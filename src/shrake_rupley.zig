@@ -3,6 +3,7 @@ const types = @import("types.zig");
 const test_points = @import("test_points.zig");
 const neighbor_list = @import("neighbor_list.zig");
 const simd = @import("simd.zig");
+const thread_pool = @import("thread_pool.zig");
 
 const Vec3 = types.Vec3;
 const NeighborList = neighbor_list.NeighborList;
@@ -244,6 +245,141 @@ pub fn calculateSasa(
         atom_areas[i] = area;
         total_area += area;
     }
+
+    return SasaResult{
+        .total_area = total_area,
+        .atom_areas = atom_areas,
+        .allocator = allocator,
+    };
+}
+
+/// Context for parallel SASA calculation workers.
+const ParallelContext = struct {
+    positions: []const Vec3,
+    radii: []const f64,
+    radii_with_probe_sq: []const f64,
+    test_points_array: []const Vec3,
+    neighbor_list_data: *const NeighborList,
+    probe_radius: f64,
+    atom_areas: []f64,
+};
+
+/// Worker function for parallel SASA calculation.
+/// Processes atoms from chunk_start to chunk_end.
+fn parallelSasaWorker(ctx: ParallelContext, chunk_start: usize, chunk_end: usize) f64 {
+    var chunk_total: f64 = 0.0;
+
+    for (chunk_start..chunk_end) |i| {
+        const atom_radius_probe = ctx.radii[i] + ctx.probe_radius;
+        const neighbors = ctx.neighbor_list_data.getNeighbors(i);
+        const area = atomSasaWithNeighbors(
+            i,
+            ctx.positions,
+            ctx.radii_with_probe_sq,
+            ctx.test_points_array,
+            atom_radius_probe,
+            neighbors,
+        );
+        ctx.atom_areas[i] = area;
+        chunk_total += area;
+    }
+
+    return chunk_total;
+}
+
+/// Reduce function to sum all chunk totals.
+fn sumReducer(results: []const f64) f64 {
+    var total: f64 = 0.0;
+    for (results) |r| {
+        total += r;
+    }
+    return total;
+}
+
+/// Calculate SASA for all atoms using parallel processing.
+///
+/// # Parameters
+/// - `allocator`: Memory allocator for result arrays
+/// - `input`: Atom input data (positions and radii)
+/// - `config`: Configuration parameters (n_points, probe_radius)
+/// - `n_threads`: Number of worker threads (0 = auto-detect)
+///
+/// # Returns
+/// SasaResult containing total_area and per-atom areas. Caller must call deinit().
+pub fn calculateSasaParallel(
+    allocator: Allocator,
+    input: AtomInput,
+    config: Config,
+    n_threads: usize,
+) !SasaResult {
+    const n_atoms = input.atomCount();
+    if (n_atoms == 0) return error.NoAtoms;
+
+    // Auto-detect thread count if 0
+    const actual_threads = if (n_threads == 0)
+        try std.Thread.getCpuCount()
+    else
+        n_threads;
+
+    // Generate test points
+    const test_points_array = try test_points.generateTestPoints(allocator, config.n_points);
+    defer allocator.free(test_points_array);
+
+    // Convert input to Vec3 positions
+    const positions = try allocator.alloc(Vec3, n_atoms);
+    defer allocator.free(positions);
+
+    for (0..n_atoms) |i| {
+        positions[i] = Vec3{
+            .x = input.x[i],
+            .y = input.y[i],
+            .z = input.z[i],
+        };
+    }
+
+    // Build neighbor list for O(N) instead of O(N²) neighbor checking
+    var neighbor_list_data = try NeighborList.init(allocator, positions, input.r, config.probe_radius);
+    defer neighbor_list_data.deinit();
+
+    // Pre-compute (r[j] + probe_radius)² for each atom
+    const radii_with_probe_sq = try allocator.alloc(f64, n_atoms);
+    defer allocator.free(radii_with_probe_sq);
+
+    for (0..n_atoms) |i| {
+        const r_probe = input.r[i] + config.probe_radius;
+        radii_with_probe_sq[i] = r_probe * r_probe;
+    }
+
+    // Allocate result arrays
+    const atom_areas = try allocator.alloc(f64, n_atoms);
+    errdefer allocator.free(atom_areas);
+
+    // Create parallel context
+    const ctx = ParallelContext{
+        .positions = positions,
+        .radii = input.r,
+        .radii_with_probe_sq = radii_with_probe_sq,
+        .test_points_array = test_points_array,
+        .neighbor_list_data = &neighbor_list_data,
+        .probe_radius = config.probe_radius,
+        .atom_areas = atom_areas,
+    };
+
+    // Calculate chunk size: aim for ~100-500 atoms per chunk
+    const chunk_size = @max(64, n_atoms / (actual_threads * 4));
+
+    // Run parallel calculation
+    const total_area = try thread_pool.parallelFor(
+        ParallelContext,
+        f64,
+        allocator,
+        actual_threads,
+        parallelSasaWorker,
+        ctx,
+        n_atoms,
+        chunk_size,
+        sumReducer,
+    );
 
     return SasaResult{
         .total_area = total_area,
@@ -603,4 +739,107 @@ test "atomSasaWithNeighbors - handles 0-3 neighbors correctly (scalar fallback)"
     const neighbors_3 = [_]u32{ 1, 2, 3 };
     const sasa_3 = atomSasaWithNeighbors(0, &positions, &radii_with_probe_sq, test_points_array, atom_radius_probe, &neighbors_3);
     try std.testing.expectApproxEqRel(expected_full_sasa, sasa_3, 0.01);
+}
+
+test "calculateSasaParallel - same results as sequential" {
+    const allocator = std.testing.allocator;
+
+    // Create a cluster of 20 atoms for more meaningful parallel test
+    const n_atoms = 20;
+    const x = try allocator.alloc(f64, n_atoms);
+    defer allocator.free(x);
+    const y = try allocator.alloc(f64, n_atoms);
+    defer allocator.free(y);
+    const z = try allocator.alloc(f64, n_atoms);
+    defer allocator.free(z);
+    const r = try allocator.alloc(f64, n_atoms);
+    defer allocator.free(r);
+
+    // Create a grid of atoms
+    var idx: usize = 0;
+    for (0..4) |ix| {
+        for (0..5) |iy| {
+            x[idx] = @as(f64, @floatFromInt(ix)) * 3.0;
+            y[idx] = @as(f64, @floatFromInt(iy)) * 3.0;
+            z[idx] = 0.0;
+            r[idx] = 1.0 + @as(f64, @floatFromInt(idx % 5)) * 0.1;
+            idx += 1;
+        }
+    }
+
+    const input = AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .allocator = allocator,
+    };
+
+    const config = Config{
+        .n_points = 100,
+        .probe_radius = 1.4,
+    };
+
+    // Calculate sequential
+    var sequential_result = try calculateSasa(allocator, input, config);
+    defer sequential_result.deinit();
+
+    // Calculate parallel with 2 threads
+    var parallel_result = try calculateSasaParallel(allocator, input, config, 2);
+    defer parallel_result.deinit();
+
+    // Verify total area matches
+    try std.testing.expectApproxEqAbs(sequential_result.total_area, parallel_result.total_area, 1e-10);
+
+    // Verify each atom area matches
+    for (0..n_atoms) |i| {
+        try std.testing.expectApproxEqAbs(
+            sequential_result.atom_areas[i],
+            parallel_result.atom_areas[i],
+            1e-10,
+        );
+    }
+}
+
+test "calculateSasaParallel - auto thread count" {
+    const allocator = std.testing.allocator;
+
+    const x = try allocator.alloc(f64, 2);
+    defer allocator.free(x);
+    const y = try allocator.alloc(f64, 2);
+    defer allocator.free(y);
+    const z = try allocator.alloc(f64, 2);
+    defer allocator.free(z);
+    const r = try allocator.alloc(f64, 2);
+    defer allocator.free(r);
+
+    x[0] = 0.0;
+    y[0] = 0.0;
+    z[0] = 0.0;
+    r[0] = 1.0;
+    x[1] = 100.0;
+    y[1] = 0.0;
+    z[1] = 0.0;
+    r[1] = 1.0;
+
+    const input = AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .allocator = allocator,
+    };
+
+    const config = Config{
+        .n_points = 100,
+        .probe_radius = 1.4,
+    };
+
+    // n_threads = 0 should auto-detect
+    var result = try calculateSasaParallel(allocator, input, config, 0);
+    defer result.deinit();
+
+    // Just verify it runs and produces valid output
+    try std.testing.expect(result.total_area > 0);
+    try std.testing.expectEqual(@as(usize, 2), result.atom_areas.len);
 }
