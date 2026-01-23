@@ -54,6 +54,9 @@ pub const AtomInput = struct {
     residue: ?[]const []const u8 = null,
     /// Atom names (e.g., "CA", "CB") - optional, for classifier
     atom_name: ?[]const []const u8 = null,
+    /// Element atomic numbers (e.g., 6=C, 7=N, 8=O, 20=Ca) - optional
+    /// Used to disambiguate atom names like "CA" (Carbon alpha vs Calcium)
+    element: ?[]const u8 = null,
     allocator: std.mem.Allocator,
 
     /// Get number of atoms
@@ -64,6 +67,11 @@ pub const AtomInput = struct {
     /// Check if residue/atom names are available for classification
     pub fn hasClassificationInfo(self: AtomInput) bool {
         return self.residue != null and self.atom_name != null;
+    }
+
+    /// Check if element info is available
+    pub fn hasElementInfo(self: AtomInput) bool {
+        return self.element != null;
     }
 
     /// Free allocated memory
@@ -83,6 +91,9 @@ pub const AtomInput = struct {
                 self.allocator.free(s);
             }
             self.allocator.free(names);
+        }
+        if (self.element) |elem| {
+            self.allocator.free(elem);
         }
     }
 };

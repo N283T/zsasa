@@ -86,6 +86,10 @@ const class: AtomClass = oons.getClass("ALA", "C");  // .polar
 ```zig
 const classifier = @import("classifier.zig");
 
+// 原子番号から半径推定（CA/Ca問題を解決）
+const radius = classifier.guessRadiusFromAtomicNumber(6);   // 1.70 (Carbon)
+const radius = classifier.guessRadiusFromAtomicNumber(20);  // 2.31 (Calcium)
+
 // 元素記号から半径推定
 const radius = classifier.guessRadius("C");   // 1.70
 const radius = classifier.guessRadius("FE");  // 1.26
@@ -98,6 +102,25 @@ const radius = classifier.guessRadiusFromAtomName("FE  "); // 1.26 (FE)
 const elem = classifier.extractElement(" CA "); // "C"（先頭スペース→1文字元素）
 const elem = classifier.extractElement("FE  "); // "FE"（先頭スペースなし→2文字チェック）
 ```
+
+### 原子番号による明確な元素識別
+
+入力JSONに`element`フィールド（原子番号配列）を含めることで、原子名の曖昧さを解消できる：
+
+```json
+{
+  "x": [1.0, 2.0],
+  "y": [3.0, 4.0],
+  "z": [5.0, 6.0],
+  "r": [1.7, 2.31],
+  "atom_name": ["CA", "CA"],
+  "element": [6, 20]
+}
+```
+
+上記の例では：
+- 1番目のCA: 原子番号6 = 炭素（Cα）
+- 2番目のCA: 原子番号20 = カルシウム（金属イオン）
 
 ### データ型
 

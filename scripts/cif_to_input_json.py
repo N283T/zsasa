@@ -34,6 +34,7 @@ class AtomCoordinates(BaseModel):
     r: list[float]
     residue: list[str] | None = None
     atom_name: list[str] | None = None
+    element: list[int] | None = None  # Atomic numbers (e.g., 6=C, 7=N, 8=O)
 
     @property
     def n_atoms(self) -> int:
@@ -49,7 +50,7 @@ def extract_atoms(path: str | Path) -> AtomCoordinates:
         path: Path to mmCIF or PDB file (gzipped OK)
 
     Returns:
-        AtomCoordinates with x, y, z coordinates, r radii, and residue/atom names
+        AtomCoordinates with x, y, z coordinates, r radii, residue/atom names, and elements
     """
     st = gemmi.read_structure(str(path))
     st.remove_hydrogens()
@@ -63,6 +64,7 @@ def extract_atoms(path: str | Path) -> AtomCoordinates:
     rs: list[float] = []
     residues: list[str] = []
     atom_names: list[str] = []
+    elements: list[int] = []
 
     # Use first model only (common for X-ray structures)
     model = st[0]
@@ -74,9 +76,10 @@ def extract_atoms(path: str | Path) -> AtomCoordinates:
         rs.append(cra.atom.element.vdw_r)
         residues.append(cra.residue.name)
         atom_names.append(cra.atom.name)
+        elements.append(cra.atom.element.atomic_number)
 
     return AtomCoordinates(
-        x=xs, y=ys, z=zs, r=rs, residue=residues, atom_name=atom_names
+        x=xs, y=ys, z=zs, r=rs, residue=residues, atom_name=atom_names, element=elements
     )
 
 
