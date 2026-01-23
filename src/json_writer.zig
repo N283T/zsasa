@@ -4,13 +4,20 @@ const types = @import("types.zig");
 const Allocator = std.mem.Allocator;
 const SasaResult = types.SasaResult;
 
+/// Output format options
+pub const OutputFormat = enum {
+    json, // Pretty-printed JSON (default)
+    compact, // Single-line JSON
+    csv, // CSV format
+};
+
 /// JSON structure for output
 const JsonOutput = struct {
     total_area: f64,
     atom_areas: []const f64,
 };
 
-/// Convert SasaResult to JSON string
+/// Convert SasaResult to compact JSON string (single line)
 /// Caller must free the returned slice
 pub fn sasaResultToJson(allocator: Allocator, result: SasaResult) ![]u8 {
     const output = JsonOutput{
@@ -21,15 +28,65 @@ pub fn sasaResultToJson(allocator: Allocator, result: SasaResult) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, output, .{});
 }
 
-/// Write SasaResult to JSON file
-pub fn writeSasaResult(allocator: Allocator, result: SasaResult, path: []const u8) !void {
-    const json_str = try sasaResultToJson(allocator, result);
-    defer allocator.free(json_str);
+/// Convert SasaResult to pretty-printed JSON string
+/// Caller must free the returned slice
+pub fn sasaResultToJsonPretty(allocator: Allocator, result: SasaResult) ![]u8 {
+    const output = JsonOutput{
+        .total_area = result.total_area,
+        .atom_areas = result.atom_areas,
+    };
+
+    return std.json.Stringify.valueAlloc(allocator, output, .{
+        .whitespace = .indent_2,
+    });
+}
+
+/// Convert SasaResult to CSV string
+/// Format: atom_index,area (with total at end)
+/// Caller must free the returned slice
+pub fn sasaResultToCsv(allocator: Allocator, result: SasaResult) ![]u8 {
+    var list = std.ArrayListUnmanaged(u8){};
+    errdefer list.deinit(allocator);
+
+    const writer = list.writer(allocator);
+
+    // Header
+    try writer.writeAll("atom_index,area\n");
+
+    // Atom areas
+    for (result.atom_areas, 0..) |area, i| {
+        try writer.print("{d},{d:.6}\n", .{ i, area });
+    }
+
+    // Total
+    try writer.print("total,{d:.6}\n", .{result.total_area});
+
+    return list.toOwnedSlice(allocator);
+}
+
+/// Write SasaResult to file with specified format
+pub fn writeSasaResultWithFormat(
+    allocator: Allocator,
+    result: SasaResult,
+    path: []const u8,
+    format: OutputFormat,
+) !void {
+    const output_str = switch (format) {
+        .json => try sasaResultToJsonPretty(allocator, result),
+        .compact => try sasaResultToJson(allocator, result),
+        .csv => try sasaResultToCsv(allocator, result),
+    };
+    defer allocator.free(output_str);
 
     const file = try std.fs.cwd().createFile(path, .{});
     defer file.close();
 
-    try file.writeAll(json_str);
+    try file.writeAll(output_str);
+}
+
+/// Write SasaResult to JSON file (default: compact for backward compatibility)
+pub fn writeSasaResult(allocator: Allocator, result: SasaResult, path: []const u8) !void {
+    return writeSasaResultWithFormat(allocator, result, path, .compact);
 }
 
 // Tests
@@ -101,6 +158,92 @@ test "sasaResultToJson single atom" {
     );
 }
 
+test "sasaResultToJsonPretty basic" {
+    const allocator = std.testing.allocator;
+
+    const atom_areas = try allocator.alloc(f64, 2);
+    defer allocator.free(atom_areas);
+
+    atom_areas[0] = 10.5;
+    atom_areas[1] = 20.3;
+
+    const result = SasaResult{
+        .total_area = 30.8,
+        .atom_areas = atom_areas,
+        .allocator = allocator,
+    };
+
+    const json = try sasaResultToJsonPretty(allocator, result);
+    defer allocator.free(json);
+
+    const expected =
+        \\{
+        \\  "total_area": 30.8,
+        \\  "atom_areas": [
+        \\    10.5,
+        \\    20.3
+        \\  ]
+        \\}
+    ;
+
+    try std.testing.expectEqualStrings(expected, json);
+}
+
+test "sasaResultToCsv basic" {
+    const allocator = std.testing.allocator;
+
+    const atom_areas = try allocator.alloc(f64, 3);
+    defer allocator.free(atom_areas);
+
+    atom_areas[0] = 10.5;
+    atom_areas[1] = 20.3;
+    atom_areas[2] = 5.0;
+
+    const result = SasaResult{
+        .total_area = 35.8,
+        .atom_areas = atom_areas,
+        .allocator = allocator,
+    };
+
+    const csv = try sasaResultToCsv(allocator, result);
+    defer allocator.free(csv);
+
+    const expected =
+        \\atom_index,area
+        \\0,10.500000
+        \\1,20.300000
+        \\2,5.000000
+        \\total,35.800000
+        \\
+    ;
+
+    try std.testing.expectEqualStrings(expected, csv);
+}
+
+test "sasaResultToCsv empty atoms" {
+    const allocator = std.testing.allocator;
+
+    const atom_areas = try allocator.alloc(f64, 0);
+    defer allocator.free(atom_areas);
+
+    const result = SasaResult{
+        .total_area = 0.0,
+        .atom_areas = atom_areas,
+        .allocator = allocator,
+    };
+
+    const csv = try sasaResultToCsv(allocator, result);
+    defer allocator.free(csv);
+
+    const expected =
+        \\atom_index,area
+        \\total,0.000000
+        \\
+    ;
+
+    try std.testing.expectEqualStrings(expected, csv);
+}
+
 test "writeSasaResult creates file" {
     const allocator = std.testing.allocator;
 
@@ -132,6 +275,66 @@ test "writeSasaResult creates file" {
         "{\"total_area\":30.8,\"atom_areas\":[10.5,20.3]}",
         content,
     );
+}
+
+test "writeSasaResultWithFormat json" {
+    const allocator = std.testing.allocator;
+
+    const atom_areas = try allocator.alloc(f64, 2);
+    defer allocator.free(atom_areas);
+
+    atom_areas[0] = 10.5;
+    atom_areas[1] = 20.3;
+
+    const result = SasaResult{
+        .total_area = 30.8,
+        .atom_areas = atom_areas,
+        .allocator = allocator,
+    };
+
+    const test_path = "test_format_json.json";
+    defer std.fs.cwd().deleteFile(test_path) catch {};
+
+    try writeSasaResultWithFormat(allocator, result, test_path, .json);
+
+    const file = try std.fs.cwd().openFile(test_path, .{});
+    defer file.close();
+
+    const content = try file.readToEndAlloc(allocator, 1024);
+    defer allocator.free(content);
+
+    // Should be pretty-printed
+    try std.testing.expect(std.mem.indexOf(u8, content, "\n") != null);
+}
+
+test "writeSasaResultWithFormat csv" {
+    const allocator = std.testing.allocator;
+
+    const atom_areas = try allocator.alloc(f64, 2);
+    defer allocator.free(atom_areas);
+
+    atom_areas[0] = 10.5;
+    atom_areas[1] = 20.3;
+
+    const result = SasaResult{
+        .total_area = 30.8,
+        .atom_areas = atom_areas,
+        .allocator = allocator,
+    };
+
+    const test_path = "test_format.csv";
+    defer std.fs.cwd().deleteFile(test_path) catch {};
+
+    try writeSasaResultWithFormat(allocator, result, test_path, .csv);
+
+    const file = try std.fs.cwd().openFile(test_path, .{});
+    defer file.close();
+
+    const content = try file.readToEndAlloc(allocator, 1024);
+    defer allocator.free(content);
+
+    // Should start with header
+    try std.testing.expect(std.mem.startsWith(u8, content, "atom_index,area\n"));
 }
 
 test "writeSasaResult overwrites existing file" {
