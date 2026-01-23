@@ -9,8 +9,9 @@ SASA (Solvent Accessible Surface Area) measures the surface area of a biomolecul
 ## Features
 
 - Shrake-Rupley algorithm implementation
-- JSON input/output format
+- JSON input/output format with multiple output options
 - Configurable test points and probe radius
+- Input validation with detailed error messages
 - Memory-safe implementation with explicit allocators
 - **Multi-threading support** for parallel atom processing
 - **SIMD optimization** using `@Vector(4, f64)` for batch distance calculations
@@ -18,7 +19,7 @@ SASA (Solvent Accessible Surface Area) measures the surface area of a biomolecul
 
 ## Building
 
-Requires Zig 0.14.0 or later.
+Requires Zig 0.15.2 or later.
 
 ```bash
 zig build
@@ -33,24 +34,49 @@ zig build test
 ## Usage
 
 ```bash
-# Basic usage (auto-detect thread count)
-./zig-out/bin/freesasa_zig <input.json> [output.json]
+freesasa_zig [OPTIONS] <input.json> [output.json]
+```
+
+### Examples
+
+```bash
+# Basic usage (auto-detect thread count, pretty JSON output)
+./zig-out/bin/freesasa_zig input.json output.json
 
 # Specify thread count
-./zig-out/bin/freesasa_zig --threads=4 <input.json> [output.json]
+./zig-out/bin/freesasa_zig --threads=4 input.json output.json
 
 # Single-threaded mode
-./zig-out/bin/freesasa_zig --threads=1 <input.json> [output.json]
+./zig-out/bin/freesasa_zig --threads=1 input.json output.json
 
-# Example
-./zig-out/bin/freesasa_zig examples/input_1a0q.json output.json
+# Custom algorithm parameters
+./zig-out/bin/freesasa_zig --probe-radius=1.5 --n-points=200 input.json output.json
+
+# CSV output format
+./zig-out/bin/freesasa_zig --format=csv input.json output.csv
+
+# Compact JSON (single line, no whitespace)
+./zig-out/bin/freesasa_zig --format=compact input.json output.json
+
+# Validate input only (no calculation)
+./zig-out/bin/freesasa_zig --validate input.json
+
+# Quiet mode (suppress progress output)
+./zig-out/bin/freesasa_zig --quiet input.json output.json
 ```
 
 ### Options
 
-| Option | Description |
-|--------|-------------|
-| `--threads=N` | Number of threads (default: auto-detect CPU count) |
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--threads=N` | Number of threads | auto-detect |
+| `--probe-radius=R` | Probe radius in Angstroms (0 < R ≤ 10) | 1.4 |
+| `--n-points=N` | Test points per atom (1-10000) | 100 |
+| `--format=FORMAT` | Output format: `json`, `compact`, `csv` | json |
+| `--validate` | Validate input only, do not calculate SASA | - |
+| `-q, --quiet` | Suppress progress output | - |
+| `-h, --help` | Show help message | - |
+| `-V, --version` | Show version | - |
 
 ### Input Format
 
@@ -65,13 +91,36 @@ JSON file with atom coordinates and van der Waals radii:
 }
 ```
 
-### Output Format
+**Validation rules:**
+- All arrays must have the same length
+- Input must contain at least one atom
+- Coordinates must be finite (not NaN or Inf)
+- Radii must be positive and ≤ 100 Å
 
+### Output Formats
+
+**JSON (default)** - Pretty-printed with indentation:
 ```json
 {
   "total_area": 1234.56,
-  "atom_areas": [10.5, 20.3, ...]
+  "atom_areas": [
+    10.5,
+    20.3
+  ]
 }
+```
+
+**Compact** - Single-line JSON:
+```json
+{"total_area":1234.56,"atom_areas":[10.5,20.3]}
+```
+
+**CSV** - Comma-separated values:
+```csv
+atom_index,area
+0,10.500000
+1,20.300000
+total,1234.560000
 ```
 
 ## Preparing Input Data
@@ -84,6 +133,9 @@ Use the provided Python scripts to convert structure files:
 
 # Generate reference SASA using FreeSASA (for validation)
 ./scripts/calc_reference_sasa.py structure.cif reference.json
+
+# Run benchmark
+./scripts/benchmark.py examples/1A0Q.cif.gz --runs 5 --threads 4
 ```
 
 Requirements: Python 3.11+, gemmi, freesasa (installed automatically via PEP 723)
@@ -136,9 +188,10 @@ Benchmark on PDB 1A0Q (3,183 atoms):
 freesasa-zig/
 ├── src/
 │   ├── main.zig           # CLI entry point
+│   ├── root.zig           # Library root module
 │   ├── types.zig          # Data structures (Vec3, AtomInput, etc.)
-│   ├── json_parser.zig    # JSON input parsing
-│   ├── json_writer.zig    # JSON output writing
+│   ├── json_parser.zig    # JSON input parsing and validation
+│   ├── json_writer.zig    # Output writing (JSON, CSV)
 │   ├── test_points.zig    # Golden Section Spiral generation
 │   ├── neighbor_list.zig  # Spatial neighbor list (O(N) lookup)
 │   ├── simd.zig           # SIMD batch operations
@@ -149,11 +202,11 @@ freesasa-zig/
 │   ├── calc_reference_sasa.py # Reference SASA calculator
 │   └── benchmark.py           # Performance benchmark
 ├── examples/
-│   └── input_1a0q.json    # Example input (PDB 1A0Q)
+│   ├── 1A0Q.cif.gz        # Original structure file (PDB 1A0Q)
+│   ├── input_1a0q.json    # Example input (converted from cif)
+│   └── 1A0Q_sasa.json     # Reference SASA from FreeSASA
 └── plans/
-    ├── phase-1-shrake-rupley.md
-    ├── phase-3-simd-optimization.md
-    └── phase-4-multithreading.md
+    └── *.md               # Implementation plans
 ```
 
 ## Roadmap
@@ -162,7 +215,7 @@ freesasa-zig/
 - [x] Phase 2: Neighbor list optimization (O(N²) → O(N))
 - [x] Phase 3: SIMD optimization (4.5x faster than FreeSASA)
 - [x] Phase 4: Multi-threading (6.4x faster than FreeSASA)
-- [ ] Phase 5: Production features (more CLI options, configuration file)
+- [x] Phase 5: Production features (CLI options, output formats, validation)
 
 ## License
 
