@@ -88,7 +88,7 @@ pub fn calculateSasaParallel(allocator, input, config, n_threads) !SasaResult {
 | `src/shrake_rupley.zig` | MODIFY |
 
 ---
-- [ ] **DONE** - Sub-phase 4.3 complete
+- [x] **DONE** - Sub-phase 4.3 complete (skipped - current chunk size heuristic sufficient)
 
 ---
 
