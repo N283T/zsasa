@@ -322,6 +322,122 @@ fn printVersion() void {
     std.debug.print("freesasa_zig {s}\n", .{version});
 }
 
+/// Apply a custom classifier to input, replacing radii based on residue/atom names
+fn applyClassifier(
+    allocator: std.mem.Allocator,
+    input: *types.AtomInput,
+    custom_classifier: *const classifier.Classifier,
+    quiet: bool,
+) !void {
+    const n = input.atomCount();
+    const residues = input.residue.?;
+    const atom_names = input.atom_name.?;
+
+    // Allocate new radii array
+    const new_radii = try allocator.alloc(f64, n);
+    errdefer allocator.free(new_radii);
+
+    var classified_count: usize = 0;
+    var fallback_count: usize = 0;
+
+    for (0..n) |i| {
+        // Try classifier lookup
+        if (custom_classifier.getRadius(residues[i], atom_names[i])) |r| {
+            new_radii[i] = r;
+            classified_count += 1;
+        } else if (input.element) |elements| {
+            // Fall back to element-based radius
+            if (classifier.guessRadiusFromAtomicNumber(elements[i])) |r| {
+                new_radii[i] = r;
+                fallback_count += 1;
+            } else {
+                // Keep original radius
+                new_radii[i] = input.r[i];
+            }
+        } else if (classifier.guessRadiusFromAtomName(atom_names[i])) |r| {
+            // Fall back to atom name-based radius
+            new_radii[i] = r;
+            fallback_count += 1;
+        } else {
+            // Keep original radius
+            new_radii[i] = input.r[i];
+        }
+    }
+
+    // Free old radii and replace
+    allocator.free(@constCast(input.r));
+    input.r = new_radii;
+
+    if (!quiet) {
+        std.debug.print("Classifier '{s}': {d} atoms classified, {d} fallback\n", .{
+            custom_classifier.name,
+            classified_count,
+            fallback_count,
+        });
+    }
+}
+
+/// Apply a built-in classifier to input
+fn applyBuiltinClassifier(
+    allocator: std.mem.Allocator,
+    input: *types.AtomInput,
+    ct: ClassifierType,
+    quiet: bool,
+) !void {
+    const n = input.atomCount();
+    const residues = input.residue.?;
+    const atom_names = input.atom_name.?;
+
+    // Allocate new radii array
+    const new_radii = try allocator.alloc(f64, n);
+    errdefer allocator.free(new_radii);
+
+    var classified_count: usize = 0;
+    var fallback_count: usize = 0;
+
+    for (0..n) |i| {
+        // Try built-in classifier lookup
+        const maybe_radius: ?f64 = switch (ct) {
+            .naccess => classifier_naccess.getRadius(residues[i], atom_names[i]),
+            .protor => classifier_protor.getRadius(residues[i], atom_names[i]),
+            .oons => classifier_oons.getRadius(residues[i], atom_names[i]),
+        };
+
+        if (maybe_radius) |r| {
+            new_radii[i] = r;
+            classified_count += 1;
+        } else if (input.element) |elements| {
+            // Fall back to element-based radius
+            if (classifier.guessRadiusFromAtomicNumber(elements[i])) |r| {
+                new_radii[i] = r;
+                fallback_count += 1;
+            } else {
+                // Keep original radius
+                new_radii[i] = input.r[i];
+            }
+        } else if (classifier.guessRadiusFromAtomName(atom_names[i])) |r| {
+            // Fall back to atom name-based radius
+            new_radii[i] = r;
+            fallback_count += 1;
+        } else {
+            // Keep original radius
+            new_radii[i] = input.r[i];
+        }
+    }
+
+    // Free old radii and replace
+    allocator.free(@constCast(input.r));
+    input.r = new_radii;
+
+    if (!quiet) {
+        std.debug.print("Classifier '{s}': {d} atoms classified, {d} fallback\n", .{
+            ct.name(),
+            classified_count,
+            fallback_count,
+        });
+    }
+}
+
 pub fn main() !void {
     // Setup allocator
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -383,6 +499,43 @@ pub fn main() !void {
             std.debug.print("Input validation passed: {} atoms\n", .{input.atomCount()});
         }
         return;
+    }
+
+    // Apply classifier if specified (--config takes precedence over --classifier)
+    if (parsed.config_path != null or parsed.classifier_type != null) {
+        // Warn if both are specified
+        if (parsed.config_path != null and parsed.classifier_type != null) {
+            if (!parsed.quiet) {
+                std.debug.print("Warning: Both --classifier and --config specified; using --config\n", .{});
+            }
+        }
+
+        // Check if input has classification info
+        if (!input.hasClassificationInfo()) {
+            std.debug.print("Error: Classifier requires 'residue' and 'atom_name' fields in input JSON\n", .{});
+            std.process.exit(1);
+        }
+
+        // Load classifier and apply radii
+        if (parsed.config_path) |config_path| {
+            // Load from custom config file
+            var custom_classifier = classifier_parser.parseConfigFile(allocator, config_path) catch |err| {
+                std.debug.print("Error loading config file '{s}': {s}\n", .{ config_path, @errorName(err) });
+                std.process.exit(1);
+            };
+            defer custom_classifier.deinit();
+
+            applyClassifier(allocator, &input, &custom_classifier, parsed.quiet) catch |err| {
+                std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
+                std.process.exit(1);
+            };
+        } else if (parsed.classifier_type) |ct| {
+            // Use built-in classifier
+            applyBuiltinClassifier(allocator, &input, ct, parsed.quiet) catch |err| {
+                std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
+                std.process.exit(1);
+            };
+        }
     }
 
     // Calculate SASA with configured parameters
