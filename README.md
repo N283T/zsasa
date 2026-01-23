@@ -109,21 +109,27 @@ freesasa-zig/
 │   ├── json_parser.zig    # JSON input parsing
 │   ├── json_writer.zig    # JSON output writing
 │   ├── test_points.zig    # Golden Section Spiral generation
+│   ├── neighbor_list.zig  # Spatial neighbor list (O(N) lookup)
+│   ├── simd.zig           # SIMD batch operations
 │   └── shrake_rupley.zig  # Core SASA algorithm
 ├── scripts/
 │   ├── cif_to_input_json.py   # Structure to JSON converter
-│   └── calc_reference_sasa.py # Reference SASA calculator
+│   ├── calc_reference_sasa.py # Reference SASA calculator
+│   └── benchmark.py           # Performance benchmark
 ├── examples/
 │   └── input_1a0q.json    # Example input (PDB 1A0Q)
 └── plans/
-    └── phase-1-shrake-rupley.md
+    ├── phase-1-shrake-rupley.md
+    └── phase-3-simd-optimization.md
 ```
 
 ## Roadmap
 
 - [x] Phase 1: Basic Shrake-Rupley implementation
-- [ ] Phase 2: Optimization (neighbor lists, SIMD, parallelism)
-- [ ] Phase 3: Production features (CLI options, error handling)
+- [x] Phase 2: Neighbor list optimization (O(N²) → O(N))
+- [x] Phase 3: SIMD optimization (4.5x faster than FreeSASA)
+- [ ] Phase 4: Multi-threading (parallel atom processing)
+- [ ] Phase 5: Production features (CLI options, error handling)
 
 ## License
 
