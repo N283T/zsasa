@@ -2,6 +2,7 @@ const std = @import("std");
 const types = @import("types.zig");
 const test_points = @import("test_points.zig");
 const neighbor_list = @import("neighbor_list.zig");
+const simd = @import("simd.zig");
 
 const Vec3 = types.Vec3;
 const NeighborList = neighbor_list.NeighborList;
@@ -121,21 +122,48 @@ fn atomSasaWithNeighbors(
         const scaled = test_point.scale(atom_radius_probe);
         const point = atom_pos.add(scaled);
 
-        // Check if this point is inside any neighbor atom (O(k) instead of O(N))
+        // Check if this point is inside any neighbor atom using SIMD
         var is_buried = false;
-        for (neighbors) |j| {
-            const other_pos = positions[j];
+        var i: usize = 0;
 
-            // Calculate squared distance
-            const dx = point.x - other_pos.x;
-            const dy = point.y - other_pos.y;
-            const dz = point.z - other_pos.z;
-            const dist_sq = dx * dx + dy * dy + dz * dz;
+        // Process 4 neighbors at a time with SIMD
+        while (i + 4 <= neighbors.len) : (i += 4) {
+            const batch_positions = [4]Vec3{
+                positions[neighbors[i]],
+                positions[neighbors[i + 1]],
+                positions[neighbors[i + 2]],
+                positions[neighbors[i + 3]],
+            };
+            const batch_radii = [4]f64{
+                radii_with_probe_sq[neighbors[i]],
+                radii_with_probe_sq[neighbors[i + 1]],
+                radii_with_probe_sq[neighbors[i + 2]],
+                radii_with_probe_sq[neighbors[i + 3]],
+            };
 
-            // Check if point is inside this atom (using pre-computed squared radius)
-            if (dist_sq < radii_with_probe_sq[j]) {
+            if (simd.isPointBuriedBatch4(point, batch_positions, batch_radii)) {
                 is_buried = true;
                 break;
+            }
+        }
+
+        // Handle remaining neighbors (0-3) with scalar fallback
+        if (!is_buried) {
+            while (i < neighbors.len) : (i += 1) {
+                const j = neighbors[i];
+                const other_pos = positions[j];
+
+                // Calculate squared distance
+                const dx = point.x - other_pos.x;
+                const dy = point.y - other_pos.y;
+                const dz = point.z - other_pos.z;
+                const dist_sq = dx * dx + dy * dy + dz * dz;
+
+                // Check if point is inside this atom
+                if (dist_sq < radii_with_probe_sq[j]) {
+                    is_buried = true;
+                    break;
+                }
             }
         }
 
