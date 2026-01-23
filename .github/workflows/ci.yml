@@ -3,8 +3,18 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - 'plans/**'
+      - 'LICENSE'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - 'plans/**'
+      - 'LICENSE'
 
 jobs:
   build:
@@ -14,8 +24,13 @@ jobs:
         include:
           - os: ubuntu-latest
             name: Linux
+            binary: freesasa_zig
           - os: macos-latest
             name: macOS
+            binary: freesasa_zig
+          - os: windows-latest
+            name: Windows
+            binary: freesasa_zig.exe
 
     runs-on: ${{ matrix.os }}
     name: Build (${{ matrix.name }})
@@ -38,21 +53,43 @@ jobs:
       - name: Build Release
         run: zig build -Doptimize=ReleaseFast
 
-      - name: Check binary exists
+      - name: Check binary exists (Unix)
+        if: runner.os != 'Windows'
         run: |
-          if [ -f "./zig-out/bin/freesasa_zig" ]; then
+          if [ -f "./zig-out/bin/${{ matrix.binary }}" ]; then
             echo "Binary built successfully"
-            ls -la ./zig-out/bin/freesasa_zig
+            ls -la ./zig-out/bin/${{ matrix.binary }}
           else
             echo "Binary not found"
             exit 1
           fi
 
-      - name: Test CLI help
-        run: ./zig-out/bin/freesasa_zig --help
+      - name: Check binary exists (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          if (Test-Path "./zig-out/bin/${{ matrix.binary }}") {
+            Write-Host "Binary built successfully"
+            Get-Item "./zig-out/bin/${{ matrix.binary }}"
+          } else {
+            Write-Host "Binary not found"
+            exit 1
+          }
 
-      - name: Test CLI version
-        run: ./zig-out/bin/freesasa_zig --version
+      - name: Test CLI help (Unix)
+        if: runner.os != 'Windows'
+        run: ./zig-out/bin/${{ matrix.binary }} --help
+
+      - name: Test CLI help (Windows)
+        if: runner.os == 'Windows'
+        run: ./zig-out/bin/${{ matrix.binary }} --help
+
+      - name: Test CLI version (Unix)
+        if: runner.os != 'Windows'
+        run: ./zig-out/bin/${{ matrix.binary }} --version
+
+      - name: Test CLI version (Windows)
+        if: runner.os == 'Windows'
+        run: ./zig-out/bin/${{ matrix.binary }} --version
 
   validate:
     runs-on: ubuntu-latest
@@ -78,7 +115,6 @@ jobs:
 
       - name: Validate output format
         run: |
-          # Check JSON is valid and has expected fields
           python3 -c "
           import json
           with open('/tmp/output.json') as f:
