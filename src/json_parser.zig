@@ -29,6 +29,9 @@ pub const ValidationResult = struct {
     }
 };
 
+/// Maximum allowed radius in Angstroms
+const MAX_RADIUS_ANGSTROMS: f64 = 100.0;
+
 /// Validate a single value is finite (not NaN or Inf)
 fn isFinite(value: f64) bool {
     return std.math.isFinite(value);
@@ -36,7 +39,7 @@ fn isFinite(value: f64) bool {
 
 /// Validate radius value (must be positive and finite)
 fn isValidRadius(value: f64) bool {
-    return isFinite(value) and value > 0 and value <= 100.0;
+    return isFinite(value) and value > 0 and value <= MAX_RADIUS_ANGSTROMS;
 }
 
 /// Validate input data and collect all errors
@@ -124,14 +127,12 @@ pub fn printValidationErrors(errors: []const ValidationError) void {
 
 /// Parse atom input from JSON string
 pub fn parseAtomInput(allocator: Allocator, json_str: []const u8) !AtomInput {
-    const parsed = std.json.parseFromSlice(
+    const parsed = try std.json.parseFromSlice(
         JsonInput,
         allocator,
         json_str,
         .{},
-    ) catch |err| {
-        return err;
-    };
+    );
     defer parsed.deinit();
 
     const data = parsed.value;
@@ -171,22 +172,6 @@ pub fn parseAtomInput(allocator: Allocator, json_str: []const u8) !AtomInput {
         .r = r,
         .allocator = allocator,
     };
-}
-
-/// Parse and validate atom input from JSON string
-pub fn parseAndValidateAtomInput(allocator: Allocator, json_str: []const u8) !AtomInput {
-    var input = try parseAtomInput(allocator, json_str);
-    errdefer input.deinit();
-
-    var validation = try validateInput(allocator, input);
-    defer validation.deinit();
-
-    if (!validation.valid) {
-        printValidationErrors(validation.errors);
-        return error.ValidationFailed;
-    }
-
-    return input;
 }
 
 /// Read atom input from JSON file
@@ -485,4 +470,41 @@ test "validateInput zero radius" {
 
     try std.testing.expect(!result.valid);
     try std.testing.expectEqual(@as(usize, 1), result.errors.len);
+}
+
+test "validateInput radius too large" {
+    const allocator = std.testing.allocator;
+
+    const x = try allocator.alloc(f64, 2);
+    defer allocator.free(x);
+    const y = try allocator.alloc(f64, 2);
+    defer allocator.free(y);
+    const z = try allocator.alloc(f64, 2);
+    defer allocator.free(z);
+    const r = try allocator.alloc(f64, 2);
+    defer allocator.free(r);
+
+    x[0] = 1.0;
+    x[1] = 2.0;
+    y[0] = 1.0;
+    y[1] = 2.0;
+    z[0] = 1.0;
+    z[1] = 2.0;
+    r[0] = 150.0; // Exceeds MAX_RADIUS_ANGSTROMS (100.0)
+    r[1] = 1.6;
+
+    const input = AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .allocator = allocator,
+    };
+
+    var result = try validateInput(allocator, input);
+    defer result.deinit();
+
+    try std.testing.expect(!result.valid);
+    try std.testing.expectEqual(@as(usize, 1), result.errors.len);
+    try std.testing.expectEqual(@as(usize, 0), result.errors[0].index.?);
 }
