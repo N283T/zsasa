@@ -7,9 +7,60 @@
 //! 1. Look up by (residue_name, atom_name)
 //! 2. Fall back to ("ANY", atom_name)
 //! 3. Fall back to element-based radius guessing
+//!
+//! ## Available Built-in Classifiers
+//!
+//! - **NACCESS**: Default classifier, NACCESS-compatible radii (João Rodrigues)
+//! - **ProtOr**: Hybridization-based radii from Tsai et al. 1999
+//! - **OONS**: Ooi, Oobatake, Nemethy, Scheraga radii (older FreeSASA default)
+//!
+//! ## Usage
+//!
+//! ```zig
+//! const classifier = @import("classifier.zig");
+//! const naccess = @import("classifier_naccess.zig");
+//! const protor = @import("classifier_protor.zig");
+//! const oons = @import("classifier_oons.zig");
+//!
+//! // Get classifier by type
+//! const classifier_type = classifier.ClassifierType.naccess;
+//!
+//! // Or use built-in classifiers directly
+//! const r = naccess.getRadius("ALA", "CA");
+//! ```
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+
+/// Built-in classifier types
+pub const ClassifierType = enum {
+    /// NACCESS-compatible radii (default)
+    /// Based on naccess.config from FreeSASA (João Rodrigues)
+    naccess,
+
+    /// ProtOr radii based on hybridization state
+    /// Reference: Tsai et al. 1999, J. Mol. Biol. 290:253-266
+    protor,
+
+    /// OONS radii (older FreeSASA default)
+    /// Reference: Ooi, Oobatake, Nemethy, Scheraga
+    oons,
+
+    pub fn name(self: ClassifierType) []const u8 {
+        return switch (self) {
+            .naccess => "NACCESS",
+            .protor => "ProtOr",
+            .oons => "OONS",
+        };
+    }
+
+    pub fn fromString(s: []const u8) ?ClassifierType {
+        if (std.ascii.eqlIgnoreCase(s, "naccess")) return .naccess;
+        if (std.ascii.eqlIgnoreCase(s, "protor")) return .protor;
+        if (std.ascii.eqlIgnoreCase(s, "oons")) return .oons;
+        return null;
+    }
+};
 
 /// Atom polarity classification
 pub const AtomClass = enum {
