@@ -21,6 +21,32 @@ const Args = struct {
     show_version: bool = false,
 };
 
+/// Parse and validate probe radius value
+fn parseProbeRadius(value: []const u8) f64 {
+    const radius = std.fmt.parseFloat(f64, value) catch {
+        std.debug.print("Error: Invalid probe radius: {s}\n", .{value});
+        std.process.exit(1);
+    };
+    if (radius <= 0 or radius > 10.0 or !std.math.isFinite(radius)) {
+        std.debug.print("Error: Probe radius must be between 0 and 10 Angstroms: {d}\n", .{radius});
+        std.process.exit(1);
+    }
+    return radius;
+}
+
+/// Parse and validate n-points value
+fn parseNPoints(value: []const u8) u32 {
+    const n = std.fmt.parseInt(u32, value, 10) catch {
+        std.debug.print("Error: Invalid n-points: {s}\n", .{value});
+        std.process.exit(1);
+    };
+    if (n == 0 or n > 10000) {
+        std.debug.print("Error: n-points must be between 1 and 10000: {d}\n", .{n});
+        std.process.exit(1);
+    }
+    return n;
+}
+
 /// Parse command-line arguments
 fn parseArgs(args: []const []const u8) Args {
     var result = Args{};
@@ -50,54 +76,26 @@ fn parseArgs(args: []const []const u8) Args {
         // --probe-radius=R or --probe-radius R
         else if (std.mem.startsWith(u8, arg, "--probe-radius=")) {
             const value = arg["--probe-radius=".len..];
-            result.probe_radius = std.fmt.parseFloat(f64, value) catch {
-                std.debug.print("Error: Invalid probe radius: {s}\n", .{value});
-                std.process.exit(1);
-            };
-            if (result.probe_radius <= 0) {
-                std.debug.print("Error: Probe radius must be positive: {d}\n", .{result.probe_radius});
-                std.process.exit(1);
-            }
+            result.probe_radius = parseProbeRadius(value);
         } else if (std.mem.eql(u8, arg, "--probe-radius")) {
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --probe-radius\n", .{});
                 std.process.exit(1);
             }
-            result.probe_radius = std.fmt.parseFloat(f64, args[i]) catch {
-                std.debug.print("Error: Invalid probe radius: {s}\n", .{args[i]});
-                std.process.exit(1);
-            };
-            if (result.probe_radius <= 0) {
-                std.debug.print("Error: Probe radius must be positive: {d}\n", .{result.probe_radius});
-                std.process.exit(1);
-            }
+            result.probe_radius = parseProbeRadius(args[i]);
         }
         // --n-points=N or --n-points N
         else if (std.mem.startsWith(u8, arg, "--n-points=")) {
             const value = arg["--n-points=".len..];
-            result.n_points = std.fmt.parseInt(u32, value, 10) catch {
-                std.debug.print("Error: Invalid n-points: {s}\n", .{value});
-                std.process.exit(1);
-            };
-            if (result.n_points == 0) {
-                std.debug.print("Error: n-points must be positive\n", .{});
-                std.process.exit(1);
-            }
+            result.n_points = parseNPoints(value);
         } else if (std.mem.eql(u8, arg, "--n-points")) {
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --n-points\n", .{});
                 std.process.exit(1);
             }
-            result.n_points = std.fmt.parseInt(u32, args[i], 10) catch {
-                std.debug.print("Error: Invalid n-points: {s}\n", .{args[i]});
-                std.process.exit(1);
-            };
-            if (result.n_points == 0) {
-                std.debug.print("Error: n-points must be positive\n", .{});
-                std.process.exit(1);
-            }
+            result.n_points = parseNPoints(args[i]);
         }
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
@@ -341,4 +339,27 @@ test "parseArgs multiple options" {
     try std.testing.expectEqual(true, parsed.quiet);
     try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
     try std.testing.expectEqualStrings("output.json", parsed.output_path);
+}
+
+// Tests for space-separated option syntax
+test "parseArgs --threads N (space-separated)" {
+    const args = [_][]const u8{ "freesasa_zig", "--threads", "4", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(@as(usize, 4), parsed.n_threads);
+    try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
+}
+
+test "parseArgs --probe-radius R (space-separated)" {
+    const args = [_][]const u8{ "freesasa_zig", "--probe-radius", "1.5", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(@as(f64, 1.5), parsed.probe_radius);
+}
+
+test "parseArgs --n-points N (space-separated)" {
+    const args = [_][]const u8{ "freesasa_zig", "--n-points", "200", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(@as(u32, 200), parsed.n_points);
 }
