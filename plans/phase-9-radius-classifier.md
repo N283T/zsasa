@@ -266,23 +266,24 @@ pub fn getBuiltinClassifier(classifier_type: ClassifierType) *const Classifier;
 
 ---
 
-## Phase 9.5: Config File Parser
+## Phase 9.5: Config File Parser ✅
 
 **目標**: FreeSASA互換の設定ファイルパーサー
 
 ### Tasks
 
-- [ ] `types:` セクションパース
-- [ ] `atoms:` セクションパース
-- [ ] `name:` セクションパース（オプション）
-- [ ] コメント（`#`）対応
-- [ ] エラーメッセージ
+- [x] `types:` セクションパース
+- [x] `atoms:` セクションパース
+- [x] `name:` セクションパース（オプション）
+- [x] コメント（`#`）対応
+- [x] エラーメッセージ（行番号付き `ParseResult.lines_parsed`）
 
 ### API
 
 ```zig
 pub fn parseConfig(allocator: Allocator, content: []const u8) !Classifier;
 pub fn parseConfigFile(allocator: Allocator, path: []const u8) !Classifier;
+pub fn parseConfigWithLineInfo(allocator: Allocator, content: []const u8) !ParseResult;
 ```
 
 ### Files
@@ -293,8 +294,8 @@ pub fn parseConfigFile(allocator: Allocator, path: []const u8) !Classifier;
 
 ### Success Criteria
 
-- [ ] FreeSASAの`naccess.config`をパースできる
-- [ ] 不正な設定ファイルで適切なエラー
+- [x] FreeSASAの`naccess.config`をパースできる
+- [x] 不正な設定ファイルで適切なエラー
 
 ---
 
@@ -375,7 +376,7 @@ pub fn parseConfigFile(allocator: Allocator, path: []const u8) !Classifier;
 | 9.2 | Element-Based Guessing | 9.1 | ✅ 完了 |
 | 9.3 | NACCESS Classifier | 9.1, 9.2 | ✅ 完了 |
 | 9.4 | ProtOr & OONS | 9.3 | ✅ 完了 |
-| 9.5 | Config Parser | 9.1 | |
+| 9.5 | Config Parser | 9.1 | ✅ 完了 |
 | 9.6 | CLI Integration | 9.3, 9.5 | |
 | 9.7 | Docs & Testing | 9.6 | |
 
