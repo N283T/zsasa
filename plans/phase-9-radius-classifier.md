@@ -229,15 +229,15 @@ pub const naccess_classifier = Classifier.initBuiltin(&naccess_types, &naccess_a
 
 ---
 
-## Phase 9.4: Built-in ProtOr & OONS Classifiers
+## Phase 9.4: Built-in ProtOr & OONS Classifiers ✅
 
 **目標**: ProtOrとOONSの組み込み分類器を追加
 
 ### Tasks
 
-- [ ] ProtOr半径データ埋め込み
-- [ ] OONS半径データ埋め込み
-- [ ] `ClassifierType` enumと選択API
+- [x] ProtOr半径データ埋め込み
+- [x] OONS半径データ埋め込み
+- [x] `ClassifierType` enumと選択API
 
 ### API
 
@@ -261,8 +261,8 @@ pub fn getBuiltinClassifier(classifier_type: ClassifierType) *const Classifier;
 
 ### Success Criteria
 
-- [ ] 3種類の分類器が利用可能
-- [ ] 各分類器でFreeSASAと同じ半径
+- [x] 3種類の分類器が利用可能
+- [x] 各分類器でFreeSASAと同じ半径
 
 ---
 
@@ -374,7 +374,7 @@ pub fn parseConfigFile(allocator: Allocator, path: []const u8) !Classifier;
 | 9.1 | Core Data Structures | 9.0 | ✅ 完了 |
 | 9.2 | Element-Based Guessing | 9.1 | ✅ 完了 |
 | 9.3 | NACCESS Classifier | 9.1, 9.2 | ✅ 完了 |
-| 9.4 | ProtOr & OONS | 9.3 | |
+| 9.4 | ProtOr & OONS | 9.3 | ✅ 完了 |
 | 9.5 | Config Parser | 9.1 | |
 | 9.6 | CLI Integration | 9.3, 9.5 | |
 | 9.7 | Docs & Testing | 9.6 | |
