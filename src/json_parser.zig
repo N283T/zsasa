@@ -179,9 +179,14 @@ pub fn parseAtomInput(allocator: Allocator, json_str: []const u8) !AtomInput {
     var residue: ?[][]const u8 = null;
     if (data.residue) |res| {
         const res_copy = try allocator.alloc([]const u8, n);
-        errdefer allocator.free(res_copy);
+        var res_allocated: usize = 0;
+        errdefer {
+            for (res_copy[0..res_allocated]) |s| allocator.free(s);
+            allocator.free(res_copy);
+        }
         for (res, 0..) |s, i| {
             res_copy[i] = try allocator.dupe(u8, s);
+            res_allocated += 1;
         }
         residue = res_copy;
     }
@@ -194,9 +199,14 @@ pub fn parseAtomInput(allocator: Allocator, json_str: []const u8) !AtomInput {
     var atom_name: ?[][]const u8 = null;
     if (data.atom_name) |names| {
         const names_copy = try allocator.alloc([]const u8, n);
-        errdefer allocator.free(names_copy);
+        var names_allocated: usize = 0;
+        errdefer {
+            for (names_copy[0..names_allocated]) |s| allocator.free(s);
+            allocator.free(names_copy);
+        }
         for (names, 0..) |s, i| {
             names_copy[i] = try allocator.dupe(u8, s);
+            names_allocated += 1;
         }
         atom_name = names_copy;
     }
