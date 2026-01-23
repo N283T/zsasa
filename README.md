@@ -73,7 +73,7 @@ freesasa_zig [OPTIONS] <input.json> [output.json]
 | `--probe-radius=R` | Probe radius in Angstroms (0 < R ≤ 10) | 1.4 |
 | `--n-points=N` | Test points per atom (1-10000) | 100 |
 | `--format=FORMAT` | Output format: `json`, `compact`, `csv` | json |
-| `--validate` | Validate input only, skip calculation | - |
+| `--validate` | Validate input only, do not calculate SASA | - |
 | `-q, --quiet` | Suppress progress output | - |
 | `-h, --help` | Show help message | - |
 | `-V, --version` | Show version | - |
@@ -202,7 +202,9 @@ freesasa-zig/
 │   ├── calc_reference_sasa.py # Reference SASA calculator
 │   └── benchmark.py           # Performance benchmark
 ├── examples/
-│   └── input_1a0q.json    # Example input (PDB 1A0Q)
+│   ├── 1A0Q.cif.gz        # Original structure file (PDB 1A0Q)
+│   ├── input_1a0q.json    # Example input (converted from cif)
+│   └── 1A0Q_sasa.json     # Reference SASA from FreeSASA
 └── plans/
     └── *.md               # Implementation plans
 ```
