@@ -50,11 +50,20 @@ pub const AtomInput = struct {
     y: []const f64,
     z: []const f64,
     r: []const f64,
+    /// Residue names (e.g., "ALA", "GLY") - optional, for classifier
+    residue: ?[]const []const u8 = null,
+    /// Atom names (e.g., "CA", "CB") - optional, for classifier
+    atom_name: ?[]const []const u8 = null,
     allocator: std.mem.Allocator,
 
     /// Get number of atoms
     pub fn atomCount(self: AtomInput) usize {
         return self.x.len;
+    }
+
+    /// Check if residue/atom names are available for classification
+    pub fn hasClassificationInfo(self: AtomInput) bool {
+        return self.residue != null and self.atom_name != null;
     }
 
     /// Free allocated memory
@@ -63,6 +72,18 @@ pub const AtomInput = struct {
         self.allocator.free(self.y);
         self.allocator.free(self.z);
         self.allocator.free(self.r);
+        if (self.residue) |res| {
+            for (res) |s| {
+                self.allocator.free(s);
+            }
+            self.allocator.free(res);
+        }
+        if (self.atom_name) |names| {
+            for (names) |s| {
+                self.allocator.free(s);
+            }
+            self.allocator.free(names);
+        }
     }
 };
 
