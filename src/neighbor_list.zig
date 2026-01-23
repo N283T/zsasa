@@ -43,6 +43,7 @@ pub const CellList = struct {
         cell_size: f64,
     ) !CellList {
         if (positions.len == 0) return error.NoAtoms;
+        if (cell_size <= 0.0) return error.InvalidCellSize;
 
         // Compute bounding box
         var x_min = positions[0].x;
@@ -163,9 +164,10 @@ pub const NeighborList = struct {
         const n_atoms = positions.len;
         if (n_atoms == 0) return error.NoAtoms;
 
-        // Find maximum radius
+        // Find maximum radius and validate
         var max_radius: f64 = 0.0;
         for (radii) |r| {
+            if (r < 0.0) return error.InvalidRadius;
             max_radius = @max(max_radius, r);
         }
 
@@ -207,6 +209,10 @@ pub const NeighborList = struct {
                     while (dx <= 1) : (dx += 1) {
                         const neighbor_idx = cell_list.getCellIndexFromCoords(ix + dx, iy + dy, iz + dz);
                         if (neighbor_idx) |nidx| {
+                            // Only process cell pairs where cell_idx <= nidx to avoid duplicates
+                            // This ensures (A,B) is processed but not (B,A)
+                            if (nidx < cell_idx) continue;
+
                             // Check all pairs between this cell and neighbor cell
                             try addNeighborPairs(
                                 allocator,
@@ -464,4 +470,85 @@ test "NeighborList - different radii" {
     // Distance 5.0 < cutoff 6.3 → neighbors
     try std.testing.expectEqual(@as(usize, 1), neighbor_list.getNeighbors(0).len);
     try std.testing.expectEqual(@as(usize, 1), neighbor_list.getNeighbors(1).len);
+}
+
+test "NeighborList - all atoms in same cell" {
+    const allocator = std.testing.allocator;
+
+    // 5 atoms very close together, all should fall in same cell
+    // cell_size = 2 * (max_radius + probe) = 2 * (1.0 + 1.4) = 4.8
+    const positions = &[_]Vec3{
+        Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 },
+        Vec3{ .x = 0.5, .y = 0.0, .z = 0.0 },
+        Vec3{ .x = 0.0, .y = 0.5, .z = 0.0 },
+        Vec3{ .x = 0.0, .y = 0.0, .z = 0.5 },
+        Vec3{ .x = 0.5, .y = 0.5, .z = 0.5 },
+    };
+    const radii = &[_]f64{ 1.0, 1.0, 1.0, 1.0, 1.0 };
+    const probe_radius = 1.4;
+
+    var neighbor_list = try NeighborList.init(allocator, positions, radii, probe_radius);
+    defer neighbor_list.deinit();
+
+    // All atoms should be neighbors of each other (4 neighbors each)
+    for (0..5) |i| {
+        try std.testing.expectEqual(@as(usize, 4), neighbor_list.getNeighbors(i).len);
+    }
+}
+
+test "NeighborList - no duplicate entries" {
+    const allocator = std.testing.allocator;
+
+    // Create atoms that span multiple cells to test duplicate prevention
+    const positions = &[_]Vec3{
+        Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 },
+        Vec3{ .x = 3.0, .y = 0.0, .z = 0.0 }, // Different cell but within cutoff
+        Vec3{ .x = 6.0, .y = 0.0, .z = 0.0 }, // Different cell but within cutoff of atom 1
+        Vec3{ .x = 0.0, .y = 3.0, .z = 0.0 }, // Different cell
+    };
+    const radii = &[_]f64{ 1.0, 1.0, 1.0, 1.0 };
+    const probe_radius = 1.4;
+
+    var neighbor_list = try NeighborList.init(allocator, positions, radii, probe_radius);
+    defer neighbor_list.deinit();
+
+    // Check for duplicates in each neighbor list
+    for (0..4) |i| {
+        const neighbors = neighbor_list.getNeighbors(i);
+        // Check all pairs for duplicates
+        for (0..neighbors.len) |j| {
+            for (j + 1..neighbors.len) |k| {
+                try std.testing.expect(neighbors[j] != neighbors[k]);
+            }
+        }
+    }
+}
+
+test "NeighborList - invalid negative radius" {
+    const allocator = std.testing.allocator;
+
+    const positions = &[_]Vec3{
+        Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 },
+    };
+    const radii = &[_]f64{-1.0}; // Invalid negative radius
+    const probe_radius = 1.4;
+
+    const result = NeighborList.init(allocator, positions, radii, probe_radius);
+    try std.testing.expectError(error.InvalidRadius, result);
+}
+
+test "CellList - invalid cell_size" {
+    const allocator = std.testing.allocator;
+
+    const positions = &[_]Vec3{
+        Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 },
+    };
+
+    // Zero cell_size
+    const result1 = CellList.init(allocator, positions, 0.0);
+    try std.testing.expectError(error.InvalidCellSize, result1);
+
+    // Negative cell_size
+    const result2 = CellList.init(allocator, positions, -1.0);
+    try std.testing.expectError(error.InvalidCellSize, result2);
 }
