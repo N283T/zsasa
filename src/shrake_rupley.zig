@@ -254,6 +254,8 @@ pub fn calculateSasa(
 }
 
 /// Context for parallel SASA calculation workers.
+/// Thread safety: All fields are read-only except `atom_areas` which has
+/// disjoint write access (each thread writes to different indices).
 const ParallelContext = struct {
     positions: []const Vec3,
     radii: []const f64,
@@ -365,7 +367,9 @@ pub fn calculateSasaParallel(
         .atom_areas = atom_areas,
     };
 
-    // Calculate chunk size: aim for ~100-500 atoms per chunk
+    // Chunk size heuristic:
+    // - Minimum 64 atoms per chunk to amortize thread overhead
+    // - Target 4 chunks per thread for load balancing (work stealing)
     const chunk_size = @max(64, n_atoms / (actual_threads * 4));
 
     // Run parallel calculation
@@ -842,4 +846,86 @@ test "calculateSasaParallel - auto thread count" {
     // Just verify it runs and produces valid output
     try std.testing.expect(result.total_area > 0);
     try std.testing.expectEqual(@as(usize, 2), result.atom_areas.len);
+}
+
+test "calculateSasaParallel - no atoms error" {
+    const allocator = std.testing.allocator;
+
+    const x = try allocator.alloc(f64, 0);
+    const y = try allocator.alloc(f64, 0);
+    const z = try allocator.alloc(f64, 0);
+    const r = try allocator.alloc(f64, 0);
+
+    var input = AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .allocator = allocator,
+    };
+    defer input.deinit();
+
+    const config = Config{};
+    const result = calculateSasaParallel(allocator, input, config, 2);
+    try std.testing.expectError(error.NoAtoms, result);
+}
+
+test "calculateSasaParallel - small workload uses single-thread fallback" {
+    // When n_atoms <= chunk_size, parallelFor falls back to single-threaded
+    const allocator = std.testing.allocator;
+
+    // Create only 3 atoms (less than minimum chunk size of 64)
+    const n_atoms = 3;
+    const x = try allocator.alloc(f64, n_atoms);
+    defer allocator.free(x);
+    const y = try allocator.alloc(f64, n_atoms);
+    defer allocator.free(y);
+    const z = try allocator.alloc(f64, n_atoms);
+    defer allocator.free(z);
+    const r = try allocator.alloc(f64, n_atoms);
+    defer allocator.free(r);
+
+    x[0] = 0.0;
+    y[0] = 0.0;
+    z[0] = 0.0;
+    r[0] = 1.0;
+    x[1] = 5.0;
+    y[1] = 0.0;
+    z[1] = 0.0;
+    r[1] = 1.0;
+    x[2] = 10.0;
+    y[2] = 0.0;
+    z[2] = 0.0;
+    r[2] = 1.0;
+
+    const input = AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .allocator = allocator,
+    };
+
+    const config = Config{
+        .n_points = 100,
+        .probe_radius = 1.4,
+    };
+
+    // Request 8 threads but with only 3 atoms, should use single-thread fallback
+    var parallel_result = try calculateSasaParallel(allocator, input, config, 8);
+    defer parallel_result.deinit();
+
+    // Compare with sequential
+    var sequential_result = try calculateSasa(allocator, input, config);
+    defer sequential_result.deinit();
+
+    // Results should be identical
+    try std.testing.expectApproxEqAbs(sequential_result.total_area, parallel_result.total_area, 1e-10);
+    for (0..n_atoms) |i| {
+        try std.testing.expectApproxEqAbs(
+            sequential_result.atom_areas[i],
+            parallel_result.atom_areas[i],
+            1e-10,
+        );
+    }
 }
