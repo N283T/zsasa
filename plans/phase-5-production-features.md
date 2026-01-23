@@ -97,12 +97,12 @@ total,1234.56
 **Goal**: Provide clear, actionable error messages.
 
 **Tasks**:
-- [ ] Validate input JSON schema (required fields)
-- [ ] Check array length consistency (x, y, z, r same length)
-- [ ] Validate radius values (positive, reasonable range)
-- [ ] Validate coordinates (finite, reasonable range)
-- [ ] Provide line/column numbers for JSON parse errors
-- [ ] Add `--validate` flag for dry-run validation
+- [x] Validate input JSON schema (required fields)
+- [x] Check array length consistency (x, y, z, r same length)
+- [x] Validate radius values (positive, max 100 Å)
+- [x] Validate coordinates (finite, not NaN/Inf)
+- [x] Add `--validate` flag for dry-run validation
+- [x] Print detailed error messages with atom index and value
 
 **Error Message Examples**:
 ```
@@ -125,7 +125,7 @@ Error: JSON parse error at line 15, column 8
 | `src/main.zig` | MODIFY |
 
 ---
-- [ ] **DONE** - Sub-phase 5.3 complete
+- [x] **DONE** - Sub-phase 5.3 complete
 
 ---
 
