@@ -2,6 +2,7 @@ const std = @import("std");
 const types = @import("types.zig");
 const neighbor_list_mod = @import("neighbor_list.zig");
 const thread_pool = @import("thread_pool.zig");
+const simd = @import("simd.zig");
 
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
@@ -96,7 +97,7 @@ pub fn calculateSasa(
     };
 }
 
-/// Calculate SASA for a single atom using slice-based method
+/// Calculate SASA for a single atom using slice-based method with SIMD optimization
 fn atomArea(
     atom_idx: usize,
     x: []const f64,
@@ -140,70 +141,143 @@ fn atomArea(
         var n_arcs: usize = 0;
         var is_buried = false;
 
-        for (neighbors) |j| {
+        // Process neighbors in batches of 4 using SIMD
+        var i: usize = 0;
+        while (i + 4 <= neighbors.len and !is_buried) : (i += 4) {
+            // Load batch of 4 neighbors
+            const batch_x = [4]f64{
+                x[neighbors[i]],
+                x[neighbors[i + 1]],
+                x[neighbors[i + 2]],
+                x[neighbors[i + 3]],
+            };
+            const batch_y = [4]f64{
+                y[neighbors[i]],
+                y[neighbors[i + 1]],
+                y[neighbors[i + 2]],
+                y[neighbors[i + 3]],
+            };
+            const batch_z = [4]f64{
+                z[neighbors[i]],
+                z[neighbors[i + 1]],
+                z[neighbors[i + 2]],
+                z[neighbors[i + 3]],
+            };
+            const batch_r = [4]f64{
+                radii[neighbors[i]],
+                radii[neighbors[i + 1]],
+                radii[neighbors[i + 2]],
+                radii[neighbors[i + 3]],
+            };
+
+            // SIMD: Calculate slice radii and xy-distances
+            const rj_primes = simd.sliceRadiiBatch4(slice_z, batch_z, batch_r);
+            const dij_batch = simd.xyDistanceBatch4(xi, yi, batch_x, batch_y);
+
+            // SIMD: Check which circles overlap
+            const overlap_mask = simd.circlesOverlapBatch4(dij_batch, Ri_prime, rj_primes);
+
+            // Process overlapping neighbors
+            for (0..4) |k| {
+                if ((overlap_mask >> @intCast(k)) & 1 == 0) continue;
+
+                const Rj_prime = rj_primes[k];
+                if (Rj_prime <= 0) continue; // No slice intersection
+
+                const dij = dij_batch[k];
+                const dx = batch_x[k] - xi;
+                const dy = batch_y[k] - yi;
+                const Rj_prime2 = Rj_prime * Rj_prime;
+
+                // Handle near-zero distance
+                if (dij < 1e-10) {
+                    if (Rj_prime > Ri_prime) {
+                        is_buried = true;
+                        break;
+                    }
+                    continue;
+                }
+
+                // Check if circle i is completely inside circle j
+                if (dij + Ri_prime < Rj_prime) {
+                    is_buried = true;
+                    break;
+                }
+                // Check if circle j is completely inside circle i
+                if (dij + Rj_prime < Ri_prime) {
+                    continue;
+                }
+
+                // Calculate arc
+                const cos_alpha = (Ri_prime2 + dij * dij - Rj_prime2) / (2.0 * Ri_prime * dij);
+                const alpha = std.math.acos(std.math.clamp(cos_alpha, -1.0, 1.0));
+                const beta = std.math.atan2(dy, dx) + std.math.pi;
+
+                var inf = beta - alpha;
+                var sup = beta + alpha;
+
+                while (inf < 0) inf += TWOPI;
+                while (inf >= TWOPI) inf -= TWOPI;
+                while (sup <= 0) sup += TWOPI;
+                while (sup > TWOPI) sup -= TWOPI;
+
+                if (sup < inf) {
+                    arc_buffer[n_arcs] = Arc{ .start = 0, .end = sup };
+                    n_arcs += 1;
+                    arc_buffer[n_arcs] = Arc{ .start = inf, .end = TWOPI };
+                    n_arcs += 1;
+                } else {
+                    arc_buffer[n_arcs] = Arc{ .start = inf, .end = sup };
+                    n_arcs += 1;
+                }
+            }
+        }
+
+        // Process remaining neighbors (scalar)
+        while (i < neighbors.len and !is_buried) : (i += 1) {
+            const j = neighbors[i];
             const zj = z[j];
             const dj = @abs(zj - slice_z);
             const Rj = radii[j];
 
-            // Check if neighbor j intersects this slice
             if (dj >= Rj) continue;
 
             const Rj_prime2 = Rj * Rj - dj * dj;
             const Rj_prime = @sqrt(Rj_prime2);
 
-            // Distance between atom centers in xy-plane
             const dx = x[j] - xi;
             const dy = y[j] - yi;
             const dij = @sqrt(dx * dx + dy * dy);
 
-            // Check circle interactions
-            if (dij >= Ri_prime + Rj_prime) {
-                // Circles don't touch
-                continue;
-            }
+            if (dij >= Ri_prime + Rj_prime) continue;
 
-            // Handle near-zero distance (atoms co-located in xy-plane)
             if (dij < 1e-10) {
                 if (Rj_prime > Ri_prime) {
-                    // Circle i is inside circle j
                     is_buried = true;
                     break;
                 }
-                // Circle j is inside circle i, skip
                 continue;
             }
 
             if (dij + Ri_prime < Rj_prime) {
-                // Circle i completely inside circle j
                 is_buried = true;
                 break;
             }
-            if (dij + Rj_prime < Ri_prime) {
-                // Circle j completely inside circle i
-                continue;
-            }
+            if (dij + Rj_prime < Ri_prime) continue;
 
-            // Calculate arc blocked by neighbor j
-            // alpha = half-angle of blocked arc
             const cos_alpha = (Ri_prime2 + dij * dij - Rj_prime2) / (2.0 * Ri_prime * dij);
             const alpha = std.math.acos(std.math.clamp(cos_alpha, -1.0, 1.0));
-
-            // beta = angle to center of blocked arc
             const beta = std.math.atan2(dy, dx) + std.math.pi;
 
             var inf = beta - alpha;
             var sup = beta + alpha;
 
-            // Normalize angles to [0, 2π)
-            // Use while loops for robustness against numerical edge cases
             while (inf < 0) inf += TWOPI;
             while (inf >= TWOPI) inf -= TWOPI;
             while (sup <= 0) sup += TWOPI;
             while (sup > TWOPI) sup -= TWOPI;
 
-            // Store arc(s)
             if (sup < inf) {
-                // Arc crosses 0, split into two arcs
                 arc_buffer[n_arcs] = Arc{ .start = 0, .end = sup };
                 n_arcs += 1;
                 arc_buffer[n_arcs] = Arc{ .start = inf, .end = TWOPI };
