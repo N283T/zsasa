@@ -165,11 +165,14 @@ const residue_atoms = std.StaticStringMap(AtomType).initComptime(.{
     .{ "PRO :CG  ", atom_types.C_ALI },
     .{ "PRO :CD  ", atom_types.C_ALI },
 
-    // SEC (selenocysteine)
+    // SEC (selenocysteine) - like CYS but with SE instead of S
+    .{ "SEC :CB  ", atom_types.C_ALI },
     .{ "SEC :SE  ", atom_types.SE },
 
-    // MSE (selenomethionine)
+    // MSE (selenomethionine) - like MET but with SE instead of S
+    .{ "MSE :CG  ", atom_types.C_ALI },
     .{ "MSE :SE  ", atom_types.SE },
+    .{ "MSE :CE  ", atom_types.C_ALI },
 
     // SER
     .{ "SER :OG  ", atom_types.O },
@@ -468,9 +471,16 @@ test "NACCESS aromatic residues" {
 }
 
 test "NACCESS selenocysteine and selenomethionine" {
+    // SEC (like CYS but with SE)
+    try std.testing.expectEqual(@as(?f64, 1.87), getRadius("SEC", "CB"));
     try std.testing.expectEqual(@as(?f64, 1.80), getRadius("SEC", "SE"));
-    try std.testing.expectEqual(@as(?f64, 1.80), getRadius("MSE", "SE"));
     try std.testing.expectEqual(AtomClass.apolar, getClass("SEC", "SE"));
+
+    // MSE (like MET but with SE)
+    try std.testing.expectEqual(@as(?f64, 1.87), getRadius("MSE", "CG"));
+    try std.testing.expectEqual(@as(?f64, 1.80), getRadius("MSE", "SE"));
+    try std.testing.expectEqual(@as(?f64, 1.87), getRadius("MSE", "CE"));
+    try std.testing.expectEqual(AtomClass.apolar, getClass("MSE", "SE"));
 }
 
 test "NACCESS nucleic acid backbone" {
