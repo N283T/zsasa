@@ -557,3 +557,50 @@ test "optimized vs original - same results" {
         try std.testing.expectApproxEqAbs(original_sasa, optimized_sasa, 1e-10);
     }
 }
+
+test "atomSasaWithNeighbors - handles 0-3 neighbors correctly (scalar fallback)" {
+    // Test edge cases where SIMD loop is skipped and only scalar fallback runs
+    const allocator = std.testing.allocator;
+
+    const positions = [_]Vec3{
+        Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 }, // atom 0 (isolated)
+        Vec3{ .x = 100.0, .y = 0.0, .z = 0.0 }, // atom 1 (far away)
+        Vec3{ .x = 100.0, .y = 100.0, .z = 0.0 }, // atom 2 (far away)
+        Vec3{ .x = 100.0, .y = 100.0, .z = 100.0 }, // atom 3 (far away)
+    };
+    const radii = [_]f64{ 1.0, 1.0, 1.0, 1.0 };
+    const probe_radius = 1.4;
+
+    const test_points_array = try test_points.generateTestPoints(allocator, 100);
+    defer allocator.free(test_points_array);
+
+    // Pre-compute radii_with_probe_sq
+    var radii_with_probe_sq: [4]f64 = undefined;
+    for (0..4) |i| {
+        const r_probe = radii[i] + probe_radius;
+        radii_with_probe_sq[i] = r_probe * r_probe;
+    }
+
+    const atom_radius_probe = radii[0] + probe_radius;
+    const expected_full_sasa = 4.0 * std.math.pi * atom_radius_probe * atom_radius_probe;
+
+    // Test with 0 neighbors (completely isolated)
+    const neighbors_0 = [_]u32{};
+    const sasa_0 = atomSasaWithNeighbors(0, &positions, &radii_with_probe_sq, test_points_array, atom_radius_probe, &neighbors_0);
+    try std.testing.expectApproxEqRel(expected_full_sasa, sasa_0, 0.01);
+
+    // Test with 1 neighbor (far away, should still have full SASA)
+    const neighbors_1 = [_]u32{1};
+    const sasa_1 = atomSasaWithNeighbors(0, &positions, &radii_with_probe_sq, test_points_array, atom_radius_probe, &neighbors_1);
+    try std.testing.expectApproxEqRel(expected_full_sasa, sasa_1, 0.01);
+
+    // Test with 2 neighbors (far away)
+    const neighbors_2 = [_]u32{ 1, 2 };
+    const sasa_2 = atomSasaWithNeighbors(0, &positions, &radii_with_probe_sq, test_points_array, atom_radius_probe, &neighbors_2);
+    try std.testing.expectApproxEqRel(expected_full_sasa, sasa_2, 0.01);
+
+    // Test with 3 neighbors (far away)
+    const neighbors_3 = [_]u32{ 1, 2, 3 };
+    const sasa_3 = atomSasaWithNeighbors(0, &positions, &radii_with_probe_sq, test_points_array, atom_radius_probe, &neighbors_3);
+    try std.testing.expectApproxEqRel(expected_full_sasa, sasa_3, 0.01);
+}
