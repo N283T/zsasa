@@ -3,12 +3,20 @@ const build_options = @import("build_options");
 const json_parser = @import("json_parser.zig");
 const json_writer = @import("json_writer.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
+const lee_richards = @import("lee_richards.zig");
 const types = @import("types.zig");
 
 const Config = types.Config;
 const OutputFormat = json_writer.OutputFormat;
+const LeeRichardsConfig = lee_richards.LeeRichardsConfig;
 
 const version = build_options.version;
+
+/// SASA algorithm selection
+const Algorithm = enum {
+    sr, // Shrake-Rupley (test point method)
+    lr, // Lee-Richards (slice method)
+};
 
 /// Parsed command-line arguments
 const Args = struct {
@@ -16,7 +24,9 @@ const Args = struct {
     output_path: []const u8 = "output.json",
     n_threads: usize = 0, // 0 = auto-detect
     probe_radius: f64 = 1.4,
-    n_points: u32 = 100,
+    n_points: u32 = 100, // For Shrake-Rupley
+    n_slices: u32 = 20, // For Lee-Richards
+    algorithm: Algorithm = .sr, // Default: Shrake-Rupley
     output_format: OutputFormat = .json,
     quiet: bool = false,
     validate_only: bool = false,
@@ -63,6 +73,32 @@ fn parseOutputFormat(value: []const u8) OutputFormat {
         std.debug.print("Valid formats: json, compact, csv\n", .{});
         std.process.exit(1);
     }
+}
+
+/// Parse and validate algorithm value
+fn parseAlgorithm(value: []const u8) Algorithm {
+    if (std.mem.eql(u8, value, "sr") or std.mem.eql(u8, value, "shrake-rupley")) {
+        return .sr;
+    } else if (std.mem.eql(u8, value, "lr") or std.mem.eql(u8, value, "lee-richards")) {
+        return .lr;
+    } else {
+        std.debug.print("Error: Invalid algorithm: {s}\n", .{value});
+        std.debug.print("Valid algorithms: sr (shrake-rupley), lr (lee-richards)\n", .{});
+        std.process.exit(1);
+    }
+}
+
+/// Parse and validate n-slices value (for Lee-Richards)
+fn parseNSlices(value: []const u8) u32 {
+    const n = std.fmt.parseInt(u32, value, 10) catch {
+        std.debug.print("Error: Invalid n-slices: {s}\n", .{value});
+        std.process.exit(1);
+    };
+    if (n == 0 or n > 1000) {
+        std.debug.print("Error: n-slices must be between 1 and 1000: {d}\n", .{n});
+        std.process.exit(1);
+    }
+    return n;
 }
 
 /// Parse command-line arguments
@@ -127,6 +163,30 @@ fn parseArgs(args: []const []const u8) Args {
             }
             result.output_format = parseOutputFormat(args[i]);
         }
+        // --algorithm=ALGO or --algorithm ALGO
+        else if (std.mem.startsWith(u8, arg, "--algorithm=")) {
+            const value = arg["--algorithm=".len..];
+            result.algorithm = parseAlgorithm(value);
+        } else if (std.mem.eql(u8, arg, "--algorithm")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --algorithm\n", .{});
+                std.process.exit(1);
+            }
+            result.algorithm = parseAlgorithm(args[i]);
+        }
+        // --n-slices=N or --n-slices N (for Lee-Richards)
+        else if (std.mem.startsWith(u8, arg, "--n-slices=")) {
+            const value = arg["--n-slices=".len..];
+            result.n_slices = parseNSlices(value);
+        } else if (std.mem.eql(u8, arg, "--n-slices")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --n-slices\n", .{});
+                std.process.exit(1);
+            }
+            result.n_slices = parseNSlices(args[i]);
+        }
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
@@ -172,15 +232,22 @@ fn printHelp(program_name: []const u8) void {
         \\    [output.json]    Output JSON file (default: output.json)
         \\
         \\OPTIONS:
+        \\    --algorithm=ALGO   Algorithm: sr (shrake-rupley), lr (lee-richards)
+        \\                       Default: sr
         \\    --threads=N        Number of threads (default: auto-detect)
         \\                       Use --threads=1 for single-threaded mode
         \\    --probe-radius=R   Probe radius in Angstroms (default: 1.4)
-        \\    --n-points=N       Test points per atom (default: 100)
+        \\    --n-points=N       Test points per atom (default: 100, for sr)
+        \\    --n-slices=N       Slices per atom diameter (default: 20, for lr)
         \\    --format=FORMAT    Output format: json, compact, csv (default: json)
         \\    --validate         Validate input only, do not calculate SASA
         \\    -q, --quiet        Suppress progress output
         \\    -h, --help         Show this help message
         \\    -V, --version      Show version
+        \\
+        \\ALGORITHMS:
+        \\    sr, shrake-rupley  Test point method (default)
+        \\    lr, lee-richards   Slice-based method
         \\
         \\OUTPUT FORMATS:
         \\    json     Pretty-printed JSON with indentation
@@ -189,12 +256,13 @@ fn printHelp(program_name: []const u8) void {
         \\
         \\EXAMPLES:
         \\    {s} input.json output.json
+        \\    {s} --algorithm=lr input.json output.json
+        \\    {s} --algorithm=lr --n-slices=50 input.json output.json
         \\    {s} --threads=4 input.json output.json
         \\    {s} --probe-radius=1.5 --n-points=200 input.json
         \\    {s} --format=csv input.json output.csv
-        \\    {s} --quiet input.json output.json
         \\
-    , .{ version, program_name, program_name, program_name, program_name, program_name, program_name });
+    , .{ version, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 fn printVersion() void {
@@ -265,21 +333,38 @@ pub fn main() !void {
     }
 
     // Calculate SASA with configured parameters
-    const config = Config{
-        .n_points = parsed.n_points,
-        .probe_radius = parsed.probe_radius,
+    var result = switch (parsed.algorithm) {
+        .sr => blk: {
+            const config = Config{
+                .n_points = parsed.n_points,
+                .probe_radius = parsed.probe_radius,
+            };
+            break :blk if (parsed.n_threads == 1)
+                shrake_rupley.calculateSasa(allocator, input, config) catch |err| {
+                    std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                    std.process.exit(1);
+                }
+            else
+                shrake_rupley.calculateSasaParallel(allocator, input, config, parsed.n_threads) catch |err| {
+                    std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                    std.process.exit(1);
+                };
+        },
+        .lr => blk: {
+            // Warn if --threads specified (Lee-Richards is single-threaded)
+            if (parsed.n_threads > 1 and !parsed.quiet) {
+                std.debug.print("Warning: --threads is ignored for Lee-Richards algorithm (single-threaded only)\n", .{});
+            }
+            const lr_config = LeeRichardsConfig{
+                .n_slices = parsed.n_slices,
+                .probe_radius = parsed.probe_radius,
+            };
+            break :blk lee_richards.calculateSasa(allocator, input, lr_config) catch |err| {
+                std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                std.process.exit(1);
+            };
+        },
     };
-
-    var result = if (parsed.n_threads == 1)
-        shrake_rupley.calculateSasa(allocator, input, config) catch |err| {
-            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
-            std.process.exit(1);
-        }
-    else
-        shrake_rupley.calculateSasaParallel(allocator, input, config, parsed.n_threads) catch |err| {
-            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
-            std.process.exit(1);
-        };
     defer result.deinit();
 
     // Write output file
@@ -475,4 +560,77 @@ test "parseArgs default validate_only is false" {
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(false, parsed.validate_only);
+}
+
+// Tests for --algorithm option
+test "parseArgs default algorithm is sr" {
+    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Algorithm.sr, parsed.algorithm);
+}
+
+test "parseArgs --algorithm=sr" {
+    const args = [_][]const u8{ "freesasa_zig", "--algorithm=sr", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Algorithm.sr, parsed.algorithm);
+}
+
+test "parseArgs --algorithm=lr" {
+    const args = [_][]const u8{ "freesasa_zig", "--algorithm=lr", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Algorithm.lr, parsed.algorithm);
+}
+
+test "parseArgs --algorithm=shrake-rupley" {
+    const args = [_][]const u8{ "freesasa_zig", "--algorithm=shrake-rupley", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Algorithm.sr, parsed.algorithm);
+}
+
+test "parseArgs --algorithm=lee-richards" {
+    const args = [_][]const u8{ "freesasa_zig", "--algorithm=lee-richards", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Algorithm.lr, parsed.algorithm);
+}
+
+test "parseArgs --algorithm lr (space-separated)" {
+    const args = [_][]const u8{ "freesasa_zig", "--algorithm", "lr", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Algorithm.lr, parsed.algorithm);
+}
+
+// Tests for --n-slices option
+test "parseArgs default n_slices is 20" {
+    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(@as(u32, 20), parsed.n_slices);
+}
+
+test "parseArgs --n-slices=50" {
+    const args = [_][]const u8{ "freesasa_zig", "--n-slices=50", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(@as(u32, 50), parsed.n_slices);
+}
+
+test "parseArgs --n-slices 100 (space-separated)" {
+    const args = [_][]const u8{ "freesasa_zig", "--n-slices", "100", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(@as(u32, 100), parsed.n_slices);
+}
+
+test "parseArgs combined algorithm and n-slices" {
+    const args = [_][]const u8{ "freesasa_zig", "--algorithm=lr", "--n-slices=50", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Algorithm.lr, parsed.algorithm);
+    try std.testing.expectEqual(@as(u32, 50), parsed.n_slices);
 }
