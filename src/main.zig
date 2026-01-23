@@ -6,6 +6,7 @@ const shrake_rupley = @import("shrake_rupley.zig");
 const types = @import("types.zig");
 
 const Config = types.Config;
+const OutputFormat = json_writer.OutputFormat;
 
 const version = build_options.version;
 
@@ -16,6 +17,7 @@ const Args = struct {
     n_threads: usize = 0, // 0 = auto-detect
     probe_radius: f64 = 1.4,
     n_points: u32 = 100,
+    output_format: OutputFormat = .json,
     quiet: bool = false,
     show_help: bool = false,
     show_version: bool = false,
@@ -45,6 +47,21 @@ fn parseNPoints(value: []const u8) u32 {
         std.process.exit(1);
     }
     return n;
+}
+
+/// Parse and validate output format value
+fn parseOutputFormat(value: []const u8) OutputFormat {
+    if (std.mem.eql(u8, value, "json")) {
+        return .json;
+    } else if (std.mem.eql(u8, value, "compact")) {
+        return .compact;
+    } else if (std.mem.eql(u8, value, "csv")) {
+        return .csv;
+    } else {
+        std.debug.print("Error: Invalid format: {s}\n", .{value});
+        std.debug.print("Valid formats: json, compact, csv\n", .{});
+        std.process.exit(1);
+    }
 }
 
 /// Parse command-line arguments
@@ -97,6 +114,18 @@ fn parseArgs(args: []const []const u8) Args {
             }
             result.n_points = parseNPoints(args[i]);
         }
+        // --format=FORMAT or --format FORMAT
+        else if (std.mem.startsWith(u8, arg, "--format=")) {
+            const value = arg["--format=".len..];
+            result.output_format = parseOutputFormat(value);
+        } else if (std.mem.eql(u8, arg, "--format")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --format\n", .{});
+                std.process.exit(1);
+            }
+            result.output_format = parseOutputFormat(args[i]);
+        }
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
@@ -142,17 +171,24 @@ fn printHelp(program_name: []const u8) void {
         \\                       Use --threads=1 for single-threaded mode
         \\    --probe-radius=R   Probe radius in Angstroms (default: 1.4)
         \\    --n-points=N       Test points per atom (default: 100)
+        \\    --format=FORMAT    Output format: json, compact, csv (default: json)
         \\    -q, --quiet        Suppress progress output
         \\    -h, --help         Show this help message
         \\    -V, --version      Show version
+        \\
+        \\OUTPUT FORMATS:
+        \\    json     Pretty-printed JSON with indentation
+        \\    compact  Single-line JSON (no whitespace)
+        \\    csv      CSV with atom_index,area columns
         \\
         \\EXAMPLES:
         \\    {s} input.json output.json
         \\    {s} --threads=4 input.json output.json
         \\    {s} --probe-radius=1.5 --n-points=200 input.json
+        \\    {s} --format=csv input.json output.csv
         \\    {s} --quiet input.json output.json
         \\
-    , .{ version, program_name, program_name, program_name, program_name, program_name });
+    , .{ version, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 fn printVersion() void {
@@ -220,8 +256,8 @@ pub fn main() !void {
         };
     defer result.deinit();
 
-    // Write output JSON file
-    json_writer.writeSasaResult(allocator, result, parsed.output_path) catch |err| {
+    // Write output file
+    json_writer.writeSasaResultWithFormat(allocator, result, parsed.output_path, parsed.output_format) catch |err| {
         std.debug.print("Error writing output file '{s}': {s}\n", .{ parsed.output_path, @errorName(err) });
         std.process.exit(1);
     };
@@ -362,4 +398,40 @@ test "parseArgs --n-points N (space-separated)" {
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(@as(u32, 200), parsed.n_points);
+}
+
+// Tests for --format option
+test "parseArgs --format=json" {
+    const args = [_][]const u8{ "freesasa_zig", "--format=json", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(OutputFormat.json, parsed.output_format);
+}
+
+test "parseArgs --format=compact" {
+    const args = [_][]const u8{ "freesasa_zig", "--format=compact", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(OutputFormat.compact, parsed.output_format);
+}
+
+test "parseArgs --format=csv" {
+    const args = [_][]const u8{ "freesasa_zig", "--format=csv", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(OutputFormat.csv, parsed.output_format);
+}
+
+test "parseArgs --format csv (space-separated)" {
+    const args = [_][]const u8{ "freesasa_zig", "--format", "csv", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(OutputFormat.csv, parsed.output_format);
+}
+
+test "parseArgs default format is json" {
+    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(OutputFormat.json, parsed.output_format);
 }

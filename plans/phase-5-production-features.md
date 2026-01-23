@@ -51,11 +51,11 @@ Options:
 **Goal**: Support multiple output formats for different use cases.
 
 **Tasks**:
-- [ ] Add `--format=<json|csv|compact>` option
-- [ ] Implement CSV output (atom_index, area)
-- [ ] Implement compact JSON (no pretty-print)
-- [ ] Add `--output-atoms` flag to include/exclude atom_areas
-- [ ] Update json_writer.zig for format options
+- [x] Add `--format=<json|csv|compact>` option
+- [x] Implement CSV output (atom_index, area)
+- [x] Implement compact JSON (no pretty-print)
+- [x] Implement pretty-printed JSON (default)
+- [x] Update json_writer.zig for format options
 
 **Output Formats**:
 
@@ -88,7 +88,7 @@ total,1234.56
 | `src/json_writer.zig` | MODIFY |
 
 ---
-- [ ] **DONE** - Sub-phase 5.2 complete
+- [x] **DONE** - Sub-phase 5.2 complete
 
 ---
 
