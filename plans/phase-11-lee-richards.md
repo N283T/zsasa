@@ -129,7 +129,7 @@ freesasa_zig --algorithm=lr --n-slices=50 input.json output.json
 
 - [x] 近傍リストの再利用
 - [ ] SIMD最適化（円弧計算）
-- [ ] マルチスレッド対応
+- [x] マルチスレッド対応
 
 ## Files
 
