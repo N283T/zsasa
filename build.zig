@@ -6,6 +6,8 @@ const std = @import("std");
 // for defining build steps and express dependencies between them, allowing the
 // build runner to parallelize the build automatically (and the cache system to
 // know when a step doesn't need to be re-run).
+const version = "0.5.0";
+
 pub fn build(b: *std.Build) void {
     // Standard target options allow the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
@@ -57,6 +59,10 @@ pub fn build(b: *std.Build) void {
     //
     // If neither case applies to you, feel free to delete the declaration you
     // don't need and to put everything under a single module.
+    // Build options for compile-time constants
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", version);
+
     const exe = b.addExecutable(.{
         .name = "freesasa_zig",
         .root_module = b.createModule(.{
@@ -79,6 +85,7 @@ pub fn build(b: *std.Build) void {
                 // can be extremely useful in case of collisions (which can happen
                 // importing modules from different packages).
                 .{ .name = "freesasa_zig", .module = mod },
+                .{ .name = "build_options", .module = options.createModule() },
             },
         }),
     });
