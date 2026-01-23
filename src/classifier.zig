@@ -258,13 +258,16 @@ pub fn guessRadius(element: []const u8) ?f64 {
 /// PDB atom names are 4 characters with specific conventions:
 /// - Columns 13-16 in PDB format
 /// - For most atoms: first char is space, element is inferred from name
-/// - For 2-char elements (Fe, Ca, etc.): both chars are the element
+/// - For 2-char elements (Fe, Ca, etc.): both chars are the element at start
+///
+/// Key rule: If original input starts with a space, element is single-character.
+/// Only check for 2-char elements if input starts with non-space.
 ///
 /// Examples:
-/// " CA " -> "C" (carbon alpha, not calcium)
+/// " CA " -> "C" (carbon alpha, not calcium - leading space!)
 /// " NE2" -> "N" (nitrogen)
-/// "FE  " -> "FE" (iron)
-/// "CA  " -> "CA" (calcium - 2 char element at start)
+/// "FE  " -> "FE" (iron - no leading space)
+/// "CA  " -> "CA" (calcium - no leading space, 2-char element)
 /// " OG1" -> "O" (oxygen)
 /// "SE  " -> "SE" (selenium)
 pub fn extractElement(atom_name: []const u8) []const u8 {
@@ -273,9 +276,11 @@ pub fn extractElement(atom_name: []const u8) []const u8 {
     const trimmed = std.mem.trim(u8, atom_name, " ");
     if (trimmed.len == 0) return "";
 
-    // Check if first two characters form a known 2-char element
-    // This handles cases like "FE", "CA" (calcium), "MG", "ZN", "SE", etc.
-    if (trimmed.len >= 2) {
+    // PDB convention: if original input starts with space, element is single-char
+    // Only check for 2-char elements if input starts with a letter (no leading space)
+    const has_leading_space = atom_name.len > 0 and atom_name[0] == ' ';
+
+    if (!has_leading_space and trimmed.len >= 2) {
         const first_two = trimmed[0..2];
         // Check if it's a known 2-character element
         for (element_radii) |entry| {
@@ -516,9 +521,11 @@ test "extractElement two char elements" {
 }
 
 test "extractElement trimmed input" {
-    try std.testing.expectEqualStrings("C", extractElement("CA"));
-    try std.testing.expectEqualStrings("N", extractElement("N"));
-    try std.testing.expectEqualStrings("FE", extractElement("FE"));
+    // Without leading space, 2-char elements are recognized
+    try std.testing.expectEqualStrings("CA", extractElement("CA")); // Calcium (no leading space)
+    try std.testing.expectEqualStrings("N", extractElement("N")); // Nitrogen (1-char)
+    try std.testing.expectEqualStrings("FE", extractElement("FE")); // Iron (2-char)
+    try std.testing.expectEqualStrings("C", extractElement("C")); // Carbon (1-char)
 }
 
 test "extractElement empty input" {
