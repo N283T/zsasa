@@ -1,5 +1,7 @@
 # freesasa-zig
 
+[日本語](README.ja.md) | English
+
 Solvent Accessible Surface Area (SASA) calculator implemented in Zig, ported from [FreeSASA](https://github.com/mittinatten/freesasa).
 
 ## Overview
@@ -205,6 +207,11 @@ freesasa-zig/
 │   ├── 1A0Q.cif.gz        # Original structure file (PDB 1A0Q)
 │   ├── input_1a0q.json    # Example input (converted from cif)
 │   └── 1A0Q_sasa.json     # Reference SASA from FreeSASA
+├── docs/                  # Technical documentation (Japanese)
+│   ├── architecture.md    # Architecture overview
+│   ├── algorithm.md       # Algorithm details
+│   ├── optimizations.md   # Optimization techniques
+│   └── cli-io.md          # CLI and I/O details
 └── plans/
     └── *.md               # Implementation plans
 ```
