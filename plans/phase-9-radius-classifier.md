@@ -178,16 +178,23 @@ pub fn extractElement(atom_name: []const u8) []const u8;
 
 ---
 
-## Phase 9.3: Built-in NACCESS Classifier
+## Phase 9.3: Built-in NACCESS Classifier ✅
 
 **目標**: NACCESS互換の組み込み分類器を実装
 
 ### Tasks
 
-- [ ] NACCESS半径データを`comptime`で埋め込み
-- [ ] `naccess_classifier` を`pub const`で公開
-- [ ] ANYフォールバックの実装
-- [ ] FreeSASAと同じ半径が返ることを検証
+- [x] NACCESS半径データを`comptime`で埋め込み
+- [x] `classifier_naccess`モジュールを公開
+- [x] ANYフォールバックの実装
+- [x] FreeSASAと同じ半径が返ることを検証
+- [x] SEC/MSE側鎖原子追加
+
+### 実装メモ
+
+- PR #21で実装完了
+- `StaticStringMap`によるO(1)コンパイル時ルックアップ
+- キー形式: `"RES :ATOM"` (9文字パディング)
 
 ### 実装方針
 
@@ -216,9 +223,9 @@ pub const naccess_classifier = Classifier.initBuiltin(&naccess_types, &naccess_a
 
 ### Success Criteria
 
-- [ ] NACCESS分類器が利用可能
-- [ ] 標準アミノ酸の全原子に半径が割り当てられる
-- [ ] ANYフォールバックが動作
+- [x] NACCESS分類器が利用可能
+- [x] 標準アミノ酸の全原子に半径が割り当てられる
+- [x] ANYフォールバックが動作
 
 ---
 
@@ -366,7 +373,7 @@ pub fn parseConfigFile(allocator: Allocator, path: []const u8) !Classifier;
 | 9.0 | Input Format Extension | - | ✅ 完了 |
 | 9.1 | Core Data Structures | 9.0 | ✅ 完了 |
 | 9.2 | Element-Based Guessing | 9.1 | ✅ 完了 |
-| 9.3 | NACCESS Classifier | 9.1, 9.2 | |
+| 9.3 | NACCESS Classifier | 9.1, 9.2 | ✅ 完了 |
 | 9.4 | ProtOr & OONS | 9.3 | |
 | 9.5 | Config Parser | 9.1 | |
 | 9.6 | CLI Integration | 9.3, 9.5 | |
