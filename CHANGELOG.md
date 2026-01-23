@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Lee-Richards algorithm** (`--algorithm=lr`)
+  - Slice-based method with exact arc integration
+  - `--n-slices=N` option (default: 20)
+  - Multi-threading and SIMD support
+  - 2.0x faster than FreeSASA (Python)
+
+- **Atom classifier module** (library only, CLI integration planned)
+  - `classifier.zig` - Core data structures, element-based radius guessing
+  - `classifier_naccess.zig` - NACCESS-compatible built-in classifier
+  - O(1) compile-time hash lookup using `StaticStringMap`
+  - Support for 20 standard amino acids + SEC/MSE
+  - Support for RNA/DNA nucleotides (A, C, G, I, T, U, DA, DC, DG, DI, DT, DU)
+  - ANY fallback for backbone atoms
+  - Element-based radius guessing from atom names
+
+- Extended input format with optional `residue` and `atom_name` fields
+
+### Changed
+
+- Removed Windows from CI matrix (WSL recommended for Windows users)
+
 ## [0.0.5] - 2025-01-23
 
 ### Added
