@@ -12,6 +12,7 @@ freesasa-zig の技術ドキュメント（日本語）。
 | [algorithm.md](algorithm.md) | Shrake-Rupley algorithm | アルゴリズム詳解 |
 | [optimizations.md](optimizations.md) | Optimization techniques | 最適化技術 |
 | [cli-io.md](cli-io.md) | CLI and I/O | CLI・入出力 |
+| [ci.md](ci.md) | CI/CD configuration | CI/CD構成 |
 
 ## Benchmark Environment / ベンチマーク環境
 
