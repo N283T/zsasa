@@ -157,6 +157,18 @@ fn atomArea(
                 // Circles don't touch
                 continue;
             }
+
+            // Handle near-zero distance (atoms co-located in xy-plane)
+            if (dij < 1e-10) {
+                if (Rj_prime > Ri_prime) {
+                    // Circle i is inside circle j
+                    is_buried = true;
+                    break;
+                }
+                // Circle j is inside circle i, skip
+                continue;
+            }
+
             if (dij + Ri_prime < Rj_prime) {
                 // Circle i completely inside circle j
                 is_buried = true;
@@ -179,8 +191,11 @@ fn atomArea(
             var sup = beta + alpha;
 
             // Normalize angles to [0, 2π)
-            if (inf < 0) inf += TWOPI;
-            if (sup > TWOPI) sup -= TWOPI;
+            // Use while loops for robustness against numerical edge cases
+            while (inf < 0) inf += TWOPI;
+            while (inf >= TWOPI) inf -= TWOPI;
+            while (sup <= 0) sup += TWOPI;
+            while (sup > TWOPI) sup -= TWOPI;
 
             // Store arc(s)
             if (sup < inf) {

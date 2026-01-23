@@ -351,11 +351,14 @@ pub fn main() !void {
                 };
         },
         .lr => blk: {
+            // Warn if --threads specified (Lee-Richards is single-threaded)
+            if (parsed.n_threads > 1 and !parsed.quiet) {
+                std.debug.print("Warning: --threads is ignored for Lee-Richards algorithm (single-threaded only)\n", .{});
+            }
             const lr_config = LeeRichardsConfig{
                 .n_slices = parsed.n_slices,
                 .probe_radius = parsed.probe_radius,
             };
-            // Note: Lee-Richards currently single-threaded
             break :blk lee_richards.calculateSasa(allocator, input, lr_config) catch |err| {
                 std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                 std.process.exit(1);
