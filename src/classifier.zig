@@ -323,3 +323,22 @@ test "Classifier residue-specific override" {
     try std.testing.expectEqual(@as(?f64, 1.70), classifier.getRadius("ALA", "CB"));
     try std.testing.expectEqual(@as(?f64, 1.70), classifier.getRadius("GLY", "CB"));
 }
+
+test "AtomKey truncation behavior" {
+    // Names longer than 4 chars are truncated
+    const key = AtomKey.init("TOOLONG", "VERYLONGNAME");
+    try std.testing.expectEqualStrings("TOOL", key.residueName());
+    try std.testing.expectEqualStrings("VERY", key.atomName());
+}
+
+test "AtomKey hash distinguishes similar keys" {
+    // Ensure separator prevents collision between ("A", "BCD") and ("AB", "CD")
+    const key1 = AtomKey.init("A", "BCD");
+    const key2 = AtomKey.init("AB", "CD");
+    try std.testing.expect(key1.hash() != key2.hash());
+
+    // Also test ("ABC", "D") vs ("A", "BCD")
+    const key3 = AtomKey.init("ABC", "D");
+    try std.testing.expect(key1.hash() != key3.hash());
+    try std.testing.expect(key2.hash() != key3.hash());
+}
