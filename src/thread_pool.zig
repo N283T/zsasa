@@ -18,10 +18,11 @@ pub fn ThreadPool(comptime Context: type, comptime Result: type) type {
         total_items: usize,
         chunk_size: usize,
         next_chunk: std.atomic.Value(usize),
-        completed_chunks: std.atomic.Value(usize),
         total_chunks: usize,
 
         /// Initialize thread pool with specified number of worker threads.
+        /// Returns error.InvalidChunkSize if chunk_size is 0.
+        /// Returns error.InvalidThreadCount if n_threads is 0.
         pub fn init(
             allocator: Allocator,
             n_threads: usize,
@@ -30,7 +31,11 @@ pub fn ThreadPool(comptime Context: type, comptime Result: type) type {
             total_items: usize,
             chunk_size: usize,
         ) !Self {
-            const actual_threads = @min(n_threads, try std.Thread.getCpuCount());
+            if (chunk_size == 0) return error.InvalidChunkSize;
+            if (n_threads == 0) return error.InvalidThreadCount;
+
+            const cpu_count = try std.Thread.getCpuCount();
+            const actual_threads = @min(n_threads, cpu_count);
             const total_chunks = (total_items + chunk_size - 1) / chunk_size;
 
             const threads = try allocator.alloc(std.Thread, actual_threads);
@@ -48,7 +53,6 @@ pub fn ThreadPool(comptime Context: type, comptime Result: type) type {
                 .total_items = total_items,
                 .chunk_size = chunk_size,
                 .next_chunk = std.atomic.Value(usize).init(0),
-                .completed_chunks = std.atomic.Value(usize).init(0),
                 .total_chunks = total_chunks,
             };
         }
@@ -85,9 +89,6 @@ pub fn ThreadPool(comptime Context: type, comptime Result: type) type {
                 // Execute work function
                 const result = self.work_fn(self.context, chunk_start, chunk_end);
                 self.results[chunk_idx] = result;
-
-                // Mark chunk as completed
-                _ = self.completed_chunks.fetchAdd(1, .seq_cst);
             }
         }
 
@@ -347,4 +348,48 @@ test "parallelFor - single thread fallback" {
     );
 
     try std.testing.expectEqual(@as(i64, 15), result);
+}
+
+test "ThreadPool - zero chunk size returns error" {
+    const allocator = std.testing.allocator;
+
+    const Context = struct {};
+    const work_fn = struct {
+        fn call(_: Context, _: usize, _: usize) i64 {
+            return 0;
+        }
+    }.call;
+
+    const result = ThreadPool(Context, i64).init(
+        allocator,
+        4,
+        work_fn,
+        Context{},
+        10,
+        0, // Invalid: zero chunk size
+    );
+
+    try std.testing.expectError(error.InvalidChunkSize, result);
+}
+
+test "ThreadPool - zero threads returns error" {
+    const allocator = std.testing.allocator;
+
+    const Context = struct {};
+    const work_fn = struct {
+        fn call(_: Context, _: usize, _: usize) i64 {
+            return 0;
+        }
+    }.call;
+
+    const result = ThreadPool(Context, i64).init(
+        allocator,
+        0, // Invalid: zero threads
+        work_fn,
+        Context{},
+        10,
+        5,
+    );
+
+    try std.testing.expectError(error.InvalidThreadCount, result);
 }
