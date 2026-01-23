@@ -128,16 +128,16 @@ pub const Classifier = struct {
 
 ---
 
-## Phase 9.2: Element-Based Radius Guessing
+## Phase 9.2: Element-Based Radius Guessing ✅
 
 **目標**: 元素記号からvan der Waals半径を推定（最終フォールバック）
 
 ### Tasks
 
-- [ ] `guessRadius(element: []const u8) ?f64` 実装
-- [ ] 主要元素のvdW半径テーブル（Mantina et al. 2009）
-- [ ] PDB原子名から元素記号抽出ロジック
-- [ ] テスト
+- [x] `guessRadius(element: []const u8) ?f64` 実装
+- [x] 主要元素のvdW半径テーブル（Mantina et al. 2009）
+- [x] PDB原子名から元素記号抽出ロジック
+- [x] テスト
 
 ### 元素半径テーブル（一部）
 
@@ -173,8 +173,8 @@ pub fn extractElement(atom_name: []const u8) []const u8;
 
 ### Success Criteria
 
-- [ ] 主要元素（H, C, N, O, S, P）の半径が正しい
-- [ ] PDB形式の原子名から元素を正しく抽出
+- [x] 主要元素（H, C, N, O, S, P）の半径が正しい
+- [x] PDB形式の原子名から元素を正しく抽出
 
 ---
 
@@ -365,7 +365,7 @@ pub fn parseConfigFile(allocator: Allocator, path: []const u8) !Classifier;
 |-------|------|------|------|
 | 9.0 | Input Format Extension | - | ✅ 完了 |
 | 9.1 | Core Data Structures | 9.0 | ✅ 完了 |
-| 9.2 | Element-Based Guessing | 9.1 | |
+| 9.2 | Element-Based Guessing | 9.1 | ✅ 完了 |
 | 9.3 | NACCESS Classifier | 9.1, 9.2 | |
 | 9.4 | ProtOr & OONS | 9.3 | |
 | 9.5 | Config Parser | 9.1 | |

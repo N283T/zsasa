@@ -189,6 +189,113 @@ pub const Classifier = struct {
 };
 
 // =============================================================================
+// Element-Based Radius Guessing
+// =============================================================================
+
+/// Element van der Waals radii (Mantina et al. 2009, gemmi)
+/// Used as final fallback when classifier lookup fails
+const ElementRadius = struct {
+    symbol: []const u8,
+    radius: f64,
+};
+
+/// van der Waals radii table
+/// Sources: Mantina et al. 2009 for common elements, gemmi for others
+const element_radii = [_]ElementRadius{
+    // Common biological elements
+    .{ .symbol = "H", .radius = 1.10 },
+    .{ .symbol = "C", .radius = 1.70 },
+    .{ .symbol = "N", .radius = 1.55 },
+    .{ .symbol = "O", .radius = 1.52 },
+    .{ .symbol = "P", .radius = 1.80 },
+    .{ .symbol = "S", .radius = 1.80 },
+    .{ .symbol = "SE", .radius = 1.90 },
+    // Halogens
+    .{ .symbol = "F", .radius = 1.47 },
+    .{ .symbol = "CL", .radius = 1.75 },
+    .{ .symbol = "BR", .radius = 1.83 },
+    .{ .symbol = "I", .radius = 1.98 },
+    // Alkali and Alkali Earth metals
+    .{ .symbol = "LI", .radius = 1.81 },
+    .{ .symbol = "BE", .radius = 1.53 },
+    .{ .symbol = "NA", .radius = 2.27 },
+    .{ .symbol = "MG", .radius = 1.73 },
+    .{ .symbol = "K", .radius = 2.75 },
+    .{ .symbol = "CA", .radius = 2.31 },
+    // Transition metals (common in proteins)
+    .{ .symbol = "FE", .radius = 1.26 },
+    .{ .symbol = "CO", .radius = 1.13 },
+    .{ .symbol = "NI", .radius = 1.63 },
+    .{ .symbol = "CU", .radius = 1.40 },
+    .{ .symbol = "ZN", .radius = 1.39 },
+    .{ .symbol = "MN", .radius = 1.19 },
+    // Other metals
+    .{ .symbol = "CD", .radius = 1.58 },
+    .{ .symbol = "HG", .radius = 1.55 },
+    .{ .symbol = "PB", .radius = 2.02 },
+    .{ .symbol = "AS", .radius = 1.85 },
+};
+
+/// Guess van der Waals radius from element symbol
+/// Returns null if element is not recognized
+pub fn guessRadius(element: []const u8) ?f64 {
+    if (element.len == 0) return null;
+
+    // Normalize: trim and uppercase for comparison
+    const trimmed = std.mem.trim(u8, element, " ");
+    if (trimmed.len == 0) return null;
+
+    for (element_radii) |entry| {
+        if (std.ascii.eqlIgnoreCase(trimmed, entry.symbol)) {
+            return entry.radius;
+        }
+    }
+
+    return null;
+}
+
+/// Extract element symbol from PDB atom name
+/// PDB atom names are 4 characters with specific conventions:
+/// - Columns 13-16 in PDB format
+/// - For most atoms: first char is space, element is inferred from name
+/// - For 2-char elements (Fe, Ca, etc.): both chars are the element
+///
+/// Examples:
+/// " CA " -> "C" (carbon alpha, not calcium)
+/// " NE2" -> "N" (nitrogen)
+/// "FE  " -> "FE" (iron)
+/// "CA  " -> "CA" (calcium - 2 char element at start)
+/// " OG1" -> "O" (oxygen)
+/// "SE  " -> "SE" (selenium)
+pub fn extractElement(atom_name: []const u8) []const u8 {
+    if (atom_name.len == 0) return "";
+
+    const trimmed = std.mem.trim(u8, atom_name, " ");
+    if (trimmed.len == 0) return "";
+
+    // Check if first two characters form a known 2-char element
+    // This handles cases like "FE", "CA" (calcium), "MG", "ZN", "SE", etc.
+    if (trimmed.len >= 2) {
+        const first_two = trimmed[0..2];
+        // Check if it's a known 2-character element
+        for (element_radii) |entry| {
+            if (entry.symbol.len == 2 and std.ascii.eqlIgnoreCase(first_two, entry.symbol)) {
+                return first_two;
+            }
+        }
+    }
+
+    // Default: first character is the element (C, N, O, H, S, P)
+    return trimmed[0..1];
+}
+
+/// Get radius by guessing from atom name (extracts element first)
+pub fn guessRadiusFromAtomName(atom_name: []const u8) ?f64 {
+    const element = extractElement(atom_name);
+    return guessRadius(element);
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -341,4 +448,93 @@ test "AtomKey hash distinguishes similar keys" {
     const key3 = AtomKey.init("ABC", "D");
     try std.testing.expect(key1.hash() != key3.hash());
     try std.testing.expect(key2.hash() != key3.hash());
+}
+
+// =============================================================================
+// Element-Based Radius Tests
+// =============================================================================
+
+test "guessRadius common elements" {
+    // Common biological elements
+    try std.testing.expectEqual(@as(?f64, 1.10), guessRadius("H"));
+    try std.testing.expectEqual(@as(?f64, 1.70), guessRadius("C"));
+    try std.testing.expectEqual(@as(?f64, 1.55), guessRadius("N"));
+    try std.testing.expectEqual(@as(?f64, 1.52), guessRadius("O"));
+    try std.testing.expectEqual(@as(?f64, 1.80), guessRadius("P"));
+    try std.testing.expectEqual(@as(?f64, 1.80), guessRadius("S"));
+    try std.testing.expectEqual(@as(?f64, 1.90), guessRadius("SE"));
+}
+
+test "guessRadius case insensitive" {
+    try std.testing.expectEqual(@as(?f64, 1.70), guessRadius("c"));
+    try std.testing.expectEqual(@as(?f64, 1.55), guessRadius("n"));
+    try std.testing.expectEqual(@as(?f64, 1.90), guessRadius("se"));
+    try std.testing.expectEqual(@as(?f64, 1.90), guessRadius("Se"));
+}
+
+test "guessRadius with whitespace" {
+    try std.testing.expectEqual(@as(?f64, 1.70), guessRadius(" C"));
+    try std.testing.expectEqual(@as(?f64, 1.70), guessRadius("C "));
+    try std.testing.expectEqual(@as(?f64, 1.70), guessRadius(" C "));
+    try std.testing.expectEqual(@as(?f64, 1.39), guessRadius(" ZN "));
+}
+
+test "guessRadius metals" {
+    try std.testing.expectEqual(@as(?f64, 1.26), guessRadius("FE"));
+    try std.testing.expectEqual(@as(?f64, 1.39), guessRadius("ZN"));
+    try std.testing.expectEqual(@as(?f64, 1.40), guessRadius("CU"));
+    try std.testing.expectEqual(@as(?f64, 1.73), guessRadius("MG"));
+    try std.testing.expectEqual(@as(?f64, 2.31), guessRadius("CA"));
+}
+
+test "guessRadius unknown element" {
+    try std.testing.expectEqual(@as(?f64, null), guessRadius("XX"));
+    try std.testing.expectEqual(@as(?f64, null), guessRadius(""));
+    try std.testing.expectEqual(@as(?f64, null), guessRadius("   "));
+}
+
+test "extractElement single char elements" {
+    // Standard amino acid atoms - first char after space is element
+    try std.testing.expectEqualStrings("C", extractElement(" CA "));
+    try std.testing.expectEqualStrings("C", extractElement(" CB "));
+    try std.testing.expectEqualStrings("N", extractElement(" N  "));
+    try std.testing.expectEqualStrings("N", extractElement(" NE2"));
+    try std.testing.expectEqualStrings("O", extractElement(" O  "));
+    try std.testing.expectEqualStrings("O", extractElement(" OG1"));
+    try std.testing.expectEqualStrings("H", extractElement(" H  "));
+    try std.testing.expectEqualStrings("S", extractElement(" SG "));
+}
+
+test "extractElement two char elements" {
+    // Metal ions and selenium
+    try std.testing.expectEqualStrings("FE", extractElement("FE  "));
+    try std.testing.expectEqualStrings("ZN", extractElement("ZN  "));
+    try std.testing.expectEqualStrings("CA", extractElement("CA  "));
+    try std.testing.expectEqualStrings("MG", extractElement("MG  "));
+    try std.testing.expectEqualStrings("SE", extractElement("SE  "));
+    try std.testing.expectEqualStrings("CU", extractElement("CU  "));
+}
+
+test "extractElement trimmed input" {
+    try std.testing.expectEqualStrings("C", extractElement("CA"));
+    try std.testing.expectEqualStrings("N", extractElement("N"));
+    try std.testing.expectEqualStrings("FE", extractElement("FE"));
+}
+
+test "extractElement empty input" {
+    try std.testing.expectEqualStrings("", extractElement(""));
+    try std.testing.expectEqualStrings("", extractElement("    "));
+}
+
+test "guessRadiusFromAtomName" {
+    // Standard atoms
+    try std.testing.expectEqual(@as(?f64, 1.70), guessRadiusFromAtomName(" CA "));
+    try std.testing.expectEqual(@as(?f64, 1.55), guessRadiusFromAtomName(" N  "));
+    try std.testing.expectEqual(@as(?f64, 1.52), guessRadiusFromAtomName(" O  "));
+    try std.testing.expectEqual(@as(?f64, 1.80), guessRadiusFromAtomName(" SG "));
+
+    // Metals
+    try std.testing.expectEqual(@as(?f64, 1.26), guessRadiusFromAtomName("FE  "));
+    try std.testing.expectEqual(@as(?f64, 1.39), guessRadiusFromAtomName("ZN  "));
+    try std.testing.expectEqual(@as(?f64, 1.90), guessRadiusFromAtomName("SE  "));
 }
