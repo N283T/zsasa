@@ -26,6 +26,8 @@ SASA (Solvent Accessible Surface Area) measures the surface area of a biomolecul
 
 Requires Zig 0.15.2 or later.
 
+**Supported platforms**: Linux, macOS. Windows users should use [WSL](https://learn.microsoft.com/en-us/windows/wsl/) (Windows Subsystem for Linux) with the Linux build.
+
 ```bash
 zig build
 ```
