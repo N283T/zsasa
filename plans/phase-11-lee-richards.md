@@ -128,7 +128,7 @@ freesasa_zig --algorithm=lr --n-slices=50 input.json output.json
 ### Phase 11.5: Optimization (Future)
 
 - [x] 近傍リストの再利用
-- [ ] SIMD最適化（円弧計算）
+- [x] SIMD最適化（円弧計算）
 - [x] マルチスレッド対応
 
 ## Files
