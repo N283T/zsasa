@@ -34,11 +34,11 @@ Parallelize SASA calculations across multiple CPU cores using Zig's `std.Thread`
 **Goal**: Parallelize per-atom SASA calculations.
 
 **Tasks**:
-- [ ] Add `calculateSasaParallel()` function in `shrake_rupley.zig`
-- [ ] Distribute atoms across worker threads
-- [ ] Aggregate results from all threads
-- [ ] Ensure thread-safe accumulation of total_area
-- [ ] Integration tests comparing parallel vs sequential results
+- [x] Add `calculateSasaParallel()` function in `shrake_rupley.zig`
+- [x] Distribute atoms across worker threads
+- [x] Aggregate results from all threads
+- [x] Ensure thread-safe accumulation of total_area
+- [x] Integration tests comparing parallel vs sequential results
 
 **Key Insight**: Each atom's SASA is independent - embarrassingly parallel.
 
@@ -56,9 +56,14 @@ pub fn calculateSasaParallel(allocator, input, config, n_threads) !SasaResult {
 | File | Action |
 |------|--------|
 | `src/shrake_rupley.zig` | MODIFY |
+| `src/main.zig` | MODIFY (--threads CLI option) |
+
+**Results**:
+- Single-threaded: ~13ms
+- Multi-threaded: ~8ms (1.5x speedup)
 
 ---
-- [ ] **DONE** - Sub-phase 4.2 complete
+- [x] **DONE** - Sub-phase 4.2 complete
 
 ---
 
