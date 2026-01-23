@@ -1,8 +1,10 @@
 const std = @import("std");
 const types = @import("types.zig");
 const test_points = @import("test_points.zig");
+const neighbor_list = @import("neighbor_list.zig");
 
 const Vec3 = types.Vec3;
+const NeighborList = neighbor_list.NeighborList;
 const AtomInput = types.AtomInput;
 const SasaResult = types.SasaResult;
 const Config = types.Config;
@@ -83,6 +85,71 @@ pub fn atomSasa(
     return surface_area * exposed_fraction;
 }
 
+/// Calculate SASA for a single atom using pre-computed neighbor list (O(k) instead of O(N))
+///
+/// This is the optimized version that only checks neighbors instead of all atoms.
+/// The neighbor list must be pre-computed using NeighborList.init().
+///
+/// # Parameters
+/// - `atom_idx`: Index of the atom to calculate SASA for
+/// - `positions`: Array of atom positions (Vec3)
+/// - `radii_with_probe_sq`: Pre-computed (r[j] + probe_radius)² for each atom
+/// - `test_points_array`: Array of unit sphere test points
+/// - `atom_radius_probe`: Pre-computed (r[i] + probe_radius) for this atom
+/// - `neighbors`: Pre-computed list of neighbor indices for this atom
+///
+/// # Returns
+/// SASA value for the atom in Ų
+fn atomSasaWithNeighbors(
+    atom_idx: usize,
+    positions: []const Vec3,
+    radii_with_probe_sq: []const f64,
+    test_points_array: []const Vec3,
+    atom_radius_probe: f64,
+    neighbors: []const u32,
+) f64 {
+    const n_points = test_points_array.len;
+
+    // Get atom position
+    const atom_pos = positions[atom_idx];
+
+    // Count exposed test points
+    var n_exposed: usize = 0;
+
+    for (test_points_array) |test_point| {
+        // Scale and translate test point to atom surface
+        const scaled = test_point.scale(atom_radius_probe);
+        const point = atom_pos.add(scaled);
+
+        // Check if this point is inside any neighbor atom (O(k) instead of O(N))
+        var is_buried = false;
+        for (neighbors) |j| {
+            const other_pos = positions[j];
+
+            // Calculate squared distance
+            const dx = point.x - other_pos.x;
+            const dy = point.y - other_pos.y;
+            const dz = point.z - other_pos.z;
+            const dist_sq = dx * dx + dy * dy + dz * dz;
+
+            // Check if point is inside this atom (using pre-computed squared radius)
+            if (dist_sq < radii_with_probe_sq[j]) {
+                is_buried = true;
+                break;
+            }
+        }
+
+        if (!is_buried) {
+            n_exposed += 1;
+        }
+    }
+
+    // Calculate SASA: 4π * r² * (exposed / total)
+    const surface_area = 4.0 * std.math.pi * atom_radius_probe * atom_radius_probe;
+    const exposed_fraction = @as(f64, @floatFromInt(n_exposed)) / @as(f64, @floatFromInt(n_points));
+    return surface_area * exposed_fraction;
+}
+
 /// Calculate SASA for all atoms in the system.
 ///
 /// # Parameters
@@ -116,14 +183,36 @@ pub fn calculateSasa(
         };
     }
 
+    // Build neighbor list for O(N) instead of O(N²) neighbor checking
+    var neighbor_list_data = try NeighborList.init(allocator, positions, input.r, config.probe_radius);
+    defer neighbor_list_data.deinit();
+
+    // Pre-compute (r[j] + probe_radius)² for each atom
+    const radii_with_probe_sq = try allocator.alloc(f64, n_atoms);
+    defer allocator.free(radii_with_probe_sq);
+
+    for (0..n_atoms) |i| {
+        const r_probe = input.r[i] + config.probe_radius;
+        radii_with_probe_sq[i] = r_probe * r_probe;
+    }
+
     // Allocate result arrays
     const atom_areas = try allocator.alloc(f64, n_atoms);
     errdefer allocator.free(atom_areas);
 
-    // Calculate SASA for each atom
+    // Calculate SASA for each atom using neighbor list
     var total_area: f64 = 0.0;
     for (0..n_atoms) |i| {
-        const area = atomSasa(i, positions, input.r, test_points_array, config.probe_radius);
+        const atom_radius_probe = input.r[i] + config.probe_radius;
+        const neighbors = neighbor_list_data.getNeighbors(i);
+        const area = atomSasaWithNeighbors(
+            i,
+            positions,
+            radii_with_probe_sq,
+            test_points_array,
+            atom_radius_probe,
+            neighbors,
+        );
         atom_areas[i] = area;
         total_area += area;
     }
@@ -364,4 +453,79 @@ test "calculateSasa - no atoms error" {
 
     const result = calculateSasa(allocator, input, config);
     try std.testing.expectError(error.NoAtoms, result);
+}
+
+test "optimized vs original - same results" {
+    // Verify the neighbor-list optimized implementation produces
+    // identical results to the O(N²) implementation
+    const allocator = std.testing.allocator;
+
+    // Create a cluster of 10 atoms
+    const n_atoms = 10;
+    const positions = try allocator.alloc(Vec3, n_atoms);
+    defer allocator.free(positions);
+    const radii = try allocator.alloc(f64, n_atoms);
+    defer allocator.free(radii);
+
+    // Random-ish positions in a 10 Å cube
+    positions[0] = Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 };
+    positions[1] = Vec3{ .x = 2.5, .y = 0.0, .z = 0.0 };
+    positions[2] = Vec3{ .x = 5.0, .y = 1.0, .z = 0.0 };
+    positions[3] = Vec3{ .x = 1.0, .y = 3.0, .z = 0.5 };
+    positions[4] = Vec3{ .x = 3.5, .y = 2.5, .z = 1.0 };
+    positions[5] = Vec3{ .x = 0.5, .y = 1.5, .z = 3.0 };
+    positions[6] = Vec3{ .x = 4.0, .y = 0.5, .z = 2.5 };
+    positions[7] = Vec3{ .x = 2.0, .y = 4.0, .z = 2.0 };
+    positions[8] = Vec3{ .x = 6.0, .y = 3.0, .z = 1.5 };
+    positions[9] = Vec3{ .x = 7.0, .y = 1.0, .z = 3.0 };
+
+    // Different radii to test the cutoff calculation
+    radii[0] = 1.0;
+    radii[1] = 1.2;
+    radii[2] = 0.8;
+    radii[3] = 1.5;
+    radii[4] = 1.0;
+    radii[5] = 1.1;
+    radii[6] = 0.9;
+    radii[7] = 1.3;
+    radii[8] = 1.0;
+    radii[9] = 1.2;
+
+    const probe_radius = 1.4;
+    const test_points_array = try test_points.generateTestPoints(allocator, 500);
+    defer allocator.free(test_points_array);
+
+    // Build neighbor list for optimized implementation
+    var neighbor_list_data = try NeighborList.init(allocator, positions, radii, probe_radius);
+    defer neighbor_list_data.deinit();
+
+    // Pre-compute radii_with_probe_sq
+    const radii_with_probe_sq = try allocator.alloc(f64, n_atoms);
+    defer allocator.free(radii_with_probe_sq);
+    for (0..n_atoms) |i| {
+        const r_probe = radii[i] + probe_radius;
+        radii_with_probe_sq[i] = r_probe * r_probe;
+    }
+
+    // Compare results for each atom
+    for (0..n_atoms) |i| {
+        const atom_radius_probe = radii[i] + probe_radius;
+        const neighbors = neighbor_list_data.getNeighbors(i);
+
+        // Original O(N²) implementation
+        const original_sasa = atomSasa(i, positions, radii, test_points_array, probe_radius);
+
+        // Optimized O(k) implementation
+        const optimized_sasa = atomSasaWithNeighbors(
+            i,
+            positions,
+            radii_with_probe_sq,
+            test_points_array,
+            atom_radius_probe,
+            neighbors,
+        );
+
+        // Should be exactly equal (same algorithm, just checking fewer atoms)
+        try std.testing.expectApproxEqAbs(original_sasa, optimized_sasa, 1e-10);
+    }
 }
