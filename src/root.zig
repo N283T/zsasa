@@ -3,6 +3,7 @@ const std = @import("std");
 
 // Re-export modules for library consumers
 pub const classifier = @import("classifier.zig");
+pub const classifier_naccess = @import("classifier_naccess.zig");
 
 pub fn bufferedPrint() !void {
     // Stdout is for the actual output of your application, for example if you
@@ -28,4 +29,5 @@ test "basic add functionality" {
 test {
     // Reference imported modules to include their tests
     _ = classifier;
+    _ = classifier_naccess;
 }
