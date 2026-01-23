@@ -19,6 +19,7 @@ const Args = struct {
     n_points: u32 = 100,
     output_format: OutputFormat = .json,
     quiet: bool = false,
+    validate_only: bool = false,
     show_help: bool = false,
     show_version: bool = false,
 };
@@ -130,6 +131,10 @@ fn parseArgs(args: []const []const u8) Args {
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
         }
+        // --validate
+        else if (std.mem.eql(u8, arg, "--validate")) {
+            result.validate_only = true;
+        }
         // --help or -h
         else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             result.show_help = true;
@@ -172,6 +177,7 @@ fn printHelp(program_name: []const u8) void {
         \\    --probe-radius=R   Probe radius in Angstroms (default: 1.4)
         \\    --n-points=N       Test points per atom (default: 100)
         \\    --format=FORMAT    Output format: json, compact, csv (default: json)
+        \\    --validate         Validate input only, do not calculate SASA
         \\    -q, --quiet        Suppress progress output
         \\    -h, --help         Show this help message
         \\    -V, --version      Show version
@@ -237,6 +243,26 @@ pub fn main() !void {
         std.process.exit(1);
     };
     defer input.deinit();
+
+    // Validate input data
+    var validation = json_parser.validateInput(allocator, input) catch |err| {
+        std.debug.print("Error validating input: {s}\n", .{@errorName(err)});
+        std.process.exit(1);
+    };
+    defer validation.deinit();
+
+    if (!validation.valid) {
+        json_parser.printValidationErrors(validation.errors);
+        std.process.exit(1);
+    }
+
+    // Handle --validate (dry-run)
+    if (parsed.validate_only) {
+        if (!parsed.quiet) {
+            std.debug.print("Input validation passed: {} atoms\n", .{input.atomCount()});
+        }
+        return;
+    }
 
     // Calculate SASA with configured parameters
     const config = Config{
@@ -434,4 +460,19 @@ test "parseArgs default format is json" {
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(OutputFormat.json, parsed.output_format);
+}
+
+test "parseArgs --validate" {
+    const args = [_][]const u8{ "freesasa_zig", "--validate", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(true, parsed.validate_only);
+    try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
+}
+
+test "parseArgs default validate_only is false" {
+    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(false, parsed.validate_only);
 }
