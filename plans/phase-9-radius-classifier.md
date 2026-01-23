@@ -77,17 +77,17 @@ ARG CG  C_ALI
 
 ---
 
-## Phase 9.1: Core Data Structures
+## Phase 9.1: Core Data Structures ✅
 
 **目標**: 分類器の基本データ構造を実装
 
 ### Tasks
 
-- [ ] `AtomClass` enum定義（polar, apolar, unknown）
-- [ ] `AtomType` struct定義（name, radius, class）
-- [ ] `ResidueConfig` struct定義（atom_name → radius/class）
-- [ ] `Classifier` struct定義
-- [ ] 基本テスト
+- [x] `AtomClass` enum定義（polar, apolar, unknown）
+- [x] `AtomProperties` struct定義（radius, class）
+- [x] `AtomKey` struct定義（residue + atom_name のハッシュマップキー）
+- [x] `Classifier` struct定義
+- [x] 基本テスト
 
 ### API設計
 
@@ -123,8 +123,8 @@ pub const Classifier = struct {
 
 ### Success Criteria
 
-- [ ] データ構造が定義されている
-- [ ] 単純なルックアップテストが通る
+- [x] データ構造が定義されている
+- [x] 単純なルックアップテストが通る
 
 ---
 
@@ -364,7 +364,7 @@ pub fn parseConfigFile(allocator: Allocator, path: []const u8) !Classifier;
 | Phase | 内容 | 依存 | 状態 |
 |-------|------|------|------|
 | 9.0 | Input Format Extension | - | ✅ 完了 |
-| 9.1 | Core Data Structures | 9.0 | |
+| 9.1 | Core Data Structures | 9.0 | ✅ 完了 |
 | 9.2 | Element-Based Guessing | 9.1 | |
 | 9.3 | NACCESS Classifier | 9.1, 9.2 | |
 | 9.4 | ProtOr & OONS | 9.3 | |
