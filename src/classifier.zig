@@ -50,22 +50,26 @@ pub const AtomKey = struct {
         const res_len: u8 = @intCast(@min(residue.len, 4));
         const atm_len: u8 = @intCast(@min(atom.len, 4));
 
-        var res_buf: [4]u8 = [_]u8{0} ** 4;
-        var atm_buf: [4]u8 = [_]u8{0} ** 4;
-
-        for (0..res_len) |i| {
-            res_buf[i] = residue[i];
-        }
-        for (0..atm_len) |i| {
-            atm_buf[i] = atom[i];
-        }
-
-        return AtomKey{
-            .residue = res_buf,
+        var key = AtomKey{
+            .residue = .{ 0, 0, 0, 0 },
             .residue_len = res_len,
-            .atom = atm_buf,
+            .atom = .{ 0, 0, 0, 0 },
             .atom_len = atm_len,
         };
+
+        // Copy residue bytes
+        var i: usize = 0;
+        while (i < res_len) : (i += 1) {
+            key.residue[i] = residue[i];
+        }
+
+        // Copy atom bytes
+        i = 0;
+        while (i < atm_len) : (i += 1) {
+            key.atom[i] = atom[i];
+        }
+
+        return key;
     }
 
     pub fn residueName(self: AtomKey) []const u8 {
