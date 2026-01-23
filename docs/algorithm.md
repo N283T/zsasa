@@ -1,4 +1,44 @@
-# Shrake-Rupleyアルゴリズム詳解
+# SASAアルゴリズム詳解
+
+## 概要
+
+本実装では2つのSASA計算アルゴリズムを提供する：
+
+1. **Shrake-Rupley (SR)**: テストポイント法（1973年）
+2. **Lee-Richards (LR)**: スライス法（1971年）
+
+## アルゴリズム比較
+
+| 特性 | Shrake-Rupley | Lee-Richards |
+|------|---------------|--------------|
+| 発表年 | 1973 | 1971 |
+| 手法 | テストポイント | スライス/円弧積分 |
+| 精度制御 | ポイント数 (`--n-points`) | スライス数 (`--n-slices`) |
+| 計算量 | O(N × P × K) | O(N × S × K) |
+| 長所 | 実装が単純、高速 | 数学的に厳密 |
+| 短所 | 統計的誤差 | 計算コスト高 |
+| 推奨用途 | 大規模構造、迅速な解析 | 高精度が必要な場合 |
+
+**凡例:** N=原子数, P=ポイント数, S=スライス数, K=平均近傍数
+
+### パフォーマンス比較（1A0Q, 3183原子, ReleaseFast）
+
+| アルゴリズム | 1スレッド | 4スレッド |
+|-------------|-----------|-----------|
+| Shrake-Rupley (100点) | 17ms | 13ms |
+| Lee-Richards (20スライス) | 53ms | 26ms |
+
+### どちらを選ぶべきか
+
+- **Shrake-Rupley**: デフォルト。ほとんどの用途に適切
+- **Lee-Richards**: 以下の場合に推奨
+  - 絶対値の精度が重要な場合
+  - 他のLee-Richards実装との比較が必要な場合
+  - 円弧の幾何学的な厳密性が必要な場合
+
+---
+
+# Shrake-Rupleyアルゴリズム
 
 ## 概要
 
@@ -250,3 +290,169 @@ FreeSASA（C実装の参照実装）との比較結果:
 - ナイーブ: O(N² × P) - 全原子ペアをチェック
 - 最適化版: O(N × P × K) - 近傍のみチェック
 - 大規模分子（N > 1000）では10倍以上の高速化
+
+---
+
+# Lee-Richardsアルゴリズム
+
+## 概要
+
+Lee-Richards法は、1971年にLeeとRichardsによって提案されたSASA計算手法。原子球をZ軸方向にスライスし、各スライスでの露出円弧を積分することで表面積を計算する。
+
+## 理論的背景
+
+### スライスベースのアプローチ
+
+```
+        ╭─────╮
+       ╱   ●   ╲      ← 原子球
+      │    │    │
+   ───┼────┼────┼───  ← スライス（Z軸に垂直）
+      │    │    │
+       ╲       ╱
+        ╰─────╯
+
+スライス断面:
+    ╭───╮
+   ╱     ╲
+  │   ●   │  ← 原子断面（円）
+   ╲     ╱
+    ╰───╯
+     ↑
+    露出円弧を計算
+```
+
+各スライスで：
+1. 原子の断面円を計算
+2. 近傍原子による遮蔽円弧を特定
+3. 露出円弧の長さを計算
+4. スライス厚と掛け合わせて表面積に寄与
+
+### 数学的定式化
+
+スライスzでの原子iの断面半径：
+```
+R'_i(z) = √(R_i² - (z - z_i)²)
+```
+
+ここで R_i = 原子半径 + プローブ半径
+
+総表面積：
+```
+SASA_i = ∫ R_i × L_exposed(z) dz
+```
+
+ここで L_exposed(z) はスライスzでの露出円弧長。
+
+## 実装詳細
+
+### ファイル: `src/lee_richards.zig`
+
+#### メインAPI
+
+```zig
+pub fn calculateSasa(
+    allocator: Allocator,
+    input: AtomInput,
+    config: LeeRichardsConfig,
+) !SasaResult
+```
+
+**設定構造体:**
+```zig
+pub const LeeRichardsConfig = struct {
+    n_slices: u32 = 20,      // スライス数（デフォルト: 20）
+    probe_radius: f64 = 1.4, // プローブ半径（デフォルト: 1.4 Å）
+};
+```
+
+### 円弧計算
+
+2つの円の交差から、遮蔽される円弧を計算：
+
+```
+2つの円の交点から、原子1の遮蔽円弧を計算
+
+    ╭───╮
+   ╱  1  ╲╲
+  │   ●───●│ 2  ← 円2が円1を遮蔽
+   ╲     ╱╱
+    ╰───╯
+
+遮蔽角度 α = acos((R'_i² + d_ij² - R'_j²) / (2 × R'_i × d_ij))
+遮蔽円弧の中心角 β = atan2(dy, dx) + π
+```
+
+### SIMD最適化
+
+Lee-Richardsでも4近傍ずつのSIMD処理を行う：
+
+```zig
+// SIMD: スライス半径とxy距離を計算
+const rj_primes = simd.sliceRadiiBatch4(slice_z, batch_z, batch_r);
+const dij_batch = simd.xyDistanceBatch4(xi, yi, batch_x, batch_y);
+
+// SIMD: 円の重なりをチェック
+const overlap_mask = simd.circlesOverlapBatch4(dij_batch, Ri_prime, rj_primes);
+```
+
+**注意:** `atan2`/`acos`の計算は超越関数のためスカラー処理のまま。
+
+### 円弧のマージ
+
+複数の近傍原子からの遮蔽円弧が重なる場合、マージ処理が必要：
+
+```zig
+fn exposedArcLength(arcs: []Arc) f64 {
+    // 円弧を開始角度でソート
+    sortArcs(arcs);
+
+    // 重なりをマージして露出長を計算
+    var sum: f64 = arcs[0].start;
+    var sup: f64 = arcs[0].end;
+
+    for (arcs[1..]) |arc| {
+        if (sup < arc.start) {
+            sum += arc.start - sup;  // ギャップ（露出部分）
+        }
+        sup = @max(sup, arc.end);
+    }
+
+    sum += TWOPI - sup;  // 最後の円弧以降の露出
+    return sum;
+}
+```
+
+## スライス数と精度のトレードオフ
+
+| スライス数 | 精度 | 計算時間（相対） |
+|-----------|------|-----------------|
+| 10 | 低 | 0.5x |
+| 20 | 中（デフォルト） | 1.0x |
+| 50 | 高 | 2.5x |
+| 100 | 非常に高 | 5.0x |
+
+## Shrake-Rupleyとの精度比較
+
+同じ構造（1A0Q）での比較：
+
+| アルゴリズム | パラメータ | 結果 (Å²) |
+|-------------|-----------|-----------|
+| Shrake-Rupley | 100ポイント | 19,211.19 |
+| Lee-Richards | 20スライス | 19,201.26 |
+| 差分 | | 0.05% |
+
+両アルゴリズムは非常に近い結果を出力する。
+
+## 計算量解析
+
+| 処理 | 計算量 | 備考 |
+|------|--------|------|
+| 近傍リスト構築 | O(N) | N = 原子数 |
+| スライス処理（1原子） | O(S × K) | S = スライス数, K = 近傍数 |
+| 円弧ソート | O(K log K) | 挿入ソート（小配列に効率的） |
+| 全体 | O(N × S × K) | 実質 O(N × S) |
+
+## 参考文献
+
+- Lee, B., & Richards, F. M. (1971). The interpretation of protein structures: estimation of static accessibility. *Journal of Molecular Biology*, 55(3), 379-400.
