@@ -50,21 +50,23 @@ pub const AtomKey = struct {
         const res_len: usize = @min(residue.len, 4);
         const atm_len: usize = @min(atom.len, 4);
 
-        var key = AtomKey{
-            .residue = [_]u8{0} ** 4,
+        // Initialize arrays directly with input data
+        var res_arr = [_]u8{0} ** 4;
+        var atm_arr = [_]u8{0} ** 4;
+
+        for (residue[0..res_len], 0..) |c, i| {
+            res_arr[i] = c;
+        }
+        for (atom[0..atm_len], 0..) |c, i| {
+            atm_arr[i] = c;
+        }
+
+        return .{
+            .residue = res_arr,
             .residue_len = @intCast(res_len),
-            .atom = [_]u8{0} ** 4,
+            .atom = atm_arr,
             .atom_len = @intCast(atm_len),
         };
-
-        if (res_len > 0) {
-            std.mem.copyForwards(u8, &key.residue, residue[0..res_len]);
-        }
-        if (atm_len > 0) {
-            std.mem.copyForwards(u8, &key.atom, atom[0..atm_len]);
-        }
-
-        return key;
     }
 
     pub fn residueName(self: AtomKey) []const u8 {
