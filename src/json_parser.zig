@@ -11,6 +11,8 @@ const JsonInput = struct {
     r: []f64,
     residue: ?[][]const u8 = null,
     atom_name: ?[][]const u8 = null,
+    /// Element atomic numbers (e.g., 6=C, 7=N, 8=O, 20=Ca)
+    element: ?[]u8 = null,
 };
 
 /// Validation error details
@@ -156,6 +158,9 @@ pub fn parseAtomInput(allocator: Allocator, json_str: []const u8) !AtomInput {
     if (data.atom_name) |names| {
         if (names.len != n) return error.ArrayLengthMismatch;
     }
+    if (data.element) |elem| {
+        if (elem.len != n) return error.ArrayLengthMismatch;
+    }
 
     // Allocate and copy data
     const x = try allocator.alloc(f64, n);
@@ -211,6 +216,13 @@ pub fn parseAtomInput(allocator: Allocator, json_str: []const u8) !AtomInput {
         atom_name = names_copy;
     }
 
+    // Copy optional element atomic numbers
+    var element: ?[]u8 = null;
+    if (data.element) |elem| {
+        element = try allocator.dupe(u8, elem);
+    }
+    errdefer if (element) |elem| allocator.free(elem);
+
     return AtomInput{
         .x = x,
         .y = y,
@@ -218,6 +230,7 @@ pub fn parseAtomInput(allocator: Allocator, json_str: []const u8) !AtomInput {
         .r = r,
         .residue = residue,
         .atom_name = atom_name,
+        .element = element,
         .allocator = allocator,
     };
 }
@@ -275,6 +288,47 @@ test "parseAtomInput with residue and atom_name" {
     try std.testing.expectEqualStrings("GLY", residue[1]);
     try std.testing.expectEqualStrings("CA", atom_name[0]);
     try std.testing.expectEqualStrings("N", atom_name[1]);
+}
+
+test "parseAtomInput with element atomic numbers" {
+    const allocator = std.testing.allocator;
+
+    // 6=Carbon, 7=Nitrogen, 8=Oxygen
+    const json =
+        \\{"x": [1.0, 2.0, 3.0], "y": [4.0, 5.0, 6.0], "z": [7.0, 8.0, 9.0], "r": [1.5, 1.6, 1.7], "residue": ["ALA", "ALA", "ALA"], "atom_name": ["CA", "N", "O"], "element": [6, 7, 8]}
+    ;
+
+    var input = try parseAtomInput(allocator, json);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), input.atomCount());
+    try std.testing.expect(input.hasClassificationInfo());
+    try std.testing.expect(input.hasElementInfo());
+
+    const element = input.element.?;
+    try std.testing.expectEqual(@as(u8, 6), element[0]); // Carbon
+    try std.testing.expectEqual(@as(u8, 7), element[1]); // Nitrogen
+    try std.testing.expectEqual(@as(u8, 8), element[2]); // Oxygen
+}
+
+test "parseAtomInput with element distinguishes CA (Carbon) from Ca (Calcium)" {
+    const allocator = std.testing.allocator;
+
+    // First atom: CA = Carbon alpha (atomic number 6)
+    // Second atom: CA = Calcium ion (atomic number 20)
+    const json =
+        \\{"x": [1.0, 2.0], "y": [3.0, 4.0], "z": [5.0, 6.0], "r": [1.7, 2.31], "residue": ["ALA", "CA"], "atom_name": ["CA", "CA"], "element": [6, 20]}
+    ;
+
+    var input = try parseAtomInput(allocator, json);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expect(input.hasElementInfo());
+
+    const element = input.element.?;
+    try std.testing.expectEqual(@as(u8, 6), element[0]); // Carbon (CA in amino acid)
+    try std.testing.expectEqual(@as(u8, 20), element[1]); // Calcium (CA ion)
 }
 
 test "parseAtomInput empty arrays" {

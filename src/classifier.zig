@@ -254,6 +254,55 @@ pub const Classifier = struct {
 // Element-Based Radius Guessing
 // =============================================================================
 
+/// van der Waals radii by atomic number (O(1) array lookup)
+/// Sources: Mantina et al. 2009 for common elements, gemmi for others
+/// Index = atomic number, Value = radius in Angstroms (0 = unknown)
+const atomic_number_radii = blk: {
+    var radii: [119]f64 = .{0} ** 119;
+    // Common biological elements
+    radii[1] = 1.10; // H
+    radii[6] = 1.70; // C
+    radii[7] = 1.55; // N
+    radii[8] = 1.52; // O
+    radii[15] = 1.80; // P
+    radii[16] = 1.80; // S
+    radii[34] = 1.90; // Se
+    // Halogens
+    radii[9] = 1.47; // F
+    radii[17] = 1.75; // Cl
+    radii[35] = 1.83; // Br
+    radii[53] = 1.98; // I
+    // Alkali and Alkali Earth metals
+    radii[3] = 1.81; // Li
+    radii[4] = 1.53; // Be
+    radii[11] = 2.27; // Na
+    radii[12] = 1.73; // Mg
+    radii[19] = 2.75; // K
+    radii[20] = 2.31; // Ca
+    // Transition metals (common in proteins)
+    radii[25] = 1.19; // Mn
+    radii[26] = 1.26; // Fe
+    radii[27] = 1.13; // Co
+    radii[28] = 1.63; // Ni
+    radii[29] = 1.40; // Cu
+    radii[30] = 1.39; // Zn
+    // Other metals
+    radii[33] = 1.85; // As
+    radii[48] = 1.58; // Cd
+    radii[80] = 1.55; // Hg
+    radii[82] = 2.02; // Pb
+    break :blk radii;
+};
+
+/// Get van der Waals radius from atomic number
+/// Returns null if atomic number is not recognized or out of range
+pub fn guessRadiusFromAtomicNumber(atomic_number: u8) ?f64 {
+    if (atomic_number == 0 or atomic_number >= atomic_number_radii.len) return null;
+    const radius = atomic_number_radii[atomic_number];
+    if (radius == 0) return null;
+    return radius;
+}
+
 /// van der Waals radii map (O(1) lookup)
 /// Sources: Mantina et al. 2009 for common elements, gemmi for others
 /// Keys are uppercase element symbols
@@ -603,4 +652,36 @@ test "guessRadiusFromAtomName" {
     try std.testing.expectEqual(@as(?f64, 1.26), guessRadiusFromAtomName("FE  "));
     try std.testing.expectEqual(@as(?f64, 1.39), guessRadiusFromAtomName("ZN  "));
     try std.testing.expectEqual(@as(?f64, 1.90), guessRadiusFromAtomName("SE  "));
+}
+
+test "guessRadiusFromAtomicNumber common elements" {
+    // Common biological elements
+    try std.testing.expectEqual(@as(?f64, 1.10), guessRadiusFromAtomicNumber(1)); // H
+    try std.testing.expectEqual(@as(?f64, 1.70), guessRadiusFromAtomicNumber(6)); // C
+    try std.testing.expectEqual(@as(?f64, 1.55), guessRadiusFromAtomicNumber(7)); // N
+    try std.testing.expectEqual(@as(?f64, 1.52), guessRadiusFromAtomicNumber(8)); // O
+    try std.testing.expectEqual(@as(?f64, 1.80), guessRadiusFromAtomicNumber(15)); // P
+    try std.testing.expectEqual(@as(?f64, 1.80), guessRadiusFromAtomicNumber(16)); // S
+    try std.testing.expectEqual(@as(?f64, 1.90), guessRadiusFromAtomicNumber(34)); // Se
+}
+
+test "guessRadiusFromAtomicNumber metals" {
+    try std.testing.expectEqual(@as(?f64, 1.26), guessRadiusFromAtomicNumber(26)); // Fe
+    try std.testing.expectEqual(@as(?f64, 1.39), guessRadiusFromAtomicNumber(30)); // Zn
+    try std.testing.expectEqual(@as(?f64, 1.40), guessRadiusFromAtomicNumber(29)); // Cu
+    try std.testing.expectEqual(@as(?f64, 1.73), guessRadiusFromAtomicNumber(12)); // Mg
+    try std.testing.expectEqual(@as(?f64, 2.31), guessRadiusFromAtomicNumber(20)); // Ca
+}
+
+test "guessRadiusFromAtomicNumber distinguishes CA (Carbon) from Ca (Calcium)" {
+    // This is the key test: atomic numbers unambiguously identify elements
+    // Carbon (atomic number 6) vs Calcium (atomic number 20)
+    try std.testing.expectEqual(@as(?f64, 1.70), guessRadiusFromAtomicNumber(6)); // Carbon
+    try std.testing.expectEqual(@as(?f64, 2.31), guessRadiusFromAtomicNumber(20)); // Calcium
+}
+
+test "guessRadiusFromAtomicNumber unknown" {
+    try std.testing.expectEqual(@as(?f64, null), guessRadiusFromAtomicNumber(0)); // Invalid
+    try std.testing.expectEqual(@as(?f64, null), guessRadiusFromAtomicNumber(2)); // He (not in our map)
+    try std.testing.expectEqual(@as(?f64, null), guessRadiusFromAtomicNumber(118)); // Oganesson
 }
