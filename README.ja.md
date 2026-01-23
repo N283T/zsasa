@@ -232,18 +232,32 @@ PDB 1A0Q（3,183原子）でのベンチマーク、ReleaseFastビルド:
 
 ## 原子分類器（ライブラリ）
 
-分類器モジュールは残基名と原子名に基づいてvan der Waals半径と極性クラスを割り当てます。現在はライブラリとして利用可能で、CLI統合は予定中です。
+分類器モジュールは残基名と原子名に基づいてvan der Waals半径と極性クラスを割り当てます。3種類の組み込み分類器が利用可能で、CLI統合は予定中です。
+
+### 利用可能な分類器
+
+| 分類器 | 説明 | C脂肪族 | ANYフォールバック |
+|--------|------|---------|-------------------|
+| **NACCESS** | デフォルト、NACCESS互換 | 1.87 Å | あり |
+| **ProtOr** | ハイブリダイゼーションベース（Tsai et al. 1999） | 1.88 Å | なし |
+| **OONS** | 旧FreeSASAデフォルト | 2.00 Å | あり |
 
 ### 使用方法
 
 ```zig
 const classifier = @import("classifier.zig");
 const naccess = @import("classifier_naccess.zig");
+const protor = @import("classifier_protor.zig");
+const oons = @import("classifier_oons.zig");
 
-// NACCESS分類器（NACCESS互換半径）
+// NACCESS分類器（デフォルト）
 const radius = naccess.getRadius("ALA", "CA");  // 1.87
-const class = naccess.getClass("ALA", "O");     // .polar
-const props = naccess.getProperties("CYS", "SG"); // {1.85, .apolar}
+
+// ProtOr分類器（ハイブリダイゼーションベース）
+const radius = protor.getRadius("ALA", "CA");   // 1.88
+
+// OONS分類器（脂肪族炭素が大きい）
+const radius = oons.getRadius("ALA", "CA");     // 2.00
 
 // 元素ベースのフォールバック（未知原子用）
 const r = classifier.guessRadiusFromAtomName(" CA "); // 1.70（炭素）
@@ -252,21 +266,8 @@ const r = classifier.guessRadiusFromAtomName(" CA "); // 1.70（炭素）
 ### ルックアップ順序
 
 1. **残基固有**: 正確な（残基, 原子）マッチ
-2. **ANYフォールバック**: 全残基共通の原子定義
+2. **ANYフォールバック**: 全残基共通の原子定義（NACCESS/OONSのみ）
 3. **元素推定**: 元素記号からvan der Waals半径
-
-### NACCESS原子タイプ
-
-| タイプ | 半径 (Å) | クラス | 説明 |
-|--------|----------|--------|------|
-| C_ALI | 1.87 | apolar | 脂肪族炭素 |
-| C_CAR | 1.76 | apolar | カルボニル/芳香族炭素 |
-| N_AMD | 1.65 | polar | アミド窒素 |
-| N_AMN | 1.50 | polar | アミノ窒素 |
-| O | 1.40 | polar | 酸素 |
-| S | 1.85 | apolar | 硫黄 |
-| SE | 1.80 | apolar | セレン |
-| P | 1.90 | apolar | リン |
 
 詳細は[docs/classifier.md](docs/classifier.md)を参照。
 
@@ -282,6 +283,8 @@ freesasa-zig/
 │   ├── json_writer.zig       # 出力（JSON, CSV）
 │   ├── classifier.zig        # 原子分類器コア（型、元素推定）
 │   ├── classifier_naccess.zig # NACCESS組み込み分類器
+│   ├── classifier_protor.zig  # ProtOr組み込み分類器
+│   ├── classifier_oons.zig    # OONS組み込み分類器
 │   ├── test_points.zig       # Golden Section Spiral生成
 │   ├── neighbor_list.zig     # 空間近傍リスト（O(N)探索）
 │   ├── simd.zig              # SIMDバッチ処理

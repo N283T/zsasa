@@ -16,12 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 2.0x faster than FreeSASA (Python)
 
 - **Atom classifier module** (library only, CLI integration planned)
-  - `classifier.zig` - Core data structures, element-based radius guessing
+  - `classifier.zig` - Core data structures, element-based radius guessing, ClassifierType enum
   - `classifier_naccess.zig` - NACCESS-compatible built-in classifier
+  - `classifier_protor.zig` - ProtOr classifier (hybridization-based, Tsai et al. 1999)
+  - `classifier_oons.zig` - OONS classifier (older FreeSASA default)
   - O(1) compile-time hash lookup using `StaticStringMap`
-  - Support for 20 standard amino acids + SEC/MSE
+  - Support for 20 standard amino acids + SEC/MSE/PYL/ASX/GLX
   - Support for RNA/DNA nucleotides (A, C, G, I, T, U, DA, DC, DG, DI, DT, DU)
-  - ANY fallback for backbone atoms
+  - ANY fallback for backbone atoms (NACCESS/OONS)
   - Element-based radius guessing from atom names
 
 - Extended input format with optional `residue` and `atom_name` fields

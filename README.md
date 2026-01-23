@@ -232,18 +232,32 @@ Benchmark on PDB 1A0Q (3,183 atoms), ReleaseFast build:
 
 ## Atom Classifier (Library)
 
-The classifier module assigns van der Waals radii and polarity classes to atoms based on residue and atom names. Currently available as a library; CLI integration is planned.
+The classifier module assigns van der Waals radii and polarity classes to atoms based on residue and atom names. Three built-in classifiers are available; CLI integration is planned.
+
+### Available Classifiers
+
+| Classifier | Description | C aliphatic | ANY fallback |
+|------------|-------------|-------------|--------------|
+| **NACCESS** | Default, NACCESS-compatible | 1.87 Å | Yes |
+| **ProtOr** | Hybridization-based (Tsai et al. 1999) | 1.88 Å | No |
+| **OONS** | Older FreeSASA default | 2.00 Å | Yes |
 
 ### Usage
 
 ```zig
 const classifier = @import("classifier.zig");
 const naccess = @import("classifier_naccess.zig");
+const protor = @import("classifier_protor.zig");
+const oons = @import("classifier_oons.zig");
 
-// NACCESS classifier (NACCESS-compatible radii)
+// NACCESS classifier (default)
 const radius = naccess.getRadius("ALA", "CA");  // 1.87
-const class = naccess.getClass("ALA", "O");     // .polar
-const props = naccess.getProperties("CYS", "SG"); // {1.85, .apolar}
+
+// ProtOr classifier (hybridization-based)
+const radius = protor.getRadius("ALA", "CA");   // 1.88
+
+// OONS classifier (larger aliphatic carbon)
+const radius = oons.getRadius("ALA", "CA");     // 2.00
 
 // Element-based fallback (for unknown atoms)
 const r = classifier.guessRadiusFromAtomName(" CA "); // 1.70 (carbon)
@@ -252,21 +266,8 @@ const r = classifier.guessRadiusFromAtomName(" CA "); // 1.70 (carbon)
 ### Lookup Order
 
 1. **Residue-specific**: Exact (residue, atom) match
-2. **ANY fallback**: Generic atom definition for all residues
+2. **ANY fallback**: Generic atom definition (NACCESS/OONS only)
 3. **Element guess**: van der Waals radius from element symbol
-
-### NACCESS Atom Types
-
-| Type | Radius (Å) | Class | Description |
-|------|------------|-------|-------------|
-| C_ALI | 1.87 | apolar | Aliphatic carbon |
-| C_CAR | 1.76 | apolar | Carbonyl/aromatic carbon |
-| N_AMD | 1.65 | polar | Amide nitrogen |
-| N_AMN | 1.50 | polar | Amino nitrogen |
-| O | 1.40 | polar | Oxygen |
-| S | 1.85 | apolar | Sulfur |
-| SE | 1.80 | apolar | Selenium |
-| P | 1.90 | apolar | Phosphorus |
 
 See [docs/classifier.md](docs/classifier.md) for details.
 
@@ -282,6 +283,8 @@ freesasa-zig/
 │   ├── json_writer.zig       # Output writing (JSON, CSV)
 │   ├── classifier.zig        # Atom classifier core (types, element guessing)
 │   ├── classifier_naccess.zig # NACCESS built-in classifier
+│   ├── classifier_protor.zig  # ProtOr built-in classifier
+│   ├── classifier_oons.zig    # OONS built-in classifier
 │   ├── test_points.zig       # Golden Section Spiral generation
 │   ├── neighbor_list.zig     # Spatial neighbor list (O(N) lookup)
 │   ├── simd.zig              # SIMD batch operations
