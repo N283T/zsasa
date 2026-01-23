@@ -50,9 +50,6 @@ jobs:
           - os: macos-latest
             name: macOS
             binary: freesasa_zig
-          - os: windows-latest
-            name: Windows
-            binary: freesasa_zig.exe
 
     runs-on: ${{ matrix.os }}
     name: Build (${{ matrix.name }})
@@ -76,8 +73,7 @@ jobs:
       - name: Build Release
         run: zig build -Doptimize=ReleaseFast
 
-      - name: Check binary exists (Unix)
-        if: runner.os != 'Windows'
+      - name: Check binary exists
         run: |
           if [ -f "./zig-out/bin/${{ matrix.binary }}" ]; then
             echo "Binary built successfully"
@@ -86,18 +82,6 @@ jobs:
             echo "Binary not found"
             exit 1
           fi
-
-      - name: Check binary exists (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if (Test-Path "./zig-out/bin/${{ matrix.binary }}") {
-            Write-Host "Binary built successfully"
-            Get-Item "./zig-out/bin/${{ matrix.binary }}"
-          } else {
-            Write-Host "Binary not found"
-            exit 1
-          }
 
       - name: Test CLI
         run: |

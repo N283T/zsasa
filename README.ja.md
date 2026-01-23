@@ -26,6 +26,8 @@ SASA（Solvent Accessible Surface Area：溶媒接触可能表面積）は、生
 
 Zig 0.15.2以上が必要。
 
+**対応プラットフォーム**: Linux、macOS。Windowsユーザーは[WSL](https://learn.microsoft.com/ja-jp/windows/wsl/)（Windows Subsystem for Linux）でLinuxビルドを使用してください。
+
 ```bash
 zig build
 ```
