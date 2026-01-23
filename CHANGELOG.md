@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.5.0] - 2025-01-23
+## [0.0.5] - 2025-01-23
 
 ### Added
 
@@ -29,7 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Radius range validation (positive, ≤ 100 Å)
   - Detailed error messages with atom index and value
 
-## [0.4.0] - 2025-01-22
+## [0.0.4] - 2025-01-22
 
 ### Added
 
@@ -42,14 +42,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Default execution mode is now multi-threaded
 - 6.4x faster than FreeSASA (Python) on 3,183 atoms
 
-## [0.3.0] - 2025-01-21
+## [0.0.3] - 2025-01-21
 
 ### Added
 
 - SIMD optimization using `@Vector(4, f64)` for batch distance calculations
 - 4.5x faster than FreeSASA (Python) single-threaded
 
-## [0.2.0] - 2025-01-20
+## [0.0.2] - 2025-01-20
 
 ### Added
 
@@ -61,7 +61,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Reduced algorithmic complexity from O(N²) to O(N)
 
-## [0.1.0] - 2025-01-19
+## [0.0.1] - 2025-01-19
 
 ### Added
 
@@ -74,9 +74,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `calc_reference_sasa.py` - Generate reference SASA
   - `benchmark.py` - Performance benchmarking
 
-[Unreleased]: https://github.com/N283T/freesasa-zig/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/N283T/freesasa-zig/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/N283T/freesasa-zig/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/N283T/freesasa-zig/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/N283T/freesasa-zig/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/N283T/freesasa-zig/releases/tag/v0.1.0
+[Unreleased]: https://github.com/N283T/freesasa-zig/compare/v0.0.5...HEAD
+[0.0.5]: https://github.com/N283T/freesasa-zig/compare/v0.0.4...v0.0.5
+[0.0.4]: https://github.com/N283T/freesasa-zig/compare/v0.0.3...v0.0.4
+[0.0.3]: https://github.com/N283T/freesasa-zig/compare/v0.0.2...v0.0.3
+[0.0.2]: https://github.com/N283T/freesasa-zig/compare/v0.0.1...v0.0.2
+[0.0.1]: https://github.com/N283T/freesasa-zig/releases/tag/v0.0.1
