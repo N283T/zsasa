@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - 'plans/**'
+      - 'examples/**'
+      - 'scripts/**'
+      - 'LICENSE'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - 'plans/**'
+      - 'examples/**'
+      - 'scripts/**'
+      - 'LICENSE'
+  workflow_dispatch:  # Allow manual triggers
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    name: Format check
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Check formatting
+        run: zig fmt --check src/
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Linux
+            binary: freesasa_zig
+          - os: macos-latest
+            name: macOS
+            binary: freesasa_zig
+          - os: windows-latest
+            name: Windows
+            binary: freesasa_zig.exe
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.name }})
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build
+        run: zig build
+
+      - name: Run tests
+        run: zig build test
+
+      - name: Build Release
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Check binary exists (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          if [ -f "./zig-out/bin/${{ matrix.binary }}" ]; then
+            echo "Binary built successfully"
+            ls -la ./zig-out/bin/${{ matrix.binary }}
+          else
+            echo "Binary not found"
+            exit 1
+          fi
+
+      - name: Check binary exists (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (Test-Path "./zig-out/bin/${{ matrix.binary }}") {
+            Write-Host "Binary built successfully"
+            Get-Item "./zig-out/bin/${{ matrix.binary }}"
+          } else {
+            Write-Host "Binary not found"
+            exit 1
+          }
+
+      - name: Test CLI
+        run: |
+          ./zig-out/bin/${{ matrix.binary }} --help
+          ./zig-out/bin/${{ matrix.binary }} --version
+
+  validate:
+    runs-on: ubuntu-latest
+    name: Validate example
+    needs: [fmt, build]
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Run with example input
+        run: |
+          ./zig-out/bin/freesasa_zig examples/input_1a0q.json /tmp/output.json
+          cat /tmp/output.json | head -20
+
+      - name: Validate output format
+        run: |
+          python3 -c "
+          import json
+          with open('/tmp/output.json') as f:
+              data = json.load(f)
+          assert 'total_area' in data, 'Missing total_area'
+          assert 'atom_areas' in data, 'Missing atom_areas'
+          assert isinstance(data['total_area'], (int, float)), 'total_area should be number'
+          assert isinstance(data['atom_areas'], list), 'atom_areas should be list'
+          assert len(data['atom_areas']) == 3183, f'Expected 3183 atoms, got {len(data[\"atom_areas\"])}'
+          print(f'Validation passed: total_area={data[\"total_area\"]:.2f}, atoms={len(data[\"atom_areas\"])}')"
+
+      - name: Test CSV output
+        run: |
+          ./zig-out/bin/freesasa_zig --format=csv examples/input_1a0q.json /tmp/output.csv
+          head -5 /tmp/output.csv
+          tail -3 /tmp/output.csv
+
+      - name: Test validate mode
+        run: ./zig-out/bin/freesasa_zig --validate examples/input_1a0q.json
