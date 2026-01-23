@@ -203,66 +203,61 @@ pub const Classifier = struct {
 // Element-Based Radius Guessing
 // =============================================================================
 
-/// Element van der Waals radii (Mantina et al. 2009, gemmi)
-/// Used as final fallback when classifier lookup fails
-const ElementRadius = struct {
-    symbol: []const u8,
-    radius: f64,
-};
-
-/// van der Waals radii table
+/// van der Waals radii map (O(1) lookup)
 /// Sources: Mantina et al. 2009 for common elements, gemmi for others
-const element_radii = [_]ElementRadius{
+/// Keys are uppercase element symbols
+const element_radii_map = std.StaticStringMap(f64).initComptime(.{
     // Common biological elements
-    .{ .symbol = "H", .radius = 1.10 },
-    .{ .symbol = "C", .radius = 1.70 },
-    .{ .symbol = "N", .radius = 1.55 },
-    .{ .symbol = "O", .radius = 1.52 },
-    .{ .symbol = "P", .radius = 1.80 },
-    .{ .symbol = "S", .radius = 1.80 },
-    .{ .symbol = "SE", .radius = 1.90 },
+    .{ "H", 1.10 },
+    .{ "C", 1.70 },
+    .{ "N", 1.55 },
+    .{ "O", 1.52 },
+    .{ "P", 1.80 },
+    .{ "S", 1.80 },
+    .{ "SE", 1.90 },
     // Halogens
-    .{ .symbol = "F", .radius = 1.47 },
-    .{ .symbol = "CL", .radius = 1.75 },
-    .{ .symbol = "BR", .radius = 1.83 },
-    .{ .symbol = "I", .radius = 1.98 },
+    .{ "F", 1.47 },
+    .{ "CL", 1.75 },
+    .{ "BR", 1.83 },
+    .{ "I", 1.98 },
     // Alkali and Alkali Earth metals
-    .{ .symbol = "LI", .radius = 1.81 },
-    .{ .symbol = "BE", .radius = 1.53 },
-    .{ .symbol = "NA", .radius = 2.27 },
-    .{ .symbol = "MG", .radius = 1.73 },
-    .{ .symbol = "K", .radius = 2.75 },
-    .{ .symbol = "CA", .radius = 2.31 },
+    .{ "LI", 1.81 },
+    .{ "BE", 1.53 },
+    .{ "NA", 2.27 },
+    .{ "MG", 1.73 },
+    .{ "K", 2.75 },
+    .{ "CA", 2.31 },
     // Transition metals (common in proteins)
-    .{ .symbol = "FE", .radius = 1.26 },
-    .{ .symbol = "CO", .radius = 1.13 },
-    .{ .symbol = "NI", .radius = 1.63 },
-    .{ .symbol = "CU", .radius = 1.40 },
-    .{ .symbol = "ZN", .radius = 1.39 },
-    .{ .symbol = "MN", .radius = 1.19 },
+    .{ "FE", 1.26 },
+    .{ "CO", 1.13 },
+    .{ "NI", 1.63 },
+    .{ "CU", 1.40 },
+    .{ "ZN", 1.39 },
+    .{ "MN", 1.19 },
     // Other metals
-    .{ .symbol = "CD", .radius = 1.58 },
-    .{ .symbol = "HG", .radius = 1.55 },
-    .{ .symbol = "PB", .radius = 2.02 },
-    .{ .symbol = "AS", .radius = 1.85 },
-};
+    .{ "CD", 1.58 },
+    .{ "HG", 1.55 },
+    .{ "PB", 2.02 },
+    .{ "AS", 1.85 },
+});
 
 /// Guess van der Waals radius from element symbol
 /// Returns null if element is not recognized
+/// Lookup is case-insensitive and whitespace is trimmed
 pub fn guessRadius(element: []const u8) ?f64 {
     if (element.len == 0) return null;
 
-    // Normalize: trim and uppercase for comparison
+    // Normalize: trim whitespace
     const trimmed = std.mem.trim(u8, element, " ");
-    if (trimmed.len == 0) return null;
+    if (trimmed.len == 0 or trimmed.len > 2) return null;
 
-    for (element_radii) |entry| {
-        if (std.ascii.eqlIgnoreCase(trimmed, entry.symbol)) {
-            return entry.radius;
-        }
+    // Convert to uppercase for map lookup
+    var upper: [2]u8 = undefined;
+    for (trimmed, 0..) |c, i| {
+        upper[i] = std.ascii.toUpper(c);
     }
 
-    return null;
+    return element_radii_map.get(upper[0..trimmed.len]);
 }
 
 /// Extract element symbol from PDB atom name
@@ -273,6 +268,9 @@ pub fn guessRadius(element: []const u8) ?f64 {
 ///
 /// Key rule: If original input starts with a space, element is single-character.
 /// Only check for 2-char elements if input starts with non-space.
+///
+/// **Lifetime note**: Returns a slice into the input `atom_name`.
+/// The returned slice is only valid as long as `atom_name` is valid.
 ///
 /// Examples:
 /// " CA " -> "C" (carbon alpha, not calcium - leading space!)
@@ -289,15 +287,14 @@ pub fn extractElement(atom_name: []const u8) []const u8 {
 
     // PDB convention: if original input starts with space, element is single-char
     // Only check for 2-char elements if input starts with a letter (no leading space)
-    const has_leading_space = atom_name.len > 0 and atom_name[0] == ' ';
+    const has_leading_space = atom_name[0] == ' ';
 
     if (!has_leading_space and trimmed.len >= 2) {
         const first_two = trimmed[0..2];
-        // Check if it's a known 2-character element
-        for (element_radii) |entry| {
-            if (entry.symbol.len == 2 and std.ascii.eqlIgnoreCase(first_two, entry.symbol)) {
-                return first_two;
-            }
+        // Check if it's a known 2-character element using O(1) map lookup
+        var upper: [2]u8 = .{ std.ascii.toUpper(first_two[0]), std.ascii.toUpper(first_two[1]) };
+        if (element_radii_map.get(&upper) != null) {
+            return first_two;
         }
     }
 
