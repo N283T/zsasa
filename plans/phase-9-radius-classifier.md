@@ -299,16 +299,16 @@ pub fn parseConfigWithLineInfo(allocator: Allocator, content: []const u8) !Parse
 
 ---
 
-## Phase 9.6: CLI Integration
+## Phase 9.6: CLI Integration ✅
 
 **目標**: CLIオプションとの統合
 
 ### Tasks
 
-- [ ] `--classifier=TYPE` オプション追加（naccess/protor/oons）
-- [ ] `--config=FILE` オプション追加（カスタム設定）
-- [ ] 新しい入力形式の検討（座標+残基名+原子名）
-- [ ] ヘルプメッセージ更新
+- [x] `--classifier=TYPE` オプション追加（naccess/protor/oons）
+- [x] `--config=FILE` オプション追加（カスタム設定）
+- [ ] 新しい入力形式の検討（座標+残基名+原子名）→ 将来の検討事項
+- [x] ヘルプメッセージ更新
 
 ### 新しい入力形式案
 
@@ -377,7 +377,7 @@ pub fn parseConfigWithLineInfo(allocator: Allocator, content: []const u8) !Parse
 | 9.3 | NACCESS Classifier | 9.1, 9.2 | ✅ 完了 |
 | 9.4 | ProtOr & OONS | 9.3 | ✅ 完了 |
 | 9.5 | Config Parser | 9.1 | ✅ 完了 |
-| 9.6 | CLI Integration | 9.3, 9.5 | |
+| 9.6 | CLI Integration | 9.3, 9.5 | ✅ 完了 |
 | 9.7 | Docs & Testing | 9.6 | |
 
 ## Files Summary

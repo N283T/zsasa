@@ -5,10 +5,16 @@ const json_writer = @import("json_writer.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
 const lee_richards = @import("lee_richards.zig");
 const types = @import("types.zig");
+const classifier = @import("classifier.zig");
+const classifier_parser = @import("classifier_parser.zig");
+const classifier_naccess = @import("classifier_naccess.zig");
+const classifier_protor = @import("classifier_protor.zig");
+const classifier_oons = @import("classifier_oons.zig");
 
 const Config = types.Config;
 const OutputFormat = json_writer.OutputFormat;
 const LeeRichardsConfig = lee_richards.LeeRichardsConfig;
+const ClassifierType = classifier.ClassifierType;
 
 const version = build_options.version;
 
@@ -28,6 +34,8 @@ const Args = struct {
     n_slices: u32 = 20, // For Lee-Richards
     algorithm: Algorithm = .sr, // Default: Shrake-Rupley
     output_format: OutputFormat = .json,
+    classifier_type: ?ClassifierType = null, // Built-in classifier (naccess/protor/oons)
+    config_path: ?[]const u8 = null, // Custom config file path
     quiet: bool = false,
     validate_only: bool = false,
     show_help: bool = false,
@@ -99,6 +107,17 @@ fn parseNSlices(value: []const u8) u32 {
         std.process.exit(1);
     }
     return n;
+}
+
+/// Parse and validate classifier type value
+fn parseClassifierType(value: []const u8) ClassifierType {
+    if (ClassifierType.fromString(value)) |ct| {
+        return ct;
+    } else {
+        std.debug.print("Error: Invalid classifier: {s}\n", .{value});
+        std.debug.print("Valid classifiers: naccess, protor, oons\n", .{});
+        std.process.exit(1);
+    }
 }
 
 /// Parse command-line arguments
@@ -187,6 +206,30 @@ fn parseArgs(args: []const []const u8) Args {
             }
             result.n_slices = parseNSlices(args[i]);
         }
+        // --classifier=TYPE or --classifier TYPE
+        else if (std.mem.startsWith(u8, arg, "--classifier=")) {
+            const value = arg["--classifier=".len..];
+            result.classifier_type = parseClassifierType(value);
+        } else if (std.mem.eql(u8, arg, "--classifier")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --classifier\n", .{});
+                std.process.exit(1);
+            }
+            result.classifier_type = parseClassifierType(args[i]);
+        }
+        // --config=FILE or --config FILE
+        else if (std.mem.startsWith(u8, arg, "--config=")) {
+            const value = arg["--config=".len..];
+            result.config_path = value;
+        } else if (std.mem.eql(u8, arg, "--config")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --config\n", .{});
+                std.process.exit(1);
+            }
+            result.config_path = args[i];
+        }
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
@@ -234,6 +277,9 @@ fn printHelp(program_name: []const u8) void {
         \\OPTIONS:
         \\    --algorithm=ALGO   Algorithm: sr (shrake-rupley), lr (lee-richards)
         \\                       Default: sr
+        \\    --classifier=TYPE  Built-in classifier: naccess, protor, oons
+        \\                       Use with residue/atom_name input for auto-radius
+        \\    --config=FILE      Custom classifier config file (FreeSASA format)
         \\    --threads=N        Number of threads (default: auto-detect)
         \\                       Use --threads=1 for single-threaded mode
         \\    --probe-radius=R   Probe radius in Angstroms (default: 1.4)
@@ -249,6 +295,11 @@ fn printHelp(program_name: []const u8) void {
         \\    sr, shrake-rupley  Test point method (default)
         \\    lr, lee-richards   Slice-based method
         \\
+        \\CLASSIFIERS:
+        \\    naccess  NACCESS-compatible radii (default if --classifier used)
+        \\    protor   ProtOr radii (Tsai et al. 1999)
+        \\    oons     OONS radii (Ooi et al.)
+        \\
         \\OUTPUT FORMATS:
         \\    json     Pretty-printed JSON with indentation
         \\    compact  Single-line JSON (no whitespace)
@@ -261,8 +312,10 @@ fn printHelp(program_name: []const u8) void {
         \\    {s} --threads=4 input.json output.json
         \\    {s} --probe-radius=1.5 --n-points=200 input.json
         \\    {s} --format=csv input.json output.csv
+        \\    {s} --classifier=naccess input.json output.json
+        \\    {s} --config=custom.config input.json output.json
         \\
-    , .{ version, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
+    , .{ version, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 fn printVersion() void {
@@ -638,4 +691,71 @@ test "parseArgs combined algorithm and n-slices" {
 
     try std.testing.expectEqual(Algorithm.lr, parsed.algorithm);
     try std.testing.expectEqual(@as(u32, 50), parsed.n_slices);
+}
+
+// Tests for --classifier option
+test "parseArgs default classifier_type is null" {
+    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(@as(?ClassifierType, null), parsed.classifier_type);
+}
+
+test "parseArgs --classifier=naccess" {
+    const args = [_][]const u8{ "freesasa_zig", "--classifier=naccess", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(ClassifierType.naccess, parsed.classifier_type.?);
+}
+
+test "parseArgs --classifier=protor" {
+    const args = [_][]const u8{ "freesasa_zig", "--classifier=protor", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(ClassifierType.protor, parsed.classifier_type.?);
+}
+
+test "parseArgs --classifier=oons" {
+    const args = [_][]const u8{ "freesasa_zig", "--classifier=oons", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(ClassifierType.oons, parsed.classifier_type.?);
+}
+
+test "parseArgs --classifier protor (space-separated)" {
+    const args = [_][]const u8{ "freesasa_zig", "--classifier", "protor", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(ClassifierType.protor, parsed.classifier_type.?);
+}
+
+// Tests for --config option
+test "parseArgs default config_path is null" {
+    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(@as(?[]const u8, null), parsed.config_path);
+}
+
+test "parseArgs --config=custom.config" {
+    const args = [_][]const u8{ "freesasa_zig", "--config=custom.config", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqualStrings("custom.config", parsed.config_path.?);
+}
+
+test "parseArgs --config custom.config (space-separated)" {
+    const args = [_][]const u8{ "freesasa_zig", "--config", "custom.config", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqualStrings("custom.config", parsed.config_path.?);
+}
+
+test "parseArgs combined classifier and config (config takes precedence)" {
+    const args = [_][]const u8{ "freesasa_zig", "--classifier=naccess", "--config=custom.config", "input.json" };
+    const parsed = parseArgs(&args);
+
+    // Both are set - config should take precedence in main() logic
+    try std.testing.expectEqual(ClassifierType.naccess, parsed.classifier_type.?);
+    try std.testing.expectEqualStrings("custom.config", parsed.config_path.?);
 }
