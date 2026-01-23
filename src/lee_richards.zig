@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 const neighbor_list_mod = @import("neighbor_list.zig");
+const thread_pool = @import("thread_pool.zig");
 
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
@@ -9,6 +10,9 @@ const Vec3 = types.Vec3;
 const NeighborList = neighbor_list_mod.NeighborList;
 
 const TWOPI: f64 = 2.0 * std.math.pi;
+
+/// Thread-safe allocator for parallel workers
+const thread_safe_allocator = std.heap.page_allocator;
 
 /// Configuration for Lee-Richards algorithm
 pub const LeeRichardsConfig = struct {
@@ -261,6 +265,159 @@ fn sortArcs(arcs: []Arc) void {
     }
 }
 
+/// Context for parallel Lee-Richards calculation workers.
+/// Thread safety: All fields are read-only except `atom_areas` which has
+/// disjoint write access (each thread writes to different indices).
+const ParallelContext = struct {
+    x: []const f64,
+    y: []const f64,
+    z: []const f64,
+    radii: []const f64,
+    neighbor_list: *const NeighborList,
+    n_slices: u32,
+    max_arc_buffer_size: usize,
+    atom_areas: []f64,
+};
+
+/// Worker function for parallel Lee-Richards calculation.
+/// Processes atoms from chunk_start to chunk_end.
+fn parallelLeeRichardsWorker(ctx: ParallelContext, chunk_start: usize, chunk_end: usize) f64 {
+    // Allocate arc buffer for this chunk (thread-safe allocator)
+    const arc_buffer = thread_safe_allocator.alloc(Arc, ctx.max_arc_buffer_size) catch {
+        // Log error - this is very unlikely with page_allocator but shouldn't fail silently
+        std.log.err("Lee-Richards worker: allocation failed for chunk {d}-{d}", .{ chunk_start, chunk_end });
+        return 0.0;
+    };
+    defer thread_safe_allocator.free(arc_buffer);
+
+    var chunk_total: f64 = 0.0;
+
+    for (chunk_start..chunk_end) |i| {
+        const area = atomArea(
+            i,
+            ctx.x,
+            ctx.y,
+            ctx.z,
+            ctx.radii,
+            ctx.neighbor_list,
+            ctx.n_slices,
+            arc_buffer,
+        );
+        ctx.atom_areas[i] = area;
+        chunk_total += area;
+    }
+
+    return chunk_total;
+}
+
+/// Reduce function to sum all chunk totals.
+fn sumReducer(results: []const f64) f64 {
+    var total: f64 = 0.0;
+    for (results) |r| {
+        total += r;
+    }
+    return total;
+}
+
+/// Calculate SASA using Lee-Richards algorithm with parallel processing.
+///
+/// # Parameters
+/// - `allocator`: Memory allocator for result arrays
+/// - `input`: Atom input data (positions and radii)
+/// - `config`: Configuration parameters (n_slices, probe_radius)
+/// - `n_threads`: Number of worker threads (0 = auto-detect)
+///
+/// # Returns
+/// SasaResult containing total_area and per-atom areas. Caller must call deinit().
+pub fn calculateSasaParallel(
+    allocator: Allocator,
+    input: AtomInput,
+    config: LeeRichardsConfig,
+    n_threads: usize,
+) !SasaResult {
+    const n_atoms = input.atomCount();
+    if (n_atoms == 0) {
+        return SasaResult{
+            .total_area = 0.0,
+            .atom_areas = try allocator.alloc(f64, 0),
+            .allocator = allocator,
+        };
+    }
+
+    // Auto-detect thread count if 0
+    const actual_threads = if (n_threads == 0)
+        try std.Thread.getCpuCount()
+    else
+        n_threads;
+
+    // Convert to Vec3 positions for neighbor list
+    const positions = try allocator.alloc(Vec3, n_atoms);
+    defer allocator.free(positions);
+    for (0..n_atoms) |i| {
+        positions[i] = Vec3{ .x = input.x[i], .y = input.y[i], .z = input.z[i] };
+    }
+
+    // Pre-compute effective radii (atom radius + probe radius)
+    const radii = try allocator.alloc(f64, n_atoms);
+    defer allocator.free(radii);
+    for (0..n_atoms) |i| {
+        radii[i] = input.r[i] + config.probe_radius;
+    }
+
+    // Build neighbor list with effective radii
+    // Note: pass probe_radius=0 since we already added it to radii
+    var neighbor_list = try NeighborList.init(allocator, positions, radii, 0.0);
+    defer neighbor_list.deinit();
+
+    // Estimate max neighbors for arc buffer allocation
+    var max_neighbors: usize = 0;
+    for (0..n_atoms) |i| {
+        max_neighbors = @max(max_neighbors, neighbor_list.getNeighbors(i).len);
+    }
+    // Each neighbor can create up to 2 arcs (when crossing 0)
+    const max_arc_buffer_size = (max_neighbors + 1) * 2;
+
+    // Allocate result arrays
+    const atom_areas = try allocator.alloc(f64, n_atoms);
+    errdefer allocator.free(atom_areas);
+
+    // Create parallel context
+    const ctx = ParallelContext{
+        .x = input.x,
+        .y = input.y,
+        .z = input.z,
+        .radii = radii,
+        .neighbor_list = &neighbor_list,
+        .n_slices = config.n_slices,
+        .max_arc_buffer_size = max_arc_buffer_size,
+        .atom_areas = atom_areas,
+    };
+
+    // Chunk size heuristic:
+    // - Minimum 64 atoms per chunk to amortize thread overhead
+    // - Target 4 chunks per thread for load balancing
+    const chunk_size = @max(64, n_atoms / (actual_threads * 4));
+
+    // Run parallel calculation
+    const total_area = try thread_pool.parallelFor(
+        ParallelContext,
+        f64,
+        allocator,
+        actual_threads,
+        parallelLeeRichardsWorker,
+        ctx,
+        n_atoms,
+        chunk_size,
+        sumReducer,
+    );
+
+    return SasaResult{
+        .total_area = total_area,
+        .atom_areas = atom_areas,
+        .allocator = allocator,
+    };
+}
+
 // Tests
 test "exposedArcLength empty" {
     var arcs: [0]Arc = .{};
@@ -344,4 +501,57 @@ test "single atom SASA" {
     // Expected: 4π(1.5 + 1.4)² = 4π(2.9)² ≈ 105.68
     const expected = 4.0 * std.math.pi * 2.9 * 2.9;
     try std.testing.expectApproxEqRel(expected, result.total_area, 0.01);
+}
+
+test "parallel calculation matches serial" {
+    const allocator = std.testing.allocator;
+
+    // Create a small multi-atom system for testing
+    const n_atoms = 100;
+    const x_arr = try allocator.alloc(f64, n_atoms);
+    defer allocator.free(x_arr);
+    const y_arr = try allocator.alloc(f64, n_atoms);
+    defer allocator.free(y_arr);
+    const z_arr = try allocator.alloc(f64, n_atoms);
+    defer allocator.free(z_arr);
+    const r_arr = try allocator.alloc(f64, n_atoms);
+    defer allocator.free(r_arr);
+
+    // Create a grid of atoms
+    for (0..n_atoms) |i| {
+        const fi: f64 = @floatFromInt(i);
+        x_arr[i] = @mod(fi, 10.0) * 3.0;
+        y_arr[i] = @mod(@floor(fi / 10.0), 10.0) * 3.0;
+        z_arr[i] = @floor(fi / 100.0) * 3.0;
+        r_arr[i] = 1.5;
+    }
+
+    const input = AtomInput{
+        .x = x_arr,
+        .y = y_arr,
+        .z = z_arr,
+        .r = r_arr,
+        .allocator = allocator,
+    };
+
+    const config = LeeRichardsConfig{
+        .n_slices = 20,
+        .probe_radius = 1.4,
+    };
+
+    // Calculate using serial version
+    var serial_result = try calculateSasa(allocator, input, config);
+    defer serial_result.deinit();
+
+    // Calculate using parallel version (2 threads)
+    var parallel_result = try calculateSasaParallel(allocator, input, config, 2);
+    defer parallel_result.deinit();
+
+    // Total area should match
+    try std.testing.expectApproxEqRel(serial_result.total_area, parallel_result.total_area, 1e-10);
+
+    // Per-atom areas should match
+    for (0..n_atoms) |i| {
+        try std.testing.expectApproxEqRel(serial_result.atom_areas[i], parallel_result.atom_areas[i], 1e-10);
+    }
 }
