@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.venv/
+
+# Zig
+.zig-cache/
+zig-out/
+
+# Tool caches
+.cache/
+.ruff_cache/
+
+# IDE
+.idea/
+.vscode/
