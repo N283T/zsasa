@@ -19,7 +19,7 @@ SASA (Solvent Accessible Surface Area) measures the surface area of a biomolecul
 
 ## Building
 
-Requires Zig 0.15.0 or later.
+Requires Zig 0.15.2 or later.
 
 ```bash
 zig build
@@ -93,6 +93,7 @@ JSON file with atom coordinates and van der Waals radii:
 
 **Validation rules:**
 - All arrays must have the same length
+- Input must contain at least one atom
 - Coordinates must be finite (not NaN or Inf)
 - Radii must be positive and ≤ 100 Å
 
