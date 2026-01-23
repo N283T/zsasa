@@ -47,14 +47,23 @@ pub const AtomKey = struct {
     atom_len: u8,
 
     pub fn init(residue: []const u8, atom: []const u8) AtomKey {
+        const res_len: usize = @min(residue.len, 4);
+        const atm_len: usize = @min(atom.len, 4);
+
         var key = AtomKey{
             .residue = [_]u8{0} ** 4,
-            .residue_len = @intCast(@min(residue.len, 4)),
+            .residue_len = @intCast(res_len),
             .atom = [_]u8{0} ** 4,
-            .atom_len = @intCast(@min(atom.len, 4)),
+            .atom_len = @intCast(atm_len),
         };
-        @memcpy(key.residue[0..key.residue_len], residue[0..key.residue_len]);
-        @memcpy(key.atom[0..key.atom_len], atom[0..key.atom_len]);
+
+        if (res_len > 0) {
+            std.mem.copyForwards(u8, &key.residue, residue[0..res_len]);
+        }
+        if (atm_len > 0) {
+            std.mem.copyForwards(u8, &key.atom, atom[0..atm_len]);
+        }
+
         return key;
     }
 
