@@ -10,8 +10,17 @@ GitHub Actionsによる継続的インテグレーション。
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - 'plans/**'
+      - 'examples/**'
+      - 'scripts/**'
+      - 'LICENSE'
   pull_request:
     branches: [main]
+    paths-ignore: [同上]
+  workflow_dispatch:  # 手動トリガー
 ```
 
 ### 除外パス（CIをスキップ）
@@ -23,23 +32,32 @@ on:
 | `*.md` | ドキュメントのみ |
 | `docs/**` | ドキュメントのみ |
 | `plans/**` | 計画ファイルのみ |
-| `examples/**` | サンプルデータのみ |
+| `examples/**` | サンプルデータ（テストフィクスチャ） |
 | `scripts/**` | Pythonスクリプト（Zig無関係） |
 | `LICENSE` | ライセンスファイル |
+
+**注意:** `examples/input_1a0q.json`はvalidateジョブで使用されるテストフィクスチャです。このファイルを変更してもCIは実行されないため、変更時は手動でテストを実行してください。
+
+### 手動トリガー
+
+`workflow_dispatch`により、GitHub UIから手動でCIを実行可能。
+
+Actions → CI → Run workflow
 
 ## ジョブ構成
 
 ```
 ┌──────────────┐  ┌─────────────────────────────────┐
 │ fmt          │  │ build (並列 x3)                 │
-│ (Linux)      │  │ Linux / macOS / Windows         │
+│ (5min)       │  │ Linux / macOS / Windows         │
+│              │  │ (15min)                         │
 └──────┬───────┘  └────────────────┬────────────────┘
        │                           │
        └───────────┬───────────────┘
                    ▼
          ┌─────────────────┐
          │ validate        │
-         │ (Linux)         │
+         │ (10min)         │
          └─────────────────┘
 ```
 
@@ -48,21 +66,25 @@ on:
 ### 1. Format Check (`fmt`)
 
 **実行環境:** ubuntu-latest
+**タイムアウト:** 5分
 **実行時間:** 約20秒
 
 ```bash
-zig fmt --check src/*.zig
+zig fmt --check src/
 ```
+
+`src/`ディレクトリ以下の全`.zig`ファイルを再帰的にチェック。
 
 フォーマット違反があると失敗。修正方法:
 
 ```bash
-zig fmt src/*.zig
+zig fmt src/
 ```
 
 ### 2. Build (`build`)
 
 **実行環境:** Linux, macOS, Windows（並列実行）
+**タイムアウト:** 15分
 **実行時間:**
 - Linux: 約45秒
 - macOS: 約1分10秒
@@ -76,9 +98,14 @@ zig fmt src/*.zig
 | Binary check | - | バイナリ存在確認 |
 | CLI test | `--help`, `--version` | CLI動作確認 |
 
+**Windows固有:**
+- バイナリ名: `freesasa_zig.exe`
+- 存在確認: PowerShell使用
+
 ### 3. Validate (`validate`)
 
 **実行環境:** ubuntu-latest
+**タイムアウト:** 10分
 **依存:** fmt, build（両方成功後に実行）
 **実行時間:** 約45秒
 
@@ -98,7 +125,7 @@ zig fmt src/*.zig
 
 ```bash
 # フォーマットチェック
-zig fmt --check src/*.zig
+zig fmt --check src/
 
 # ビルド・テスト
 zig build
@@ -121,7 +148,7 @@ zig build -Doptimize=ReleaseFast
 
 ```bash
 # ローカルでフォーマット実行
-zig fmt src/*.zig
+zig fmt src/
 git add -u && git commit --amend
 git push -f
 ```
@@ -144,6 +171,15 @@ git push -f
 2. 出力JSONの形式を確認
 3. 原子数が3183であることを確認
 
+### Timeout
+
+デフォルトタイムアウト:
+- fmt: 5分
+- build: 15分
+- validate: 10分
+
+通常これらを超えることはない。超えた場合は無限ループの可能性を調査。
+
 ## Zigバージョン
 
 CI で使用しているZigバージョン: **0.15.2**
@@ -155,3 +191,9 @@ CI で使用しているZigバージョン: **0.15.2**
   with:
     version: 0.15.2
 ```
+
+## セキュリティ
+
+- サードパーティアクション: `actions/checkout@v4`, `goto-bus-stop/setup-zig@v2`
+- ハードコードされたシークレット: なし
+- 危険な権限: なし（デフォルト権限を使用）

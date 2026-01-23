@@ -19,11 +19,13 @@ on:
       - 'examples/**'
       - 'scripts/**'
       - 'LICENSE'
+  workflow_dispatch:  # Allow manual triggers
 
 jobs:
   fmt:
     runs-on: ubuntu-latest
     name: Format check
+    timeout-minutes: 5
 
     steps:
       - name: Checkout
@@ -35,7 +37,7 @@ jobs:
           version: 0.15.2
 
       - name: Check formatting
-        run: zig fmt --check src/*.zig
+        run: zig fmt --check src/
 
   build:
     strategy:
@@ -54,6 +56,7 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     name: Build (${{ matrix.name }})
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -86,6 +89,7 @@ jobs:
 
       - name: Check binary exists (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
           if (Test-Path "./zig-out/bin/${{ matrix.binary }}") {
             Write-Host "Binary built successfully"
@@ -95,26 +99,16 @@ jobs:
             exit 1
           }
 
-      - name: Test CLI help (Unix)
-        if: runner.os != 'Windows'
-        run: ./zig-out/bin/${{ matrix.binary }} --help
-
-      - name: Test CLI help (Windows)
-        if: runner.os == 'Windows'
-        run: ./zig-out/bin/${{ matrix.binary }} --help
-
-      - name: Test CLI version (Unix)
-        if: runner.os != 'Windows'
-        run: ./zig-out/bin/${{ matrix.binary }} --version
-
-      - name: Test CLI version (Windows)
-        if: runner.os == 'Windows'
-        run: ./zig-out/bin/${{ matrix.binary }} --version
+      - name: Test CLI
+        run: |
+          ./zig-out/bin/${{ matrix.binary }} --help
+          ./zig-out/bin/${{ matrix.binary }} --version
 
   validate:
     runs-on: ubuntu-latest
     name: Validate example
     needs: [fmt, build]
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
