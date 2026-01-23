@@ -1,122 +1,186 @@
-# Phase 2: Neighbor List Optimization
+# Phase 3: SIMD Optimization
 
 ## Goal
 
-Replace O(N^2) neighbor checking with O(N) using cell-based spatial hashing.
+Use Zig's `@Vector` to parallelize distance calculations and achieve further performance improvement.
 
-**Current**: 1.5s for 3183 atoms (1A0Q)
-**Target**: < 0.1s (30x improvement)
+**Current**: ~53ms (optimized with neighbor list)
+**Target**: ~30ms (1.5-2x improvement)
 
-## Key Insight
+## Analysis Summary
 
-Current bottleneck (`shrake_rupley.zig:55-73`):
+### Hot Paths Identified
+
+| Location | Function | Lines | Priority |
+|----------|----------|-------|----------|
+| `shrake_rupley.zig` | `atomSasaWithNeighbors` | 130-133 | **HIGHEST** |
+| `shrake_rupley.zig` | `atomSasa` | 64-67 | Keep as reference |
+| `neighbor_list.zig` | `addNeighborPairs` | 276-279 | LOW (runs once) |
+
+### Current Distance Calculation
 ```zig
-for (0..n_atoms) |j| {  // Checks ALL atoms for EVERY test point
+const dx = point.x - other_pos.x;
+const dy = point.y - other_pos.y;
+const dz = point.z - other_pos.z;
+const dist_sq = dx * dx + dy * dy + dz * dz;
 ```
 
-With neighbor list: check only ~10-30 neighbors instead of 3183 atoms.
+This runs millions of times per SASA calculation.
 
 ## Implementation Plan
 
-### Phase 2.1: Create `src/neighbor_list.zig`
+### Phase 3.1: Add SIMD Vec3 Helper (`src/simd.zig`)
 
-**New Data Structures:**
-
-```zig
-/// Cell in spatial hash grid
-pub const Cell = struct {
-    atoms: std.ArrayList(u32),  // Atom indices in this cell
-};
-
-/// Spatial hash grid
-pub const CellList = struct {
-    cells: []Cell,
-    nx, ny, nz: usize,          // Grid dimensions
-    cell_size: f64,             // = 2 * (max_radius + probe_radius)
-    x_min, y_min, z_min: f64,   // Bounding box origin
-};
-
-/// Pre-computed neighbor list
-pub const NeighborList = struct {
-    neighbors: []std.ArrayList(u32),  // neighbors[i] = neighbor indices
-};
-```
-
-**Key Functions:**
-- `CellList.init(positions, max_radius)` - Build spatial grid
-- `NeighborList.init(positions, radii, probe_radius)` - Build neighbor list
-- Both have `deinit()` for cleanup
-
-**Algorithm:**
-1. cell_size = 2 * (max_radius + probe_radius)
-2. Divide bounding box into nx × ny × nz cells
-3. Assign each atom to its cell
-4. For each cell pair (same + 13 forward neighbors):
-   - Check all atom pairs, add if distance < ri + rj + 2*probe
-
-### Phase 2.2: Unit Tests for `neighbor_list.zig`
+**New File: `src/simd.zig`**
 
 ```zig
-test "NeighborList - two far atoms" {
-    // positions 100 Å apart → no neighbors
+const std = @import("std");
+const types = @import("types.zig");
+const Vec3 = types.Vec3;
+
+/// SIMD-optimized batch distance squared calculation
+/// Process 4 positions simultaneously using @Vector(4, f64)
+pub fn distanceSquaredBatch4(
+    point: Vec3,
+    positions: [4]Vec3,
+) [4]f64 {
+    // Load into vectors
+    const px: @Vector(4, f64) = @splat(point.x);
+    const py: @Vector(4, f64) = @splat(point.y);
+    const pz: @Vector(4, f64) = @splat(point.z);
+
+    const ox = @Vector(4, f64){ positions[0].x, positions[1].x, positions[2].x, positions[3].x };
+    const oy = @Vector(4, f64){ positions[0].y, positions[1].y, positions[2].y, positions[3].y };
+    const oz = @Vector(4, f64){ positions[0].z, positions[1].z, positions[2].z, positions[3].z };
+
+    // Calculate differences
+    const dx = px - ox;
+    const dy = py - oy;
+    const dz = pz - oz;
+
+    // Calculate squared distances
+    const dist_sq = dx * dx + dy * dy + dz * dz;
+
+    return dist_sq;
 }
 
-test "NeighborList - two touching atoms" {
-    // positions 2 Å apart → mutual neighbors
-}
+/// Check if point is buried by any of 4 atoms (returns true if buried)
+pub fn isPointBuriedBatch4(
+    point: Vec3,
+    positions: [4]Vec3,
+    radii_sq: [4]f64,
+) bool {
+    const dist_sq = distanceSquaredBatch4(point, positions);
+    const radii_v: @Vector(4, f64) = radii_sq;
 
-test "NeighborList - symmetry" {
-    // j in neighbors[i] ↔ i in neighbors[j]
+    // Check if any distance < radius
+    const inside = dist_sq < radii_v;
+    return @reduce(.Or, inside);
 }
 ```
 
-### Phase 2.3: Integrate into `shrake_rupley.zig`
+### Phase 3.2: Integrate into `atomSasaWithNeighbors`
 
-**Modify `calculateSasa()`:**
+**Modify: `src/shrake_rupley.zig`**
+
+Change the inner neighbor loop to process 4 neighbors at a time:
+
 ```zig
-// NEW: Build neighbor list once
-var neighbor_list = try NeighborList.init(allocator, positions, input.r, config.probe_radius);
-defer neighbor_list.deinit();
+fn atomSasaWithNeighbors(...) f64 {
+    // ...
+    for (test_points_array) |test_point| {
+        const point = atom_pos.add(test_point.scale(atom_radius_probe));
 
-// Pre-compute radii_with_probe[] and radii_sq[]
-for (0..n_atoms) |i| {
-    const neighbors = neighbor_list.getNeighbors(i);
-    atom_areas[i] = atomSasaWithNeighbors(i, positions, radii_sq, test_points, neighbors);
-}
-```
+        var is_buried = false;
+        var i: usize = 0;
 
-**New internal function:**
-```zig
-fn atomSasaWithNeighbors(atom_idx, positions, radii_sq, test_points, neighbors) f64 {
-    for (test_points) |tp| {
-        for (neighbors) |j| {  // O(k) instead of O(N)
-            // distance check
+        // Process 4 neighbors at a time with SIMD
+        while (i + 4 <= neighbors.len) : (i += 4) {
+            const batch_positions = [4]Vec3{
+                positions[neighbors[i]],
+                positions[neighbors[i + 1]],
+                positions[neighbors[i + 2]],
+                positions[neighbors[i + 3]],
+            };
+            const batch_radii = [4]f64{
+                radii_with_probe_sq[neighbors[i]],
+                radii_with_probe_sq[neighbors[i + 1]],
+                radii_with_probe_sq[neighbors[i + 2]],
+                radii_with_probe_sq[neighbors[i + 3]],
+            };
+
+            if (simd.isPointBuriedBatch4(point, batch_positions, batch_radii)) {
+                is_buried = true;
+                break;
+            }
         }
+
+        // Handle remaining neighbors (0-3) with scalar fallback
+        if (!is_buried) {
+            while (i < neighbors.len) : (i += 1) {
+                // ... existing scalar code ...
+            }
+        }
+
+        if (!is_buried) n_exposed += 1;
     }
+    // ...
 }
 ```
 
-**Keep original `atomSasa()` unchanged** for backward compatibility.
+### Phase 3.3: Unit Tests for SIMD Functions
 
-### Phase 2.4: Verification
+```zig
+test "distanceSquaredBatch4 - correctness" {
+    const point = Vec3{ .x = 0, .y = 0, .z = 0 };
+    const positions = [4]Vec3{
+        Vec3{ .x = 1, .y = 0, .z = 0 },  // dist² = 1
+        Vec3{ .x = 0, .y = 2, .z = 0 },  // dist² = 4
+        Vec3{ .x = 0, .y = 0, .z = 3 },  // dist² = 9
+        Vec3{ .x = 1, .y = 1, .z = 1 },  // dist² = 3
+    };
 
-1. Run all existing tests → must pass
-2. Benchmark: `zig build && time ./zig-out/bin/freesasa_zig examples/input_1a0q.json /tmp/out.json`
-3. Compare output with reference (18923 Å² ± 1%)
+    const result = distanceSquaredBatch4(point, positions);
+    try std.testing.expectApproxEqAbs(1.0, result[0], 1e-10);
+    try std.testing.expectApproxEqAbs(4.0, result[1], 1e-10);
+    try std.testing.expectApproxEqAbs(9.0, result[2], 1e-10);
+    try std.testing.expectApproxEqAbs(3.0, result[3], 1e-10);
+}
+
+test "isPointBuriedBatch4 - one inside" {
+    // Point is inside atom[1] only
+    const point = Vec3{ .x = 0.5, .y = 0, .z = 0 };
+    const positions = [4]Vec3{
+        Vec3{ .x = 10, .y = 0, .z = 0 },  // far
+        Vec3{ .x = 0, .y = 0, .z = 0 },   // close (radius 1.0)
+        Vec3{ .x = 10, .y = 0, .z = 0 },  // far
+        Vec3{ .x = 10, .y = 0, .z = 0 },  // far
+    };
+    const radii_sq = [4]f64{ 1.0, 1.0, 1.0, 1.0 };
+
+    try std.testing.expect(isPointBuriedBatch4(point, positions, radii_sq));
+}
+```
+
+### Phase 3.4: Verification
+
+1. All existing tests must pass
+2. SASA values must be identical (< 0.01% difference)
+3. Benchmark should show improvement
 
 ## Files to Modify
 
 | File | Action |
 |------|--------|
-| `src/neighbor_list.zig` | **CREATE** - Cell, CellList, NeighborList |
-| `src/shrake_rupley.zig` | **MODIFY** - Use NeighborList in calculateSasa |
+| `src/simd.zig` | **CREATE** - SIMD helper functions |
+| `src/shrake_rupley.zig` | **MODIFY** - Use SIMD in atomSasaWithNeighbors |
 
 ## Success Criteria
 
 - [x] All existing tests pass
-- [x] SASA values unchanged (< 0.01% difference)
-- [x] 1A0Q benchmark: < 0.1s (achieved ~0.07s debug, ~0.02s release)
-- [x] No memory leaks (GPA check)
+- [x] SASA values unchanged (0% difference - identical output: 19211.19 Ų)
+- [x] Performance improvement (achieved ~11ms, 4.6x faster than FreeSASA baseline)
+- [x] No memory leaks
 
 ## Verification Commands
 
@@ -127,16 +191,33 @@ zig build test
 # Benchmark
 time zig build run -- examples/input_1a0q.json /tmp/output.json
 
-# Compare results
-python3 scripts/benchmark.py
+# Compare with FreeSASA
+uv run scripts/benchmark.py examples/1A0Q.cif.gz --runs 3
 ```
 
-## Results
+## Notes
 
-- **Performance**: 0.07s (debug) / 0.02s (ReleaseFast) vs 1.5s original → **20-75x improvement**
-- **SASA**: 19211.19 Å² for 3183 atoms (1A0Q)
-- **All tests pass** including verification test comparing optimized vs original
-- **No memory leaks** verified via GPA
+- Start with 4-wide SIMD (`@Vector(4, f64)`) as it's well-supported across platforms
+- AVX-512 (8-wide) can be explored later if beneficial
+- Keep scalar fallback for remaining elements (neighbors.len % 4)
 
 ---
 - [x] **DONE** - Phase complete
+
+## Results
+
+**Performance achieved**: ~11ms (4.6x faster than FreeSASA's ~50ms baseline)
+**Target was**: ~30ms (1.5-2x improvement)
+**Actually achieved**: ~11ms (4.6x improvement)
+
+### Implementation Summary
+
+1. Created `src/simd.zig` with:
+   - `distanceSquaredBatch4()` - SIMD batch distance calculation using `@Vector(4, f64)`
+   - `isPointBuriedBatch4()` - SIMD batch burial check with early exit
+
+2. Modified `src/shrake_rupley.zig`:
+   - Updated `atomSasaWithNeighbors()` to process 4 neighbors at a time
+   - Added scalar fallback for remaining neighbors (0-3)
+
+3. All tests pass, SASA values unchanged.

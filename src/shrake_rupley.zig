@@ -2,6 +2,7 @@ const std = @import("std");
 const types = @import("types.zig");
 const test_points = @import("test_points.zig");
 const neighbor_list = @import("neighbor_list.zig");
+const simd = @import("simd.zig");
 
 const Vec3 = types.Vec3;
 const NeighborList = neighbor_list.NeighborList;
@@ -121,21 +122,48 @@ fn atomSasaWithNeighbors(
         const scaled = test_point.scale(atom_radius_probe);
         const point = atom_pos.add(scaled);
 
-        // Check if this point is inside any neighbor atom (O(k) instead of O(N))
+        // Check if this point is inside any neighbor atom using SIMD
         var is_buried = false;
-        for (neighbors) |j| {
-            const other_pos = positions[j];
+        var i: usize = 0;
 
-            // Calculate squared distance
-            const dx = point.x - other_pos.x;
-            const dy = point.y - other_pos.y;
-            const dz = point.z - other_pos.z;
-            const dist_sq = dx * dx + dy * dy + dz * dz;
+        // Process 4 neighbors at a time with SIMD
+        while (i + 4 <= neighbors.len) : (i += 4) {
+            const batch_positions = [4]Vec3{
+                positions[neighbors[i]],
+                positions[neighbors[i + 1]],
+                positions[neighbors[i + 2]],
+                positions[neighbors[i + 3]],
+            };
+            const batch_radii = [4]f64{
+                radii_with_probe_sq[neighbors[i]],
+                radii_with_probe_sq[neighbors[i + 1]],
+                radii_with_probe_sq[neighbors[i + 2]],
+                radii_with_probe_sq[neighbors[i + 3]],
+            };
 
-            // Check if point is inside this atom (using pre-computed squared radius)
-            if (dist_sq < radii_with_probe_sq[j]) {
+            if (simd.isPointBuriedBatch4(point, batch_positions, batch_radii)) {
                 is_buried = true;
                 break;
+            }
+        }
+
+        // Handle remaining neighbors (0-3) with scalar fallback
+        if (!is_buried) {
+            while (i < neighbors.len) : (i += 1) {
+                const j = neighbors[i];
+                const other_pos = positions[j];
+
+                // Calculate squared distance
+                const dx = point.x - other_pos.x;
+                const dy = point.y - other_pos.y;
+                const dz = point.z - other_pos.z;
+                const dist_sq = dx * dx + dy * dy + dz * dz;
+
+                // Check if point is inside this atom
+                if (dist_sq < radii_with_probe_sq[j]) {
+                    is_buried = true;
+                    break;
+                }
             }
         }
 
@@ -528,4 +556,51 @@ test "optimized vs original - same results" {
         // Should be exactly equal (same algorithm, just checking fewer atoms)
         try std.testing.expectApproxEqAbs(original_sasa, optimized_sasa, 1e-10);
     }
+}
+
+test "atomSasaWithNeighbors - handles 0-3 neighbors correctly (scalar fallback)" {
+    // Test edge cases where SIMD loop is skipped and only scalar fallback runs
+    const allocator = std.testing.allocator;
+
+    const positions = [_]Vec3{
+        Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 }, // atom 0 (isolated)
+        Vec3{ .x = 100.0, .y = 0.0, .z = 0.0 }, // atom 1 (far away)
+        Vec3{ .x = 100.0, .y = 100.0, .z = 0.0 }, // atom 2 (far away)
+        Vec3{ .x = 100.0, .y = 100.0, .z = 100.0 }, // atom 3 (far away)
+    };
+    const radii = [_]f64{ 1.0, 1.0, 1.0, 1.0 };
+    const probe_radius = 1.4;
+
+    const test_points_array = try test_points.generateTestPoints(allocator, 100);
+    defer allocator.free(test_points_array);
+
+    // Pre-compute radii_with_probe_sq
+    var radii_with_probe_sq: [4]f64 = undefined;
+    for (0..4) |i| {
+        const r_probe = radii[i] + probe_radius;
+        radii_with_probe_sq[i] = r_probe * r_probe;
+    }
+
+    const atom_radius_probe = radii[0] + probe_radius;
+    const expected_full_sasa = 4.0 * std.math.pi * atom_radius_probe * atom_radius_probe;
+
+    // Test with 0 neighbors (completely isolated)
+    const neighbors_0 = [_]u32{};
+    const sasa_0 = atomSasaWithNeighbors(0, &positions, &radii_with_probe_sq, test_points_array, atom_radius_probe, &neighbors_0);
+    try std.testing.expectApproxEqRel(expected_full_sasa, sasa_0, 0.01);
+
+    // Test with 1 neighbor (far away, should still have full SASA)
+    const neighbors_1 = [_]u32{1};
+    const sasa_1 = atomSasaWithNeighbors(0, &positions, &radii_with_probe_sq, test_points_array, atom_radius_probe, &neighbors_1);
+    try std.testing.expectApproxEqRel(expected_full_sasa, sasa_1, 0.01);
+
+    // Test with 2 neighbors (far away)
+    const neighbors_2 = [_]u32{ 1, 2 };
+    const sasa_2 = atomSasaWithNeighbors(0, &positions, &radii_with_probe_sq, test_points_array, atom_radius_probe, &neighbors_2);
+    try std.testing.expectApproxEqRel(expected_full_sasa, sasa_2, 0.01);
+
+    // Test with 3 neighbors (far away)
+    const neighbors_3 = [_]u32{ 1, 2, 3 };
+    const sasa_3 = atomSasaWithNeighbors(0, &positions, &radii_with_probe_sq, test_points_array, atom_radius_probe, &neighbors_3);
+    try std.testing.expectApproxEqRel(expected_full_sasa, sasa_3, 0.01);
 }
