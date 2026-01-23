@@ -9,6 +9,8 @@ const JsonInput = struct {
     y: []f64,
     z: []f64,
     r: []f64,
+    residue: ?[][]const u8 = null,
+    atom_name: ?[][]const u8 = null,
 };
 
 /// Validation error details
@@ -147,6 +149,14 @@ pub fn parseAtomInput(allocator: Allocator, json_str: []const u8) !AtomInput {
         return error.EmptyInput;
     }
 
+    // Validate optional arrays if present
+    if (data.residue) |res| {
+        if (res.len != n) return error.ArrayLengthMismatch;
+    }
+    if (data.atom_name) |names| {
+        if (names.len != n) return error.ArrayLengthMismatch;
+    }
+
     // Allocate and copy data
     const x = try allocator.alloc(f64, n);
     errdefer allocator.free(x);
@@ -165,11 +175,39 @@ pub fn parseAtomInput(allocator: Allocator, json_str: []const u8) !AtomInput {
     @memcpy(z, data.z);
     @memcpy(r, data.r);
 
+    // Copy optional residue names
+    var residue: ?[][]const u8 = null;
+    if (data.residue) |res| {
+        const res_copy = try allocator.alloc([]const u8, n);
+        errdefer allocator.free(res_copy);
+        for (res, 0..) |s, i| {
+            res_copy[i] = try allocator.dupe(u8, s);
+        }
+        residue = res_copy;
+    }
+    errdefer if (residue) |res| {
+        for (res) |s| allocator.free(s);
+        allocator.free(res);
+    };
+
+    // Copy optional atom names
+    var atom_name: ?[][]const u8 = null;
+    if (data.atom_name) |names| {
+        const names_copy = try allocator.alloc([]const u8, n);
+        errdefer allocator.free(names_copy);
+        for (names, 0..) |s, i| {
+            names_copy[i] = try allocator.dupe(u8, s);
+        }
+        atom_name = names_copy;
+    }
+
     return AtomInput{
         .x = x,
         .y = y,
         .z = z,
         .r = r,
+        .residue = residue,
+        .atom_name = atom_name,
         .allocator = allocator,
     };
 }
@@ -204,6 +242,29 @@ test "parseAtomInput basic" {
     try std.testing.expectEqual(@as(f64, 4.0), input.y[0]);
     try std.testing.expectEqual(@as(f64, 1.5), input.r[0]);
     try std.testing.expectEqual(@as(f64, 1.7), input.r[2]);
+    try std.testing.expect(!input.hasClassificationInfo());
+}
+
+test "parseAtomInput with residue and atom_name" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{"x": [1.0, 2.0], "y": [3.0, 4.0], "z": [5.0, 6.0], "r": [1.5, 1.6], "residue": ["ALA", "GLY"], "atom_name": ["CA", "N"]}
+    ;
+
+    var input = try parseAtomInput(allocator, json);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expect(input.hasClassificationInfo());
+
+    const residue = input.residue.?;
+    const atom_name = input.atom_name.?;
+
+    try std.testing.expectEqualStrings("ALA", residue[0]);
+    try std.testing.expectEqualStrings("GLY", residue[1]);
+    try std.testing.expectEqualStrings("CA", atom_name[0]);
+    try std.testing.expectEqualStrings("N", atom_name[1]);
 }
 
 test "parseAtomInput empty arrays" {

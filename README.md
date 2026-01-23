@@ -102,6 +102,21 @@ JSON file with atom coordinates and van der Waals radii:
 }
 ```
 
+**Extended format** (for future classifier support):
+
+```json
+{
+  "x": [1.0, 2.0, 3.0],
+  "y": [1.0, 2.0, 3.0],
+  "z": [1.0, 2.0, 3.0],
+  "r": [1.7, 1.55, 1.52],
+  "residue": ["ALA", "ALA", "ALA"],
+  "atom_name": ["CA", "CB", "C"]
+}
+```
+
+The `residue` and `atom_name` fields are optional. When provided, they enable automatic radius assignment via classifiers (planned for Phase 9).
+
 **Validation rules:**
 - All arrays must have the same length
 - Input must contain at least one atom
