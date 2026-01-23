@@ -47,33 +47,33 @@ pub const AtomKey = struct {
     atom_len: u8,
 
     pub fn init(residue: []const u8, atom: []const u8) AtomKey {
+        var self: AtomKey = undefined;
+        self.initInPlace(residue, atom);
+        return self;
+    }
+
+    pub fn initInPlace(self: *AtomKey, residue: []const u8, atom: []const u8) void {
         const res_len: usize = @min(residue.len, 4);
         const atm_len: usize = @min(atom.len, 4);
 
-        // Initialize arrays directly with input data
-        var res_arr = [_]u8{0} ** 4;
-        var atm_arr = [_]u8{0} ** 4;
+        self.residue = .{ 0, 0, 0, 0 };
+        self.atom = .{ 0, 0, 0, 0 };
+        self.residue_len = @intCast(res_len);
+        self.atom_len = @intCast(atm_len);
 
         for (residue[0..res_len], 0..) |c, i| {
-            res_arr[i] = c;
+            self.residue[i] = c;
         }
         for (atom[0..atm_len], 0..) |c, i| {
-            atm_arr[i] = c;
+            self.atom[i] = c;
         }
-
-        return .{
-            .residue = res_arr,
-            .residue_len = @intCast(res_len),
-            .atom = atm_arr,
-            .atom_len = @intCast(atm_len),
-        };
     }
 
-    pub fn residueName(self: AtomKey) []const u8 {
+    pub fn residueName(self: *const AtomKey) []const u8 {
         return self.residue[0..self.residue_len];
     }
 
-    pub fn atomName(self: AtomKey) []const u8 {
+    pub fn atomName(self: *const AtomKey) []const u8 {
         return self.atom[0..self.atom_len];
     }
 
