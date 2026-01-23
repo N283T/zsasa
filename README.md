@@ -12,6 +12,9 @@ SASA (Solvent Accessible Surface Area) measures the surface area of a biomolecul
 - JSON input/output format
 - Configurable test points and probe radius
 - Memory-safe implementation with explicit allocators
+- **Multi-threading support** for parallel atom processing
+- **SIMD optimization** using `@Vector(4, f64)` for batch distance calculations
+- **Neighbor list optimization** for O(N) instead of O(N²) neighbor checking
 
 ## Building
 
@@ -30,12 +33,24 @@ zig build test
 ## Usage
 
 ```bash
-# Basic usage
+# Basic usage (auto-detect thread count)
 ./zig-out/bin/freesasa_zig <input.json> [output.json]
+
+# Specify thread count
+./zig-out/bin/freesasa_zig --threads=4 <input.json> [output.json]
+
+# Single-threaded mode
+./zig-out/bin/freesasa_zig --threads=1 <input.json> [output.json]
 
 # Example
 ./zig-out/bin/freesasa_zig examples/input_1a0q.json output.json
 ```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--threads=N` | Number of threads (default: auto-detect CPU count) |
 
 ### Input Format
 
@@ -99,6 +114,22 @@ Tested against FreeSASA reference implementation:
 |-----------|-------|----------------|----------|------------|
 | 1A0Q | 3183 | 18923.28 | 19211.19 | 1.52% |
 
+## Performance
+
+Benchmark on PDB 1A0Q (3,183 atoms):
+
+| Configuration | Time | Speedup vs FreeSASA |
+|---------------|------|---------------------|
+| FreeSASA (Python) | ~51ms | 1.0x |
+| Zig (single-threaded) | ~13ms | 3.9x |
+| Zig (multi-threaded) | ~8ms | **6.4x** |
+
+### Optimization Techniques
+
+1. **Neighbor List**: O(N) neighbor lookup instead of O(N²)
+2. **SIMD**: Process 4 distance calculations in parallel using `@Vector(4, f64)`
+3. **Multi-threading**: Parallel atom processing with work-stealing thread pool
+
 ## Project Structure
 
 ```
@@ -111,6 +142,7 @@ freesasa-zig/
 │   ├── test_points.zig    # Golden Section Spiral generation
 │   ├── neighbor_list.zig  # Spatial neighbor list (O(N) lookup)
 │   ├── simd.zig           # SIMD batch operations
+│   ├── thread_pool.zig    # Generic thread pool for parallelization
 │   └── shrake_rupley.zig  # Core SASA algorithm
 ├── scripts/
 │   ├── cif_to_input_json.py   # Structure to JSON converter
@@ -120,7 +152,8 @@ freesasa-zig/
 │   └── input_1a0q.json    # Example input (PDB 1A0Q)
 └── plans/
     ├── phase-1-shrake-rupley.md
-    └── phase-3-simd-optimization.md
+    ├── phase-3-simd-optimization.md
+    └── phase-4-multithreading.md
 ```
 
 ## Roadmap
@@ -128,8 +161,8 @@ freesasa-zig/
 - [x] Phase 1: Basic Shrake-Rupley implementation
 - [x] Phase 2: Neighbor list optimization (O(N²) → O(N))
 - [x] Phase 3: SIMD optimization (4.5x faster than FreeSASA)
-- [ ] Phase 4: Multi-threading (parallel atom processing)
-- [ ] Phase 5: Production features (CLI options, error handling)
+- [x] Phase 4: Multi-threading (6.4x faster than FreeSASA)
+- [ ] Phase 5: Production features (more CLI options, configuration file)
 
 ## License
 

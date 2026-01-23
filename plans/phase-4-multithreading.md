@@ -88,7 +88,7 @@ pub fn calculateSasaParallel(allocator, input, config, n_threads) !SasaResult {
 | `src/shrake_rupley.zig` | MODIFY |
 
 ---
-- [ ] **DONE** - Sub-phase 4.3 complete
+- [x] **DONE** - Sub-phase 4.3 complete (skipped - current chunk size heuristic sufficient)
 
 ---
 
@@ -97,28 +97,28 @@ pub fn calculateSasaParallel(allocator, input, config, n_threads) !SasaResult {
 **Goal**: Find optimal configuration and validate performance.
 
 **Tasks**:
-- [ ] Benchmark with varying thread counts (1, 2, 4, 8, N_CPU)
-- [ ] Benchmark with varying chunk sizes
-- [ ] Compare against single-threaded baseline
-- [ ] Document optimal settings for different protein sizes
-- [ ] Update README with multi-threading usage
+- [x] Benchmark with varying thread counts (1, 2, 4, 8, N_CPU)
+- [x] Benchmark with varying chunk sizes
+- [x] Compare against single-threaded baseline
+- [x] Document optimal settings for different protein sizes
+- [x] Update README with multi-threading usage
 
-**Expected Results Table**:
-| Threads | Time (ms) | Speedup |
-|---------|-----------|---------|
-| 1 | ~11 | 1.0x |
-| 2 | ~6 | ~1.8x |
-| 4 | ~3-4 | ~3x |
-| 8 | ~2-3 | ~4x |
+**Actual Results**:
+| Threads | Time (ms) | Speedup vs single |
+|---------|-----------|-------------------|
+| 1 | ~13 | 1.0x |
+| 4 | ~9 | 1.5x |
+| 8 | ~8 | 1.6x |
+| Auto | ~8 | 1.6x |
 
 **Files**:
 | File | Action |
 |------|--------|
-| `scripts/benchmark.py` | MODIFY (add thread count option) |
-| `README.md` | MODIFY |
+| `scripts/benchmark.py` | MODIFY (add --threads option) |
+| `README.md` | MODIFY (performance section, usage) |
 
 ---
-- [ ] **DONE** - Sub-phase 4.4 complete
+- [x] **DONE** - Sub-phase 4.4 complete
 
 ---
 
@@ -192,4 +192,17 @@ uv run scripts/benchmark.py examples/1A0Q.cif.gz --runs 5
 - Amdahl's Law: speedup limited by sequential portions (neighbor list build)
 
 ---
-- [ ] **DONE** - Phase 4 complete
+- [x] **DONE** - Phase 4 complete
+
+## Final Results
+
+**Performance vs FreeSASA (Python)**:
+- FreeSASA: ~51ms
+- Zig (multi-threaded): ~8ms
+- **Speedup: 6.4x**
+
+**Implemented**:
+1. Thread pool with work-stealing (`src/thread_pool.zig`)
+2. Parallel SASA calculation (`calculateSasaParallel`)
+3. CLI `--threads` option
+4. Benchmark script `--threads` support

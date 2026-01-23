@@ -9,11 +9,12 @@
 """Benchmark freesasa-zig against FreeSASA Python bindings.
 
 Usage:
-    ./benchmark.py <input_file> [--runs N] [--zig-binary PATH]
+    ./benchmark.py <input_file> [--runs N] [--zig-binary PATH] [--threads N]
 
 Examples:
     ./benchmark.py examples/1A0Q.cif.gz
     ./benchmark.py examples/input_1a0q.json --runs 5
+    ./benchmark.py examples/1A0Q.cif.gz --threads 4
 """
 
 from __future__ import annotations
@@ -101,18 +102,25 @@ def benchmark_zig(
     json_path: Path,
     zig_binary: Path,
     runs: int,
+    threads: int | None = None,
 ) -> BenchmarkResult:
     """Benchmark the Zig implementation."""
     times = []
     total_area = 0.0
     n_atoms = 0
 
+    # Build command
+    cmd = [str(zig_binary)]
+    if threads is not None:
+        cmd.append(f"--threads={threads}")
+    cmd.extend([str(json_path)])
+
     for i in range(runs):
         output_tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
 
         start = time.perf_counter()
         result = subprocess.run(
-            [str(zig_binary), str(json_path), output_tmp.name],
+            cmd + [output_tmp.name],
             capture_output=True,
             text=True,
         )
@@ -133,8 +141,12 @@ def benchmark_zig(
 
         Path(output_tmp.name).unlink()
 
+    name = "Zig"
+    if threads is not None:
+        name = f"Zig ({threads} thread{'s' if threads != 1 else ''})"
+
     return BenchmarkResult(
-        name="Zig",
+        name=name,
         times=times,
         total_area=total_area,
         n_atoms=n_atoms,
@@ -223,6 +235,12 @@ def main() -> int:
         default=Path("zig-out/bin/freesasa_zig"),
         help="Path to Zig binary",
     )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=None,
+        help="Number of threads for Zig (default: auto-detect)",
+    )
     args = parser.parse_args()
 
     if not args.input_file.exists():
@@ -236,6 +254,8 @@ def main() -> int:
 
     print(f"Input: {args.input_file}")
     print(f"Runs: {args.runs}")
+    if args.threads is not None:
+        print(f"Threads: {args.threads}")
 
     # Prepare inputs
     json_path, pdb_path = prepare_inputs(args.input_file)
@@ -243,8 +263,9 @@ def main() -> int:
     results = []
 
     # Benchmark Zig
-    print("\nBenchmarking Zig implementation...")
-    zig_result = benchmark_zig(json_path, args.zig_binary, args.runs)
+    thread_info = f" ({args.threads} threads)" if args.threads else ""
+    print(f"\nBenchmarking Zig implementation{thread_info}...")
+    zig_result = benchmark_zig(json_path, args.zig_binary, args.runs, args.threads)
     results.append(zig_result)
 
     # Benchmark FreeSASA (if PDB available)
