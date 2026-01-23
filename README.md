@@ -14,6 +14,7 @@ SASA (Solvent Accessible Surface Area) measures the surface area of a biomolecul
 ## Features
 
 - **Two SASA algorithms**: Shrake-Rupley (fast) and Lee-Richards (precise)
+- **Atom radius classifier**: NACCESS-compatible radius assignment (library only)
 - JSON input/output format with multiple output options
 - Configurable parameters (test points, slices, probe radius)
 - Input validation with detailed error messages
@@ -229,22 +230,64 @@ Benchmark on PDB 1A0Q (3,183 atoms), ReleaseFast build:
 2. **SIMD**: Process 4 calculations in parallel using `@Vector(4, f64)`
 3. **Multi-threading**: Parallel atom processing with work-stealing thread pool
 
+## Atom Classifier (Library)
+
+The classifier module assigns van der Waals radii and polarity classes to atoms based on residue and atom names. Currently available as a library; CLI integration is planned.
+
+### Usage
+
+```zig
+const classifier = @import("classifier.zig");
+const naccess = @import("classifier_naccess.zig");
+
+// NACCESS classifier (NACCESS-compatible radii)
+const radius = naccess.getRadius("ALA", "CA");  // 1.87
+const class = naccess.getClass("ALA", "O");     // .polar
+const props = naccess.getProperties("CYS", "SG"); // {1.85, .apolar}
+
+// Element-based fallback (for unknown atoms)
+const r = classifier.guessRadiusFromAtomName(" CA "); // 1.70 (carbon)
+```
+
+### Lookup Order
+
+1. **Residue-specific**: Exact (residue, atom) match
+2. **ANY fallback**: Generic atom definition for all residues
+3. **Element guess**: van der Waals radius from element symbol
+
+### NACCESS Atom Types
+
+| Type | Radius (Å) | Class | Description |
+|------|------------|-------|-------------|
+| C_ALI | 1.87 | apolar | Aliphatic carbon |
+| C_CAR | 1.76 | apolar | Carbonyl/aromatic carbon |
+| N_AMD | 1.65 | polar | Amide nitrogen |
+| N_AMN | 1.50 | polar | Amino nitrogen |
+| O | 1.40 | polar | Oxygen |
+| S | 1.85 | apolar | Sulfur |
+| SE | 1.80 | apolar | Selenium |
+| P | 1.90 | apolar | Phosphorus |
+
+See [docs/classifier.md](docs/classifier.md) for details.
+
 ## Project Structure
 
 ```
 freesasa-zig/
 ├── src/
-│   ├── main.zig           # CLI entry point
-│   ├── root.zig           # Library root module
-│   ├── types.zig          # Data structures (Vec3, AtomInput, etc.)
-│   ├── json_parser.zig    # JSON input parsing and validation
-│   ├── json_writer.zig    # Output writing (JSON, CSV)
-│   ├── test_points.zig    # Golden Section Spiral generation
-│   ├── neighbor_list.zig  # Spatial neighbor list (O(N) lookup)
-│   ├── simd.zig           # SIMD batch operations
-│   ├── thread_pool.zig    # Generic thread pool for parallelization
-│   ├── shrake_rupley.zig  # Shrake-Rupley algorithm
-│   └── lee_richards.zig   # Lee-Richards algorithm
+│   ├── main.zig              # CLI entry point
+│   ├── root.zig              # Library root module
+│   ├── types.zig             # Data structures (Vec3, AtomInput, etc.)
+│   ├── json_parser.zig       # JSON input parsing and validation
+│   ├── json_writer.zig       # Output writing (JSON, CSV)
+│   ├── classifier.zig        # Atom classifier core (types, element guessing)
+│   ├── classifier_naccess.zig # NACCESS built-in classifier
+│   ├── test_points.zig       # Golden Section Spiral generation
+│   ├── neighbor_list.zig     # Spatial neighbor list (O(N) lookup)
+│   ├── simd.zig              # SIMD batch operations
+│   ├── thread_pool.zig       # Generic thread pool for parallelization
+│   ├── shrake_rupley.zig     # Shrake-Rupley algorithm
+│   └── lee_richards.zig      # Lee-Richards algorithm
 ├── scripts/
 │   ├── cif_to_input_json.py   # Structure to JSON converter
 │   ├── calc_reference_sasa.py # Reference SASA calculator
@@ -257,7 +300,8 @@ freesasa-zig/
 │   ├── architecture.md    # Architecture overview
 │   ├── algorithm.md       # Algorithm details
 │   ├── optimizations.md   # Optimization techniques
-│   └── cli-io.md          # CLI and I/O details
+│   ├── cli-io.md          # CLI and I/O details
+│   └── classifier.md      # Atom classifier details
 └── plans/
     └── *.md               # Implementation plans
 ```
@@ -272,6 +316,9 @@ freesasa-zig/
 - [x] Phase 6: CI/CD pipeline
 - [x] Phase 11: Lee-Richards algorithm (with multi-threading & SIMD)
 - [ ] Phase 9: Radius classifier (auto-detect atom radii)
+  - [x] Core data structures and element-based guessing
+  - [x] NACCESS built-in classifier
+  - [ ] ProtOr/OONS classifiers, config parser, CLI integration
 - [ ] Phase 10: Direct mmCIF input support
 
 ## License

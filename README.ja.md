@@ -14,6 +14,7 @@ SASA（Solvent Accessible Surface Area：溶媒接触可能表面積）は、生
 ## 特徴
 
 - **2つのSASAアルゴリズム**: Shrake-Rupley（高速）とLee-Richards（高精度）
+- **原子半径分類器**: NACCESS互換の半径割り当て（ライブラリのみ）
 - JSON入出力（複数フォーマット対応）
 - 各種パラメータ設定可能（テストポイント数、スライス数、プローブ半径）
 - 詳細なエラーメッセージ付き入力バリデーション
@@ -229,22 +230,64 @@ PDB 1A0Q（3,183原子）でのベンチマーク、ReleaseFastビルド:
 2. **SIMD**: `@Vector(4, f64)`によるバッチ計算
 3. **マルチスレッド**: Work-stealingスレッドプールによる並列原子処理
 
+## 原子分類器（ライブラリ）
+
+分類器モジュールは残基名と原子名に基づいてvan der Waals半径と極性クラスを割り当てます。現在はライブラリとして利用可能で、CLI統合は予定中です。
+
+### 使用方法
+
+```zig
+const classifier = @import("classifier.zig");
+const naccess = @import("classifier_naccess.zig");
+
+// NACCESS分類器（NACCESS互換半径）
+const radius = naccess.getRadius("ALA", "CA");  // 1.87
+const class = naccess.getClass("ALA", "O");     // .polar
+const props = naccess.getProperties("CYS", "SG"); // {1.85, .apolar}
+
+// 元素ベースのフォールバック（未知原子用）
+const r = classifier.guessRadiusFromAtomName(" CA "); // 1.70（炭素）
+```
+
+### ルックアップ順序
+
+1. **残基固有**: 正確な（残基, 原子）マッチ
+2. **ANYフォールバック**: 全残基共通の原子定義
+3. **元素推定**: 元素記号からvan der Waals半径
+
+### NACCESS原子タイプ
+
+| タイプ | 半径 (Å) | クラス | 説明 |
+|--------|----------|--------|------|
+| C_ALI | 1.87 | apolar | 脂肪族炭素 |
+| C_CAR | 1.76 | apolar | カルボニル/芳香族炭素 |
+| N_AMD | 1.65 | polar | アミド窒素 |
+| N_AMN | 1.50 | polar | アミノ窒素 |
+| O | 1.40 | polar | 酸素 |
+| S | 1.85 | apolar | 硫黄 |
+| SE | 1.80 | apolar | セレン |
+| P | 1.90 | apolar | リン |
+
+詳細は[docs/classifier.md](docs/classifier.md)を参照。
+
 ## プロジェクト構成
 
 ```
 freesasa-zig/
 ├── src/
-│   ├── main.zig           # CLIエントリーポイント
-│   ├── root.zig           # ライブラリルートモジュール
-│   ├── types.zig          # データ構造（Vec3, AtomInput等）
-│   ├── json_parser.zig    # JSON入力パース・バリデーション
-│   ├── json_writer.zig    # 出力（JSON, CSV）
-│   ├── test_points.zig    # Golden Section Spiral生成
-│   ├── neighbor_list.zig  # 空間近傍リスト（O(N)探索）
-│   ├── simd.zig           # SIMDバッチ処理
-│   ├── thread_pool.zig    # 汎用スレッドプール
-│   ├── shrake_rupley.zig  # Shrake-Rupleyアルゴリズム
-│   └── lee_richards.zig   # Lee-Richardsアルゴリズム
+│   ├── main.zig              # CLIエントリーポイント
+│   ├── root.zig              # ライブラリルートモジュール
+│   ├── types.zig             # データ構造（Vec3, AtomInput等）
+│   ├── json_parser.zig       # JSON入力パース・バリデーション
+│   ├── json_writer.zig       # 出力（JSON, CSV）
+│   ├── classifier.zig        # 原子分類器コア（型、元素推定）
+│   ├── classifier_naccess.zig # NACCESS組み込み分類器
+│   ├── test_points.zig       # Golden Section Spiral生成
+│   ├── neighbor_list.zig     # 空間近傍リスト（O(N)探索）
+│   ├── simd.zig              # SIMDバッチ処理
+│   ├── thread_pool.zig       # 汎用スレッドプール
+│   ├── shrake_rupley.zig     # Shrake-Rupleyアルゴリズム
+│   └── lee_richards.zig      # Lee-Richardsアルゴリズム
 ├── scripts/
 │   ├── cif_to_input_json.py   # 構造→JSON変換
 │   ├── calc_reference_sasa.py # 参照SASA計算
@@ -257,7 +300,8 @@ freesasa-zig/
 │   ├── architecture.md    # アーキテクチャ詳解
 │   ├── algorithm.md       # アルゴリズム詳解
 │   ├── optimizations.md   # 最適化技術詳解
-│   └── cli-io.md          # CLI・入出力詳解
+│   ├── cli-io.md          # CLI・入出力詳解
+│   └── classifier.md      # 原子分類器詳解
 └── plans/
     └── *.md               # 実装計画
 ```
@@ -272,6 +316,9 @@ freesasa-zig/
 - [x] Phase 6: CI/CDパイプライン
 - [x] Phase 11: Lee-Richardsアルゴリズム（マルチスレッド・SIMD対応）
 - [ ] Phase 9: 半径分類器（原子半径の自動判定）
+  - [x] コアデータ構造と元素ベース推定
+  - [x] NACCESS組み込み分類器
+  - [ ] ProtOr/OONS分類器、設定パーサー、CLI統合
 - [ ] Phase 10: mmCIF直接入力対応
 
 ## ライセンス
