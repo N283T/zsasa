@@ -210,10 +210,11 @@ def run_freesasa_c_benchmark(
     n_slices: int = 20,
     n_threads: int = 1,
     fs_c_binary: Path | None = None,
-) -> tuple[float, float]:
-    """Run FreeSASA C benchmark. Returns (time_ms, total_area).
+) -> tuple[float, float, float | None]:
+    """Run FreeSASA C benchmark. Returns (time_ms, total_area, sasa_only_ms).
 
     Requires FreeSASA C binary compiled with thread support.
+    The sasa_only_ms is parsed from stderr if available (requires patched binary).
     """
     if fs_c_binary is None:
         # Default location: freesasa-c/src/freesasa in project root
@@ -248,7 +249,7 @@ def run_freesasa_c_benchmark(
     if result.returncode != 0:
         raise RuntimeError(f"FreeSASA C failed: {result.stderr}")
 
-    # Parse total area from output
+    # Parse total area from stdout
     total_area = 0.0
     for line in result.stdout.split("\n"):
         if line.startswith("Total"):
@@ -257,7 +258,15 @@ def run_freesasa_c_benchmark(
                 total_area = float(match.group())
                 break
 
-    return elapsed * 1000, total_area
+    # Parse SASA-only time from stderr (if patched binary)
+    sasa_only_ms = None
+    for line in result.stderr.split("\n"):
+        match = re.search(r"SASA calculation time:\s*([\d.]+)\s*ms", line)
+        if match:
+            sasa_only_ms = float(match.group(1))
+            break
+
+    return elapsed * 1000, total_area, sasa_only_ms
 
 
 def download_cif_if_needed(pdb_id: str, cif_dir: Path) -> Path:
@@ -409,10 +418,11 @@ def run_benchmarks(
                 try:
                     cif_path = download_cif_if_needed(pdb_id, cif_dir)
                     fsc_times = []
+                    fsc_sasa_times = []
                     fsc_area = 0.0
                     for _ in range(n_runs):
                         try:
-                            t, area = run_freesasa_c_benchmark(
+                            t, area, sasa_ms = run_freesasa_c_benchmark(
                                 cif_path,
                                 algo,
                                 n_threads=n_threads if n_threads > 0 else 1,
@@ -420,19 +430,35 @@ def run_benchmarks(
                             )
                             fsc_times.append(t)
                             fsc_area = area
+                            if sasa_ms is not None:
+                                fsc_sasa_times.append(sasa_ms)
                         except Exception as e:
                             print(f"    FS-C {algo.upper()}: ERROR - {e}")
                             break
 
                     if fsc_times:
                         avg_time = sum(fsc_times) / len(fsc_times)
+                        avg_sasa_time = (
+                            sum(fsc_sasa_times) / len(fsc_sasa_times)
+                            if fsc_sasa_times
+                            else None
+                        )
                         results.append(
                             BenchmarkResult(
-                                pdb_id, n_atoms, algo, "freesasa-c", avg_time, fsc_area
+                                pdb_id,
+                                n_atoms,
+                                algo,
+                                "freesasa-c",
+                                avg_time,
+                                fsc_area,
+                                avg_sasa_time,
                             )
                         )
+                        sasa_str = (
+                            f", SASA: {avg_sasa_time:.2f}" if avg_sasa_time else ""
+                        )
                         print(
-                            f"  FS-C    {algo.upper():2s}: {avg_time:8.2f} ms (area: {fsc_area:.2f})"
+                            f"  FS-C    {algo.upper():2s}: {avg_time:8.2f} ms{sasa_str} (area: {fsc_area:.2f})"
                         )
                 except FileNotFoundError as e:
                     print(f"    FS-C {algo.upper()}: SKIP - {e}")
@@ -452,16 +478,109 @@ def print_summary(results: list[BenchmarkResult]) -> None:
         key=lambda p: next(r.n_atoms for r in results if r.pdb_id == p),
     )
 
-    # Check if we have Zig Python results
+    # Check which tools we have
     has_zig_py = any(r.tool == "zig-py" for r in results)
+    has_fs_c = any(r.tool == "freesasa-c" for r in results)
 
-    if has_zig_py:
+    if has_fs_c:
+        # FreeSASA C comparison mode (SASA-only times)
+        print(
+            f"\n{'PDB':<8} {'Atoms':>8} {'Algo':<4} "
+            f"{'Zig SASA':>12} {'FS-C SASA':>12} {'Speedup':>10}"
+        )
+        print("-" * 65)
+
+        for pdb in pdbs:
+            pdb_results = [r for r in results if r.pdb_id == pdb]
+            n_atoms = pdb_results[0].n_atoms if pdb_results else 0
+
+            for algo in ["sr", "lr"]:
+                zig_cli_r = next(
+                    (
+                        r
+                        for r in pdb_results
+                        if r.algorithm == algo and r.tool == "zig-cli"
+                    ),
+                    None,
+                )
+                fsc_r = next(
+                    (
+                        r
+                        for r in pdb_results
+                        if r.algorithm == algo and r.tool == "freesasa-c"
+                    ),
+                    None,
+                )
+
+                if zig_cli_r and fsc_r:
+                    # Use SASA-only time for both
+                    zig_time = (
+                        zig_cli_r.sasa_only_ms
+                        if zig_cli_r.sasa_only_ms
+                        else zig_cli_r.time_ms
+                    )
+                    fsc_time = (
+                        fsc_r.sasa_only_ms if fsc_r.sasa_only_ms else fsc_r.time_ms
+                    )
+                    speedup = fsc_time / zig_time if zig_time > 0 else 0
+                    print(
+                        f"{pdb:<8} {n_atoms:>8} {algo.upper():<4} "
+                        f"{zig_time:>11.2f}ms {fsc_time:>11.2f}ms {speedup:>9.2f}x"
+                    )
+
+    elif has_zig_py:
         print(
             f"\n{'PDB':<6} {'Atoms':>7} {'Algo':<3} "
             f"{'Zig CLI':>10} {'Zig Py':>10} {'FreeSASA':>10} "
             f"{'CLI vs FS':>10} {'Py vs FS':>10}"
         )
         print("-" * 90)
+
+        for pdb in pdbs:
+            pdb_results = [r for r in results if r.pdb_id == pdb]
+            n_atoms = pdb_results[0].n_atoms if pdb_results else 0
+
+            for algo in ["sr", "lr"]:
+                zig_cli_r = next(
+                    (
+                        r
+                        for r in pdb_results
+                        if r.algorithm == algo and r.tool == "zig-cli"
+                    ),
+                    None,
+                )
+                zig_py_r = next(
+                    (
+                        r
+                        for r in pdb_results
+                        if r.algorithm == algo and r.tool == "zig-py"
+                    ),
+                    None,
+                )
+                fs_r = next(
+                    (
+                        r
+                        for r in pdb_results
+                        if r.algorithm == algo and r.tool == "freesasa"
+                    ),
+                    None,
+                )
+
+                if zig_cli_r and zig_py_r and fs_r:
+                    cli_time = (
+                        zig_cli_r.sasa_only_ms
+                        if zig_cli_r.sasa_only_ms
+                        else zig_cli_r.time_ms
+                    )
+                    py_time = zig_py_r.time_ms
+                    fs_time = fs_r.time_ms
+                    cli_speedup = fs_time / cli_time if cli_time > 0 else 0
+                    py_speedup = fs_time / py_time if py_time > 0 else 0
+                    print(
+                        f"{pdb:<6} {n_atoms:>7} {algo.upper():<3} "
+                        f"{cli_time:>9.2f}ms {py_time:>9.2f}ms {fs_time:>9.2f}ms "
+                        f"{cli_speedup:>9.2f}x {py_speedup:>9.2f}x"
+                    )
     else:
         print(
             f"\n{'PDB':<8} {'Atoms':>8} {'Algo':<4} "
@@ -469,56 +588,39 @@ def print_summary(results: list[BenchmarkResult]) -> None:
         )
         print("-" * 60)
 
-    for pdb in pdbs:
-        pdb_results = [r for r in results if r.pdb_id == pdb]
-        n_atoms = pdb_results[0].n_atoms if pdb_results else 0
+        for pdb in pdbs:
+            pdb_results = [r for r in results if r.pdb_id == pdb]
+            n_atoms = pdb_results[0].n_atoms if pdb_results else 0
 
-        for algo in ["sr", "lr"]:
-            zig_cli_r = next(
-                (r for r in pdb_results if r.algorithm == algo and r.tool == "zig-cli"),
-                None,
-            )
-            zig_py_r = next(
-                (r for r in pdb_results if r.algorithm == algo and r.tool == "zig-py"),
-                None,
-            )
-            fs_r = next(
-                (
-                    r
-                    for r in pdb_results
-                    if r.algorithm == algo and r.tool == "freesasa"
-                ),
-                None,
-            )
+            for algo in ["sr", "lr"]:
+                zig_cli_r = next(
+                    (
+                        r
+                        for r in pdb_results
+                        if r.algorithm == algo and r.tool == "zig-cli"
+                    ),
+                    None,
+                )
+                fs_r = next(
+                    (
+                        r
+                        for r in pdb_results
+                        if r.algorithm == algo and r.tool == "freesasa"
+                    ),
+                    None,
+                )
 
-            if has_zig_py and zig_cli_r and zig_py_r and fs_r:
-                # Use SASA-only time for CLI (or total if not available)
-                cli_time = (
-                    zig_cli_r.sasa_only_ms
-                    if zig_cli_r.sasa_only_ms
-                    else zig_cli_r.time_ms
-                )
-                py_time = zig_py_r.time_ms
-                fs_time = fs_r.time_ms
-                cli_speedup = fs_time / cli_time if cli_time > 0 else 0
-                py_speedup = fs_time / py_time if py_time > 0 else 0
-                print(
-                    f"{pdb:<6} {n_atoms:>7} {algo.upper():<3} "
-                    f"{cli_time:>9.2f}ms {py_time:>9.2f}ms {fs_time:>9.2f}ms "
-                    f"{cli_speedup:>9.2f}x {py_speedup:>9.2f}x"
-                )
-            elif zig_cli_r and fs_r:
-                # Fallback: no Zig Python results
-                zig_time = (
-                    zig_cli_r.sasa_only_ms
-                    if zig_cli_r.sasa_only_ms
-                    else zig_cli_r.time_ms
-                )
-                speedup = fs_r.time_ms / zig_time if zig_time > 0 else 0
-                print(
-                    f"{pdb:<8} {n_atoms:>8} {algo.upper():<4} "
-                    f"{zig_time:>10.2f} {fs_r.time_ms:>10.2f} {speedup:>9.2f}x"
-                )
+                if zig_cli_r and fs_r:
+                    zig_time = (
+                        zig_cli_r.sasa_only_ms
+                        if zig_cli_r.sasa_only_ms
+                        else zig_cli_r.time_ms
+                    )
+                    speedup = fs_r.time_ms / zig_time if zig_time > 0 else 0
+                    print(
+                        f"{pdb:<8} {n_atoms:>8} {algo.upper():<4} "
+                        f"{zig_time:>10.2f} {fs_r.time_ms:>10.2f} {speedup:>9.2f}x"
+                    )
 
 
 def main() -> int:
