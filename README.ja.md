@@ -82,6 +82,8 @@ freesasa_zig [OPTIONS] <input.json> [output.json]
 | オプション | 説明 | デフォルト |
 |-----------|------|-----------|
 | `--algorithm=ALGO` | アルゴリズム: `sr` (Shrake-Rupley), `lr` (Lee-Richards) | sr |
+| `--classifier=TYPE` | 組み込み分類器: `naccess`, `protor`, `oons` | - |
+| `--config=FILE` | カスタム分類器設定ファイル（FreeSASA形式） | - |
 | `--threads=N` | スレッド数 | 自動検出 |
 | `--probe-radius=R` | プローブ半径（Å単位、0 < R ≤ 10） | 1.4 |
 | `--n-points=N` | テストポイント数（SR専用、1-10000） | 100 |
@@ -208,21 +210,35 @@ total,1234.560000
 
 ## 検証
 
-FreeSASA参照実装との比較:
+FreeSASA参照実装との比較（ProtOr分類器使用）:
 
-| 構造 | 原子数 | 参照値 (Å²) | Zig (Å²) | 差分 |
-|------|--------|------------|----------|------|
-| 1A0Q | 3183 | 18923.28 | 19211.19 | 1.52% |
+| 構造 | 原子数 | FreeSASA (Å²) | Zig (Å²) | 差分 |
+|------|--------|---------------|----------|------|
+| 1CRN | 327 | 3,001.13 | 3,001.13 | 0.000% |
+| 1UBQ | 602 | 4,834.72 | 4,834.72 | 0.000% |
+| 1A0Q | 3,183 | 18,908.90 | 18,908.90 | 0.000% |
+| 3HHB | 4,384 | 25,527.36 | 25,527.36 | 0.000% |
+| 1AON | 58,674 | 316,879.14 | 316,879.14 | 0.000% |
+| 4V6X | 237,685 | 1,325,369.25 | 1,325,369.25 | 0.000% |
+
+検証実行: `./scripts/validate_accuracy.py`
 
 ## 性能
 
-PDB 1A0Q（3,183原子）でのベンチマーク、ReleaseFastビルド:
+Zig（ReleaseFast）とFreeSASA Pythonの比較、SASA計算時間のみ:
 
-| アルゴリズム | 1スレッド | 4スレッド | FreeSASA比 |
-|-------------|-----------|-----------|------------|
-| Shrake-Rupley | 17ms | 13ms | **3.9x高速** |
-| Lee-Richards | 53ms | 26ms | 2.0x高速 |
-| FreeSASA (Python) | 約51ms | - | 1.0x |
+| 構造 | 原子数 | SR Zig (ms) | SR FS (ms) | SR 高速化 | LR Zig (ms) | LR FS (ms) | LR 高速化 |
+|------|--------|-------------|------------|-----------|-------------|------------|-----------|
+| 1CRN | 327 | 0.53 | 0.77 | 1.45x | 4.60 | 4.85 | 1.05x |
+| 1UBQ | 602 | 0.64 | 1.40 | 2.19x | 8.45 | 9.19 | 1.09x |
+| 1A0Q | 3,183 | 2.46 | 9.16 | 3.72x | 49.17 | 53.34 | 1.08x |
+| 3HHB | 4,384 | 3.56 | 12.14 | 3.41x | 68.56 | 74.89 | 1.09x |
+| 1AON | 58,674 | 43.76 | 179.52 | 4.10x | 930.22 | 1030.58 | 1.11x |
+| 4V6X | 237,685 | 178.47 | 744.13 | 4.17x | 3740.60 | 4132.06 | 1.10x |
+
+**概要**: Shrake-RupleyはFreeSASAより**1.5x-4.2x高速**。構造サイズが大きいほど高速化率が向上。
+
+ベンチマーク実行: `./scripts/benchmark_all.py`
 
 ### 最適化技術
 
@@ -230,9 +246,9 @@ PDB 1A0Q（3,183原子）でのベンチマーク、ReleaseFastビルド:
 2. **SIMD**: `@Vector(4, f64)`によるバッチ計算
 3. **マルチスレッド**: Work-stealingスレッドプールによる並列原子処理
 
-## 原子分類器（ライブラリ）
+## 原子分類器
 
-分類器モジュールは残基名と原子名に基づいてvan der Waals半径と極性クラスを割り当てます。3種類の組み込み分類器が利用可能で、CLI統合は予定中です。
+分類器モジュールは残基名と原子名に基づいてvan der Waals半径と極性クラスを割り当てます。3種類の組み込み分類器と、カスタム設定ファイルに対応。
 
 ### 利用可能な分類器
 
@@ -242,7 +258,24 @@ PDB 1A0Q（3,183原子）でのベンチマーク、ReleaseFastビルド:
 | **ProtOr** | ハイブリダイゼーションベース（Tsai et al. 1999） | 1.88 Å | なし |
 | **OONS** | 旧FreeSASAデフォルト | 2.00 Å | あり |
 
-### 使用方法
+### CLI使用方法
+
+```bash
+# 組み込み分類器を使用（入力JSONにresidue/atom_nameが必要）
+./zig-out/bin/freesasa_zig --classifier=naccess input.json output.json
+./zig-out/bin/freesasa_zig --classifier=protor input.json output.json
+./zig-out/bin/freesasa_zig --classifier=oons input.json output.json
+
+# カスタム設定ファイルを使用（FreeSASA形式）
+./zig-out/bin/freesasa_zig --config=my_radii.config input.json output.json
+```
+
+分類器を指定すると:
+1. 入力JSONの`residue`と`atom_name`フィールドで半径を検索
+2. 見つからない場合は元素ベースの推定にフォールバック
+3. `--config`と`--classifier`を両方指定した場合は`--config`が優先
+
+### ライブラリ使用方法
 
 ```zig
 const classifier = @import("classifier.zig");
@@ -292,9 +325,18 @@ freesasa-zig/
 │   ├── shrake_rupley.zig     # Shrake-Rupleyアルゴリズム
 │   └── lee_richards.zig      # Lee-Richardsアルゴリズム
 ├── scripts/
-│   ├── cif_to_input_json.py   # 構造→JSON変換
-│   ├── calc_reference_sasa.py # 参照SASA計算
-│   └── benchmark.py           # 性能ベンチマーク
+│   ├── cif_to_input_json.py       # 構造→JSON変換
+│   ├── calc_reference_sasa.py     # 参照SASA計算
+│   ├── benchmark.py               # 単一構造ベンチマーク
+│   ├── benchmark_all.py           # 統合ベンチマーク
+│   ├── validate_accuracy.py       # FreeSASA参照値との検証
+│   ├── generate_benchmark_data.py # 構造DL・参照値生成
+│   └── generate_protor_inputs.py  # ProtOr半径入力生成
+├── benchmarks/
+│   ├── structures/            # DLしたPDB構造 (.cif.gz)
+│   ├── inputs/                # 生成した入力JSON（元素ベース半径）
+│   ├── inputs_protor/         # 生成した入力JSON（ProtOr半径）
+│   └── references/            # FreeSASA参照SASA値
 ├── examples/
 │   ├── 1A0Q.cif.gz        # 元構造ファイル（PDB 1A0Q）
 │   ├── input_1a0q.json    # 入力例（cifから変換）
@@ -317,11 +359,14 @@ freesasa-zig/
 - [x] Phase 4: マルチスレッド
 - [x] Phase 5: 本番機能（CLI、出力形式、バリデーション）
 - [x] Phase 6: CI/CDパイプライン
-- [x] Phase 11: Lee-Richardsアルゴリズム（マルチスレッド・SIMD対応）
-- [ ] Phase 9: 半径分類器（原子半径の自動判定）
+- [x] Phase 7: 公平なベンチマーク（タイミング分解、SASA計算のみ測定）
+- [x] Phase 8: ベンチマークデータセット（6構造、小〜超大）
+- [x] Phase 9: 半径分類器（原子半径の自動判定）
   - [x] コアデータ構造と元素ベース推定
-  - [x] NACCESS組み込み分類器
-  - [ ] ProtOr/OONS分類器、設定パーサー、CLI統合
+  - [x] NACCESS/ProtOr/OONS組み込み分類器
+  - [x] カスタム設定ファイルパーサー（FreeSASA形式）
+  - [x] CLI統合（`--classifier`, `--config`）
+- [x] Phase 11: Lee-Richardsアルゴリズム（マルチスレッド・SIMD対応）
 - [ ] Phase 10: mmCIF直接入力対応
 
 ## ライセンス

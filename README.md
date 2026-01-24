@@ -220,16 +220,16 @@ Slice-based method - mathematically precise.
 
 ## Validation
 
-Tested against FreeSASA reference implementation using ProtOr classifier (default for FreeSASA Python):
+Tested against FreeSASA reference implementation using ProtOr classifier:
 
 | Structure | Atoms | FreeSASA (Å²) | Zig (Å²) | Difference |
 |-----------|------:|-------------:|--------:|----------:|
-| 1CRN | 327 | 2,407.47 | 2,407.47 | 0.000% |
-| 1UBQ | 602 | 4,803.47 | 4,803.47 | 0.000% |
-| 1A0Q | 3,183 | 18,923.28 | 18,923.28 | 0.000% |
-| 3HHB | 4,384 | 26,047.03 | 26,047.03 | 0.000% |
-| 1AON | 58,674 | 291,728.28 | 291,728.28 | 0.000% |
-| 4V6X | 237,685 | 1,141,803.28 | 1,141,803.28 | 0.000% |
+| 1CRN | 327 | 3,001.13 | 3,001.13 | 0.000% |
+| 1UBQ | 602 | 4,834.72 | 4,834.72 | 0.000% |
+| 1A0Q | 3,183 | 18,908.90 | 18,908.90 | 0.000% |
+| 3HHB | 4,384 | 25,527.36 | 25,527.36 | 0.000% |
+| 1AON | 58,674 | 316,879.14 | 316,879.14 | 0.000% |
+| 4V6X | 237,685 | 1,325,369.25 | 1,325,369.25 | 0.000% |
 
 Run validation: `./scripts/validate_accuracy.py`
 
@@ -239,14 +239,14 @@ Benchmark comparing Zig (ReleaseFast) vs FreeSASA Python, SASA calculation time 
 
 | Structure | Atoms | SR Zig (ms) | SR FS (ms) | SR Speedup | LR Zig (ms) | LR FS (ms) | LR Speedup |
 |-----------|------:|-----------:|-----------:|----------:|-----------:|-----------:|----------:|
-| 1CRN | 327 | 0.21 | 0.40 | 1.90x | 0.44 | 0.46 | 1.05x |
-| 1UBQ | 602 | 0.28 | 0.74 | 2.69x | 0.87 | 0.90 | 1.04x |
-| 1A0Q | 3,183 | 1.28 | 4.71 | 3.67x | 4.86 | 5.37 | 1.10x |
-| 3HHB | 4,384 | 2.02 | 7.20 | 3.57x | 4.64 | 7.72 | 1.66x |
-| 1AON | 58,674 | 32.82 | 140.50 | 4.28x | 92.11 | 102.23 | 1.11x |
-| 4V6X | 237,685 | 161.93 | 707.48 | 4.37x | 495.74 | 554.38 | 1.12x |
+| 1CRN | 327 | 0.53 | 0.77 | 1.45x | 4.60 | 4.85 | 1.05x |
+| 1UBQ | 602 | 0.64 | 1.40 | 2.19x | 8.45 | 9.19 | 1.09x |
+| 1A0Q | 3,183 | 2.46 | 9.16 | 3.72x | 49.17 | 53.34 | 1.08x |
+| 3HHB | 4,384 | 3.56 | 12.14 | 3.41x | 68.56 | 74.89 | 1.09x |
+| 1AON | 58,674 | 43.76 | 179.52 | 4.10x | 930.22 | 1030.58 | 1.11x |
+| 4V6X | 237,685 | 178.47 | 744.13 | 4.17x | 3740.60 | 4132.06 | 1.10x |
 
-**Summary**: Shrake-Rupley is **1.9x-4.4x faster** than FreeSASA. Speedup increases with structure size.
+**Summary**: Shrake-Rupley is **1.5x-4.2x faster** than FreeSASA. Speedup increases with structure size.
 
 Run benchmark: `./scripts/benchmark_all.py`
 
@@ -342,10 +342,12 @@ freesasa-zig/
 │   ├── benchmark_all.py           # Unified benchmark across all structures
 │   ├── validate_accuracy.py       # Validate against FreeSASA references
 │   ├── generate_benchmark_data.py # Download structures and generate references
+│   ├── generate_protor_inputs.py  # Generate inputs with ProtOr radii
 │   └── compare_classifiers.py     # Compare classifier radii
 ├── benchmarks/
 │   ├── structures/            # Downloaded PDB structures (.cif.gz)
-│   ├── inputs/                # Generated input JSONs
+│   ├── inputs/                # Generated input JSONs (element-based radii)
+│   ├── inputs_protor/         # Generated input JSONs (ProtOr radii)
 │   └── references/            # FreeSASA reference SASA values
 ├── examples/
 │   ├── 1A0Q.cif.gz        # Original structure file (PDB 1A0Q)
