@@ -253,10 +253,7 @@ def run_benchmarks(
                         avg_sasa_time,
                     )
                 )
-                sasa_str = f" (SASA: {avg_sasa_time:.2f}ms)" if avg_sasa_time else ""
-                print(
-                    f"  Zig   {algo.upper():2s}: {avg_sasa_time or avg_time:8.2f} ms{sasa_str}"
-                )
+                print(f"  Zig   {algo.upper():2s}: {avg_sasa_time or avg_time:8.2f} ms")
 
             # FreeSASA C benchmark
             fsc_times = []
