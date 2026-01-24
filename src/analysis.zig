@@ -2,11 +2,65 @@
 //!
 //! Provides functions for:
 //! - Per-residue SASA aggregation
-//! - RSA (Relative Solvent Accessibility) calculation (future)
+//! - RSA (Relative Solvent Accessibility) calculation
 //! - Polar/nonpolar classification (future)
 
 const std = @import("std");
 const types = @import("types.zig");
+
+/// Maximum SASA values for standard amino acids (in Å²).
+/// Values from Tien et al. (2013) "Maximum allowed solvent accessibilities
+/// of residues in proteins" - empirical values.
+/// These represent the theoretical maximum exposure for each residue type.
+pub const MaxSASA = struct {
+    // Standard 20 amino acids
+    pub const ALA: f64 = 129.0;
+    pub const ARG: f64 = 274.0;
+    pub const ASN: f64 = 195.0;
+    pub const ASP: f64 = 193.0;
+    pub const CYS: f64 = 167.0;
+    pub const GLN: f64 = 225.0;
+    pub const GLU: f64 = 223.0;
+    pub const GLY: f64 = 104.0;
+    pub const HIS: f64 = 224.0;
+    pub const ILE: f64 = 197.0;
+    pub const LEU: f64 = 201.0;
+    pub const LYS: f64 = 236.0;
+    pub const MET: f64 = 224.0;
+    pub const PHE: f64 = 240.0;
+    pub const PRO: f64 = 159.0;
+    pub const SER: f64 = 155.0;
+    pub const THR: f64 = 172.0;
+    pub const TRP: f64 = 285.0;
+    pub const TYR: f64 = 263.0;
+    pub const VAL: f64 = 174.0;
+
+    /// Get MaxSASA for a given 3-letter residue code.
+    /// Returns null for unknown residues.
+    pub fn get(residue_name: []const u8) ?f64 {
+        if (std.mem.eql(u8, residue_name, "ALA")) return ALA;
+        if (std.mem.eql(u8, residue_name, "ARG")) return ARG;
+        if (std.mem.eql(u8, residue_name, "ASN")) return ASN;
+        if (std.mem.eql(u8, residue_name, "ASP")) return ASP;
+        if (std.mem.eql(u8, residue_name, "CYS")) return CYS;
+        if (std.mem.eql(u8, residue_name, "GLN")) return GLN;
+        if (std.mem.eql(u8, residue_name, "GLU")) return GLU;
+        if (std.mem.eql(u8, residue_name, "GLY")) return GLY;
+        if (std.mem.eql(u8, residue_name, "HIS")) return HIS;
+        if (std.mem.eql(u8, residue_name, "ILE")) return ILE;
+        if (std.mem.eql(u8, residue_name, "LEU")) return LEU;
+        if (std.mem.eql(u8, residue_name, "LYS")) return LYS;
+        if (std.mem.eql(u8, residue_name, "MET")) return MET;
+        if (std.mem.eql(u8, residue_name, "PHE")) return PHE;
+        if (std.mem.eql(u8, residue_name, "PRO")) return PRO;
+        if (std.mem.eql(u8, residue_name, "SER")) return SER;
+        if (std.mem.eql(u8, residue_name, "THR")) return THR;
+        if (std.mem.eql(u8, residue_name, "TRP")) return TRP;
+        if (std.mem.eql(u8, residue_name, "TYR")) return TYR;
+        if (std.mem.eql(u8, residue_name, "VAL")) return VAL;
+        return null;
+    }
+};
 
 /// Per-residue SASA data
 pub const ResidueSasa = struct {
@@ -16,6 +70,22 @@ pub const ResidueSasa = struct {
     insertion_code: []const u8,
     sasa: f64,
     atom_count: usize,
+    /// Relative Solvent Accessibility (0.0-1.0+), null if MaxSASA unknown
+    rsa: ?f64 = null,
+
+    /// Calculate RSA from SASA and residue name.
+    /// RSA values > 1.0 are possible for exposed terminal residues.
+    pub fn calculateRsa(self: *ResidueSasa) void {
+        if (MaxSASA.get(self.residue_name)) |max_sasa| {
+            if (max_sasa > 0) {
+                self.rsa = self.sasa / max_sasa;
+            } else {
+                self.rsa = null;
+            }
+        } else {
+            self.rsa = null;
+        }
+    }
 };
 
 /// Result of per-residue aggregation
@@ -91,6 +161,11 @@ pub fn aggregateByResidue(
         }
     }
 
+    // Calculate RSA for each residue
+    for (residue_list.items) |*res| {
+        res.calculateRsa();
+    }
+
     return ResidueResult{
         .residues = try residue_list.toOwnedSlice(allocator),
         .allocator = allocator,
@@ -127,6 +202,51 @@ pub fn printResidueResults(residues: []const ResidueSasa) void {
                 res.residue_name,
                 num_str,
                 res.sasa,
+                res.atom_count,
+            });
+        }
+    }
+}
+
+/// Print per-residue SASA results with RSA (Relative Solvent Accessibility)
+pub fn printResidueResultsWithRsa(residues: []const ResidueSasa) void {
+    std.debug.print("\nPer-residue SASA with RSA:\n", .{});
+    std.debug.print("{s:>5} {s:>4} {s:>6} {s:>10} {s:>6} {s:>6}\n", .{
+        "Chain", "Res", "Num", "SASA", "RSA", "Atoms",
+    });
+    std.debug.print("{s:->5} {s:->4} {s:->6} {s:->10} {s:->6} {s:->6}\n", .{
+        "", "", "", "", "", "",
+    });
+
+    for (residues) |res| {
+        // Format residue number as string to avoid Zig's "+" prefix for positive integers
+        var num_buf: [16]u8 = undefined;
+        const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{res.residue_num}) catch "?";
+
+        // Format RSA as percentage or N/A
+        var rsa_buf: [8]u8 = undefined;
+        const rsa_str = if (res.rsa) |rsa|
+            std.fmt.bufPrint(&rsa_buf, "{d:.2}", .{rsa}) catch "?"
+        else
+            "N/A";
+
+        if (res.insertion_code.len > 0) {
+            std.debug.print("{s:>5} {s:>4} {s:>5}{s:<1} {d:>10.2} {s:>6} {d:>6}\n", .{
+                res.chain_id,
+                res.residue_name,
+                num_str,
+                res.insertion_code,
+                res.sasa,
+                rsa_str,
+                res.atom_count,
+            });
+        } else {
+            std.debug.print("{s:>5} {s:>4} {s:>6} {d:>10.2} {s:>6} {d:>6}\n", .{
+                res.chain_id,
+                res.residue_name,
+                num_str,
+                res.sasa,
+                rsa_str,
                 res.atom_count,
             });
         }
@@ -210,4 +330,66 @@ test "aggregateByResidue basic" {
     try std.testing.expectEqual(@as(i32, 2), result.residues[1].residue_num);
     try std.testing.expectEqual(@as(f64, 45.0), result.residues[1].sasa);
     try std.testing.expectEqual(@as(usize, 2), result.residues[1].atom_count);
+
+    // Check RSA values are calculated
+    // ALA: RSA = 25.0 / 129.0 ≈ 0.194
+    try std.testing.expect(result.residues[0].rsa != null);
+    try std.testing.expectApproxEqRel(25.0 / 129.0, result.residues[0].rsa.?, 0.001);
+
+    // GLY: RSA = 45.0 / 104.0 ≈ 0.433
+    try std.testing.expect(result.residues[1].rsa != null);
+    try std.testing.expectApproxEqRel(45.0 / 104.0, result.residues[1].rsa.?, 0.001);
+}
+
+test "MaxSASA lookup" {
+    // Test known amino acids
+    try std.testing.expectEqual(@as(f64, 129.0), MaxSASA.get("ALA").?);
+    try std.testing.expectEqual(@as(f64, 104.0), MaxSASA.get("GLY").?);
+    try std.testing.expectEqual(@as(f64, 285.0), MaxSASA.get("TRP").?);
+    try std.testing.expectEqual(@as(f64, 274.0), MaxSASA.get("ARG").?);
+
+    // Unknown residue returns null
+    try std.testing.expect(MaxSASA.get("XXX") == null);
+    try std.testing.expect(MaxSASA.get("HOH") == null);
+}
+
+test "ResidueSasa calculateRsa" {
+    // Known residue
+    var res_ala = ResidueSasa{
+        .chain_id = "A",
+        .residue_name = "ALA",
+        .residue_num = 1,
+        .insertion_code = "",
+        .sasa = 64.5, // 50% of MaxSASA
+        .atom_count = 5,
+    };
+    res_ala.calculateRsa();
+    try std.testing.expect(res_ala.rsa != null);
+    try std.testing.expectApproxEqRel(64.5 / 129.0, res_ala.rsa.?, 0.001);
+
+    // Unknown residue
+    var res_unk = ResidueSasa{
+        .chain_id = "A",
+        .residue_name = "UNK",
+        .residue_num = 1,
+        .insertion_code = "",
+        .sasa = 100.0,
+        .atom_count = 10,
+    };
+    res_unk.calculateRsa();
+    try std.testing.expect(res_unk.rsa == null);
+
+    // RSA > 1.0 is possible for exposed terminal residues
+    var res_gly = ResidueSasa{
+        .chain_id = "A",
+        .residue_name = "GLY",
+        .residue_num = 1,
+        .insertion_code = "",
+        .sasa = 150.0, // Exceeds MaxSASA of 104.0
+        .atom_count = 4,
+    };
+    res_gly.calculateRsa();
+    try std.testing.expect(res_gly.rsa != null);
+    try std.testing.expect(res_gly.rsa.? > 1.0);
+    try std.testing.expectApproxEqRel(150.0 / 104.0, res_gly.rsa.?, 0.001);
 }
