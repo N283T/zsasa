@@ -181,23 +181,7 @@ pub fn fromSymbol(symbol_str: []const u8) Element {
 
     // Single letter elements (most common in PDB)
     if (upper[1] == 0) {
-        return switch (upper[0]) {
-            'H' => .H,
-            'B' => .B,
-            'C' => .C,
-            'N' => .N,
-            'O' => .O,
-            'F' => .F,
-            'P' => .P,
-            'S' => .S,
-            'K' => .K,
-            'V' => .V,
-            'Y' => .Y,
-            'I' => .I,
-            'W' => .W,
-            'U' => .U,
-            else => .X,
-        };
+        return singleLetterElement(upper[0]);
     }
 
     // Two letter elements - search through the table
@@ -209,7 +193,12 @@ pub fn fromSymbol(symbol_str: []const u8) Element {
 
     // Try single letter if two-letter lookup failed
     // (e.g., "CA" in atom name context might mean Carbon-alpha, not Calcium)
-    return switch (upper[0]) {
+    return singleLetterElement(upper[0]);
+}
+
+/// Helper function for single-letter element lookup
+fn singleLetterElement(c: u8) Element {
+    return switch (c) {
         'H' => .H,
         'B' => .B,
         'C' => .C,

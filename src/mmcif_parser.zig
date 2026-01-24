@@ -21,7 +21,7 @@
 //! const parser = @import("mmcif_parser.zig");
 //!
 //! var mmcif = parser.MmcifParser.init(allocator);
-//! defer mmcif.deinit();
+//! // Note: Parser itself has no deinit - only the result needs cleanup
 //!
 //! const input = try mmcif.parseFile("structure.cif");
 //! defer input.deinit();
@@ -44,12 +44,6 @@ pub const ParseError = error{
     InvalidCoordinate,
     /// File read error
     FileReadError,
-    /// Memory allocation error
-    OutOfMemory,
-    /// Unexpected end of file
-    UnexpectedEof,
-    /// Tokenizer error
-    TokenizerError,
 };
 
 /// Column indices for atom_site fields
@@ -161,7 +155,7 @@ pub const MmcifParser = struct {
                     columns = AtomSiteColumns{};
                 },
                 .tag => |tag| {
-                    if (std.mem.startsWith(u8, tag, "_atom_site.")) {
+                    if (startsWithIgnoreCase(tag, "_atom_site.")) {
                         in_atom_site_loop = true;
                         const field = tag["_atom_site.".len..];
 
@@ -438,6 +432,17 @@ fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
     return true;
 }
 
+/// Case-insensitive prefix check
+fn startsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
+    if (haystack.len < prefix.len) return false;
+    for (haystack[0..prefix.len], prefix) |h, p| {
+        if (std.ascii.toLower(h) != std.ascii.toLower(p)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -602,4 +607,12 @@ test "eqlIgnoreCase" {
     try std.testing.expect(eqlIgnoreCase("cartn_x", "Cartn_x"));
     try std.testing.expect(!eqlIgnoreCase("Cartn_x", "Cartn_y"));
     try std.testing.expect(!eqlIgnoreCase("short", "longer"));
+}
+
+test "startsWithIgnoreCase" {
+    try std.testing.expect(startsWithIgnoreCase("_atom_site.Cartn_x", "_atom_site."));
+    try std.testing.expect(startsWithIgnoreCase("_ATOM_SITE.Cartn_x", "_atom_site."));
+    try std.testing.expect(startsWithIgnoreCase("_Atom_Site.Cartn_x", "_atom_site."));
+    try std.testing.expect(!startsWithIgnoreCase("_cell.length_a", "_atom_site."));
+    try std.testing.expect(!startsWithIgnoreCase("_atom", "_atom_site."));
 }
