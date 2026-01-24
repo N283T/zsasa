@@ -226,8 +226,8 @@ fn atomArea(
 
                 // Calculate arc
                 const cos_alpha = (Ri_prime2 + dij * dij - Rj_prime2) / (2.0 * Ri_prime * dij);
-                const alpha = std.math.acos(std.math.clamp(cos_alpha, -1.0, 1.0));
-                const beta = std.math.atan2(dy, dx) + std.math.pi;
+                const alpha = simd.fastAcos(cos_alpha);
+                const beta = simd.fastAtan2(dy, dx) + std.math.pi;
 
                 var inf = beta - alpha;
                 var sup = beta + alpha;
@@ -317,8 +317,8 @@ fn atomArea(
 
                 // Calculate arc
                 const cos_alpha = (Ri_prime2 + dij * dij - Rj_prime2) / (2.0 * Ri_prime * dij);
-                const alpha = std.math.acos(std.math.clamp(cos_alpha, -1.0, 1.0));
-                const beta = std.math.atan2(dy, dx) + std.math.pi;
+                const alpha = simd.fastAcos(cos_alpha);
+                const beta = simd.fastAtan2(dy, dx) + std.math.pi;
 
                 var inf = beta - alpha;
                 var sup = beta + alpha;

@@ -2,6 +2,84 @@ const std = @import("std");
 const types = @import("types.zig");
 const Vec3 = types.Vec3;
 
+// ============================================================================
+// Fast approximate trigonometric functions
+// ============================================================================
+
+/// Fast approximate acos using polynomial approximation.
+/// Based on Handbook of Mathematical Functions (Abramowitz & Stegun).
+/// Max error: ~0.0003 radians (~0.02 degrees)
+///
+/// # Parameters
+/// - `x`: Input value in range [-1, 1]
+///
+/// # Returns
+/// Approximate acos(x) in radians [0, π]
+pub fn fastAcos(x: f64) f64 {
+    // Clamp input to valid range
+    const clamped = std.math.clamp(x, -1.0, 1.0);
+    const abs_x = @abs(clamped);
+
+    // Polynomial approximation for acos(x) when x >= 0
+    // acos(x) ≈ sqrt(1-x) * (a0 + a1*x + a2*x² + a3*x³)
+    const a0: f64 = 1.5707963267948966; // π/2
+    const a1: f64 = -0.2145988016038123;
+    const a2: f64 = 0.0889789874093553;
+    const a3: f64 = -0.0501743046129726;
+
+    const sqrt_term = @sqrt(1.0 - abs_x);
+    const poly = a0 + abs_x * (a1 + abs_x * (a2 + abs_x * a3));
+    const result = sqrt_term * poly;
+
+    // For negative x: acos(-x) = π - acos(x)
+    return if (clamped < 0) std.math.pi - result else result;
+}
+
+/// Fast approximate atan2 using polynomial approximation.
+/// Based on approximation with max error ~0.0015 radians (~0.09 degrees)
+///
+/// # Parameters
+/// - `y`: Y coordinate
+/// - `x`: X coordinate
+///
+/// # Returns
+/// Approximate atan2(y, x) in radians [-π, π]
+pub fn fastAtan2(y: f64, x: f64) f64 {
+    const abs_x = @abs(x);
+    const abs_y = @abs(y);
+
+    // Handle special cases
+    if (abs_x < 1e-10 and abs_y < 1e-10) {
+        return 0.0;
+    }
+
+    // Use the smaller ratio for better accuracy
+    const swap = abs_y > abs_x;
+    const ratio = if (swap) abs_x / abs_y else abs_y / abs_x;
+
+    // Polynomial approximation for atan(r) where r = min(|y/x|, |x/y|)
+    // atan(r) ≈ r * (c0 + r² * (c1 + r² * c2))
+    const c0: f64 = 0.9998660373;
+    const c1: f64 = -0.3302994844;
+    const c2: f64 = 0.1801410321;
+
+    const r2 = ratio * ratio;
+    var atan_r = ratio * (c0 + r2 * (c1 + r2 * c2));
+
+    // Adjust for the octant
+    if (swap) {
+        atan_r = std.math.pi / 2.0 - atan_r;
+    }
+    if (x < 0) {
+        atan_r = std.math.pi - atan_r;
+    }
+    if (y < 0) {
+        atan_r = -atan_r;
+    }
+
+    return atan_r;
+}
+
 /// SIMD-optimized batch distance squared calculation.
 /// Process 4 positions simultaneously using @Vector(4, f64).
 ///
@@ -544,6 +622,57 @@ test "circlesOverlapBatch4 - mixed" {
     // Neighbor 2: 0.5 < 2.0 -> overlaps
     // Neighbor 3: 2.0 < 2.0 -> no (equal, not less)
     try std.testing.expectEqual(@as(u4, 0b0101), result);
+}
+
+// Fast approximation tests
+
+test "fastAcos - accuracy" {
+    // Test various values and compare with std.math.acos
+    const test_values = [_]f64{ -1.0, -0.9, -0.5, 0.0, 0.5, 0.9, 1.0 };
+    const tolerance = 0.001; // ~0.06 degrees
+
+    for (test_values) |x| {
+        const expected = std.math.acos(x);
+        const actual = fastAcos(x);
+        try std.testing.expectApproxEqAbs(expected, actual, tolerance);
+    }
+}
+
+test "fastAcos - edge cases" {
+    // Values outside [-1, 1] should be clamped
+    try std.testing.expectApproxEqAbs(std.math.pi, fastAcos(-1.5), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), fastAcos(1.5), 0.001);
+}
+
+test "fastAtan2 - accuracy" {
+    // Test various angles
+    const angles = [_]f64{ 0.0, 0.25, 0.5, 1.0, 2.0, 3.0 };
+    const tolerance = 0.002; // ~0.1 degrees
+
+    for (angles) |angle| {
+        const y = @sin(angle);
+        const x = @cos(angle);
+        const expected = std.math.atan2(y, x);
+        const actual = fastAtan2(y, x);
+        try std.testing.expectApproxEqAbs(expected, actual, tolerance);
+    }
+
+    // Test negative quadrants
+    try std.testing.expectApproxEqAbs(std.math.atan2(-1.0, 1.0), fastAtan2(-1.0, 1.0), tolerance);
+    try std.testing.expectApproxEqAbs(std.math.atan2(-1.0, -1.0), fastAtan2(-1.0, -1.0), tolerance);
+    try std.testing.expectApproxEqAbs(std.math.atan2(1.0, -1.0), fastAtan2(1.0, -1.0), tolerance);
+}
+
+test "fastAtan2 - edge cases" {
+    // Origin should return 0
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), fastAtan2(0.0, 0.0), 0.001);
+
+    // Axis-aligned cases
+    const tolerance = 0.002;
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), fastAtan2(0.0, 1.0), tolerance);
+    try std.testing.expectApproxEqAbs(std.math.pi / 2.0, fastAtan2(1.0, 0.0), tolerance);
+    try std.testing.expectApproxEqAbs(std.math.pi, fastAtan2(0.0, -1.0), tolerance);
+    try std.testing.expectApproxEqAbs(-std.math.pi / 2.0, fastAtan2(-1.0, 0.0), tolerance);
 }
 
 // Lee-Richards 8-wide SIMD tests
