@@ -242,8 +242,11 @@ def run_freesasa_c_benchmark(
 
     # Run and time
     start = time.perf_counter()
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     elapsed = time.perf_counter() - start
+
+    if result.returncode != 0:
+        raise RuntimeError(f"FreeSASA C failed: {result.stderr}")
 
     # Parse total area from output
     total_area = 0.0
@@ -263,12 +266,20 @@ def download_cif_if_needed(pdb_id: str, cif_dir: Path) -> Path:
     if cif_path.exists():
         return cif_path
 
+    import urllib.error
     import urllib.request
 
     url = f"https://files.rcsb.org/download/{pdb_id.upper()}.cif"
     print(f"  Downloading {pdb_id}.cif...")
     cif_dir.mkdir(parents=True, exist_ok=True)
-    urllib.request.urlretrieve(url, cif_path)
+
+    try:
+        urllib.request.urlretrieve(url, cif_path)
+    except (urllib.error.URLError, urllib.error.HTTPError) as e:
+        # Clean up partial download
+        cif_path.unlink(missing_ok=True)
+        raise FileNotFoundError(f"Failed to download {pdb_id}.cif: {e}") from e
+
     return cif_path
 
 
