@@ -47,7 +47,7 @@ def run_zig_sasa(
     n_points: int = 100,
     n_slices: int = 20,
     classifier: str | None = None,
-) -> tuple[float, float]:
+) -> tuple[float, float | None]:
     """Run Zig SASA implementation and return (total_area, time_ms)."""
     zig_binary = Path(__file__).parent.parent / "zig-out" / "bin" / "freesasa_zig"
 
@@ -169,13 +169,9 @@ def main() -> int:
 
     print("=" * 70)
     clf_str = classifier if classifier else "none (element-based)"
-    print(
-        f"SASA Validation (algorithm={algorithm}, classifier={clf_str}, tolerance={tolerance}%)"
-    )
+    print(f"SASA Validation (algorithm={algorithm}, classifier={clf_str}, tolerance={tolerance}%)")
     print("=" * 70)
-    print(
-        f"{'PDB':<8} {'Atoms':>8} {'FreeSASA':>12} {'Zig':>12} {'Diff%':>8} {'Status':<8}"
-    )
+    print(f"{'PDB':<8} {'Atoms':>8} {'FreeSASA':>12} {'Zig':>12} {'Diff%':>8} {'Status':<8}")
     print("-" * 70)
 
     results = []
