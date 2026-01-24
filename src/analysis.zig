@@ -73,10 +73,15 @@ pub const ResidueSasa = struct {
     /// Relative Solvent Accessibility (0.0-1.0+), null if MaxSASA unknown
     rsa: ?f64 = null,
 
-    /// Calculate RSA from SASA and residue name
+    /// Calculate RSA from SASA and residue name.
+    /// RSA values > 1.0 are possible for exposed terminal residues.
     pub fn calculateRsa(self: *ResidueSasa) void {
         if (MaxSASA.get(self.residue_name)) |max_sasa| {
-            self.rsa = self.sasa / max_sasa;
+            if (max_sasa > 0) {
+                self.rsa = self.sasa / max_sasa;
+            } else {
+                self.rsa = null;
+            }
         } else {
             self.rsa = null;
         }
@@ -373,4 +378,18 @@ test "ResidueSasa calculateRsa" {
     };
     res_unk.calculateRsa();
     try std.testing.expect(res_unk.rsa == null);
+
+    // RSA > 1.0 is possible for exposed terminal residues
+    var res_gly = ResidueSasa{
+        .chain_id = "A",
+        .residue_name = "GLY",
+        .residue_num = 1,
+        .insertion_code = "",
+        .sasa = 150.0, // Exceeds MaxSASA of 104.0
+        .atom_count = 4,
+    };
+    res_gly.calculateRsa();
+    try std.testing.expect(res_gly.rsa != null);
+    try std.testing.expect(res_gly.rsa.? > 1.0);
+    try std.testing.expectApproxEqRel(150.0 / 104.0, res_gly.rsa.?, 0.001);
 }
