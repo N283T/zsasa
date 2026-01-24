@@ -584,19 +584,19 @@ pub fn main() !void {
                 .n_slices = parsed.n_slices,
                 .probe_radius = parsed.probe_radius,
             };
-            if (parsed.n_threads > 1) {
-                // Parallel Lee-Richards
-                break :blk lee_richards.calculateSasaParallel(allocator, input, lr_config, parsed.n_threads) catch |err| {
+            // FIX: Previously used `if (n_threads > 1)` which made n_threads=0 (auto-detect)
+            // fall through to single-threaded mode. Now consistent with SR: use parallel
+            // unless explicitly single-threaded (n_threads=1).
+            break :blk if (parsed.n_threads == 1)
+                lee_richards.calculateSasa(allocator, input, lr_config) catch |err| {
+                    std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                    std.process.exit(1);
+                }
+            else
+                lee_richards.calculateSasaParallel(allocator, input, lr_config, parsed.n_threads) catch |err| {
                     std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                     std.process.exit(1);
                 };
-            } else {
-                // Single-threaded Lee-Richards
-                break :blk lee_richards.calculateSasa(allocator, input, lr_config) catch |err| {
-                    std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
-                    std.process.exit(1);
-                };
-            }
         },
     };
     defer result.deinit();

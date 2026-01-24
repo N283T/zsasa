@@ -246,6 +246,39 @@ Zig（ReleaseFast）とFreeSASA Pythonの比較、SASA計算時間のみ:
 2. **SIMD**: `@Vector(4, f64)`によるバッチ計算
 3. **マルチスレッド**: Work-stealingスレッドプールによる並列原子処理
 
+## Pythonバインディング
+
+NumPy配列を使ってPythonからfreesasa-zigを利用可能:
+
+```python
+import numpy as np
+from freesasa_zig import calculate_sasa
+
+# 原子座標 (N, 3) と半径 (N,)
+coords = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+radii = np.array([1.5, 1.5])
+
+# SASA計算
+result = calculate_sasa(coords, radii)
+print(f"総SASA: {result.total_area:.2f} Å²")
+
+# Lee-Richardsアルゴリズムを使用
+result_lr = calculate_sasa(coords, radii, algorithm="lr")
+```
+
+### インストール
+
+```bash
+# 共有ライブラリをビルド
+zig build -Doptimize=ReleaseFast
+
+# Pythonパッケージをインストール
+cd python
+pip install -e .
+```
+
+詳細なAPIドキュメントは[python/README.md](python/README.md)を参照。
+
 ## 原子分類器
 
 分類器モジュールは残基名と原子名に基づいてvan der Waals半径と極性クラスを割り当てます。3種類の組み込み分類器と、カスタム設定ファイルに対応。
@@ -341,6 +374,11 @@ freesasa-zig/
 │   ├── 1A0Q.cif.gz        # 元構造ファイル（PDB 1A0Q）
 │   ├── input_1a0q.json    # 入力例（cifから変換）
 │   └── 1A0Q_sasa.json     # FreeSASAによる参照SASA
+├── python/
+│   ├── freesasa_zig/      # Pythonバインディング
+│   │   ├── __init__.py    # パッケージエクスポート
+│   │   └── core.py        # ctypesバインディング
+│   └── tests/             # Pythonテスト
 ├── docs/
 │   ├── architecture.md    # アーキテクチャ詳解
 │   ├── algorithm.md       # アルゴリズム詳解
@@ -367,6 +405,7 @@ freesasa-zig/
   - [x] カスタム設定ファイルパーサー（FreeSASA形式）
   - [x] CLI統合（`--classifier`, `--config`）
 - [x] Phase 11: Lee-Richardsアルゴリズム（マルチスレッド・SIMD対応）
+- [x] Phase 13: Pythonバインディング（C API経由のNumPy統合）
 - [ ] Phase 10: mmCIF直接入力対応
 
 ## ライセンス
