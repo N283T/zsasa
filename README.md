@@ -14,7 +14,8 @@ SASA (Solvent Accessible Surface Area) measures the surface area of a biomolecul
 ## Features
 
 - **Two SASA algorithms**: Shrake-Rupley (fast) and Lee-Richards (precise)
-- **Atom radius classifier**: NACCESS-compatible radius assignment (library only)
+- **Atom radius classifier**: NACCESS/ProtOr/OONS classifiers with CLI and library support
+- **Custom config files**: FreeSASA-compatible configuration format
 - JSON input/output format with multiple output options
 - Configurable parameters (test points, slices, probe radius)
 - Input validation with detailed error messages
@@ -75,6 +76,12 @@ freesasa_zig [OPTIONS] <input.json> [output.json]
 
 # Quiet mode
 ./zig-out/bin/freesasa_zig --quiet input.json output.json
+
+# Use NACCESS classifier for automatic radius assignment
+./zig-out/bin/freesasa_zig --classifier=naccess input.json output.json
+
+# Use custom config file
+./zig-out/bin/freesasa_zig --config=custom.config input.json output.json
 ```
 
 ### Options
@@ -82,6 +89,8 @@ freesasa_zig [OPTIONS] <input.json> [output.json]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--algorithm=ALGO` | Algorithm: `sr` (Shrake-Rupley), `lr` (Lee-Richards) | sr |
+| `--classifier=TYPE` | Built-in classifier: `naccess`, `protor`, `oons` | - |
+| `--config=FILE` | Custom classifier config file (FreeSASA format) | - |
 | `--threads=N` | Number of threads | auto-detect |
 | `--probe-radius=R` | Probe radius in Angstroms (0 < R ≤ 10) | 1.4 |
 | `--n-points=N` | Test points per atom (SR only, 1-10000) | 100 |
@@ -105,7 +114,7 @@ JSON file with atom coordinates and van der Waals radii:
 }
 ```
 
-**Extended format** (for future classifier support):
+**Extended format** (for classifier support):
 
 ```json
 {
@@ -114,11 +123,14 @@ JSON file with atom coordinates and van der Waals radii:
   "z": [1.0, 2.0, 3.0],
   "r": [1.7, 1.55, 1.52],
   "residue": ["ALA", "ALA", "ALA"],
-  "atom_name": ["CA", "CB", "C"]
+  "atom_name": ["CA", "CB", "C"],
+  "element": [6, 6, 6]
 }
 ```
 
-The `residue` and `atom_name` fields are optional. When provided, they enable automatic radius assignment via classifiers (planned for Phase 9).
+The `residue`, `atom_name`, and `element` fields are optional:
+- **`residue` + `atom_name`**: Required for `--classifier` or `--config` options
+- **`element`**: Atomic numbers (6=C, 7=N, 8=O, etc.) for unambiguous element identification
 
 **Validation rules:**
 - All arrays must have the same length
@@ -230,9 +242,9 @@ Benchmark on PDB 1A0Q (3,183 atoms), ReleaseFast build:
 2. **SIMD**: Process 4 calculations in parallel using `@Vector(4, f64)`
 3. **Multi-threading**: Parallel atom processing with work-stealing thread pool
 
-## Atom Classifier (Library)
+## Atom Classifier
 
-The classifier module assigns van der Waals radii and polarity classes to atoms based on residue and atom names. Three built-in classifiers are available; CLI integration is planned.
+The classifier module assigns van der Waals radii and polarity classes to atoms based on residue and atom names. Three built-in classifiers are available, plus support for custom config files.
 
 ### Available Classifiers
 
@@ -242,7 +254,24 @@ The classifier module assigns van der Waals radii and polarity classes to atoms 
 | **ProtOr** | Hybridization-based (Tsai et al. 1999) | 1.88 Å | No |
 | **OONS** | Older FreeSASA default | 2.00 Å | Yes |
 
-### Usage
+### CLI Usage
+
+```bash
+# Use built-in classifier (requires residue/atom_name in input JSON)
+./zig-out/bin/freesasa_zig --classifier=naccess input.json output.json
+./zig-out/bin/freesasa_zig --classifier=protor input.json output.json
+./zig-out/bin/freesasa_zig --classifier=oons input.json output.json
+
+# Use custom config file (FreeSASA format)
+./zig-out/bin/freesasa_zig --config=my_radii.config input.json output.json
+```
+
+When a classifier is specified:
+1. The `residue` and `atom_name` fields in the input JSON are used to look up radii
+2. If lookup fails, falls back to element-based guessing
+3. If `--config` and `--classifier` are both specified, `--config` takes precedence
+
+### Library Usage
 
 ```zig
 const classifier = @import("classifier.zig");
@@ -285,6 +314,7 @@ freesasa-zig/
 │   ├── classifier_naccess.zig # NACCESS built-in classifier
 │   ├── classifier_protor.zig  # ProtOr built-in classifier
 │   ├── classifier_oons.zig    # OONS built-in classifier
+│   ├── classifier_parser.zig  # FreeSASA config file parser
 │   ├── test_points.zig       # Golden Section Spiral generation
 │   ├── neighbor_list.zig     # Spatial neighbor list (O(N) lookup)
 │   ├── simd.zig              # SIMD batch operations
@@ -318,10 +348,11 @@ freesasa-zig/
 - [x] Phase 5: Production features (CLI, output formats, validation)
 - [x] Phase 6: CI/CD pipeline
 - [x] Phase 11: Lee-Richards algorithm (with multi-threading & SIMD)
-- [ ] Phase 9: Radius classifier (auto-detect atom radii)
+- [x] Phase 9: Radius classifier (auto-detect atom radii)
   - [x] Core data structures and element-based guessing
-  - [x] NACCESS built-in classifier
-  - [ ] ProtOr/OONS classifiers, config parser, CLI integration
+  - [x] NACCESS/ProtOr/OONS built-in classifiers
+  - [x] Custom config file parser (FreeSASA format)
+  - [x] CLI integration (`--classifier`, `--config`)
 - [ ] Phase 10: Direct mmCIF input support
 
 ## License

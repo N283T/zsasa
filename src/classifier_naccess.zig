@@ -538,3 +538,104 @@ test "NACCESS getProperties" {
     const unknown = getProperties("XXX", "ZZZ");
     try std.testing.expectEqual(@as(?AtomProperties, null), unknown);
 }
+
+// =============================================================================
+// Comprehensive Amino Acid Coverage Tests
+// =============================================================================
+
+test "NACCESS all 20 standard amino acids have backbone radii" {
+    const residues = [_][]const u8{
+        "ALA", "ARG", "ASN", "ASP", "CYS",
+        "GLN", "GLU", "GLY", "HIS", "ILE",
+        "LEU", "LYS", "MET", "PHE", "PRO",
+        "SER", "THR", "TRP", "TYR", "VAL",
+    };
+    const backbone_atoms = [_][]const u8{ "N", "CA", "C", "O" };
+
+    for (residues) |res| {
+        for (backbone_atoms) |atom| {
+            const radius = getRadius(res, atom);
+            try std.testing.expect(radius != null);
+            // Backbone radii should be consistent
+            if (std.mem.eql(u8, atom, "N")) {
+                try std.testing.expectEqual(@as(f64, 1.65), radius.?);
+            } else if (std.mem.eql(u8, atom, "CA")) {
+                try std.testing.expectEqual(@as(f64, 1.87), radius.?);
+            } else if (std.mem.eql(u8, atom, "C")) {
+                try std.testing.expectEqual(@as(f64, 1.76), radius.?);
+            } else if (std.mem.eql(u8, atom, "O")) {
+                try std.testing.expectEqual(@as(f64, 1.40), radius.?);
+            }
+        }
+    }
+}
+
+test "NACCESS all amino acids with CB have CB radius" {
+    // All except GLY have CB
+    const residues_with_cb = [_][]const u8{
+        "ALA", "ARG", "ASN", "ASP", "CYS",
+        "GLN", "GLU", "HIS", "ILE",
+        "LEU", "LYS", "MET", "PHE", "PRO",
+        "SER", "THR", "TRP", "TYR", "VAL",
+    };
+
+    for (residues_with_cb) |res| {
+        const radius = getRadius(res, "CB");
+        try std.testing.expect(radius != null);
+        try std.testing.expectEqual(@as(f64, 1.87), radius.?);
+    }
+
+    // GLY has no CB - should fall back to ANY CB
+    const gly_cb = getRadius("GLY", "CB");
+    try std.testing.expectEqual(@as(?f64, 1.87), gly_cb); // ANY fallback
+}
+
+test "NACCESS sulfur-containing amino acids" {
+    // CYS: SG
+    try std.testing.expectEqual(@as(?f64, 1.85), getRadius("CYS", "SG"));
+    try std.testing.expectEqual(AtomClass.apolar, getClass("CYS", "SG"));
+
+    // MET: SD
+    try std.testing.expectEqual(@as(?f64, 1.85), getRadius("MET", "SD"));
+    try std.testing.expectEqual(AtomClass.apolar, getClass("MET", "SD"));
+}
+
+test "NACCESS all charged amino acids have correct terminal atoms" {
+    // Positively charged
+    try std.testing.expectEqual(@as(?f64, 1.50), getRadius("LYS", "NZ")); // amine
+    try std.testing.expectEqual(@as(?f64, 1.65), getRadius("ARG", "NH1")); // guanidinium
+    try std.testing.expectEqual(@as(?f64, 1.65), getRadius("ARG", "NH2"));
+    try std.testing.expectEqual(@as(?f64, 1.65), getRadius("HIS", "ND1")); // imidazole
+
+    // Negatively charged
+    try std.testing.expectEqual(@as(?f64, 1.40), getRadius("ASP", "OD1"));
+    try std.testing.expectEqual(@as(?f64, 1.40), getRadius("ASP", "OD2"));
+    try std.testing.expectEqual(@as(?f64, 1.40), getRadius("GLU", "OE1"));
+    try std.testing.expectEqual(@as(?f64, 1.40), getRadius("GLU", "OE2"));
+}
+
+test "NACCESS hydroxyl-containing amino acids" {
+    // SER
+    try std.testing.expectEqual(@as(?f64, 1.40), getRadius("SER", "OG"));
+    try std.testing.expectEqual(AtomClass.polar, getClass("SER", "OG"));
+
+    // THR
+    try std.testing.expectEqual(@as(?f64, 1.40), getRadius("THR", "OG1"));
+    try std.testing.expectEqual(AtomClass.polar, getClass("THR", "OG1"));
+
+    // TYR
+    try std.testing.expectEqual(@as(?f64, 1.40), getRadius("TYR", "OH"));
+    try std.testing.expectEqual(AtomClass.polar, getClass("TYR", "OH"));
+}
+
+test "NACCESS amide-containing amino acids" {
+    // ASN
+    try std.testing.expectEqual(@as(?f64, 1.40), getRadius("ASN", "OD1"));
+    try std.testing.expectEqual(@as(?f64, 1.65), getRadius("ASN", "ND2"));
+    try std.testing.expectEqual(AtomClass.polar, getClass("ASN", "ND2"));
+
+    // GLN
+    try std.testing.expectEqual(@as(?f64, 1.40), getRadius("GLN", "OE1"));
+    try std.testing.expectEqual(@as(?f64, 1.65), getRadius("GLN", "NE2"));
+    try std.testing.expectEqual(AtomClass.polar, getClass("GLN", "NE2"));
+}
