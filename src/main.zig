@@ -1,5 +1,6 @@
 const std = @import("std");
 const build_options = @import("build_options");
+const analysis = @import("analysis.zig");
 const json_parser = @import("json_parser.zig");
 const json_writer = @import("json_writer.zig");
 const mmcif_parser = @import("mmcif_parser.zig");
@@ -40,6 +41,7 @@ const Args = struct {
     chain_filter: ?[]const u8 = null, // Chain filter (e.g., "A" or "A,B,C")
     model_num: ?u32 = null, // Model number for NMR structures
     use_auth_chain: bool = false, // Use auth_asym_id instead of label_asym_id
+    per_residue: bool = false, // Show per-residue SASA
     quiet: bool = false,
     validate_only: bool = false,
     show_timing: bool = false, // Show timing breakdown for benchmarking
@@ -333,6 +335,10 @@ fn parseArgs(args: []const []const u8) Args {
         else if (std.mem.eql(u8, arg, "--auth-chain")) {
             result.use_auth_chain = true;
         }
+        // --per-residue (show per-residue SASA)
+        else if (std.mem.eql(u8, arg, "--per-residue")) {
+            result.per_residue = true;
+        }
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
@@ -392,6 +398,7 @@ fn printHelp(program_name: []const u8) void {
         \\                       Default: label_asym_id (mmCIF standard)
         \\    --auth-chain       Use auth_asym_id instead of label_asym_id
         \\    --model=N          Model number for NMR structures (default: all)
+        \\    --per-residue      Show per-residue SASA aggregation
         \\    --threads=N        Number of threads (default: auto-detect)
         \\                       Use --threads=1 for single-threaded mode
         \\    --probe-radius=R   Probe radius in Angstroms (default: 1.4)
@@ -780,6 +787,16 @@ pub fn main() !void {
         // Print per-chain results if chain info is available
         if (input.chain_id) |chain_ids| {
             printPerChainResults(chain_ids, result.atom_areas);
+        }
+
+        // Print per-residue results if requested
+        if (parsed.per_residue and input.hasResidueInfo()) {
+            var residue_result = analysis.aggregateByResidue(allocator, input, result.atom_areas) catch |err| {
+                std.debug.print("Error calculating per-residue SASA: {s}\n", .{@errorName(err)});
+                std.process.exit(1);
+            };
+            defer residue_result.deinit();
+            analysis.printResidueResults(residue_result.residues);
         }
 
         std.debug.print("Output written to {s}\n", .{parsed.output_path});

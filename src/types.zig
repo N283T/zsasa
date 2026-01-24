@@ -59,6 +59,10 @@ pub const AtomInput = struct {
     element: ?[]const u8 = null,
     /// Chain IDs (e.g., "A", "B") - optional, for per-chain analysis
     chain_id: ?[]const []const u8 = null,
+    /// Residue sequence numbers - optional, for per-residue analysis
+    residue_num: ?[]const i32 = null,
+    /// Insertion codes (e.g., "", "A", "B") - optional, for per-residue analysis
+    insertion_code: ?[]const []const u8 = null,
     allocator: std.mem.Allocator,
 
     /// Get number of atoms
@@ -74,6 +78,12 @@ pub const AtomInput = struct {
     /// Check if element info is available
     pub fn hasElementInfo(self: AtomInput) bool {
         return self.element != null;
+    }
+
+    /// Check if per-residue analysis info is available
+    pub fn hasResidueInfo(self: AtomInput) bool {
+        return self.residue != null and self.residue_num != null and
+            self.chain_id != null and self.insertion_code != null;
     }
 
     /// Free allocated memory
@@ -102,6 +112,15 @@ pub const AtomInput = struct {
                 self.allocator.free(s);
             }
             self.allocator.free(chains);
+        }
+        if (self.residue_num) |nums| {
+            self.allocator.free(nums);
+        }
+        if (self.insertion_code) |codes| {
+            for (codes) |s| {
+                self.allocator.free(s);
+            }
+            self.allocator.free(codes);
         }
     }
 };
