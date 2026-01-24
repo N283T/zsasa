@@ -364,7 +364,7 @@ def run_benchmarks(
             # Zig Python bindings benchmark
             if not ZIG_PYTHON_AVAILABLE:
                 print(f"  Zig Py  {algo.upper():2s}: SKIPPED (bindings not available)")
-            elif ZIG_PYTHON_AVAILABLE:
+            else:
                 zig_py_times = []
                 zig_py_area = 0.0
                 for _ in range(n_runs):
