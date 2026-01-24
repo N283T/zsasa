@@ -42,6 +42,7 @@ const Args = struct {
     model_num: ?u32 = null, // Model number for NMR structures
     use_auth_chain: bool = false, // Use auth_asym_id instead of label_asym_id
     per_residue: bool = false, // Show per-residue SASA
+    rsa: bool = false, // Show RSA (Relative Solvent Accessibility)
     quiet: bool = false,
     validate_only: bool = false,
     show_timing: bool = false, // Show timing breakdown for benchmarking
@@ -339,6 +340,11 @@ fn parseArgs(args: []const []const u8) Args {
         else if (std.mem.eql(u8, arg, "--per-residue")) {
             result.per_residue = true;
         }
+        // --rsa (show RSA - Relative Solvent Accessibility)
+        else if (std.mem.eql(u8, arg, "--rsa")) {
+            result.rsa = true;
+            result.per_residue = true; // RSA implies per-residue
+        }
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
@@ -399,6 +405,7 @@ fn printHelp(program_name: []const u8) void {
         \\    --auth-chain       Use auth_asym_id instead of label_asym_id
         \\    --model=N          Model number for NMR structures (default: all)
         \\    --per-residue      Show per-residue SASA aggregation
+        \\    --rsa              Show RSA (Relative Solvent Accessibility)
         \\    --threads=N        Number of threads (default: auto-detect)
         \\                       Use --threads=1 for single-threaded mode
         \\    --probe-radius=R   Probe radius in Angstroms (default: 1.4)
@@ -796,7 +803,11 @@ pub fn main() !void {
                 std.process.exit(1);
             };
             defer residue_result.deinit();
-            analysis.printResidueResults(residue_result.residues);
+            if (parsed.rsa) {
+                analysis.printResidueResultsWithRsa(residue_result.residues);
+            } else {
+                analysis.printResidueResults(residue_result.residues);
+            }
         }
 
         std.debug.print("Output written to {s}\n", .{parsed.output_path});
