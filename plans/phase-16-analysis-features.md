@@ -58,22 +58,10 @@ Residue SASA = Σ(atom SASA for atoms in residue)
 | Polar | N, O (except charged) |
 | Charged | Nζ(Lys), Oδ(Asp), etc. |
 
-### Phase 16.4: Interface SASA
+### Phase 16.4: Interface SASA - REMOVED
 
-- [ ] 複合体界面面積計算
-- [ ] Buried Surface Area (BSA)
-- [ ] チェーンペア指定
-
-**計算式:**
-```
-Interface = (SASA_A + SASA_B - SASA_AB) / 2
-BSA = SASA_isolated - SASA_complex
-```
-
-**CLI例:**
-```bash
-freesasa-zig complex.cif --interface=A:B
-```
+~~削除済み~~ - 計算式の定義が曖昧（ChimeraXは/2、FreeSASAは未実装）のため、
+ユーザーが`--chain`オプションで個別計算する方式を推奨。
 
 ## Files
 
@@ -87,7 +75,6 @@ freesasa-zig complex.cif --interface=A:B
 
 - [ ] RSA計算が参照実装と一致
 - [ ] 残基別SASAが原子SASAの合計と一致
-- [ ] Interface SASAが既存ツールと一致
 
 ---
 - [ ] **DONE** - Phase 16 complete

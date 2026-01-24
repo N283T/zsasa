@@ -32,7 +32,6 @@ const Args = struct {
     per_residue: bool = false,           // 残基単位出力
     rsa: bool = false,                   // RSA計算
     polar: bool = false,                 // 極性/非極性
-    interface: bool = false,             // 界面SASA
 
     // 出力オプション
     output_format: OutputFormat = .json,
@@ -127,7 +126,6 @@ fn printHelp() void {
         \\  --per-residue      Output per-residue SASA
         \\  --rsa              Calculate RSA (implies --per-residue)
         \\  --polar            Show polar/nonpolar summary
-        \\  --interface        Calculate interface SASA
         \\
         \\Output:
         \\  --format=FORMAT    json, compact, or csv (default: json)
@@ -384,20 +382,6 @@ Polar/Nonpolar Summary:
   Polar:     2,345.67 Å² (45.2%)
   Nonpolar:  2,845.23 Å² (54.8%)
   Total:     5,190.90 Å²
-```
-
-### 界面SASA（--interface）
-
-複合体界面 = Σ(個別チェーンSASA) - 複合体SASA
-
-**出力例:**
-```
-Interface SASA Analysis:
-Chain  Isolated(Å²)  Complex(Å²)  Buried(Å²)
-    A      4,234.56      3,890.12      344.44
-    B      4,567.89      4,123.45      444.44
-
-Total buried at interface: 788.88 Å²
 ```
 
 ---
