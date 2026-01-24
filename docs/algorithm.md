@@ -21,12 +21,14 @@
 
 **凡例:** N=原子数, P=ポイント数, S=スライス数, K=平均近傍数
 
-### パフォーマンス比較（1A0Q, 3183原子, ReleaseFast）
+### パフォーマンス比較（1A0Q, 3183原子, 4スレッド, ReleaseFast）
 
-| アルゴリズム | 1スレッド | 4スレッド |
-|-------------|-----------|-----------|
-| Shrake-Rupley (100点) | 17ms | 13ms |
-| Lee-Richards (20スライス) | 53ms | 26ms |
+| アルゴリズム | Zig | FreeSASA C | 高速化 |
+|-------------|-----|------------|--------|
+| Shrake-Rupley (100点) | 2.6ms | 4.4ms | 1.7x |
+| Lee-Richards (20スライス) | 9.9ms | 16.1ms | 1.6x |
+
+詳細な最適化手法については [docs/optimizations.md](optimizations.md) を参照。
 
 ### どちらを選ぶべきか
 
@@ -169,19 +171,21 @@ fn isPointBuried(
     atoms: types.AtomInput,
     probe_radius: f64,
 ) bool {
-    // 4原子ずつSIMD処理
     var i: usize = 0;
+
+    // 8原子ずつSIMD処理（8-wide SIMD）
+    while (i + 8 <= neighbors.len) : (i += 8) {
+        const indices = neighbors[i..][0..8];
+        if (simd.isAnyWithinRadiusBatch8(point, atoms, indices, probe_radius)) {
+            return true;
+        }
+    }
+
+    // 4原子ずつSIMD処理（残り用）
     while (i + 4 <= neighbors.len) : (i += 4) {
         const indices = neighbors[i..][0..4];
-
-        // SIMD距離計算
-        if (simd.isAnyWithinRadius(
-            point,
-            atoms,
-            indices,
-            probe_radius
-        )) {
-            return true;  // 埋没している
+        if (simd.isAnyWithinRadius(point, atoms, indices, probe_radius)) {
+            return true;
         }
     }
 
@@ -197,11 +201,11 @@ fn isPointBuried(
 
         const diff = point.sub(neighbor_center);
         if (diff.lengthSquared() < neighbor_radius * neighbor_radius) {
-            return true;  // 埋没している
+            return true;
         }
     }
 
-    return false;  // 露出している
+    return false;
 }
 ```
 
@@ -385,18 +389,28 @@ pub const LeeRichardsConfig = struct {
 
 ### SIMD最適化
 
-Lee-Richardsでも4近傍ずつのSIMD処理を行う：
+Lee-Richardsでも8近傍ずつのSIMD処理を行う：
 
 ```zig
-// SIMD: スライス半径とxy距離を計算
-const rj_primes = simd.sliceRadiiBatch4(slice_z, batch_z, batch_r);
-const dij_batch = simd.xyDistanceBatch4(xi, yi, batch_x, batch_y);
+// 8-wide SIMD: スライス半径とxy距離を計算
+const rj_primes = simd.sliceRadiiBatch8(slice_z, batch_z, batch_r);
+const dij_batch = simd.xyDistanceBatch8(xi, yi, batch_x, batch_y);
 
-// SIMD: 円の重なりをチェック
-const overlap_mask = simd.circlesOverlapBatch4(dij_batch, Ri_prime, rj_primes);
+// 8-wide SIMD: 円の重なりをチェック
+const overlap_mask = simd.circlesOverlapBatch8(dij_batch, Ri_prime, rj_primes);
 ```
 
-**注意:** `atan2`/`acos`の計算は超越関数のためスカラー処理のまま。
+### 高速三角関数
+
+円弧角度計算では、標準ライブラリの`acos`/`atan2`の代わりに多項式近似を使用：
+
+```zig
+// 高速近似（最大誤差: acos ~0.02°, atan2 ~0.09°）
+const alpha = simd.fastAcos(cos_alpha);
+const beta = simd.fastAtan2(dy, dx) + std.math.pi;
+```
+
+これにより約27%の高速化を達成。精度は0.3%以内で実用上問題なし。
 
 ### 円弧のマージ
 
