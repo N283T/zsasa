@@ -167,9 +167,9 @@ zig build -Doptimize=ReleaseFast
 # Pythonテスト
 cd python
 uv pip install -e ".[dev]"
-uv run --with pytest pytest tests/ -v
-uv run --with ruff ruff check freesasa_zig/
-uv run --with ruff ruff format --check freesasa_zig/
+pytest tests/ -v
+ruff check freesasa_zig/
+ruff format --check freesasa_zig/
 ```
 
 ## CI失敗時の対処
@@ -179,9 +179,11 @@ uv run --with ruff ruff format --check freesasa_zig/
 ```bash
 # ローカルでフォーマット実行
 zig fmt src/
-git add -u && git commit --amend
-git push -f
+git add -u && git commit -m "style: Format code"
+git push
 ```
+
+**注意:** `--amend` + `git push -f` はプッシュ済みコミットを書き換えるため、共有ブランチでは使用しないでください。
 
 ### Build failed
 
@@ -220,10 +222,10 @@ git push -f
 
 ```bash
 cd python
-uv run --with ruff ruff check freesasa_zig/ --fix
-uv run --with ruff ruff format freesasa_zig/
-git add -u && git commit --amend
-git push -f
+ruff check freesasa_zig/ --fix
+ruff format freesasa_zig/
+git add -u && git commit -m "style: Fix Python lint issues"
+git push
 ```
 
 ### Timeout
