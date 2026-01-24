@@ -1,9 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = [
-#     "pydantic>=2.0",
-# ]
+# dependencies = []
 # ///
 """Validate Zig SASA implementation against FreeSASA reference values.
 
@@ -129,7 +127,10 @@ def validate_structure(
         print(f"  {pdb_id}: ERROR - {e}")
         return None
 
-    diff_percent = abs(zig_sasa - reference_sasa) / reference_sasa * 100
+    if reference_sasa == 0:
+        diff_percent = 0.0 if zig_sasa == 0 else float("inf")
+    else:
+        diff_percent = abs(zig_sasa - reference_sasa) / reference_sasa * 100
     passed = diff_percent <= tolerance
 
     return ValidationResult(
