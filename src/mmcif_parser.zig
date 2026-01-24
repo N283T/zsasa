@@ -58,6 +58,9 @@ const AtomSiteColumns = struct {
     auth_comp_id: ?usize = null,
     label_asym_id: ?usize = null,
     auth_asym_id: ?usize = null,
+    label_seq_id: ?usize = null,
+    auth_seq_id: ?usize = null,
+    pdbx_pdb_ins_code: ?usize = null,
     group_pdb: ?usize = null,
     label_alt_id: ?usize = null,
     pdbx_pdb_model_num: ?usize = null,
@@ -83,6 +86,16 @@ const AtomSiteColumns = struct {
             return self.auth_asym_id orelse self.label_asym_id;
         }
         return self.label_asym_id orelse self.auth_asym_id;
+    }
+
+    /// Get residue sequence number column (prefer label over auth)
+    fn getResSeqCol(self: AtomSiteColumns) ?usize {
+        return self.label_seq_id orelse self.auth_seq_id;
+    }
+
+    /// Get insertion code column
+    fn getInsCodeCol(self: AtomSiteColumns) ?usize {
+        return self.pdbx_pdb_ins_code;
     }
 };
 
@@ -194,6 +207,12 @@ pub const MmcifParser = struct {
                             columns.label_asym_id = col_index;
                         } else if (eqlIgnoreCase(field, "auth_asym_id")) {
                             columns.auth_asym_id = col_index;
+                        } else if (eqlIgnoreCase(field, "label_seq_id")) {
+                            columns.label_seq_id = col_index;
+                        } else if (eqlIgnoreCase(field, "auth_seq_id")) {
+                            columns.auth_seq_id = col_index;
+                        } else if (eqlIgnoreCase(field, "pdbx_PDB_ins_code")) {
+                            columns.pdbx_pdb_ins_code = col_index;
                         } else if (eqlIgnoreCase(field, "group_PDB")) {
                             columns.group_pdb = col_index;
                         } else if (eqlIgnoreCase(field, "label_alt_id")) {
@@ -260,6 +279,10 @@ pub const MmcifParser = struct {
         defer element_list.deinit(self.allocator);
         var chain_id_list = std.ArrayListUnmanaged([]const u8){};
         defer chain_id_list.deinit(self.allocator);
+        var residue_num_list = std.ArrayListUnmanaged(i32){};
+        defer residue_num_list.deinit(self.allocator);
+        var insertion_code_list = std.ArrayListUnmanaged([]const u8){};
+        defer insertion_code_list.deinit(self.allocator);
 
         // Buffer for current row values
         var row_values = try self.allocator.alloc([]const u8, num_cols);
@@ -347,6 +370,31 @@ pub const MmcifParser = struct {
                             } else {
                                 try chain_id_list.append(self.allocator, try self.allocator.dupe(u8, ""));
                             }
+
+                            // Get residue sequence number
+                            if (columns.getResSeqCol()) |seq_col| {
+                                const seq_str = row_values[seq_col];
+                                if (cif.isNull(seq_str)) {
+                                    try residue_num_list.append(self.allocator, 0);
+                                } else {
+                                    const seq_num = std.fmt.parseInt(i32, seq_str, 10) catch 0;
+                                    try residue_num_list.append(self.allocator, seq_num);
+                                }
+                            } else {
+                                try residue_num_list.append(self.allocator, 0);
+                            }
+
+                            // Get insertion code
+                            if (columns.getInsCodeCol()) |ins_col| {
+                                const ins_code = row_values[ins_col];
+                                if (cif.isNull(ins_code)) {
+                                    try insertion_code_list.append(self.allocator, try self.allocator.dupe(u8, ""));
+                                } else {
+                                    try insertion_code_list.append(self.allocator, try self.allocator.dupe(u8, ins_code));
+                                }
+                            } else {
+                                try insertion_code_list.append(self.allocator, try self.allocator.dupe(u8, ""));
+                            }
                         }
 
                         col = 0;
@@ -379,6 +427,8 @@ pub const MmcifParser = struct {
             .atom_name = try atom_name_list.toOwnedSlice(self.allocator),
             .element = try element_list.toOwnedSlice(self.allocator),
             .chain_id = try chain_id_list.toOwnedSlice(self.allocator),
+            .residue_num = try residue_num_list.toOwnedSlice(self.allocator),
+            .insertion_code = try insertion_code_list.toOwnedSlice(self.allocator),
             .allocator = self.allocator,
         };
     }
