@@ -165,6 +165,7 @@ def run_freesasa_python_benchmark(
     algorithm: str = "sr",
     n_points: int = 100,
     n_slices: int = 20,
+    n_threads: int = 0,
 ) -> tuple[float, float]:
     """Run FreeSASA Python benchmark. Returns (time_ms, total_area).
 
@@ -183,13 +184,14 @@ def run_freesasa_python_benchmark(
 
     # Set algorithm parameters
     if algorithm == "sr":
-        params = freesasa.Parameters(
-            {"algorithm": freesasa.ShrakeRupley, "n-points": n_points}
-        )
+        param_dict = {"algorithm": freesasa.ShrakeRupley, "n-points": n_points}
     else:
-        params = freesasa.Parameters(
-            {"algorithm": freesasa.LeeRichards, "n-slices": n_slices}
-        )
+        param_dict = {"algorithm": freesasa.LeeRichards, "n-slices": n_slices}
+
+    if n_threads > 0:
+        param_dict["n-threads"] = n_threads
+
+    params = freesasa.Parameters(param_dict)
 
     # Time only the SASA calculation
     start = time.perf_counter()
@@ -299,7 +301,9 @@ def run_benchmarks(
             fs_area = 0.0
             for _ in range(n_runs):
                 try:
-                    t, area = run_freesasa_python_benchmark(input_path, algo)
+                    t, area = run_freesasa_python_benchmark(
+                        input_path, algo, n_threads=n_threads
+                    )
                     fs_times.append(t)
                     fs_area = area
                 except Exception as e:
