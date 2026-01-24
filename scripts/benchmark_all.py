@@ -3,7 +3,6 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #     "freesasa>=2.0",
-#     "gemmi>=0.7.4",
 # ]
 # ///
 """Unified benchmark comparing Zig implementation with FreeSASA across all structures.
@@ -31,7 +30,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import freesasa
-import gemmi
 
 
 @dataclass
@@ -100,48 +98,43 @@ def run_zig_benchmark(
         output_path.unlink(missing_ok=True)
 
 
-def run_freesasa_benchmark(
-    structure_path: Path,
+def run_freesasa_python_benchmark(
+    input_path: Path,
     algorithm: str = "sr",
     n_points: int = 100,
     n_slices: int = 20,
 ) -> tuple[float, float]:
-    """Run FreeSASA benchmark. Returns (time_ms, total_area)."""
-    # Load structure
-    st = gemmi.read_structure(str(structure_path))
-    st.remove_hydrogens()
-    st.remove_alternative_conformations()
-    st.remove_ligands_and_waters()
-    st.remove_empty_chains()
+    """Run FreeSASA Python benchmark. Returns (time_ms, total_area).
 
-    # Write temporary PDB
-    with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False) as f:
-        tmp_pdb = Path(f.name)
+    Measures only the freesasa.calc() time for fair comparison.
+    """
+    # Load pre-computed ProtOr radii input
+    with open(input_path) as f:
+        data = json.load(f)
 
-    try:
-        st.write_pdb(str(tmp_pdb))
+    n_atoms = len(data["x"])
+    coords = []
+    for i in range(n_atoms):
+        coords.extend([data["x"][i], data["y"][i], data["z"][i]])
 
-        # Configure FreeSASA
-        params = freesasa.Parameters()
-        if algorithm == "sr":
-            params.setAlgorithm(freesasa.ShrakeRupley)
-            params.setNPoints(n_points)
-        else:
-            params.setAlgorithm(freesasa.LeeRichards)
-            params.setNSlices(n_slices)
+    radii = data["r"]
 
-        # Load structure
-        structure = freesasa.Structure(str(tmp_pdb))
+    # Set algorithm parameters
+    if algorithm == "sr":
+        params = freesasa.Parameters(
+            {"algorithm": freesasa.ShrakeRupley, "n-points": n_points}
+        )
+    else:
+        params = freesasa.Parameters(
+            {"algorithm": freesasa.LeeRichards, "n-slices": n_slices}
+        )
 
-        # Time the calculation
-        start = time.perf_counter()
-        result = freesasa.calc(structure, params)
-        elapsed = (time.perf_counter() - start) * 1000  # ms
+    # Time only the SASA calculation
+    start = time.perf_counter()
+    result = freesasa.calcCoord(coords, radii, params)
+    elapsed = time.perf_counter() - start
 
-        return elapsed, result.totalArea()
-
-    finally:
-        tmp_pdb.unlink(missing_ok=True)
+    return elapsed * 1000, result.totalArea()
 
 
 def run_benchmarks(
@@ -155,11 +148,11 @@ def run_benchmarks(
     algorithms = ["sr", "lr"]
 
     for pdb_id, category, description in structures:
-        input_path = base_dir / "inputs" / f"{pdb_id}.json"
-        structure_path = base_dir / "structures" / f"{pdb_id}.cif.gz"
+        # Use ProtOr-radii inputs for both Zig and FreeSASA
+        input_path = base_dir / "inputs_protor" / f"{pdb_id}.json"
 
-        if not input_path.exists() or not structure_path.exists():
-            print(f"  {pdb_id}: Skipping (files not found)")
+        if not input_path.exists():
+            print(f"  {pdb_id}: Skipping (input not found)")
             continue
 
         # Get atom count
@@ -205,12 +198,12 @@ def run_benchmarks(
                     f"  Zig {algo.upper():2s}: {avg_time:8.2f} ms{sasa_str} (area: {zig_area:.2f})"
                 )
 
-            # FreeSASA benchmark
+            # FreeSASA Python benchmark
             fs_times = []
             fs_area = 0.0
             for _ in range(n_runs):
                 try:
-                    t, area = run_freesasa_benchmark(structure_path, algo)
+                    t, area = run_freesasa_python_benchmark(input_path, algo)
                     fs_times.append(t)
                     fs_area = area
                 except Exception as e:
@@ -225,7 +218,7 @@ def run_benchmarks(
                     )
                 )
                 print(
-                    f"  FS  {algo.upper():2s}: {avg_time:8.2f} ms (area: {fs_area:.2f})"
+                    f"  FS   {algo.upper():2s}: {avg_time:8.2f} ms (area: {fs_area:.2f})"
                 )
 
     return results
