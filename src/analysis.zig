@@ -188,17 +188,12 @@ pub const ChainSasa = struct {
     atom_count: usize,
 };
 
-/// Interface SASA summary
+/// Interface SASA summary (view struct - does not own memory)
 pub const InterfaceSummary = struct {
-    chains: []ChainSasa,
+    chains: []const ChainSasa,
     total_complex_sasa: f64,
     total_isolated_sasa: f64,
     total_buried_sasa: f64,
-    allocator: std.mem.Allocator,
-
-    pub fn deinit(self: *InterfaceSummary) void {
-        self.allocator.free(self.chains);
-    }
 };
 
 /// Calculate per-chain SASA from atom areas and chain IDs.

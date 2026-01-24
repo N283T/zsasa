@@ -896,15 +896,12 @@ pub fn main() !void {
                     }
 
                     // Print interface summary
-                    var interface_summary = analysis.InterfaceSummary{
+                    const interface_summary = analysis.InterfaceSummary{
                         .chains = chain_data,
                         .total_complex_sasa = total_complex,
                         .total_isolated_sasa = total_isolated,
                         .total_buried_sasa = total_buried,
-                        .allocator = allocator,
                     };
-                    // Don't deinit - chain_data is already deferred
-                    _ = &interface_summary;
                     analysis.printInterfaceSummary(interface_summary);
                 }
             } else {
