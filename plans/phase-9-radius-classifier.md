@@ -349,21 +349,21 @@ pub fn parseConfigWithLineInfo(allocator: Allocator, content: []const u8) !Parse
 
 ---
 
-## Phase 9.7: Documentation & Testing
+## Phase 9.7: Documentation & Testing ✅
 
 **目標**: ドキュメントと検証
 
 ### Tasks
 
-- [ ] README更新（classifier使用法）
-- [ ] docs/classifier.md 作成
-- [ ] FreeSASAとの比較検証スクリプト
-- [ ] 全アミノ酸の半径検証テスト
+- [x] README更新（classifier使用法）
+- [x] docs/classifier.md 更新（CLI使用法、設定ファイル形式追加）
+- [x] FreeSASAとの比較検証スクリプト（scripts/compare_classifiers.py）
+- [x] 全アミノ酸の半径検証テスト（classifier_naccess.zig）
 
 ### Success Criteria
 
-- [ ] ドキュメントが完備
-- [ ] FreeSASAと同等の半径割り当て
+- [x] ドキュメントが完備
+- [x] FreeSASAと同等の半径割り当て
 
 ---
 
@@ -378,7 +378,7 @@ pub fn parseConfigWithLineInfo(allocator: Allocator, content: []const u8) !Parse
 | 9.4 | ProtOr & OONS | 9.3 | ✅ 完了 |
 | 9.5 | Config Parser | 9.1 | ✅ 完了 |
 | 9.6 | CLI Integration | 9.3, 9.5 | ✅ 完了 |
-| 9.7 | Docs & Testing | 9.6 | |
+| 9.7 | Docs & Testing | 9.6 | ✅ 完了 |
 
 ## Files Summary
 
@@ -397,4 +397,4 @@ pub fn parseConfigWithLineInfo(allocator: Allocator, content: []const u8) !Parse
 | `README.md` | MODIFY | 9.0, 9.7 |
 
 ---
-- [ ] **DONE** - Phase 9 complete
+- [x] **DONE** - Phase 9 complete
