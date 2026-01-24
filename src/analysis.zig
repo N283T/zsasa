@@ -157,24 +157,23 @@ pub fn calculatePolarSummary(residues: []const ResidueSasa) PolarSummary {
     return summary;
 }
 
-/// Print polar/nonpolar SASA summary
+/// Print polar/nonpolar SASA summary.
+/// Note: Percentages are calculated excluding unknown residues.
 pub fn printPolarSummary(summary: PolarSummary) void {
-    const total = summary.polar_sasa + summary.nonpolar_sasa + summary.unknown_sasa;
     std.debug.print("\nPolar/Nonpolar SASA:\n", .{});
     std.debug.print("  Polar:    {d:>10.2} Å² ({d:>5.1}%) - {d} residues\n", .{
         summary.polar_sasa,
-        if (total > 0) summary.polar_sasa / total * 100 else 0,
+        summary.polarFraction() * 100,
         summary.polar_residue_count,
     });
     std.debug.print("  Nonpolar: {d:>10.2} Å² ({d:>5.1}%) - {d} residues\n", .{
         summary.nonpolar_sasa,
-        if (total > 0) summary.nonpolar_sasa / total * 100 else 0,
+        summary.nonpolarFraction() * 100,
         summary.nonpolar_residue_count,
     });
     if (summary.unknown_sasa > 0) {
-        std.debug.print("  Unknown:  {d:>10.2} Å² ({d:>5.1}%) - {d} residues\n", .{
+        std.debug.print("  Unknown:  {d:>10.2} Å² - {d} residues (excluded from %)\n", .{
             summary.unknown_sasa,
-            summary.unknown_sasa / total * 100,
             summary.unknown_residue_count,
         });
     }
