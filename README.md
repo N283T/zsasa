@@ -220,21 +220,35 @@ Slice-based method - mathematically precise.
 
 ## Validation
 
-Tested against FreeSASA reference implementation:
+Tested against FreeSASA reference implementation using ProtOr classifier (default for FreeSASA Python):
 
-| Structure | Atoms | Reference (Å²) | Zig (Å²) | Difference |
-|-----------|-------|----------------|----------|------------|
-| 1A0Q | 3183 | 18923.28 | 19211.19 | 1.52% |
+| Structure | Atoms | FreeSASA (Å²) | Zig (Å²) | Difference |
+|-----------|------:|-------------:|--------:|----------:|
+| 1CRN | 327 | 2,407.47 | 2,407.47 | 0.000% |
+| 1UBQ | 602 | 4,803.47 | 4,803.47 | 0.000% |
+| 1A0Q | 3,183 | 18,923.28 | 18,923.28 | 0.000% |
+| 3HHB | 4,384 | 26,047.03 | 26,047.03 | 0.000% |
+| 1AON | 58,674 | 291,728.28 | 291,728.28 | 0.000% |
+| 4V6X | 237,685 | 1,141,803.28 | 1,141,803.28 | 0.000% |
+
+Run validation: `./scripts/validate_accuracy.py`
 
 ## Performance
 
-Benchmark on PDB 1A0Q (3,183 atoms), ReleaseFast build:
+Benchmark comparing Zig (ReleaseFast) vs FreeSASA Python, SASA calculation time only:
 
-| Algorithm | 1 thread | 4 threads | vs FreeSASA |
-|-----------|----------|-----------|-------------|
-| Shrake-Rupley | 17ms | 13ms | **3.9x faster** |
-| Lee-Richards | 53ms | 26ms | 2.0x faster |
-| FreeSASA (Python) | ~51ms | - | 1.0x |
+| Structure | Atoms | SR Zig (ms) | SR FS (ms) | SR Speedup | LR Zig (ms) | LR FS (ms) | LR Speedup |
+|-----------|------:|-----------:|-----------:|----------:|-----------:|-----------:|----------:|
+| 1CRN | 327 | 0.21 | 0.40 | 1.90x | 0.44 | 0.46 | 1.05x |
+| 1UBQ | 602 | 0.28 | 0.74 | 2.69x | 0.87 | 0.90 | 1.04x |
+| 1A0Q | 3,183 | 1.28 | 4.71 | 3.67x | 4.86 | 5.37 | 1.10x |
+| 3HHB | 4,384 | 2.02 | 7.20 | 3.57x | 4.64 | 7.72 | 1.66x |
+| 1AON | 58,674 | 32.82 | 140.50 | 4.28x | 92.11 | 102.23 | 1.11x |
+| 4V6X | 237,685 | 161.93 | 707.48 | 4.37x | 495.74 | 554.38 | 1.12x |
+
+**Summary**: Shrake-Rupley is **1.9x-4.4x faster** than FreeSASA. Speedup increases with structure size.
+
+Run benchmark: `./scripts/benchmark_all.py`
 
 ### Optimization Techniques
 
@@ -322,9 +336,17 @@ freesasa-zig/
 │   ├── shrake_rupley.zig     # Shrake-Rupley algorithm
 │   └── lee_richards.zig      # Lee-Richards algorithm
 ├── scripts/
-│   ├── cif_to_input_json.py   # Structure to JSON converter
-│   ├── calc_reference_sasa.py # Reference SASA calculator
-│   └── benchmark.py           # Performance benchmark
+│   ├── cif_to_input_json.py       # Structure to JSON converter
+│   ├── calc_reference_sasa.py     # Reference SASA calculator
+│   ├── benchmark.py               # Single-structure benchmark
+│   ├── benchmark_all.py           # Unified benchmark across all structures
+│   ├── validate_accuracy.py       # Validate against FreeSASA references
+│   ├── generate_benchmark_data.py # Download structures and generate references
+│   └── compare_classifiers.py     # Compare classifier radii
+├── benchmarks/
+│   ├── structures/            # Downloaded PDB structures (.cif.gz)
+│   ├── inputs/                # Generated input JSONs
+│   └── references/            # FreeSASA reference SASA values
 ├── examples/
 │   ├── 1A0Q.cif.gz        # Original structure file (PDB 1A0Q)
 │   ├── input_1a0q.json    # Example input (converted from cif)
@@ -347,12 +369,14 @@ freesasa-zig/
 - [x] Phase 4: Multi-threading
 - [x] Phase 5: Production features (CLI, output formats, validation)
 - [x] Phase 6: CI/CD pipeline
-- [x] Phase 11: Lee-Richards algorithm (with multi-threading & SIMD)
+- [x] Phase 7: Fair benchmark (timing breakdown, SASA-only measurement)
+- [x] Phase 8: Benchmark dataset (6 structures from tiny to xlarge)
 - [x] Phase 9: Radius classifier (auto-detect atom radii)
   - [x] Core data structures and element-based guessing
   - [x] NACCESS/ProtOr/OONS built-in classifiers
   - [x] Custom config file parser (FreeSASA format)
   - [x] CLI integration (`--classifier`, `--config`)
+- [x] Phase 11: Lee-Richards algorithm (with multi-threading & SIMD)
 - [ ] Phase 10: Direct mmCIF input support
 
 ## License
