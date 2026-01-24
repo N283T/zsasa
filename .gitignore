@@ -18,3 +18,10 @@ zig-out/
 # IDE
 .idea/
 .vscode/
+
+# FreeSASA C build (for benchmark)
+freesasa-c/
+
+# Downloaded CIF files for benchmark
+benchmarks/cif/
+data/*.cif
