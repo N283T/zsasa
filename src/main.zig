@@ -304,20 +304,30 @@ fn parseArgs(args: []const []const u8) Args {
         // --model=N or --model N
         else if (std.mem.startsWith(u8, arg, "--model=")) {
             const value = arg["--model=".len..];
-            result.model_num = std.fmt.parseInt(u32, value, 10) catch {
+            const model = std.fmt.parseInt(u32, value, 10) catch {
                 std.debug.print("Error: Invalid model number: {s}\n", .{value});
                 std.process.exit(1);
             };
+            if (model == 0) {
+                std.debug.print("Error: Model number must be >= 1\n", .{});
+                std.process.exit(1);
+            }
+            result.model_num = model;
         } else if (std.mem.eql(u8, arg, "--model")) {
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --model\n", .{});
                 std.process.exit(1);
             }
-            result.model_num = std.fmt.parseInt(u32, args[i], 10) catch {
+            const model = std.fmt.parseInt(u32, args[i], 10) catch {
                 std.debug.print("Error: Invalid model number: {s}\n", .{args[i]});
                 std.process.exit(1);
             };
+            if (model == 0) {
+                std.debug.print("Error: Model number must be >= 1\n", .{});
+                std.process.exit(1);
+            }
+            result.model_num = model;
         }
         // --auth-chain (use auth_asym_id instead of label_asym_id)
         else if (std.mem.eql(u8, arg, "--auth-chain")) {
@@ -575,8 +585,11 @@ fn printPerChainResults(chain_ids: []const []const u8, atom_areas: []const f64) 
             chain_areas[num_chains] = atom_areas[i];
             chain_counts[num_chains] = 1;
             num_chains += 1;
+        } else if (num_chains == max_chains) {
+            // Warn once when limit is exceeded
+            std.debug.print("Warning: More than {d} unique chains; some chains omitted from summary\n", .{max_chains});
+            num_chains += 1; // Prevent repeated warnings
         }
-        // If we exceed max_chains, just ignore additional chains
     }
 
     if (num_chains > 0) {
