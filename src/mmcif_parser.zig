@@ -56,6 +56,8 @@ const AtomSiteColumns = struct {
     auth_atom_id: ?usize = null,
     label_comp_id: ?usize = null,
     auth_comp_id: ?usize = null,
+    label_asym_id: ?usize = null,
+    auth_asym_id: ?usize = null,
     group_pdb: ?usize = null,
     label_alt_id: ?usize = null,
     pdbx_pdb_model_num: ?usize = null,
@@ -74,6 +76,14 @@ const AtomSiteColumns = struct {
     fn getResNameCol(self: AtomSiteColumns) ?usize {
         return self.label_comp_id orelse self.auth_comp_id;
     }
+
+    /// Get chain ID column (prefer label over auth by default)
+    fn getChainCol(self: AtomSiteColumns, use_auth: bool) ?usize {
+        if (use_auth) {
+            return self.auth_asym_id orelse self.label_asym_id;
+        }
+        return self.label_asym_id orelse self.auth_asym_id;
+    }
 };
 
 /// mmCIF Parser
@@ -85,6 +95,10 @@ pub const MmcifParser = struct {
     first_alt_loc_only: bool = true,
     /// Model number to extract (null = first model or all)
     model_num: ?u32 = null,
+    /// Chain IDs to include (null = all chains)
+    chain_filter: ?[]const []const u8 = null,
+    /// Use auth_asym_id instead of label_asym_id for chain
+    use_auth_chain: bool = false,
 
     pub fn init(allocator: Allocator) MmcifParser {
         return .{ .allocator = allocator };
@@ -176,6 +190,10 @@ pub const MmcifParser = struct {
                             columns.label_comp_id = col_index;
                         } else if (eqlIgnoreCase(field, "auth_comp_id")) {
                             columns.auth_comp_id = col_index;
+                        } else if (eqlIgnoreCase(field, "label_asym_id")) {
+                            columns.label_asym_id = col_index;
+                        } else if (eqlIgnoreCase(field, "auth_asym_id")) {
+                            columns.auth_asym_id = col_index;
                         } else if (eqlIgnoreCase(field, "group_PDB")) {
                             columns.group_pdb = col_index;
                         } else if (eqlIgnoreCase(field, "label_alt_id")) {
@@ -240,6 +258,8 @@ pub const MmcifParser = struct {
         defer atom_name_list.deinit(self.allocator);
         var element_list = std.ArrayListUnmanaged(u8){};
         defer element_list.deinit(self.allocator);
+        var chain_id_list = std.ArrayListUnmanaged([]const u8){};
+        defer chain_id_list.deinit(self.allocator);
 
         // Buffer for current row values
         var row_values = try self.allocator.alloc([]const u8, num_cols);
@@ -315,6 +335,18 @@ pub const MmcifParser = struct {
                             } else {
                                 try atom_name_list.append(self.allocator, try self.allocator.dupe(u8, "X"));
                             }
+
+                            // Get chain ID
+                            if (columns.getChainCol(self.use_auth_chain)) |chain_col| {
+                                const chain = row_values[chain_col];
+                                if (cif.isNull(chain)) {
+                                    try chain_id_list.append(self.allocator, try self.allocator.dupe(u8, ""));
+                                } else {
+                                    try chain_id_list.append(self.allocator, try self.allocator.dupe(u8, chain));
+                                }
+                            } else {
+                                try chain_id_list.append(self.allocator, try self.allocator.dupe(u8, ""));
+                            }
                         }
 
                         col = 0;
@@ -346,6 +378,7 @@ pub const MmcifParser = struct {
             .residue = try residue_list.toOwnedSlice(self.allocator),
             .atom_name = try atom_name_list.toOwnedSlice(self.allocator),
             .element = try element_list.toOwnedSlice(self.allocator),
+            .chain_id = try chain_id_list.toOwnedSlice(self.allocator),
             .allocator = self.allocator,
         };
     }
@@ -393,6 +426,27 @@ pub const MmcifParser = struct {
                     if (model != target_model) {
                         return false;
                     }
+                }
+            }
+        }
+
+        // Check chain filter
+        if (self.chain_filter) |chains| {
+            if (columns.getChainCol(self.use_auth_chain)) |col| {
+                const chain = row_values[col];
+                if (cif.isNull(chain)) {
+                    return false;
+                }
+                // Check if chain is in the filter list
+                var found = false;
+                for (chains) |target_chain| {
+                    if (std.mem.eql(u8, chain, target_chain)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    return false;
                 }
             }
         }

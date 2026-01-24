@@ -37,6 +37,9 @@ const Args = struct {
     output_format: OutputFormat = .json,
     classifier_type: ?ClassifierType = null, // Built-in classifier (naccess/protor/oons)
     config_path: ?[]const u8 = null, // Custom config file path
+    chain_filter: ?[]const u8 = null, // Chain filter (e.g., "A" or "A,B,C")
+    model_num: ?u32 = null, // Model number for NMR structures
+    use_auth_chain: bool = false, // Use auth_asym_id instead of label_asym_id
     quiet: bool = false,
     validate_only: bool = false,
     show_timing: bool = false, // Show timing breakdown for benchmarking
@@ -137,13 +140,40 @@ fn detectInputFormat(path: []const u8) InputFormat {
     return .json;
 }
 
+/// Parse chain filter string into array of chain IDs
+fn parseChainFilter(allocator: std.mem.Allocator, filter_str: []const u8) ![]const []const u8 {
+    var chains = std.ArrayListUnmanaged([]const u8){};
+    errdefer chains.deinit(allocator);
+
+    var iter = std.mem.splitScalar(u8, filter_str, ',');
+    while (iter.next()) |chain| {
+        const trimmed = std.mem.trim(u8, chain, " ");
+        if (trimmed.len > 0) {
+            try chains.append(allocator, trimmed);
+        }
+    }
+
+    return chains.toOwnedSlice(allocator);
+}
+
 /// Read input file (auto-detect format)
-fn readInputFile(allocator: std.mem.Allocator, path: []const u8) !types.AtomInput {
+fn readInputFile(allocator: std.mem.Allocator, path: []const u8, args: Args) !types.AtomInput {
     const format = detectInputFormat(path);
     return switch (format) {
         .json => json_parser.readAtomInputFromFile(allocator, path),
         .mmcif => blk: {
             var parser = mmcif_parser.MmcifParser.init(allocator);
+            parser.model_num = args.model_num;
+            parser.use_auth_chain = args.use_auth_chain;
+
+            // Parse chain filter if specified
+            var chain_filter_slice: ?[]const []const u8 = null;
+            if (args.chain_filter) |filter_str| {
+                chain_filter_slice = try parseChainFilter(allocator, filter_str);
+                parser.chain_filter = chain_filter_slice;
+            }
+            defer if (chain_filter_slice) |s| allocator.free(s);
+
             break :blk parser.parseFile(path);
         },
     };
@@ -259,6 +289,50 @@ fn parseArgs(args: []const []const u8) Args {
             }
             result.config_path = args[i];
         }
+        // --chain=ID or --chain ID (e.g., --chain=A or --chain=A,B,C)
+        else if (std.mem.startsWith(u8, arg, "--chain=")) {
+            const value = arg["--chain=".len..];
+            result.chain_filter = value;
+        } else if (std.mem.eql(u8, arg, "--chain")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --chain\n", .{});
+                std.process.exit(1);
+            }
+            result.chain_filter = args[i];
+        }
+        // --model=N or --model N
+        else if (std.mem.startsWith(u8, arg, "--model=")) {
+            const value = arg["--model=".len..];
+            const model = std.fmt.parseInt(u32, value, 10) catch {
+                std.debug.print("Error: Invalid model number: {s}\n", .{value});
+                std.process.exit(1);
+            };
+            if (model == 0) {
+                std.debug.print("Error: Model number must be >= 1\n", .{});
+                std.process.exit(1);
+            }
+            result.model_num = model;
+        } else if (std.mem.eql(u8, arg, "--model")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --model\n", .{});
+                std.process.exit(1);
+            }
+            const model = std.fmt.parseInt(u32, args[i], 10) catch {
+                std.debug.print("Error: Invalid model number: {s}\n", .{args[i]});
+                std.process.exit(1);
+            };
+            if (model == 0) {
+                std.debug.print("Error: Model number must be >= 1\n", .{});
+                std.process.exit(1);
+            }
+            result.model_num = model;
+        }
+        // --auth-chain (use auth_asym_id instead of label_asym_id)
+        else if (std.mem.eql(u8, arg, "--auth-chain")) {
+            result.use_auth_chain = true;
+        }
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
@@ -314,6 +388,10 @@ fn printHelp(program_name: []const u8) void {
         \\    --classifier=TYPE  Built-in classifier: naccess, protor, oons
         \\                       Use with residue/atom_name input for auto-radius
         \\    --config=FILE      Custom classifier config file (FreeSASA format)
+        \\    --chain=ID         Filter by chain ID (e.g., --chain=A or --chain=A,B,C)
+        \\                       Default: label_asym_id (mmCIF standard)
+        \\    --auth-chain       Use auth_asym_id instead of label_asym_id
+        \\    --model=N          Model number for NMR structures (default: all)
         \\    --threads=N        Number of threads (default: auto-detect)
         \\                       Use --threads=1 for single-threaded mode
         \\    --probe-radius=R   Probe radius in Angstroms (default: 1.4)
@@ -477,6 +555,56 @@ fn applyBuiltinClassifier(
     }
 }
 
+/// Print per-chain SASA results
+fn printPerChainResults(chain_ids: []const []const u8, atom_areas: []const f64) void {
+    // Use a simple approach: iterate through to find unique chains and sum areas
+    // For efficiency, we'll use a fixed-size buffer for up to 64 unique chains
+    const max_chains = 64;
+    var chain_names: [max_chains][]const u8 = undefined;
+    var chain_areas: [max_chains]f64 = undefined;
+    var chain_counts: [max_chains]usize = undefined;
+    var num_chains: usize = 0;
+    var warned_overflow = false;
+
+    for (chain_ids, 0..) |chain_id, i| {
+        // Find if this chain already exists
+        var found_idx: ?usize = null;
+        for (0..num_chains) |j| {
+            if (std.mem.eql(u8, chain_names[j], chain_id)) {
+                found_idx = j;
+                break;
+            }
+        }
+
+        if (found_idx) |idx| {
+            // Add to existing chain
+            chain_areas[idx] += atom_areas[i];
+            chain_counts[idx] += 1;
+        } else if (num_chains < max_chains) {
+            // Add new chain
+            chain_names[num_chains] = chain_id;
+            chain_areas[num_chains] = atom_areas[i];
+            chain_counts[num_chains] = 1;
+            num_chains += 1;
+        } else if (!warned_overflow) {
+            // Warn once when limit is exceeded
+            std.debug.print("Warning: More than {d} unique chains; some chains omitted from summary\n", .{max_chains});
+            warned_overflow = true;
+        }
+    }
+
+    if (num_chains > 0) {
+        std.debug.print("\nPer-chain SASA:\n", .{});
+        for (0..num_chains) |i| {
+            std.debug.print("  {s}: {d:.2} Å² ({d} atoms)\n", .{
+                chain_names[i],
+                chain_areas[i],
+                chain_counts[i],
+            });
+        }
+    }
+}
+
 pub fn main() !void {
     // Setup allocator
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -525,7 +653,7 @@ pub fn main() !void {
 
     // Read input file (JSON or mmCIF)
     timer.reset();
-    var input = readInputFile(allocator, parsed.input_path.?) catch |err| {
+    var input = readInputFile(allocator, parsed.input_path.?, parsed) catch |err| {
         std.debug.print("Error reading input file '{s}': {s}\n", .{ parsed.input_path.?, @errorName(err) });
         std.process.exit(1);
     };
@@ -648,6 +776,12 @@ pub fn main() !void {
     if (!parsed.quiet) {
         std.debug.print("Calculated SASA for {} atoms\n", .{input.atomCount()});
         std.debug.print("Total area: {d:.2} Å²\n", .{result.total_area});
+
+        // Print per-chain results if chain info is available
+        if (input.chain_id) |chain_ids| {
+            printPerChainResults(chain_ids, result.atom_areas);
+        }
+
         std.debug.print("Output written to {s}\n", .{parsed.output_path});
     }
 
