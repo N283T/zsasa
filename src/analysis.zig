@@ -3,7 +3,7 @@
 //! Provides functions for:
 //! - Per-residue SASA aggregation
 //! - RSA (Relative Solvent Accessibility) calculation
-//! - Polar/nonpolar classification (future)
+//! - Polar/nonpolar classification
 
 const std = @import("std");
 const types = @import("types.zig");
@@ -61,6 +61,123 @@ pub const MaxSASA = struct {
         return null;
     }
 };
+
+/// Residue classification for polar/nonpolar analysis
+pub const ResidueClass = enum {
+    polar,
+    nonpolar,
+    unknown,
+
+    /// Classify a residue by its 3-letter code.
+    /// Polar: charged (D, E, H, K, R) or H-bonding (N, Q, S, T, Y)
+    /// Nonpolar: hydrophobic (A, C, F, G, I, L, M, P, V, W)
+    pub fn fromResidueName(residue_name: []const u8) ResidueClass {
+        // Polar residues (charged or H-bonding capable)
+        if (std.mem.eql(u8, residue_name, "ARG")) return .polar; // R - charged
+        if (std.mem.eql(u8, residue_name, "ASN")) return .polar; // N - H-bonding
+        if (std.mem.eql(u8, residue_name, "ASP")) return .polar; // D - charged
+        if (std.mem.eql(u8, residue_name, "GLN")) return .polar; // Q - H-bonding
+        if (std.mem.eql(u8, residue_name, "GLU")) return .polar; // E - charged
+        if (std.mem.eql(u8, residue_name, "HIS")) return .polar; // H - charged
+        if (std.mem.eql(u8, residue_name, "LYS")) return .polar; // K - charged
+        if (std.mem.eql(u8, residue_name, "SER")) return .polar; // S - H-bonding
+        if (std.mem.eql(u8, residue_name, "THR")) return .polar; // T - H-bonding
+        if (std.mem.eql(u8, residue_name, "TYR")) return .polar; // Y - H-bonding
+
+        // Nonpolar residues (hydrophobic)
+        if (std.mem.eql(u8, residue_name, "ALA")) return .nonpolar; // A
+        if (std.mem.eql(u8, residue_name, "CYS")) return .nonpolar; // C
+        if (std.mem.eql(u8, residue_name, "PHE")) return .nonpolar; // F
+        if (std.mem.eql(u8, residue_name, "GLY")) return .nonpolar; // G
+        if (std.mem.eql(u8, residue_name, "ILE")) return .nonpolar; // I
+        if (std.mem.eql(u8, residue_name, "LEU")) return .nonpolar; // L
+        if (std.mem.eql(u8, residue_name, "MET")) return .nonpolar; // M
+        if (std.mem.eql(u8, residue_name, "PRO")) return .nonpolar; // P
+        if (std.mem.eql(u8, residue_name, "TRP")) return .nonpolar; // W
+        if (std.mem.eql(u8, residue_name, "VAL")) return .nonpolar; // V
+
+        return .unknown;
+    }
+};
+
+/// Summary of polar/nonpolar SASA
+pub const PolarSummary = struct {
+    polar_sasa: f64,
+    nonpolar_sasa: f64,
+    unknown_sasa: f64,
+    polar_residue_count: usize,
+    nonpolar_residue_count: usize,
+    unknown_residue_count: usize,
+
+    pub fn polarFraction(self: PolarSummary) f64 {
+        const total = self.polar_sasa + self.nonpolar_sasa;
+        if (total > 0) {
+            return self.polar_sasa / total;
+        }
+        return 0;
+    }
+
+    pub fn nonpolarFraction(self: PolarSummary) f64 {
+        const total = self.polar_sasa + self.nonpolar_sasa;
+        if (total > 0) {
+            return self.nonpolar_sasa / total;
+        }
+        return 0;
+    }
+};
+
+/// Calculate polar/nonpolar SASA summary from per-residue data
+pub fn calculatePolarSummary(residues: []const ResidueSasa) PolarSummary {
+    var summary = PolarSummary{
+        .polar_sasa = 0,
+        .nonpolar_sasa = 0,
+        .unknown_sasa = 0,
+        .polar_residue_count = 0,
+        .nonpolar_residue_count = 0,
+        .unknown_residue_count = 0,
+    };
+
+    for (residues) |res| {
+        switch (ResidueClass.fromResidueName(res.residue_name)) {
+            .polar => {
+                summary.polar_sasa += res.sasa;
+                summary.polar_residue_count += 1;
+            },
+            .nonpolar => {
+                summary.nonpolar_sasa += res.sasa;
+                summary.nonpolar_residue_count += 1;
+            },
+            .unknown => {
+                summary.unknown_sasa += res.sasa;
+                summary.unknown_residue_count += 1;
+            },
+        }
+    }
+
+    return summary;
+}
+
+/// Print polar/nonpolar SASA summary.
+/// Note: Percentages are calculated excluding unknown residues.
+pub fn printPolarSummary(summary: PolarSummary) void {
+    std.debug.print("\nPolar/Nonpolar SASA:\n", .{});
+    std.debug.print("  Polar:    {d:>10.2} Å² ({d:>5.1}%) - {d} residues\n", .{
+        summary.polar_sasa,
+        summary.polarFraction() * 100,
+        summary.polar_residue_count,
+    });
+    std.debug.print("  Nonpolar: {d:>10.2} Å² ({d:>5.1}%) - {d} residues\n", .{
+        summary.nonpolar_sasa,
+        summary.nonpolarFraction() * 100,
+        summary.nonpolar_residue_count,
+    });
+    if (summary.unknown_sasa > 0) {
+        std.debug.print("  Unknown:  {d:>10.2} Å² - {d} residues (excluded from %)\n", .{
+            summary.unknown_sasa,
+            summary.unknown_residue_count,
+        });
+    }
+}
 
 /// Per-residue SASA data
 pub const ResidueSasa = struct {
@@ -392,4 +509,52 @@ test "ResidueSasa calculateRsa" {
     try std.testing.expect(res_gly.rsa != null);
     try std.testing.expect(res_gly.rsa.? > 1.0);
     try std.testing.expectApproxEqRel(150.0 / 104.0, res_gly.rsa.?, 0.001);
+}
+
+test "ResidueClass classification" {
+    // Polar residues
+    try std.testing.expectEqual(ResidueClass.polar, ResidueClass.fromResidueName("ARG"));
+    try std.testing.expectEqual(ResidueClass.polar, ResidueClass.fromResidueName("ASP"));
+    try std.testing.expectEqual(ResidueClass.polar, ResidueClass.fromResidueName("GLU"));
+    try std.testing.expectEqual(ResidueClass.polar, ResidueClass.fromResidueName("LYS"));
+    try std.testing.expectEqual(ResidueClass.polar, ResidueClass.fromResidueName("SER"));
+    try std.testing.expectEqual(ResidueClass.polar, ResidueClass.fromResidueName("THR"));
+
+    // Nonpolar residues
+    try std.testing.expectEqual(ResidueClass.nonpolar, ResidueClass.fromResidueName("ALA"));
+    try std.testing.expectEqual(ResidueClass.nonpolar, ResidueClass.fromResidueName("ILE"));
+    try std.testing.expectEqual(ResidueClass.nonpolar, ResidueClass.fromResidueName("LEU"));
+    try std.testing.expectEqual(ResidueClass.nonpolar, ResidueClass.fromResidueName("PHE"));
+    try std.testing.expectEqual(ResidueClass.nonpolar, ResidueClass.fromResidueName("VAL"));
+
+    // Unknown
+    try std.testing.expectEqual(ResidueClass.unknown, ResidueClass.fromResidueName("UNK"));
+    try std.testing.expectEqual(ResidueClass.unknown, ResidueClass.fromResidueName("HOH"));
+}
+
+test "calculatePolarSummary" {
+    const residues = [_]ResidueSasa{
+        .{ .chain_id = "A", .residue_name = "ALA", .residue_num = 1, .insertion_code = "", .sasa = 50.0, .atom_count = 5 },
+        .{ .chain_id = "A", .residue_name = "SER", .residue_num = 2, .insertion_code = "", .sasa = 30.0, .atom_count = 6 },
+        .{ .chain_id = "A", .residue_name = "LEU", .residue_num = 3, .insertion_code = "", .sasa = 40.0, .atom_count = 8 },
+        .{ .chain_id = "A", .residue_name = "ASP", .residue_num = 4, .insertion_code = "", .sasa = 20.0, .atom_count = 8 },
+    };
+
+    const summary = calculatePolarSummary(&residues);
+
+    // Polar: SER (30) + ASP (20) = 50
+    try std.testing.expectEqual(@as(f64, 50.0), summary.polar_sasa);
+    try std.testing.expectEqual(@as(usize, 2), summary.polar_residue_count);
+
+    // Nonpolar: ALA (50) + LEU (40) = 90
+    try std.testing.expectEqual(@as(f64, 90.0), summary.nonpolar_sasa);
+    try std.testing.expectEqual(@as(usize, 2), summary.nonpolar_residue_count);
+
+    // No unknown
+    try std.testing.expectEqual(@as(f64, 0.0), summary.unknown_sasa);
+    try std.testing.expectEqual(@as(usize, 0), summary.unknown_residue_count);
+
+    // Fractions: polar = 50/140, nonpolar = 90/140
+    try std.testing.expectApproxEqRel(50.0 / 140.0, summary.polarFraction(), 0.001);
+    try std.testing.expectApproxEqRel(90.0 / 140.0, summary.nonpolarFraction(), 0.001);
 }
