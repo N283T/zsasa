@@ -43,6 +43,7 @@ const Args = struct {
     use_auth_chain: bool = false, // Use auth_asym_id instead of label_asym_id
     per_residue: bool = false, // Show per-residue SASA
     rsa: bool = false, // Show RSA (Relative Solvent Accessibility)
+    polar: bool = false, // Show polar/nonpolar SASA summary
     quiet: bool = false,
     validate_only: bool = false,
     show_timing: bool = false, // Show timing breakdown for benchmarking
@@ -345,6 +346,11 @@ fn parseArgs(args: []const []const u8) Args {
             result.rsa = true;
             result.per_residue = true; // RSA implies per-residue
         }
+        // --polar (show polar/nonpolar SASA summary)
+        else if (std.mem.eql(u8, arg, "--polar")) {
+            result.polar = true;
+            result.per_residue = true; // Polar analysis requires per-residue
+        }
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
@@ -406,6 +412,7 @@ fn printHelp(program_name: []const u8) void {
         \\    --model=N          Model number for NMR structures (default: all)
         \\    --per-residue      Show per-residue SASA aggregation
         \\    --rsa              Show RSA (Relative Solvent Accessibility)
+        \\    --polar            Show polar/nonpolar SASA summary
         \\    --threads=N        Number of threads (default: auto-detect)
         \\                       Use --threads=1 for single-threaded mode
         \\    --probe-radius=R   Probe radius in Angstroms (default: 1.4)
@@ -807,6 +814,12 @@ pub fn main() !void {
                 analysis.printResidueResultsWithRsa(residue_result.residues);
             } else {
                 analysis.printResidueResults(residue_result.residues);
+            }
+
+            // Print polar/nonpolar summary if requested
+            if (parsed.polar) {
+                const polar_summary = analysis.calculatePolarSummary(residue_result.residues);
+                analysis.printPolarSummary(polar_summary);
             }
         }
 
