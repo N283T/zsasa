@@ -564,6 +564,7 @@ fn printPerChainResults(chain_ids: []const []const u8, atom_areas: []const f64) 
     var chain_areas: [max_chains]f64 = undefined;
     var chain_counts: [max_chains]usize = undefined;
     var num_chains: usize = 0;
+    var warned_overflow = false;
 
     for (chain_ids, 0..) |chain_id, i| {
         // Find if this chain already exists
@@ -585,10 +586,10 @@ fn printPerChainResults(chain_ids: []const []const u8, atom_areas: []const f64) 
             chain_areas[num_chains] = atom_areas[i];
             chain_counts[num_chains] = 1;
             num_chains += 1;
-        } else if (num_chains == max_chains) {
+        } else if (!warned_overflow) {
             // Warn once when limit is exceeded
             std.debug.print("Warning: More than {d} unique chains; some chains omitted from summary\n", .{max_chains});
-            num_chains += 1; // Prevent repeated warnings
+            warned_overflow = true;
         }
     }
 
