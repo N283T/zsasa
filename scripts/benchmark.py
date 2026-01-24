@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = []
+# dependencies = ["rich>=13.0"]
 # ///
 """Benchmark comparing Zig SASA implementation with FreeSASA C.
 
@@ -254,7 +254,9 @@ def run_benchmarks(
                     )
                 )
                 sasa_str = f" (SASA: {avg_sasa_time:.2f}ms)" if avg_sasa_time else ""
-                print(f"  Zig   {algo.upper():2s}: {avg_sasa_time or avg_time:8.2f} ms{sasa_str}")
+                print(
+                    f"  Zig   {algo.upper():2s}: {avg_sasa_time or avg_time:8.2f} ms{sasa_str}"
+                )
 
             # FreeSASA C benchmark
             fsc_times = []
@@ -292,27 +294,34 @@ def run_benchmarks(
 
 
 def print_summary(results: list[BenchmarkResult]) -> None:
-    """Print benchmark summary table."""
-    print("\n" + "=" * 70)
-    print("BENCHMARK SUMMARY (SASA calculation time only)")
-    print("=" * 70)
+    """Print benchmark summary table using rich."""
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
 
     pdbs = sorted(
         set(r.pdb_id for r in results),
         key=lambda p: next(r.n_atoms for r in results if r.pdb_id == p),
     )
 
-    print(
-        f"\n{'PDB':<8} {'Atoms':>8} {'Algo':<4} "
-        f"{'Zig (ms)':>12} {'FS-C (ms)':>12} {'Speedup':>10}"
-    )
-    print("-" * 65)
+    for algo, algo_name in [("sr", "Shrake-Rupley"), ("lr", "Lee-Richards")]:
+        table = Table(
+            title=f"[bold]{algo_name}[/bold] (SASA calculation time)",
+            show_header=True,
+            header_style="bold cyan",
+        )
 
-    for pdb in pdbs:
-        pdb_results = [r for r in results if r.pdb_id == pdb]
-        n_atoms = pdb_results[0].n_atoms if pdb_results else 0
+        table.add_column("PDB", style="bold")
+        table.add_column("Atoms", justify="right")
+        table.add_column("Zig (ms)", justify="right", style="green")
+        table.add_column("FreeSASA C (ms)", justify="right", style="yellow")
+        table.add_column("Speedup", justify="right", style="bold magenta")
 
-        for algo in ["sr", "lr"]:
+        for pdb in pdbs:
+            pdb_results = [r for r in results if r.pdb_id == pdb]
+            n_atoms = pdb_results[0].n_atoms if pdb_results else 0
+
             zig_r = next(
                 (r for r in pdb_results if r.algorithm == algo and r.tool == "zig"),
                 None,
@@ -330,10 +339,16 @@ def print_summary(results: list[BenchmarkResult]) -> None:
                 zig_time = zig_r.sasa_only_ms or zig_r.time_ms
                 fsc_time = fsc_r.sasa_only_ms or fsc_r.time_ms
                 speedup = fsc_time / zig_time if zig_time > 0 else 0
-                print(
-                    f"{pdb:<8} {n_atoms:>8} {algo.upper():<4} "
-                    f"{zig_time:>12.2f} {fsc_time:>12.2f} {speedup:>9.2f}x"
+                table.add_row(
+                    pdb.upper(),
+                    f"{n_atoms:,}",
+                    f"{zig_time:.2f}",
+                    f"{fsc_time:.2f}",
+                    f"{speedup:.2f}x",
                 )
+
+        console.print()
+        console.print(table)
 
 
 def main() -> int:
@@ -370,7 +385,9 @@ def main() -> int:
     base_dir = Path(__file__).parent.parent / "benchmarks"
 
     print("=" * 70)
-    print(f"SASA Benchmark: Zig vs FreeSASA C (runs={n_runs}, threads={n_threads or 'auto'})")
+    print(
+        f"SASA Benchmark: Zig vs FreeSASA C (runs={n_runs}, threads={n_threads or 'auto'})"
+    )
     print("=" * 70)
 
     results = run_benchmarks(structures, base_dir, n_runs, n_threads, fs_c_path)
