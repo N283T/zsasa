@@ -78,4 +78,4 @@ Peak memory usage
 - [ ] 複数サイズでの性能特性が把握できる
 
 ---
-- [ ] **DONE** - Phase 7 complete
+- [x] **DONE** - Phase 7 complete
