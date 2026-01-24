@@ -170,13 +170,13 @@ Use the provided Python scripts to convert structure files:
 
 ```bash
 # Convert mmCIF/PDB to input JSON
-./scripts/cif_to_input_json.py structure.cif output.json
+./scripts/data/cif_to_json.py structure.cif output.json
 
 # Generate reference SASA using FreeSASA (for validation)
-./scripts/calc_reference_sasa.py structure.cif reference.json
+./scripts/data/calc_reference.py structure.cif reference.json
 
 # Run benchmark
-./scripts/benchmark.py examples/1A0Q.cif.gz --runs 5 --threads 4
+./scripts/benchmark.py --runs 5 --threads 4
 ```
 
 Requirements: Python 3.11+, gemmi, freesasa (installed automatically via PEP 723)
@@ -231,7 +231,7 @@ Tested against FreeSASA reference implementation using ProtOr classifier:
 | 1AON | 58,674 | 316,879.14 | 316,879.14 | 0.000% |
 | 4V6X | 237,685 | 1,325,369.25 | 1,325,369.25 | 0.000% |
 
-Run validation: `./scripts/validate_accuracy.py`
+Run validation: `./scripts/validate.py`
 
 ## Performance
 
@@ -248,7 +248,7 @@ Benchmark comparing Zig (ReleaseFast) vs FreeSASA Python, SASA calculation time 
 
 **Summary**: Shrake-Rupley is **1.5x-4.2x faster** than FreeSASA. Speedup increases with structure size.
 
-Run benchmark: `./scripts/benchmark_all.py`
+Run benchmark: `./scripts/benchmark.py`
 
 ### Optimization Techniques
 
@@ -369,14 +369,14 @@ freesasa-zig/
 │   ├── shrake_rupley.zig     # Shrake-Rupley algorithm
 │   └── lee_richards.zig      # Lee-Richards algorithm
 ├── scripts/
-│   ├── cif_to_input_json.py       # Structure to JSON converter
-│   ├── calc_reference_sasa.py     # Reference SASA calculator
-│   ├── benchmark.py               # Single-structure benchmark
-│   ├── benchmark_all.py           # Unified benchmark across all structures
-│   ├── validate_accuracy.py       # Validate against FreeSASA references
-│   ├── generate_benchmark_data.py # Download structures and generate references
-│   ├── generate_protor_inputs.py  # Generate inputs with ProtOr radii
-│   └── compare_classifiers.py     # Compare classifier radii
+│   ├── benchmark.py               # Unified benchmark across all structures
+│   ├── validate.py                # Validate against FreeSASA references
+│   └── data/                      # Data preparation scripts
+│       ├── cif_to_json.py         # Structure to JSON converter
+│       ├── calc_reference.py      # Reference SASA calculator
+│       ├── generate.py            # Download structures and generate references
+│       ├── generate_protor.py     # Generate inputs with ProtOr radii
+│       └── compare_classifiers.py # Compare classifier radii
 ├── benchmarks/
 │   ├── structures/            # Downloaded PDB structures (.cif.gz)
 │   ├── inputs/                # Generated input JSONs (element-based radii)

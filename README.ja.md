@@ -160,13 +160,13 @@ total,1234.560000
 
 ```bash
 # mmCIF/PDBを入力JSONに変換
-./scripts/cif_to_input_json.py structure.cif output.json
+./scripts/data/cif_to_json.py structure.cif output.json
 
 # FreeSASAで参照SASA値を生成（検証用）
-./scripts/calc_reference_sasa.py structure.cif reference.json
+./scripts/data/calc_reference.py structure.cif reference.json
 
 # ベンチマーク実行
-./scripts/benchmark.py examples/1A0Q.cif.gz --runs 5 --threads 4
+./scripts/benchmark.py --runs 5 --threads 4
 ```
 
 必要環境: Python 3.11+, gemmi, freesasa（PEP 723により自動インストール）
@@ -221,7 +221,7 @@ FreeSASA参照実装との比較（ProtOr分類器使用）:
 | 1AON | 58,674 | 316,879.14 | 316,879.14 | 0.000% |
 | 4V6X | 237,685 | 1,325,369.25 | 1,325,369.25 | 0.000% |
 
-検証実行: `./scripts/validate_accuracy.py`
+検証実行: `./scripts/validate.py`
 
 ## 性能
 
@@ -238,7 +238,7 @@ Zig（ReleaseFast）とFreeSASA Pythonの比較、SASA計算時間のみ:
 
 **概要**: Shrake-RupleyはFreeSASAより**1.5x-4.2x高速**。構造サイズが大きいほど高速化率が向上。
 
-ベンチマーク実行: `./scripts/benchmark_all.py`
+ベンチマーク実行: `./scripts/benchmark.py`
 
 ### 最適化技術
 
@@ -358,13 +358,14 @@ freesasa-zig/
 │   ├── shrake_rupley.zig     # Shrake-Rupleyアルゴリズム
 │   └── lee_richards.zig      # Lee-Richardsアルゴリズム
 ├── scripts/
-│   ├── cif_to_input_json.py       # 構造→JSON変換
-│   ├── calc_reference_sasa.py     # 参照SASA計算
-│   ├── benchmark.py               # 単一構造ベンチマーク
-│   ├── benchmark_all.py           # 統合ベンチマーク
-│   ├── validate_accuracy.py       # FreeSASA参照値との検証
-│   ├── generate_benchmark_data.py # 構造DL・参照値生成
-│   └── generate_protor_inputs.py  # ProtOr半径入力生成
+│   ├── benchmark.py               # 統合ベンチマーク
+│   ├── validate.py                # FreeSASA参照値との検証
+│   └── data/                      # データ準備スクリプト
+│       ├── cif_to_json.py         # 構造→JSON変換
+│       ├── calc_reference.py      # 参照SASA計算
+│       ├── generate.py            # 構造DL・参照値生成
+│       ├── generate_protor.py     # ProtOr半径入力生成
+│       └── compare_classifiers.py # 分類器比較
 ├── benchmarks/
 │   ├── structures/            # DLしたPDB構造 (.cif.gz)
 │   ├── inputs/                # 生成した入力JSON（元素ベース半径）

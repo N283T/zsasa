@@ -160,7 +160,7 @@ Library-to-library comparison (Python bindings vs FreeSASA Python):
 - **LR algorithm**: Zig is 2.9-5.5x faster
 - **Accuracy**: Results match FreeSASA (< 0.01% difference)
 
-Run benchmark: `./scripts/benchmark_python.py`
+Run benchmark: `./scripts/benchmark.py`
 
 ## Development
 
