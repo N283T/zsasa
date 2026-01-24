@@ -14,7 +14,7 @@ SASA (Solvent Accessible Surface Area) measures the surface area of a biomolecul
 ## Features
 
 - **Two SASA algorithms**: Shrake-Rupley (fast) and Lee-Richards (precise)
-- **Direct structure input**: PDB and mmCIF file formats supported
+- **Direct structure input**: mmCIF file format supported
 - **Chain/Model selection**: Filter by chain ID, model number, or auth chain ID
 - **Atom radius classifier**: NACCESS/ProtOr/OONS classifiers with CLI and library support
 - **Custom config files**: FreeSASA-compatible configuration format
@@ -53,7 +53,7 @@ zig build test
 freesasa_zig [OPTIONS] <input> [output.json]
 ```
 
-Supported input formats: JSON, PDB (.pdb), mmCIF (.cif, .cif.gz)
+Supported input formats: JSON, mmCIF (.cif, .cif.gz)
 
 ### Examples
 
@@ -92,15 +92,14 @@ Supported input formats: JSON, PDB (.pdb), mmCIF (.cif, .cif.gz)
 # Use custom config file
 ./zig-out/bin/freesasa_zig --config=custom.config input.json output.json
 
-# Direct PDB/mmCIF input (auto-detects format)
-./zig-out/bin/freesasa_zig structure.pdb output.json
+# Direct mmCIF input (auto-detects format)
 ./zig-out/bin/freesasa_zig structure.cif output.json
 ./zig-out/bin/freesasa_zig structure.cif.gz output.json
 
 # Chain/Model selection
 ./zig-out/bin/freesasa_zig --chain=A structure.cif output.json
-./zig-out/bin/freesasa_zig --model=1 structure.pdb output.json
-./zig-out/bin/freesasa_zig --auth-chain=A structure.cif output.json
+./zig-out/bin/freesasa_zig --model=1 structure.cif output.json
+./zig-out/bin/freesasa_zig --auth-chain --chain=A structure.cif output.json
 
 # Per-residue analysis
 ./zig-out/bin/freesasa_zig --per-residue structure.cif output.json
@@ -128,8 +127,8 @@ Supported input formats: JSON, PDB (.pdb), mmCIF (.cif, .cif.gz)
 | `--n-slices=N` | Slices per atom diameter (LR only, 1-1000) | 20 |
 | `--format=FORMAT` | Output format: `json`, `compact`, `csv` | json |
 | `--chain=ID` | Filter by label chain ID (e.g., "A", "B") | - |
-| `--model=N` | Select model number (for multi-model files) | 1 |
-| `--auth-chain=ID` | Filter by auth chain ID (PDB chain ID) | - |
+| `--model=N` | Select model number (for multi-model files) | all |
+| `--auth-chain` | Use auth chain ID instead of label chain ID | - |
 | `--per-residue` | Output per-residue SASA aggregation | - |
 | `--rsa` | Calculate RSA (implies --per-residue) | - |
 | `--polar` | Show polar/nonpolar summary (implies --per-residue) | - |
@@ -170,13 +169,12 @@ The `residue`, `atom_name`, and `element` fields are optional:
 - **`residue` + `atom_name`**: Required for `--classifier` or `--config` options
 - **`element`**: Atomic numbers (6=C, 7=N, 8=O, etc.) for unambiguous element identification
 
-**PDB/mmCIF input**:
+**mmCIF input**:
 
-Files with `.pdb`, `.cif`, or `.cif.gz` extensions are automatically recognized:
+Files with `.cif` or `.cif.gz` extensions are automatically recognized:
 
 ```bash
 # Direct structure file input
-./zig-out/bin/freesasa_zig 1CRN.pdb output.json
 ./zig-out/bin/freesasa_zig 1CRN.cif output.json
 ./zig-out/bin/freesasa_zig 1CRN.cif.gz output.json
 ```
@@ -408,7 +406,6 @@ freesasa-zig/
 │   ├── types.zig             # Data structures (Vec3, AtomInput, etc.)
 │   ├── json_parser.zig       # JSON input parsing and validation
 │   ├── json_writer.zig       # Output writing (JSON, CSV)
-│   ├── pdb_parser.zig        # PDB file parser
 │   ├── mmcif_parser.zig      # mmCIF file parser
 │   ├── analysis.zig          # Analysis features (per-residue, RSA, polar, interface)
 │   ├── classifier.zig        # Atom classifier core (types, element guessing)
@@ -470,7 +467,7 @@ freesasa-zig/
   - [x] NACCESS/ProtOr/OONS built-in classifiers
   - [x] Custom config file parser (FreeSASA format)
   - [x] CLI integration (`--classifier`, `--config`)
-- [x] Phase 10: Direct structure file input (PDB/mmCIF)
+- [x] Phase 10: Direct structure file input (mmCIF)
 - [x] Phase 11: Lee-Richards algorithm (with multi-threading & SIMD)
 - [x] Phase 13: Python bindings (NumPy integration via C API)
 - [x] Phase 15: Chain/Model selection (`--chain`, `--model`, `--auth-chain`)

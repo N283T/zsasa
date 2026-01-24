@@ -25,8 +25,8 @@ const Args = struct {
 
     // チェーン/モデル選択
     chain: ?[]const u8 = null,           // ラベルチェーンID
-    model: u32 = 1,                      // モデル番号
-    auth_chain: ?[]const u8 = null,      // authチェーンID
+    model_num: ?u32 = null,              // モデル番号（null = 全モデル）
+    use_auth_chain: bool = false,        // authチェーンID使用フラグ
 
     // 解析オプション
     per_residue: bool = false,           // 残基単位出力
@@ -105,7 +105,7 @@ fn printHelp() void {
         \\Usage: freesasa_zig [OPTIONS] <input> [output.json]
         \\
         \\Calculate Solvent Accessible Surface Area (SASA).
-        \\Input formats: JSON, PDB (.pdb), mmCIF (.cif, .cif.gz)
+        \\Input formats: JSON, mmCIF (.cif, .cif.gz)
         \\
         \\Algorithm:
         \\  --algorithm=ALGO   sr (Shrake-Rupley) or lr (Lee-Richards) (default: sr)
@@ -120,8 +120,8 @@ fn printHelp() void {
         \\
         \\Chain/Model:
         \\  --chain=ID         Filter by label chain ID
-        \\  --model=N          Select model number (default: 1)
-        \\  --auth-chain=ID    Filter by auth chain ID
+        \\  --model=N          Select model number (default: all)
+        \\  --auth-chain       Use auth chain ID instead of label chain ID
         \\
         \\Analysis:
         \\  --per-residue      Output per-residue SASA
@@ -298,19 +298,18 @@ Input validation failed with 3 error(s):
 
 ---
 
-## PDB/mmCIF入力
+## mmCIF入力
 
-### ファイル: `src/pdb_parser.zig`, `src/mmcif_parser.zig`
+### ファイル: `src/mmcif_parser.zig`
 
 構造ファイルの拡張子で形式を自動判別:
-- `.pdb` → PDBパーサー
 - `.cif`, `.cif.gz` → mmCIFパーサー
+- その他 → JSONパーサー
 
 ```zig
 fn detectInputFormat(path: []const u8) InputFormat {
-    if (std.mem.endsWith(u8, path, ".pdb")) return .pdb;
     if (std.mem.endsWith(u8, path, ".cif")) return .mmcif;
-    if (std.mem.endsWith(u8, path, ".cif.gz")) return .mmcif_gz;
+    if (std.mem.endsWith(u8, path, ".mmcif")) return .mmcif;
     return .json;
 }
 ```
@@ -321,11 +320,11 @@ fn detectInputFormat(path: []const u8) InputFormat {
 # ラベルチェーンID（mmCIF label_asym_id）
 --chain=A
 
-# モデル番号（NMR構造など）
+# モデル番号（NMR構造など、デフォルト: 全モデル）
 --model=1
 
-# authチェーンID（PDB互換のchain ID）
---auth-chain=A
+# authチェーンIDを使用（--chainと併用）
+--auth-chain --chain=A
 ```
 
 ---

@@ -14,7 +14,7 @@ SASA（Solvent Accessible Surface Area：溶媒接触可能表面積）は、生
 ## 特徴
 
 - **2つのSASAアルゴリズム**: Shrake-Rupley（高速）とLee-Richards（高精度）
-- **構造ファイル直接入力**: PDB/mmCIF形式対応
+- **構造ファイル直接入力**: mmCIF形式対応
 - **チェーン/モデル選択**: チェーンID、モデル番号、authチェーンIDでフィルタリング
 - **原子半径分類器**: NACCESS/ProtOr/OONS分類器（CLI・ライブラリ対応）
 - **カスタム設定ファイル**: FreeSASA互換形式
@@ -53,7 +53,7 @@ zig build test
 freesasa_zig [OPTIONS] <input> [output.json]
 ```
 
-対応入力形式: JSON, PDB (.pdb), mmCIF (.cif, .cif.gz)
+対応入力形式: JSON, mmCIF (.cif, .cif.gz)
 
 ### 使用例
 
@@ -86,15 +86,14 @@ freesasa_zig [OPTIONS] <input> [output.json]
 # 静寂モード
 ./zig-out/bin/freesasa_zig --quiet input.json output.json
 
-# PDB/mmCIF直接入力（形式自動判別）
-./zig-out/bin/freesasa_zig structure.pdb output.json
+# mmCIF直接入力（形式自動判別）
 ./zig-out/bin/freesasa_zig structure.cif output.json
 ./zig-out/bin/freesasa_zig structure.cif.gz output.json
 
 # チェーン/モデル選択
 ./zig-out/bin/freesasa_zig --chain=A structure.cif output.json
-./zig-out/bin/freesasa_zig --model=1 structure.pdb output.json
-./zig-out/bin/freesasa_zig --auth-chain=A structure.cif output.json
+./zig-out/bin/freesasa_zig --model=1 structure.cif output.json
+./zig-out/bin/freesasa_zig --auth-chain --chain=A structure.cif output.json
 
 # 残基単位解析
 ./zig-out/bin/freesasa_zig --per-residue structure.cif output.json
@@ -122,8 +121,8 @@ freesasa_zig [OPTIONS] <input> [output.json]
 | `--n-slices=N` | スライス数（LR専用、1-1000） | 20 |
 | `--format=FORMAT` | 出力形式: `json`, `compact`, `csv` | json |
 | `--chain=ID` | ラベルチェーンIDでフィルタ（例: "A", "B"） | - |
-| `--model=N` | モデル番号選択（マルチモデルファイル用） | 1 |
-| `--auth-chain=ID` | authチェーンIDでフィルタ（PDBチェーンID） | - |
+| `--model=N` | モデル番号選択（マルチモデルファイル用） | 全て |
+| `--auth-chain` | ラベルチェーンIDの代わりにauthチェーンIDを使用 | - |
 | `--per-residue` | 残基単位SASA集計を出力 | - |
 | `--rsa` | RSA計算（--per-residueを含む） | - |
 | `--polar` | 極性/非極性サマリー表示（--per-residueを含む） | - |
@@ -164,13 +163,12 @@ freesasa_zig [OPTIONS] <input> [output.json]
 - **`residue` + `atom_name`**: `--classifier`または`--config`オプション使用時に必要
 - **`element`**: 元素の原子番号（6=C, 7=N, 8=O等）
 
-**PDB/mmCIF入力**:
+**mmCIF入力**:
 
-`.pdb`、`.cif`、`.cif.gz`拡張子のファイルは自動認識:
+`.cif`、`.cif.gz`拡張子のファイルは自動認識:
 
 ```bash
 # 構造ファイル直接入力
-./zig-out/bin/freesasa_zig 1CRN.pdb output.json
 ./zig-out/bin/freesasa_zig 1CRN.cif output.json
 ./zig-out/bin/freesasa_zig 1CRN.cif.gz output.json
 ```
@@ -402,7 +400,6 @@ freesasa-zig/
 │   ├── types.zig             # データ構造（Vec3, AtomInput等）
 │   ├── json_parser.zig       # JSON入力パース・バリデーション
 │   ├── json_writer.zig       # 出力（JSON, CSV）
-│   ├── pdb_parser.zig        # PDBファイルパーサー
 │   ├── mmcif_parser.zig      # mmCIFファイルパーサー
 │   ├── analysis.zig          # 解析機能（残基単位、RSA、極性、界面）
 │   ├── classifier.zig        # 原子分類器コア（型、元素推定）
@@ -464,7 +461,7 @@ freesasa-zig/
   - [x] NACCESS/ProtOr/OONS組み込み分類器
   - [x] カスタム設定ファイルパーサー（FreeSASA形式）
   - [x] CLI統合（`--classifier`, `--config`）
-- [x] Phase 10: 構造ファイル直接入力（PDB/mmCIF）
+- [x] Phase 10: 構造ファイル直接入力（mmCIF）
 - [x] Phase 11: Lee-Richardsアルゴリズム（マルチスレッド・SIMD対応）
 - [x] Phase 13: Pythonバインディング（C API経由のNumPy統合）
 - [x] Phase 15: チェーン/モデル選択（`--chain`, `--model`, `--auth-chain`）
