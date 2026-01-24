@@ -24,7 +24,7 @@ classifiers = [
 dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-cov>=4.0", "ruff>=0.5"]
+dev = ["pytest>=8.0", "pytest-cov>=4.0", "ruff>=0.5", "ty>=0.0.1a0"]
 
 [project.urls]
 Homepage = "https://github.com/N283T/freesasa-zig"
@@ -39,6 +39,9 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+
+[tool.ty.environment]
+python-version = "3.11"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
