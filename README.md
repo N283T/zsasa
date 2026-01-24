@@ -27,7 +27,8 @@ SASA (Solvent Accessible Surface Area) measures the surface area of a biomolecul
 - Input validation with detailed error messages
 - Memory-safe implementation with explicit allocators
 - **Multi-threading support** for parallel atom processing
-- **SIMD optimization** using `@Vector(4, f64)` for batch calculations
+- **SIMD optimization** using `@Vector(8, f64)` for 8-wide batch calculations
+- **Fast trigonometry** using polynomial approximations for LR algorithm
 - **Neighbor list optimization** for O(N) instead of O(N²) neighbor checking
 
 ## Building
@@ -251,7 +252,8 @@ Slice-based method - mathematically precise.
 |--------|---------------|--------------|
 | Method | Test points | Slice integration |
 | Precision control | `--n-points` | `--n-slices` |
-| Speed (1A0Q, 4 threads) | 13ms | 26ms |
+| Speed (1A0Q, 4 threads) | 2.6ms | 9.9ms |
+| vs FreeSASA C | 1.2x-2.3x faster | 1.1x-1.7x faster |
 | Best for | Large structures, quick analysis | High precision requirements |
 
 ### Parameters
@@ -279,26 +281,27 @@ Run validation: `./scripts/validate.py`
 
 ## Performance
 
-Benchmark comparing Zig (ReleaseFast) vs FreeSASA Python, SASA calculation time only:
+Benchmark comparing Zig (ReleaseFast) vs FreeSASA C (native binary), SASA calculation time only (4 threads):
 
-| Structure | Atoms | SR Zig (ms) | SR FS (ms) | SR Speedup | LR Zig (ms) | LR FS (ms) | LR Speedup |
-|-----------|------:|-----------:|-----------:|----------:|-----------:|-----------:|----------:|
-| 1CRN | 327 | 0.53 | 0.77 | 1.45x | 4.60 | 4.85 | 1.05x |
-| 1UBQ | 602 | 0.64 | 1.40 | 2.19x | 8.45 | 9.19 | 1.09x |
-| 1A0Q | 3,183 | 2.46 | 9.16 | 3.72x | 49.17 | 53.34 | 1.08x |
-| 3HHB | 4,384 | 3.56 | 12.14 | 3.41x | 68.56 | 74.89 | 1.09x |
-| 1AON | 58,674 | 43.76 | 179.52 | 4.10x | 930.22 | 1030.58 | 1.11x |
-| 4V6X | 237,685 | 178.47 | 744.13 | 4.17x | 3740.60 | 4132.06 | 1.10x |
+| Structure | Atoms | SR Zig (ms) | SR FS-C (ms) | SR Speedup | LR Zig (ms) | LR FS-C (ms) | LR Speedup |
+|-----------|------:|------------:|-------------:|-----------:|------------:|-------------:|-----------:|
+| 1CRN | 327 | 0.44 | 0.53 | 1.20x | 1.45 | 1.64 | 1.13x |
+| 1UBQ | 602 | 0.63 | 0.88 | 1.40x | 2.19 | 2.99 | 1.37x |
+| 1A0Q | 3,183 | 2.64 | 4.42 | 1.67x | 9.90 | 16.09 | 1.62x |
+| 3HHB | 4,384 | 3.54 | 5.95 | 1.68x | 14.15 | 23.44 | 1.66x |
+| 1AON | 58,674 | 45.61 | 98.28 | 2.15x | 182.83 | 317.41 | 1.74x |
+| 4V6X | 237,685 | 189.06 | 424.53 | 2.25x | 741.86 | 1293.48 | 1.74x |
 
-**Summary**: Shrake-Rupley is **1.5x-4.2x faster** than FreeSASA. Speedup increases with structure size.
+**Summary**: Both algorithms are faster than FreeSASA C. Shrake-Rupley is **1.2x-2.3x faster**, Lee-Richards is **1.1x-1.7x faster**. Speedup increases with structure size.
 
 Run benchmark: `./scripts/benchmark.py`
 
 ### Optimization Techniques
 
 1. **Neighbor List**: O(N) neighbor lookup instead of O(N²)
-2. **SIMD**: Process 4 calculations in parallel using `@Vector(4, f64)`
-3. **Multi-threading**: Parallel atom processing with work-stealing thread pool
+2. **8-wide SIMD**: Process 8 calculations in parallel using `@Vector(8, f64)`
+3. **Fast Trigonometry**: Polynomial approximations for acos/atan2 in LR algorithm (~37% faster)
+4. **Multi-threading**: Parallel atom processing with work-stealing thread pool
 
 ## Python Bindings
 

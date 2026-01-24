@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **8-wide SIMD optimization** for Shrake-Rupley algorithm
+  - `@Vector(8, f64)` for processing 8 atoms in parallel
+  - Tiered processing: 8-wide → 4-wide → scalar for remaining atoms
+  - ~16% speedup on large structures (4V6X: 237k atoms)
+
+- **Fast trigonometry** for Lee-Richards algorithm
+  - Polynomial approximations for `acos` and `atan2`
+  - ~37% speedup on large structures (4V6X: 1021ms → 743ms)
+  - Accuracy within 0.3% of reference (well within 2% tolerance)
+
+- **Area difference column** in benchmark output
+  - Shows percentage difference between Zig and FreeSASA C results
+
 - **Python bindings** (`python/freesasa_zig`)
   - C ABI shared library (`libfreesasa_zig.dylib/.so/.dll`)
   - NumPy-based Python API with ctypes bindings
@@ -30,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Slice-based method with exact arc integration
   - `--n-slices=N` option (default: 20)
   - Multi-threading and SIMD support
-  - ~1.1x faster than FreeSASA (Python)
+  - 1.1x-1.7x faster than FreeSASA C
 
 - **Atom classifier module** with CLI integration
   - `classifier.zig` - Core data structures, element-based radius guessing, ClassifierType enum
@@ -50,7 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Removed Windows from CI matrix (WSL recommended for Windows users)
-- Updated benchmark results: SR algorithm is 1.5x-4.2x faster than FreeSASA
+- **Updated benchmark**: Now compares against FreeSASA C (native binary) instead of Python
+  - SR: 1.2x-2.3x faster than FreeSASA C
+  - LR: 1.1x-1.7x faster than FreeSASA C
 - **Scripts reorganization**
   - Created `scripts/data/` subdirectory for data preparation scripts
   - Renamed: `benchmark_all.py` → `benchmark.py`, `validate_accuracy.py` → `validate.py`

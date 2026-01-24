@@ -11,9 +11,10 @@ src/
 ├── json_writer.zig    # 出力フォーマット（JSON/CSV）
 ├── test_points.zig    # Golden Section Spiralによるテストポイント生成
 ├── neighbor_list.zig  # 空間ハッシュによる近傍探索
-├── simd.zig           # SIMD最適化された距離計算
+├── simd.zig           # SIMD最適化（8-wide距離計算、高速三角関数）
 ├── thread_pool.zig    # 汎用スレッドプール
-└── shrake_rupley.zig  # コアSASAアルゴリズム
+├── shrake_rupley.zig  # Shrake-Rupleyアルゴリズム
+└── lee_richards.zig   # Lee-Richardsアルゴリズム
 ```
 
 ## モジュール依存関係
@@ -80,7 +81,7 @@ main.zig
 │           │                              │
 │  ┌────────▼────────┐                    │
 │  │     simd        │ 距離計算            │
-│  │  (@Vector 4本)   │ 4原子同時処理      │
+│  │  (@Vector 8本)   │ 8原子同時処理      │
 │  └─────────────────┘                    │
 └────────────────────┬────────────────────┘
                      │
