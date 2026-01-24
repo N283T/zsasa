@@ -132,3 +132,82 @@ jobs:
 
       - name: Test validate mode
         run: ./zig-out/bin/freesasa_zig --validate examples/input_1a0q.json
+
+  python:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: Linux
+            lib: libfreesasa_zig.so
+          - os: macos-latest
+            name: macOS
+            lib: libfreesasa_zig.dylib
+
+    runs-on: ${{ matrix.os }}
+    name: Python (${{ matrix.name }})
+    needs: [fmt]
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build shared library
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Check shared library exists
+        run: |
+          if [ -f "./zig-out/lib/${{ matrix.lib }}" ]; then
+            echo "Shared library built successfully"
+            ls -la ./zig-out/lib/${{ matrix.lib }}
+          else
+            echo "Shared library not found"
+            exit 1
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install Python package
+        working-directory: python
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run Python tests
+        working-directory: python
+        run: uv run --with pytest pytest tests/ -v
+
+      - name: Run linter
+        working-directory: python
+        run: |
+          uv run --with ruff ruff check freesasa_zig/
+          uv run --with ruff ruff format --check freesasa_zig/
+
+      - name: Test import and basic usage
+        run: |
+          python3 -c "
+          import numpy as np
+          from freesasa_zig import calculate_sasa, get_version
+
+          print(f'Version: {get_version()}')
+
+          # Simple test
+          coords = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+          radii = np.array([1.5, 1.5])
+
+          result = calculate_sasa(coords, radii)
+          print(f'Total SASA: {result.total_area:.2f} Å²')
+          assert result.total_area > 0, 'SASA should be positive'
+          print('Python bindings test passed!')
+          "
