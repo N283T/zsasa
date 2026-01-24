@@ -22,7 +22,6 @@ SASA（Solvent Accessible Surface Area：溶媒接触可能表面積）は、生
   - 残基単位SASA集計
   - RSA（相対溶媒接触可能性）計算
   - 極性/非極性表面分類
-  - 複合体界面SASA
 - JSON入出力（複数フォーマット対応）
 - 各種パラメータ設定可能（テストポイント数、スライス数、プローブ半径）
 - 詳細なエラーメッセージ付き入力バリデーション
@@ -103,9 +102,6 @@ freesasa_zig [OPTIONS] <input> [output.json]
 
 # 極性/非極性表面解析
 ./zig-out/bin/freesasa_zig --polar structure.cif output.json
-
-# 界面SASA（複合体）
-./zig-out/bin/freesasa_zig --interface structure.cif output.json
 ```
 
 ### オプション
@@ -126,7 +122,6 @@ freesasa_zig [OPTIONS] <input> [output.json]
 | `--per-residue` | 残基単位SASA集計を出力 | - |
 | `--rsa` | RSA計算（--per-residueを含む） | - |
 | `--polar` | 極性/非極性サマリー表示（--per-residueを含む） | - |
-| `--interface` | 複合体界面SASAを計算 | - |
 | `--validate` | 入力バリデーションのみ実行 | - |
 | `-q, --quiet` | 進捗出力を抑制 | - |
 | `-h, --help` | ヘルプメッセージを表示 | - |
@@ -401,7 +396,7 @@ freesasa-zig/
 │   ├── json_parser.zig       # JSON入力パース・バリデーション
 │   ├── json_writer.zig       # 出力（JSON, CSV）
 │   ├── mmcif_parser.zig      # mmCIFファイルパーサー
-│   ├── analysis.zig          # 解析機能（残基単位、RSA、極性、界面）
+│   ├── analysis.zig          # 解析機能（残基単位、RSA、極性）
 │   ├── classifier.zig        # 原子分類器コア（型、元素推定）
 │   ├── classifier_naccess.zig # NACCESS組み込み分類器
 │   ├── classifier_protor.zig  # ProtOr組み込み分類器
@@ -469,7 +464,6 @@ freesasa-zig/
   - [x] 残基単位SASA集計（`--per-residue`）
   - [x] RSA計算（`--rsa`）
   - [x] 極性/非極性分類（`--polar`）
-  - [x] 界面SASA（`--interface`）
 
 ## ライセンス
 

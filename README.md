@@ -22,7 +22,6 @@ SASA (Solvent Accessible Surface Area) measures the surface area of a biomolecul
   - Per-residue SASA aggregation
   - RSA (Relative Solvent Accessibility) calculation
   - Polar/Nonpolar surface classification
-  - Interface SASA for multi-chain complexes
 - JSON input/output format with multiple output options
 - Configurable parameters (test points, slices, probe radius)
 - Input validation with detailed error messages
@@ -109,9 +108,6 @@ Supported input formats: JSON, mmCIF (.cif, .cif.gz)
 
 # Polar/Nonpolar surface analysis
 ./zig-out/bin/freesasa_zig --polar structure.cif output.json
-
-# Interface SASA (multi-chain complexes)
-./zig-out/bin/freesasa_zig --interface structure.cif output.json
 ```
 
 ### Options
@@ -132,7 +128,6 @@ Supported input formats: JSON, mmCIF (.cif, .cif.gz)
 | `--per-residue` | Output per-residue SASA aggregation | - |
 | `--rsa` | Calculate RSA (implies --per-residue) | - |
 | `--polar` | Show polar/nonpolar summary (implies --per-residue) | - |
-| `--interface` | Calculate interface SASA for multi-chain complexes | - |
 | `--validate` | Validate input only, do not calculate SASA | - |
 | `-q, --quiet` | Suppress progress output | - |
 | `-h, --help` | Show help message | - |
@@ -407,7 +402,7 @@ freesasa-zig/
 │   ├── json_parser.zig       # JSON input parsing and validation
 │   ├── json_writer.zig       # Output writing (JSON, CSV)
 │   ├── mmcif_parser.zig      # mmCIF file parser
-│   ├── analysis.zig          # Analysis features (per-residue, RSA, polar, interface)
+│   ├── analysis.zig          # Analysis features (per-residue, RSA, polar)
 │   ├── classifier.zig        # Atom classifier core (types, element guessing)
 │   ├── classifier_naccess.zig # NACCESS built-in classifier
 │   ├── classifier_protor.zig  # ProtOr built-in classifier
@@ -475,7 +470,6 @@ freesasa-zig/
   - [x] Per-residue SASA aggregation (`--per-residue`)
   - [x] RSA calculation (`--rsa`)
   - [x] Polar/Nonpolar classification (`--polar`)
-  - [x] Interface SASA (`--interface`)
 
 ## License
 
