@@ -9,11 +9,11 @@
 """Convert coordinate files (mmCIF/PDB) to SASA input JSON format.
 
 Usage:
-    ./cif_to_input_json.py <input_file> [output_file]
+    ./scripts/data/cif_to_json.py <input_file> [output_file]
 
 Examples:
-    ./cif_to_input_json.py examples/1A0Q.cif.gz
-    ./cif_to_input_json.py 1abc.pdb output.json
+    ./scripts/data/cif_to_json.py examples/1A0Q.cif.gz
+    ./scripts/data/cif_to_json.py 1abc.pdb output.json
 """
 
 from __future__ import annotations

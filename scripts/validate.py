@@ -9,12 +9,12 @@ Compares the Zig implementation output with FreeSASA reference data
 and reports accuracy metrics.
 
 Usage:
-    ./validate_accuracy.py [--algorithm=sr|lr] [--tolerance=2.0]
+    ./scripts/validate.py [--algorithm=sr|lr] [--tolerance=2.0]
 
 Examples:
-    ./validate_accuracy.py                    # Validate with SR algorithm
-    ./validate_accuracy.py --algorithm=lr     # Validate with LR algorithm
-    ./validate_accuracy.py --tolerance=1.0    # Require <1% difference
+    ./scripts/validate.py                    # Validate with SR algorithm
+    ./scripts/validate.py --algorithm=lr     # Validate with LR algorithm
+    ./scripts/validate.py --tolerance=1.0    # Require <1% difference
 """
 
 from __future__ import annotations
@@ -169,9 +169,13 @@ def main() -> int:
 
     print("=" * 70)
     clf_str = classifier if classifier else "none (element-based)"
-    print(f"SASA Validation (algorithm={algorithm}, classifier={clf_str}, tolerance={tolerance}%)")
+    print(
+        f"SASA Validation (algorithm={algorithm}, classifier={clf_str}, tolerance={tolerance}%)"
+    )
     print("=" * 70)
-    print(f"{'PDB':<8} {'Atoms':>8} {'FreeSASA':>12} {'Zig':>12} {'Diff%':>8} {'Status':<8}")
+    print(
+        f"{'PDB':<8} {'Atoms':>8} {'FreeSASA':>12} {'Zig':>12} {'Diff%':>8} {'Status':<8}"
+    )
     print("-" * 70)
 
     results = []

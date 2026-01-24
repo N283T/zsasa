@@ -14,7 +14,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - NumPy-based Python API with ctypes bindings
   - Both SR and LR algorithms supported
   - `calculate_sasa(coords, radii, algorithm="sr"|"lr", ...)` function
-  - `scripts/benchmark_python.py` - Library-to-library benchmark
   - 12 unit tests with pytest
 
 - **Timing breakdown** (`--timing` flag)
@@ -24,8 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Benchmark dataset** (6 structures from tiny to xlarge)
   - 1CRN (327 atoms), 1UBQ (602), 1A0Q (3,183), 3HHB (4,384), 1AON (58,674), 4V6X (237,685)
   - `benchmarks/inputs_protor/` - Pre-generated inputs with ProtOr radii
-  - `scripts/generate_protor_inputs.py` - Generate inputs with ProtOr radii
-  - `scripts/benchmark_all.py` - Unified benchmark comparing Zig vs FreeSASA
+  - `scripts/data/generate_protor.py` - Generate inputs with ProtOr radii
+  - `scripts/benchmark.py` - Unified benchmark comparing Zig vs FreeSASA
 
 - **Lee-Richards algorithm** (`--algorithm=lr`)
   - Slice-based method with exact arc integration
@@ -52,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Removed Windows from CI matrix (WSL recommended for Windows users)
 - Updated benchmark results: SR algorithm is 1.5x-4.2x faster than FreeSASA
+- **Scripts reorganization**
+  - Created `scripts/data/` subdirectory for data preparation scripts
+  - Renamed: `benchmark_all.py` → `benchmark.py`, `validate_accuracy.py` → `validate.py`
+  - Moved data scripts to `scripts/data/` with shorter names
 
 ## [0.0.5] - 2025-01-23
 

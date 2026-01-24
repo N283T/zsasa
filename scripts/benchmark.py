@@ -3,284 +3,442 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #     "freesasa>=2.0",
-#     "gemmi>=0.7.4",
+#     "numpy>=1.24",
 # ]
 # ///
-"""Benchmark freesasa-zig against FreeSASA Python bindings.
+"""Unified benchmark comparing Zig implementation with FreeSASA across all structures.
+
+Measures performance across multiple structure sizes with both algorithms.
+Compares three implementations:
+- Zig CLI (subprocess)
+- Zig Python bindings (library)
+- FreeSASA Python (library)
 
 Usage:
-    ./benchmark.py <input_file> [--runs N] [--zig-binary PATH] [--threads N]
+    ./scripts/benchmark.py [--runs=N] [--threads=N] [--structure=PDB]
 
 Examples:
-    ./benchmark.py examples/1A0Q.cif.gz
-    ./benchmark.py examples/input_1a0q.json --runs 5
-    ./benchmark.py examples/1A0Q.cif.gz --threads 4
+    ./scripts/benchmark.py                      # Run all benchmarks
+    ./scripts/benchmark.py --runs=5             # 5 runs per benchmark
+    ./scripts/benchmark.py --structure=1a0q     # Single structure only
+
+Note on benchmark fairness:
+    Execution order is: Zig CLI -> Zig Python -> FreeSASA Python
+
+    CPU cache warming effect: FreeSASA runs after Zig, benefiting from cached data
+    (coordinates, NumPy internals, math functions, allocator state). Testing shows
+    FreeSASA is ~20% faster when run after Zig vs. cold start. This means the
+    benchmark slightly favors FreeSASA, making Zig's speedup numbers conservative.
+
+    Memory interference: Tested and confirmed no negative impact. Zig's allocations
+    are properly freed via defer, and Python GC has no significant effect.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from statistics import mean, stdev
 
 import freesasa
-import gemmi
+import numpy as np
+
+# Add the python package to path for Zig Python bindings
+sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
+try:
+    from freesasa_zig import calculate_sasa as zig_calculate_sasa
+
+    ZIG_PYTHON_AVAILABLE = True
+except ImportError:
+    ZIG_PYTHON_AVAILABLE = False
 
 
 @dataclass
 class BenchmarkResult:
-    """Benchmark results for a single implementation."""
+    """Result of a single benchmark run."""
 
-    name: str
-    times: list[float]
-    total_area: float
+    pdb_id: str
     n_atoms: int
-
-    @property
-    def mean_time(self) -> float:
-        return mean(self.times)
-
-    @property
-    def stdev_time(self) -> float:
-        return stdev(self.times) if len(self.times) > 1 else 0.0
-
-    @property
-    def min_time(self) -> float:
-        return min(self.times)
-
-    @property
-    def max_time(self) -> float:
-        return max(self.times)
+    algorithm: str
+    tool: str
+    time_ms: float
+    total_area: float
+    sasa_only_ms: float | None = (
+        None  # SASA calculation time only (for fair comparison)
+    )
 
 
-def prepare_inputs(
+def run_zig_benchmark(
     input_path: Path,
-) -> tuple[Path, Path | None]:
-    """Prepare input files for both implementations.
+    algorithm: str = "sr",
+    n_threads: int = 0,
+    classifier: str = "protor",
+) -> tuple[float, float, dict[str, float]]:
+    """Run Zig benchmark with timing. Returns (time_ms, total_area, timing_breakdown)."""
+    zig_binary = Path(__file__).parent.parent / "zig-out" / "bin" / "freesasa_zig"
 
-    Returns (json_path, pdb_path) for zig and freesasa respectively.
-    """
-    # Check if input is already JSON
-    if input_path.suffix == ".json":
-        # Need to create PDB for FreeSASA
-        # This is a limitation - we'd need the original structure
-        # For now, just return the JSON path and None for PDB
-        return input_path, None
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        output_path = Path(f.name)
 
-    # Input is a structure file (CIF/PDB)
-    st = gemmi.read_structure(str(input_path))
-    st.remove_hydrogens()
-    st.remove_alternative_conformations()
-    st.remove_ligands_and_waters()
-    st.remove_empty_chains()
+    try:
+        cmd = [
+            str(zig_binary),
+            "--timing",
+            f"--algorithm={algorithm}",
+            f"--classifier={classifier}",
+            str(input_path),
+            str(output_path),
+        ]
+        if n_threads > 0:
+            cmd.insert(3, f"--threads={n_threads}")
 
-    # Create JSON for Zig
-    xs, ys, zs, rs = [], [], [], []
-    for cra in st[0].all():
-        atom = cra.atom
-        xs.append(atom.pos.x)
-        ys.append(atom.pos.y)
-        zs.append(atom.pos.z)
-        rs.append(atom.element.vdw_r)
-
-    json_tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
-    json.dump({"x": xs, "y": ys, "z": zs, "r": rs}, open(json_tmp.name, "w"))
-
-    # Create PDB for FreeSASA
-    pdb_tmp = tempfile.NamedTemporaryFile(suffix=".pdb", delete=False)
-    st.write_pdb(pdb_tmp.name)
-
-    return Path(json_tmp.name), Path(pdb_tmp.name)
-
-
-def benchmark_zig(
-    json_path: Path,
-    zig_binary: Path,
-    runs: int,
-    threads: int | None = None,
-) -> BenchmarkResult:
-    """Benchmark the Zig implementation."""
-    times = []
-    total_area = 0.0
-    n_atoms = 0
-
-    # Build command
-    cmd = [str(zig_binary)]
-    if threads is not None:
-        cmd.append(f"--threads={threads}")
-    cmd.extend([str(json_path)])
-
-    for i in range(runs):
-        output_tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
-
-        start = time.perf_counter()
-        result = subprocess.run(
-            cmd + [output_tmp.name],
-            capture_output=True,
-            text=True,
-        )
-        elapsed = time.perf_counter() - start
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
         if result.returncode != 0:
-            print(f"Zig error: {result.stderr}", file=sys.stderr)
-            sys.exit(1)
+            raise RuntimeError(f"Zig failed: {result.stderr}")
 
-        times.append(elapsed)
+        # Parse timing from stderr
+        timing = {}
+        for line in result.stderr.split("\n"):
+            if ":" in line and "ms" in line:
+                match = re.match(r"\s*(.+?):\s*([\d.]+)\s*ms", line)
+                if match:
+                    key = match.group(1).strip().lower().replace(" ", "_")
+                    timing[key] = float(match.group(2))
 
-        # Parse output on first run
-        if i == 0:
-            with open(output_tmp.name) as f:
-                data = json.load(f)
-                total_area = data["total_area"]
-                n_atoms = len(data["atom_areas"])
+        # Get total time
+        total_time = timing.get("total", 0.0)
 
-        Path(output_tmp.name).unlink()
+        # Parse output
+        with open(output_path) as f:
+            data = json.load(f)
 
-    name = "Zig"
-    if threads is not None:
-        name = f"Zig ({threads} thread{'s' if threads != 1 else ''})"
+        return total_time, data["total_area"], timing
 
-    return BenchmarkResult(
-        name=name,
-        times=times,
-        total_area=total_area,
-        n_atoms=n_atoms,
-    )
+    finally:
+        output_path.unlink(missing_ok=True)
 
 
-def benchmark_freesasa(
-    pdb_path: Path | None,
-    json_path: Path | None,
-    runs: int,
-) -> BenchmarkResult | None:
-    """Benchmark the FreeSASA Python implementation."""
-    if pdb_path is None:
-        return None
+def run_zig_python_benchmark(
+    input_path: Path,
+    algorithm: str = "sr",
+    n_points: int = 100,
+    n_slices: int = 20,
+    n_threads: int = 0,
+) -> tuple[float, float]:
+    """Run Zig Python bindings benchmark. Returns (time_ms, total_area).
 
-    times = []
-    total_area = 0.0
-    n_atoms = 0
+    Measures only the SASA calculation time for fair comparison.
+    """
+    if not ZIG_PYTHON_AVAILABLE:
+        raise RuntimeError("Zig Python bindings not available")
 
-    for i in range(runs):
-        start = time.perf_counter()
-        structure = freesasa.Structure(str(pdb_path))
-        result = freesasa.calc(structure)
-        elapsed = time.perf_counter() - start
+    # Load input data
+    with open(input_path) as f:
+        data = json.load(f)
 
-        times.append(elapsed)
+    coords = np.column_stack([data["x"], data["y"], data["z"]])
+    radii = np.array(data["r"])
 
-        if i == 0:
-            total_area = result.totalArea()
-            n_atoms = result.nAtoms()
+    # Time only the SASA calculation
+    start = time.perf_counter()
+    if algorithm == "sr":
+        result = zig_calculate_sasa(
+            coords, radii, algorithm="sr", n_points=n_points, n_threads=n_threads
+        )
+    else:
+        result = zig_calculate_sasa(
+            coords, radii, algorithm="lr", n_slices=n_slices, n_threads=n_threads
+        )
+    elapsed = time.perf_counter() - start
 
-    return BenchmarkResult(
-        name="FreeSASA (Python)",
-        times=times,
-        total_area=total_area,
-        n_atoms=n_atoms,
-    )
+    return elapsed * 1000, result.total_area
 
 
-def print_results(results: list[BenchmarkResult], runs: int) -> None:
-    """Print benchmark results in a formatted table."""
-    print(f"\n{'=' * 60}")
-    print(f"Benchmark Results ({runs} runs)")
-    print(f"{'=' * 60}\n")
+def run_freesasa_python_benchmark(
+    input_path: Path,
+    algorithm: str = "sr",
+    n_points: int = 100,
+    n_slices: int = 20,
+) -> tuple[float, float]:
+    """Run FreeSASA Python benchmark. Returns (time_ms, total_area).
 
-    # Table header
-    print(
-        f"{'Implementation':<20} {'Mean (s)':<12} {'Std (s)':<12} {'Min (s)':<12} {'Max (s)':<12}"
-    )
-    print("-" * 68)
+    Measures only the freesasa.calc() time for fair comparison.
+    """
+    # Load pre-computed ProtOr radii input
+    with open(input_path) as f:
+        data = json.load(f)
 
-    for r in results:
-        print(
-            f"{r.name:<20} {r.mean_time:<12.4f} {r.stdev_time:<12.4f} "
-            f"{r.min_time:<12.4f} {r.max_time:<12.4f}"
+    n_atoms = len(data["x"])
+    coords = []
+    for i in range(n_atoms):
+        coords.extend([data["x"][i], data["y"][i], data["z"][i]])
+
+    radii = data["r"]
+
+    # Set algorithm parameters
+    if algorithm == "sr":
+        params = freesasa.Parameters(
+            {"algorithm": freesasa.ShrakeRupley, "n-points": n_points}
+        )
+    else:
+        params = freesasa.Parameters(
+            {"algorithm": freesasa.LeeRichards, "n-slices": n_slices}
         )
 
-    print()
+    # Time only the SASA calculation
+    start = time.perf_counter()
+    result = freesasa.calcCoord(coords, radii, params)
+    elapsed = time.perf_counter() - start
 
-    # SASA comparison
-    print(f"{'Implementation':<20} {'Atoms':<10} {'Total SASA (Å²)':<20}")
-    print("-" * 50)
+    return elapsed * 1000, result.totalArea()
 
-    for r in results:
-        print(f"{r.name:<20} {r.n_atoms:<10} {r.total_area:<20.2f}")
 
-    if len(results) == 2:
-        diff = abs(results[0].total_area - results[1].total_area)
-        diff_pct = diff / results[1].total_area * 100
-        speedup = results[1].mean_time / results[0].mean_time
+def run_benchmarks(
+    structures: list[tuple[str, str, str]],
+    base_dir: Path,
+    n_runs: int = 3,
+    n_threads: int = 0,
+) -> list[BenchmarkResult]:
+    """Run all benchmarks and return results."""
+    results = []
+    algorithms = ["sr", "lr"]
 
-        print()
-        print(f"SASA difference: {diff:.2f} Å² ({diff_pct:.2f}%)")
-        print(f"Speedup: {speedup:.2f}x")
+    for pdb_id, category, description in structures:
+        # Use ProtOr-radii inputs for both Zig and FreeSASA
+        input_path = base_dir / "inputs_protor" / f"{pdb_id}.json"
+
+        if not input_path.exists():
+            print(f"  {pdb_id}: Skipping (input not found)")
+            continue
+
+        # Get atom count
+        with open(input_path) as f:
+            data = json.load(f)
+            n_atoms = len(data.get("x", []))
+
+        print(f"\n{pdb_id.upper()} ({n_atoms} atoms):")
+
+        for algo in algorithms:
+            # Zig benchmark
+            zig_times = []
+            zig_sasa_times = []
+            zig_area = 0.0
+            for _ in range(n_runs):
+                try:
+                    t, area, timing = run_zig_benchmark(
+                        input_path, algo, n_threads, "protor"
+                    )
+                    zig_times.append(t)
+                    zig_area = area
+                    # Extract SASA-only time from timing breakdown
+                    if "sasa_calculation" in timing:
+                        zig_sasa_times.append(timing["sasa_calculation"])
+                except Exception as e:
+                    print(f"    Zig {algo.upper()}: ERROR - {e}")
+                    break
+
+            if zig_times:
+                avg_time = sum(zig_times) / len(zig_times)
+                avg_sasa_time = (
+                    sum(zig_sasa_times) / len(zig_sasa_times)
+                    if zig_sasa_times
+                    else None
+                )
+                results.append(
+                    BenchmarkResult(
+                        pdb_id,
+                        n_atoms,
+                        algo,
+                        "zig-cli",
+                        avg_time,
+                        zig_area,
+                        avg_sasa_time,
+                    )
+                )
+                sasa_str = f", SASA: {avg_sasa_time:.2f}" if avg_sasa_time else ""
+                print(
+                    f"  Zig CLI {algo.upper():2s}: {avg_time:8.2f} ms{sasa_str} (area: {zig_area:.2f})"
+                )
+
+            # Zig Python bindings benchmark
+            if not ZIG_PYTHON_AVAILABLE:
+                print(f"  Zig Py  {algo.upper():2s}: SKIPPED (bindings not available)")
+            elif ZIG_PYTHON_AVAILABLE:
+                zig_py_times = []
+                zig_py_area = 0.0
+                for _ in range(n_runs):
+                    try:
+                        t, area = run_zig_python_benchmark(
+                            input_path, algo, n_threads=n_threads
+                        )
+                        zig_py_times.append(t)
+                        zig_py_area = area
+                    except Exception as e:
+                        print(f"    Zig Py {algo.upper()}: ERROR - {e}")
+                        break
+
+                if zig_py_times:
+                    avg_time = sum(zig_py_times) / len(zig_py_times)
+                    results.append(
+                        BenchmarkResult(
+                            pdb_id, n_atoms, algo, "zig-py", avg_time, zig_py_area
+                        )
+                    )
+                    print(
+                        f"  Zig Py  {algo.upper():2s}: {avg_time:8.2f} ms (area: {zig_py_area:.2f})"
+                    )
+
+            # FreeSASA Python benchmark
+            fs_times = []
+            fs_area = 0.0
+            for _ in range(n_runs):
+                try:
+                    t, area = run_freesasa_python_benchmark(input_path, algo)
+                    fs_times.append(t)
+                    fs_area = area
+                except Exception as e:
+                    print(f"    FreeSASA {algo.upper()}: ERROR - {e}")
+                    break
+
+            if fs_times:
+                avg_time = sum(fs_times) / len(fs_times)
+                results.append(
+                    BenchmarkResult(
+                        pdb_id, n_atoms, algo, "freesasa", avg_time, fs_area
+                    )
+                )
+                print(
+                    f"  FS      {algo.upper():2s}: {avg_time:8.2f} ms (area: {fs_area:.2f})"
+                )
+
+    return results
+
+
+def print_summary(results: list[BenchmarkResult]) -> None:
+    """Print benchmark summary table."""
+    print("\n" + "=" * 100)
+    print("BENCHMARK SUMMARY (SASA-only for fair comparison)")
+    print("=" * 100)
+
+    # Group by PDB
+    pdbs = sorted(
+        set(r.pdb_id for r in results),
+        key=lambda p: next(r.n_atoms for r in results if r.pdb_id == p),
+    )
+
+    # Check if we have Zig Python results
+    has_zig_py = any(r.tool == "zig-py" for r in results)
+
+    if has_zig_py:
+        print(
+            f"\n{'PDB':<6} {'Atoms':>7} {'Algo':<3} "
+            f"{'Zig CLI':>10} {'Zig Py':>10} {'FreeSASA':>10} "
+            f"{'CLI vs FS':>10} {'Py vs FS':>10}"
+        )
+        print("-" * 90)
+    else:
+        print(
+            f"\n{'PDB':<8} {'Atoms':>8} {'Algo':<4} "
+            f"{'Zig SASA':>10} {'FS (ms)':>10} {'Speedup':>10}"
+        )
+        print("-" * 60)
+
+    for pdb in pdbs:
+        pdb_results = [r for r in results if r.pdb_id == pdb]
+        n_atoms = pdb_results[0].n_atoms if pdb_results else 0
+
+        for algo in ["sr", "lr"]:
+            zig_cli_r = next(
+                (r for r in pdb_results if r.algorithm == algo and r.tool == "zig-cli"),
+                None,
+            )
+            zig_py_r = next(
+                (r for r in pdb_results if r.algorithm == algo and r.tool == "zig-py"),
+                None,
+            )
+            fs_r = next(
+                (
+                    r
+                    for r in pdb_results
+                    if r.algorithm == algo and r.tool == "freesasa"
+                ),
+                None,
+            )
+
+            if has_zig_py and zig_cli_r and zig_py_r and fs_r:
+                # Use SASA-only time for CLI (or total if not available)
+                cli_time = (
+                    zig_cli_r.sasa_only_ms
+                    if zig_cli_r.sasa_only_ms
+                    else zig_cli_r.time_ms
+                )
+                py_time = zig_py_r.time_ms
+                fs_time = fs_r.time_ms
+                cli_speedup = fs_time / cli_time if cli_time > 0 else 0
+                py_speedup = fs_time / py_time if py_time > 0 else 0
+                print(
+                    f"{pdb:<6} {n_atoms:>7} {algo.upper():<3} "
+                    f"{cli_time:>9.2f}ms {py_time:>9.2f}ms {fs_time:>9.2f}ms "
+                    f"{cli_speedup:>9.2f}x {py_speedup:>9.2f}x"
+                )
+            elif zig_cli_r and fs_r:
+                # Fallback: no Zig Python results
+                zig_time = (
+                    zig_cli_r.sasa_only_ms
+                    if zig_cli_r.sasa_only_ms
+                    else zig_cli_r.time_ms
+                )
+                speedup = fs_r.time_ms / zig_time if zig_time > 0 else 0
+                print(
+                    f"{pdb:<8} {n_atoms:>8} {algo.upper():<4} "
+                    f"{zig_time:>10.2f} {fs_r.time_ms:>10.2f} {speedup:>9.2f}x"
+                )
 
 
 def main() -> int:
-    import argparse
+    # Parse arguments
+    n_runs = 3
+    n_threads = 0
+    structure_filter = None
 
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input_file", type=Path, help="Input file (CIF, PDB, or JSON)")
-    parser.add_argument("--runs", type=int, default=3, help="Number of benchmark runs")
-    parser.add_argument(
-        "--zig-binary",
-        type=Path,
-        default=Path("zig-out/bin/freesasa_zig"),
-        help="Path to Zig binary",
-    )
-    parser.add_argument(
-        "--threads",
-        type=int,
-        default=None,
-        help="Number of threads for Zig (default: auto-detect)",
-    )
-    args = parser.parse_args()
+    for arg in sys.argv[1:]:
+        if arg.startswith("--runs="):
+            n_runs = int(arg.split("=")[1])
+        elif arg.startswith("--threads="):
+            n_threads = int(arg.split("=")[1])
+        elif arg.startswith("--structure="):
+            structure_filter = arg.split("=")[1].lower()
 
-    if not args.input_file.exists():
-        print(f"Error: File not found: {args.input_file}", file=sys.stderr)
-        return 1
+    # Available structures
+    structures = [
+        ("1crn", "tiny", "Crambin"),
+        ("1ubq", "small", "Ubiquitin"),
+        ("1a0q", "medium", "Lipid transfer protein"),
+        ("3hhb", "medium", "Hemoglobin"),
+        ("1aon", "large", "GroEL-GroES"),
+        ("4v6x", "xlarge", "Ribosome"),
+    ]
 
-    if not args.zig_binary.exists():
-        print(f"Error: Zig binary not found: {args.zig_binary}", file=sys.stderr)
-        print("Run 'zig build' first.", file=sys.stderr)
-        return 1
+    if structure_filter:
+        structures = [(p, c, d) for p, c, d in structures if p == structure_filter]
+        if not structures:
+            print(f"Error: Unknown structure: {structure_filter}")
+            return 1
 
-    print(f"Input: {args.input_file}")
-    print(f"Runs: {args.runs}")
-    if args.threads is not None:
-        print(f"Threads: {args.threads}")
+    base_dir = Path(__file__).parent.parent / "benchmarks"
 
-    # Prepare inputs
-    json_path, pdb_path = prepare_inputs(args.input_file)
+    print("=" * 80)
+    print(f"SASA Benchmark (runs={n_runs}, threads={n_threads or 'auto'})")
+    print("=" * 80)
 
-    results = []
-
-    # Benchmark Zig
-    thread_info = f" ({args.threads} threads)" if args.threads else ""
-    print(f"\nBenchmarking Zig implementation{thread_info}...")
-    zig_result = benchmark_zig(json_path, args.zig_binary, args.runs, args.threads)
-    results.append(zig_result)
-
-    # Benchmark FreeSASA (if PDB available)
-    if pdb_path:
-        print("Benchmarking FreeSASA (Python)...")
-        freesasa_result = benchmark_freesasa(pdb_path, json_path, args.runs)
-        if freesasa_result:
-            results.append(freesasa_result)
-        pdb_path.unlink()
-
-    # Cleanup temp JSON if we created it
-    if json_path != args.input_file:
-        json_path.unlink()
-
-    print_results(results, args.runs)
+    results = run_benchmarks(structures, base_dir, n_runs, n_threads)
+    print_summary(results)
 
     return 0
 

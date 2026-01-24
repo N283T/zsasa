@@ -12,7 +12,7 @@ This creates inputs that can be used directly with the C benchmark
 without needing a classifier.
 
 Usage:
-    ./generate_protor_inputs.py
+    ./scripts/data/generate_protor.py
 """
 
 from __future__ import annotations
@@ -90,4 +90,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

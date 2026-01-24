@@ -13,11 +13,11 @@ Converts mmCIF/PDB to a clean PDB (no hydrogens, no altlocs, no ligands),
 then calculates SASA using FreeSASA's Shrake-Rupley algorithm.
 
 Usage:
-    ./calc_reference_sasa.py <input_file> [output_file]
+    ./scripts/data/calc_reference.py <input_file> [output_file]
 
 Examples:
-    ./calc_reference_sasa.py examples/1A0Q.cif.gz
-    ./calc_reference_sasa.py 1abc.pdb reference.json
+    ./scripts/data/calc_reference.py examples/1A0Q.cif.gz
+    ./scripts/data/calc_reference.py 1abc.pdb reference.json
 """
 
 from __future__ import annotations

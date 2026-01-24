@@ -14,12 +14,12 @@ Downloads PDB structures from RCSB, converts to input JSON format,
 and calculates FreeSASA reference SASA values.
 
 Usage:
-    ./generate_benchmark_data.py [--structures-only] [--references-only]
+    ./scripts/data/generate.py [--structures-only] [--references-only]
 
 Examples:
-    ./generate_benchmark_data.py                    # Full generation
-    ./generate_benchmark_data.py --structures-only  # Download structures only
-    ./generate_benchmark_data.py --references-only  # Generate references only
+    ./scripts/data/generate.py                    # Full generation
+    ./scripts/data/generate.py --structures-only  # Download structures only
+    ./scripts/data/generate.py --references-only  # Generate references only
 """
 
 from __future__ import annotations
