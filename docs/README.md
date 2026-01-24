@@ -9,9 +9,10 @@ freesasa-zig の技術ドキュメント（日本語）。
 | File | Description | 内容 |
 |------|-------------|------|
 | [architecture.md](architecture.md) | Architecture overview | アーキテクチャ概要 |
-| [algorithm.md](algorithm.md) | Shrake-Rupley algorithm | アルゴリズム詳解 |
+| [algorithm.md](algorithm.md) | SASA algorithms (SR/LR) | アルゴリズム詳解 |
 | [optimizations.md](optimizations.md) | Optimization techniques | 最適化技術 |
-| [cli-io.md](cli-io.md) | CLI and I/O | CLI・入出力 |
+| [cli-io.md](cli-io.md) | CLI, I/O, and analysis | CLI・入出力・解析 |
+| [classifier.md](classifier.md) | Atom radius classifiers | 原子分類器詳解 |
 | [ci.md](ci.md) | CI/CD configuration | CI/CD構成 |
 
 ## Benchmark Environment / ベンチマーク環境
