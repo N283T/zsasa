@@ -256,6 +256,39 @@ Run benchmark: `./scripts/benchmark_all.py`
 2. **SIMD**: Process 4 calculations in parallel using `@Vector(4, f64)`
 3. **Multi-threading**: Parallel atom processing with work-stealing thread pool
 
+## Python Bindings
+
+Use freesasa-zig from Python with NumPy arrays:
+
+```python
+import numpy as np
+from freesasa_zig import calculate_sasa
+
+# Atom coordinates (N, 3) and radii (N,)
+coords = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+radii = np.array([1.5, 1.5])
+
+# Calculate SASA
+result = calculate_sasa(coords, radii)
+print(f"Total SASA: {result.total_area:.2f} Å²")
+
+# Use Lee-Richards algorithm
+result_lr = calculate_sasa(coords, radii, algorithm="lr")
+```
+
+### Installation
+
+```bash
+# Build shared library
+zig build -Doptimize=ReleaseFast
+
+# Install Python package
+cd python
+pip install -e .
+```
+
+See [python/README.md](python/README.md) for full API documentation.
+
 ## Atom Classifier
 
 The classifier module assigns van der Waals radii and polarity classes to atoms based on residue and atom names. Three built-in classifiers are available, plus support for custom config files.
@@ -353,6 +386,11 @@ freesasa-zig/
 │   ├── 1A0Q.cif.gz        # Original structure file (PDB 1A0Q)
 │   ├── input_1a0q.json    # Example input (converted from cif)
 │   └── 1A0Q_sasa.json     # Reference SASA from FreeSASA
+├── python/
+│   ├── freesasa_zig/      # Python bindings package
+│   │   ├── __init__.py    # Package exports
+│   │   └── core.py        # ctypes bindings with NumPy
+│   └── tests/             # Python tests
 ├── docs/                  # Technical documentation (Japanese)
 │   ├── architecture.md    # Architecture overview
 │   ├── algorithm.md       # Algorithm details
@@ -379,6 +417,7 @@ freesasa-zig/
   - [x] Custom config file parser (FreeSASA format)
   - [x] CLI integration (`--classifier`, `--config`)
 - [x] Phase 11: Lee-Richards algorithm (with multi-threading & SIMD)
+- [x] Phase 13: Python bindings (NumPy integration via C API)
 - [ ] Phase 10: Direct mmCIF input support
 
 ## License
