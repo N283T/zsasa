@@ -172,6 +172,20 @@ def calculate_sasa(
     """
     lib = _get_lib()
 
+    # Validate parameters
+    if n_points <= 0:
+        msg = f"n_points must be positive, got {n_points}"
+        raise ValueError(msg)
+    if n_slices <= 0:
+        msg = f"n_slices must be positive, got {n_slices}"
+        raise ValueError(msg)
+    if probe_radius <= 0:
+        msg = f"probe_radius must be positive, got {probe_radius}"
+        raise ValueError(msg)
+    if n_threads < 0:
+        msg = f"n_threads must be non-negative, got {n_threads}"
+        raise ValueError(msg)
+
     # Validate and convert inputs
     coords = np.ascontiguousarray(coords, dtype=np.float64)
     radii = np.ascontiguousarray(radii, dtype=np.float64)
@@ -183,6 +197,10 @@ def calculate_sasa(
     n_atoms = coords.shape[0]
     if radii.shape != (n_atoms,):
         msg = f"radii must be ({n_atoms},) array, got shape {radii.shape}"
+        raise ValueError(msg)
+
+    if np.any(radii < 0):
+        msg = "All radii must be non-negative"
         raise ValueError(msg)
 
     # Extract x, y, z

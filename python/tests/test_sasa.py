@@ -153,3 +153,43 @@ class TestInputValidation:
 
         with pytest.raises(ValueError, match="Unknown algorithm"):
             calculate_sasa(coords, radii, algorithm="invalid")
+
+    def test_empty_input(self):
+        """Should raise error for empty arrays."""
+        coords = np.array([]).reshape(0, 3)
+        radii = np.array([])
+
+        with pytest.raises((ValueError, RuntimeError)):
+            calculate_sasa(coords, radii)
+
+    def test_negative_n_points(self):
+        """Should raise error for negative n_points."""
+        coords = np.array([[0.0, 0.0, 0.0]])
+        radii = np.array([1.5])
+
+        with pytest.raises(ValueError, match="n_points must be positive"):
+            calculate_sasa(coords, radii, n_points=-1)
+
+    def test_zero_n_slices(self):
+        """Should raise error for zero n_slices."""
+        coords = np.array([[0.0, 0.0, 0.0]])
+        radii = np.array([1.5])
+
+        with pytest.raises(ValueError, match="n_slices must be positive"):
+            calculate_sasa(coords, radii, algorithm="lr", n_slices=0)
+
+    def test_negative_probe_radius(self):
+        """Should raise error for negative probe_radius."""
+        coords = np.array([[0.0, 0.0, 0.0]])
+        radii = np.array([1.5])
+
+        with pytest.raises(ValueError, match="probe_radius must be positive"):
+            calculate_sasa(coords, radii, probe_radius=-1.0)
+
+    def test_negative_radii(self):
+        """Should raise error for negative radii."""
+        coords = np.array([[0.0, 0.0, 0.0]])
+        radii = np.array([-1.5])
+
+        with pytest.raises(ValueError, match="non-negative"):
+            calculate_sasa(coords, radii)

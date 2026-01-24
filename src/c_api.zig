@@ -11,10 +11,14 @@ const types = @import("types.zig");
 const AtomInput = types.AtomInput;
 const Config = types.Config;
 
-// Error codes
+/// No error - calculation completed successfully
 pub const FREESASA_OK: c_int = 0;
+/// Invalid input parameters (n_atoms=0, n_points=0, n_slices=0, or invalid probe_radius)
+/// Note: Passing NULL pointers results in undefined behavior
 pub const FREESASA_ERROR_INVALID_INPUT: c_int = -1;
+/// Memory allocation failed during calculation
 pub const FREESASA_ERROR_OUT_OF_MEMORY: c_int = -2;
+/// Internal calculation error
 pub const FREESASA_ERROR_CALCULATION: c_int = -3;
 
 // Version string
@@ -55,7 +59,7 @@ export fn freesasa_calc_sr(
     total_area: *f64,
 ) callconv(.c) c_int {
     // Validate input
-    if (n_atoms == 0) {
+    if (n_atoms == 0 or n_points == 0 or probe_radius <= 0.0) {
         return FREESASA_ERROR_INVALID_INPUT;
     }
 
@@ -121,7 +125,7 @@ export fn freesasa_calc_lr(
     total_area: *f64,
 ) callconv(.c) c_int {
     // Validate input
-    if (n_atoms == 0) {
+    if (n_atoms == 0 or n_slices == 0 or probe_radius <= 0.0) {
         return FREESASA_ERROR_INVALID_INPUT;
     }
 
