@@ -1,41 +1,26 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = [
-#     "freesasa>=2.0",
-#     "numpy>=1.24",
-# ]
+# dependencies = []
 # ///
-"""Unified benchmark comparing Zig implementation with FreeSASA across all structures.
+"""Benchmark comparing Zig SASA implementation with FreeSASA C.
 
-Measures performance across multiple structure sizes with both algorithms.
-Compares implementations:
-- Zig CLI (subprocess)
-- Zig Python bindings (library)
-- FreeSASA Python (library)
-- FreeSASA C (optional, subprocess with multi-threading support)
+Measures SASA calculation performance across multiple structure sizes.
+Compares Zig CLI vs FreeSASA C (both native, both with multi-threading).
 
 Usage:
     ./scripts/benchmark.py [--runs=N] [--threads=N] [--structure=PDB]
-    ./scripts/benchmark.py --use-c [--fs-c-path=PATH] [--threads=N]
+    ./scripts/benchmark.py --fs-c-path=PATH [--threads=N]
 
 Examples:
-    ./scripts/benchmark.py                      # Run all benchmarks
+    ./scripts/benchmark.py                      # Run benchmark
     ./scripts/benchmark.py --runs=5             # 5 runs per benchmark
-    ./scripts/benchmark.py --structure=1a0q     # Single structure only
-    ./scripts/benchmark.py --use-c              # Include FreeSASA C benchmark
-    ./scripts/benchmark.py --use-c --threads=4  # FreeSASA C with 4 threads
+    ./scripts/benchmark.py --structure=4v6x     # Single structure only
+    ./scripts/benchmark.py --threads=4          # Use 4 threads
 
-Note on benchmark fairness:
-    Execution order is: Zig CLI -> Zig Python -> FreeSASA Python
-
-    CPU cache warming effect: FreeSASA runs after Zig, benefiting from cached data
-    (coordinates, NumPy internals, math functions, allocator state). Testing shows
-    FreeSASA is ~20% faster when run after Zig vs. cold start. This means the
-    benchmark slightly favors FreeSASA, making Zig's speedup numbers conservative.
-
-    Memory interference: Tested and confirmed no negative impact. Zig's allocations
-    are properly freed via defer, and Python GC has no significant effect.
+Requirements:
+    - Zig binary built with: zig build -Doptimize=ReleaseFast
+    - FreeSASA C binary built with thread support (see README)
 """
 
 from __future__ import annotations
@@ -45,21 +30,8 @@ import re
 import subprocess
 import sys
 import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
-
-import freesasa
-import numpy as np
-
-# Add the python package to path for Zig Python bindings
-sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
-try:
-    from freesasa_zig import calculate_sasa as zig_calculate_sasa
-
-    ZIG_PYTHON_AVAILABLE = True
-except ImportError:
-    ZIG_PYTHON_AVAILABLE = False
 
 
 @dataclass
@@ -72,9 +44,7 @@ class BenchmarkResult:
     tool: str
     time_ms: float
     total_area: float
-    sasa_only_ms: float | None = (
-        None  # SASA calculation time only (for fair comparison)
-    )
+    sasa_only_ms: float | None = None
 
 
 def run_zig_benchmark(
@@ -128,81 +98,6 @@ def run_zig_benchmark(
         output_path.unlink(missing_ok=True)
 
 
-def run_zig_python_benchmark(
-    input_path: Path,
-    algorithm: str = "sr",
-    n_points: int = 100,
-    n_slices: int = 20,
-    n_threads: int = 0,
-) -> tuple[float, float]:
-    """Run Zig Python bindings benchmark. Returns (time_ms, total_area).
-
-    Measures only the SASA calculation time for fair comparison.
-    """
-    if not ZIG_PYTHON_AVAILABLE:
-        raise RuntimeError("Zig Python bindings not available")
-
-    # Load input data
-    with open(input_path) as f:
-        data = json.load(f)
-
-    coords = np.column_stack([data["x"], data["y"], data["z"]])
-    radii = np.array(data["r"])
-
-    # Time only the SASA calculation
-    start = time.perf_counter()
-    if algorithm == "sr":
-        result = zig_calculate_sasa(
-            coords, radii, algorithm="sr", n_points=n_points, n_threads=n_threads
-        )
-    else:
-        result = zig_calculate_sasa(
-            coords, radii, algorithm="lr", n_slices=n_slices, n_threads=n_threads
-        )
-    elapsed = time.perf_counter() - start
-
-    return elapsed * 1000, result.total_area
-
-
-def run_freesasa_python_benchmark(
-    input_path: Path,
-    algorithm: str = "sr",
-    n_points: int = 100,
-    n_slices: int = 20,
-) -> tuple[float, float]:
-    """Run FreeSASA Python benchmark. Returns (time_ms, total_area).
-
-    Measures only the freesasa.calc() time for fair comparison.
-    """
-    # Load pre-computed ProtOr radii input
-    with open(input_path) as f:
-        data = json.load(f)
-
-    n_atoms = len(data["x"])
-    coords = []
-    for i in range(n_atoms):
-        coords.extend([data["x"][i], data["y"][i], data["z"][i]])
-
-    radii = data["r"]
-
-    # Set algorithm parameters
-    if algorithm == "sr":
-        params = freesasa.Parameters(
-            {"algorithm": freesasa.ShrakeRupley, "n-points": n_points}
-        )
-    else:
-        params = freesasa.Parameters(
-            {"algorithm": freesasa.LeeRichards, "n-slices": n_slices}
-        )
-
-    # Time only the SASA calculation
-    start = time.perf_counter()
-    result = freesasa.calcCoord(coords, radii, params)
-    elapsed = time.perf_counter() - start
-
-    return elapsed * 1000, result.totalArea()
-
-
 def run_freesasa_c_benchmark(
     cif_path: Path,
     algorithm: str = "sr",
@@ -217,7 +112,6 @@ def run_freesasa_c_benchmark(
     The sasa_only_ms is parsed from stderr if available (requires patched binary).
     """
     if fs_c_binary is None:
-        # Default location: freesasa-c/src/freesasa in project root
         fs_c_binary = Path(__file__).parent.parent / "freesasa-c" / "src" / "freesasa"
 
     if not fs_c_binary.exists():
@@ -226,7 +120,6 @@ def run_freesasa_c_benchmark(
     if not cif_path.exists():
         raise FileNotFoundError(f"CIF file not found: {cif_path}")
 
-    # Build command
     cmd = [
         str(fs_c_binary),
         "--cif",
@@ -241,10 +134,7 @@ def run_freesasa_c_benchmark(
 
     cmd.append(str(cif_path))
 
-    # Run and time
-    start = time.perf_counter()
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    elapsed = time.perf_counter() - start
 
     if result.returncode != 0:
         raise RuntimeError(f"FreeSASA C failed: {result.stderr}")
@@ -266,7 +156,10 @@ def run_freesasa_c_benchmark(
             sasa_only_ms = float(match.group(1))
             break
 
-    return elapsed * 1000, total_area, sasa_only_ms
+    # Use SASA-only time as the primary time if available
+    elapsed_ms = sasa_only_ms if sasa_only_ms is not None else 0.0
+
+    return elapsed_ms, total_area, sasa_only_ms
 
 
 def download_cif_if_needed(pdb_id: str, cif_dir: Path) -> Path:
@@ -285,7 +178,6 @@ def download_cif_if_needed(pdb_id: str, cif_dir: Path) -> Path:
     try:
         urllib.request.urlretrieve(url, cif_path)
     except (urllib.error.URLError, urllib.error.HTTPError) as e:
-        # Clean up partial download
         cif_path.unlink(missing_ok=True)
         raise FileNotFoundError(f"Failed to download {pdb_id}.cif: {e}") from e
 
@@ -297,15 +189,14 @@ def run_benchmarks(
     base_dir: Path,
     n_runs: int = 3,
     n_threads: int = 0,
-    use_c: bool = False,
     fs_c_path: Path | None = None,
 ) -> list[BenchmarkResult]:
     """Run all benchmarks and return results."""
     results = []
     algorithms = ["sr", "lr"]
+    cif_dir = base_dir / "cif"
 
     for pdb_id, category, description in structures:
-        # Use ProtOr-radii inputs for both Zig and FreeSASA
         input_path = base_dir / "inputs_protor" / f"{pdb_id}.json"
 
         if not input_path.exists():
@@ -316,6 +207,13 @@ def run_benchmarks(
         with open(input_path) as f:
             data = json.load(f)
             n_atoms = len(data.get("x", []))
+
+        # Download CIF for FreeSASA C
+        try:
+            cif_path = download_cif_if_needed(pdb_id, cif_dir)
+        except FileNotFoundError as e:
+            print(f"  {pdb_id}: Skipping ({e})")
+            continue
 
         print(f"\n{pdb_id.upper()} ({n_atoms} atoms):")
 
@@ -331,7 +229,6 @@ def run_benchmarks(
                     )
                     zig_times.append(t)
                     zig_area = area
-                    # Extract SASA-only time from timing breakdown
                     if "sasa_calculation" in timing:
                         zig_sasa_times.append(timing["sasa_calculation"])
                 except Exception as e:
@@ -350,285 +247,99 @@ def run_benchmarks(
                         pdb_id,
                         n_atoms,
                         algo,
-                        "zig-cli",
+                        "zig",
                         avg_time,
                         zig_area,
                         avg_sasa_time,
                     )
                 )
-                sasa_str = f", SASA: {avg_sasa_time:.2f}" if avg_sasa_time else ""
-                print(
-                    f"  Zig CLI {algo.upper():2s}: {avg_time:8.2f} ms{sasa_str} (area: {zig_area:.2f})"
-                )
+                sasa_str = f" (SASA: {avg_sasa_time:.2f}ms)" if avg_sasa_time else ""
+                print(f"  Zig   {algo.upper():2s}: {avg_sasa_time or avg_time:8.2f} ms{sasa_str}")
 
-            # Zig Python bindings benchmark
-            if not ZIG_PYTHON_AVAILABLE:
-                print(f"  Zig Py  {algo.upper():2s}: SKIPPED (bindings not available)")
-            else:
-                zig_py_times = []
-                zig_py_area = 0.0
-                for _ in range(n_runs):
-                    try:
-                        t, area = run_zig_python_benchmark(
-                            input_path, algo, n_threads=n_threads
-                        )
-                        zig_py_times.append(t)
-                        zig_py_area = area
-                    except Exception as e:
-                        print(f"    Zig Py {algo.upper()}: ERROR - {e}")
-                        break
-
-                if zig_py_times:
-                    avg_time = sum(zig_py_times) / len(zig_py_times)
-                    results.append(
-                        BenchmarkResult(
-                            pdb_id, n_atoms, algo, "zig-py", avg_time, zig_py_area
-                        )
-                    )
-                    print(
-                        f"  Zig Py  {algo.upper():2s}: {avg_time:8.2f} ms (area: {zig_py_area:.2f})"
-                    )
-
-            # FreeSASA Python benchmark
-            fs_times = []
-            fs_area = 0.0
+            # FreeSASA C benchmark
+            fsc_times = []
+            fsc_area = 0.0
             for _ in range(n_runs):
                 try:
-                    t, area = run_freesasa_python_benchmark(input_path, algo)
-                    fs_times.append(t)
-                    fs_area = area
+                    t, area, sasa_ms = run_freesasa_c_benchmark(
+                        cif_path,
+                        algo,
+                        n_threads=n_threads if n_threads > 0 else 1,
+                        fs_c_binary=fs_c_path,
+                    )
+                    fsc_times.append(t)
+                    fsc_area = area
                 except Exception as e:
-                    print(f"    FreeSASA {algo.upper()}: ERROR - {e}")
+                    print(f"    FS-C {algo.upper()}: ERROR - {e}")
                     break
 
-            if fs_times:
-                avg_time = sum(fs_times) / len(fs_times)
+            if fsc_times:
+                avg_time = sum(fsc_times) / len(fsc_times)
                 results.append(
                     BenchmarkResult(
-                        pdb_id, n_atoms, algo, "freesasa", avg_time, fs_area
+                        pdb_id,
+                        n_atoms,
+                        algo,
+                        "freesasa-c",
+                        avg_time,
+                        fsc_area,
+                        avg_time,  # Already SASA-only from patched binary
                     )
                 )
-                print(
-                    f"  FS      {algo.upper():2s}: {avg_time:8.2f} ms (area: {fs_area:.2f})"
-                )
-
-            # FreeSASA C benchmark (optional)
-            if use_c:
-                cif_dir = base_dir / "cif"
-                try:
-                    cif_path = download_cif_if_needed(pdb_id, cif_dir)
-                    fsc_times = []
-                    fsc_sasa_times = []
-                    fsc_area = 0.0
-                    for _ in range(n_runs):
-                        try:
-                            t, area, sasa_ms = run_freesasa_c_benchmark(
-                                cif_path,
-                                algo,
-                                n_threads=n_threads if n_threads > 0 else 1,
-                                fs_c_binary=fs_c_path,
-                            )
-                            fsc_times.append(t)
-                            fsc_area = area
-                            if sasa_ms is not None:
-                                fsc_sasa_times.append(sasa_ms)
-                        except Exception as e:
-                            print(f"    FS-C {algo.upper()}: ERROR - {e}")
-                            break
-
-                    if fsc_times:
-                        avg_time = sum(fsc_times) / len(fsc_times)
-                        avg_sasa_time = (
-                            sum(fsc_sasa_times) / len(fsc_sasa_times)
-                            if fsc_sasa_times
-                            else None
-                        )
-                        results.append(
-                            BenchmarkResult(
-                                pdb_id,
-                                n_atoms,
-                                algo,
-                                "freesasa-c",
-                                avg_time,
-                                fsc_area,
-                                avg_sasa_time,
-                            )
-                        )
-                        sasa_str = (
-                            f", SASA: {avg_sasa_time:.2f}" if avg_sasa_time else ""
-                        )
-                        print(
-                            f"  FS-C    {algo.upper():2s}: {avg_time:8.2f} ms{sasa_str} (area: {fsc_area:.2f})"
-                        )
-                except FileNotFoundError as e:
-                    print(f"    FS-C {algo.upper()}: SKIP - {e}")
+                print(f"  FS-C  {algo.upper():2s}: {avg_time:8.2f} ms")
 
     return results
 
 
 def print_summary(results: list[BenchmarkResult]) -> None:
     """Print benchmark summary table."""
-    print("\n" + "=" * 100)
-    print("BENCHMARK SUMMARY (SASA-only for fair comparison)")
-    print("=" * 100)
+    print("\n" + "=" * 70)
+    print("BENCHMARK SUMMARY (SASA calculation time only)")
+    print("=" * 70)
 
-    # Group by PDB
     pdbs = sorted(
         set(r.pdb_id for r in results),
         key=lambda p: next(r.n_atoms for r in results if r.pdb_id == p),
     )
 
-    # Check which tools we have
-    has_zig_py = any(r.tool == "zig-py" for r in results)
-    has_fs_c = any(r.tool == "freesasa-c" for r in results)
+    print(
+        f"\n{'PDB':<8} {'Atoms':>8} {'Algo':<4} "
+        f"{'Zig (ms)':>12} {'FS-C (ms)':>12} {'Speedup':>10}"
+    )
+    print("-" * 65)
 
-    if has_fs_c:
-        # FreeSASA C comparison mode (SASA-only times)
-        print(
-            f"\n{'PDB':<8} {'Atoms':>8} {'Algo':<4} "
-            f"{'Zig SASA':>12} {'FS-C SASA':>12} {'Speedup':>10}"
-        )
-        print("-" * 65)
+    for pdb in pdbs:
+        pdb_results = [r for r in results if r.pdb_id == pdb]
+        n_atoms = pdb_results[0].n_atoms if pdb_results else 0
 
-        for pdb in pdbs:
-            pdb_results = [r for r in results if r.pdb_id == pdb]
-            n_atoms = pdb_results[0].n_atoms if pdb_results else 0
+        for algo in ["sr", "lr"]:
+            zig_r = next(
+                (r for r in pdb_results if r.algorithm == algo and r.tool == "zig"),
+                None,
+            )
+            fsc_r = next(
+                (
+                    r
+                    for r in pdb_results
+                    if r.algorithm == algo and r.tool == "freesasa-c"
+                ),
+                None,
+            )
 
-            for algo in ["sr", "lr"]:
-                zig_cli_r = next(
-                    (
-                        r
-                        for r in pdb_results
-                        if r.algorithm == algo and r.tool == "zig-cli"
-                    ),
-                    None,
+            if zig_r and fsc_r:
+                zig_time = zig_r.sasa_only_ms or zig_r.time_ms
+                fsc_time = fsc_r.sasa_only_ms or fsc_r.time_ms
+                speedup = fsc_time / zig_time if zig_time > 0 else 0
+                print(
+                    f"{pdb:<8} {n_atoms:>8} {algo.upper():<4} "
+                    f"{zig_time:>12.2f} {fsc_time:>12.2f} {speedup:>9.2f}x"
                 )
-                fsc_r = next(
-                    (
-                        r
-                        for r in pdb_results
-                        if r.algorithm == algo and r.tool == "freesasa-c"
-                    ),
-                    None,
-                )
-
-                if zig_cli_r and fsc_r:
-                    # Use SASA-only time for both
-                    zig_time = (
-                        zig_cli_r.sasa_only_ms
-                        if zig_cli_r.sasa_only_ms
-                        else zig_cli_r.time_ms
-                    )
-                    fsc_time = (
-                        fsc_r.sasa_only_ms if fsc_r.sasa_only_ms else fsc_r.time_ms
-                    )
-                    speedup = fsc_time / zig_time if zig_time > 0 else 0
-                    print(
-                        f"{pdb:<8} {n_atoms:>8} {algo.upper():<4} "
-                        f"{zig_time:>11.2f}ms {fsc_time:>11.2f}ms {speedup:>9.2f}x"
-                    )
-
-    elif has_zig_py:
-        print(
-            f"\n{'PDB':<6} {'Atoms':>7} {'Algo':<3} "
-            f"{'Zig CLI':>10} {'Zig Py':>10} {'FreeSASA':>10} "
-            f"{'CLI vs FS':>10} {'Py vs FS':>10}"
-        )
-        print("-" * 90)
-
-        for pdb in pdbs:
-            pdb_results = [r for r in results if r.pdb_id == pdb]
-            n_atoms = pdb_results[0].n_atoms if pdb_results else 0
-
-            for algo in ["sr", "lr"]:
-                zig_cli_r = next(
-                    (
-                        r
-                        for r in pdb_results
-                        if r.algorithm == algo and r.tool == "zig-cli"
-                    ),
-                    None,
-                )
-                zig_py_r = next(
-                    (
-                        r
-                        for r in pdb_results
-                        if r.algorithm == algo and r.tool == "zig-py"
-                    ),
-                    None,
-                )
-                fs_r = next(
-                    (
-                        r
-                        for r in pdb_results
-                        if r.algorithm == algo and r.tool == "freesasa"
-                    ),
-                    None,
-                )
-
-                if zig_cli_r and zig_py_r and fs_r:
-                    cli_time = (
-                        zig_cli_r.sasa_only_ms
-                        if zig_cli_r.sasa_only_ms
-                        else zig_cli_r.time_ms
-                    )
-                    py_time = zig_py_r.time_ms
-                    fs_time = fs_r.time_ms
-                    cli_speedup = fs_time / cli_time if cli_time > 0 else 0
-                    py_speedup = fs_time / py_time if py_time > 0 else 0
-                    print(
-                        f"{pdb:<6} {n_atoms:>7} {algo.upper():<3} "
-                        f"{cli_time:>9.2f}ms {py_time:>9.2f}ms {fs_time:>9.2f}ms "
-                        f"{cli_speedup:>9.2f}x {py_speedup:>9.2f}x"
-                    )
-    else:
-        print(
-            f"\n{'PDB':<8} {'Atoms':>8} {'Algo':<4} "
-            f"{'Zig SASA':>10} {'FS (ms)':>10} {'Speedup':>10}"
-        )
-        print("-" * 60)
-
-        for pdb in pdbs:
-            pdb_results = [r for r in results if r.pdb_id == pdb]
-            n_atoms = pdb_results[0].n_atoms if pdb_results else 0
-
-            for algo in ["sr", "lr"]:
-                zig_cli_r = next(
-                    (
-                        r
-                        for r in pdb_results
-                        if r.algorithm == algo and r.tool == "zig-cli"
-                    ),
-                    None,
-                )
-                fs_r = next(
-                    (
-                        r
-                        for r in pdb_results
-                        if r.algorithm == algo and r.tool == "freesasa"
-                    ),
-                    None,
-                )
-
-                if zig_cli_r and fs_r:
-                    zig_time = (
-                        zig_cli_r.sasa_only_ms
-                        if zig_cli_r.sasa_only_ms
-                        else zig_cli_r.time_ms
-                    )
-                    speedup = fs_r.time_ms / zig_time if zig_time > 0 else 0
-                    print(
-                        f"{pdb:<8} {n_atoms:>8} {algo.upper():<4} "
-                        f"{zig_time:>10.2f} {fs_r.time_ms:>10.2f} {speedup:>9.2f}x"
-                    )
 
 
 def main() -> int:
-    # Parse arguments
     n_runs = 3
     n_threads = 0
     structure_filter = None
-    use_c = False
     fs_c_path = None
 
     for arg in sys.argv[1:]:
@@ -638,13 +349,9 @@ def main() -> int:
             n_threads = int(arg.split("=")[1])
         elif arg.startswith("--structure="):
             structure_filter = arg.split("=")[1].lower()
-        elif arg == "--use-c":
-            use_c = True
         elif arg.startswith("--fs-c-path="):
             fs_c_path = Path(arg.split("=")[1])
-            use_c = True  # Implicitly enable C benchmark
 
-    # Available structures
     structures = [
         ("1crn", "tiny", "Crambin"),
         ("1ubq", "small", "Ubiquitin"),
@@ -662,13 +369,11 @@ def main() -> int:
 
     base_dir = Path(__file__).parent.parent / "benchmarks"
 
-    print("=" * 80)
-    print(
-        f"SASA Benchmark (runs={n_runs}, threads={n_threads or 'auto'}, use_c={use_c})"
-    )
-    print("=" * 80)
+    print("=" * 70)
+    print(f"SASA Benchmark: Zig vs FreeSASA C (runs={n_runs}, threads={n_threads or 'auto'})")
+    print("=" * 70)
 
-    results = run_benchmarks(structures, base_dir, n_runs, n_threads, use_c, fs_c_path)
+    results = run_benchmarks(structures, base_dir, n_runs, n_threads, fs_c_path)
     print_summary(results)
 
     return 0
