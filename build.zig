@@ -96,6 +96,19 @@ pub fn build(b: *std.Build) void {
     // by passing `--prefix` or `-p`.
     b.installArtifact(exe);
 
+    // Shared library for C API / Python bindings
+    const lib = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "freesasa_zig",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/c_api.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    lib.linkLibC();
+    b.installArtifact(lib);
+
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
     // This will evaluate the `run` step rather than the default step.

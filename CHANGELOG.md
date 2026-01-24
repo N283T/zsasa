@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Python bindings** (`python/freesasa_zig`)
+  - C ABI shared library (`libfreesasa_zig.dylib/.so/.dll`)
+  - NumPy-based Python API with ctypes bindings
+  - Both SR and LR algorithms supported
+  - `calculate_sasa(coords, radii, algorithm="sr"|"lr", ...)` function
+  - `scripts/benchmark_python.py` - Library-to-library benchmark
+  - 12 unit tests with pytest
+
 - **Timing breakdown** (`--timing` flag)
   - Reports detailed timing for each phase: parsing, classification, SASA calculation, output
   - Enables fair performance comparison by measuring SASA-only time
