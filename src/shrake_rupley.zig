@@ -112,6 +112,11 @@ fn atomSasaWithNeighbors(
 ) f64 {
     const n_points = test_points_array.len;
 
+    // Early exit: no neighbors means full surface is exposed
+    if (neighbors.len == 0) {
+        return 4.0 * std.math.pi * atom_radius_probe * atom_radius_probe;
+    }
+
     // Get atom position
     const atom_pos = positions[atom_idx];
 
@@ -127,8 +132,37 @@ fn atomSasaWithNeighbors(
         var is_buried = false;
         var i: usize = 0;
 
-        // Process 4 neighbors at a time with SIMD
-        while (i + 4 <= neighbors.len) : (i += 4) {
+        // Process 8 neighbors at a time with 8-wide SIMD
+        while (i + 8 <= neighbors.len) : (i += 8) {
+            const batch_positions = [8]Vec3{
+                positions[neighbors[i]],
+                positions[neighbors[i + 1]],
+                positions[neighbors[i + 2]],
+                positions[neighbors[i + 3]],
+                positions[neighbors[i + 4]],
+                positions[neighbors[i + 5]],
+                positions[neighbors[i + 6]],
+                positions[neighbors[i + 7]],
+            };
+            const batch_radii = [8]f64{
+                radii_with_probe_sq[neighbors[i]],
+                radii_with_probe_sq[neighbors[i + 1]],
+                radii_with_probe_sq[neighbors[i + 2]],
+                radii_with_probe_sq[neighbors[i + 3]],
+                radii_with_probe_sq[neighbors[i + 4]],
+                radii_with_probe_sq[neighbors[i + 5]],
+                radii_with_probe_sq[neighbors[i + 6]],
+                radii_with_probe_sq[neighbors[i + 7]],
+            };
+
+            if (simd.isPointBuriedBatch8(point, batch_positions, batch_radii)) {
+                is_buried = true;
+                break;
+            }
+        }
+
+        // Process remaining 4-7 neighbors with 4-wide SIMD
+        if (!is_buried and i + 4 <= neighbors.len) {
             const batch_positions = [4]Vec3{
                 positions[neighbors[i]],
                 positions[neighbors[i + 1]],
@@ -144,8 +178,8 @@ fn atomSasaWithNeighbors(
 
             if (simd.isPointBuriedBatch4(point, batch_positions, batch_radii)) {
                 is_buried = true;
-                break;
             }
+            i += 4;
         }
 
         // Handle remaining neighbors (0-3) with scalar fallback

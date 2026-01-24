@@ -552,3 +552,4 @@ test "CellList - invalid cell_size" {
     const result2 = CellList.init(allocator, positions, -1.0);
     try std.testing.expectError(error.InvalidCellSize, result2);
 }
+
