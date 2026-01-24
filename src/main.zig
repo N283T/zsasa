@@ -324,18 +324,18 @@ fn printVersion() void {
 
 /// Apply a custom classifier to input, replacing radii based on residue/atom names
 fn applyClassifier(
-    allocator: std.mem.Allocator,
+    _: std.mem.Allocator,
     input: *types.AtomInput,
     custom_classifier: *const classifier.Classifier,
     quiet: bool,
 ) !void {
     const n = input.atomCount();
-    const residues = input.residue.?;
-    const atom_names = input.atom_name.?;
+    const residues = input.residue orelse return error.MissingClassificationInfo;
+    const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
 
-    // Allocate new radii array
-    const new_radii = try allocator.alloc(f64, n);
-    errdefer allocator.free(new_radii);
+    // Allocate new radii array (use input.allocator for consistency with deinit)
+    const new_radii = try input.allocator.alloc(f64, n);
+    errdefer input.allocator.free(new_radii);
 
     var classified_count: usize = 0;
     var fallback_count: usize = 0;
@@ -365,7 +365,8 @@ fn applyClassifier(
     }
 
     // Free old radii and replace
-    allocator.free(@constCast(input.r));
+    // TODO: Refactor AtomInput to have mutable radii field instead of using @constCast
+    input.allocator.free(@constCast(input.r));
     input.r = new_radii;
 
     if (!quiet) {
@@ -379,18 +380,18 @@ fn applyClassifier(
 
 /// Apply a built-in classifier to input
 fn applyBuiltinClassifier(
-    allocator: std.mem.Allocator,
+    _: std.mem.Allocator,
     input: *types.AtomInput,
     ct: ClassifierType,
     quiet: bool,
 ) !void {
     const n = input.atomCount();
-    const residues = input.residue.?;
-    const atom_names = input.atom_name.?;
+    const residues = input.residue orelse return error.MissingClassificationInfo;
+    const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
 
-    // Allocate new radii array
-    const new_radii = try allocator.alloc(f64, n);
-    errdefer allocator.free(new_radii);
+    // Allocate new radii array (use input.allocator for consistency with deinit)
+    const new_radii = try input.allocator.alloc(f64, n);
+    errdefer input.allocator.free(new_radii);
 
     var classified_count: usize = 0;
     var fallback_count: usize = 0;
@@ -426,7 +427,8 @@ fn applyBuiltinClassifier(
     }
 
     // Free old radii and replace
-    allocator.free(@constCast(input.r));
+    // TODO: Refactor AtomInput to have mutable radii field instead of using @constCast
+    input.allocator.free(@constCast(input.r));
     input.r = new_radii;
 
     if (!quiet) {
