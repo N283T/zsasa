@@ -300,7 +300,7 @@ Run benchmark: `./scripts/benchmark.py`
 
 1. **Neighbor List**: O(N) neighbor lookup instead of O(N²)
 2. **8-wide SIMD**: Process 8 calculations in parallel using `@Vector(8, f64)`
-3. **Fast Trigonometry**: Polynomial approximations for acos/atan2 in LR algorithm (~27% faster)
+3. **Fast Trigonometry**: Polynomial approximations for acos/atan2 in LR algorithm (~37% faster)
 4. **Multi-threading**: Parallel atom processing with work-stealing thread pool
 
 ## Python Bindings

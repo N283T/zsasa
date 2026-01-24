@@ -410,7 +410,7 @@ const alpha = simd.fastAcos(cos_alpha);
 const beta = simd.fastAtan2(dy, dx) + std.math.pi;
 ```
 
-これにより約27%の高速化を達成。精度は0.3%以内で実用上問題なし。
+これにより約37%の高速化を達成。精度は0.3%以内で実用上問題なし。
 
 ### 円弧のマージ
 

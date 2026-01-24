@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Fast trigonometry** for Lee-Richards algorithm
   - Polynomial approximations for `acos` and `atan2`
-  - ~27% speedup on large structures (4V6X: 1021ms → 743ms)
+  - ~37% speedup on large structures (4V6X: 1021ms → 743ms)
   - Accuracy within 0.3% of reference (well within 2% tolerance)
 
 - **Area difference column** in benchmark output
@@ -43,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Slice-based method with exact arc integration
   - `--n-slices=N` option (default: 20)
   - Multi-threading and SIMD support
-  - ~1.1x faster than FreeSASA (Python)
+  - 1.1x-1.7x faster than FreeSASA C
 
 - **Atom classifier module** with CLI integration
   - `classifier.zig` - Core data structures, element-based radius guessing, ClassifierType enum
