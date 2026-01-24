@@ -42,9 +42,12 @@ pub fn aggregateByResidue(
     const insertion_codes = input.insertion_code orelse return error.MissingInsertionCodeInfo;
 
     const n = input.atomCount();
+    if (atom_areas.len != n) {
+        return error.LengthMismatch;
+    }
     if (n == 0) {
         return ResidueResult{
-            .residues = &[_]ResidueSasa{},
+            .residues = try allocator.alloc(ResidueSasa, 0),
             .allocator = allocator,
         };
     }

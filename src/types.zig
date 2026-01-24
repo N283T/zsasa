@@ -82,7 +82,8 @@ pub const AtomInput = struct {
 
     /// Check if per-residue analysis info is available
     pub fn hasResidueInfo(self: AtomInput) bool {
-        return self.residue != null and self.residue_num != null and self.chain_id != null;
+        return self.residue != null and self.residue_num != null and
+            self.chain_id != null and self.insertion_code != null;
     }
 
     /// Free allocated memory
