@@ -9,18 +9,22 @@
 """Unified benchmark comparing Zig implementation with FreeSASA across all structures.
 
 Measures performance across multiple structure sizes with both algorithms.
-Compares three implementations:
+Compares implementations:
 - Zig CLI (subprocess)
 - Zig Python bindings (library)
 - FreeSASA Python (library)
+- FreeSASA C (optional, subprocess with multi-threading support)
 
 Usage:
     ./scripts/benchmark.py [--runs=N] [--threads=N] [--structure=PDB]
+    ./scripts/benchmark.py --use-c [--fs-c-path=PATH] [--threads=N]
 
 Examples:
     ./scripts/benchmark.py                      # Run all benchmarks
     ./scripts/benchmark.py --runs=5             # 5 runs per benchmark
     ./scripts/benchmark.py --structure=1a0q     # Single structure only
+    ./scripts/benchmark.py --use-c              # Include FreeSASA C benchmark
+    ./scripts/benchmark.py --use-c --threads=4  # FreeSASA C with 4 threads
 
 Note on benchmark fairness:
     Execution order is: Zig CLI -> Zig Python -> FreeSASA Python
@@ -199,11 +203,82 @@ def run_freesasa_python_benchmark(
     return elapsed * 1000, result.totalArea()
 
 
+def run_freesasa_c_benchmark(
+    cif_path: Path,
+    algorithm: str = "sr",
+    n_points: int = 100,
+    n_slices: int = 20,
+    n_threads: int = 1,
+    fs_c_binary: Path | None = None,
+) -> tuple[float, float]:
+    """Run FreeSASA C benchmark. Returns (time_ms, total_area).
+
+    Requires FreeSASA C binary compiled with thread support.
+    """
+    if fs_c_binary is None:
+        # Default location: freesasa-c/src/freesasa in project root
+        fs_c_binary = Path(__file__).parent.parent / "freesasa-c" / "src" / "freesasa"
+
+    if not fs_c_binary.exists():
+        raise FileNotFoundError(f"FreeSASA C binary not found: {fs_c_binary}")
+
+    if not cif_path.exists():
+        raise FileNotFoundError(f"CIF file not found: {cif_path}")
+
+    # Build command
+    cmd = [
+        str(fs_c_binary),
+        "--cif",
+        "--radii=protor",
+        f"--n-threads={n_threads}",
+    ]
+
+    if algorithm == "sr":
+        cmd.extend(["--shrake-rupley", f"--resolution={n_points}"])
+    else:
+        cmd.extend(["--lee-richards", f"--resolution={n_slices}"])
+
+    cmd.append(str(cif_path))
+
+    # Run and time
+    start = time.perf_counter()
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    elapsed = time.perf_counter() - start
+
+    # Parse total area from output
+    total_area = 0.0
+    for line in result.stdout.split("\n"):
+        if line.startswith("Total"):
+            match = re.search(r"[\d.]+", line)
+            if match:
+                total_area = float(match.group())
+                break
+
+    return elapsed * 1000, total_area
+
+
+def download_cif_if_needed(pdb_id: str, cif_dir: Path) -> Path:
+    """Download CIF file from RCSB if not present."""
+    cif_path = cif_dir / f"{pdb_id}.cif"
+    if cif_path.exists():
+        return cif_path
+
+    import urllib.request
+
+    url = f"https://files.rcsb.org/download/{pdb_id.upper()}.cif"
+    print(f"  Downloading {pdb_id}.cif...")
+    cif_dir.mkdir(parents=True, exist_ok=True)
+    urllib.request.urlretrieve(url, cif_path)
+    return cif_path
+
+
 def run_benchmarks(
     structures: list[tuple[str, str, str]],
     base_dir: Path,
     n_runs: int = 3,
     n_threads: int = 0,
+    use_c: bool = False,
+    fs_c_path: Path | None = None,
 ) -> list[BenchmarkResult]:
     """Run all benchmarks and return results."""
     results = []
@@ -317,6 +392,40 @@ def run_benchmarks(
                     f"  FS      {algo.upper():2s}: {avg_time:8.2f} ms (area: {fs_area:.2f})"
                 )
 
+            # FreeSASA C benchmark (optional)
+            if use_c:
+                cif_dir = base_dir / "cif"
+                try:
+                    cif_path = download_cif_if_needed(pdb_id, cif_dir)
+                    fsc_times = []
+                    fsc_area = 0.0
+                    for _ in range(n_runs):
+                        try:
+                            t, area = run_freesasa_c_benchmark(
+                                cif_path,
+                                algo,
+                                n_threads=n_threads if n_threads > 0 else 1,
+                                fs_c_binary=fs_c_path,
+                            )
+                            fsc_times.append(t)
+                            fsc_area = area
+                        except Exception as e:
+                            print(f"    FS-C {algo.upper()}: ERROR - {e}")
+                            break
+
+                    if fsc_times:
+                        avg_time = sum(fsc_times) / len(fsc_times)
+                        results.append(
+                            BenchmarkResult(
+                                pdb_id, n_atoms, algo, "freesasa-c", avg_time, fsc_area
+                            )
+                        )
+                        print(
+                            f"  FS-C    {algo.upper():2s}: {avg_time:8.2f} ms (area: {fsc_area:.2f})"
+                        )
+                except FileNotFoundError as e:
+                    print(f"    FS-C {algo.upper()}: SKIP - {e}")
+
     return results
 
 
@@ -406,6 +515,8 @@ def main() -> int:
     n_runs = 3
     n_threads = 0
     structure_filter = None
+    use_c = False
+    fs_c_path = None
 
     for arg in sys.argv[1:]:
         if arg.startswith("--runs="):
@@ -414,6 +525,11 @@ def main() -> int:
             n_threads = int(arg.split("=")[1])
         elif arg.startswith("--structure="):
             structure_filter = arg.split("=")[1].lower()
+        elif arg == "--use-c":
+            use_c = True
+        elif arg.startswith("--fs-c-path="):
+            fs_c_path = Path(arg.split("=")[1])
+            use_c = True  # Implicitly enable C benchmark
 
     # Available structures
     structures = [
@@ -434,10 +550,12 @@ def main() -> int:
     base_dir = Path(__file__).parent.parent / "benchmarks"
 
     print("=" * 80)
-    print(f"SASA Benchmark (runs={n_runs}, threads={n_threads or 'auto'})")
+    print(
+        f"SASA Benchmark (runs={n_runs}, threads={n_threads or 'auto'}, use_c={use_c})"
+    )
     print("=" * 80)
 
-    results = run_benchmarks(structures, base_dir, n_runs, n_threads)
+    results = run_benchmarks(structures, base_dir, n_runs, n_threads, use_c, fs_c_path)
     print_summary(results)
 
     return 0
