@@ -1,20 +1,12 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = []
+# dependencies = ["rich>=13.0", "typer>=0.9.0"]
 # ///
 """Validate Zig SASA implementation against FreeSASA reference values.
 
 Compares the Zig implementation output with FreeSASA reference data
 and reports accuracy metrics.
-
-Usage:
-    ./scripts/validate.py [--algorithm=sr|lr] [--tolerance=2.0]
-
-Examples:
-    ./scripts/validate.py                    # Validate with SR algorithm
-    ./scripts/validate.py --algorithm=lr     # Validate with LR algorithm
-    ./scripts/validate.py --tolerance=1.0    # Require <1% difference
 """
 
 from __future__ import annotations
@@ -22,10 +14,17 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Annotated
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+app = typer.Typer(help="Validate Zig SASA against FreeSASA reference")
+console = Console()
 
 
 @dataclass
@@ -124,7 +123,7 @@ def validate_structure(
     try:
         zig_sasa, time_ms = run_zig_sasa(input_path, algorithm, classifier=classifier)
     except Exception as e:
-        print(f"  {pdb_id}: ERROR - {e}")
+        console.print(f"  [red]{pdb_id}: ERROR[/red] - {e}")
         return None
 
     if reference_sasa == 0:
@@ -144,75 +143,84 @@ def validate_structure(
     )
 
 
-def main() -> int:
-    # Parse arguments
-    algorithm = "sr"
-    tolerance = 2.0
-    classifier = "protor"  # Default: use ProtOr for fair comparison with FreeSASA
+@app.command()
+def main(
+    algorithm: Annotated[
+        str, typer.Option("--algorithm", "-a", help="Algorithm: sr or lr")
+    ] = "sr",
+    tolerance: Annotated[
+        float, typer.Option("--tolerance", "-t", help="Max allowed difference (%)")
+    ] = 2.0,
+    classifier: Annotated[
+        str | None,
+        typer.Option("--classifier", "-c", help="Classifier (protor, naccess)"),
+    ] = "protor",
+    no_classifier: Annotated[
+        bool, typer.Option("--no-classifier", help="Disable classifier (element-based)")
+    ] = False,
+) -> None:
+    """Validate Zig SASA against FreeSASA reference values."""
+    if no_classifier:
+        classifier = None
 
-    for arg in sys.argv[1:]:
-        if arg.startswith("--algorithm="):
-            algorithm = arg.split("=")[1]
-        elif arg.startswith("--tolerance="):
-            tolerance = float(arg.split("=")[1])
-        elif arg.startswith("--classifier="):
-            classifier = arg.split("=")[1]
-        elif arg == "--no-classifier":
-            classifier = None
-
-    # Setup paths
     base_dir = Path(__file__).parent.parent / "benchmarks"
     inputs_dir = base_dir / "inputs"
     references_dir = base_dir / "references"
 
     structures = ["1crn", "1ubq", "1a0q", "3hhb", "1aon", "4v6x"]
 
-    print("=" * 70)
     clf_str = classifier if classifier else "none (element-based)"
-    print(
-        f"SASA Validation (algorithm={algorithm}, classifier={clf_str}, tolerance={tolerance}%)"
+    console.rule("[bold]SASA Validation[/bold]")
+    console.print(
+        f"algorithm={algorithm}, classifier={clf_str}, tolerance={tolerance}%"
     )
-    print("=" * 70)
-    print(
-        f"{'PDB':<8} {'Atoms':>8} {'FreeSASA':>12} {'Zig':>12} {'Diff%':>8} {'Status':<8}"
-    )
-    print("-" * 70)
 
-    results = []
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("PDB", style="bold")
+    table.add_column("Atoms", justify="right")
+    table.add_column("FreeSASA", justify="right", style="yellow")
+    table.add_column("Zig", justify="right", style="green")
+    table.add_column("Diff%", justify="right")
+    table.add_column("Status", justify="center")
+
+    results: list[ValidationResult] = []
     for pdb_id in structures:
         result = validate_structure(
             pdb_id, inputs_dir, references_dir, algorithm, tolerance, classifier
         )
         if result:
             results.append(result)
-            status = "PASS" if result.passed else "FAIL"
-            print(
-                f"{result.pdb_id:<8} {result.n_atoms:>8} "
-                f"{result.reference_sasa:>12.2f} {result.zig_sasa:>12.2f} "
-                f"{result.difference_percent:>7.3f}% {status:<8}"
+            status = "[green]PASS[/green]" if result.passed else "[red]FAIL[/red]"
+            table.add_row(
+                result.pdb_id.upper(),
+                f"{result.n_atoms:,}",
+                f"{result.reference_sasa:.2f}",
+                f"{result.zig_sasa:.2f}",
+                f"{result.difference_percent:.3f}%",
+                status,
             )
         else:
-            print(f"{pdb_id:<8} {'SKIPPED':>8}")
+            table.add_row(pdb_id.upper(), "-", "-", "-", "-", "[dim]SKIPPED[/dim]")
 
-    print("-" * 70)
+    console.print()
+    console.print(table)
 
-    # Summary
     if results:
         passed = sum(1 for r in results if r.passed)
         total = len(results)
         avg_diff = sum(r.difference_percent for r in results) / len(results)
 
-        print(f"\nSummary: {passed}/{total} passed (avg diff: {avg_diff:.3f}%)")
+        console.print()
+        console.print(f"Summary: {passed}/{total} passed (avg diff: {avg_diff:.3f}%)")
 
         if passed == total:
-            print("All validations PASSED!")
-            return 0
+            console.print("[bold green]All validations PASSED![/bold green]")
         else:
-            print("Some validations FAILED!")
-            return 1
-
-    return 1
+            console.print("[bold red]Some validations FAILED![/bold red]")
+            raise typer.Exit(1)
+    else:
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    app()

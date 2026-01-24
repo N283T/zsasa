@@ -1,22 +1,12 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["rich>=13.0"]
+# dependencies = ["rich>=13.0", "typer>=0.9.0"]
 # ///
 """Benchmark comparing Zig SASA implementation with FreeSASA C.
 
 Measures SASA calculation performance across multiple structure sizes.
 Compares Zig CLI vs FreeSASA C (both native, both with multi-threading).
-
-Usage:
-    ./scripts/benchmark.py [--runs=N] [--threads=N] [--structure=PDB]
-    ./scripts/benchmark.py --fs-c-path=PATH [--threads=N]
-
-Examples:
-    ./scripts/benchmark.py                      # Run benchmark
-    ./scripts/benchmark.py --runs=5             # 5 runs per benchmark
-    ./scripts/benchmark.py --structure=4v6x     # Single structure only
-    ./scripts/benchmark.py --threads=4          # Use 4 threads
 
 Requirements:
     - Zig binary built with: zig build -Doptimize=ReleaseFast
@@ -28,10 +18,16 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Annotated
+
+import typer
+from rich.console import Console
+
+app = typer.Typer(help="Benchmark Zig SASA vs FreeSASA C")
+console = Console()
 
 
 @dataclass
@@ -53,7 +49,10 @@ def run_zig_benchmark(
     n_threads: int = 0,
     classifier: str = "protor",
 ) -> tuple[float, float, dict[str, float]]:
-    """Run Zig benchmark with timing. Returns (time_ms, total_area, timing_breakdown)."""
+    """Run Zig benchmark with timing.
+
+    Returns (time_ms, total_area, timing_breakdown).
+    """
     zig_binary = Path(__file__).parent.parent / "zig-out" / "bin" / "freesasa_zig"
 
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
@@ -172,7 +171,7 @@ def download_cif_if_needed(pdb_id: str, cif_dir: Path) -> Path:
     import urllib.request
 
     url = f"https://files.rcsb.org/download/{pdb_id.upper()}.cif"
-    print(f"  Downloading {pdb_id}.cif...")
+    console.print(f"  Downloading {pdb_id}.cif...")
     cif_dir.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -200,7 +199,7 @@ def run_benchmarks(
         input_path = base_dir / "inputs_protor" / f"{pdb_id}.json"
 
         if not input_path.exists():
-            print(f"  {pdb_id}: Skipping (input not found)")
+            console.print(f"  {pdb_id}: Skipping (input not found)")
             continue
 
         # Get atom count
@@ -212,10 +211,10 @@ def run_benchmarks(
         try:
             cif_path = download_cif_if_needed(pdb_id, cif_dir)
         except FileNotFoundError as e:
-            print(f"  {pdb_id}: Skipping ({e})")
+            console.print(f"  {pdb_id}: Skipping ({e})")
             continue
 
-        print(f"\n{pdb_id.upper()} ({n_atoms} atoms):")
+        console.print(f"\n[bold]{pdb_id.upper()}[/bold] ({n_atoms:,} atoms)")
 
         for algo in algorithms:
             # Zig benchmark
@@ -232,7 +231,7 @@ def run_benchmarks(
                     if "sasa_calculation" in timing:
                         zig_sasa_times.append(timing["sasa_calculation"])
                 except Exception as e:
-                    print(f"    Zig {algo.upper()}: ERROR - {e}")
+                    console.print(f"    [red]Zig {algo.upper()}: ERROR[/red] - {e}")
                     break
 
             if zig_times:
@@ -253,7 +252,8 @@ def run_benchmarks(
                         avg_sasa_time,
                     )
                 )
-                print(f"  Zig   {algo.upper():2s}: {avg_sasa_time or avg_time:8.2f} ms")
+                t = avg_sasa_time or avg_time
+                console.print(f"  [green]Zig[/green]   {algo.upper():2s}: {t:8.2f} ms")
 
             # FreeSASA C benchmark
             fsc_times = []
@@ -269,7 +269,7 @@ def run_benchmarks(
                     fsc_times.append(t)
                     fsc_area = area
                 except Exception as e:
-                    print(f"    FS-C {algo.upper()}: ERROR - {e}")
+                    console.print(f"    [red]FS-C {algo.upper()}: ERROR[/red] - {e}")
                     break
 
             if fsc_times:
@@ -285,17 +285,16 @@ def run_benchmarks(
                         avg_time,  # Already SASA-only from patched binary
                     )
                 )
-                print(f"  FS-C  {algo.upper():2s}: {avg_time:8.2f} ms")
+                console.print(
+                    f"  [yellow]FS-C[/yellow]  {algo.upper():2s}: {avg_time:8.2f} ms"
+                )
 
     return results
 
 
 def print_summary(results: list[BenchmarkResult]) -> None:
     """Print benchmark summary table using rich."""
-    from rich.console import Console
     from rich.table import Table
-
-    console = Console()
 
     pdbs = sorted(
         set(r.pdb_id for r in results),
@@ -356,22 +355,25 @@ def print_summary(results: list[BenchmarkResult]) -> None:
         console.print(table)
 
 
-def main() -> int:
-    n_runs = 3
-    n_threads = 0
-    structure_filter = None
-    fs_c_path = None
-
-    for arg in sys.argv[1:]:
-        if arg.startswith("--runs="):
-            n_runs = int(arg.split("=")[1])
-        elif arg.startswith("--threads="):
-            n_threads = int(arg.split("=")[1])
-        elif arg.startswith("--structure="):
-            structure_filter = arg.split("=")[1].lower()
-        elif arg.startswith("--fs-c-path="):
-            fs_c_path = Path(arg.split("=")[1])
-
+@app.command()
+def main(
+    runs: Annotated[
+        int, typer.Option("--runs", "-r", help="Number of runs per benchmark")
+    ] = 3,
+    threads: Annotated[
+        int, typer.Option("--threads", "-t", help="Number of threads (0=auto)")
+    ] = 0,
+    structure: Annotated[
+        str | None,
+        typer.Option(
+            "--structure", "-s", help="Single structure to benchmark (e.g., 4v6x)"
+        ),
+    ] = None,
+    fs_c_path: Annotated[
+        Path | None, typer.Option("--fs-c-path", help="Path to FreeSASA C binary")
+    ] = None,
+) -> None:
+    """Run SASA benchmarks comparing Zig vs FreeSASA C."""
     structures = [
         ("1crn", "tiny", "Crambin"),
         ("1ubq", "small", "Ubiquitin"),
@@ -381,25 +383,21 @@ def main() -> int:
         ("4v6x", "xlarge", "Ribosome"),
     ]
 
-    if structure_filter:
-        structures = [(p, c, d) for p, c, d in structures if p == structure_filter]
+    if structure:
+        structure_lower = structure.lower()
+        structures = [(p, c, d) for p, c, d in structures if p == structure_lower]
         if not structures:
-            print(f"Error: Unknown structure: {structure_filter}")
-            return 1
+            console.print(f"[red]Error:[/red] Unknown structure: {structure}")
+            raise typer.Exit(1)
 
     base_dir = Path(__file__).parent.parent / "benchmarks"
 
-    print("=" * 70)
-    print(
-        f"SASA Benchmark: Zig vs FreeSASA C (runs={n_runs}, threads={n_threads or 'auto'})"
-    )
-    print("=" * 70)
+    console.rule("[bold]SASA Benchmark: Zig vs FreeSASA C[/bold]")
+    console.print(f"runs={runs}, threads={threads or 'auto'}")
 
-    results = run_benchmarks(structures, base_dir, n_runs, n_threads, fs_c_path)
+    results = run_benchmarks(structures, base_dir, runs, threads, fs_c_path)
     print_summary(results)
-
-    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    app()

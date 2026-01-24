@@ -25,3 +25,5 @@ freesasa-c/
 # Downloaded CIF files for benchmark
 benchmarks/cif/
 data/*.cif
+scripts/.venv/
+scripts/uv.lock
