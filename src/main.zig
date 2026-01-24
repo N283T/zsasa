@@ -38,6 +38,7 @@ const Args = struct {
     config_path: ?[]const u8 = null, // Custom config file path
     quiet: bool = false,
     validate_only: bool = false,
+    show_timing: bool = false, // Show timing breakdown for benchmarking
     show_help: bool = false,
     show_version: bool = false,
 };
@@ -238,6 +239,10 @@ fn parseArgs(args: []const []const u8) Args {
         else if (std.mem.eql(u8, arg, "--validate")) {
             result.validate_only = true;
         }
+        // --timing
+        else if (std.mem.eql(u8, arg, "--timing")) {
+            result.show_timing = true;
+        }
         // --help or -h
         else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             result.show_help = true;
@@ -287,6 +292,7 @@ fn printHelp(program_name: []const u8) void {
         \\    --n-slices=N       Slices per atom diameter (default: 20, for lr)
         \\    --format=FORMAT    Output format: json, compact, csv (default: json)
         \\    --validate         Validate input only, do not calculate SASA
+        \\    --timing           Show timing breakdown (for benchmarking)
         \\    -q, --quiet        Suppress progress output
         \\    -h, --help         Show this help message
         \\    -V, --version      Show version
@@ -476,7 +482,18 @@ pub fn main() !void {
         std.process.exit(1);
     }
 
+    // Timing variables (in nanoseconds)
+    var timer = std.time.Timer.start() catch {
+        std.debug.print("Error: Timer not supported\n", .{});
+        std.process.exit(1);
+    };
+    var time_parse: u64 = 0;
+    var time_classify: u64 = 0;
+    var time_sasa: u64 = 0;
+    var time_write: u64 = 0;
+
     // Read input JSON file
+    timer.reset();
     var input = json_parser.readAtomInputFromFile(allocator, parsed.input_path.?) catch |err| {
         std.debug.print("Error reading input file '{s}': {s}\n", .{ parsed.input_path.?, @errorName(err) });
         std.process.exit(1);
@@ -494,6 +511,7 @@ pub fn main() !void {
         json_parser.printValidationErrors(validation.errors);
         std.process.exit(1);
     }
+    time_parse = timer.read();
 
     // Handle --validate (dry-run)
     if (parsed.validate_only) {
@@ -504,6 +522,7 @@ pub fn main() !void {
     }
 
     // Apply classifier if specified (--config takes precedence over --classifier)
+    timer.reset();
     if (parsed.config_path != null or parsed.classifier_type != null) {
         // Warn if both are specified
         if (parsed.config_path != null and parsed.classifier_type != null) {
@@ -539,8 +558,10 @@ pub fn main() !void {
             };
         }
     }
+    time_classify = timer.read();
 
     // Calculate SASA with configured parameters
+    timer.reset();
     var result = switch (parsed.algorithm) {
         .sr => blk: {
             const config = Config{
@@ -579,18 +600,37 @@ pub fn main() !void {
         },
     };
     defer result.deinit();
+    time_sasa = timer.read();
 
     // Write output file
+    timer.reset();
     json_writer.writeSasaResultWithFormat(allocator, result, parsed.output_path, parsed.output_format) catch |err| {
         std.debug.print("Error writing output file '{s}': {s}\n", .{ parsed.output_path, @errorName(err) });
         std.process.exit(1);
     };
+    time_write = timer.read();
+
+    // Calculate total time
+    const time_total = time_parse + time_classify + time_sasa + time_write;
 
     // Print summary (unless quiet mode)
     if (!parsed.quiet) {
         std.debug.print("Calculated SASA for {} atoms\n", .{input.atomCount()});
         std.debug.print("Total area: {d:.2} Å²\n", .{result.total_area});
         std.debug.print("Output written to {s}\n", .{parsed.output_path});
+    }
+
+    // Print timing breakdown if requested
+    if (parsed.show_timing) {
+        const ns_to_ms = 1_000_000.0;
+        std.debug.print("\nTiming breakdown:\n", .{});
+        std.debug.print("  Parse + validate: {d:.2} ms\n", .{@as(f64, @floatFromInt(time_parse)) / ns_to_ms});
+        if (time_classify > 0) {
+            std.debug.print("  Classifier:       {d:.2} ms\n", .{@as(f64, @floatFromInt(time_classify)) / ns_to_ms});
+        }
+        std.debug.print("  SASA calculation: {d:.2} ms\n", .{@as(f64, @floatFromInt(time_sasa)) / ns_to_ms});
+        std.debug.print("  Write output:     {d:.2} ms\n", .{@as(f64, @floatFromInt(time_write)) / ns_to_ms});
+        std.debug.print("  Total:            {d:.2} ms\n", .{@as(f64, @floatFromInt(time_total)) / ns_to_ms});
     }
 }
 
@@ -913,4 +953,20 @@ test "parseArgs combined classifier and config (config takes precedence)" {
     // Both are set - config should take precedence in main() logic
     try std.testing.expectEqual(ClassifierType.naccess, parsed.classifier_type.?);
     try std.testing.expectEqualStrings("custom.config", parsed.config_path.?);
+}
+
+// Tests for --timing option
+test "parseArgs default show_timing is false" {
+    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(false, parsed.show_timing);
+}
+
+test "parseArgs --timing" {
+    const args = [_][]const u8{ "freesasa_zig", "--timing", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(true, parsed.show_timing);
+    try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
 }

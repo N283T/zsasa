@@ -220,21 +220,35 @@ Slice-based method - mathematically precise.
 
 ## Validation
 
-Tested against FreeSASA reference implementation:
+Tested against FreeSASA reference implementation using ProtOr classifier:
 
-| Structure | Atoms | Reference (Å²) | Zig (Å²) | Difference |
-|-----------|-------|----------------|----------|------------|
-| 1A0Q | 3183 | 18923.28 | 19211.19 | 1.52% |
+| Structure | Atoms | FreeSASA (Å²) | Zig (Å²) | Difference |
+|-----------|------:|-------------:|--------:|----------:|
+| 1CRN | 327 | 3,001.13 | 3,001.13 | 0.000% |
+| 1UBQ | 602 | 4,834.72 | 4,834.72 | 0.000% |
+| 1A0Q | 3,183 | 18,908.90 | 18,908.90 | 0.000% |
+| 3HHB | 4,384 | 25,527.36 | 25,527.36 | 0.000% |
+| 1AON | 58,674 | 316,879.14 | 316,879.14 | 0.000% |
+| 4V6X | 237,685 | 1,325,369.25 | 1,325,369.25 | 0.000% |
+
+Run validation: `./scripts/validate_accuracy.py`
 
 ## Performance
 
-Benchmark on PDB 1A0Q (3,183 atoms), ReleaseFast build:
+Benchmark comparing Zig (ReleaseFast) vs FreeSASA Python, SASA calculation time only:
 
-| Algorithm | 1 thread | 4 threads | vs FreeSASA |
-|-----------|----------|-----------|-------------|
-| Shrake-Rupley | 17ms | 13ms | **3.9x faster** |
-| Lee-Richards | 53ms | 26ms | 2.0x faster |
-| FreeSASA (Python) | ~51ms | - | 1.0x |
+| Structure | Atoms | SR Zig (ms) | SR FS (ms) | SR Speedup | LR Zig (ms) | LR FS (ms) | LR Speedup |
+|-----------|------:|-----------:|-----------:|----------:|-----------:|-----------:|----------:|
+| 1CRN | 327 | 0.53 | 0.77 | 1.45x | 4.60 | 4.85 | 1.05x |
+| 1UBQ | 602 | 0.64 | 1.40 | 2.19x | 8.45 | 9.19 | 1.09x |
+| 1A0Q | 3,183 | 2.46 | 9.16 | 3.72x | 49.17 | 53.34 | 1.08x |
+| 3HHB | 4,384 | 3.56 | 12.14 | 3.41x | 68.56 | 74.89 | 1.09x |
+| 1AON | 58,674 | 43.76 | 179.52 | 4.10x | 930.22 | 1030.58 | 1.11x |
+| 4V6X | 237,685 | 178.47 | 744.13 | 4.17x | 3740.60 | 4132.06 | 1.10x |
+
+**Summary**: Shrake-Rupley is **1.5x-4.2x faster** than FreeSASA. Speedup increases with structure size.
+
+Run benchmark: `./scripts/benchmark_all.py`
 
 ### Optimization Techniques
 
@@ -322,9 +336,19 @@ freesasa-zig/
 │   ├── shrake_rupley.zig     # Shrake-Rupley algorithm
 │   └── lee_richards.zig      # Lee-Richards algorithm
 ├── scripts/
-│   ├── cif_to_input_json.py   # Structure to JSON converter
-│   ├── calc_reference_sasa.py # Reference SASA calculator
-│   └── benchmark.py           # Performance benchmark
+│   ├── cif_to_input_json.py       # Structure to JSON converter
+│   ├── calc_reference_sasa.py     # Reference SASA calculator
+│   ├── benchmark.py               # Single-structure benchmark
+│   ├── benchmark_all.py           # Unified benchmark across all structures
+│   ├── validate_accuracy.py       # Validate against FreeSASA references
+│   ├── generate_benchmark_data.py # Download structures and generate references
+│   ├── generate_protor_inputs.py  # Generate inputs with ProtOr radii
+│   └── compare_classifiers.py     # Compare classifier radii
+├── benchmarks/
+│   ├── structures/            # Downloaded PDB structures (.cif.gz)
+│   ├── inputs/                # Generated input JSONs (element-based radii)
+│   ├── inputs_protor/         # Generated input JSONs (ProtOr radii)
+│   └── references/            # FreeSASA reference SASA values
 ├── examples/
 │   ├── 1A0Q.cif.gz        # Original structure file (PDB 1A0Q)
 │   ├── input_1a0q.json    # Example input (converted from cif)
@@ -347,12 +371,14 @@ freesasa-zig/
 - [x] Phase 4: Multi-threading
 - [x] Phase 5: Production features (CLI, output formats, validation)
 - [x] Phase 6: CI/CD pipeline
-- [x] Phase 11: Lee-Richards algorithm (with multi-threading & SIMD)
+- [x] Phase 7: Fair benchmark (timing breakdown, SASA-only measurement)
+- [x] Phase 8: Benchmark dataset (6 structures from tiny to xlarge)
 - [x] Phase 9: Radius classifier (auto-detect atom radii)
   - [x] Core data structures and element-based guessing
   - [x] NACCESS/ProtOr/OONS built-in classifiers
   - [x] Custom config file parser (FreeSASA format)
   - [x] CLI integration (`--classifier`, `--config`)
+- [x] Phase 11: Lee-Richards algorithm (with multi-threading & SIMD)
 - [ ] Phase 10: Direct mmCIF input support
 
 ## License

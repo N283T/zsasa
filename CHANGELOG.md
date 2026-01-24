@@ -9,13 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Timing breakdown** (`--timing` flag)
+  - Reports detailed timing for each phase: parsing, classification, SASA calculation, output
+  - Enables fair performance comparison by measuring SASA-only time
+
+- **Benchmark dataset** (6 structures from tiny to xlarge)
+  - 1CRN (327 atoms), 1UBQ (602), 1A0Q (3,183), 3HHB (4,384), 1AON (58,674), 4V6X (237,685)
+  - `benchmarks/inputs_protor/` - Pre-generated inputs with ProtOr radii
+  - `scripts/generate_protor_inputs.py` - Generate inputs with ProtOr radii
+  - `scripts/benchmark_all.py` - Unified benchmark comparing Zig vs FreeSASA
+
 - **Lee-Richards algorithm** (`--algorithm=lr`)
   - Slice-based method with exact arc integration
   - `--n-slices=N` option (default: 20)
   - Multi-threading and SIMD support
-  - 2.0x faster than FreeSASA (Python)
+  - ~1.1x faster than FreeSASA (Python)
 
-- **Atom classifier module** (library only, CLI integration planned)
+- **Atom classifier module** with CLI integration
   - `classifier.zig` - Core data structures, element-based radius guessing, ClassifierType enum
   - `classifier_naccess.zig` - NACCESS-compatible built-in classifier
   - `classifier_protor.zig` - ProtOr classifier (hybridization-based, Tsai et al. 1999)
@@ -25,12 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Support for RNA/DNA nucleotides (A, C, G, I, T, U, DA, DC, DG, DI, DT, DU)
   - ANY fallback for backbone atoms (NACCESS/OONS)
   - Element-based radius guessing from atom names
+  - `--classifier=naccess|protor|oons` - Use built-in classifier
+  - `--config=FILE` - Use custom config file (FreeSASA format)
 
 - Extended input format with optional `residue` and `atom_name` fields
 
 ### Changed
 
 - Removed Windows from CI matrix (WSL recommended for Windows users)
+- Updated benchmark results: SR algorithm is 1.5x-4.2x faster than FreeSASA
 
 ## [0.0.5] - 2025-01-23
 
