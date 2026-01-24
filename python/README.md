@@ -133,7 +133,7 @@ import json
 import numpy as np
 from freesasa_zig import calculate_sasa
 
-# Load input JSON (from cif_to_input_json.py)
+# Load input JSON (from scripts/data/cif_to_json.py)
 with open("input.json") as f:
     data = json.load(f)
 

@@ -15,12 +15,12 @@ Compares three implementations:
 - FreeSASA Python (library)
 
 Usage:
-    ./benchmark_all.py [--runs=N] [--threads=N] [--structure=PDB]
+    ./scripts/benchmark.py [--runs=N] [--threads=N] [--structure=PDB]
 
 Examples:
-    ./benchmark_all.py                      # Run all benchmarks
-    ./benchmark_all.py --runs=5             # 5 runs per benchmark
-    ./benchmark_all.py --structure=1a0q     # Single structure only
+    ./scripts/benchmark.py                      # Run all benchmarks
+    ./scripts/benchmark.py --runs=5             # 5 runs per benchmark
+    ./scripts/benchmark.py --structure=1a0q     # Single structure only
 
 Note on benchmark fairness:
     Execution order is: Zig CLI -> Zig Python -> FreeSASA Python
