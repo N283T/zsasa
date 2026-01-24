@@ -141,8 +141,115 @@ fn atomArea(
         var n_arcs: usize = 0;
         var is_buried = false;
 
-        // Process neighbors in batches of 4 using SIMD
+        // Process neighbors in batches of 8 using SIMD
         var i: usize = 0;
+        while (i + 8 <= neighbors.len and !is_buried) : (i += 8) {
+            // Load batch of 8 neighbors
+            const batch_x = [8]f64{
+                x[neighbors[i]],
+                x[neighbors[i + 1]],
+                x[neighbors[i + 2]],
+                x[neighbors[i + 3]],
+                x[neighbors[i + 4]],
+                x[neighbors[i + 5]],
+                x[neighbors[i + 6]],
+                x[neighbors[i + 7]],
+            };
+            const batch_y = [8]f64{
+                y[neighbors[i]],
+                y[neighbors[i + 1]],
+                y[neighbors[i + 2]],
+                y[neighbors[i + 3]],
+                y[neighbors[i + 4]],
+                y[neighbors[i + 5]],
+                y[neighbors[i + 6]],
+                y[neighbors[i + 7]],
+            };
+            const batch_z = [8]f64{
+                z[neighbors[i]],
+                z[neighbors[i + 1]],
+                z[neighbors[i + 2]],
+                z[neighbors[i + 3]],
+                z[neighbors[i + 4]],
+                z[neighbors[i + 5]],
+                z[neighbors[i + 6]],
+                z[neighbors[i + 7]],
+            };
+            const batch_r = [8]f64{
+                radii[neighbors[i]],
+                radii[neighbors[i + 1]],
+                radii[neighbors[i + 2]],
+                radii[neighbors[i + 3]],
+                radii[neighbors[i + 4]],
+                radii[neighbors[i + 5]],
+                radii[neighbors[i + 6]],
+                radii[neighbors[i + 7]],
+            };
+
+            // SIMD: Calculate slice radii and xy-distances
+            const rj_primes = simd.sliceRadiiBatch8(slice_z, batch_z, batch_r);
+            const dij_batch = simd.xyDistanceBatch8(xi, yi, batch_x, batch_y);
+
+            // SIMD: Check which circles overlap
+            const overlap_mask = simd.circlesOverlapBatch8(dij_batch, Ri_prime, rj_primes);
+
+            // Process overlapping neighbors
+            for (0..8) |k| {
+                if ((overlap_mask >> @intCast(k)) & 1 == 0) continue;
+
+                const Rj_prime = rj_primes[k];
+                if (Rj_prime <= 0) continue; // No slice intersection
+
+                const dij = dij_batch[k];
+                const dx = batch_x[k] - xi;
+                const dy = batch_y[k] - yi;
+                const Rj_prime2 = Rj_prime * Rj_prime;
+
+                // Handle near-zero distance
+                if (dij < 1e-10) {
+                    if (Rj_prime > Ri_prime) {
+                        is_buried = true;
+                        break;
+                    }
+                    continue;
+                }
+
+                // Check if circle i is completely inside circle j
+                if (dij + Ri_prime < Rj_prime) {
+                    is_buried = true;
+                    break;
+                }
+                // Check if circle j is completely inside circle i
+                if (dij + Rj_prime < Ri_prime) {
+                    continue;
+                }
+
+                // Calculate arc
+                const cos_alpha = (Ri_prime2 + dij * dij - Rj_prime2) / (2.0 * Ri_prime * dij);
+                const alpha = std.math.acos(std.math.clamp(cos_alpha, -1.0, 1.0));
+                const beta = std.math.atan2(dy, dx) + std.math.pi;
+
+                var inf = beta - alpha;
+                var sup = beta + alpha;
+
+                while (inf < 0) inf += TWOPI;
+                while (inf >= TWOPI) inf -= TWOPI;
+                while (sup <= 0) sup += TWOPI;
+                while (sup > TWOPI) sup -= TWOPI;
+
+                if (sup < inf) {
+                    arc_buffer[n_arcs] = Arc{ .start = 0, .end = sup };
+                    n_arcs += 1;
+                    arc_buffer[n_arcs] = Arc{ .start = inf, .end = TWOPI };
+                    n_arcs += 1;
+                } else {
+                    arc_buffer[n_arcs] = Arc{ .start = inf, .end = sup };
+                    n_arcs += 1;
+                }
+            }
+        }
+
+        // Process remaining neighbors in batches of 4 using SIMD
         while (i + 4 <= neighbors.len and !is_buried) : (i += 4) {
             // Load batch of 4 neighbors
             const batch_x = [4]f64{
