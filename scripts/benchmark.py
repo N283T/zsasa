@@ -314,6 +314,7 @@ def print_summary(results: list[BenchmarkResult]) -> None:
         table.add_column("Zig (ms)", justify="right", style="green")
         table.add_column("FreeSASA C (ms)", justify="right", style="yellow")
         table.add_column("Speedup", justify="right", style="bold magenta")
+        table.add_column("Area Diff", justify="right", style="cyan")
 
         for pdb in pdbs:
             pdb_results = [r for r in results if r.pdb_id == pdb]
@@ -336,12 +337,19 @@ def print_summary(results: list[BenchmarkResult]) -> None:
                 zig_time = zig_r.sasa_only_ms or zig_r.time_ms
                 fsc_time = fsc_r.sasa_only_ms or fsc_r.time_ms
                 speedup = fsc_time / zig_time if zig_time > 0 else 0
+                # Calculate area difference percentage
+                area_diff = (
+                    abs(zig_r.total_area - fsc_r.total_area) / fsc_r.total_area * 100
+                    if fsc_r.total_area > 0
+                    else 0
+                )
                 table.add_row(
                     pdb.upper(),
                     f"{n_atoms:,}",
                     f"{zig_time:.2f}",
                     f"{fsc_time:.2f}",
                     f"{speedup:.2f}x",
+                    f"{area_diff:.3f}%",
                 )
 
         console.print()
