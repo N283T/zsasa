@@ -5,17 +5,19 @@
 #     "freesasa>=2.0",
 # ]
 # ///
-"""Compare classifier radii between FreeSASA and freesasa-zig.
+"""Print FreeSASA default classifier radii for reference.
 
-This script compares the atom radii returned by FreeSASA's Python bindings
-with our Zig implementation to verify consistency.
+This script prints the atom radii returned by FreeSASA's Python bindings
+for all standard amino acid atoms. FreeSASA Python uses ProtOr radii by default.
+
+To compare with our Zig NACCESS implementation, run `zig build test` and
+check the test assertions in src/classifier_naccess.zig.
 
 Usage:
-    ./compare_classifiers.py [--classifier=naccess|protor|oons]
-
-Examples:
     ./compare_classifiers.py
-    ./compare_classifiers.py --classifier=protor
+
+Note: The radii shown are ProtOr values, not NACCESS. For NACCESS comparison,
+refer to FreeSASA's share/naccess.config file.
 """
 
 from __future__ import annotations
@@ -75,18 +77,15 @@ class ComparisonResult:
     diff: float | None
 
 
-def get_freesasa_radius(
-    residue: str, atom: str, classifier: str = "naccess"
-) -> float | None:
+def get_freesasa_radius(residue: str, atom: str) -> float | None:
     """Get radius from FreeSASA's Python bindings.
 
-    Note: FreeSASA Python module uses ProtOr radii by default.
-    The classifier parameter selects from available config files.
+    Note: FreeSASA Python module uses ProtOr radii by default,
+    regardless of any classifier parameter. To compare with NACCESS,
+    refer to FreeSASA's naccess.config file directly.
     """
     import freesasa
 
-    # FreeSASA classifier selection via config file path
-    # The default Classifier() uses ProtOr radii
     try:
         clf = freesasa.Classifier()
         return clf.radius(residue, atom)
@@ -94,29 +93,20 @@ def get_freesasa_radius(
         return None
 
 
-def get_zig_radius(
-    residue: str, atom: str, classifier: str = "naccess"
-) -> float | None:
-    """Get radius from our Zig implementation by running a test."""
-    # We'll use zig build test to run a specific test
-    # For now, return None and we'll compare with the values from the Zig source
-    return None  # TODO: Add actual Zig invocation
-
-
-def compare_classifiers(classifier: str = "naccess") -> list[ComparisonResult]:
-    """Compare radii between FreeSASA and Zig for all amino acid atoms."""
+def compare_classifiers() -> list[ComparisonResult]:
+    """Compare radii between FreeSASA (ProtOr default) and Zig for all amino acid atoms."""
     results = []
 
     for residue, atoms in AMINO_ACIDS.items():
         for atom in atoms:
-            fs_radius = get_freesasa_radius(residue, atom, classifier)
+            fs_radius = get_freesasa_radius(residue, atom)
 
             results.append(
                 ComparisonResult(
                     residue=residue,
                     atom=atom,
                     freesasa_radius=fs_radius,
-                    zig_radius=None,  # Will be filled in by Zig tests
+                    zig_radius=None,  # Compare with Zig test output manually
                     match=True,  # Assume match for now
                     diff=None,
                 )
@@ -125,16 +115,20 @@ def compare_classifiers(classifier: str = "naccess") -> list[ComparisonResult]:
     return results
 
 
-def print_freesasa_radii(classifier: str = "naccess") -> None:
-    """Print all FreeSASA radii for verification."""
-    print(f"FreeSASA {classifier.upper()} Classifier Radii")
+def print_freesasa_radii() -> None:
+    """Print all FreeSASA radii for verification.
+
+    Note: FreeSASA Python uses ProtOr radii by default.
+    For NACCESS comparison, refer to FreeSASA's naccess.config file.
+    """
+    print("FreeSASA Default (ProtOr) Classifier Radii")
     print("=" * 60)
     print(f"{'Residue':<8} {'Atom':<6} {'Radius (Å)':<12}")
     print("-" * 60)
 
     for residue, atoms in sorted(AMINO_ACIDS.items()):
         for atom in atoms:
-            radius = get_freesasa_radius(residue, atom, classifier)
+            radius = get_freesasa_radius(residue, atom)
             if radius is not None:
                 print(f"{residue:<8} {atom:<6} {radius:<12.2f}")
             else:
@@ -143,20 +137,17 @@ def print_freesasa_radii(classifier: str = "naccess") -> None:
 
 
 def main() -> int:
-    classifier = "naccess"
-
-    for arg in sys.argv[1:]:
-        if arg.startswith("--classifier="):
-            classifier = arg.split("=")[1]
-
-    print_freesasa_radii(classifier)
+    print_freesasa_radii()
 
     # Summary
     print("\nSummary:")
-    print(f"Classifier: {classifier}")
+    print("Note: FreeSASA Python uses ProtOr radii by default")
     print(f"Amino acids tested: {len(AMINO_ACIDS)}")
     total_atoms = sum(len(atoms) for atoms in AMINO_ACIDS.values())
     print(f"Total atoms: {total_atoms}")
+    print("\nTo compare with Zig NACCESS implementation:")
+    print("  Run: zig build test")
+    print("  Check: src/classifier_naccess.zig test assertions")
 
     return 0
 
