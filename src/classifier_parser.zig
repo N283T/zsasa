@@ -117,12 +117,12 @@ pub fn parseConfigWithLineInfo(allocator: Allocator, content: []const u8) Error!
     defer types.deinit();
 
     // We need to track allocated keys to free them
-    var type_keys = std.ArrayList([]u8).init(allocator);
+    var type_keys = std.ArrayListUnmanaged([]u8){};
     defer {
         for (type_keys.items) |key| {
             allocator.free(key);
         }
-        type_keys.deinit();
+        type_keys.deinit(allocator);
     }
 
     var name: []const u8 = "custom";
@@ -188,7 +188,7 @@ pub fn parseConfigWithLineInfo(allocator: Allocator, content: []const u8) Error!
 
                 // Store type (need to dupe the key since it's from content slice)
                 const key = try allocator.dupe(u8, type_name);
-                try type_keys.append(key);
+                try type_keys.append(allocator, key);
                 try types.put(key, TypeDef{ .radius = radius, .class = class });
             },
             .atoms => {
