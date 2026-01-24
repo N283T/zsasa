@@ -57,6 +57,8 @@ pub const AtomInput = struct {
     /// Element atomic numbers (e.g., 6=C, 7=N, 8=O, 20=Ca) - optional
     /// Used to disambiguate atom names like "CA" (Carbon alpha vs Calcium)
     element: ?[]const u8 = null,
+    /// Chain IDs (e.g., "A", "B") - optional, for per-chain analysis
+    chain_id: ?[]const []const u8 = null,
     allocator: std.mem.Allocator,
 
     /// Get number of atoms
@@ -94,6 +96,12 @@ pub const AtomInput = struct {
         }
         if (self.element) |elem| {
             self.allocator.free(elem);
+        }
+        if (self.chain_id) |chains| {
+            for (chains) |s| {
+                self.allocator.free(s);
+            }
+            self.allocator.free(chains);
         }
     }
 };
