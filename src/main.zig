@@ -954,3 +954,19 @@ test "parseArgs combined classifier and config (config takes precedence)" {
     try std.testing.expectEqual(ClassifierType.naccess, parsed.classifier_type.?);
     try std.testing.expectEqualStrings("custom.config", parsed.config_path.?);
 }
+
+// Tests for --timing option
+test "parseArgs default show_timing is false" {
+    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(false, parsed.show_timing);
+}
+
+test "parseArgs --timing" {
+    const args = [_][]const u8{ "freesasa_zig", "--timing", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(true, parsed.show_timing);
+    try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
+}

@@ -22,6 +22,7 @@ Examples:
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -88,8 +89,6 @@ def run_zig_sasa(
         for line in result.stderr.split("\n"):
             if "ms" in line.lower():
                 # Try to extract time
-                import re
-
                 match = re.search(r"(\d+(?:\.\d+)?)\s*ms", line, re.IGNORECASE)
                 if match:
                     time_ms = float(match.group(1))
