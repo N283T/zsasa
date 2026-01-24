@@ -5,7 +5,7 @@ Python bindings for the freesasa-zig library - a high-performance implementation
 ## Features
 
 - **NumPy integration**: Pass coordinates and radii as NumPy arrays
-- **Two algorithms**: Shrake-Rupley (fast) and Lee-Richards (precise)
+- **Two algorithms**: Shrake-Rupley (point-based) and Lee-Richards (slice-based)
 - **Multi-threading**: Automatic parallelization across CPU cores
 - **Type-safe**: Full type hints and runtime validation
 
@@ -148,17 +148,17 @@ print(f"Total SASA: {result.total_area:.2f} Å²")
 
 Library-to-library comparison (Python bindings vs FreeSASA Python):
 
-| Structure | Atoms | Zig SR | FreeSASA SR | LR Speedup |
-|-----------|------:|-------:|------------:|----------:|
-| 1CRN | 327 | 1.9ms | 0.7ms | 0.8x |
-| 1UBQ | 602 | 2.3ms | 1.2ms | 1.2x |
-| 1A0Q | 3,183 | 10.6ms | 7.5ms | 1.4x |
-| 3HHB | 4,384 | 14.4ms | 11.0ms | 1.4x |
-| 1AON | 58,674 | 201ms | 163ms | 1.4x |
+| Structure | Atoms | Zig SR | FS SR | SR Speedup | Zig LR | FS LR | LR Speedup |
+|-----------|------:|-------:|------:|----------:|-------:|------:|----------:|
+| 1CRN | 327 | 0.5ms | 0.7ms | 1.4x | 1.5ms | 4.4ms | 2.9x |
+| 1UBQ | 602 | 0.6ms | 1.3ms | 2.2x | 2.0ms | 8.4ms | 4.2x |
+| 1A0Q | 3,183 | 2.4ms | 7.6ms | 3.2x | 8.9ms | 48ms | 5.5x |
+| 3HHB | 4,384 | 3.4ms | 11ms | 3.2x | 12ms | 69ms | 5.5x |
+| 1AON | 58,674 | 44ms | 163ms | 3.7x | 171ms | 931ms | 5.5x |
 
-- **SR algorithm**: FreeSASA's C extension is slightly faster
-- **LR algorithm**: Zig is 1.2-1.4x faster
-- **Accuracy**: Results are identical (0.00 Å² difference)
+- **SR algorithm**: Zig is 1.4-3.7x faster (speedup increases with size)
+- **LR algorithm**: Zig is 2.9-5.5x faster
+- **Accuracy**: Results match FreeSASA (< 0.01% difference)
 
 Run benchmark: `./scripts/benchmark_python.py`
 

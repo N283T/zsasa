@@ -584,8 +584,9 @@ pub fn main() !void {
                 .n_slices = parsed.n_slices,
                 .probe_radius = parsed.probe_radius,
             };
-            // Use single-threaded only when explicitly requested (n_threads=1)
-            // n_threads=0 means auto-detect, which should use parallel
+            // FIX: Previously used `if (n_threads > 1)` which made n_threads=0 (auto-detect)
+            // fall through to single-threaded mode. Now consistent with SR: use parallel
+            // unless explicitly single-threaded (n_threads=1).
             break :blk if (parsed.n_threads == 1)
                 lee_richards.calculateSasa(allocator, input, lr_config) catch |err| {
                     std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
