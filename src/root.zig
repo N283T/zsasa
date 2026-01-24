@@ -2,6 +2,9 @@
 const std = @import("std");
 
 // Re-export modules for library consumers
+pub const element = @import("element.zig");
+pub const cif_tokenizer = @import("cif_tokenizer.zig");
+pub const mmcif_parser = @import("mmcif_parser.zig");
 pub const classifier = @import("classifier.zig");
 pub const classifier_naccess = @import("classifier_naccess.zig");
 pub const classifier_protor = @import("classifier_protor.zig");
@@ -30,6 +33,9 @@ test "basic add functionality" {
 
 test {
     // Reference imported modules to include their tests
+    _ = element;
+    _ = cif_tokenizer;
+    _ = mmcif_parser;
     _ = classifier;
     _ = classifier_naccess;
     _ = classifier_protor;

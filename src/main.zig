@@ -2,6 +2,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const json_parser = @import("json_parser.zig");
 const json_writer = @import("json_writer.zig");
+const mmcif_parser = @import("mmcif_parser.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
 const lee_richards = @import("lee_richards.zig");
 const types = @import("types.zig");
@@ -119,6 +120,33 @@ fn parseClassifierType(value: []const u8) ClassifierType {
         std.debug.print("Valid classifiers: naccess, protor, oons\n", .{});
         std.process.exit(1);
     }
+}
+
+/// Input file format
+const InputFormat = enum {
+    json,
+    mmcif,
+};
+
+/// Detect input file format from extension
+fn detectInputFormat(path: []const u8) InputFormat {
+    if (std.mem.endsWith(u8, path, ".cif")) return .mmcif;
+    if (std.mem.endsWith(u8, path, ".mmcif")) return .mmcif;
+    if (std.mem.endsWith(u8, path, ".CIF")) return .mmcif;
+    if (std.mem.endsWith(u8, path, ".mmCIF")) return .mmcif;
+    return .json;
+}
+
+/// Read input file (auto-detect format)
+fn readInputFile(allocator: std.mem.Allocator, path: []const u8) !types.AtomInput {
+    const format = detectInputFormat(path);
+    return switch (format) {
+        .json => json_parser.readAtomInputFromFile(allocator, path),
+        .mmcif => blk: {
+            var parser = mmcif_parser.MmcifParser.init(allocator);
+            break :blk parser.parseFile(path);
+        },
+    };
 }
 
 /// Parse command-line arguments
@@ -273,10 +301,11 @@ fn printHelp(program_name: []const u8) void {
         \\freesasa_zig {s} - Solvent Accessible Surface Area calculator
         \\
         \\USAGE:
-        \\    {s} [OPTIONS] <input.json> [output.json]
+        \\    {s} [OPTIONS] <input> [output.json]
         \\
         \\ARGUMENTS:
-        \\    <input.json>     Input JSON file with atom coordinates and radii
+        \\    <input>          Input file (JSON or mmCIF format, auto-detected by extension)
+        \\                     Supported: .json, .cif, .mmcif
         \\    [output.json]    Output JSON file (default: output.json)
         \\
         \\OPTIONS:
@@ -313,15 +342,17 @@ fn printHelp(program_name: []const u8) void {
         \\
         \\EXAMPLES:
         \\    {s} input.json output.json
+        \\    {s} structure.cif output.json              # mmCIF input
         \\    {s} --algorithm=lr input.json output.json
         \\    {s} --algorithm=lr --n-slices=50 input.json output.json
         \\    {s} --threads=4 input.json output.json
         \\    {s} --probe-radius=1.5 --n-points=200 input.json
         \\    {s} --format=csv input.json output.csv
         \\    {s} --classifier=naccess input.json output.json
+        \\    {s} --classifier=naccess structure.cif output.json
         \\    {s} --config=custom.config input.json output.json
         \\
-    , .{ version, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
+    , .{ version, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 fn printVersion() void {
@@ -492,9 +523,9 @@ pub fn main() !void {
     var time_sasa: u64 = 0;
     var time_write: u64 = 0;
 
-    // Read input JSON file
+    // Read input file (JSON or mmCIF)
     timer.reset();
-    var input = json_parser.readAtomInputFromFile(allocator, parsed.input_path.?) catch |err| {
+    var input = readInputFile(allocator, parsed.input_path.?) catch |err| {
         std.debug.print("Error reading input file '{s}': {s}\n", .{ parsed.input_path.?, @errorName(err) });
         std.process.exit(1);
     };
