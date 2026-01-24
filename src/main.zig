@@ -44,6 +44,7 @@ const Args = struct {
     per_residue: bool = false, // Show per-residue SASA
     rsa: bool = false, // Show RSA (Relative Solvent Accessibility)
     polar: bool = false, // Show polar/nonpolar SASA summary
+    interface: bool = false, // Calculate interface SASA between chains
     quiet: bool = false,
     validate_only: bool = false,
     show_timing: bool = false, // Show timing breakdown for benchmarking
@@ -351,6 +352,10 @@ fn parseArgs(args: []const []const u8) Args {
             result.polar = true;
             result.per_residue = true; // Polar analysis requires per-residue
         }
+        // --interface (calculate interface SASA between chains)
+        else if (std.mem.eql(u8, arg, "--interface")) {
+            result.interface = true;
+        }
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
@@ -413,6 +418,7 @@ fn printHelp(program_name: []const u8) void {
         \\    --per-residue      Show per-residue SASA aggregation
         \\    --rsa              Show RSA (Relative Solvent Accessibility)
         \\    --polar            Show polar/nonpolar SASA summary
+        \\    --interface        Calculate interface SASA between chains
         \\    --threads=N        Number of threads (default: auto-detect)
         \\                       Use --threads=1 for single-threaded mode
         \\    --probe-radius=R   Probe radius in Angstroms (default: 1.4)
@@ -820,6 +826,86 @@ pub fn main() !void {
             if (parsed.polar) {
                 const polar_summary = analysis.calculatePolarSummary(residue_result.residues);
                 analysis.printPolarSummary(polar_summary);
+            }
+        }
+
+        // Calculate interface SASA if requested
+        if (parsed.interface) {
+            if (input.chain_id) |chain_ids| {
+                // Get unique chains
+                const unique_chains = input.getUniqueChains(allocator) catch |err| {
+                    std.debug.print("Error getting unique chains: {s}\n", .{@errorName(err)});
+                    std.process.exit(1);
+                };
+                defer allocator.free(unique_chains);
+
+                if (unique_chains.len < 2) {
+                    std.debug.print("\nInterface analysis requires at least 2 chains (found {d})\n", .{unique_chains.len});
+                } else {
+                    // Calculate per-chain SASA in complex
+                    const chain_data = analysis.calculatePerChainSasa(allocator, chain_ids, result.atom_areas) catch |err| {
+                        std.debug.print("Error calculating per-chain SASA: {s}\n", .{@errorName(err)});
+                        std.process.exit(1);
+                    };
+                    defer allocator.free(chain_data);
+
+                    // Calculate isolated SASA for each chain
+                    var total_isolated: f64 = 0;
+                    var total_complex: f64 = 0;
+                    var total_buried: f64 = 0;
+
+                    for (chain_data) |*chain| {
+                        // Filter input to just this chain
+                        var filtered = input.filterByChain(chain.chain_id) catch |err| {
+                            std.debug.print("Error filtering chain {s}: {s}\n", .{ chain.chain_id, @errorName(err) });
+                            continue;
+                        };
+                        defer filtered.deinit();
+
+                        // Calculate SASA for isolated chain
+                        const isolated_result = switch (parsed.algorithm) {
+                            .sr => blk: {
+                                const config = Config{
+                                    .n_points = parsed.n_points,
+                                    .probe_radius = parsed.probe_radius,
+                                };
+                                break :blk shrake_rupley.calculateSasa(allocator, filtered, config) catch |err| {
+                                    std.debug.print("Error calculating isolated SASA: {s}\n", .{@errorName(err)});
+                                    continue;
+                                };
+                            },
+                            .lr => blk: {
+                                const config = LeeRichardsConfig{
+                                    .n_slices = parsed.n_slices,
+                                    .probe_radius = parsed.probe_radius,
+                                };
+                                break :blk lee_richards.calculateSasa(allocator, filtered, config) catch |err| {
+                                    std.debug.print("Error calculating isolated SASA: {s}\n", .{@errorName(err)});
+                                    continue;
+                                };
+                            },
+                        };
+                        defer allocator.free(isolated_result.atom_areas);
+
+                        chain.isolated_sasa = isolated_result.total_area;
+                        chain.buried_sasa = chain.isolated_sasa - chain.complex_sasa;
+
+                        total_complex += chain.complex_sasa;
+                        total_isolated += chain.isolated_sasa;
+                        total_buried += chain.buried_sasa;
+                    }
+
+                    // Print interface summary
+                    const interface_summary = analysis.InterfaceSummary{
+                        .chains = chain_data,
+                        .total_complex_sasa = total_complex,
+                        .total_isolated_sasa = total_isolated,
+                        .total_buried_sasa = total_buried,
+                    };
+                    analysis.printInterfaceSummary(interface_summary);
+                }
+            } else {
+                std.debug.print("\nInterface analysis requires chain information\n", .{});
             }
         }
 

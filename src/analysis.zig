@@ -179,6 +179,94 @@ pub fn printPolarSummary(summary: PolarSummary) void {
     }
 }
 
+/// Per-chain SASA data for interface calculation
+pub const ChainSasa = struct {
+    chain_id: []const u8,
+    complex_sasa: f64, // SASA when in complex
+    isolated_sasa: f64, // SASA when isolated
+    buried_sasa: f64, // Difference (buried at interface)
+    atom_count: usize,
+};
+
+/// Interface SASA summary (view struct - does not own memory)
+pub const InterfaceSummary = struct {
+    chains: []const ChainSasa,
+    total_complex_sasa: f64,
+    total_isolated_sasa: f64,
+    total_buried_sasa: f64,
+};
+
+/// Calculate per-chain SASA from atom areas and chain IDs.
+/// Returns a map of chain_id -> total SASA for that chain.
+pub fn calculatePerChainSasa(
+    allocator: std.mem.Allocator,
+    chain_ids: []const []const u8,
+    atom_areas: []const f64,
+) ![]ChainSasa {
+    var chain_map = std.ArrayListUnmanaged(ChainSasa){};
+    defer chain_map.deinit(allocator);
+
+    for (chain_ids, 0..) |chain, i| {
+        // Find existing chain or create new
+        var found = false;
+        for (chain_map.items) |*c| {
+            if (std.mem.eql(u8, c.chain_id, chain)) {
+                c.complex_sasa += atom_areas[i];
+                c.atom_count += 1;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            try chain_map.append(allocator, ChainSasa{
+                .chain_id = chain,
+                .complex_sasa = atom_areas[i],
+                .isolated_sasa = 0, // Will be set later
+                .buried_sasa = 0, // Will be calculated later
+                .atom_count = 1,
+            });
+        }
+    }
+
+    return try chain_map.toOwnedSlice(allocator);
+}
+
+/// Print interface SASA summary
+pub fn printInterfaceSummary(summary: InterfaceSummary) void {
+    std.debug.print("\nInterface SASA Analysis:\n", .{});
+    std.debug.print("{s:>5} {s:>12} {s:>12} {s:>12} {s:>6}\n", .{
+        "Chain", "Complex", "Isolated", "Buried", "Atoms",
+    });
+    std.debug.print("{s:->5} {s:->12} {s:->12} {s:->12} {s:->6}\n", .{
+        "", "", "", "", "",
+    });
+
+    for (summary.chains) |chain| {
+        std.debug.print("{s:>5} {d:>12.2} {d:>12.2} {d:>12.2} {d:>6}\n", .{
+            chain.chain_id,
+            chain.complex_sasa,
+            chain.isolated_sasa,
+            chain.buried_sasa,
+            chain.atom_count,
+        });
+    }
+
+    std.debug.print("{s:->5} {s:->12} {s:->12} {s:->12} {s:->6}\n", .{
+        "", "", "", "", "",
+    });
+    std.debug.print("{s:>5} {d:>12.2} {d:>12.2} {d:>12.2}\n", .{
+        "Total",
+        summary.total_complex_sasa,
+        summary.total_isolated_sasa,
+        summary.total_buried_sasa,
+    });
+
+    if (summary.total_isolated_sasa > 0) {
+        const buried_pct = summary.total_buried_sasa / summary.total_isolated_sasa * 100;
+        std.debug.print("\nBuried surface: {d:.1}% of total isolated surface\n", .{buried_pct});
+    }
+}
+
 /// Per-residue SASA data
 pub const ResidueSasa = struct {
     chain_id: []const u8,
