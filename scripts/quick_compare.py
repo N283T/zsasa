@@ -520,8 +520,9 @@ def run_benchmarks(
                             avg_time,  # Already SASA-only from timing patch
                         )
                     )
+                    algo_str = algo.upper()
                     console.print(
-                        f"  [magenta]Rust[/magenta]  {algo.upper():2s}: {avg_time:8.2f} ms"
+                        f"  [magenta]Rust[/magenta]  {algo_str:2s}: {avg_time:8.2f} ms"
                     )
 
     return results

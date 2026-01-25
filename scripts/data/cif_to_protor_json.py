@@ -29,7 +29,6 @@ from __future__ import annotations
 import gzip
 import json
 import multiprocessing as mp
-import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Annotated
@@ -188,8 +187,10 @@ def generate(
 
         pdb_id, n_atoms, size = cif_to_benchmark_json(input_path, output_path)
         if n_atoms > 0:
+            size_kb = size / 1024
             console.print(
-                f"[green]Generated {output_path.name}[/green] ({n_atoms} atoms, {size / 1024:.1f} KB)"
+                f"[green]Generated {output_path.name}[/green] "
+                f"({n_atoms} atoms, {size_kb:.1f} KB)"
             )
         else:
             console.print(
