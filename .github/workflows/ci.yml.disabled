@@ -7,8 +7,7 @@ on:
       - '*.md'
       - 'docs/**'
       - 'plans/**'
-      - 'examples/**'
-      - 'scripts/**'
+      - 'benchmarks/**'
       - 'LICENSE'
   pull_request:
     branches: [main]
@@ -16,8 +15,7 @@ on:
       - '*.md'
       - 'docs/**'
       - 'plans/**'
-      - 'examples/**'
-      - 'scripts/**'
+      - 'benchmarks/**'
       - 'LICENSE'
   workflow_dispatch:  # Allow manual triggers
 
@@ -108,7 +106,7 @@ jobs:
 
       - name: Run with example input
         run: |
-          ./zig-out/bin/freesasa_zig examples/input_1a0q.json /tmp/output.json
+          ./zig-out/bin/freesasa_zig benchmarks/dataset/1a0q.json.gz /tmp/output.json
           cat /tmp/output.json | head -20
 
       - name: Validate output format
@@ -126,12 +124,12 @@ jobs:
 
       - name: Test CSV output
         run: |
-          ./zig-out/bin/freesasa_zig --format=csv examples/input_1a0q.json /tmp/output.csv
+          ./zig-out/bin/freesasa_zig --format=csv benchmarks/dataset/1a0q.json.gz /tmp/output.csv
           head -5 /tmp/output.csv
           tail -3 /tmp/output.csv
 
       - name: Test validate mode
-        run: ./zig-out/bin/freesasa_zig --validate examples/input_1a0q.json
+        run: ./zig-out/bin/freesasa_zig --validate benchmarks/dataset/1a0q.json.gz
 
   python:
     strategy:

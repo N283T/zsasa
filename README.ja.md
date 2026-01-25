@@ -208,14 +208,14 @@ total,1234.560000
 付属のPythonスクリプトで構造ファイルを変換:
 
 ```bash
-# mmCIF/PDBを入力JSONに変換
-./scripts/data/cif_to_json.py structure.cif output.json
-
-# FreeSASAで参照SASA値を生成（検証用）
-./scripts/data/calc_reference.py structure.cif reference.json
+# CIFをベンチマークJSONに変換（ProtOr半径付き）
+./benchmarks/scripts/generate_json.py --file structure.cif output.json.gz
 
 # ベンチマーク実行
-./scripts/benchmark.py --runs 5 --threads 4
+./benchmarks/scripts/run.py --tool zig --algorithm sr --threads 1-10
+
+# 結果解析
+./benchmarks/scripts/analyze.py all
 ```
 
 必要環境: Python 3.11+, gemmi, freesasa（PEP 723により自動インストール）
@@ -271,7 +271,7 @@ FreeSASA参照実装との比較（ProtOr分類器使用）:
 | 1AON | 58,674 | 316,879.14 | 316,879.14 | 0.000% |
 | 4V6X | 237,685 | 1,325,369.25 | 1,325,369.25 | 0.000% |
 
-検証実行: `./scripts/validate.py`
+検証実行: `./benchmarks/scripts/analyze.py validate`
 
 ## 性能
 
@@ -311,7 +311,7 @@ RustSASA自身のベンチマーク論文によると、単一タンパク質の
 
 **概要**: 単一タンパク質のSASA計算において、freesasa-zigは**RustSASAより1.7x-3.2x高速**、**FreeSASA Cより2.0x-4.7x高速**。RustSASAはShrake-Rupleyアルゴリズムのみ対応。
 
-ベンチマーク実行: `./scripts/benchmark.py`
+ベンチマーク実行: `./benchmarks/scripts/run.py --tool zig --algorithm sr`
 
 ### 最適化技術
 
@@ -415,56 +415,32 @@ const r = classifier.guessRadiusFromAtomName(" CA "); // 1.70（炭素）
 
 ```
 freesasa-zig/
-├── src/
-│   ├── main.zig              # CLIエントリーポイント
-│   ├── root.zig              # ライブラリルートモジュール
-│   ├── types.zig             # データ構造（Vec3, AtomInput等）
-│   ├── json_parser.zig       # JSON入力パース・バリデーション
-│   ├── json_writer.zig       # 出力（JSON, CSV）
-│   ├── mmcif_parser.zig      # mmCIFファイルパーサー
-│   ├── analysis.zig          # 解析機能（残基単位、RSA、極性）
-│   ├── classifier.zig        # 原子分類器コア（型、元素推定）
-│   ├── classifier_naccess.zig # NACCESS組み込み分類器
-│   ├── classifier_protor.zig  # ProtOr組み込み分類器
-│   ├── classifier_oons.zig    # OONS組み込み分類器
-│   ├── classifier_parser.zig  # FreeSASA設定ファイルパーサー
-│   ├── test_points.zig       # Golden Section Spiral生成
-│   ├── neighbor_list.zig     # 空間近傍リスト（O(N)探索）
-│   ├── simd.zig              # SIMDバッチ処理
-│   ├── thread_pool.zig       # 汎用スレッドプール
-│   ├── shrake_rupley.zig     # Shrake-Rupleyアルゴリズム
-│   └── lee_richards.zig      # Lee-Richardsアルゴリズム
-├── scripts/
-│   ├── benchmark.py               # 統合ベンチマーク
-│   ├── validate.py                # FreeSASA参照値との検証
-│   └── data/                      # データ準備スクリプト
-│       ├── cif_to_json.py         # 構造→JSON変換
-│       ├── calc_reference.py      # 参照SASA計算
-│       ├── generate.py            # 構造DL・参照値生成
-│       ├── generate_protor.py     # ProtOr半径入力生成
-│       └── compare_classifiers.py # 分類器比較
+├── src/                   # Zigソースコード
+│   ├── main.zig           # CLIエントリーポイント
+│   ├── root.zig           # ライブラリルートモジュール
+│   ├── types.zig          # データ構造（Vec3, AtomInput等）
+│   ├── json_parser.zig    # JSON入力パース・バリデーション
+│   ├── json_writer.zig    # 出力（JSON, CSV）
+│   ├── mmcif_parser.zig   # mmCIFファイルパーサー
+│   ├── analysis.zig       # 解析機能（残基単位、RSA、極性）
+│   ├── classifier*.zig    # 原子分類器（NACCESS, ProtOr, OONS）
+│   ├── shrake_rupley.zig  # Shrake-Rupleyアルゴリズム
+│   └── lee_richards.zig   # Lee-Richardsアルゴリズム
 ├── benchmarks/
-│   ├── structures/            # DLしたPDB構造 (.cif.gz)
-│   ├── inputs/                # 生成した入力JSON（元素ベース半径）
-│   ├── inputs_protor/         # 生成した入力JSON（ProtOr半径）
-│   └── references/            # FreeSASA参照SASA値
-├── examples/
-│   ├── 1A0Q.cif.gz        # 元構造ファイル（PDB 1A0Q）
-│   ├── input_1a0q.json    # 入力例（cifから変換）
-│   └── 1A0Q_sasa.json     # FreeSASAによる参照SASA
+│   ├── scripts/           # ベンチマークツール
+│   │   ├── run.py         # ベンチマーク実行（単一ツール/アルゴリズム）
+│   │   ├── analyze.py     # 結果解析・グラフ生成
+│   │   └── generate_json.py # CIF→JSON変換
+│   ├── dataset/           # 標準6構造（JSON、git管理）
+│   ├── cif/               # ソースCIFファイル（圧縮）
+│   ├── external/          # 比較ツール（FreeSASA, RustSASAフォーク）
+│   ├── inputs/            # 生成データ（gitignore）
+│   └── results/           # ベンチマーク結果
 ├── python/
 │   ├── freesasa_zig/      # Pythonバインディング
-│   │   ├── __init__.py    # パッケージエクスポート
-│   │   └── core.py        # ctypesバインディング
 │   └── tests/             # Pythonテスト
-├── docs/
-│   ├── architecture.md    # アーキテクチャ詳解
-│   ├── algorithm.md       # アルゴリズム詳解
-│   ├── optimizations.md   # 最適化技術詳解
-│   ├── cli-io.md          # CLI・入出力詳解
-│   └── classifier.md      # 原子分類器詳解
-└── plans/
-    └── *.md               # 実装計画
+├── docs/                  # 技術ドキュメント
+└── plans/                 # 実装計画
 ```
 
 ## ロードマップ

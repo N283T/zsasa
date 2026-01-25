@@ -133,7 +133,7 @@ import json
 import numpy as np
 from freesasa_zig import calculate_sasa
 
-# Load input JSON (from scripts/data/cif_to_json.py)
+# Load input JSON (from benchmarks/scripts/generate_json.py)
 with open("input.json") as f:
     data = json.load(f)
 
@@ -160,7 +160,7 @@ Library-to-library comparison (Python bindings vs FreeSASA Python):
 - **LR algorithm**: Zig is 2.9-5.5x faster
 - **Accuracy**: Results match FreeSASA (< 0.01% difference)
 
-Run benchmark: `./scripts/benchmark.py`
+Run benchmark: `./benchmarks/scripts/run.py --tool zig --algorithm sr`
 
 ## Development
 
