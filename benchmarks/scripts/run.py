@@ -9,8 +9,19 @@ Runs benchmark for a single tool and algorithm with configurable thread counts.
 Results are saved to CSV with execution config in JSON.
 
 Usage:
+    # Default dataset (6 structures)
     ./benchmarks/scripts/run.py --tool zig --algorithm sr --threads 1-10
     ./benchmarks/scripts/run.py --tool freesasa --algorithm lr --threads 1-10
+
+    # Custom input directory (all .json.gz files)
+    ./benchmarks/scripts/run.py --tool zig --algorithm sr --input-dir benchmarks/inputs
+
+    # Stratified sample (from sample.py output)
+    ./benchmarks/scripts/run.py --tool zig --algorithm sr \\
+        --input-dir benchmarks/inputs \\
+        --sample-file benchmarks/samples/stratified_75k.json
+
+    # Single run for testing
     ./benchmarks/scripts/run.py --tool zig --algorithm sr --threads 1 --runs 1
 
 Output:
@@ -41,8 +52,8 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 app = typer.Typer(help="SASA benchmark with separated tool execution")
 console = Console()
 
-# All benchmark structures
-STRUCTURES = [
+# Default benchmark structures (used when --input-dir is not specified)
+DEFAULT_STRUCTURES = [
     ("1crn", 327, "Crambin"),
     ("1ubq", 602, "Ubiquitin"),
     ("1a0q", 3183, "Lipid transfer protein"),
@@ -50,6 +61,62 @@ STRUCTURES = [
     ("1aon", 58674, "GroEL-GroES"),
     ("4v6x", 237685, "Ribosome"),
 ]
+
+
+def get_n_atoms_from_json(json_path: Path) -> int:
+    """Get number of atoms from a JSON file."""
+    try:
+        if str(json_path).endswith(".gz"):
+            with gzip.open(json_path, "rt") as f:
+                data = json.load(f)
+        else:
+            with open(json_path) as f:
+                data = json.load(f)
+        return len(data.get("x", []))
+    except Exception:
+        return 0
+
+
+def scan_input_directory(input_dir: Path) -> list[tuple[str, int, str]]:
+    """Scan directory for .json.gz files and return structures list.
+
+    Note: n_atoms is set to 0 initially for performance (avoids reading all files).
+    Actual n_atoms is determined during benchmark run.
+
+    Uses os.scandir for fast scanning of large directories.
+    """
+    structures = []
+
+    # Use os.scandir for fast directory scanning
+    entries = []
+    with os.scandir(input_dir) as it:
+        for entry in it:
+            if entry.is_file() and (
+                entry.name.endswith(".json.gz") or entry.name.endswith(".json")
+            ):
+                entries.append(entry.name)
+
+    # Sort by name
+    entries.sort()
+
+    for filename in entries:
+        if filename.endswith(".json.gz"):
+            pdb_id = filename[:-8]  # Remove .json.gz
+        else:
+            pdb_id = filename[:-5]  # Remove .json
+        structures.append((pdb_id, 0, ""))
+
+    return structures
+
+
+def load_sample_file(sample_path: Path) -> list[str]:
+    """Load sample file and return list of PDB IDs."""
+    with open(sample_path) as f:
+        data = json.load(f)
+    if "samples" not in data:
+        raise ValueError(f"Invalid sample file: missing 'samples' key in {sample_path}")
+    return data["samples"]
+
 
 TOOLS = ["zig", "freesasa", "rust"]
 ALGORITHMS = ["sr", "lr"]
@@ -320,6 +387,14 @@ def main(
         Path | None,
         typer.Option("--output-dir", "-o", help="Output directory"),
     ] = None,
+    input_dir: Annotated[
+        Path | None,
+        typer.Option("--input-dir", "-i", help="Input directory with .json.gz files"),
+    ] = None,
+    sample_file: Annotated[
+        Path | None,
+        typer.Option("--sample-file", "-S", help="Sample file from sample.py"),
+    ] = None,
 ) -> None:
     """Run SASA benchmark for a single tool and algorithm."""
 
@@ -342,13 +417,54 @@ def main(
         console.print("[red]Error:[/red] RustSASA only supports SR algorithm")
         raise typer.Exit(1)
 
+    # Validate sample file requires input-dir
+    sample_ids: set[str] | None = None
+    if sample_file is not None:
+        if input_dir is None:
+            console.print("[red]Error:[/red] --sample-file requires --input-dir")
+            raise typer.Exit(1)
+        if not sample_file.exists():
+            console.print(f"[red]Error:[/red] Sample file not found: {sample_file}")
+            raise typer.Exit(1)
+        sample_ids = set(load_sample_file(sample_file))
+        console.print(
+            f"Loaded [cyan]{len(sample_ids):,}[/cyan] samples from {sample_file}"
+        )
+
+    # Setup input directory and structures
+    if input_dir is not None:
+        if not input_dir.exists():
+            console.print(f"[red]Error:[/red] Input directory not found: {input_dir}")
+            raise typer.Exit(1)
+        json_dir = input_dir
+        structures = scan_input_directory(input_dir)
+        if not structures:
+            console.print(f"[red]Error:[/red] No .json.gz files found in {input_dir}")
+            raise typer.Exit(1)
+
+        # Filter by sample file if provided
+        if sample_ids is not None:
+            structures = [
+                (pdb_id, n, desc)
+                for pdb_id, n, desc in structures
+                if pdb_id in sample_ids
+            ]
+            if not structures:
+                console.print("[red]Error:[/red] No matching structures found")
+                raise typer.Exit(1)
+
+        console.print(
+            f"Found [cyan]{len(structures):,}[/cyan] structures in {input_dir}"
+        )
+    else:
+        json_dir = Path(__file__).parent.parent / "dataset"
+        structures = DEFAULT_STRUCTURES
+
     # Setup output directory
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     if output_dir is None:
         output_dir = Path(__file__).parent.parent / "results" / f"{tool}_{algorithm}"
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    json_dir = Path(__file__).parent.parent / "dataset"
 
     # Save config
     config = {
@@ -359,17 +475,19 @@ def main(
             "algorithm": algorithm,
             "thread_counts": thread_counts,
             "runs": runs,
-            "structures": [s[0] for s in STRUCTURES],
+            "structures": [s[0] for s in structures],
+            "input_dir": str(input_dir) if input_dir else None,
+            "sample_file": str(sample_file) if sample_file else None,
         },
     }
     config_path = output_dir / "config.json"
     config_path.write_text(json.dumps(config, indent=2))
 
     # Calculate total runs
-    total_runs = len(STRUCTURES) * len(thread_counts) * runs
+    total_runs = len(structures) * len(thread_counts) * runs
 
     console.print(f"[bold]{tool.upper()} {algorithm.upper()}[/bold]")
-    console.print(f"Threads: {thread_counts}, Runs: {runs}, Total: {total_runs}\n")
+    console.print(f"Threads: {thread_counts}, Runs: {runs}, Total: {total_runs:,}\n")
 
     # Run benchmarks
     csv_path = output_dir / "results.csv"
@@ -399,12 +517,24 @@ def main(
         ) as progress:
             task = progress.add_task("Running", total=total_runs)
 
+            # Cache for n_atoms (lazy loading)
+            n_atoms_cache: dict[str, int] = {}
+
             for n_threads in thread_counts:
-                for pdb_id, n_atoms, _ in STRUCTURES:
+                for pdb_id, n_atoms, _ in structures:
+                    # Try .json.gz first, then .json
                     json_path = json_dir / f"{pdb_id}.json.gz"
+                    if not json_path.exists():
+                        json_path = json_dir / f"{pdb_id}.json"
                     if not json_path.exists():
                         console.print(f"[yellow]Skip {pdb_id}: not found[/yellow]")
                         continue
+
+                    # Get n_atoms lazily (once per structure)
+                    if n_atoms == 0:
+                        if pdb_id not in n_atoms_cache:
+                            n_atoms_cache[pdb_id] = get_n_atoms_from_json(json_path)
+                        n_atoms = n_atoms_cache[pdb_id]
 
                     for run_num in range(1, runs + 1):
                         desc = f"{pdb_id} t={n_threads} #{run_num}"

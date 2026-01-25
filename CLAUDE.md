@@ -19,6 +19,15 @@ Benchmark scripts use typer + rich with PEP 723 metadata. Located in `benchmarks
 ./benchmarks/scripts/run.py --tool zig --algorithm sr --threads 1-10
 ./benchmarks/scripts/run.py --tool freesasa --algorithm lr --threads 1-10
 
+# Large-scale benchmark with stratified sampling
+./benchmarks/scripts/build_index.py benchmarks/inputs              # Build index
+./benchmarks/scripts/sample.py benchmarks/inputs/index.json --analyze  # Check distribution
+./benchmarks/scripts/sample.py benchmarks/inputs/index.json \
+    --target 75000 --seed 42 -o benchmarks/samples/stratified_75k.json
+./benchmarks/scripts/run.py --tool zig --algorithm sr \
+    --input-dir benchmarks/inputs \
+    --sample-file benchmarks/samples/stratified_75k.json
+
 # Analyze results
 ./benchmarks/scripts/analyze.py summary    # Show summary tables
 ./benchmarks/scripts/analyze.py validate   # Validate SASA values
