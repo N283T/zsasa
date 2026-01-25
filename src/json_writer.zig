@@ -3,6 +3,7 @@ const types = @import("types.zig");
 
 const Allocator = std.mem.Allocator;
 const SasaResult = types.SasaResult;
+const AtomInput = types.AtomInput;
 
 /// Output format options
 pub const OutputFormat = enum {
@@ -41,7 +42,7 @@ pub fn sasaResultToJsonPretty(allocator: Allocator, result: SasaResult) ![]u8 {
     });
 }
 
-/// Convert SasaResult to CSV string
+/// Convert SasaResult to CSV string (basic format)
 /// Format: atom_index,area (with total at end)
 /// Caller must free the returned slice
 pub fn sasaResultToCsv(allocator: Allocator, result: SasaResult) ![]u8 {
@@ -64,6 +65,71 @@ pub fn sasaResultToCsv(allocator: Allocator, result: SasaResult) ![]u8 {
     return list.toOwnedSlice(allocator);
 }
 
+/// Convert SasaResult to rich CSV string with structural information
+/// Format: chain,residue,resnum,atom_name,x,y,z,radius,area
+/// Caller must free the returned slice
+pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: []const f64) ![]u8 {
+    var list = std.ArrayListUnmanaged(u8){};
+    errdefer list.deinit(allocator);
+
+    const writer = list.writer(allocator);
+
+    // Header
+    try writer.writeAll("chain,residue,resnum,atom_name,x,y,z,radius,area\n");
+
+    // Atom rows
+    const n = input.atomCount();
+    for (0..n) |i| {
+        // Chain
+        if (input.chain_id) |chains| {
+            try writer.writeAll(chains[i]);
+        } else {
+            try writer.writeAll("-");
+        }
+        try writer.writeAll(",");
+
+        // Residue name
+        if (input.residue) |residues| {
+            try writer.writeAll(residues[i]);
+        } else {
+            try writer.writeAll("-");
+        }
+        try writer.writeAll(",");
+
+        // Residue number
+        if (input.residue_num) |nums| {
+            try writer.print("{d}", .{nums[i]});
+        } else {
+            try writer.writeAll("-");
+        }
+        try writer.writeAll(",");
+
+        // Atom name
+        if (input.atom_name) |names| {
+            try writer.writeAll(names[i]);
+        } else {
+            try writer.writeAll("-");
+        }
+        try writer.writeAll(",");
+
+        // Coordinates and radius
+        try writer.print("{d:.3},{d:.3},{d:.3},{d:.3},{d:.6}\n", .{
+            input.x[i],
+            input.y[i],
+            input.z[i],
+            input.r[i],
+            atom_areas[i],
+        });
+    }
+
+    // Total row
+    var total: f64 = 0;
+    for (atom_areas) |a| total += a;
+    try writer.print(",,,,,,,,{d:.6}\n", .{total});
+
+    return list.toOwnedSlice(allocator);
+}
+
 /// Write SasaResult to file with specified format
 pub fn writeSasaResultWithFormat(
     allocator: Allocator,
@@ -75,6 +141,30 @@ pub fn writeSasaResultWithFormat(
         .json => try sasaResultToJsonPretty(allocator, result),
         .compact => try sasaResultToJson(allocator, result),
         .csv => try sasaResultToCsv(allocator, result),
+    };
+    defer allocator.free(output_str);
+
+    const file = try std.fs.cwd().createFile(path, .{});
+    defer file.close();
+
+    try file.writeAll(output_str);
+}
+
+/// Write SasaResult to file with specified format, using rich CSV when input has structural info
+pub fn writeSasaResultWithFormatAndInput(
+    allocator: Allocator,
+    result: SasaResult,
+    input: AtomInput,
+    path: []const u8,
+    format: OutputFormat,
+) !void {
+    const output_str = switch (format) {
+        .json => try sasaResultToJsonPretty(allocator, result),
+        .compact => try sasaResultToJson(allocator, result),
+        .csv => if (input.hasResidueInfo())
+            try sasaResultToRichCsv(allocator, input, result.atom_areas)
+        else
+            try sasaResultToCsv(allocator, result),
     };
     defer allocator.free(output_str);
 

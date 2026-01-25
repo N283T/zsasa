@@ -371,6 +371,24 @@ fn parseArgs(args: []const []const u8) Args {
         else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
             result.show_version = true;
         }
+        // -o FILE or --output=FILE or --output FILE
+        else if (std.mem.eql(u8, arg, "-o")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for -o\n", .{});
+                std.process.exit(1);
+            }
+            result.output_path = args[i];
+        } else if (std.mem.startsWith(u8, arg, "--output=")) {
+            result.output_path = arg["--output=".len..];
+        } else if (std.mem.eql(u8, arg, "--output")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --output\n", .{});
+                std.process.exit(1);
+            }
+            result.output_path = args[i];
+        }
         // Unknown option
         else if (std.mem.startsWith(u8, arg, "-")) {
             std.debug.print("Error: Unknown option: {s}\n", .{arg});
@@ -419,6 +437,7 @@ fn printHelp(program_name: []const u8) void {
         \\    --n-points=N       Test points per atom (default: 100, for sr)
         \\    --n-slices=N       Slices per atom diameter (default: 20, for lr)
         \\    --format=FORMAT    Output format: json, compact, csv (default: json)
+        \\    -o, --output=FILE  Output file (alternative to positional argument)
         \\    --validate         Validate input only, do not calculate SASA
         \\    --timing           Show timing breakdown (for benchmarking)
         \\    -q, --quiet        Suppress progress output
@@ -784,7 +803,7 @@ pub fn main() !void {
 
     // Write output file
     timer.reset();
-    json_writer.writeSasaResultWithFormat(allocator, result, parsed.output_path, parsed.output_format) catch |err| {
+    json_writer.writeSasaResultWithFormatAndInput(allocator, result, input, parsed.output_path, parsed.output_format) catch |err| {
         std.debug.print("Error writing output file '{s}': {s}\n", .{ parsed.output_path, @errorName(err) });
         std.process.exit(1);
     };
