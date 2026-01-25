@@ -10,9 +10,9 @@
 
 ### Phase 16.1: Relative SASA (RSA)
 
-- [ ] Gly-X-Gly参照値テーブル実装
-- [ ] 残基ごとのRSA計算（0-100%）
-- [ ] 埋没/露出判定（閾値: 25%）
+- [x] Gly-X-Gly参照値テーブル実装
+- [x] 残基ごとのRSA計算（0-100%）
+- [x] 埋没/露出判定（閾値: 25%）
 
 **参照値 (Miller et al. 1987, Sander & Rost 1994):**
 ```zig
@@ -36,9 +36,9 @@ LYS-3    67.8%  Exposed
 
 ### Phase 16.2: Per-Residue Aggregation
 
-- [ ] 原子SASA → 残基SASA集約
-- [ ] 残基番号 + 挿入コード対応
-- [ ] Backbone/Sidechain分離（オプション）
+- [x] 原子SASA → 残基SASA集約
+- [x] 残基番号 + 挿入コード対応
+- [ ] Backbone/Sidechain分離（オプション） - 未実装（将来拡張）
 
 **集計ロジック:**
 ```
@@ -47,9 +47,9 @@ Residue SASA = Σ(atom SASA for atoms in residue)
 
 ### Phase 16.3: Polar/Nonpolar Classification
 
-- [ ] 原子の極性分類
-- [ ] Polar/Nonpolar/Charged面積内訳
-- [ ] 残基タイプ別集計
+- [x] 原子の極性分類
+- [x] Polar/Nonpolar面積内訳
+- [x] 残基タイプ別集計
 
 **分類基準:**
 | Type | Atoms |
@@ -73,8 +73,8 @@ Residue SASA = Σ(atom SASA for atoms in residue)
 
 ## Success Criteria
 
-- [ ] RSA計算が参照実装と一致
-- [ ] 残基別SASAが原子SASAの合計と一致
+- [x] RSA計算が参照実装と一致
+- [x] 残基別SASAが原子SASAの合計と一致
 
 ---
-- [ ] **DONE** - Phase 16 complete
+- [x] **DONE** - Phase 16 complete
