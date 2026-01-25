@@ -25,41 +25,42 @@ freesasa-zig と同じ形式：
 
 ### Phase 17.1: Input Generation Script ✅
 
-- [x] `scripts/data/generate_benchmark_json.py` 作成
+- [x] `scripts/data/cif_to_protor_json.py` 作成（旧 generate_benchmark_json.py）
   - gemmi で CIF 読み込み
   - Protein atoms only（HETATM 除外）
   - Hydrogen 除外
   - ProtOr 半径付与
-  - JSON 出力（x, y, z, r のみ、コンパクト形式）
+  - JSON 出力（x, y, z, r のみ、コンパクト形式、gzip 圧縮）
 - [x] `benchmarks/inputs_json/` に 6 構造生成済み
 
-### Phase 17.2: FreeSASA C JSON Support
+### Phase 17.2: FreeSASA C JSON Support ✅
 
-- [ ] `freesasa-bench` に JSON 入力オプション追加
-  - cJSON ライブラリ統合
-  - `--json` オプション追加
+- [x] `freesasa-bench` に JSON 入力オプション追加
+  - 独自 JSON パーサー実装（zlib で gzip 対応）
+  - `--json-input` オプション追加
   - JSON → freesasa_structure 変換
   - 既存の計算ロジック使用
 
-### Phase 17.3: RustSASA JSON Support
+### Phase 17.3: RustSASA JSON Support ✅
 
-- [ ] `rustsasa-bench` に JSON 入力オプション追加
-  - serde_json 依存追加
-  - `--json-input` オプション追加
+- [x] `rustsasa-bench` に JSON 入力オプション追加
+  - serde_json + flate2 依存追加
+  - `-J/--json-input` オプション追加
   - pdbtbx バイパスして直接計算
 
-### Phase 17.4: Benchmark Script Update
+### Phase 17.4: Benchmark Script ✅
 
-- [ ] `benchmark.py` 更新
-  - JSON 入力モード追加
-  - CIF/JSON 自動判別
-  - 全実装で JSON 使用
+- [x] 新規 `scripts/benchmark.py` 作成
+  - JSON 入力のみ（公平な計測）
+  - Zig/FreeSASA C/RustSASA 全対応
+  - SASA 計算時間のみ計測
+- [x] 旧 benchmark.py → `scripts/quick_compare.py` に改名（CIF 入力用）
 
-### Phase 17.5: Test Dataset Generation
+### Phase 17.5: Test Dataset Generation ✅
 
-- [ ] ベンチマーク用 JSON 生成
+- [x] ベンチマーク用 JSON 生成済み
   - 既存 6 構造 (1CRN, 1UBQ, 1A0Q, 3HHB, 1AON, 4V6X)
-  - `benchmarks/inputs_json/` に保存
+  - `benchmarks/inputs_json/` に .json.gz 形式で保存
 
 ## Directory Structure
 
@@ -81,5 +82,14 @@ benchmarks/
 - 半径は生成時に確定 → 各実装で classifier 不要
 - Protein only → 水分子・リガンド除外で公平
 
+## Results
+
+初回ベンチマーク結果（M4 Mac, 10コア）:
+
+| 構造 | 原子数 | Zig SR | RustSASA | FS-C | Zig vs FS-C | Zig vs Rust |
+|------|--------|--------|----------|------|-------------|-------------|
+| 1CRN | 327 | 0.43ms | 0.65ms | 0.85ms | 1.98x | 1.52x |
+| 4V6X | 237,685 | 159ms | 501ms | 759ms | 4.77x | 3.16x |
+
 ---
-- [ ] **DONE** - Phase complete
+- [x] **DONE** - Phase complete
