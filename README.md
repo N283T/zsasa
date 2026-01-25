@@ -294,6 +294,29 @@ Benchmark comparing Zig (ReleaseFast) vs FreeSASA C (native binary), SASA calcul
 
 **Summary**: Both algorithms are faster than FreeSASA C. Shrake-Rupley is **1.2x-2.3x faster**, Lee-Richards is **1.1x-1.7x faster**. Speedup increases with structure size.
 
+### Comparison with RustSASA
+
+[RustSASA](https://github.com/maxall41/RustSASA) is a Rust implementation that claims to be "5x faster than FreeSASA". However, this claim is for **batch processing of the entire E. coli proteome** (4,391 structures), not for single-protein calculations.
+
+According to RustSASA's own benchmark paper, single-protein performance is essentially identical to FreeSASA:
+
+| Implementation | Single Protein (ms) | E. coli Proteome (s) |
+|----------------|--------------------:|---------------------:|
+| FreeSASA | 4.0 | 28.0 |
+| RustSASA | 4.0 | 5.2 |
+| **Speedup** | 1.0x | 5.4x |
+
+The "5x" speedup comes from RustSASA's CLI processing multiple files in parallel, not from faster SASA algorithm.
+
+**SASA-only comparison** (single-threaded, n_points=100, Shrake-Rupley):
+
+| Structure | Atoms | Zig (ms) | RustSASA (ms) | FreeSASA C (ms) | vs Rust | vs FS-C |
+|-----------|------:|---------:|--------------:|----------------:|--------:|--------:|
+| 1CRN | 327 | 0.40 | 0.69 | 0.79 | 1.7x | 2.0x |
+| 4V6X | 237,685 | 158.58 | 500.11 | 747.95 | 3.2x | 4.7x |
+
+**Summary**: For single-protein SASA calculation, freesasa-zig is **1.7x-3.2x faster than RustSASA** and **2.0x-4.7x faster than FreeSASA C**. RustSASA only supports Shrake-Rupley algorithm.
+
 Run benchmark: `./scripts/benchmark.py`
 
 ### Optimization Techniques
@@ -483,3 +506,4 @@ MIT
 - Shrake, A., & Rupley, J. A. (1973). Environment and exposure to solvent of protein atoms. Lysozyme and insulin. *Journal of Molecular Biology*, 79(2), 351-371.
 - Lee, B., & Richards, F. M. (1971). The interpretation of protein structures: estimation of static accessibility. *Journal of Molecular Biology*, 55(3), 379-400.
 - [FreeSASA](https://github.com/mittinatten/freesasa) - Original C implementation
+- [RustSASA](https://github.com/maxall41/RustSASA) - Rust implementation (batch processing optimized)

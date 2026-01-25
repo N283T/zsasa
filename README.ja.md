@@ -288,6 +288,29 @@ Zig（ReleaseFast）とFreeSASA C（ネイティブバイナリ）の比較、SA
 
 **概要**: 両アルゴリズムともFreeSASA Cより高速。Shrake-Rupleyは**1.2x-2.3x高速**、Lee-Richardsは**1.1x-1.7x高速**。構造サイズが大きいほど高速化率が向上。
 
+### RustSASAとの比較
+
+[RustSASA](https://github.com/maxall41/RustSASA)は「FreeSASAより5倍高速」と謳うRust実装です。しかし、この「5倍」は**大腸菌プロテオーム全体（4,391構造）のバッチ処理**であり、単一タンパク質の計算速度ではありません。
+
+RustSASA自身のベンチマーク論文によると、単一タンパク質の性能はFreeSASAと同等：
+
+| 実装 | 単一タンパク質 (ms) | 大腸菌プロテオーム (s) |
+|------|--------------------:|----------------------:|
+| FreeSASA | 4.0 | 28.0 |
+| RustSASA | 4.0 | 5.2 |
+| **高速化率** | 1.0x | 5.4x |
+
+「5倍」の高速化はRustSASAのCLIが複数ファイルを並列処理することで達成されており、SASAアルゴリズム自体の高速化ではありません。
+
+**SASA計算のみの比較**（シングルスレッド、n_points=100、Shrake-Rupley）：
+
+| 構造 | 原子数 | Zig (ms) | RustSASA (ms) | FreeSASA C (ms) | vs Rust | vs FS-C |
+|------|-------:|---------:|--------------:|----------------:|--------:|--------:|
+| 1CRN | 327 | 0.40 | 0.69 | 0.79 | 1.7x | 2.0x |
+| 4V6X | 237,685 | 158.58 | 500.11 | 747.95 | 3.2x | 4.7x |
+
+**概要**: 単一タンパク質のSASA計算において、freesasa-zigは**RustSASAより1.7x-3.2x高速**、**FreeSASA Cより2.0x-4.7x高速**。RustSASAはShrake-Rupleyアルゴリズムのみ対応。
+
 ベンチマーク実行: `./scripts/benchmark.py`
 
 ### 最適化技術
@@ -477,3 +500,4 @@ MIT
 - Shrake, A., & Rupley, J. A. (1973). Environment and exposure to solvent of protein atoms. Lysozyme and insulin. *Journal of Molecular Biology*, 79(2), 351-371.
 - Lee, B., & Richards, F. M. (1971). The interpretation of protein structures: estimation of static accessibility. *Journal of Molecular Biology*, 55(3), 379-400.
 - [FreeSASA](https://github.com/mittinatten/freesasa) - オリジナルC実装
+- [RustSASA](https://github.com/maxall41/RustSASA) - Rust実装（バッチ処理最適化）
