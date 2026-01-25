@@ -208,7 +208,20 @@ def run_freesasa_c_benchmark(
     The sasa_only_ms is parsed from stderr if available (requires patched binary).
     """
     if fs_c_binary is None:
-        fs_c_binary = Path(__file__).parent.parent / "freesasa-c" / "src" / "freesasa"
+        # Check new location first, then legacy
+        new_path = (
+            Path(__file__).parent.parent
+            / "benchmarks"
+            / "external"
+            / "freesasa-bench"
+            / "src"
+            / "freesasa"
+        )
+        legacy_path = Path(__file__).parent.parent / "freesasa-c" / "src" / "freesasa"
+        if new_path.exists():
+            fs_c_binary = new_path
+        else:
+            fs_c_binary = legacy_path
 
     if not fs_c_binary.exists():
         raise FileNotFoundError(f"FreeSASA C binary not found: {fs_c_binary}")
@@ -270,13 +283,27 @@ def run_rustsasa_benchmark(
     RustSASA only supports Shrake-Rupley algorithm.
     """
     if rust_binary is None:
-        rust_binary = (
+        # Check new location first, then legacy
+        new_path = (
+            Path(__file__).parent.parent
+            / "benchmarks"
+            / "external"
+            / "rustsasa-bench"
+            / "target"
+            / "release"
+            / "rust-sasa"
+        )
+        legacy_path = (
             Path(__file__).parent.parent
             / "rust-sasa-bench"
             / "target"
             / "release"
             / "rust-sasa"
         )
+        if new_path.exists():
+            rust_binary = new_path
+        else:
+            rust_binary = legacy_path
 
     if not rust_binary.exists():
         raise FileNotFoundError(f"RustSASA binary not found: {rust_binary}")
