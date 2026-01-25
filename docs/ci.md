@@ -14,8 +14,7 @@ on:
       - '*.md'
       - 'docs/**'
       - 'plans/**'
-      - 'examples/**'
-      - 'scripts/**'
+      - 'benchmarks/**'
       - 'LICENSE'
   pull_request:
     branches: [main]
@@ -32,11 +31,8 @@ on:
 | `*.md` | ドキュメントのみ |
 | `docs/**` | ドキュメントのみ |
 | `plans/**` | 計画ファイルのみ |
-| `examples/**` | サンプルデータ（テストフィクスチャ） |
-| `scripts/**` | Pythonスクリプト（Zig無関係） |
+| `benchmarks/**` | ベンチマークデータ・スクリプト |
 | `LICENSE` | ライセンスファイル |
-
-**注意:** `examples/input_1a0q.json`はvalidateジョブで使用されるテストフィクスチャです。このファイルを変更してもCIは実行されないため、変更時は手動でテストを実行してください。
 
 ### 手動トリガー
 
@@ -108,7 +104,7 @@ zig fmt src/
 
 | ステップ | 内容 |
 |----------|------|
-| Example run | `examples/input_1a0q.json`で計算 |
+| Example run | `benchmarks/dataset/1a0q.json.gz`で計算 |
 | JSON validation | 出力フィールド検証（Python） |
 | CSV test | CSV出力テスト |
 | Validate mode | `--validate`フラグテスト |
@@ -160,9 +156,9 @@ zig build -Doptimize=ReleaseFast
 ./zig-out/bin/freesasa_zig --version
 
 # 検証テスト
-./zig-out/bin/freesasa_zig examples/input_1a0q.json /tmp/output.json
-./zig-out/bin/freesasa_zig --format=csv examples/input_1a0q.json /tmp/output.csv
-./zig-out/bin/freesasa_zig --validate examples/input_1a0q.json
+./zig-out/bin/freesasa_zig benchmarks/dataset/1a0q.json.gz /tmp/output.json
+./zig-out/bin/freesasa_zig --format=csv benchmarks/dataset/1a0q.json.gz /tmp/output.csv
+./zig-out/bin/freesasa_zig --validate benchmarks/dataset/1a0q.json.gz
 
 # Pythonテスト
 cd python
@@ -199,7 +195,7 @@ git push
 
 ### Validate failed
 
-1. `examples/input_1a0q.json` で実行を確認
+1. `benchmarks/dataset/1a0q.json.gz` で実行を確認
 2. 出力JSONの形式を確認
 3. 原子数が3183であることを確認
 

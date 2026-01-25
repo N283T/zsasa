@@ -10,21 +10,26 @@ zig build -Doptimize=ReleaseFast
 
 Never use `zig build` without `-Doptimize=ReleaseFast` - debug builds are 3-10x slower and will give misleading benchmark results.
 
-## Scripts
+## Benchmark Scripts
 
-Scripts use typer + rich with PEP 723 metadata.
+Benchmark scripts use typer + rich with PEP 723 metadata. Located in `benchmarks/scripts/`.
 
 ```bash
-# Setup (first time)
-cd scripts && uv sync
+# Run benchmark (single tool, single algorithm)
+./benchmarks/scripts/run.py --tool zig --algorithm sr --threads 1-10
+./benchmarks/scripts/run.py --tool freesasa --algorithm lr --threads 1-10
 
-# Run scripts
-./scripts/benchmark.py --help
-./scripts/validate.py --help
+# Analyze results
+./benchmarks/scripts/analyze.py summary    # Show summary tables
+./benchmarks/scripts/analyze.py validate   # Validate SASA values
+./benchmarks/scripts/analyze.py plot       # Generate graphs
+./benchmarks/scripts/analyze.py all        # All of the above
+
+# Generate JSON input from CIF files
+./benchmarks/scripts/generate_json.py /path/to/cif /path/to/output
 
 # Lint/Type check
-ruff check scripts/*.py
-ty check --python scripts/.venv scripts/*.py
+ruff check benchmarks/scripts/*.py
 ```
 
 ## Benchmark
@@ -35,5 +40,5 @@ Before benchmarking, ensure:
 
 ```bash
 zig build -Doptimize=ReleaseFast
-./scripts/benchmark.py
+./benchmarks/scripts/run.py --tool zig --algorithm sr
 ```

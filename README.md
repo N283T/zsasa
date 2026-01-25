@@ -214,14 +214,14 @@ total,1234.560000
 Use the provided Python scripts to convert structure files:
 
 ```bash
-# Convert mmCIF/PDB to input JSON
-./scripts/data/cif_to_json.py structure.cif output.json
-
-# Generate reference SASA using FreeSASA (for validation)
-./scripts/data/calc_reference.py structure.cif reference.json
+# Convert CIF to benchmark JSON (with ProtOr radii)
+./benchmarks/scripts/generate_json.py --file structure.cif output.json.gz
 
 # Run benchmark
-./scripts/benchmark.py --runs 5 --threads 4
+./benchmarks/scripts/run.py --tool zig --algorithm sr --threads 1-10
+
+# Analyze results
+./benchmarks/scripts/analyze.py all
 ```
 
 Requirements: Python 3.11+, gemmi, freesasa (installed automatically via PEP 723)
@@ -277,7 +277,7 @@ Tested against FreeSASA reference implementation using ProtOr classifier:
 | 1AON | 58,674 | 316,879.14 | 316,879.14 | 0.000% |
 | 4V6X | 237,685 | 1,325,369.25 | 1,325,369.25 | 0.000% |
 
-Run validation: `./scripts/validate.py`
+Run validation: `./benchmarks/scripts/analyze.py validate`
 
 ## Performance
 
@@ -317,7 +317,7 @@ The "5x" speedup comes from RustSASA's CLI processing multiple files in parallel
 
 **Summary**: For single-protein SASA calculation, freesasa-zig is **1.7x-3.2x faster than RustSASA** and **2.0x-4.7x faster than FreeSASA C**. RustSASA only supports Shrake-Rupley algorithm.
 
-Run benchmark: `./scripts/benchmark.py`
+Run benchmark: `./benchmarks/scripts/run.py --tool zig --algorithm sr`
 
 ### Optimization Techniques
 
@@ -421,56 +421,32 @@ See [docs/classifier.md](docs/classifier.md) for details.
 
 ```
 freesasa-zig/
-├── src/
-│   ├── main.zig              # CLI entry point
-│   ├── root.zig              # Library root module
-│   ├── types.zig             # Data structures (Vec3, AtomInput, etc.)
-│   ├── json_parser.zig       # JSON input parsing and validation
-│   ├── json_writer.zig       # Output writing (JSON, CSV)
-│   ├── mmcif_parser.zig      # mmCIF file parser
-│   ├── analysis.zig          # Analysis features (per-residue, RSA, polar)
-│   ├── classifier.zig        # Atom classifier core (types, element guessing)
-│   ├── classifier_naccess.zig # NACCESS built-in classifier
-│   ├── classifier_protor.zig  # ProtOr built-in classifier
-│   ├── classifier_oons.zig    # OONS built-in classifier
-│   ├── classifier_parser.zig  # FreeSASA config file parser
-│   ├── test_points.zig       # Golden Section Spiral generation
-│   ├── neighbor_list.zig     # Spatial neighbor list (O(N) lookup)
-│   ├── simd.zig              # SIMD batch operations
-│   ├── thread_pool.zig       # Generic thread pool for parallelization
-│   ├── shrake_rupley.zig     # Shrake-Rupley algorithm
-│   └── lee_richards.zig      # Lee-Richards algorithm
-├── scripts/
-│   ├── benchmark.py               # Unified benchmark across all structures
-│   ├── validate.py                # Validate against FreeSASA references
-│   └── data/                      # Data preparation scripts
-│       ├── cif_to_json.py         # Structure to JSON converter
-│       ├── calc_reference.py      # Reference SASA calculator
-│       ├── generate.py            # Download structures and generate references
-│       ├── generate_protor.py     # Generate inputs with ProtOr radii
-│       └── compare_classifiers.py # Compare classifier radii
+├── src/                   # Zig source code
+│   ├── main.zig           # CLI entry point
+│   ├── root.zig           # Library root module
+│   ├── types.zig          # Data structures (Vec3, AtomInput, etc.)
+│   ├── json_parser.zig    # JSON input parsing and validation
+│   ├── json_writer.zig    # Output writing (JSON, CSV)
+│   ├── mmcif_parser.zig   # mmCIF file parser
+│   ├── analysis.zig       # Analysis features (per-residue, RSA, polar)
+│   ├── classifier*.zig    # Atom classifiers (NACCESS, ProtOr, OONS)
+│   ├── shrake_rupley.zig  # Shrake-Rupley algorithm
+│   └── lee_richards.zig   # Lee-Richards algorithm
 ├── benchmarks/
-│   ├── structures/            # Downloaded PDB structures (.cif.gz)
-│   ├── inputs/                # Generated input JSONs (element-based radii)
-│   ├── inputs_protor/         # Generated input JSONs (ProtOr radii)
-│   └── references/            # FreeSASA reference SASA values
-├── examples/
-│   ├── 1A0Q.cif.gz        # Original structure file (PDB 1A0Q)
-│   ├── input_1a0q.json    # Example input (converted from cif)
-│   └── 1A0Q_sasa.json     # Reference SASA from FreeSASA
+│   ├── scripts/           # Benchmark tools
+│   │   ├── run.py         # Run benchmark (single tool/algorithm)
+│   │   ├── analyze.py     # Analyze results, generate graphs
+│   │   └── generate_json.py # CIF to JSON converter
+│   ├── dataset/           # Standard 6 structures (JSON, git-tracked)
+│   ├── cif/               # Source CIF files (compressed)
+│   ├── external/          # Comparison tools (FreeSASA, RustSASA forks)
+│   ├── inputs/            # Generated data (gitignored)
+│   └── results/           # Benchmark results
 ├── python/
 │   ├── freesasa_zig/      # Python bindings package
-│   │   ├── __init__.py    # Package exports
-│   │   └── core.py        # ctypes bindings with NumPy
 │   └── tests/             # Python tests
-├── docs/                  # Technical documentation (Japanese)
-│   ├── architecture.md    # Architecture overview
-│   ├── algorithm.md       # Algorithm details
-│   ├── optimizations.md   # Optimization techniques
-│   ├── cli-io.md          # CLI and I/O details
-│   └── classifier.md      # Atom classifier details
-└── plans/
-    └── *.md               # Implementation plans
+├── docs/                  # Technical documentation
+└── plans/                 # Implementation plans
 ```
 
 ## Roadmap
