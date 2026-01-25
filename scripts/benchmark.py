@@ -309,8 +309,11 @@ def run_rustsasa_benchmark(
         sasa_only_ms = None
         for line in result.stderr.split("\n"):
             if "SASA_TIME_US:" in line:
-                us = int(line.split(":")[1])
-                sasa_only_ms = us / 1000.0
+                try:
+                    us = int(line.split(":")[1].strip())
+                    sasa_only_ms = us / 1000.0
+                except (ValueError, IndexError):
+                    pass  # Skip malformed timing output
                 break
 
         # Parse total area from output JSON
