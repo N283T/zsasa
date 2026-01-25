@@ -109,12 +109,8 @@ def cif_to_benchmark_json(cif_path: Path, output_path: Path) -> tuple[str, int, 
             if not polymer:
                 continue
 
-            # Only process peptides (proteins), skip DNA/RNA
-            poly_type = polymer.check_polymer_type()
-            if poly_type not in (
-                gemmi.PolymerType.PeptideL,
-                gemmi.PolymerType.PeptideD,
-            ):
+            # Only process L-peptides (standard proteins)
+            if polymer.check_polymer_type() != gemmi.PolymerType.PeptideL:
                 continue
 
             for residue in polymer:
