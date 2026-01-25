@@ -3,19 +3,22 @@
 # requires-python = ">=3.11"
 # dependencies = ["rich>=13.0", "typer>=0.9.0"]
 # ///
-"""Benchmark comparing Zig SASA implementation with FreeSASA C.
+"""Benchmark comparing Zig SASA implementation with FreeSASA C and RustSASA.
 
 Measures SASA calculation performance across multiple structure sizes.
-Compares Zig CLI vs FreeSASA C (both native, both with multi-threading).
+Compares Zig CLI vs FreeSASA C vs RustSASA (all native, with multi-threading).
 
 Requirements:
     - Zig binary built with: zig build -Doptimize=ReleaseFast
     - FreeSASA C binary built with thread support (see README)
+    - RustSASA binary built with: cargo build --release --features cli
 """
 
 from __future__ import annotations
 
 import json
+import os
+import platform
 import re
 import subprocess
 import tempfile
@@ -25,9 +28,103 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.table import Table
 
-app = typer.Typer(help="Benchmark Zig SASA vs FreeSASA C")
+app = typer.Typer(help="Benchmark Zig SASA vs FreeSASA C vs RustSASA")
 console = Console()
+
+
+def get_cpu_count() -> int:
+    """Get the number of CPU cores available."""
+    return os.cpu_count() or 1
+
+
+def get_system_info() -> dict[str, str]:
+    """Get system information for benchmark context."""
+    info = {
+        "os": f"{platform.system()} {platform.release()}",
+        "arch": platform.machine(),
+        "cpu_cores": str(get_cpu_count()),
+    }
+
+    # Try to get CPU model
+    system = platform.system()
+    if system == "Darwin":
+        try:
+            result = subprocess.run(
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                info["cpu_model"] = result.stdout.strip()
+            # Get memory
+            result = subprocess.run(
+                ["sysctl", "-n", "hw.memsize"], capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                mem_bytes = int(result.stdout.strip())
+                info["memory"] = f"{mem_bytes // (1024**3)} GB"
+        except Exception:
+            pass
+    elif system == "Linux":
+        try:
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.startswith("model name"):
+                        info["cpu_model"] = line.split(":")[1].strip()
+                        break
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal"):
+                        mem_kb = int(line.split()[1])
+                        info["memory"] = f"{mem_kb // (1024**2)} GB"
+                        break
+        except Exception:
+            pass
+
+    return info
+
+
+def print_config(
+    n_runs: int,
+    n_threads: int,
+    n_points: int = 100,
+    n_slices: int = 20,
+    classifier: str = "protor",
+    probe_radius: float = 1.4,
+) -> None:
+    """Print benchmark configuration and system info."""
+    sys_info = get_system_info()
+
+    table = Table(title="Benchmark Configuration", show_header=False, box=None)
+    table.add_column("Key", style="bold cyan")
+    table.add_column("Value")
+
+    # System info
+    if "cpu_model" in sys_info:
+        table.add_row("CPU", sys_info["cpu_model"])
+    table.add_row("CPU Cores", sys_info["cpu_cores"])
+    if "memory" in sys_info:
+        table.add_row("Memory", sys_info["memory"])
+    table.add_row("OS", sys_info["os"])
+    table.add_row("Arch", sys_info["arch"])
+    table.add_row("", "")  # Separator
+
+    # Benchmark settings
+    actual_threads = n_threads if n_threads > 0 else get_cpu_count()
+    table.add_row("Runs per benchmark", str(n_runs))
+    table.add_row(
+        "Threads", f"{actual_threads}" + (" (auto)" if n_threads == 0 else "")
+    )
+    table.add_row("SR n_points", str(n_points))
+    table.add_row("LR n_slices", str(n_slices))
+    table.add_row("Classifier", classifier)
+    table.add_row("Probe radius", f"{probe_radius} Å")
+
+    console.print()
+    console.print(table)
+    console.print()
 
 
 @dataclass
@@ -161,6 +258,72 @@ def run_freesasa_c_benchmark(
     return elapsed_ms, total_area, sasa_only_ms
 
 
+def run_rustsasa_benchmark(
+    cif_path: Path,
+    n_points: int = 100,
+    n_threads: int = 1,
+    rust_binary: Path | None = None,
+) -> tuple[float, float, float | None]:
+    """Run RustSASA benchmark. Returns (time_ms, total_area, sasa_only_ms).
+
+    Requires RustSASA binary with timing patch (outputs SASA_TIME_US to stderr).
+    RustSASA only supports Shrake-Rupley algorithm.
+    """
+    if rust_binary is None:
+        rust_binary = (
+            Path(__file__).parent.parent
+            / "rust-sasa-bench"
+            / "target"
+            / "release"
+            / "rust-sasa"
+        )
+
+    if not rust_binary.exists():
+        raise FileNotFoundError(f"RustSASA binary not found: {rust_binary}")
+
+    if not cif_path.exists():
+        raise FileNotFoundError(f"CIF file not found: {cif_path}")
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        output_path = Path(f.name)
+
+    try:
+        cmd = [
+            str(rust_binary),
+            str(cif_path),
+            str(output_path),
+            "-o",
+            "atom",
+            "-n",
+            str(n_points),
+            "-t",
+            str(n_threads),
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+
+        if result.returncode != 0:
+            raise RuntimeError(f"RustSASA failed: {result.stderr}")
+
+        # Parse SASA_TIME_US from stderr
+        sasa_only_ms = None
+        for line in result.stderr.split("\n"):
+            if "SASA_TIME_US:" in line:
+                us = int(line.split(":")[1])
+                sasa_only_ms = us / 1000.0
+                break
+
+        # Parse total area from output JSON
+        with open(output_path) as f:
+            data = json.load(f)
+        total_area = sum(data.get("Atom", []))
+
+        return sasa_only_ms or 0.0, total_area, sasa_only_ms
+
+    finally:
+        output_path.unlink(missing_ok=True)
+
+
 def download_cif_if_needed(pdb_id: str, cif_dir: Path) -> Path:
     """Download CIF file from RCSB if not present."""
     cif_path = cif_dir / f"{pdb_id}.cif"
@@ -189,6 +352,7 @@ def run_benchmarks(
     n_runs: int = 3,
     n_threads: int = 0,
     fs_c_path: Path | None = None,
+    rust_path: Path | None = None,
 ) -> list[BenchmarkResult]:
     """Run all benchmarks and return results."""
     results = []
@@ -289,19 +453,60 @@ def run_benchmarks(
                     f"  [yellow]FS-C[/yellow]  {algo.upper():2s}: {avg_time:8.2f} ms"
                 )
 
+            # RustSASA benchmark (SR only - RustSASA doesn't support LR)
+            if algo == "sr":
+                rust_times = []
+                rust_area = 0.0
+                for _ in range(n_runs):
+                    try:
+                        t, area, sasa_ms = run_rustsasa_benchmark(
+                            cif_path,
+                            n_threads=n_threads if n_threads > 0 else 1,
+                            rust_binary=rust_path,
+                        )
+                        rust_times.append(t)
+                        rust_area = area
+                    except FileNotFoundError:
+                        # RustSASA binary not available, skip silently
+                        break
+                    except Exception as e:
+                        console.print(f"    [red]Rust SR: ERROR[/red] - {e}")
+                        break
+
+                if rust_times:
+                    avg_time = sum(rust_times) / len(rust_times)
+                    results.append(
+                        BenchmarkResult(
+                            pdb_id,
+                            n_atoms,
+                            algo,
+                            "rustsasa",
+                            avg_time,
+                            rust_area,
+                            avg_time,  # Already SASA-only from timing patch
+                        )
+                    )
+                    console.print(
+                        f"  [magenta]Rust[/magenta]  {algo.upper():2s}: {avg_time:8.2f} ms"
+                    )
+
     return results
 
 
 def print_summary(results: list[BenchmarkResult]) -> None:
     """Print benchmark summary table using rich."""
-    from rich.table import Table
-
     pdbs = sorted(
         set(r.pdb_id for r in results),
         key=lambda p: next(r.n_atoms for r in results if r.pdb_id == p),
     )
 
+    # Check if RustSASA results are available
+    has_rust = any(r.tool == "rustsasa" for r in results)
+
     for algo, algo_name in [("sr", "Shrake-Rupley"), ("lr", "Lee-Richards")]:
+        # For LR, RustSASA is not available
+        show_rust = has_rust and algo == "sr"
+
         table = Table(
             title=f"[bold]{algo_name}[/bold] (SASA calculation time)",
             show_header=True,
@@ -311,9 +516,12 @@ def print_summary(results: list[BenchmarkResult]) -> None:
         table.add_column("PDB", style="bold")
         table.add_column("Atoms", justify="right")
         table.add_column("Zig (ms)", justify="right", style="green")
+        if show_rust:
+            table.add_column("RustSASA (ms)", justify="right", style="magenta")
         table.add_column("FreeSASA C (ms)", justify="right", style="yellow")
-        table.add_column("Speedup", justify="right", style="bold magenta")
-        table.add_column("Area Diff", justify="right", style="cyan")
+        table.add_column("Zig vs FS-C", justify="right", style="bold cyan")
+        if show_rust:
+            table.add_column("Zig vs Rust", justify="right", style="bold green")
 
         for pdb in pdbs:
             pdb_results = [r for r in results if r.pdb_id == pdb]
@@ -331,25 +539,41 @@ def print_summary(results: list[BenchmarkResult]) -> None:
                 ),
                 None,
             )
+            rust_r = (
+                next(
+                    (
+                        r
+                        for r in pdb_results
+                        if r.algorithm == algo and r.tool == "rustsasa"
+                    ),
+                    None,
+                )
+                if show_rust
+                else None
+            )
 
             if zig_r and fsc_r:
                 zig_time = zig_r.sasa_only_ms or zig_r.time_ms
                 fsc_time = fsc_r.sasa_only_ms or fsc_r.time_ms
-                speedup = fsc_time / zig_time if zig_time > 0 else 0
-                # Calculate area difference percentage
-                area_diff = (
-                    abs(zig_r.total_area - fsc_r.total_area) / fsc_r.total_area * 100
-                    if fsc_r.total_area > 0
-                    else 0
+                rust_time = (rust_r.sasa_only_ms or rust_r.time_ms) if rust_r else None
+                speedup_fsc = fsc_time / zig_time if zig_time > 0 else 0
+                speedup_rust = (
+                    rust_time / zig_time if rust_time and zig_time > 0 else None
                 )
-                table.add_row(
+
+                row = [
                     pdb.upper(),
                     f"{n_atoms:,}",
                     f"{zig_time:.2f}",
-                    f"{fsc_time:.2f}",
-                    f"{speedup:.2f}x",
-                    f"{area_diff:.3f}%",
-                )
+                ]
+                if show_rust:
+                    row.append(f"{rust_time:.2f}" if rust_time else "-")
+                row.append(f"{fsc_time:.2f}")
+                row.append(f"{speedup_fsc:.2f}x")
+                if show_rust:
+                    row.append(f"{speedup_rust:.2f}x" if speedup_rust else "-")
+
+                table.add_row(*row)
 
         console.print()
         console.print(table)
@@ -372,8 +596,11 @@ def main(
     fs_c_path: Annotated[
         Path | None, typer.Option("--fs-c-path", help="Path to FreeSASA C binary")
     ] = None,
+    rust_path: Annotated[
+        Path | None, typer.Option("--rust-path", help="Path to RustSASA binary")
+    ] = None,
 ) -> None:
-    """Run SASA benchmarks comparing Zig vs FreeSASA C."""
+    """Run SASA benchmarks comparing Zig vs FreeSASA C vs RustSASA."""
     structures = [
         ("1crn", "tiny", "Crambin"),
         ("1ubq", "small", "Ubiquitin"),
@@ -392,10 +619,10 @@ def main(
 
     base_dir = Path(__file__).parent.parent / "benchmarks"
 
-    console.rule("[bold]SASA Benchmark: Zig vs FreeSASA C[/bold]")
-    console.print(f"runs={runs}, threads={threads or 'auto'}")
+    console.rule("[bold]SASA Benchmark: Zig vs FreeSASA C vs RustSASA[/bold]")
+    print_config(n_runs=runs, n_threads=threads)
 
-    results = run_benchmarks(structures, base_dir, runs, threads, fs_c_path)
+    results = run_benchmarks(structures, base_dir, runs, threads, fs_c_path, rust_path)
     print_summary(results)
 
 
