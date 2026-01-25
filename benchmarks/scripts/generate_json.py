@@ -398,17 +398,31 @@ def process_directory_archive(
 
         if split > 0 and len(json_files) > split:
             # Split into multiple archives
-            for i in range(0, len(json_files), split):
-                chunk = json_files[i : i + split]
-                chunk_num = i // split + 1
-                chunk_path = Path(f"{base_path}_{chunk_num:03d}.tar")
-                archive_paths.append(chunk_path)
+            n_chunks = (len(json_files) + split - 1) // split
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                console=console,
+            ) as progress:
+                task = progress.add_task("Creating archives", total=n_chunks)
 
-                with tarfile.open(chunk_path, "w") as tar:
-                    for json_file in chunk:
-                        tar.add(json_file, arcname=f"dataset/{json_file.name}")
+                for i in range(0, len(json_files), split):
+                    chunk = json_files[i : i + split]
+                    chunk_num = i // split + 1
+                    chunk_path = Path(f"{base_path}_{chunk_num:03d}.tar")
+                    archive_paths.append(chunk_path)
 
-                total_archive_size += chunk_path.stat().st_size
+                    progress.update(task, description=f"Creating {chunk_path.name}")
+
+                    with tarfile.open(chunk_path, "w") as tar:
+                        for json_file in chunk:
+                            tar.add(json_file, arcname=f"dataset/{json_file.name}")
+
+                    total_archive_size += chunk_path.stat().st_size
+                    progress.advance(task)
         else:
             # Single archive
             with tarfile.open(archive_path, "w") as tar:
