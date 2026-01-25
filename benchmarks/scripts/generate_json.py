@@ -82,8 +82,10 @@ def cif_to_benchmark_json(cif_path: Path, output_path: Path) -> tuple[str, int, 
     Returns (pdb_id, n_atoms, file_size_bytes).
     """
     try:
-        # Read structure
         st = gemmi.read_structure(str(cif_path))
+
+        # Setup entities to populate entity_type
+        st.setup_entities()
 
         # Clean up
         st.remove_hydrogens()
@@ -100,22 +102,30 @@ def cif_to_benchmark_json(cif_path: Path, output_path: Path) -> tuple[str, int, 
         zs: list[float] = []
         rs: list[float] = []
 
-        # Use first model only
         model = st[0]
 
-        for cra in model.all():
-            residue_name = cra.residue.name
-            atom_name = cra.atom.name
+        for chain in model:
+            polymer = chain.get_polymer()
+            if not polymer:
+                continue
 
-            # Get ProtOr radius
-            radius = get_protor_radius(residue_name, atom_name)
+            # Only process peptides (proteins), skip DNA/RNA
+            poly_type = polymer.check_polymer_type()
+            if poly_type not in (
+                gemmi.PolymerType.PeptideL,
+                gemmi.PolymerType.PeptideD,
+            ):
+                continue
 
-            xs.append(round(cra.atom.pos.x, 3))
-            ys.append(round(cra.atom.pos.y, 3))
-            zs.append(round(cra.atom.pos.z, 3))
-            rs.append(round(radius, 2))
+            for residue in polymer:
+                for atom in residue:
+                    radius = get_protor_radius(residue.name, atom.name)
+                    xs.append(atom.pos.x)
+                    ys.append(atom.pos.y)
+                    zs.append(atom.pos.z)
+                    rs.append(radius)
 
-        # Skip empty structures
+        # Skip empty structures (no protein atoms)
         if len(xs) == 0:
             return (cif_path.stem, 0, 0)
 
