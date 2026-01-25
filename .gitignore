@@ -19,8 +19,9 @@ zig-out/
 .idea/
 .vscode/
 
-# FreeSASA C build (for benchmark)
+# External benchmark dependencies (legacy locations)
 freesasa-c/
+rust-sasa-bench/
 
 # Downloaded CIF files for benchmark
 benchmarks/cif/
