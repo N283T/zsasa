@@ -20,8 +20,8 @@ Usage:
     # Process directory (recursive, parallel)
     ./benchmarks/scripts/generate_json.py /path/to/cif/files /path/to/output
 
-    # Create tar.gz archive for distribution
-    ./benchmarks/scripts/generate_json.py /path/to/cif/files output.tar.gz --archive
+    # Create tar archive for distribution (no double compression)
+    ./benchmarks/scripts/generate_json.py /path/to/cif/files output.tar --archive
 
     # Process single file
     ./benchmarks/scripts/generate_json.py --file input.cif output.json.gz
@@ -310,11 +310,11 @@ def process_directory(input_dir: Path, output_dir: Path, workers: int) -> None:
 def process_directory_archive(
     input_dir: Path, archive_path: Path, workers: int
 ) -> None:
-    """Process all CIF files and create a tar.gz archive."""
+    """Process all CIF files and create a tar archive."""
 
-    # Ensure archive path ends with .tar.gz
-    if not str(archive_path).endswith(".tar.gz"):
-        archive_path = Path(str(archive_path) + ".tar.gz")
+    # Ensure archive path ends with .tar
+    if not str(archive_path).endswith(".tar"):
+        archive_path = Path(str(archive_path) + ".tar")
 
     # Create temp directory for processing
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -379,11 +379,11 @@ def process_directory_archive(
                     else:
                         error_count += 1
 
-        # Create tar.gz archive
+        # Create tar archive (no gzip - files are already compressed)
         console.print("\n[bold]Creating archive...[/bold]")
         archive_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with tarfile.open(archive_path, "w:gz") as tar:
+        with tarfile.open(archive_path, "w") as tar:
             # Add files with relative path (dataset/xxx.json.gz)
             for json_file in sorted(temp_output.glob("*.json.gz")):
                 tar.add(json_file, arcname=f"dataset/{json_file.name}")
