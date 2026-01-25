@@ -23,6 +23,9 @@ Usage:
     # Create tar archive for distribution (no double compression)
     ./benchmarks/scripts/generate_json.py /path/to/cif/files output.tar --archive
 
+    # Split into multiple archives (10,000 files each)
+    ./benchmarks/scripts/generate_json.py /path/to/cif/files output --archive --split 10000
+
     # Process single file
     ./benchmarks/scripts/generate_json.py --file input.cif output.json.gz
 """
@@ -177,8 +180,12 @@ def generate(
     ] = False,
     archive: Annotated[
         bool,
-        typer.Option("--archive", "-a", help="Create tar.gz archive for distribution"),
+        typer.Option("--archive", "-a", help="Create tar archive for distribution"),
     ] = False,
+    split: Annotated[
+        int,
+        typer.Option("--split", "-s", help="Split archive into chunks of N files"),
+    ] = 0,
     workers: Annotated[
         int,
         typer.Option("--workers", "-w", help="Number of parallel workers"),
@@ -222,9 +229,9 @@ def generate(
         console.print("[red]Error: Output path required for directory mode[/red]")
         raise typer.Exit(1)
 
-    # Archive mode: process to temp dir, then create tar.gz
+    # Archive mode: process to temp dir, then create tar
     if archive:
-        process_directory_archive(input_path, output_path, workers)
+        process_directory_archive(input_path, output_path, workers, split)
     else:
         process_directory(input_path, output_path, workers)
 
@@ -308,13 +315,15 @@ def process_directory(input_dir: Path, output_dir: Path, workers: int) -> None:
 
 
 def process_directory_archive(
-    input_dir: Path, archive_path: Path, workers: int
+    input_dir: Path, archive_path: Path, workers: int, split: int = 0
 ) -> None:
     """Process all CIF files and create a tar archive."""
 
     # Ensure archive path ends with .tar
-    if not str(archive_path).endswith(".tar"):
-        archive_path = Path(str(archive_path) + ".tar")
+    base_path = archive_path
+    if str(archive_path).endswith(".tar"):
+        base_path = Path(str(archive_path)[:-4])
+    archive_path = Path(str(base_path) + ".tar")
 
     # Create temp directory for processing
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -379,16 +388,34 @@ def process_directory_archive(
                     else:
                         error_count += 1
 
-        # Create tar archive (no gzip - files are already compressed)
+        # Create tar archive(s)
         console.print("\n[bold]Creating archive...[/bold]")
-        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        base_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with tarfile.open(archive_path, "w") as tar:
-            # Add files with relative path (dataset/xxx.json.gz)
-            for json_file in sorted(temp_output.glob("*.json.gz")):
-                tar.add(json_file, arcname=f"dataset/{json_file.name}")
+        json_files = sorted(temp_output.glob("*.json.gz"))
+        archive_paths: list[Path] = []
+        total_archive_size = 0
 
-        archive_size = archive_path.stat().st_size
+        if split > 0 and len(json_files) > split:
+            # Split into multiple archives
+            for i in range(0, len(json_files), split):
+                chunk = json_files[i : i + split]
+                chunk_num = i // split + 1
+                chunk_path = Path(f"{base_path}_{chunk_num:03d}.tar")
+                archive_paths.append(chunk_path)
+
+                with tarfile.open(chunk_path, "w") as tar:
+                    for json_file in chunk:
+                        tar.add(json_file, arcname=f"dataset/{json_file.name}")
+
+                total_archive_size += chunk_path.stat().st_size
+        else:
+            # Single archive
+            with tarfile.open(archive_path, "w") as tar:
+                for json_file in json_files:
+                    tar.add(json_file, arcname=f"dataset/{json_file.name}")
+            archive_paths.append(archive_path)
+            total_archive_size = archive_path.stat().st_size
 
         # Summary
         console.print()
@@ -401,10 +428,19 @@ def process_directory_archive(
         table.add_row("Errors", f"{error_count:,}")
         table.add_row("Total atoms", f"{total_atoms:,}")
         table.add_row("Uncompressed size", f"{total_size / 1024 / 1024:.1f} MB")
-        table.add_row("Archive size", f"{archive_size / 1024 / 1024:.1f} MB")
+        table.add_row("Archive size", f"{total_archive_size / 1024 / 1024:.1f} MB")
+        if len(archive_paths) > 1:
+            table.add_row("Archives", f"{len(archive_paths)}")
 
         console.print(table)
-        console.print(f"\n[green]Done![/green] Archive saved to: {archive_path}")
+        if len(archive_paths) == 1:
+            console.print(
+                f"\n[green]Done![/green] Archive saved to: {archive_paths[0]}"
+            )
+        else:
+            console.print(f"\n[green]Done![/green] Archives saved to:")
+            for p in archive_paths:
+                console.print(f"  - {p}")
 
 
 if __name__ == "__main__":
