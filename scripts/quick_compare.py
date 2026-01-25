@@ -3,10 +3,12 @@
 # requires-python = ">=3.11"
 # dependencies = ["rich>=13.0", "typer>=0.9.0"]
 # ///
-"""Benchmark comparing Zig SASA implementation with FreeSASA C and RustSASA.
+"""Quick comparison of Zig SASA implementation with FreeSASA C and RustSASA.
 
-Measures SASA calculation performance across multiple structure sizes.
-Compares Zig CLI vs FreeSASA C vs RustSASA (all native, with multi-threading).
+Compares SASA calculation across 6 representative structures using CIF input.
+This is a quick validation test, not a fair benchmark (includes CIF parsing overhead).
+
+For fair benchmarks using pre-processed JSON input, use benchmark.py instead.
 
 Requirements:
     - Zig binary built with: zig build -Doptimize=ReleaseFast
@@ -30,7 +32,9 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-app = typer.Typer(help="Benchmark Zig SASA vs FreeSASA C vs RustSASA")
+app = typer.Typer(
+    help="Quick comparison: Zig SASA vs FreeSASA C vs RustSASA (CIF input)"
+)
 console = Console()
 
 
@@ -630,7 +634,7 @@ def main(
         Path | None, typer.Option("--rust-path", help="Path to RustSASA binary")
     ] = None,
 ) -> None:
-    """Run SASA benchmarks comparing Zig vs FreeSASA C vs RustSASA."""
+    """Run quick comparison of Zig vs FreeSASA C vs RustSASA using CIF input."""
     structures = [
         ("1crn", "tiny", "Crambin"),
         ("1ubq", "small", "Ubiquitin"),
@@ -649,7 +653,7 @@ def main(
 
     base_dir = Path(__file__).parent.parent / "benchmarks"
 
-    console.rule("[bold]SASA Benchmark: Zig vs FreeSASA C vs RustSASA[/bold]")
+    console.rule("[bold]Quick Compare: Zig vs FreeSASA C vs RustSASA[/bold]")
     print_config(n_runs=runs, n_threads=threads)
 
     results = run_benchmarks(structures, base_dir, runs, threads, fs_c_path, rust_path)
