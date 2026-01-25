@@ -30,6 +30,7 @@ const Algorithm = enum {
 const Args = struct {
     input_path: ?[]const u8 = null,
     output_path: []const u8 = "output.json",
+    output_path_explicit: bool = false, // Track if -o was explicitly set
     n_threads: usize = 0, // 0 = auto-detect
     probe_radius: f64 = 1.4,
     n_points: u32 = 100, // For Shrake-Rupley
@@ -379,8 +380,10 @@ fn parseArgs(args: []const []const u8) Args {
                 std.process.exit(1);
             }
             result.output_path = args[i];
+            result.output_path_explicit = true;
         } else if (std.mem.startsWith(u8, arg, "--output=")) {
             result.output_path = arg["--output=".len..];
+            result.output_path_explicit = true;
         } else if (std.mem.eql(u8, arg, "--output")) {
             i += 1;
             if (i >= args.len) {
@@ -388,6 +391,7 @@ fn parseArgs(args: []const []const u8) Args {
                 std.process.exit(1);
             }
             result.output_path = args[i];
+            result.output_path_explicit = true;
         }
         // Unknown option
         else if (std.mem.startsWith(u8, arg, "-")) {
@@ -398,7 +402,8 @@ fn parseArgs(args: []const []const u8) Args {
         // Positional arguments
         else if (result.input_path == null) {
             result.input_path = arg;
-        } else {
+        } else if (!result.output_path_explicit) {
+            // Only use positional output if -o was not explicitly set
             result.output_path = arg;
         }
     }
@@ -1194,4 +1199,43 @@ test "parseArgs --timing" {
 
     try std.testing.expectEqual(true, parsed.show_timing);
     try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
+}
+
+test "parseArgs -o FILE" {
+    const args = [_][]const u8{ "freesasa_zig", "-o", "result.csv", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
+    try std.testing.expectEqualStrings("result.csv", parsed.output_path);
+    try std.testing.expectEqual(true, parsed.output_path_explicit);
+}
+
+test "parseArgs --output=FILE" {
+    const args = [_][]const u8{ "freesasa_zig", "--output=result.csv", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
+    try std.testing.expectEqualStrings("result.csv", parsed.output_path);
+    try std.testing.expectEqual(true, parsed.output_path_explicit);
+}
+
+test "parseArgs --output FILE (space-separated)" {
+    const args = [_][]const u8{ "freesasa_zig", "--output", "result.csv", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
+    try std.testing.expectEqualStrings("result.csv", parsed.output_path);
+    try std.testing.expectEqual(true, parsed.output_path_explicit);
+}
+
+test "parseArgs -o takes precedence over positional output" {
+    // -o before positional
+    const args1 = [_][]const u8{ "freesasa_zig", "-o", "explicit.json", "input.json", "positional.json" };
+    const parsed1 = parseArgs(&args1);
+    try std.testing.expectEqualStrings("explicit.json", parsed1.output_path);
+
+    // -o after positional (should still win)
+    const args2 = [_][]const u8{ "freesasa_zig", "input.json", "positional.json", "-o", "explicit.json" };
+    const parsed2 = parseArgs(&args2);
+    try std.testing.expectEqualStrings("explicit.json", parsed2.output_path);
 }
