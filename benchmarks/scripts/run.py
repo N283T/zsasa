@@ -113,7 +113,9 @@ def load_sample_file(sample_path: Path) -> list[str]:
     """Load sample file and return list of PDB IDs."""
     with open(sample_path) as f:
         data = json.load(f)
-    return data.get("samples", [])
+    if "samples" not in data:
+        raise ValueError(f"Invalid sample file: missing 'samples' key in {sample_path}")
+    return data["samples"]
 
 
 TOOLS = ["zig", "freesasa", "rust"]

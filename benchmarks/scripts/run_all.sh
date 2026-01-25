@@ -15,6 +15,12 @@ THREADS="1,2,4,8,10"
 RUNS=1
 INTERVAL=600  # 10 minutes in seconds
 
+# Validate sample file if specified
+if [[ -n "$SAMPLE_FILE" && ! -f "$SAMPLE_FILE" ]]; then
+    echo "Error: Sample file not found: $SAMPLE_FILE"
+    exit 1
+fi
+
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
 }
