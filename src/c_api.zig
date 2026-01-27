@@ -11,6 +11,7 @@ const classifier = @import("classifier.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_protor = @import("classifier_protor.zig");
 const classifier_oons = @import("classifier_oons.zig");
+const analysis = @import("analysis.zig");
 
 const AtomInput = types.AtomInput;
 const Config = types.Config;
@@ -352,6 +353,81 @@ export fn freesasa_classify_atoms(
     return FREESASA_OK;
 }
 
+// =============================================================================
+// RSA (Relative Solvent Accessibility) Functions
+// =============================================================================
+
+/// Get maximum SASA value for a standard amino acid.
+/// Values from Tien et al. (2013) "Maximum allowed solvent accessibilities
+/// of residues in proteins".
+///
+/// Parameters:
+///   residue_name: 3-letter residue code (e.g., "ALA", "GLY") - null-terminated
+///
+/// Returns:
+///   Maximum SASA in Angstroms², or NaN if residue is not a standard amino acid.
+export fn freesasa_get_max_sasa(
+    residue_name: [*:0]const u8,
+) callconv(.c) f64 {
+    const residue_slice = std.mem.span(residue_name);
+    return analysis.MaxSASA.get(residue_slice) orelse std.math.nan(f64);
+}
+
+/// Calculate RSA (Relative Solvent Accessibility) for a single residue.
+/// RSA = SASA / MaxSASA
+///
+/// Parameters:
+///   sasa: Observed SASA value in Angstroms²
+///   residue_name: 3-letter residue code (e.g., "ALA", "GLY") - null-terminated
+///
+/// Returns:
+///   RSA value (0.0-1.0+), or NaN if residue is not a standard amino acid.
+///   Note: RSA > 1.0 is possible for exposed terminal residues.
+export fn freesasa_calculate_rsa(
+    sasa: f64,
+    residue_name: [*:0]const u8,
+) callconv(.c) f64 {
+    const residue_slice = std.mem.span(residue_name);
+    const max_sasa = analysis.MaxSASA.get(residue_slice) orelse return std.math.nan(f64);
+    if (max_sasa <= 0.0) {
+        return std.math.nan(f64);
+    }
+    return sasa / max_sasa;
+}
+
+/// Calculate RSA for multiple residues at once (batch operation).
+///
+/// Parameters:
+///   sasas: Array of SASA values in Angstroms²
+///   residue_names: Array of residue name pointers (null-terminated strings)
+///   n_residues: Number of residues
+///   rsa_out: Output buffer for RSA values (pre-allocated, n_residues elements)
+///            NaN is written for non-standard amino acids
+///
+/// Returns:
+///   FREESASA_OK on success.
+export fn freesasa_calculate_rsa_batch(
+    sasas: [*]const f64,
+    residue_names: [*]const [*:0]const u8,
+    n_residues: usize,
+    rsa_out: [*]f64,
+) callconv(.c) c_int {
+    for (0..n_residues) |i| {
+        const residue_slice = std.mem.span(residue_names[i]);
+        const max_sasa = analysis.MaxSASA.get(residue_slice);
+        if (max_sasa) |max| {
+            if (max > 0.0) {
+                rsa_out[i] = sasas[i] / max;
+            } else {
+                rsa_out[i] = std.math.nan(f64);
+            }
+        } else {
+            rsa_out[i] = std.math.nan(f64);
+        }
+    }
+    return FREESASA_OK;
+}
+
 // Tests
 test "freesasa_version returns valid string" {
     const version = freesasa_version();
@@ -591,4 +667,70 @@ test "freesasa_classify_atoms invalid classifier" {
     );
 
     try std.testing.expectEqual(FREESASA_ERROR_INVALID_INPUT, result);
+}
+
+// =============================================================================
+// RSA Tests
+// =============================================================================
+
+test "freesasa_get_max_sasa standard amino acids" {
+    // Test known amino acids (values from Tien et al. 2013)
+    try std.testing.expectApproxEqAbs(129.0, freesasa_get_max_sasa("ALA"), 0.01);
+    try std.testing.expectApproxEqAbs(104.0, freesasa_get_max_sasa("GLY"), 0.01);
+    try std.testing.expectApproxEqAbs(285.0, freesasa_get_max_sasa("TRP"), 0.01);
+    try std.testing.expectApproxEqAbs(274.0, freesasa_get_max_sasa("ARG"), 0.01);
+    try std.testing.expectApproxEqAbs(193.0, freesasa_get_max_sasa("ASP"), 0.01);
+}
+
+test "freesasa_get_max_sasa unknown residue" {
+    const unknown = freesasa_get_max_sasa("XXX");
+    try std.testing.expect(std.math.isNan(unknown));
+
+    const water = freesasa_get_max_sasa("HOH");
+    try std.testing.expect(std.math.isNan(water));
+}
+
+test "freesasa_calculate_rsa" {
+    // ALA: RSA = 64.5 / 129.0 = 0.5
+    const rsa_ala = freesasa_calculate_rsa(64.5, "ALA");
+    try std.testing.expectApproxEqAbs(0.5, rsa_ala, 0.001);
+
+    // GLY: RSA = 52.0 / 104.0 = 0.5
+    const rsa_gly = freesasa_calculate_rsa(52.0, "GLY");
+    try std.testing.expectApproxEqAbs(0.5, rsa_gly, 0.001);
+
+    // RSA > 1.0 is possible for exposed terminal residues
+    const rsa_exposed = freesasa_calculate_rsa(150.0, "GLY");
+    try std.testing.expect(rsa_exposed > 1.0);
+    try std.testing.expectApproxEqAbs(150.0 / 104.0, rsa_exposed, 0.001);
+}
+
+test "freesasa_calculate_rsa unknown residue" {
+    const rsa = freesasa_calculate_rsa(100.0, "XXX");
+    try std.testing.expect(std.math.isNan(rsa));
+}
+
+test "freesasa_calculate_rsa_batch" {
+    const sasas = [_]f64{ 64.5, 52.0, 142.5 };
+    const residues = [_][*:0]const u8{ "ALA", "GLY", "TRP" };
+    var rsa_out: [3]f64 = undefined;
+
+    const result = freesasa_calculate_rsa_batch(&sasas, &residues, 3, &rsa_out);
+
+    try std.testing.expectEqual(FREESASA_OK, result);
+    try std.testing.expectApproxEqAbs(0.5, rsa_out[0], 0.001); // ALA: 64.5/129
+    try std.testing.expectApproxEqAbs(0.5, rsa_out[1], 0.001); // GLY: 52/104
+    try std.testing.expectApproxEqAbs(0.5, rsa_out[2], 0.001); // TRP: 142.5/285
+}
+
+test "freesasa_calculate_rsa_batch with unknown" {
+    const sasas = [_]f64{ 64.5, 100.0 };
+    const residues = [_][*:0]const u8{ "ALA", "HOH" };
+    var rsa_out: [2]f64 = undefined;
+
+    const result = freesasa_calculate_rsa_batch(&sasas, &residues, 2, &rsa_out);
+
+    try std.testing.expectEqual(FREESASA_OK, result);
+    try std.testing.expectApproxEqAbs(0.5, rsa_out[0], 0.001); // ALA: known
+    try std.testing.expect(std.math.isNan(rsa_out[1])); // HOH: unknown
 }
