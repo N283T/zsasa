@@ -269,7 +269,7 @@ pub fn runBatchSequential(
     }
 
     // Allocate results
-    var file_results = try allocator.alloc(FileResult, files.len);
+    const file_results = try allocator.alloc(FileResult, files.len);
     errdefer allocator.free(file_results);
 
     // Process each file
@@ -330,6 +330,191 @@ pub fn runBatchSequential(
     };
 }
 
+/// Shared context for parallel workers
+const ParallelContext = struct {
+    files: []const []const u8,
+    input_dir: []const u8,
+    output_dir: ?[]const u8,
+    config: BatchConfig,
+    results: []FileResult,
+    result_allocator: Allocator,
+    next_file: std.atomic.Value(usize),
+    processed_count: std.atomic.Value(usize),
+};
+
+/// Worker thread function for parallel batch processing
+fn parallelWorker(ctx: *ParallelContext) void {
+    // Each thread gets its own arena allocator
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    while (true) {
+        // Atomically grab the next file index
+        const file_idx = ctx.next_file.fetchAdd(1, .seq_cst);
+
+        if (file_idx >= ctx.files.len) {
+            break; // No more files
+        }
+
+        const filename = ctx.files[file_idx];
+
+        // Copy filename to result allocator (thread-safe: each index is unique)
+        // On allocation failure, use empty string to maintain ownership invariant
+        const filename_copy = ctx.result_allocator.dupe(u8, filename) catch {
+            // Fallback: allocate empty owned slice for deinit compatibility
+            const empty = ctx.result_allocator.alloc(u8, 0) catch {
+                // Critical allocation failure - skip file, don't store result
+                _ = ctx.processed_count.fetchAdd(1, .seq_cst);
+                _ = arena.reset(.retain_capacity);
+                continue;
+            };
+            ctx.results[file_idx] = FileResult{
+                .filename = empty,
+                .n_atoms = 0,
+                .sasa_time_ns = 0,
+                .total_sasa = 0,
+                .status = .err,
+            };
+            _ = ctx.processed_count.fetchAdd(1, .seq_cst);
+            _ = arena.reset(.retain_capacity);
+            continue;
+        };
+
+        // Process file using thread-local arena
+        var result = processOneFile(
+            arena.allocator(),
+            ctx.input_dir,
+            ctx.output_dir,
+            filename,
+            ctx.config,
+        );
+        result.filename = filename_copy;
+
+        // Store result (thread-safe: each index is unique)
+        ctx.results[file_idx] = result;
+
+        // Update progress counter
+        _ = ctx.processed_count.fetchAdd(1, .seq_cst);
+
+        // Reset arena for next file
+        _ = arena.reset(.retain_capacity);
+    }
+}
+
+/// Run batch processing in parallel
+pub fn runBatchParallel(
+    allocator: Allocator,
+    input_dir: []const u8,
+    output_dir: ?[]const u8,
+    config: BatchConfig,
+) !BatchResult {
+    // Start total timer
+    var total_timer = try std.time.Timer.start();
+
+    // Scan directory for files
+    const files = try scanDirectory(allocator, input_dir);
+    defer {
+        for (files) |f| allocator.free(f);
+        allocator.free(files);
+    }
+
+    if (files.len == 0) {
+        return BatchResult{
+            .total_files = 0,
+            .successful = 0,
+            .failed = 0,
+            .total_sasa_time_ns = 0,
+            .total_time_ns = total_timer.read(),
+            .file_results = try allocator.alloc(FileResult, 0),
+            .allocator = allocator,
+        };
+    }
+
+    // Create output directory if specified
+    if (output_dir) |out_dir| {
+        try std.fs.cwd().makePath(out_dir);
+    }
+
+    // Allocate results
+    const file_results = try allocator.alloc(FileResult, files.len);
+    errdefer allocator.free(file_results);
+
+    // Determine thread count
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    const n_threads = if (config.n_threads == 0)
+        cpu_count
+    else
+        @min(config.n_threads, cpu_count);
+
+    // For single file or single thread, use sequential
+    if (files.len == 1 or n_threads <= 1) {
+        allocator.free(file_results);
+        return runBatchSequential(allocator, input_dir, output_dir, config);
+    }
+
+    // Create shared context
+    var ctx = ParallelContext{
+        .files = files,
+        .input_dir = input_dir,
+        .output_dir = output_dir,
+        .config = config,
+        .results = file_results,
+        .result_allocator = allocator,
+        .next_file = std.atomic.Value(usize).init(0),
+        .processed_count = std.atomic.Value(usize).init(0),
+    };
+
+    // Spawn worker threads
+    const actual_threads = @min(n_threads, files.len);
+    const threads = try allocator.alloc(std.Thread, actual_threads);
+    defer allocator.free(threads);
+
+    for (threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, parallelWorker, .{&ctx});
+    }
+
+    // Progress monitoring (optional)
+    if (!config.quiet) {
+        while (ctx.processed_count.load(.seq_cst) < files.len) {
+            const processed = ctx.processed_count.load(.seq_cst);
+            std.debug.print("\rProcessing: {d}/{d}", .{ processed, files.len });
+            std.Thread.sleep(50 * std.time.ns_per_ms); // 50ms update interval
+        }
+        std.debug.print("\rProcessing: {d}/{d}\n", .{ files.len, files.len });
+    }
+
+    // Wait for all threads to complete
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    // Aggregate results
+    var total_sasa_time_ns: u64 = 0;
+    var successful: usize = 0;
+    var failed: usize = 0;
+
+    for (file_results) |result| {
+        if (result.status == .ok) {
+            successful += 1;
+            total_sasa_time_ns += result.sasa_time_ns;
+        } else {
+            failed += 1;
+        }
+    }
+
+    const total_time_ns = total_timer.read();
+
+    return BatchResult{
+        .total_files = files.len,
+        .successful = successful,
+        .failed = failed,
+        .total_sasa_time_ns = total_sasa_time_ns,
+        .total_time_ns = total_time_ns,
+        .file_results = file_results,
+        .allocator = allocator,
+    };
+}
+
 /// Run batch processing (main entry point)
 /// Uses parallel processing when n_threads > 1
 pub fn runBatch(
@@ -338,10 +523,16 @@ pub fn runBatch(
     output_dir: ?[]const u8,
     config: BatchConfig,
 ) !BatchResult {
-    // For now, use sequential processing
-    // TODO: Add parallel processing in Phase 2
-    _ = config.n_threads; // Will be used in parallel version
-    return runBatchSequential(allocator, input_dir, output_dir, config);
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    const n_threads = if (config.n_threads == 0)
+        cpu_count
+    else
+        config.n_threads;
+
+    if (n_threads <= 1) {
+        return runBatchSequential(allocator, input_dir, output_dir, config);
+    }
+    return runBatchParallel(allocator, input_dir, output_dir, config);
 }
 
 // Tests
