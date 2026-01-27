@@ -240,7 +240,7 @@ pub fn readAtomInputFromFile(allocator: Allocator, path: []const u8) !AtomInput 
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
 
-    const max_size = 100 * 1024 * 1024; // 100 MB max
+    const max_size = 200 * 1024 * 1024; // 200 MB max
     const contents = try file.readToEndAlloc(allocator, max_size);
     defer allocator.free(contents);
 
