@@ -13,18 +13,42 @@ Example:
     >>> radii = np.array([1.5])
     >>> result = calculate_sasa(coords, radii)
     >>> print(f"Total SASA: {result.total_area:.2f} Å²")
+
+    >>> # Classify atoms
+    >>> from freesasa_zig import classify_atoms, get_radius
+    >>> result = classify_atoms(["ALA", "ALA"], ["CA", "O"])
+    >>> print(result.radii)  # [1.87, 1.4]
 """
 
 from freesasa_zig.core import (
+    AtomClass,
+    ClassificationResult,
+    ClassifierType,
     SasaResult,
     calculate_sasa,
+    classify_atoms,
+    get_atom_class,
+    get_radius,
     get_version,
+    guess_radius,
+    guess_radius_from_atom_name,
 )
 
 __all__ = [
+    # SASA calculation
     "calculate_sasa",
-    "get_version",
     "SasaResult",
+    # Classifier
+    "ClassifierType",
+    "AtomClass",
+    "ClassificationResult",
+    "get_radius",
+    "get_atom_class",
+    "guess_radius",
+    "guess_radius_from_atom_name",
+    "classify_atoms",
+    # Utility
+    "get_version",
 ]
 
 __version__ = get_version()
