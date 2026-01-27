@@ -6,6 +6,7 @@ import ctypes
 import os
 import sys
 from dataclasses import dataclass
+from enum import IntEnum
 from pathlib import Path
 from typing import Literal
 
@@ -322,7 +323,7 @@ def calculate_sasa(
 # =============================================================================
 
 
-class ClassifierType:
+class ClassifierType(IntEnum):
     """Available classifier types for atom radius assignment.
 
     Attributes:
@@ -336,7 +337,7 @@ class ClassifierType:
     OONS = FREESASA_CLASSIFIER_OONS
 
 
-class AtomClass:
+class AtomClass(IntEnum):
     """Atom polarity classes.
 
     Attributes:
@@ -358,7 +359,7 @@ class AtomClass:
 def get_radius(
     residue: str,
     atom: str,
-    classifier_type: int = ClassifierType.NACCESS,
+    classifier_type: ClassifierType = ClassifierType.NACCESS,
 ) -> float | None:
     """Get van der Waals radius for an atom using the specified classifier.
 
@@ -391,7 +392,7 @@ def get_radius(
 def get_atom_class(
     residue: str,
     atom: str,
-    classifier_type: int = ClassifierType.NACCESS,
+    classifier_type: ClassifierType = ClassifierType.NACCESS,
 ) -> int:
     """Get atom polarity class using the specified classifier.
 
@@ -476,18 +477,29 @@ class ClassificationResult:
     """Result of batch atom classification.
 
     Attributes:
-        radii: Per-atom van der Waals radii in Å. NaN for unknown atoms.
+        radii: Per-atom van der Waals radii in Angstroms.
+               NaN values indicate atoms not found in the classifier.
+               Use np.isnan(result.radii) to find unknown atoms.
         classes: Per-atom polarity classes (AtomClass constants).
+
+    Example:
+        >>> result = classify_atoms(residues, atoms)
+        >>> unknown_mask = np.isnan(result.radii)
+        >>> if unknown_mask.any():
+        ...     print(f"Found {unknown_mask.sum()} unknown atoms")
     """
 
     radii: NDArray[np.float64]
     classes: NDArray[np.int32]
 
+    def __repr__(self) -> str:
+        return f"ClassificationResult(n_atoms={len(self.radii)})"
+
 
 def classify_atoms(
     residues: list[str],
     atoms: list[str],
-    classifier_type: int = ClassifierType.NACCESS,
+    classifier_type: ClassifierType = ClassifierType.NACCESS,
     *,
     include_classes: bool = True,
 ) -> ClassificationResult:

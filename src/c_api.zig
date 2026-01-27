@@ -194,6 +194,35 @@ export fn freesasa_calc_lr(
 // Classifier Functions
 // =============================================================================
 
+// Internal helper: get radius by classifier type
+fn getRadiusByClassifier(classifier_type: c_int, residue: []const u8, atom: []const u8) ?f64 {
+    return switch (classifier_type) {
+        FREESASA_CLASSIFIER_NACCESS => classifier_naccess.getRadius(residue, atom),
+        FREESASA_CLASSIFIER_PROTOR => classifier_protor.getRadius(residue, atom),
+        FREESASA_CLASSIFIER_OONS => classifier_oons.getRadius(residue, atom),
+        else => null,
+    };
+}
+
+// Internal helper: get class by classifier type
+fn getClassByClassifier(classifier_type: c_int, residue: []const u8, atom: []const u8) classifier.AtomClass {
+    return switch (classifier_type) {
+        FREESASA_CLASSIFIER_NACCESS => classifier_naccess.getClass(residue, atom),
+        FREESASA_CLASSIFIER_PROTOR => classifier_protor.getClass(residue, atom),
+        FREESASA_CLASSIFIER_OONS => classifier_oons.getClass(residue, atom),
+        else => .unknown,
+    };
+}
+
+// Internal helper: convert AtomClass to C int
+fn atomClassToInt(atom_class: classifier.AtomClass) c_int {
+    return switch (atom_class) {
+        .polar => FREESASA_ATOM_CLASS_POLAR,
+        .apolar => FREESASA_ATOM_CLASS_APOLAR,
+        .unknown => FREESASA_ATOM_CLASS_UNKNOWN,
+    };
+}
+
 /// Get van der Waals radius for an atom using the specified classifier.
 ///
 /// Parameters:
@@ -208,16 +237,11 @@ export fn freesasa_classifier_get_radius(
     residue: [*:0]const u8,
     atom: [*:0]const u8,
 ) callconv(.c) f64 {
-    const residue_slice = std.mem.span(residue);
-    const atom_slice = std.mem.span(atom);
-
-    const radius: ?f64 = switch (classifier_type) {
-        FREESASA_CLASSIFIER_NACCESS => classifier_naccess.getRadius(residue_slice, atom_slice),
-        FREESASA_CLASSIFIER_PROTOR => classifier_protor.getRadius(residue_slice, atom_slice),
-        FREESASA_CLASSIFIER_OONS => classifier_oons.getRadius(residue_slice, atom_slice),
-        else => null,
-    };
-
+    const radius = getRadiusByClassifier(
+        classifier_type,
+        std.mem.span(residue),
+        std.mem.span(atom),
+    );
     return radius orelse std.math.nan(f64);
 }
 
@@ -235,21 +259,12 @@ export fn freesasa_classifier_get_class(
     residue: [*:0]const u8,
     atom: [*:0]const u8,
 ) callconv(.c) c_int {
-    const residue_slice = std.mem.span(residue);
-    const atom_slice = std.mem.span(atom);
-
-    const atom_class = switch (classifier_type) {
-        FREESASA_CLASSIFIER_NACCESS => classifier_naccess.getClass(residue_slice, atom_slice),
-        FREESASA_CLASSIFIER_PROTOR => classifier_protor.getClass(residue_slice, atom_slice),
-        FREESASA_CLASSIFIER_OONS => classifier_oons.getClass(residue_slice, atom_slice),
-        else => classifier.AtomClass.unknown,
-    };
-
-    return switch (atom_class) {
-        .polar => FREESASA_ATOM_CLASS_POLAR,
-        .apolar => FREESASA_ATOM_CLASS_APOLAR,
-        .unknown => FREESASA_ATOM_CLASS_UNKNOWN,
-    };
+    const atom_class = getClassByClassifier(
+        classifier_type,
+        std.mem.span(residue),
+        std.mem.span(atom),
+    );
+    return atomClassToInt(atom_class);
 }
 
 /// Guess van der Waals radius from element symbol.
@@ -324,27 +339,13 @@ export fn freesasa_classify_atoms(
         const atom_slice = std.mem.span(atoms[i]);
 
         // Get radius
-        const radius: ?f64 = switch (classifier_type) {
-            FREESASA_CLASSIFIER_NACCESS => classifier_naccess.getRadius(residue_slice, atom_slice),
-            FREESASA_CLASSIFIER_PROTOR => classifier_protor.getRadius(residue_slice, atom_slice),
-            FREESASA_CLASSIFIER_OONS => classifier_oons.getRadius(residue_slice, atom_slice),
-            else => null,
-        };
+        const radius = getRadiusByClassifier(classifier_type, residue_slice, atom_slice);
         radii_out[i] = radius orelse std.math.nan(f64);
 
         // Get class if requested
         if (classes_out) |classes| {
-            const atom_class = switch (classifier_type) {
-                FREESASA_CLASSIFIER_NACCESS => classifier_naccess.getClass(residue_slice, atom_slice),
-                FREESASA_CLASSIFIER_PROTOR => classifier_protor.getClass(residue_slice, atom_slice),
-                FREESASA_CLASSIFIER_OONS => classifier_oons.getClass(residue_slice, atom_slice),
-                else => classifier.AtomClass.unknown,
-            };
-            classes[i] = switch (atom_class) {
-                .polar => FREESASA_ATOM_CLASS_POLAR,
-                .apolar => FREESASA_ATOM_CLASS_APOLAR,
-                .unknown => FREESASA_ATOM_CLASS_UNKNOWN,
-            };
+            const atom_class = getClassByClassifier(classifier_type, residue_slice, atom_slice);
+            classes[i] = atomClassToInt(atom_class);
         }
     }
 
