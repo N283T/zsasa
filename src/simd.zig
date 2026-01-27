@@ -3,6 +3,20 @@ const types = @import("types.zig");
 const Vec3 = types.Vec3;
 
 // ============================================================================
+// Generic SIMD types (inspired by astroz)
+// ============================================================================
+
+/// Generic N-wide f64 vector type
+pub fn VecN(comptime N: usize) type {
+    return @Vector(N, f64);
+}
+
+/// Generic N-wide bool vector type (for masks)
+pub fn VecNBool(comptime N: usize) type {
+    return @Vector(N, bool);
+}
+
+// ============================================================================
 // Fast approximate trigonometric functions
 // ============================================================================
 
@@ -80,6 +94,73 @@ pub fn fastAtan2(y: f64, x: f64) f64 {
     return atan_r;
 }
 
+// ============================================================================
+// Generic SIMD distance calculations with FMA optimization
+// ============================================================================
+
+/// SIMD-optimized batch distance squared calculation (generic N-wide).
+/// Uses FMA (fused multiply-add) for better precision and potential speedup.
+///
+/// # Parameters
+/// - `point`: The test point to measure distances from
+/// - `positions`: Array of N Vec3 positions to measure to
+///
+/// # Returns
+/// Array of N squared distances
+pub fn distanceSquaredBatchN(comptime N: usize, point: Vec3, positions: [N]Vec3) [N]f64 {
+    const Vec = VecN(N);
+
+    // Splat point coordinates into vectors
+    const px: Vec = @splat(point.x);
+    const py: Vec = @splat(point.y);
+    const pz: Vec = @splat(point.z);
+
+    // Load other positions into vectors (unrolled at comptime)
+    var ox_arr: [N]f64 = undefined;
+    var oy_arr: [N]f64 = undefined;
+    var oz_arr: [N]f64 = undefined;
+    inline for (0..N) |i| {
+        ox_arr[i] = positions[i].x;
+        oy_arr[i] = positions[i].y;
+        oz_arr[i] = positions[i].z;
+    }
+    const ox: Vec = ox_arr;
+    const oy: Vec = oy_arr;
+    const oz: Vec = oz_arr;
+
+    // Calculate differences
+    const dx = px - ox;
+    const dy = py - oy;
+    const dz = pz - oz;
+
+    // Calculate squared distances using FMA: dx² + dy² + dz²
+    // FMA: a*b + c in one operation with better precision
+    const dz_sq = dz * dz;
+    const dist_sq = @mulAdd(Vec, dx, dx, @mulAdd(Vec, dy, dy, dz_sq));
+
+    return dist_sq;
+}
+
+/// Check if point is buried by any of N atoms (generic N-wide).
+///
+/// # Parameters
+/// - `point`: The test point to check
+/// - `positions`: Array of N atom positions
+/// - `radii_sq`: Array of N pre-computed (radius + probe)² values
+///
+/// # Returns
+/// true if point is inside any of the N atoms, false otherwise
+pub fn isPointBuriedBatchN(comptime N: usize, point: Vec3, positions: [N]Vec3, radii_sq: [N]f64) bool {
+    const Vec = VecN(N);
+    const dist_sq = distanceSquaredBatchN(N, point, positions);
+    const radii_v: Vec = radii_sq;
+    const dist_v: Vec = dist_sq;
+
+    // Check if any distance < radius (point inside atom)
+    const inside = dist_v < radii_v;
+    return @reduce(.Or, inside);
+}
+
 /// SIMD-optimized batch distance squared calculation.
 /// Process 4 positions simultaneously using @Vector(4, f64).
 ///
@@ -93,25 +174,7 @@ pub fn distanceSquaredBatch4(
     point: Vec3,
     positions: [4]Vec3,
 ) [4]f64 {
-    // Splat point coordinates into vectors
-    const px: @Vector(4, f64) = @splat(point.x);
-    const py: @Vector(4, f64) = @splat(point.y);
-    const pz: @Vector(4, f64) = @splat(point.z);
-
-    // Load other positions into vectors
-    const ox = @Vector(4, f64){ positions[0].x, positions[1].x, positions[2].x, positions[3].x };
-    const oy = @Vector(4, f64){ positions[0].y, positions[1].y, positions[2].y, positions[3].y };
-    const oz = @Vector(4, f64){ positions[0].z, positions[1].z, positions[2].z, positions[3].z };
-
-    // Calculate differences
-    const dx = px - ox;
-    const dy = py - oy;
-    const dz = pz - oz;
-
-    // Calculate squared distances: dx² + dy² + dz²
-    const dist_sq = dx * dx + dy * dy + dz * dz;
-
-    return dist_sq;
+    return distanceSquaredBatchN(4, point, positions);
 }
 
 /// Check if point is buried by any of 4 atoms.
@@ -128,13 +191,7 @@ pub fn isPointBuriedBatch4(
     positions: [4]Vec3,
     radii_sq: [4]f64,
 ) bool {
-    const dist_sq = distanceSquaredBatch4(point, positions);
-    const radii_v: @Vector(4, f64) = radii_sq;
-    const dist_v: @Vector(4, f64) = dist_sq;
-
-    // Check if any distance < radius (point inside atom)
-    const inside = dist_v < radii_v;
-    return @reduce(.Or, inside);
+    return isPointBuriedBatchN(4, point, positions, radii_sq);
 }
 
 /// SIMD-optimized batch distance squared calculation for 8 atoms.
@@ -150,34 +207,7 @@ pub fn distanceSquaredBatch8(
     point: Vec3,
     positions: [8]Vec3,
 ) [8]f64 {
-    // Splat point coordinates into vectors
-    const px: @Vector(8, f64) = @splat(point.x);
-    const py: @Vector(8, f64) = @splat(point.y);
-    const pz: @Vector(8, f64) = @splat(point.z);
-
-    // Load other positions into vectors
-    const ox = @Vector(8, f64){
-        positions[0].x, positions[1].x, positions[2].x, positions[3].x,
-        positions[4].x, positions[5].x, positions[6].x, positions[7].x,
-    };
-    const oy = @Vector(8, f64){
-        positions[0].y, positions[1].y, positions[2].y, positions[3].y,
-        positions[4].y, positions[5].y, positions[6].y, positions[7].y,
-    };
-    const oz = @Vector(8, f64){
-        positions[0].z, positions[1].z, positions[2].z, positions[3].z,
-        positions[4].z, positions[5].z, positions[6].z, positions[7].z,
-    };
-
-    // Calculate differences
-    const dx = px - ox;
-    const dy = py - oy;
-    const dz = pz - oz;
-
-    // Calculate squared distances: dx² + dy² + dz²
-    const dist_sq = dx * dx + dy * dy + dz * dz;
-
-    return dist_sq;
+    return distanceSquaredBatchN(8, point, positions);
 }
 
 /// Check if point is buried by any of 8 atoms.
@@ -194,13 +224,7 @@ pub fn isPointBuriedBatch8(
     positions: [8]Vec3,
     radii_sq: [8]f64,
 ) bool {
-    const dist_sq = distanceSquaredBatch8(point, positions);
-    const radii_v: @Vector(8, f64) = radii_sq;
-    const dist_v: @Vector(8, f64) = dist_sq;
-
-    // Check if any distance < radius (point inside atom)
-    const inside = dist_v < radii_v;
-    return @reduce(.Or, inside);
+    return isPointBuriedBatchN(8, point, positions, radii_sq);
 }
 
 // Tests
@@ -397,89 +421,76 @@ test "isPointBuriedBatch8 - boundary case (exactly on radius)" {
 }
 
 // ============================================================================
-// Lee-Richards SIMD helpers
+// Lee-Richards SIMD helpers (generic N-wide with FMA)
 // ============================================================================
 
-/// SIMD-optimized batch xy-distance calculation for Lee-Richards.
-/// Computes sqrt(dx² + dy²) for 4 neighbors simultaneously.
+/// SIMD-optimized batch xy-distance calculation for Lee-Richards (generic N-wide).
+/// Computes sqrt(dx² + dy²) for N neighbors simultaneously using FMA.
 ///
 /// # Parameters
 /// - `xi`, `yi`: Coordinates of the reference atom
-/// - `x_neighbors`, `y_neighbors`: Arrays of 4 neighbor x/y coordinates
+/// - `x_neighbors`, `y_neighbors`: Arrays of N neighbor x/y coordinates
 ///
 /// # Returns
-/// Array of 4 xy-distances
-pub fn xyDistanceBatch4(
-    xi: f64,
-    yi: f64,
-    x_neighbors: [4]f64,
-    y_neighbors: [4]f64,
-) [4]f64 {
-    const px: @Vector(4, f64) = @splat(xi);
-    const py: @Vector(4, f64) = @splat(yi);
+/// Array of N xy-distances
+pub fn xyDistanceBatchN(comptime N: usize, xi: f64, yi: f64, x_neighbors: [N]f64, y_neighbors: [N]f64) [N]f64 {
+    const Vec = VecN(N);
 
-    const nx: @Vector(4, f64) = x_neighbors;
-    const ny: @Vector(4, f64) = y_neighbors;
+    const px: Vec = @splat(xi);
+    const py: Vec = @splat(yi);
+
+    const nx: Vec = x_neighbors;
+    const ny: Vec = y_neighbors;
 
     const dx = nx - px;
     const dy = ny - py;
 
-    const dist_sq = dx * dx + dy * dy;
+    // Use FMA for better precision: dx² + dy²
+    const dist_sq = @mulAdd(Vec, dx, dx, dy * dy);
     const dist = @sqrt(dist_sq);
 
     return dist;
 }
 
-/// Compute slice radii (Rj' = sqrt(Rj² - dj²)) for 4 neighbors.
+/// Compute slice radii (Rj' = sqrt(Rj² - dj²)) for N neighbors (generic N-wide).
 /// Returns 0 for neighbors that don't intersect the slice (dj >= Rj).
+/// Uses FMA for precision.
 ///
 /// # Parameters
 /// - `slice_z`: Z-coordinate of the current slice
-/// - `z_neighbors`: Array of 4 neighbor z-coordinates
-/// - `radii`: Array of 4 neighbor radii
+/// - `z_neighbors`: Array of N neighbor z-coordinates
+/// - `radii`: Array of N neighbor radii
 ///
 /// # Returns
-/// Array of 4 slice radii (0 if no intersection)
-pub fn sliceRadiiBatch4(
-    slice_z: f64,
-    z_neighbors: [4]f64,
-    radii: [4]f64,
-) [4]f64 {
-    const sz: @Vector(4, f64) = @splat(slice_z);
-    const zn: @Vector(4, f64) = z_neighbors;
-    const rn: @Vector(4, f64) = radii;
+/// Array of N slice radii (0 if no intersection)
+pub fn sliceRadiiBatchN(comptime N: usize, slice_z: f64, z_neighbors: [N]f64, radii: [N]f64) [N]f64 {
+    const Vec = VecN(N);
+
+    const sz: Vec = @splat(slice_z);
+    const zn: Vec = z_neighbors;
+    const rn: Vec = radii;
 
     const dz = zn - sz;
-    const dz_sq = dz * dz;
-    const r_sq = rn * rn;
 
-    // Rj_prime² = Rj² - dj²
-    const rp_sq = r_sq - dz_sq;
+    // Rj_prime² = Rj² - dj² using FMA: r*r + (-dz*dz)
+    const neg_dz_sq = -(dz * dz);
+    const rp_sq = @mulAdd(Vec, rn, rn, neg_dz_sq);
 
     // Clamp negative values to 0 (no intersection)
-    const zero: @Vector(4, f64) = @splat(0.0);
+    const zero: Vec = @splat(0.0);
     const rp_sq_clamped = @max(rp_sq, zero);
 
     return @sqrt(rp_sq_clamped);
 }
 
-/// Check if circles overlap (dij < Ri' + Rj') for 4 neighbors.
-///
-/// # Parameters
-/// - `dij`: Array of 4 xy-distances
-/// - `ri_prime`: Slice radius of reference atom
-/// - `rj_primes`: Array of 4 neighbor slice radii
-///
-/// # Returns
-/// Bitmask where bit i is set if circles overlap
-pub fn circlesOverlapBatch4(
-    dij: [4]f64,
-    ri_prime: f64,
-    rj_primes: [4]f64,
-) u4 {
-    const d: @Vector(4, f64) = dij;
-    const ri: @Vector(4, f64) = @splat(ri_prime);
-    const rj: @Vector(4, f64) = rj_primes;
+/// Check if circles overlap (dij < Ri' + Rj') for N neighbors.
+/// Returns bitmask where bit i is set if circles overlap.
+pub fn circlesOverlapBatchN(comptime N: usize, comptime MaskType: type, dij: [N]f64, ri_prime: f64, rj_primes: [N]f64) MaskType {
+    const Vec = VecN(N);
+
+    const d: Vec = dij;
+    const ri: Vec = @splat(ri_prime);
+    const rj: Vec = rj_primes;
 
     const sum_radii = ri + rj;
     const overlaps = d < sum_radii;
@@ -487,91 +498,30 @@ pub fn circlesOverlapBatch4(
     return @bitCast(overlaps);
 }
 
-/// SIMD-optimized batch xy-distance calculation for Lee-Richards (8-wide).
-/// Computes sqrt(dx² + dy²) for 8 neighbors simultaneously.
-///
-/// # Parameters
-/// - `xi`, `yi`: Coordinates of the reference atom
-/// - `x_neighbors`, `y_neighbors`: Arrays of 8 neighbor x/y coordinates
-///
-/// # Returns
-/// Array of 8 xy-distances
-pub fn xyDistanceBatch8(
-    xi: f64,
-    yi: f64,
-    x_neighbors: [8]f64,
-    y_neighbors: [8]f64,
-) [8]f64 {
-    const px: @Vector(8, f64) = @splat(xi);
-    const py: @Vector(8, f64) = @splat(yi);
+// Convenience wrappers for 4-wide and 8-wide
 
-    const nx: @Vector(8, f64) = x_neighbors;
-    const ny: @Vector(8, f64) = y_neighbors;
-
-    const dx = nx - px;
-    const dy = ny - py;
-
-    const dist_sq = dx * dx + dy * dy;
-    const dist = @sqrt(dist_sq);
-
-    return dist;
+pub fn xyDistanceBatch4(xi: f64, yi: f64, x_neighbors: [4]f64, y_neighbors: [4]f64) [4]f64 {
+    return xyDistanceBatchN(4, xi, yi, x_neighbors, y_neighbors);
 }
 
-/// Compute slice radii (Rj' = sqrt(Rj² - dj²)) for 8 neighbors.
-/// Returns 0 for neighbors that don't intersect the slice (dj >= Rj).
-///
-/// # Parameters
-/// - `slice_z`: Z-coordinate of the current slice
-/// - `z_neighbors`: Array of 8 neighbor z-coordinates
-/// - `radii`: Array of 8 neighbor radii
-///
-/// # Returns
-/// Array of 8 slice radii (0 if no intersection)
-pub fn sliceRadiiBatch8(
-    slice_z: f64,
-    z_neighbors: [8]f64,
-    radii: [8]f64,
-) [8]f64 {
-    const sz: @Vector(8, f64) = @splat(slice_z);
-    const zn: @Vector(8, f64) = z_neighbors;
-    const rn: @Vector(8, f64) = radii;
-
-    const dz = zn - sz;
-    const dz_sq = dz * dz;
-    const r_sq = rn * rn;
-
-    // Rj_prime² = Rj² - dj²
-    const rp_sq = r_sq - dz_sq;
-
-    // Clamp negative values to 0 (no intersection)
-    const zero: @Vector(8, f64) = @splat(0.0);
-    const rp_sq_clamped = @max(rp_sq, zero);
-
-    return @sqrt(rp_sq_clamped);
+pub fn sliceRadiiBatch4(slice_z: f64, z_neighbors: [4]f64, radii: [4]f64) [4]f64 {
+    return sliceRadiiBatchN(4, slice_z, z_neighbors, radii);
 }
 
-/// Check if circles overlap (dij < Ri' + Rj') for 8 neighbors.
-///
-/// # Parameters
-/// - `dij`: Array of 8 xy-distances
-/// - `ri_prime`: Slice radius of reference atom
-/// - `rj_primes`: Array of 8 neighbor slice radii
-///
-/// # Returns
-/// Bitmask where bit i is set if circles overlap
-pub fn circlesOverlapBatch8(
-    dij: [8]f64,
-    ri_prime: f64,
-    rj_primes: [8]f64,
-) u8 {
-    const d: @Vector(8, f64) = dij;
-    const ri: @Vector(8, f64) = @splat(ri_prime);
-    const rj: @Vector(8, f64) = rj_primes;
+pub fn circlesOverlapBatch4(dij: [4]f64, ri_prime: f64, rj_primes: [4]f64) u4 {
+    return circlesOverlapBatchN(4, u4, dij, ri_prime, rj_primes);
+}
 
-    const sum_radii = ri + rj;
-    const overlaps = d < sum_radii;
+pub fn xyDistanceBatch8(xi: f64, yi: f64, x_neighbors: [8]f64, y_neighbors: [8]f64) [8]f64 {
+    return xyDistanceBatchN(8, xi, yi, x_neighbors, y_neighbors);
+}
 
-    return @bitCast(overlaps);
+pub fn sliceRadiiBatch8(slice_z: f64, z_neighbors: [8]f64, radii: [8]f64) [8]f64 {
+    return sliceRadiiBatchN(8, slice_z, z_neighbors, radii);
+}
+
+pub fn circlesOverlapBatch8(dij: [8]f64, ri_prime: f64, rj_primes: [8]f64) u8 {
+    return circlesOverlapBatchN(8, u8, dij, ri_prime, rj_primes);
 }
 
 // Lee-Richards SIMD tests
