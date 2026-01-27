@@ -18,6 +18,14 @@ Example:
     >>> from freesasa_zig import classify_atoms, get_radius
     >>> result = classify_atoms(["ALA", "ALA"], ["CA", "O"])
     >>> print(result.radii)  # [1.87, 1.4]
+
+Integrations:
+    For structure file support, use the gemmi integration:
+
+    >>> # pip install freesasa-zig[gemmi]
+    >>> from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
+    >>> result = calculate_sasa_from_structure("protein.cif")
+    >>> print(f"Total: {result.total_area:.1f} Å²")
 """
 
 from freesasa_zig.core import (
