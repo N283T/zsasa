@@ -3,7 +3,19 @@
 import numpy as np
 import pytest
 
-from freesasa_zig import SasaResult, calculate_sasa, get_version
+from freesasa_zig import (
+    AtomClass,
+    ClassificationResult,
+    ClassifierType,
+    SasaResult,
+    calculate_sasa,
+    classify_atoms,
+    get_atom_class,
+    get_radius,
+    get_version,
+    guess_radius,
+    guess_radius_from_atom_name,
+)
 
 
 class TestVersion:
@@ -193,3 +205,215 @@ class TestInputValidation:
 
         with pytest.raises(ValueError, match="non-negative"):
             calculate_sasa(coords, radii)
+
+
+# =============================================================================
+# Classifier Tests
+# =============================================================================
+
+
+class TestClassifierTypes:
+    """Tests for ClassifierType enum."""
+
+    def test_classifier_type_values(self):
+        """Classifier types should have correct integer values."""
+        assert ClassifierType.NACCESS == 0
+        assert ClassifierType.PROTOR == 1
+        assert ClassifierType.OONS == 2
+
+    def test_classifier_type_is_int(self):
+        """Classifier types should be usable as integers."""
+        assert isinstance(ClassifierType.NACCESS, int)
+
+
+class TestAtomClass:
+    """Tests for AtomClass enum."""
+
+    def test_atom_class_values(self):
+        """Atom classes should have correct integer values."""
+        assert AtomClass.POLAR == 0
+        assert AtomClass.APOLAR == 1
+        assert AtomClass.UNKNOWN == 2
+
+    def test_atom_class_is_int(self):
+        """Atom classes should be usable as integers."""
+        assert isinstance(AtomClass.POLAR, int)
+
+
+class TestGetRadius:
+    """Tests for get_radius function."""
+
+    def test_get_radius_naccess(self):
+        """NACCESS classifier should return correct radii."""
+        assert get_radius("ALA", "CA") == pytest.approx(1.87, abs=0.01)
+        assert get_radius("ALA", "O") == pytest.approx(1.40, abs=0.01)
+        assert get_radius("ALA", "N") == pytest.approx(1.65, abs=0.01)
+        assert get_radius("ALA", "CB") == pytest.approx(1.87, abs=0.01)
+
+    def test_get_radius_protor(self):
+        """ProtoR classifier should return valid radii."""
+        radius = get_radius("ALA", "CA", ClassifierType.PROTOR)
+        assert radius is not None
+        assert 1.0 < radius < 3.0
+
+    def test_get_radius_oons(self):
+        """OONS classifier should return valid radii."""
+        radius = get_radius("ALA", "CA", ClassifierType.OONS)
+        assert radius is not None
+        assert 1.0 < radius < 3.0
+
+    def test_get_radius_unknown_atom(self):
+        """Unknown atom should return None."""
+        assert get_radius("ALA", "XX") is None
+        assert get_radius("XXX", "YY") is None
+
+    def test_get_radius_any_fallback(self):
+        """Should fall back to ANY residue for common atoms."""
+        # Backbone atoms should work for any residue
+        assert get_radius("UNK", "CA") == pytest.approx(1.87, abs=0.01)
+        assert get_radius("UNK", "O") == pytest.approx(1.40, abs=0.01)
+
+
+class TestGetAtomClass:
+    """Tests for get_atom_class function."""
+
+    def test_carbon_atoms_apolar(self):
+        """Carbon atoms should be classified as apolar."""
+        assert get_atom_class("ALA", "CA") == AtomClass.APOLAR
+        assert get_atom_class("ALA", "CB") == AtomClass.APOLAR
+        assert get_atom_class("ALA", "C") == AtomClass.APOLAR
+
+    def test_nitrogen_oxygen_polar(self):
+        """Nitrogen and oxygen should be classified as polar."""
+        assert get_atom_class("ALA", "N") == AtomClass.POLAR
+        assert get_atom_class("ALA", "O") == AtomClass.POLAR
+
+    def test_unknown_atom_class(self):
+        """Unknown atom should return UNKNOWN class."""
+        assert get_atom_class("ALA", "XX") == AtomClass.UNKNOWN
+
+    def test_different_classifiers(self):
+        """Different classifiers should give consistent polarity."""
+        for classifier in [ClassifierType.NACCESS, ClassifierType.PROTOR, ClassifierType.OONS]:
+            assert get_atom_class("ALA", "CA", classifier) == AtomClass.APOLAR
+            assert get_atom_class("ALA", "O", classifier) == AtomClass.POLAR
+
+
+class TestGuessRadius:
+    """Tests for guess_radius function."""
+
+    def test_common_elements(self):
+        """Common biological elements should return correct radii."""
+        assert guess_radius("C") == pytest.approx(1.70, abs=0.01)
+        assert guess_radius("N") == pytest.approx(1.55, abs=0.01)
+        assert guess_radius("O") == pytest.approx(1.52, abs=0.01)
+        assert guess_radius("S") == pytest.approx(1.80, abs=0.01)
+        assert guess_radius("H") == pytest.approx(1.10, abs=0.01)
+
+    def test_metals(self):
+        """Metal elements should return correct radii."""
+        assert guess_radius("FE") == pytest.approx(1.26, abs=0.01)
+        assert guess_radius("ZN") == pytest.approx(1.39, abs=0.01)
+        assert guess_radius("CA") == pytest.approx(2.31, abs=0.01)
+        assert guess_radius("MG") == pytest.approx(1.73, abs=0.01)
+
+    def test_case_insensitive(self):
+        """Element lookup should be case-insensitive."""
+        assert guess_radius("c") == guess_radius("C")
+        assert guess_radius("fe") == guess_radius("FE")
+        assert guess_radius("Fe") == guess_radius("FE")
+
+    def test_unknown_element(self):
+        """Unknown element should return None."""
+        assert guess_radius("XX") is None
+        assert guess_radius("") is None
+
+
+class TestGuessRadiusFromAtomName:
+    """Tests for guess_radius_from_atom_name function."""
+
+    def test_standard_pdb_atoms(self):
+        """Standard PDB atom names should be parsed correctly."""
+        # Leading space = single-char element
+        assert guess_radius_from_atom_name(" CA ") == pytest.approx(1.70, abs=0.01)  # Carbon
+        assert guess_radius_from_atom_name(" N  ") == pytest.approx(1.55, abs=0.01)
+        assert guess_radius_from_atom_name(" O  ") == pytest.approx(1.52, abs=0.01)
+
+    def test_metal_atoms(self):
+        """Metal atom names without leading space should be 2-char elements."""
+        assert guess_radius_from_atom_name("FE  ") == pytest.approx(1.26, abs=0.01)
+        assert guess_radius_from_atom_name("ZN  ") == pytest.approx(1.39, abs=0.01)
+        assert guess_radius_from_atom_name("CA  ") == pytest.approx(2.31, abs=0.01)  # Calcium
+
+    def test_ca_disambiguation(self):
+        """CA with leading space is Carbon, without is Calcium."""
+        ca_carbon = guess_radius_from_atom_name(" CA ")  # Carbon alpha
+        ca_calcium = guess_radius_from_atom_name("CA  ")  # Calcium ion
+        assert ca_carbon == pytest.approx(1.70, abs=0.01)
+        assert ca_calcium == pytest.approx(2.31, abs=0.01)
+        assert ca_carbon != ca_calcium
+
+
+class TestClassifyAtoms:
+    """Tests for classify_atoms batch function."""
+
+    def test_basic_classification(self):
+        """Basic batch classification should work."""
+        result = classify_atoms(["ALA", "ALA", "GLY"], ["CA", "O", "N"])
+
+        assert isinstance(result, ClassificationResult)
+        assert len(result.radii) == 3
+        assert len(result.classes) == 3
+
+        assert result.radii[0] == pytest.approx(1.87, abs=0.01)
+        assert result.radii[1] == pytest.approx(1.40, abs=0.01)
+        assert result.radii[2] == pytest.approx(1.65, abs=0.01)
+
+        assert result.classes[0] == AtomClass.APOLAR
+        assert result.classes[1] == AtomClass.POLAR
+        assert result.classes[2] == AtomClass.POLAR
+
+    def test_empty_input(self):
+        """Empty input should return empty result."""
+        result = classify_atoms([], [])
+        assert len(result.radii) == 0
+        assert len(result.classes) == 0
+
+    def test_mismatched_lengths(self):
+        """Mismatched lengths should raise ValueError."""
+        with pytest.raises(ValueError, match="same length"):
+            classify_atoms(["ALA"], ["CA", "O"])
+
+    def test_unknown_atoms_nan(self):
+        """Unknown atoms should have NaN radii."""
+        result = classify_atoms(["ALA", "XXX"], ["CA", "YY"])
+
+        assert result.radii[0] == pytest.approx(1.87, abs=0.01)
+        assert np.isnan(result.radii[1])
+        assert result.classes[1] == AtomClass.UNKNOWN
+
+    def test_without_classes(self):
+        """Should work without computing classes."""
+        result = classify_atoms(["ALA", "ALA"], ["CA", "O"], include_classes=False)
+
+        assert result.radii[0] == pytest.approx(1.87, abs=0.01)
+        assert result.radii[1] == pytest.approx(1.40, abs=0.01)
+        # Classes should all be UNKNOWN when not computed
+        assert all(c == AtomClass.UNKNOWN for c in result.classes)
+
+    def test_different_classifiers(self):
+        """Different classifiers should give different radii."""
+        result_naccess = classify_atoms(["ALA"], ["CA"], ClassifierType.NACCESS)
+        result_protor = classify_atoms(["ALA"], ["CA"], ClassifierType.PROTOR)
+        result_oons = classify_atoms(["ALA"], ["CA"], ClassifierType.OONS)
+
+        # All should return valid radii
+        assert not np.isnan(result_naccess.radii[0])
+        assert not np.isnan(result_protor.radii[0])
+        assert not np.isnan(result_oons.radii[0])
+
+    def test_classification_result_repr(self):
+        """ClassificationResult should have a clean repr."""
+        result = classify_atoms(["ALA", "ALA", "GLY"], ["CA", "O", "N"])
+        repr_str = repr(result)
+        assert "n_atoms=3" in repr_str

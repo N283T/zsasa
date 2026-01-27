@@ -6,6 +6,7 @@ import ctypes
 import os
 import sys
 from dataclasses import dataclass
+from enum import IntEnum
 from pathlib import Path
 from typing import Literal
 
@@ -17,6 +18,16 @@ FREESASA_OK = 0
 FREESASA_ERROR_INVALID_INPUT = -1
 FREESASA_ERROR_OUT_OF_MEMORY = -2
 FREESASA_ERROR_CALCULATION = -3
+
+# Classifier types
+FREESASA_CLASSIFIER_NACCESS = 0
+FREESASA_CLASSIFIER_PROTOR = 1
+FREESASA_CLASSIFIER_OONS = 2
+
+# Atom classes
+FREESASA_ATOM_CLASS_POLAR = 0
+FREESASA_ATOM_CLASS_APOLAR = 1
+FREESASA_ATOM_CLASS_UNKNOWN = 2
 
 
 def _find_library() -> Path:
@@ -98,6 +109,43 @@ def _load_library() -> ctypes.CDLL:
         ctypes.POINTER(ctypes.c_double),  # total_area (output)
     ]
     lib.freesasa_calc_lr.restype = ctypes.c_int
+
+    # Classifier functions
+
+    # freesasa_classifier_get_radius(classifier_type, residue, atom) -> double
+    lib.freesasa_classifier_get_radius.argtypes = [
+        ctypes.c_int,  # classifier_type
+        ctypes.c_char_p,  # residue
+        ctypes.c_char_p,  # atom
+    ]
+    lib.freesasa_classifier_get_radius.restype = ctypes.c_double
+
+    # freesasa_classifier_get_class(classifier_type, residue, atom) -> int
+    lib.freesasa_classifier_get_class.argtypes = [
+        ctypes.c_int,  # classifier_type
+        ctypes.c_char_p,  # residue
+        ctypes.c_char_p,  # atom
+    ]
+    lib.freesasa_classifier_get_class.restype = ctypes.c_int
+
+    # freesasa_guess_radius(element) -> double
+    lib.freesasa_guess_radius.argtypes = [ctypes.c_char_p]
+    lib.freesasa_guess_radius.restype = ctypes.c_double
+
+    # freesasa_guess_radius_from_atom_name(atom_name) -> double
+    lib.freesasa_guess_radius_from_atom_name.argtypes = [ctypes.c_char_p]
+    lib.freesasa_guess_radius_from_atom_name.restype = ctypes.c_double
+
+    # freesasa_classify_atoms(...) -> int
+    lib.freesasa_classify_atoms.argtypes = [
+        ctypes.c_int,  # classifier_type
+        ctypes.POINTER(ctypes.c_char_p),  # residues
+        ctypes.POINTER(ctypes.c_char_p),  # atoms
+        ctypes.c_size_t,  # n_atoms
+        ctypes.POINTER(ctypes.c_double),  # radii_out
+        ctypes.POINTER(ctypes.c_int),  # classes_out (nullable)
+    ]
+    lib.freesasa_classify_atoms.restype = ctypes.c_int
 
     return lib
 
@@ -268,3 +316,264 @@ def calculate_sasa(
         total_area=total_area.value,
         atom_areas=atom_areas,
     )
+
+
+# =============================================================================
+# Classifier Types and Classes
+# =============================================================================
+
+
+class ClassifierType(IntEnum):
+    """Available classifier types for atom radius assignment.
+
+    Attributes:
+        NACCESS: NACCESS-compatible radii (default, most commonly used).
+        PROTOR: ProtOr radii based on hybridization state.
+        OONS: Ooi, Oobatake, Nemethy, Scheraga radii (older FreeSASA default).
+    """
+
+    NACCESS = FREESASA_CLASSIFIER_NACCESS
+    PROTOR = FREESASA_CLASSIFIER_PROTOR
+    OONS = FREESASA_CLASSIFIER_OONS
+
+
+class AtomClass(IntEnum):
+    """Atom polarity classes.
+
+    Attributes:
+        POLAR: Polar atoms (e.g., N, O).
+        APOLAR: Apolar/hydrophobic atoms (e.g., C).
+        UNKNOWN: Unknown classification.
+    """
+
+    POLAR = FREESASA_ATOM_CLASS_POLAR
+    APOLAR = FREESASA_ATOM_CLASS_APOLAR
+    UNKNOWN = FREESASA_ATOM_CLASS_UNKNOWN
+
+
+# =============================================================================
+# Classifier Functions
+# =============================================================================
+
+
+def get_radius(
+    residue: str,
+    atom: str,
+    classifier_type: ClassifierType = ClassifierType.NACCESS,
+) -> float | None:
+    """Get van der Waals radius for an atom using the specified classifier.
+
+    Args:
+        residue: Residue name (e.g., "ALA", "GLY").
+        atom: Atom name (e.g., "CA", "CB").
+        classifier_type: Classifier to use. Default: ClassifierType.NACCESS.
+
+    Returns:
+        Radius in Angstroms, or None if atom is not found in classifier.
+
+    Example:
+        >>> from freesasa_zig import get_radius, ClassifierType
+        >>> get_radius("ALA", "CA")
+        1.87
+        >>> get_radius("ALA", "XX")  # Unknown atom
+        None
+    """
+    lib = _get_lib()
+    radius = lib.freesasa_classifier_get_radius(
+        classifier_type,
+        residue.encode("utf-8"),
+        atom.encode("utf-8"),
+    )
+    if np.isnan(radius):
+        return None
+    return radius
+
+
+def get_atom_class(
+    residue: str,
+    atom: str,
+    classifier_type: ClassifierType = ClassifierType.NACCESS,
+) -> int:
+    """Get atom polarity class using the specified classifier.
+
+    Args:
+        residue: Residue name (e.g., "ALA", "GLY").
+        atom: Atom name (e.g., "CA", "CB").
+        classifier_type: Classifier to use. Default: ClassifierType.NACCESS.
+
+    Returns:
+        AtomClass constant (POLAR, APOLAR, or UNKNOWN).
+
+    Example:
+        >>> from freesasa_zig import get_atom_class, AtomClass
+        >>> get_atom_class("ALA", "CA") == AtomClass.APOLAR
+        True
+        >>> get_atom_class("ALA", "O") == AtomClass.POLAR
+        True
+    """
+    lib = _get_lib()
+    return lib.freesasa_classifier_get_class(
+        classifier_type,
+        residue.encode("utf-8"),
+        atom.encode("utf-8"),
+    )
+
+
+def guess_radius(element: str) -> float | None:
+    """Guess van der Waals radius from element symbol.
+
+    Args:
+        element: Element symbol (e.g., "C", "N", "FE").
+                 Case-insensitive, whitespace is trimmed.
+
+    Returns:
+        Radius in Angstroms, or None if element is not recognized.
+
+    Example:
+        >>> from freesasa_zig import guess_radius
+        >>> guess_radius("C")
+        1.7
+        >>> guess_radius("FE")
+        1.26
+        >>> guess_radius("XX")  # Unknown
+        None
+    """
+    lib = _get_lib()
+    radius = lib.freesasa_guess_radius(element.encode("utf-8"))
+    if np.isnan(radius):
+        return None
+    return radius
+
+
+def guess_radius_from_atom_name(atom_name: str) -> float | None:
+    """Guess van der Waals radius from PDB-style atom name.
+
+    Extracts element symbol from atom name following PDB conventions:
+    - Leading space indicates single-char element (e.g., " CA " = Carbon alpha)
+    - No leading space may indicate 2-char element (e.g., "FE  " = Iron)
+
+    Args:
+        atom_name: PDB-style atom name (e.g., " CA ", "FE  ").
+
+    Returns:
+        Radius in Angstroms, or None if element cannot be determined.
+
+    Example:
+        >>> from freesasa_zig import guess_radius_from_atom_name
+        >>> guess_radius_from_atom_name(" CA ")  # Carbon alpha
+        1.7
+        >>> guess_radius_from_atom_name("FE  ")  # Iron
+        1.26
+    """
+    lib = _get_lib()
+    radius = lib.freesasa_guess_radius_from_atom_name(atom_name.encode("utf-8"))
+    if np.isnan(radius):
+        return None
+    return radius
+
+
+@dataclass
+class ClassificationResult:
+    """Result of batch atom classification.
+
+    Attributes:
+        radii: Per-atom van der Waals radii in Angstroms.
+               NaN values indicate atoms not found in the classifier.
+               Use np.isnan(result.radii) to find unknown atoms.
+        classes: Per-atom polarity classes (AtomClass constants).
+
+    Example:
+        >>> result = classify_atoms(residues, atoms)
+        >>> unknown_mask = np.isnan(result.radii)
+        >>> if unknown_mask.any():
+        ...     print(f"Found {unknown_mask.sum()} unknown atoms")
+    """
+
+    radii: NDArray[np.float64]
+    classes: NDArray[np.int32]
+
+    def __repr__(self) -> str:
+        return f"ClassificationResult(n_atoms={len(self.radii)})"
+
+
+def classify_atoms(
+    residues: list[str],
+    atoms: list[str],
+    classifier_type: ClassifierType = ClassifierType.NACCESS,
+    *,
+    include_classes: bool = True,
+) -> ClassificationResult:
+    """Classify multiple atoms at once (batch operation).
+
+    This is more efficient than calling get_radius for each atom individually.
+
+    Args:
+        residues: List of residue names.
+        atoms: List of atom names (must be same length as residues).
+        classifier_type: Classifier to use. Default: ClassifierType.NACCESS.
+        include_classes: Whether to compute atom classes. Default: True.
+
+    Returns:
+        ClassificationResult with radii and classes arrays.
+        Unknown atoms have NaN radius and UNKNOWN class.
+
+    Raises:
+        ValueError: If residues and atoms have different lengths.
+
+    Example:
+        >>> from freesasa_zig import classify_atoms
+        >>> result = classify_atoms(
+        ...     ["ALA", "ALA", "GLY"],
+        ...     ["CA", "O", "N"],
+        ... )
+        >>> result.radii
+        array([1.87, 1.4 , 1.65])
+    """
+    lib = _get_lib()
+
+    if len(residues) != len(atoms):
+        msg = f"residues and atoms must have same length: {len(residues)} != {len(atoms)}"
+        raise ValueError(msg)
+
+    n_atoms = len(residues)
+    if n_atoms == 0:
+        return ClassificationResult(
+            radii=np.array([], dtype=np.float64),
+            classes=np.array([], dtype=np.int32),
+        )
+
+    # Encode strings
+    residues_bytes = [r.encode("utf-8") for r in residues]
+    atoms_bytes = [a.encode("utf-8") for a in atoms]
+
+    # Create arrays of pointers
+    residues_arr = (ctypes.c_char_p * n_atoms)(*residues_bytes)
+    atoms_arr = (ctypes.c_char_p * n_atoms)(*atoms_bytes)
+
+    # Allocate output arrays
+    radii = np.zeros(n_atoms, dtype=np.float64)
+    classes = np.zeros(n_atoms, dtype=np.int32) if include_classes else None
+
+    radii_ptr = radii.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    classes_ptr = classes.ctypes.data_as(ctypes.POINTER(ctypes.c_int)) if include_classes else None
+
+    result = lib.freesasa_classify_atoms(
+        classifier_type,
+        residues_arr,
+        atoms_arr,
+        n_atoms,
+        radii_ptr,
+        classes_ptr,
+    )
+
+    if result == FREESASA_ERROR_INVALID_INPUT:
+        msg = f"Invalid classifier type: {classifier_type}"
+        raise ValueError(msg)
+    elif result != FREESASA_OK:
+        msg = f"Classification error: {result}"
+        raise RuntimeError(msg)
+
+    if not include_classes:
+        classes = np.full(n_atoms, AtomClass.UNKNOWN, dtype=np.int32)
+
+    return ClassificationResult(radii=radii, classes=classes)
