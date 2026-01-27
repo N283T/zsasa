@@ -417,3 +417,126 @@ class TestClassifyAtoms:
         result = classify_atoms(["ALA", "ALA", "GLY"], ["CA", "O", "N"])
         repr_str = repr(result)
         assert "n_atoms=3" in repr_str
+
+
+# =============================================================================
+# RSA Tests
+# =============================================================================
+
+
+class TestGetMaxSasa:
+    """Tests for get_max_sasa function."""
+
+    def test_standard_amino_acids(self):
+        """Should return correct values for standard amino acids."""
+        from freesasa_zig import MAX_SASA, get_max_sasa
+
+        assert get_max_sasa("ALA") == pytest.approx(129.0, abs=0.01)
+        assert get_max_sasa("GLY") == pytest.approx(104.0, abs=0.01)
+        assert get_max_sasa("TRP") == pytest.approx(285.0, abs=0.01)
+        assert get_max_sasa("ARG") == pytest.approx(274.0, abs=0.01)
+
+        # Check consistency with MAX_SASA dict
+        for residue, expected in MAX_SASA.items():
+            assert get_max_sasa(residue) == pytest.approx(expected, abs=0.01)
+
+    def test_unknown_residue(self):
+        """Unknown residue should return None."""
+        from freesasa_zig import get_max_sasa
+
+        assert get_max_sasa("XXX") is None
+        assert get_max_sasa("HOH") is None
+        assert get_max_sasa("") is None
+
+
+class TestCalculateRsa:
+    """Tests for calculate_rsa function."""
+
+    def test_basic_rsa(self):
+        """Should calculate RSA correctly."""
+        from freesasa_zig import calculate_rsa
+
+        # ALA: RSA = 64.5 / 129.0 = 0.5
+        assert calculate_rsa(64.5, "ALA") == pytest.approx(0.5, abs=0.001)
+
+        # GLY: RSA = 52.0 / 104.0 = 0.5
+        assert calculate_rsa(52.0, "GLY") == pytest.approx(0.5, abs=0.001)
+
+        # TRP: RSA = 142.5 / 285.0 = 0.5
+        assert calculate_rsa(142.5, "TRP") == pytest.approx(0.5, abs=0.001)
+
+    def test_rsa_greater_than_one(self):
+        """RSA > 1.0 is possible for exposed terminal residues."""
+        from freesasa_zig import calculate_rsa
+
+        rsa = calculate_rsa(150.0, "GLY")  # 150 / 104 ≈ 1.44
+        assert rsa is not None
+        assert rsa > 1.0
+        assert rsa == pytest.approx(150.0 / 104.0, abs=0.001)
+
+    def test_rsa_zero(self):
+        """Zero SASA should give zero RSA."""
+        from freesasa_zig import calculate_rsa
+
+        assert calculate_rsa(0.0, "ALA") == pytest.approx(0.0, abs=0.001)
+
+    def test_unknown_residue(self):
+        """Unknown residue should return None."""
+        from freesasa_zig import calculate_rsa
+
+        assert calculate_rsa(100.0, "XXX") is None
+        assert calculate_rsa(100.0, "HOH") is None
+
+
+class TestCalculateRsaBatch:
+    """Tests for calculate_rsa_batch function."""
+
+    def test_basic_batch(self):
+        """Should calculate RSA for multiple residues."""
+        from freesasa_zig import calculate_rsa_batch
+
+        sasas = np.array([64.5, 52.0, 142.5])
+        residues = ["ALA", "GLY", "TRP"]
+        rsa = calculate_rsa_batch(sasas, residues)
+
+        assert len(rsa) == 3
+        assert rsa[0] == pytest.approx(0.5, abs=0.001)  # ALA: 64.5/129
+        assert rsa[1] == pytest.approx(0.5, abs=0.001)  # GLY: 52/104
+        assert rsa[2] == pytest.approx(0.5, abs=0.001)  # TRP: 142.5/285
+
+    def test_batch_with_unknown(self):
+        """Unknown residues should have NaN RSA."""
+        from freesasa_zig import calculate_rsa_batch
+
+        sasas = np.array([64.5, 100.0, 52.0])
+        residues = ["ALA", "HOH", "GLY"]
+        rsa = calculate_rsa_batch(sasas, residues)
+
+        assert rsa[0] == pytest.approx(0.5, abs=0.001)  # ALA
+        assert np.isnan(rsa[1])  # HOH - unknown
+        assert rsa[2] == pytest.approx(0.5, abs=0.001)  # GLY
+
+    def test_batch_empty(self):
+        """Empty input should return empty array."""
+        from freesasa_zig import calculate_rsa_batch
+
+        rsa = calculate_rsa_batch(np.array([]), [])
+        assert len(rsa) == 0
+
+    def test_batch_from_list(self):
+        """Should accept list as input."""
+        from freesasa_zig import calculate_rsa_batch
+
+        sasas = [64.5, 52.0]
+        residues = ["ALA", "GLY"]
+        rsa = calculate_rsa_batch(sasas, residues)
+
+        assert len(rsa) == 2
+        assert rsa[0] == pytest.approx(0.5, abs=0.001)
+
+    def test_batch_mismatched_lengths(self):
+        """Mismatched lengths should raise ValueError."""
+        from freesasa_zig import calculate_rsa_batch
+
+        with pytest.raises(ValueError, match="same length"):
+            calculate_rsa_batch(np.array([64.5]), ["ALA", "GLY"])

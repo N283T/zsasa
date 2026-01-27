@@ -29,13 +29,17 @@ Integrations:
 """
 
 from freesasa_zig.core import (
+    MAX_SASA,
     AtomClass,
     ClassificationResult,
     ClassifierType,
     SasaResult,
+    calculate_rsa,
+    calculate_rsa_batch,
     calculate_sasa,
     classify_atoms,
     get_atom_class,
+    get_max_sasa,
     get_radius,
     get_version,
     guess_radius,
@@ -55,6 +59,11 @@ __all__ = [
     "guess_radius",
     "guess_radius_from_atom_name",
     "classify_atoms",
+    # RSA
+    "MAX_SASA",
+    "get_max_sasa",
+    "calculate_rsa",
+    "calculate_rsa_batch",
     # Utility
     "get_version",
 ]
