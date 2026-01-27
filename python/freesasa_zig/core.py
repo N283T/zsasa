@@ -731,6 +731,9 @@ def calculate_rsa_batch(
     sasas_ptr = sasas.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     rsa_ptr = rsa_out.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
 
-    lib.freesasa_calculate_rsa_batch(sasas_ptr, residues_arr, n_residues, rsa_ptr)
+    result = lib.freesasa_calculate_rsa_batch(sasas_ptr, residues_arr, n_residues, rsa_ptr)
+    if result != FREESASA_OK:
+        msg = f"RSA batch calculation failed with error code: {result}"
+        raise RuntimeError(msg)
 
     return rsa_out
