@@ -31,6 +31,14 @@ from freesasa_zig.core import (
 if TYPE_CHECKING:
     import gemmi
 
+__all__ = [
+    "AtomData",
+    "SasaResultWithAtoms",
+    "extract_atoms_from_model",
+    "calculate_sasa_from_model",
+    "calculate_sasa_from_structure",
+]
+
 
 @dataclass
 class AtomData:
@@ -72,6 +80,10 @@ class SasaResultWithAtoms(SasaResult):
         atom_data: Original atom data from the structure.
         polar_area: Total polar SASA in Å².
         apolar_area: Total apolar SASA in Å².
+
+    Note:
+        polar_area + apolar_area may be less than total_area if some atoms
+        have UNKNOWN classification.
     """
 
     atom_classes: NDArray[np.int32]
@@ -299,9 +311,15 @@ def calculate_sasa_from_structure(
     gemmi = _import_gemmi()
 
     # Load structure if path is given
-    structure = gemmi.read_structure(str(source)) if isinstance(source, (str, Path)) else source
+    if isinstance(source, (str, Path)):
+        path = Path(source)
+        if not path.exists():
+            raise FileNotFoundError(f"Structure file not found: {path}")
+        structure = gemmi.read_structure(str(path))
+    else:
+        structure = source
 
-    if model_index >= len(structure):
+    if model_index < 0 or model_index >= len(structure):
         msg = f"Model index {model_index} out of range (structure has {len(structure)} models)"
         raise IndexError(msg)
 

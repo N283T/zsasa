@@ -6,8 +6,6 @@ Run with: pip install freesasa-zig[gemmi] pytest
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 
@@ -273,6 +271,11 @@ class TestCalculateSasaFromStructure:
         with pytest.raises(IndexError, match="out of range"):
             calculate_sasa_from_structure(simple_structure, model_index=99)
 
+    def test_negative_model_index(self, simple_structure):
+        """Should raise error for negative model index."""
+        with pytest.raises(IndexError, match="out of range"):
+            calculate_sasa_from_structure(simple_structure, model_index=-1)
+
 
 # =============================================================================
 # Tests with real structure files
@@ -282,26 +285,29 @@ class TestCalculateSasaFromStructure:
 class TestWithRealFiles:
     """Tests using real structure files from the test directory."""
 
-    @pytest.fixture
-    def test_cif_path(self) -> Path | None:
-        """Get path to test CIF file if it exists."""
-        # Look for test files in common locations
-        possible_paths = [
-            Path(__file__).parent.parent.parent / "benchmarks" / "dataset" / "1aon.json",
-            Path(__file__).parent.parent.parent / "test" / "1ubq.cif",
-        ]
-        for path in possible_paths:
-            if path.exists():
-                return path
-        return None
-
-    def test_from_file_path(self, test_cif_path, tmp_path):
+    def test_from_file_path(self, simple_structure, tmp_path):
         """Should load structure from file path."""
-        if test_cif_path is None:
-            pytest.skip("No test structure file available")
+        # Write structure to temp file
+        cif_path = tmp_path / "test.cif"
+        simple_structure.make_mmcif_document().write_file(str(cif_path))
 
-        # For now, skip this test as we don't have a CIF file in the test directory
-        pytest.skip("No CIF test file available")
+        result = calculate_sasa_from_structure(cif_path)
+        assert result.total_area > 0
+        assert len(result.atom_areas) == 5
+
+    def test_from_string_path(self, simple_structure, tmp_path):
+        """Should accept string path as well as Path object."""
+        cif_path = tmp_path / "test.cif"
+        simple_structure.make_mmcif_document().write_file(str(cif_path))
+
+        # Pass as string instead of Path
+        result = calculate_sasa_from_structure(str(cif_path))
+        assert result.total_area > 0
+
+    def test_file_not_found(self):
+        """Should raise FileNotFoundError for non-existent file."""
+        with pytest.raises(FileNotFoundError, match="Structure file not found"):
+            calculate_sasa_from_structure("/nonexistent/path/to/file.cif")
 
 
 # =============================================================================
