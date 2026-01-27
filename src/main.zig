@@ -1,6 +1,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const analysis = @import("analysis.zig");
+const batch = @import("batch.zig");
 const json_parser = @import("json_parser.zig");
 const json_writer = @import("json_writer.zig");
 const mmcif_parser = @import("mmcif_parser.zig");
@@ -405,6 +406,7 @@ fn parseArgs(args: []const []const u8) Args {
         } else if (!result.output_path_explicit) {
             // Only use positional output if -o was not explicitly set
             result.output_path = arg;
+            result.output_path_explicit = true;
         }
     }
 
@@ -650,6 +652,56 @@ fn printPerChainResults(chain_ids: []const []const u8, atom_areas: []const f64) 
     }
 }
 
+/// Run batch processing mode for directory input
+fn runBatchMode(allocator: std.mem.Allocator, parsed: Args) !void {
+    const input_dir = parsed.input_path.?;
+    const output_dir: ?[]const u8 = if (parsed.output_path_explicit)
+        parsed.output_path
+    else
+        null;
+
+    // Build batch config from parsed args
+    const config = batch.BatchConfig{
+        .n_threads = parsed.n_threads,
+        .algorithm = switch (parsed.algorithm) {
+            .sr => .sr,
+            .lr => .lr,
+        },
+        .n_points = parsed.n_points,
+        .n_slices = parsed.n_slices,
+        .probe_radius = parsed.probe_radius,
+        .output_format = parsed.output_format,
+        .show_timing = parsed.show_timing,
+        .quiet = parsed.quiet,
+    };
+
+    if (!parsed.quiet) {
+        std.debug.print("Batch mode: processing directory '{s}'\n", .{input_dir});
+        std.debug.print("Algorithm: {s}, Threads: {d}\n", .{
+            if (config.algorithm == .sr) "sr" else "lr",
+            if (config.n_threads == 0) @as(usize, @intCast(std.Thread.getCpuCount() catch 1)) else config.n_threads,
+        });
+        if (output_dir) |out| {
+            std.debug.print("Output directory: {s}\n", .{out});
+        }
+        std.debug.print("\n", .{});
+    }
+
+    var result = try batch.runBatch(allocator, input_dir, output_dir, config);
+    defer result.deinit();
+
+    // Print results
+    if (!parsed.quiet) {
+        result.printSummary(parsed.show_timing);
+    }
+
+    // Always print benchmark output (for script parsing)
+    if (parsed.show_timing) {
+        std.debug.print("\n", .{});
+        result.printBenchmarkOutput();
+    }
+}
+
 pub fn main() !void {
     // Setup allocator
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -685,6 +737,23 @@ pub fn main() !void {
         printHelp(args[0]);
         std.process.exit(1);
     }
+
+    // Check if input is a directory (batch mode)
+    const input_stat = std.fs.cwd().statFile(parsed.input_path.?) catch |err| {
+        std.debug.print("Error: Cannot access '{s}': {s}\n", .{ parsed.input_path.?, @errorName(err) });
+        std.process.exit(1);
+    };
+
+    if (input_stat.kind == .directory) {
+        // Batch mode: process directory
+        runBatchMode(allocator, parsed) catch |err| {
+            std.debug.print("Error in batch processing: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+        return;
+    }
+
+    // Single file mode continues below
 
     // Timing variables (in nanoseconds)
     var timer = std.time.Timer.start() catch {
