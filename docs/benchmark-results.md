@@ -428,19 +428,19 @@ cd rustsasa-bench && cargo build --release --features cli && cd ..
 
 ```bash
 # 個別生成
-./benchmarks/scripts/plot.py scatter    # 散布図
-./benchmarks/scripts/plot.py speedup    # サイズ別高速化
-./benchmarks/scripts/plot.py scaling    # スレッドスケーリング
-./benchmarks/scripts/plot.py efficiency # 並列効率
-./benchmarks/scripts/plot.py large      # 大規模構造サマリー
-./benchmarks/scripts/plot.py samples    # ビン別サンプル
-./benchmarks/scripts/plot.py validation # SASA 検証
+./benchmarks/scripts/analyze.py scatter    # 散布図
+./benchmarks/scripts/analyze.py speedup    # サイズ別高速化
+./benchmarks/scripts/analyze.py scaling    # スレッドスケーリング
+./benchmarks/scripts/analyze.py efficiency # 並列効率
+./benchmarks/scripts/analyze.py large      # 大規模構造サマリー
+./benchmarks/scripts/analyze.py samples    # ビン別サンプル
+./benchmarks/scripts/analyze.py validation # SASA 検証
 
 # 全部生成
-./benchmarks/scripts/plot.py all
+./benchmarks/scripts/analyze.py all
 
 # CSV エクスポート
-./benchmarks/scripts/plot.py export_csv
+./benchmarks/scripts/analyze.py export_csv
 ```
 
 ---

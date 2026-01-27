@@ -28,3 +28,20 @@ benchmarks/cif/
 data/*.cif
 scripts/.venv/
 scripts/uv.lock
+
+# Benchmark results (raw data, too large to commit)
+benchmarks/results/csv/
+benchmarks/results/zig_*/
+benchmarks/results/freesasa_*/
+benchmarks/results/rust_*/
+benchmarks/results/ipc/results.csv
+benchmarks/results/plots/**/individual/
+benchmarks/results/plots/efficiency/by_size.png
+benchmarks/results/plots/large/speedup_by_threads.png
+benchmarks/results/plots/validation/lr.png
+
+# Benchmark samples (large files)
+benchmarks/samples/
+
+# Archived plans
+plans/archive/
