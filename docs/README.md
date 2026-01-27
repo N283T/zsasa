@@ -11,7 +11,9 @@ freesasa-zig の技術ドキュメント（日本語）。
 | [architecture.md](architecture.md) | Architecture overview | アーキテクチャ概要 |
 | [algorithm.md](algorithm.md) | SASA algorithms (SR/LR) | アルゴリズム詳解 |
 | [optimizations.md](optimizations.md) | Optimization techniques | 最適化技術 |
-| [benchmark.md](benchmark.md) | Benchmark methodology & results | ベンチマーク手法・結果 |
+| [benchmark.md](benchmark.md) | Benchmark methodology | ベンチマーク手法 |
+| [benchmark-results.md](benchmark-results.md) | Large-scale benchmark results with plots | 大規模ベンチマーク結果 |
+| [cpu-efficiency.md](cpu-efficiency.md) | CPU efficiency analysis (IPC, instructions) | CPU効率解析 |
 | [cli-io.md](cli-io.md) | CLI, I/O, and analysis | CLI・入出力・解析 |
 | [classifier.md](classifier.md) | Atom radius classifiers | 原子分類器詳解 |
 | [ci.md](ci.md) | CI/CD configuration | CI/CD構成 |
