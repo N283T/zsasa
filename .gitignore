@@ -19,6 +19,12 @@ zig-out/
 .idea/
 .vscode/
 
+# macOS
+**/.DS_Store
+
+# Temporary files
+output.json
+
 # External benchmark dependencies (legacy locations)
 freesasa-c/
 rust-sasa-bench/
@@ -34,14 +40,23 @@ benchmarks/results/csv/
 benchmarks/results/zig_*/
 benchmarks/results/freesasa_*/
 benchmarks/results/rust_*/
+benchmarks/results/batch_*/
 benchmarks/results/ipc/results.csv
 benchmarks/results/plots/**/individual/
 benchmarks/results/plots/efficiency/by_size.png
 benchmarks/results/plots/large/speedup_by_threads.png
 benchmarks/results/plots/validation/lr.png
+benchmarks/results/plots/batch/
+
+# Benchmark dataset (test JSON files)
+benchmarks/dataset/
 
 # Benchmark samples (large files)
 benchmarks/samples/
 
 # Archived plans
 plans/archive/
+
+# Draft documents
+docs/seminar-draft.md
+docs/examples/
