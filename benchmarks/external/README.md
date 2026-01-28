@@ -18,7 +18,7 @@ Binary: `freesasa-bench/src/freesasa`
 ### RustSASA (Rust implementation)
 
 ```bash
-git clone https://github.com/N283T/rustsasa-bench.git
+git clone --recursive https://github.com/N283T/rustsasa-bench.git
 cd rustsasa-bench
 cargo build --release --features cli
 ```
