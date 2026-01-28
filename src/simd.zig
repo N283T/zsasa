@@ -1,8 +1,44 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("types.zig");
 const Vec3 = types.Vec3;
 const Vec3f32 = types.Vec3f32;
 const Vec3Gen = types.Vec3Gen;
+
+// ============================================================================
+// Compile-time CPU feature detection
+// ============================================================================
+
+/// Compile-time CPU feature detection for SIMD optimization.
+pub const cpu_features = struct {
+    /// AVX-512F support (512-bit vectors)
+    pub const has_avx512f = if (builtin.cpu.arch == .x86_64)
+        std.Target.x86.featureSetHas(builtin.cpu.features, .avx512f)
+    else
+        false;
+
+    /// AVX2 support (256-bit vectors)
+    pub const has_avx2 = if (builtin.cpu.arch == .x86_64)
+        std.Target.x86.featureSetHas(builtin.cpu.features, .avx2)
+    else
+        false;
+
+    /// ARM NEON support (128-bit vectors, available on all aarch64)
+    pub const has_neon = builtin.cpu.arch == .aarch64;
+};
+
+/// Optimal vector widths based on detected CPU features.
+/// - AVX-512: 16 f32s or 8 f64s per vector (512-bit)
+/// - AVX2: 8 f32s or 4 f64s per vector (256-bit)
+/// - NEON: 8 f32s or 2 f64s per vector (128-bit, but efficient for f32)
+/// - Fallback: 4 f32s or 2 f64s per vector
+pub const optimal_vector_width = struct {
+    /// Optimal f32 vector width for this CPU
+    pub const f32_width: comptime_int = if (cpu_features.has_avx512f) 16 else if (cpu_features.has_avx2 or cpu_features.has_neon) 8 else 4;
+
+    /// Optimal f64 vector width for this CPU
+    pub const f64_width: comptime_int = if (cpu_features.has_avx512f) 8 else if (cpu_features.has_avx2) 4 else 2;
+};
 
 // ============================================================================
 // Fast approximate trigonometric functions
@@ -205,6 +241,79 @@ pub fn isPointBuriedBatch8(
     return @reduce(.Or, inside);
 }
 
+/// SIMD-optimized batch distance squared calculation for 16 atoms.
+/// Process 16 positions simultaneously using @Vector(16, f64).
+/// Best performance on AVX-512 enabled CPUs.
+///
+/// # Parameters
+/// - `point`: The test point to measure distances from
+/// - `positions`: Array of 16 Vec3 positions to measure to
+///
+/// # Returns
+/// Array of 16 squared distances
+pub fn distanceSquaredBatch16(
+    point: Vec3,
+    positions: [16]Vec3,
+) [16]f64 {
+    // Splat point coordinates into vectors
+    const px: @Vector(16, f64) = @splat(point.x);
+    const py: @Vector(16, f64) = @splat(point.y);
+    const pz: @Vector(16, f64) = @splat(point.z);
+
+    // Load other positions into vectors
+    const ox = @Vector(16, f64){
+        positions[0].x,  positions[1].x,  positions[2].x,  positions[3].x,
+        positions[4].x,  positions[5].x,  positions[6].x,  positions[7].x,
+        positions[8].x,  positions[9].x,  positions[10].x, positions[11].x,
+        positions[12].x, positions[13].x, positions[14].x, positions[15].x,
+    };
+    const oy = @Vector(16, f64){
+        positions[0].y,  positions[1].y,  positions[2].y,  positions[3].y,
+        positions[4].y,  positions[5].y,  positions[6].y,  positions[7].y,
+        positions[8].y,  positions[9].y,  positions[10].y, positions[11].y,
+        positions[12].y, positions[13].y, positions[14].y, positions[15].y,
+    };
+    const oz = @Vector(16, f64){
+        positions[0].z,  positions[1].z,  positions[2].z,  positions[3].z,
+        positions[4].z,  positions[5].z,  positions[6].z,  positions[7].z,
+        positions[8].z,  positions[9].z,  positions[10].z, positions[11].z,
+        positions[12].z, positions[13].z, positions[14].z, positions[15].z,
+    };
+
+    // Calculate differences
+    const dx = px - ox;
+    const dy = py - oy;
+    const dz = pz - oz;
+
+    // Calculate squared distances: dx² + dy² + dz²
+    const dist_sq = dx * dx + dy * dy + dz * dz;
+
+    return dist_sq;
+}
+
+/// Check if point is buried by any of 16 atoms.
+///
+/// # Parameters
+/// - `point`: The test point to check
+/// - `positions`: Array of 16 atom positions
+/// - `radii_sq`: Array of 16 pre-computed (radius + probe)² values
+///
+/// # Returns
+/// true if point is inside any of the 16 atoms, false otherwise
+pub fn isPointBuriedBatch16(
+    point: Vec3,
+    positions: [16]Vec3,
+    radii_sq: [16]f64,
+) bool {
+    const dist_sq = distanceSquaredBatch16(point, positions);
+    const radii_v: @Vector(16, f64) = radii_sq;
+    const dist_v: @Vector(16, f64) = dist_sq;
+
+    // Check if any distance < radius (point inside atom)
+    const inside = dist_v < radii_v;
+    return @reduce(.Or, inside);
+}
+
 // Tests
 
 test "distanceSquaredBatch4 - correctness" {
@@ -398,6 +507,100 @@ test "isPointBuriedBatch8 - boundary case (exactly on radius)" {
     try std.testing.expect(!isPointBuriedBatch8(point, positions, radii_sq));
 }
 
+test "distanceSquaredBatch16 - correctness" {
+    const point = Vec3{ .x = 0, .y = 0, .z = 0 };
+    const positions = [16]Vec3{
+        Vec3{ .x = 1, .y = 0, .z = 0 }, // dist² = 1
+        Vec3{ .x = 0, .y = 2, .z = 0 }, // dist² = 4
+        Vec3{ .x = 0, .y = 0, .z = 3 }, // dist² = 9
+        Vec3{ .x = 1, .y = 1, .z = 1 }, // dist² = 3
+        Vec3{ .x = 2, .y = 0, .z = 0 }, // dist² = 4
+        Vec3{ .x = 0, .y = 3, .z = 0 }, // dist² = 9
+        Vec3{ .x = 0, .y = 0, .z = 4 }, // dist² = 16
+        Vec3{ .x = 1, .y = 1, .z = 0 }, // dist² = 2
+        Vec3{ .x = 3, .y = 0, .z = 0 }, // dist² = 9
+        Vec3{ .x = 0, .y = 4, .z = 0 }, // dist² = 16
+        Vec3{ .x = 0, .y = 0, .z = 5 }, // dist² = 25
+        Vec3{ .x = 2, .y = 2, .z = 0 }, // dist² = 8
+        Vec3{ .x = 1, .y = 2, .z = 2 }, // dist² = 9
+        Vec3{ .x = 2, .y = 1, .z = 2 }, // dist² = 9
+        Vec3{ .x = 2, .y = 2, .z = 1 }, // dist² = 9
+        Vec3{ .x = 1, .y = 0, .z = 1 }, // dist² = 2
+    };
+
+    const result = distanceSquaredBatch16(point, positions);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result[0], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 4.0), result[1], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 9.0), result[2], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.0), result[3], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 4.0), result[4], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 9.0), result[5], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 16.0), result[6], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), result[7], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 9.0), result[8], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 16.0), result[9], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 25.0), result[10], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 8.0), result[11], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 9.0), result[12], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 9.0), result[13], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 9.0), result[14], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), result[15], 1e-10);
+}
+
+test "isPointBuriedBatch16 - none inside" {
+    const point = Vec3{ .x = 0, .y = 0, .z = 0 };
+    var positions: [16]Vec3 = undefined;
+    for (0..16) |i| {
+        positions[i] = Vec3{
+            .x = 10.0 + @as(f64, @floatFromInt(i)),
+            .y = 0,
+            .z = 0,
+        };
+    }
+    const radii_sq = [16]f64{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+
+    try std.testing.expect(!isPointBuriedBatch16(point, positions, radii_sq));
+}
+
+test "isPointBuriedBatch16 - one inside (first)" {
+    const point = Vec3{ .x = 0.5, .y = 0, .z = 0 };
+    var positions: [16]Vec3 = undefined;
+    positions[0] = Vec3{ .x = 0, .y = 0, .z = 0 }; // dist² = 0.25 < 1.0
+    for (1..16) |i| {
+        positions[i] = Vec3{ .x = 10, .y = 0, .z = 0 }; // far
+    }
+    const radii_sq = [16]f64{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+
+    try std.testing.expect(isPointBuriedBatch16(point, positions, radii_sq));
+}
+
+test "isPointBuriedBatch16 - one inside (last)" {
+    const point = Vec3{ .x = 0.5, .y = 0, .z = 0 };
+    var positions: [16]Vec3 = undefined;
+    for (0..15) |i| {
+        positions[i] = Vec3{ .x = 10, .y = 0, .z = 0 }; // far
+    }
+    positions[15] = Vec3{ .x = 0, .y = 0, .z = 0 }; // dist² = 0.25 < 1.0
+    const radii_sq = [16]f64{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+
+    try std.testing.expect(isPointBuriedBatch16(point, positions, radii_sq));
+}
+
+test "isPointBuriedBatch16 - one inside (middle)" {
+    const point = Vec3{ .x = 0.5, .y = 0, .z = 0 };
+    var positions: [16]Vec3 = undefined;
+    for (0..16) |i| {
+        if (i == 8) {
+            positions[i] = Vec3{ .x = 0, .y = 0, .z = 0 }; // dist² = 0.25 < 1.0
+        } else {
+            positions[i] = Vec3{ .x = 10, .y = 0, .z = 0 }; // far
+        }
+    }
+    const radii_sq = [16]f64{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+
+    try std.testing.expect(isPointBuriedBatch16(point, positions, radii_sq));
+}
+
 // ============================================================================
 // Generic SIMD functions (f32/f64)
 // ============================================================================
@@ -480,6 +683,59 @@ pub fn isPointBuriedBatch8Gen(comptime T: type) type {
             const dist_sq = distanceSquaredBatch8Gen(T).compute(point, positions);
             const radii_v: @Vector(8, T) = radii_sq;
             const dist_v: @Vector(8, T) = dist_sq;
+
+            const inside = dist_v < radii_v;
+            return @reduce(.Or, inside);
+        }
+    };
+}
+
+/// Generic SIMD-optimized batch distance squared calculation (16-wide).
+/// Works with both f32 and f64. Best performance on AVX-512 enabled CPUs.
+pub fn distanceSquaredBatch16Gen(comptime T: type) type {
+    const Vec = Vec3Gen(T);
+    return struct {
+        pub fn compute(point: Vec, positions: [16]Vec) [16]T {
+            const px: @Vector(16, T) = @splat(point.x);
+            const py: @Vector(16, T) = @splat(point.y);
+            const pz: @Vector(16, T) = @splat(point.z);
+
+            const ox = @Vector(16, T){
+                positions[0].x,  positions[1].x,  positions[2].x,  positions[3].x,
+                positions[4].x,  positions[5].x,  positions[6].x,  positions[7].x,
+                positions[8].x,  positions[9].x,  positions[10].x, positions[11].x,
+                positions[12].x, positions[13].x, positions[14].x, positions[15].x,
+            };
+            const oy = @Vector(16, T){
+                positions[0].y,  positions[1].y,  positions[2].y,  positions[3].y,
+                positions[4].y,  positions[5].y,  positions[6].y,  positions[7].y,
+                positions[8].y,  positions[9].y,  positions[10].y, positions[11].y,
+                positions[12].y, positions[13].y, positions[14].y, positions[15].y,
+            };
+            const oz = @Vector(16, T){
+                positions[0].z,  positions[1].z,  positions[2].z,  positions[3].z,
+                positions[4].z,  positions[5].z,  positions[6].z,  positions[7].z,
+                positions[8].z,  positions[9].z,  positions[10].z, positions[11].z,
+                positions[12].z, positions[13].z, positions[14].z, positions[15].z,
+            };
+
+            const dx = px - ox;
+            const dy = py - oy;
+            const dz = pz - oz;
+
+            return dx * dx + dy * dy + dz * dz;
+        }
+    };
+}
+
+/// Generic check if point is buried by any of 16 atoms.
+pub fn isPointBuriedBatch16Gen(comptime T: type) type {
+    const Vec = Vec3Gen(T);
+    return struct {
+        pub fn compute(point: Vec, positions: [16]Vec, radii_sq: [16]T) bool {
+            const dist_sq = distanceSquaredBatch16Gen(T).compute(point, positions);
+            const radii_v: @Vector(16, T) = radii_sq;
+            const dist_v: @Vector(16, T) = dist_sq;
 
             const inside = dist_v < radii_v;
             return @reduce(.Or, inside);
@@ -933,6 +1189,89 @@ test "isPointBuriedBatch8Gen f32 - one inside" {
     const radii_sq = [8]f32{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
 
     try std.testing.expect(isPointBuriedBatch8Gen(f32).compute(point, positions, radii_sq));
+}
+
+test "distanceSquaredBatch16Gen f32 - correctness" {
+    const point = Vec3f32{ .x = 0, .y = 0, .z = 0 };
+    var positions: [16]Vec3f32 = undefined;
+    positions[0] = Vec3f32{ .x = 1, .y = 0, .z = 0 }; // dist² = 1
+    positions[1] = Vec3f32{ .x = 0, .y = 2, .z = 0 }; // dist² = 4
+    positions[2] = Vec3f32{ .x = 0, .y = 0, .z = 3 }; // dist² = 9
+    positions[3] = Vec3f32{ .x = 1, .y = 1, .z = 1 }; // dist² = 3
+    for (4..16) |i| {
+        const fi: f32 = @floatFromInt(i);
+        positions[i] = Vec3f32{ .x = fi, .y = 0, .z = 0 }; // dist² = i²
+    }
+
+    const result = distanceSquaredBatch16Gen(f32).compute(point, positions);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), result[0], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 4.0), result[1], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 9.0), result[2], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 3.0), result[3], 1e-5);
+    for (4..16) |i| {
+        const fi: f32 = @floatFromInt(i);
+        try std.testing.expectApproxEqAbs(fi * fi, result[i], 1e-5);
+    }
+}
+
+test "isPointBuriedBatch16Gen f32 - one inside" {
+    const point = Vec3f32{ .x = 0.5, .y = 0, .z = 0 };
+    var positions: [16]Vec3f32 = undefined;
+    positions[0] = Vec3f32{ .x = 0, .y = 0, .z = 0 }; // dist² = 0.25 < 1.0
+    for (1..16) |i| {
+        positions[i] = Vec3f32{ .x = 10, .y = 0, .z = 0 }; // far
+    }
+    const radii_sq = [16]f32{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+
+    try std.testing.expect(isPointBuriedBatch16Gen(f32).compute(point, positions, radii_sq));
+}
+
+test "isPointBuriedBatch16Gen f32 - none inside" {
+    const point = Vec3f32{ .x = 0, .y = 0, .z = 0 };
+    var positions: [16]Vec3f32 = undefined;
+    for (0..16) |i| {
+        positions[i] = Vec3f32{
+            .x = 10.0 + @as(f32, @floatFromInt(i)),
+            .y = 0,
+            .z = 0,
+        };
+    }
+    const radii_sq = [16]f32{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+
+    try std.testing.expect(!isPointBuriedBatch16Gen(f32).compute(point, positions, radii_sq));
+}
+
+// ============================================================================
+// CPU feature detection tests
+// ============================================================================
+
+test "cpu_features - compile-time detection works" {
+    // These tests verify that the CPU feature detection compiles and
+    // produces consistent values at compile time
+    const has_avx512 = cpu_features.has_avx512f;
+    const has_avx2 = cpu_features.has_avx2;
+    const has_neon = cpu_features.has_neon;
+
+    // On x86_64, if AVX-512 is available, AVX2 should also be available
+    if (builtin.cpu.arch == .x86_64 and has_avx512) {
+        try std.testing.expect(has_avx2);
+    }
+
+    // On aarch64, NEON should always be available
+    if (builtin.cpu.arch == .aarch64) {
+        try std.testing.expect(has_neon);
+    }
+
+    // Vector widths should be consistent with features
+    if (has_avx512) {
+        try std.testing.expectEqual(@as(comptime_int, 16), optimal_vector_width.f32_width);
+        try std.testing.expectEqual(@as(comptime_int, 8), optimal_vector_width.f64_width);
+    } else if (has_avx2 or has_neon) {
+        try std.testing.expectEqual(@as(comptime_int, 8), optimal_vector_width.f32_width);
+        if (has_avx2) {
+            try std.testing.expectEqual(@as(comptime_int, 4), optimal_vector_width.f64_width);
+        }
+    }
 }
 
 test "fastAcosGen f32 - accuracy" {

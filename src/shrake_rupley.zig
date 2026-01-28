@@ -95,6 +95,10 @@ pub fn atomSasa(
 ///
 /// This is the optimized version that only checks neighbors instead of all atoms.
 /// The neighbor list must be pre-computed using NeighborList.init().
+/// Uses compile-time CPU feature detection to select optimal SIMD width:
+/// - AVX-512: 16 → 8 → 4 → scalar
+/// - AVX2/NEON: 8 → 4 → scalar
+/// - Fallback: 4 → scalar
 ///
 /// # Parameters
 /// - `atom_idx`: Index of the atom to calculate SASA for
@@ -136,32 +140,81 @@ fn atomSasaWithNeighbors(
         var is_buried = false;
         var i: usize = 0;
 
-        // Process 8 neighbors at a time with 8-wide SIMD
-        while (i + 8 <= neighbors.len) : (i += 8) {
-            const batch_positions = [8]Vec3{
-                positions[neighbors[i]],
-                positions[neighbors[i + 1]],
-                positions[neighbors[i + 2]],
-                positions[neighbors[i + 3]],
-                positions[neighbors[i + 4]],
-                positions[neighbors[i + 5]],
-                positions[neighbors[i + 6]],
-                positions[neighbors[i + 7]],
-            };
-            const batch_radii = [8]f64{
-                radii_with_probe_sq[neighbors[i]],
-                radii_with_probe_sq[neighbors[i + 1]],
-                radii_with_probe_sq[neighbors[i + 2]],
-                radii_with_probe_sq[neighbors[i + 3]],
-                radii_with_probe_sq[neighbors[i + 4]],
-                radii_with_probe_sq[neighbors[i + 5]],
-                radii_with_probe_sq[neighbors[i + 6]],
-                radii_with_probe_sq[neighbors[i + 7]],
-            };
+        // AVX-512: Process 16 neighbors at a time with 16-wide SIMD
+        if (comptime simd.cpu_features.has_avx512f) {
+            while (i + 16 <= neighbors.len) : (i += 16) {
+                const batch_positions = [16]Vec3{
+                    positions[neighbors[i]],
+                    positions[neighbors[i + 1]],
+                    positions[neighbors[i + 2]],
+                    positions[neighbors[i + 3]],
+                    positions[neighbors[i + 4]],
+                    positions[neighbors[i + 5]],
+                    positions[neighbors[i + 6]],
+                    positions[neighbors[i + 7]],
+                    positions[neighbors[i + 8]],
+                    positions[neighbors[i + 9]],
+                    positions[neighbors[i + 10]],
+                    positions[neighbors[i + 11]],
+                    positions[neighbors[i + 12]],
+                    positions[neighbors[i + 13]],
+                    positions[neighbors[i + 14]],
+                    positions[neighbors[i + 15]],
+                };
+                const batch_radii = [16]f64{
+                    radii_with_probe_sq[neighbors[i]],
+                    radii_with_probe_sq[neighbors[i + 1]],
+                    radii_with_probe_sq[neighbors[i + 2]],
+                    radii_with_probe_sq[neighbors[i + 3]],
+                    radii_with_probe_sq[neighbors[i + 4]],
+                    radii_with_probe_sq[neighbors[i + 5]],
+                    radii_with_probe_sq[neighbors[i + 6]],
+                    radii_with_probe_sq[neighbors[i + 7]],
+                    radii_with_probe_sq[neighbors[i + 8]],
+                    radii_with_probe_sq[neighbors[i + 9]],
+                    radii_with_probe_sq[neighbors[i + 10]],
+                    radii_with_probe_sq[neighbors[i + 11]],
+                    radii_with_probe_sq[neighbors[i + 12]],
+                    radii_with_probe_sq[neighbors[i + 13]],
+                    radii_with_probe_sq[neighbors[i + 14]],
+                    radii_with_probe_sq[neighbors[i + 15]],
+                };
 
-            if (simd.isPointBuriedBatch8(point, batch_positions, batch_radii)) {
-                is_buried = true;
-                break;
+                if (simd.isPointBuriedBatch16(point, batch_positions, batch_radii)) {
+                    is_buried = true;
+                    break;
+                }
+            }
+        }
+
+        // Process 8 neighbors at a time with 8-wide SIMD
+        if (!is_buried) {
+            while (i + 8 <= neighbors.len) : (i += 8) {
+                const batch_positions = [8]Vec3{
+                    positions[neighbors[i]],
+                    positions[neighbors[i + 1]],
+                    positions[neighbors[i + 2]],
+                    positions[neighbors[i + 3]],
+                    positions[neighbors[i + 4]],
+                    positions[neighbors[i + 5]],
+                    positions[neighbors[i + 6]],
+                    positions[neighbors[i + 7]],
+                };
+                const batch_radii = [8]f64{
+                    radii_with_probe_sq[neighbors[i]],
+                    radii_with_probe_sq[neighbors[i + 1]],
+                    radii_with_probe_sq[neighbors[i + 2]],
+                    radii_with_probe_sq[neighbors[i + 3]],
+                    radii_with_probe_sq[neighbors[i + 4]],
+                    radii_with_probe_sq[neighbors[i + 5]],
+                    radii_with_probe_sq[neighbors[i + 6]],
+                    radii_with_probe_sq[neighbors[i + 7]],
+                };
+
+                if (simd.isPointBuriedBatch8(point, batch_positions, batch_radii)) {
+                    is_buried = true;
+                    break;
+                }
             }
         }
 
@@ -435,12 +488,14 @@ pub fn calculateSasaParallel(
 // =============================================================================
 
 /// Generic Shrake-Rupley algorithm implementation supporting both f32 and f64 precision.
+/// Uses compile-time CPU feature detection to select optimal SIMD width.
 pub fn ShrakeRupleyGen(comptime T: type) type {
     const Vec = Vec3Gen(T);
     const Result = SasaResultGen(T);
     const Cfg = ConfigGen(T);
     const NList = NeighborListGen(T);
     const TestPointsGen = test_points.generateTestPointsGen(T);
+    const IsPointBuriedBatch16 = simd.isPointBuriedBatch16Gen(T);
     const IsPointBuriedBatch8 = simd.isPointBuriedBatch8Gen(T);
     const IsPointBuriedBatch4 = simd.isPointBuriedBatch4Gen(T);
 
@@ -448,6 +503,10 @@ pub fn ShrakeRupleyGen(comptime T: type) type {
         const Self = @This();
 
         /// Calculate SASA for a single atom using pre-computed neighbor list.
+        /// Uses compile-time CPU feature detection to select optimal SIMD width:
+        /// - AVX-512: 16 → 8 → 4 → scalar
+        /// - AVX2/NEON: 8 → 4 → scalar
+        /// - Fallback: 4 → scalar
         pub fn atomSasaWithNeighbors(
             atom_idx: usize,
             positions: []const Vec,
@@ -478,32 +537,81 @@ pub fn ShrakeRupleyGen(comptime T: type) type {
                 var is_buried = false;
                 var i: usize = 0;
 
-                // Process 8 neighbors at a time with 8-wide SIMD
-                while (i + 8 <= neighbors.len) : (i += 8) {
-                    const batch_positions = [8]Vec{
-                        positions[neighbors[i]],
-                        positions[neighbors[i + 1]],
-                        positions[neighbors[i + 2]],
-                        positions[neighbors[i + 3]],
-                        positions[neighbors[i + 4]],
-                        positions[neighbors[i + 5]],
-                        positions[neighbors[i + 6]],
-                        positions[neighbors[i + 7]],
-                    };
-                    const batch_radii = [8]T{
-                        radii_with_probe_sq[neighbors[i]],
-                        radii_with_probe_sq[neighbors[i + 1]],
-                        radii_with_probe_sq[neighbors[i + 2]],
-                        radii_with_probe_sq[neighbors[i + 3]],
-                        radii_with_probe_sq[neighbors[i + 4]],
-                        radii_with_probe_sq[neighbors[i + 5]],
-                        radii_with_probe_sq[neighbors[i + 6]],
-                        radii_with_probe_sq[neighbors[i + 7]],
-                    };
+                // AVX-512: Process 16 neighbors at a time with 16-wide SIMD
+                if (comptime simd.cpu_features.has_avx512f) {
+                    while (i + 16 <= neighbors.len) : (i += 16) {
+                        const batch_positions = [16]Vec{
+                            positions[neighbors[i]],
+                            positions[neighbors[i + 1]],
+                            positions[neighbors[i + 2]],
+                            positions[neighbors[i + 3]],
+                            positions[neighbors[i + 4]],
+                            positions[neighbors[i + 5]],
+                            positions[neighbors[i + 6]],
+                            positions[neighbors[i + 7]],
+                            positions[neighbors[i + 8]],
+                            positions[neighbors[i + 9]],
+                            positions[neighbors[i + 10]],
+                            positions[neighbors[i + 11]],
+                            positions[neighbors[i + 12]],
+                            positions[neighbors[i + 13]],
+                            positions[neighbors[i + 14]],
+                            positions[neighbors[i + 15]],
+                        };
+                        const batch_radii = [16]T{
+                            radii_with_probe_sq[neighbors[i]],
+                            radii_with_probe_sq[neighbors[i + 1]],
+                            radii_with_probe_sq[neighbors[i + 2]],
+                            radii_with_probe_sq[neighbors[i + 3]],
+                            radii_with_probe_sq[neighbors[i + 4]],
+                            radii_with_probe_sq[neighbors[i + 5]],
+                            radii_with_probe_sq[neighbors[i + 6]],
+                            radii_with_probe_sq[neighbors[i + 7]],
+                            radii_with_probe_sq[neighbors[i + 8]],
+                            radii_with_probe_sq[neighbors[i + 9]],
+                            radii_with_probe_sq[neighbors[i + 10]],
+                            radii_with_probe_sq[neighbors[i + 11]],
+                            radii_with_probe_sq[neighbors[i + 12]],
+                            radii_with_probe_sq[neighbors[i + 13]],
+                            radii_with_probe_sq[neighbors[i + 14]],
+                            radii_with_probe_sq[neighbors[i + 15]],
+                        };
 
-                    if (IsPointBuriedBatch8.compute(point, batch_positions, batch_radii)) {
-                        is_buried = true;
-                        break;
+                        if (IsPointBuriedBatch16.compute(point, batch_positions, batch_radii)) {
+                            is_buried = true;
+                            break;
+                        }
+                    }
+                }
+
+                // Process 8 neighbors at a time with 8-wide SIMD
+                if (!is_buried) {
+                    while (i + 8 <= neighbors.len) : (i += 8) {
+                        const batch_positions = [8]Vec{
+                            positions[neighbors[i]],
+                            positions[neighbors[i + 1]],
+                            positions[neighbors[i + 2]],
+                            positions[neighbors[i + 3]],
+                            positions[neighbors[i + 4]],
+                            positions[neighbors[i + 5]],
+                            positions[neighbors[i + 6]],
+                            positions[neighbors[i + 7]],
+                        };
+                        const batch_radii = [8]T{
+                            radii_with_probe_sq[neighbors[i]],
+                            radii_with_probe_sq[neighbors[i + 1]],
+                            radii_with_probe_sq[neighbors[i + 2]],
+                            radii_with_probe_sq[neighbors[i + 3]],
+                            radii_with_probe_sq[neighbors[i + 4]],
+                            radii_with_probe_sq[neighbors[i + 5]],
+                            radii_with_probe_sq[neighbors[i + 6]],
+                            radii_with_probe_sq[neighbors[i + 7]],
+                        };
+
+                        if (IsPointBuriedBatch8.compute(point, batch_positions, batch_radii)) {
+                            is_buried = true;
+                            break;
+                        }
                     }
                 }
 
