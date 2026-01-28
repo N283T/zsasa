@@ -459,6 +459,13 @@ cd rustsasa-bench && cargo build --release --features cli && cd ..
     --input-dir benchmarks/inputs \
     --sample-file benchmarks/samples/stratified_100k.json \
     --threads 1,2,4,8,10
+
+# バッチベンチマーク (大規模構造 10,000 ファイル)
+./benchmarks/scripts/run_batch.py \
+    --tool zig,rust --algorithm sr \
+    --input-dir benchmarks/inputs \
+    --sample-file benchmarks/samples/large_20k_10k.json \
+    --threads 10
 ```
 
 ### Generating Plots / プロット生成
