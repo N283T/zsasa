@@ -25,8 +25,13 @@ PLOTS_DIR = RESULTS_DIR / "plots"
 
 
 def load_data() -> pl.DataFrame:
-    """Load all results into a single DataFrame."""
-    csv_files = list(RESULTS_DIR.glob("*/results.csv"))
+    """Load all results into a single DataFrame (excludes batch/ipc results)."""
+    excluded = ("batch_", "ipc")
+    csv_files = [
+        f
+        for f in RESULTS_DIR.glob("*/results.csv")
+        if not any(f.parent.name.startswith(ex) for ex in excluded)
+    ]
     if not csv_files:
         raise FileNotFoundError("No results.csv files found")
 
@@ -351,6 +356,10 @@ def _plot_threads(df_algo: pl.DataFrame, algo: str, ax):
     ax.set_ylabel("Median Execution Time (ms)")
     ax.legend()
     ax.grid(True, alpha=0.3)
+    # Set x-axis to actual thread values
+    thread_values = sorted(scaling["threads"].unique().to_list())
+    ax.set_xticks(thread_values)
+    ax.set_xticklabels([str(t) for t in thread_values])
 
 
 @app.command()
