@@ -253,6 +253,16 @@ def main(
     console.print(f"  Samples: [cyan]{len(samples):,}[/cyan]")
 
 
+# Preset colors for plots
+COLOR_PRESETS = {
+    "orange": ("#f39c12", "#e67e22"),
+    "blue": ("#3498db", "#2980b9"),
+    "green": ("#2ecc71", "#27ae60"),
+    "red": ("#e74c3c", "#c0392b"),
+    "purple": ("#9b59b6", "#8e44ad"),
+}
+
+
 @app.command()
 def plot(
     sample_path: Annotated[
@@ -265,6 +275,12 @@ def plot(
             "--output", "-o", help="Output PNG path (default: plots/dataset/<name>.png)"
         ),
     ] = None,
+    color: Annotated[
+        str,
+        typer.Option(
+            "--color", "-c", help="Bar color (orange/blue/green/red/purple or hex code)"
+        ),
+    ] = "orange",
 ) -> None:
     """Generate distribution bar chart for a sample file."""
     import matplotlib.pyplot as plt
@@ -282,6 +298,13 @@ def plot(
         console.print("[red]Error:[/red] No distribution data in sample file")
         raise typer.Exit(1)
 
+    # Resolve color
+    if color in COLOR_PRESETS:
+        fill_color, edge_color = COLOR_PRESETS[color]
+    else:
+        fill_color = color
+        edge_color = color
+
     # Extract data for plotting
     bins = list(dist.keys())
     counts = [dist[b]["sampled"] for b in bins]
@@ -289,7 +312,7 @@ def plot(
     # Create plot
     fig, ax = plt.subplots(figsize=(10, 6))
     x = range(len(bins))
-    bars = ax.bar(x, counts, color="#f39c12", alpha=0.8, edgecolor="#e67e22")
+    bars = ax.bar(x, counts, color=fill_color, alpha=0.8, edgecolor=edge_color)
 
     ax.set_xlabel("Structure Size (atoms)", fontsize=11)
     ax.set_ylabel("Number of Structures", fontsize=11)
