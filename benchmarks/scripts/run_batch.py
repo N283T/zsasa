@@ -33,7 +33,6 @@ import csv
 import json
 import os
 import platform
-import re
 import shutil
 import subprocess
 import tempfile
@@ -143,6 +142,7 @@ def run_zig_batch(
     output_dir: Path,
     algorithm: str,
     n_threads: int,
+    precision: str = "f64",
 ) -> dict:
     """Run Zig batch mode."""
     binary = get_binary_path("zig")
@@ -155,6 +155,7 @@ def run_zig_batch(
         str(output_dir),
         f"--algorithm={algorithm}",
         f"--threads={n_threads}",
+        f"--precision={precision}",
         "--format=compact",
         "--timing",
         "--quiet",
@@ -239,15 +240,19 @@ def run_batch_benchmark(
     output_dir: Path,
     algorithm: str,
     n_threads: int,
+    precision: str = "f64",
 ) -> dict:
     """Run batch benchmark for a specific tool."""
     if tool == "zig":
-        return run_zig_batch(input_dir, output_dir, algorithm, n_threads)
+        return run_zig_batch(input_dir, output_dir, algorithm, n_threads, precision)
     elif tool == "rust":
         return run_rust_batch(input_dir, output_dir, n_threads)
     elif tool == "freesasa":
         return run_freesasa_batch(input_dir, output_dir, n_threads)
     raise ValueError(f"Unknown tool: {tool}")
+
+
+PRECISIONS = ["f32", "f64"]
 
 
 @app.command()
@@ -264,6 +269,9 @@ def main(
     runs: Annotated[
         int, typer.Option("--runs", "-r", help="Number of runs per configuration")
     ] = 3,
+    precision: Annotated[
+        str, typer.Option("--precision", "-p", help="Precision: f32, f64 (zig only)")
+    ] = "f64",
     output_dir: Annotated[
         Path | None, typer.Option("--output-dir", "-o", help="Output directory")
     ] = None,
@@ -295,6 +303,17 @@ def main(
     if tool == "rust" and algorithm == "lr":
         console.print("[red]Error:[/red] RustSASA only supports SR algorithm")
         raise typer.Exit(1)
+
+    # Validate precision
+    if precision not in PRECISIONS:
+        console.print(f"[red]Error:[/red] Unknown precision: {precision}")
+        console.print(f"Available: {', '.join(PRECISIONS)}")
+        raise typer.Exit(1)
+
+    # Precision only applies to Zig
+    if tool != "zig" and precision != "f64":
+        console.print("[yellow]Warning:[/yellow] --precision only applies to zig tool")
+        precision = "f64"
 
     # Validate sample file requires input-dir
     sample_ids: set[str] | None = None
@@ -334,7 +353,10 @@ def main(
         batch_input, file_count = prepare_input_dir(input_dir, sample_ids, work_dir)
 
         console.print(f"[bold]{tool.upper()} {algorithm.upper()} (Batch Mode)[/bold]")
-        console.print(f"Files: {file_count:,}, Threads: {thread_counts}, Runs: {runs}")
+        precision_info = f", Precision: {precision}" if tool == "zig" else ""
+        console.print(
+            f"Files: {file_count:,}, Threads: {thread_counts}, Runs: {runs}{precision_info}"
+        )
         console.print()
 
         # Save config
@@ -349,6 +371,7 @@ def main(
                 "file_count": file_count,
                 "input_dir": str(input_dir),
                 "sample_file": str(sample_file) if sample_file else None,
+                "precision": precision,
                 "mode": "batch",
             },
         }
@@ -380,12 +403,18 @@ def main(
 
                     try:
                         result = run_batch_benchmark(
-                            tool, batch_input, batch_output, algorithm, n_threads
+                            tool,
+                            batch_input,
+                            batch_output,
+                            algorithm,
+                            n_threads,
+                            precision,
                         )
                         results.append(
                             {
                                 "tool": tool,
                                 "algorithm": algorithm,
+                                "precision": precision,
                                 "threads": n_threads,
                                 "run": run_num,
                                 "files": result["files"],
@@ -401,6 +430,7 @@ def main(
                             {
                                 "tool": tool,
                                 "algorithm": algorithm,
+                                "precision": precision,
                                 "threads": n_threads,
                                 "run": run_num,
                                 "files": 0,
@@ -423,6 +453,7 @@ def main(
                 fieldnames=[
                     "tool",
                     "algorithm",
+                    "precision",
                     "threads",
                     "run",
                     "files",

@@ -8,9 +8,13 @@ const lee_richards = @import("lee_richards.zig");
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
 const SasaResult = types.SasaResult;
+const SasaResultGen = types.SasaResultGen;
 const Config = types.Config;
+const ConfigGen = types.ConfigGen;
+const Precision = types.Precision;
 const OutputFormat = json_writer.OutputFormat;
 const LeeRichardsConfig = lee_richards.LeeRichardsConfig;
+const LeeRichardsConfigGen = lee_richards.LeeRichardsConfigGen;
 
 /// SASA algorithm selection
 pub const Algorithm = enum {
@@ -28,6 +32,7 @@ pub const BatchConfig = struct {
     output_format: OutputFormat = .json,
     show_timing: bool = false,
     quiet: bool = false,
+    precision: Precision = .f64, // f32 or f64
 };
 
 /// Result for a single file
@@ -201,49 +206,101 @@ fn processOneFile(
     };
 
     // Calculate SASA (single-threaded per file in batch mode)
-    var sasa_result = switch (config.algorithm) {
-        .sr => shrake_rupley.calculateSasa(arena, input, .{
-            .n_points = config.n_points,
-            .probe_radius = config.probe_radius,
-        }) catch {
-            result.status = .err;
-            return result;
-        },
-        .lr => lee_richards.calculateSasa(arena, input, .{
-            .n_slices = config.n_slices,
-            .probe_radius = config.probe_radius,
-        }) catch {
-            result.status = .err;
-            return result;
-        },
-    };
-    defer sasa_result.deinit();
+    // Precision determines which implementation to use
+    var total_area: f64 = 0;
+    switch (config.precision) {
+        .f64 => {
+            var sasa_result = switch (config.algorithm) {
+                .sr => shrake_rupley.calculateSasa(arena, input, .{
+                    .n_points = config.n_points,
+                    .probe_radius = config.probe_radius,
+                }) catch {
+                    result.status = .err;
+                    return result;
+                },
+                .lr => lee_richards.calculateSasa(arena, input, .{
+                    .n_slices = config.n_slices,
+                    .probe_radius = config.probe_radius,
+                }) catch {
+                    result.status = .err;
+                    return result;
+                },
+            };
+            defer sasa_result.deinit();
+            result.sasa_time_ns = timer.read();
+            total_area = sasa_result.total_area;
 
-    result.sasa_time_ns = timer.read();
-    result.total_sasa = sasa_result.total_area;
+            // Write output if output_dir specified
+            if (output_dir) |out_dir| {
+                const output_filename = blk: {
+                    if (std.mem.endsWith(u8, filename, ".gz")) {
+                        break :blk filename[0 .. filename.len - 3];
+                    }
+                    break :blk filename;
+                };
 
-    // Write output if output_dir specified
-    if (output_dir) |out_dir| {
-        const output_filename = blk: {
-            if (std.mem.endsWith(u8, filename, ".gz")) {
-                // Remove .gz extension for output
-                const base = filename[0 .. filename.len - 3];
-                break :blk base;
+                const output_path = std.fs.path.join(arena, &.{ out_dir, output_filename }) catch {
+                    result.status = .err;
+                    return result;
+                };
+
+                json_writer.writeSasaResultWithFormat(arena, sasa_result, output_path, config.output_format) catch {
+                    result.status = .err;
+                    return result;
+                };
             }
-            break :blk filename;
-        };
+        },
+        .f32 => {
+            var sasa_result = switch (config.algorithm) {
+                .sr => shrake_rupley.calculateSasaf32(arena, input, .{
+                    .n_points = config.n_points,
+                    .probe_radius = @floatCast(config.probe_radius),
+                }) catch {
+                    result.status = .err;
+                    return result;
+                },
+                .lr => lee_richards.calculateSasaf32(arena, input, .{
+                    .n_slices = config.n_slices,
+                    .probe_radius = @floatCast(config.probe_radius),
+                }) catch {
+                    result.status = .err;
+                    return result;
+                },
+            };
+            defer sasa_result.deinit();
+            result.sasa_time_ns = timer.read();
+            total_area = @floatCast(sasa_result.total_area);
 
-        const output_path = std.fs.path.join(arena, &.{ out_dir, output_filename }) catch {
-            result.status = .err;
-            return result;
-        };
+            // Write output if output_dir specified - convert to f64 for output
+            if (output_dir) |out_dir| {
+                const output_filename = blk: {
+                    if (std.mem.endsWith(u8, filename, ".gz")) {
+                        break :blk filename[0 .. filename.len - 3];
+                    }
+                    break :blk filename;
+                };
 
-        json_writer.writeSasaResultWithFormat(arena, sasa_result, output_path, config.output_format) catch {
-            result.status = .err;
-            return result;
-        };
+                const output_path = std.fs.path.join(arena, &.{ out_dir, output_filename }) catch {
+                    result.status = .err;
+                    return result;
+                };
+
+                // Convert f32 result to f64 for output
+                var sasa_result_f64 = sasa_result.toF64(arena) catch {
+                    result.status = .err;
+                    return result;
+                };
+                defer sasa_result_f64.deinit();
+
+                json_writer.writeSasaResultWithFormat(arena, sasa_result_f64, output_path, config.output_format) catch {
+                    result.status = .err;
+                    return result;
+                };
+            }
+        },
     }
 
+    result.total_sasa = total_area;
     return result;
 }
 

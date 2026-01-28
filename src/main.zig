@@ -15,8 +15,11 @@ const classifier_protor = @import("classifier_protor.zig");
 const classifier_oons = @import("classifier_oons.zig");
 
 const Config = types.Config;
+const Configf32 = types.Configf32;
+const Precision = types.Precision;
 const OutputFormat = json_writer.OutputFormat;
 const LeeRichardsConfig = lee_richards.LeeRichardsConfig;
+const LeeRichardsConfigf32 = lee_richards.LeeRichardsConfigf32;
 const ClassifierType = classifier.ClassifierType;
 
 const version = build_options.version;
@@ -37,6 +40,7 @@ const Args = struct {
     n_points: u32 = 100, // For Shrake-Rupley
     n_slices: u32 = 20, // For Lee-Richards
     algorithm: Algorithm = .sr, // Default: Shrake-Rupley
+    precision: Precision = .f64, // f32 or f64 (default: f64)
     output_format: OutputFormat = .json,
     classifier_type: ?ClassifierType = null, // Built-in classifier (naccess/protor/oons)
     config_path: ?[]const u8 = null, // Custom config file path
@@ -127,6 +131,17 @@ fn parseClassifierType(value: []const u8) ClassifierType {
     } else {
         std.debug.print("Error: Invalid classifier: {s}\n", .{value});
         std.debug.print("Valid classifiers: naccess, protor, oons\n", .{});
+        std.process.exit(1);
+    }
+}
+
+/// Parse and validate precision value
+fn parsePrecision(value: []const u8) Precision {
+    if (Precision.fromString(value)) |p| {
+        return p;
+    } else {
+        std.debug.print("Error: Invalid precision: {s}\n", .{value});
+        std.debug.print("Valid values: f32 (single), f64 (double)\n", .{});
         std.process.exit(1);
     }
 }
@@ -282,6 +297,18 @@ fn parseArgs(args: []const []const u8) Args {
                 std.process.exit(1);
             }
             result.classifier_type = parseClassifierType(args[i]);
+        }
+        // --precision=PREC or --precision PREC
+        else if (std.mem.startsWith(u8, arg, "--precision=")) {
+            const value = arg["--precision=".len..];
+            result.precision = parsePrecision(value);
+        } else if (std.mem.eql(u8, arg, "--precision")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --precision\n", .{});
+                std.process.exit(1);
+            }
+            result.precision = parsePrecision(args[i]);
         }
         // --config=FILE or --config FILE
         else if (std.mem.startsWith(u8, arg, "--config=")) {
@@ -444,6 +471,8 @@ fn printHelp(program_name: []const u8) void {
         \\    --n-points=N       Test points per atom (default: 100, for sr)
         \\    --n-slices=N       Slices per atom diameter (default: 20, for lr)
         \\    --format=FORMAT    Output format: json, compact, csv (default: json)
+        \\    --precision=PREC   Floating-point precision: f32, f64 (default: f64)
+        \\                       f32 is faster but less accurate
         \\    -o, --output=FILE  Output file (alternative to positional argument)
         \\    --validate         Validate input only, do not calculate SASA
         \\    --timing           Show timing breakdown (for benchmarking)
@@ -670,6 +699,7 @@ fn runBatchMode(allocator: std.mem.Allocator, parsed: Args) !void {
         .n_points = parsed.n_points,
         .n_slices = parsed.n_slices,
         .probe_radius = parsed.probe_radius,
+        .precision = parsed.precision,
         .output_format = parsed.output_format,
         .show_timing = parsed.show_timing,
         .quiet = parsed.quiet,
@@ -835,41 +865,83 @@ pub fn main() !void {
 
     // Calculate SASA with configured parameters
     timer.reset();
-    var result = switch (parsed.algorithm) {
-        .sr => blk: {
-            const config = Config{
-                .n_points = parsed.n_points,
-                .probe_radius = parsed.probe_radius,
-            };
-            break :blk if (parsed.n_threads == 1)
-                shrake_rupley.calculateSasa(allocator, input, config) catch |err| {
-                    std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
-                    std.process.exit(1);
-                }
-            else
-                shrake_rupley.calculateSasaParallel(allocator, input, config, parsed.n_threads) catch |err| {
-                    std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
-                    std.process.exit(1);
+    var result = switch (parsed.precision) {
+        .f64 => switch (parsed.algorithm) {
+            .sr => blk: {
+                const config = Config{
+                    .n_points = parsed.n_points,
+                    .probe_radius = parsed.probe_radius,
                 };
+                break :blk if (parsed.n_threads == 1)
+                    shrake_rupley.calculateSasa(allocator, input, config) catch |err| {
+                        std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                        std.process.exit(1);
+                    }
+                else
+                    shrake_rupley.calculateSasaParallel(allocator, input, config, parsed.n_threads) catch |err| {
+                        std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                        std.process.exit(1);
+                    };
+            },
+            .lr => blk: {
+                const lr_config = LeeRichardsConfig{
+                    .n_slices = parsed.n_slices,
+                    .probe_radius = parsed.probe_radius,
+                };
+                break :blk if (parsed.n_threads == 1)
+                    lee_richards.calculateSasa(allocator, input, lr_config) catch |err| {
+                        std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                        std.process.exit(1);
+                    }
+                else
+                    lee_richards.calculateSasaParallel(allocator, input, lr_config, parsed.n_threads) catch |err| {
+                        std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                        std.process.exit(1);
+                    };
+            },
         },
-        .lr => blk: {
-            const lr_config = LeeRichardsConfig{
-                .n_slices = parsed.n_slices,
-                .probe_radius = parsed.probe_radius,
+        .f32 => blk: {
+            // Calculate in f32, convert to f64 for output
+            var result_f32 = switch (parsed.algorithm) {
+                .sr => inner: {
+                    const config = Configf32{
+                        .n_points = parsed.n_points,
+                        .probe_radius = @floatCast(parsed.probe_radius),
+                    };
+                    break :inner if (parsed.n_threads == 1)
+                        shrake_rupley.calculateSasaf32(allocator, input, config) catch |err| {
+                            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                            std.process.exit(1);
+                        }
+                    else
+                        shrake_rupley.calculateSasaParallelf32(allocator, input, config, parsed.n_threads) catch |err| {
+                            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                            std.process.exit(1);
+                        };
+                },
+                .lr => inner: {
+                    const lr_config = LeeRichardsConfigf32{
+                        .n_slices = parsed.n_slices,
+                        .probe_radius = @floatCast(parsed.probe_radius),
+                    };
+                    break :inner if (parsed.n_threads == 1)
+                        lee_richards.calculateSasaf32(allocator, input, lr_config) catch |err| {
+                            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                            std.process.exit(1);
+                        }
+                    else
+                        lee_richards.calculateSasaParallelf32(allocator, input, lr_config, parsed.n_threads) catch |err| {
+                            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                            std.process.exit(1);
+                        };
+                },
             };
-            // FIX: Previously used `if (n_threads > 1)` which made n_threads=0 (auto-detect)
-            // fall through to single-threaded mode. Now consistent with SR: use parallel
-            // unless explicitly single-threaded (n_threads=1).
-            break :blk if (parsed.n_threads == 1)
-                lee_richards.calculateSasa(allocator, input, lr_config) catch |err| {
-                    std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
-                    std.process.exit(1);
-                }
-            else
-                lee_richards.calculateSasaParallel(allocator, input, lr_config, parsed.n_threads) catch |err| {
-                    std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
-                    std.process.exit(1);
-                };
+            defer result_f32.deinit();
+            // Convert to f64 for output
+            break :blk result_f32.toF64(allocator) catch |err| {
+                std.debug.print("Error converting result: {s}\n", .{@errorName(err)});
+                std.process.exit(1);
+            };
         },
     };
     defer result.deinit();
@@ -1307,4 +1379,47 @@ test "parseArgs -o takes precedence over positional output" {
     const args2 = [_][]const u8{ "freesasa_zig", "input.json", "positional.json", "-o", "explicit.json" };
     const parsed2 = parseArgs(&args2);
     try std.testing.expectEqualStrings("explicit.json", parsed2.output_path);
+}
+
+// Tests for --precision option
+test "parseArgs default precision is f64" {
+    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Precision.f64, parsed.precision);
+}
+
+test "parseArgs --precision=f32" {
+    const args = [_][]const u8{ "freesasa_zig", "--precision=f32", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Precision.f32, parsed.precision);
+}
+
+test "parseArgs --precision=f64" {
+    const args = [_][]const u8{ "freesasa_zig", "--precision=f64", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Precision.f64, parsed.precision);
+}
+
+test "parseArgs --precision f32 (space-separated)" {
+    const args = [_][]const u8{ "freesasa_zig", "--precision", "f32", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Precision.f32, parsed.precision);
+}
+
+test "parseArgs --precision=single" {
+    const args = [_][]const u8{ "freesasa_zig", "--precision=single", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Precision.f32, parsed.precision);
+}
+
+test "parseArgs --precision=double" {
+    const args = [_][]const u8{ "freesasa_zig", "--precision=double", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Precision.f64, parsed.precision);
 }

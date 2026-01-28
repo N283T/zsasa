@@ -27,7 +27,7 @@ SASA (Solvent Accessible Surface Area) measures the surface area of a biomolecul
 - Input validation with detailed error messages
 - Memory-safe implementation with explicit allocators
 - **Multi-threading support** for parallel atom processing
-- **SIMD optimization** using `@Vector(8, f64)` for 8-wide batch calculations
+- **SIMD optimization** using `@Vector` for 8-wide batch calculations (f32/f64 selectable)
 - **Fast trigonometry** using polynomial approximations for LR algorithm
 - **Neighbor list optimization** for O(N) instead of O(N²) neighbor checking
 
@@ -110,6 +110,9 @@ Supported input formats: JSON, mmCIF (.cif, .cif.gz)
 # Polar/Nonpolar surface analysis
 ./zig-out/bin/freesasa_zig --polar structure.cif output.json
 
+# Single precision (f32) - faster, lower memory
+./zig-out/bin/freesasa_zig --precision=f32 input.json output.json
+
 # Batch mode (directory input)
 ./zig-out/bin/freesasa_zig input_dir/ output_dir/ --threads=8
 ./zig-out/bin/freesasa_zig input_dir/ output_dir/ --timing  # For benchmarking
@@ -126,6 +129,7 @@ Supported input formats: JSON, mmCIF (.cif, .cif.gz)
 | `--probe-radius=R` | Probe radius in Angstroms (0 < R ≤ 10) | 1.4 |
 | `--n-points=N` | Test points per atom (SR only, 1-10000) | 100 |
 | `--n-slices=N` | Slices per atom diameter (LR only, 1-1000) | 20 |
+| `--precision=P` | Floating-point precision: `f32`, `f64` | f64 |
 | `--format=FORMAT` | Output format: `json`, `compact`, `csv` | json |
 | `--chain=ID` | Filter by label chain ID (e.g., "A", "B") | - |
 | `--model=N` | Select model number (for multi-model files) | all |
@@ -321,14 +325,25 @@ The "5x" speedup comes from RustSASA's CLI processing multiple files in parallel
 
 **Summary**: For single-protein SASA calculation, freesasa-zig is **1.7x-3.2x faster than RustSASA** and **2.0x-4.7x faster than FreeSASA C**. RustSASA only supports Shrake-Rupley algorithm.
 
+**Fair comparison with f32**: RustSASA uses f32 internally. Using `--precision=f32` for fair comparison:
+
+| Tool | Precision | Time (10k files) | Throughput |
+|------|-----------|------------------|------------|
+| Zig | f32 | 171s | 58.5/s |
+| Rust | f32 | 176s | 57.0/s |
+| Zig | f64 | 176s | 56.7/s |
+
+Zig f32 is **3% faster** than Rust f32. Even Zig f64 (double precision) matches Rust f32 speed.
+
 Run benchmark: `./benchmarks/scripts/run.py --tool zig --algorithm sr`
 
 ### Optimization Techniques
 
 1. **Neighbor List**: O(N) neighbor lookup instead of O(N²)
-2. **8-wide SIMD**: Process 8 calculations in parallel using `@Vector(8, f64)`
+2. **8-wide SIMD**: Process 8 calculations in parallel using `@Vector(8, T)` (generic over f32/f64)
 3. **Fast Trigonometry**: Polynomial approximations for acos/atan2 in LR algorithm (~37% faster)
 4. **Multi-threading**: Parallel atom processing with work-stealing thread pool
+5. **Selectable Precision**: f32 for speed, f64 for maximum precision (runtime configurable)
 
 ## Python Bindings
 

@@ -2,6 +2,7 @@ const std = @import("std");
 const types = @import("types.zig");
 
 const Vec3 = types.Vec3;
+const Vec3Gen = types.Vec3Gen;
 const Allocator = std.mem.Allocator;
 
 /// Cell in spatial hash grid containing atom indices
@@ -290,6 +291,259 @@ fn addNeighborPairs(
         }
     }
 }
+
+// ============================================================================
+// Generic CellList and NeighborList (f32/f64)
+// ============================================================================
+
+/// Generic spatial hash grid for efficient neighbor lookups
+pub fn CellListGen(comptime T: type) type {
+    const Vec = Vec3Gen(T);
+    return struct {
+        const Self = @This();
+
+        cells: []Cell,
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        cell_size: T,
+        x_min: T,
+        y_min: T,
+        z_min: T,
+        allocator: Allocator,
+
+        /// Build spatial grid from atom positions
+        pub fn init(
+            allocator: Allocator,
+            positions: []const Vec,
+            cell_size: T,
+        ) !Self {
+            if (positions.len == 0) return error.NoAtoms;
+            if (cell_size <= 0.0) return error.InvalidCellSize;
+
+            // Compute bounding box
+            var x_min = positions[0].x;
+            var x_max = positions[0].x;
+            var y_min = positions[0].y;
+            var y_max = positions[0].y;
+            var z_min = positions[0].z;
+            var z_max = positions[0].z;
+
+            for (positions) |pos| {
+                x_min = @min(x_min, pos.x);
+                x_max = @max(x_max, pos.x);
+                y_min = @min(y_min, pos.y);
+                y_max = @max(y_max, pos.y);
+                z_min = @min(z_min, pos.z);
+                z_max = @max(z_max, pos.z);
+            }
+
+            // Add small padding
+            x_min -= cell_size;
+            y_min -= cell_size;
+            z_min -= cell_size;
+            x_max += cell_size;
+            y_max += cell_size;
+            z_max += cell_size;
+
+            // Calculate grid dimensions
+            const nx = @max(1, @as(usize, @intFromFloat(@ceil((x_max - x_min) / cell_size))));
+            const ny = @max(1, @as(usize, @intFromFloat(@ceil((y_max - y_min) / cell_size))));
+            const nz = @max(1, @as(usize, @intFromFloat(@ceil((z_max - z_min) / cell_size))));
+
+            const n_cells = nx * ny * nz;
+
+            const cells = try allocator.alloc(Cell, n_cells);
+            errdefer allocator.free(cells);
+
+            for (cells) |*cell| {
+                cell.* = Cell.init();
+            }
+
+            var cell_list = Self{
+                .cells = cells,
+                .nx = nx,
+                .ny = ny,
+                .nz = nz,
+                .cell_size = cell_size,
+                .x_min = x_min,
+                .y_min = y_min,
+                .z_min = z_min,
+                .allocator = allocator,
+            };
+
+            for (positions, 0..) |pos, i| {
+                const cell_idx = cell_list.getCellIndex(pos);
+                try cell_list.cells[cell_idx].append(allocator, @intCast(i));
+            }
+
+            return cell_list;
+        }
+
+        pub fn deinit(self: *Self) void {
+            for (self.cells) |*cell| {
+                cell.deinit(self.allocator);
+            }
+            self.allocator.free(self.cells);
+        }
+
+        fn getCellIndex(self: Self, pos: Vec) usize {
+            const ix = @as(usize, @intFromFloat(@max(@as(T, 0.0), (pos.x - self.x_min) / self.cell_size)));
+            const iy = @as(usize, @intFromFloat(@max(@as(T, 0.0), (pos.y - self.y_min) / self.cell_size)));
+            const iz = @as(usize, @intFromFloat(@max(@as(T, 0.0), (pos.z - self.z_min) / self.cell_size)));
+
+            const cix = @min(ix, self.nx - 1);
+            const ciy = @min(iy, self.ny - 1);
+            const ciz = @min(iz, self.nz - 1);
+
+            return ciz * self.nx * self.ny + ciy * self.nx + cix;
+        }
+
+        pub fn getCellCoords(self: Self, idx: usize) struct { ix: usize, iy: usize, iz: usize } {
+            const iz = idx / (self.nx * self.ny);
+            const remainder = idx % (self.nx * self.ny);
+            const iy = remainder / self.nx;
+            const ix = remainder % self.nx;
+            return .{ .ix = ix, .iy = iy, .iz = iz };
+        }
+
+        pub fn getCellIndexFromCoords(self: Self, ix: i64, iy: i64, iz: i64) ?usize {
+            if (ix < 0 or iy < 0 or iz < 0) return null;
+            const uix = @as(usize, @intCast(ix));
+            const uiy = @as(usize, @intCast(iy));
+            const uiz = @as(usize, @intCast(iz));
+            if (uix >= self.nx or uiy >= self.ny or uiz >= self.nz) return null;
+            return uiz * self.nx * self.ny + uiy * self.nx + uix;
+        }
+    };
+}
+
+/// Generic pre-computed neighbor list for efficient SASA calculation
+pub fn NeighborListGen(comptime T: type) type {
+    const Vec = Vec3Gen(T);
+    const CellListT = CellListGen(T);
+    return struct {
+        const Self = @This();
+
+        neighbors: []std.ArrayListUnmanaged(u32),
+        allocator: Allocator,
+
+        /// Build neighbor list from atom positions and radii
+        pub fn init(
+            allocator: Allocator,
+            positions: []const Vec,
+            radii: []const T,
+            probe_radius: T,
+        ) !Self {
+            const n_atoms = positions.len;
+            if (n_atoms == 0) return error.NoAtoms;
+
+            var max_radius: T = 0.0;
+            for (radii) |r| {
+                if (r < 0.0) return error.InvalidRadius;
+                max_radius = @max(max_radius, r);
+            }
+
+            const cell_size = 2.0 * (max_radius + probe_radius);
+
+            var cell_list = try CellListT.init(allocator, positions, cell_size);
+            defer cell_list.deinit();
+
+            const neighbors = try allocator.alloc(std.ArrayListUnmanaged(u32), n_atoms);
+            errdefer {
+                for (neighbors) |*list| {
+                    list.deinit(allocator);
+                }
+                allocator.free(neighbors);
+            }
+
+            for (neighbors) |*list| {
+                list.* = .{};
+            }
+
+            const n_cells = cell_list.nx * cell_list.ny * cell_list.nz;
+            for (0..n_cells) |cell_idx| {
+                const coords = cell_list.getCellCoords(cell_idx);
+                const ix = @as(i64, @intCast(coords.ix));
+                const iy = @as(i64, @intCast(coords.iy));
+                const iz = @as(i64, @intCast(coords.iz));
+
+                var dz: i64 = -1;
+                while (dz <= 1) : (dz += 1) {
+                    var dy: i64 = -1;
+                    while (dy <= 1) : (dy += 1) {
+                        var dx: i64 = -1;
+                        while (dx <= 1) : (dx += 1) {
+                            const neighbor_idx = cell_list.getCellIndexFromCoords(ix + dx, iy + dy, iz + dz);
+                            if (neighbor_idx) |nidx| {
+                                if (nidx < cell_idx) continue;
+                                try addNeighborPairsGen(T, allocator, &cell_list.cells[cell_idx], &cell_list.cells[nidx], positions, radii, probe_radius, neighbors, cell_idx == nidx);
+                            }
+                        }
+                    }
+                }
+            }
+
+            return Self{
+                .neighbors = neighbors,
+                .allocator = allocator,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            for (self.neighbors) |*list| {
+                list.deinit(self.allocator);
+            }
+            self.allocator.free(self.neighbors);
+        }
+
+        pub fn getNeighbors(self: Self, atom_idx: usize) []const u32 {
+            return self.neighbors[atom_idx].items;
+        }
+    };
+}
+
+/// Generic add neighbor pairs between atoms in two cells
+fn addNeighborPairsGen(
+    comptime T: type,
+    allocator: Allocator,
+    cell1: *const Cell,
+    cell2: *const Cell,
+    positions: []const Vec3Gen(T),
+    radii: []const T,
+    probe_radius: T,
+    neighbors: []std.ArrayListUnmanaged(u32),
+    same_cell: bool,
+) !void {
+    for (cell1.atoms.items) |i| {
+        for (cell2.atoms.items) |j| {
+            if (i == j) continue;
+            if (same_cell and j <= i) continue;
+
+            const pos_i = positions[i];
+            const pos_j = positions[j];
+            const r_i = radii[i];
+            const r_j = radii[j];
+
+            const dx = pos_i.x - pos_j.x;
+            const dy = pos_i.y - pos_j.y;
+            const dz = pos_i.z - pos_j.z;
+            const dist_sq = dx * dx + dy * dy + dz * dz;
+
+            const cutoff = r_i + r_j + 2.0 * probe_radius;
+            const cutoff_sq = cutoff * cutoff;
+
+            if (dist_sq < cutoff_sq) {
+                try neighbors[i].append(allocator, j);
+                try neighbors[j].append(allocator, i);
+            }
+        }
+    }
+}
+
+/// Convenient type aliases
+pub const CellListf32 = CellListGen(f32);
+pub const NeighborListf32 = NeighborListGen(f32);
 
 // Tests
 

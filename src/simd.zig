@@ -1,6 +1,8 @@
 const std = @import("std");
 const types = @import("types.zig");
 const Vec3 = types.Vec3;
+const Vec3f32 = types.Vec3f32;
+const Vec3Gen = types.Vec3Gen;
 
 // ============================================================================
 // Fast approximate trigonometric functions
@@ -397,6 +399,156 @@ test "isPointBuriedBatch8 - boundary case (exactly on radius)" {
 }
 
 // ============================================================================
+// Generic SIMD functions (f32/f64)
+// ============================================================================
+
+/// Generic SIMD-optimized batch distance squared calculation (4-wide).
+/// Works with both f32 and f64.
+pub fn distanceSquaredBatch4Gen(comptime T: type) type {
+    const Vec = Vec3Gen(T);
+    return struct {
+        pub fn compute(point: Vec, positions: [4]Vec) [4]T {
+            const px: @Vector(4, T) = @splat(point.x);
+            const py: @Vector(4, T) = @splat(point.y);
+            const pz: @Vector(4, T) = @splat(point.z);
+
+            const ox = @Vector(4, T){ positions[0].x, positions[1].x, positions[2].x, positions[3].x };
+            const oy = @Vector(4, T){ positions[0].y, positions[1].y, positions[2].y, positions[3].y };
+            const oz = @Vector(4, T){ positions[0].z, positions[1].z, positions[2].z, positions[3].z };
+
+            const dx = px - ox;
+            const dy = py - oy;
+            const dz = pz - oz;
+
+            return dx * dx + dy * dy + dz * dz;
+        }
+    };
+}
+
+/// Generic check if point is buried by any of 4 atoms.
+pub fn isPointBuriedBatch4Gen(comptime T: type) type {
+    const Vec = Vec3Gen(T);
+    return struct {
+        pub fn compute(point: Vec, positions: [4]Vec, radii_sq: [4]T) bool {
+            const dist_sq = distanceSquaredBatch4Gen(T).compute(point, positions);
+            const radii_v: @Vector(4, T) = radii_sq;
+            const dist_v: @Vector(4, T) = dist_sq;
+
+            const inside = dist_v < radii_v;
+            return @reduce(.Or, inside);
+        }
+    };
+}
+
+/// Generic SIMD-optimized batch distance squared calculation (8-wide).
+/// Works with both f32 and f64.
+pub fn distanceSquaredBatch8Gen(comptime T: type) type {
+    const Vec = Vec3Gen(T);
+    return struct {
+        pub fn compute(point: Vec, positions: [8]Vec) [8]T {
+            const px: @Vector(8, T) = @splat(point.x);
+            const py: @Vector(8, T) = @splat(point.y);
+            const pz: @Vector(8, T) = @splat(point.z);
+
+            const ox = @Vector(8, T){
+                positions[0].x, positions[1].x, positions[2].x, positions[3].x,
+                positions[4].x, positions[5].x, positions[6].x, positions[7].x,
+            };
+            const oy = @Vector(8, T){
+                positions[0].y, positions[1].y, positions[2].y, positions[3].y,
+                positions[4].y, positions[5].y, positions[6].y, positions[7].y,
+            };
+            const oz = @Vector(8, T){
+                positions[0].z, positions[1].z, positions[2].z, positions[3].z,
+                positions[4].z, positions[5].z, positions[6].z, positions[7].z,
+            };
+
+            const dx = px - ox;
+            const dy = py - oy;
+            const dz = pz - oz;
+
+            return dx * dx + dy * dy + dz * dz;
+        }
+    };
+}
+
+/// Generic check if point is buried by any of 8 atoms.
+pub fn isPointBuriedBatch8Gen(comptime T: type) type {
+    const Vec = Vec3Gen(T);
+    return struct {
+        pub fn compute(point: Vec, positions: [8]Vec, radii_sq: [8]T) bool {
+            const dist_sq = distanceSquaredBatch8Gen(T).compute(point, positions);
+            const radii_v: @Vector(8, T) = radii_sq;
+            const dist_v: @Vector(8, T) = dist_sq;
+
+            const inside = dist_v < radii_v;
+            return @reduce(.Or, inside);
+        }
+    };
+}
+
+/// Generic fast approximate acos using polynomial approximation.
+pub fn fastAcosGen(comptime T: type) type {
+    return struct {
+        pub fn compute(x: T) T {
+            const clamped = std.math.clamp(x, -1.0, 1.0);
+            const abs_x = @abs(clamped);
+
+            const a0: T = 1.5707963267948966; // π/2
+            const a1: T = -0.2145988016038123;
+            const a2: T = 0.0889789874093553;
+            const a3: T = -0.0501743046129726;
+
+            const sqrt_term = @sqrt(1.0 - abs_x);
+            const poly = a0 + abs_x * (a1 + abs_x * (a2 + abs_x * a3));
+            const result = sqrt_term * poly;
+
+            return if (clamped < 0) std.math.pi - result else result;
+        }
+    };
+}
+
+/// Generic fast approximate atan2 using polynomial approximation.
+pub fn fastAtan2Gen(comptime T: type) type {
+    return struct {
+        pub fn compute(y: T, x: T) T {
+            const abs_x = @abs(x);
+            const abs_y = @abs(y);
+
+            const epsilon: T = if (T == f32) 1e-7 else 1e-10;
+            if (abs_x < epsilon and abs_y < epsilon) {
+                return 0.0;
+            }
+
+            const swap = abs_y > abs_x;
+            const ratio = if (swap) abs_x / abs_y else abs_y / abs_x;
+
+            const c0: T = 0.9998660373;
+            const c1: T = -0.3302994844;
+            const c2: T = 0.1801410321;
+
+            const r2 = ratio * ratio;
+            var atan_r = ratio * (c0 + r2 * (c1 + r2 * c2));
+
+            const half_pi: T = @as(T, std.math.pi) / 2.0;
+            const pi: T = std.math.pi;
+
+            if (swap) {
+                atan_r = half_pi - atan_r;
+            }
+            if (x < 0) {
+                atan_r = pi - atan_r;
+            }
+            if (y < 0) {
+                atan_r = -atan_r;
+            }
+
+            return atan_r;
+        }
+    };
+}
+
+// ============================================================================
 // Lee-Richards SIMD helpers
 // ============================================================================
 
@@ -731,4 +883,268 @@ test "circlesOverlapBatch8 - mixed" {
     // 6: 0.1 < 2.0 -> yes (bit 6)
     // 7: 1.9 < 2.0 -> yes (bit 7)
     try std.testing.expectEqual(@as(u8, 0b11010101), result);
+}
+
+// ============================================================================
+// Generic SIMD tests (f32)
+// ============================================================================
+
+test "distanceSquaredBatch4Gen f32 - correctness" {
+    const point = Vec3f32{ .x = 0, .y = 0, .z = 0 };
+    const positions = [4]Vec3f32{
+        Vec3f32{ .x = 1, .y = 0, .z = 0 }, // dist² = 1
+        Vec3f32{ .x = 0, .y = 2, .z = 0 }, // dist² = 4
+        Vec3f32{ .x = 0, .y = 0, .z = 3 }, // dist² = 9
+        Vec3f32{ .x = 1, .y = 1, .z = 1 }, // dist² = 3
+    };
+
+    const result = distanceSquaredBatch4Gen(f32).compute(point, positions);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), result[0], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 4.0), result[1], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 9.0), result[2], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 3.0), result[3], 1e-5);
+}
+
+test "isPointBuriedBatch4Gen f32 - one inside" {
+    const point = Vec3f32{ .x = 0.5, .y = 0, .z = 0 };
+    const positions = [4]Vec3f32{
+        Vec3f32{ .x = 0, .y = 0, .z = 0 }, // dist² = 0.25 < 1.0
+        Vec3f32{ .x = 10, .y = 0, .z = 0 }, // far
+        Vec3f32{ .x = 10, .y = 0, .z = 0 }, // far
+        Vec3f32{ .x = 10, .y = 0, .z = 0 }, // far
+    };
+    const radii_sq = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
+
+    try std.testing.expect(isPointBuriedBatch4Gen(f32).compute(point, positions, radii_sq));
+}
+
+test "isPointBuriedBatch8Gen f32 - one inside" {
+    const point = Vec3f32{ .x = 0.5, .y = 0, .z = 0 };
+    const positions = [8]Vec3f32{
+        Vec3f32{ .x = 0, .y = 0, .z = 0 }, // dist² = 0.25 < 1.0
+        Vec3f32{ .x = 10, .y = 0, .z = 0 },
+        Vec3f32{ .x = 10, .y = 0, .z = 0 },
+        Vec3f32{ .x = 10, .y = 0, .z = 0 },
+        Vec3f32{ .x = 10, .y = 0, .z = 0 },
+        Vec3f32{ .x = 10, .y = 0, .z = 0 },
+        Vec3f32{ .x = 10, .y = 0, .z = 0 },
+        Vec3f32{ .x = 10, .y = 0, .z = 0 },
+    };
+    const radii_sq = [8]f32{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+
+    try std.testing.expect(isPointBuriedBatch8Gen(f32).compute(point, positions, radii_sq));
+}
+
+test "fastAcosGen f32 - accuracy" {
+    const test_values = [_]f32{ -1.0, -0.9, -0.5, 0.0, 0.5, 0.9, 1.0 };
+    const tolerance: f32 = 0.002; // Slightly larger tolerance for f32
+
+    for (test_values) |x| {
+        const expected = std.math.acos(x);
+        const actual = fastAcosGen(f32).compute(x);
+        try std.testing.expectApproxEqAbs(expected, actual, tolerance);
+    }
+}
+
+test "fastAtan2Gen f32 - accuracy" {
+    const angles = [_]f32{ 0.0, 0.25, 0.5, 1.0, 2.0, 3.0 };
+    const tolerance: f32 = 0.003;
+
+    for (angles) |angle| {
+        const y = @sin(angle);
+        const x = @cos(angle);
+        const expected = std.math.atan2(y, x);
+        const actual = fastAtan2Gen(f32).compute(y, x);
+        try std.testing.expectApproxEqAbs(expected, actual, tolerance);
+    }
+}
+
+// ============================================================================
+// Generic Lee-Richards SIMD helpers (f32/f64)
+// ============================================================================
+
+/// Generic SIMD-optimized batch xy-distance calculation for Lee-Richards (4-wide).
+pub fn xyDistanceBatch4Gen(comptime T: type) type {
+    return struct {
+        pub fn compute(
+            xi: T,
+            yi: T,
+            x_neighbors: [4]T,
+            y_neighbors: [4]T,
+        ) [4]T {
+            const px: @Vector(4, T) = @splat(xi);
+            const py: @Vector(4, T) = @splat(yi);
+
+            const nx: @Vector(4, T) = x_neighbors;
+            const ny: @Vector(4, T) = y_neighbors;
+
+            const dx = nx - px;
+            const dy = ny - py;
+
+            const dist_sq = dx * dx + dy * dy;
+            return @sqrt(dist_sq);
+        }
+    };
+}
+
+/// Generic compute slice radii (Rj' = sqrt(Rj² - dj²)) for 4 neighbors.
+pub fn sliceRadiiBatch4Gen(comptime T: type) type {
+    return struct {
+        pub fn compute(
+            slice_z: T,
+            z_neighbors: [4]T,
+            radii: [4]T,
+        ) [4]T {
+            const sz: @Vector(4, T) = @splat(slice_z);
+            const zn: @Vector(4, T) = z_neighbors;
+            const rn: @Vector(4, T) = radii;
+
+            const dz = zn - sz;
+            const dz_sq = dz * dz;
+            const r_sq = rn * rn;
+
+            const rp_sq = r_sq - dz_sq;
+
+            const zero: @Vector(4, T) = @splat(0.0);
+            const rp_sq_clamped = @max(rp_sq, zero);
+
+            return @sqrt(rp_sq_clamped);
+        }
+    };
+}
+
+/// Generic check if circles overlap (dij < Ri' + Rj') for 4 neighbors.
+pub fn circlesOverlapBatch4Gen(comptime T: type) type {
+    return struct {
+        pub fn compute(
+            dij: [4]T,
+            ri_prime: T,
+            rj_primes: [4]T,
+        ) u4 {
+            const d: @Vector(4, T) = dij;
+            const ri: @Vector(4, T) = @splat(ri_prime);
+            const rj: @Vector(4, T) = rj_primes;
+
+            const sum_radii = ri + rj;
+            const overlaps = d < sum_radii;
+
+            return @bitCast(overlaps);
+        }
+    };
+}
+
+/// Generic SIMD-optimized batch xy-distance calculation for Lee-Richards (8-wide).
+pub fn xyDistanceBatch8Gen(comptime T: type) type {
+    return struct {
+        pub fn compute(
+            xi: T,
+            yi: T,
+            x_neighbors: [8]T,
+            y_neighbors: [8]T,
+        ) [8]T {
+            const px: @Vector(8, T) = @splat(xi);
+            const py: @Vector(8, T) = @splat(yi);
+
+            const nx: @Vector(8, T) = x_neighbors;
+            const ny: @Vector(8, T) = y_neighbors;
+
+            const dx = nx - px;
+            const dy = ny - py;
+
+            const dist_sq = dx * dx + dy * dy;
+            return @sqrt(dist_sq);
+        }
+    };
+}
+
+/// Generic compute slice radii (Rj' = sqrt(Rj² - dj²)) for 8 neighbors.
+pub fn sliceRadiiBatch8Gen(comptime T: type) type {
+    return struct {
+        pub fn compute(
+            slice_z: T,
+            z_neighbors: [8]T,
+            radii: [8]T,
+        ) [8]T {
+            const sz: @Vector(8, T) = @splat(slice_z);
+            const zn: @Vector(8, T) = z_neighbors;
+            const rn: @Vector(8, T) = radii;
+
+            const dz = zn - sz;
+            const dz_sq = dz * dz;
+            const r_sq = rn * rn;
+
+            const rp_sq = r_sq - dz_sq;
+
+            const zero: @Vector(8, T) = @splat(0.0);
+            const rp_sq_clamped = @max(rp_sq, zero);
+
+            return @sqrt(rp_sq_clamped);
+        }
+    };
+}
+
+/// Generic check if circles overlap (dij < Ri' + Rj') for 8 neighbors.
+pub fn circlesOverlapBatch8Gen(comptime T: type) type {
+    return struct {
+        pub fn compute(
+            dij: [8]T,
+            ri_prime: T,
+            rj_primes: [8]T,
+        ) u8 {
+            const d: @Vector(8, T) = dij;
+            const ri: @Vector(8, T) = @splat(ri_prime);
+            const rj: @Vector(8, T) = rj_primes;
+
+            const sum_radii = ri + rj;
+            const overlaps = d < sum_radii;
+
+            return @bitCast(overlaps);
+        }
+    };
+}
+
+// Generic Lee-Richards SIMD tests
+
+test "xyDistanceBatch4Gen f32 - correctness" {
+    const result = xyDistanceBatch4Gen(f32).compute(
+        0.0,
+        0.0,
+        [4]f32{ 3.0, 0.0, 1.0, 3.0 },
+        [4]f32{ 4.0, 5.0, 0.0, 4.0 },
+    );
+
+    try std.testing.expectApproxEqAbs(@as(f32, 5.0), result[0], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 5.0), result[1], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), result[2], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 5.0), result[3], 1e-5);
+}
+
+test "sliceRadiiBatch4Gen f32 - correctness" {
+    const result = sliceRadiiBatch4Gen(f32).compute(
+        0.0,
+        [4]f32{ 0.0, 0.6, 0.8, 2.0 },
+        [4]f32{ 1.0, 1.0, 1.0, 1.0 },
+    );
+
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), result[0], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.8), result[1], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.6), result[2], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), result[3], 1e-5);
+}
+
+test "sliceRadiiBatch8Gen f32 - correctness" {
+    const result = sliceRadiiBatch8Gen(f32).compute(
+        0.0,
+        [8]f32{ 0.0, 0.6, 0.8, 2.0, 0.0, 0.3, 0.4, 1.5 },
+        [8]f32{ 1.0, 1.0, 1.0, 1.0, 0.5, 0.5, 0.5, 1.0 },
+    );
+
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), result[0], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.8), result[1], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.6), result[2], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), result[3], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), result[4], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.4), result[5], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.3), result[6], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), result[7], 1e-5);
 }
