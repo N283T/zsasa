@@ -103,6 +103,10 @@ freesasa_zig [OPTIONS] <input> [output.json]
 
 # 極性/非極性表面解析
 ./zig-out/bin/freesasa_zig --polar structure.cif output.json
+
+# バッチモード（ディレクトリ入力）
+./zig-out/bin/freesasa_zig input_dir/ output_dir/ --threads=8
+./zig-out/bin/freesasa_zig input_dir/ output_dir/ --timing  # ベンチマーク用
 ```
 
 ### オプション
