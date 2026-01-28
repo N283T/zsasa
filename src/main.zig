@@ -5,6 +5,7 @@ const batch = @import("batch.zig");
 const json_parser = @import("json_parser.zig");
 const json_writer = @import("json_writer.zig");
 const mmcif_parser = @import("mmcif_parser.zig");
+const pdb_parser = @import("pdb_parser.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
 const lee_richards = @import("lee_richards.zig");
 const types = @import("types.zig");
@@ -167,6 +168,7 @@ fn parseParallelism(value: []const u8) Parallelism {
 const InputFormat = enum {
     json,
     mmcif,
+    pdb,
 };
 
 /// Detect input file format from extension
@@ -175,6 +177,10 @@ fn detectInputFormat(path: []const u8) InputFormat {
     if (std.mem.endsWith(u8, path, ".mmcif")) return .mmcif;
     if (std.mem.endsWith(u8, path, ".CIF")) return .mmcif;
     if (std.mem.endsWith(u8, path, ".mmCIF")) return .mmcif;
+    if (std.mem.endsWith(u8, path, ".pdb")) return .pdb;
+    if (std.mem.endsWith(u8, path, ".PDB")) return .pdb;
+    if (std.mem.endsWith(u8, path, ".ent")) return .pdb;
+    if (std.mem.endsWith(u8, path, ".ENT")) return .pdb;
     return .json;
 }
 
@@ -203,6 +209,20 @@ fn readInputFile(allocator: std.mem.Allocator, path: []const u8, args: Args) !ty
             var parser = mmcif_parser.MmcifParser.init(allocator);
             parser.model_num = args.model_num;
             parser.use_auth_chain = args.use_auth_chain;
+
+            // Parse chain filter if specified
+            var chain_filter_slice: ?[]const []const u8 = null;
+            if (args.chain_filter) |filter_str| {
+                chain_filter_slice = try parseChainFilter(allocator, filter_str);
+                parser.chain_filter = chain_filter_slice;
+            }
+            defer if (chain_filter_slice) |s| allocator.free(s);
+
+            break :blk parser.parseFile(path);
+        },
+        .pdb => blk: {
+            var parser = pdb_parser.PdbParser.init(allocator);
+            parser.model_num = args.model_num;
 
             // Parse chain filter if specified
             var chain_filter_slice: ?[]const []const u8 = null;
@@ -478,7 +498,7 @@ fn printHelp(program_name: []const u8) void {
         \\
         \\ARGUMENTS:
         \\    <input>          Input file (JSON or mmCIF format, auto-detected by extension)
-        \\                     Supported: .json, .cif, .mmcif
+        \\                     Supported: .json, .cif, .mmcif, .pdb, .ent
         \\    [output.json]    Output JSON file (default: output.json)
         \\
         \\OPTIONS:
@@ -530,6 +550,7 @@ fn printHelp(program_name: []const u8) void {
         \\EXAMPLES:
         \\    {s} input.json output.json
         \\    {s} structure.cif output.json              # mmCIF input
+        \\    {s} structure.pdb output.json              # PDB input
         \\    {s} --algorithm=lr input.json output.json
         \\    {s} --algorithm=lr --n-slices=50 input.json output.json
         \\    {s} --threads=4 input.json output.json
@@ -544,7 +565,7 @@ fn printHelp(program_name: []const u8) void {
         \\    {s} --threads=8 input_dir/ output_dir/           # file-level parallelism
         \\    {s} --parallelism=atom --threads=8 input_dir/    # atom-level parallelism
         \\
-    , .{ version, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
+    , .{ version, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 fn printVersion() void {
