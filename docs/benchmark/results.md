@@ -308,6 +308,8 @@ PDB 最大構造でのスレッドスケーリング:
 
 複数ファイルを並列処理するバッチモードの比較。大規模構造（20k+ atoms）10,000ファイルを10スレッドで処理。
 
+> **Note**: FreeSASA C は single-file ベンチマークで Rust より遅いことが判明しているため、バッチ比較からは除外。
+
 ![Batch Comparison](../../benchmarks/results/plots/batch/comparison.png)
 
 | Tool | Precision | Total Time | Throughput | vs Rust |
