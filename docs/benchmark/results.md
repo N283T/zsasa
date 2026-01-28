@@ -349,56 +349,9 @@ FreeSASA C を基準として、Zig と RustSASA の SASA 値を比較。
 
 ---
 
-## Why is Zig Faster? / なぜ Zig が速いか
-
-### 1. SIMD Optimization / SIMD 最適化
-
-8-wide SIMD ベクトルで距離計算を並列化:
-
-```zig
-// 8 原子の距離を 1 命令で計算
-const dist_sq = dx * dx + dy * dy + dz * dz;  // @Vector(8, f64)
-```
-
-**効果**: 命令数を **2.4x 削減** (vs FreeSASA)
-
-### 2. Efficient Thread Pool / 効率的スレッドプール
-
-ワークスティーリング型スレッドプールで負荷分散:
-
-```
-原子を chunk に分割 → 各スレッドが自分の chunk を処理
-                   → 完了したスレッドは他の chunk を steal
-```
-
-**効果**: 並列効率 **+30%** (vs FreeSASA), **+100%** (vs Rust)
-
-### 3. Cache-Friendly Data Layout / キャッシュ効率
-
-Structure of Arrays (SoA) でメモリアクセスを最適化:
-
-```zig
-// SoA: SIMD に最適
-x: []f64, y: []f64, z: []f64, r: []f64
-
-// vs AoS (FreeSASA): キャッシュミス多発
-struct Atom { x, y, z, r: f64 }
-```
-
-### 4. Spatial Hash Grid / 空間ハッシュグリッド
-
-O(N²) の全探索を O(N) に削減:
-
-```
-近傍探索: 半径内の原子のみをチェック
-グリッドサイズ: 最大半径 × 2
-```
-
-詳細は [cpu-efficiency.md](cpu-efficiency.md) と [optimizations.md](optimizations.md) を参照。
-
----
-
 ## Key Takeaways / 主要な結論
+
+> **Why is Zig faster?** → [optimizations.md](../optimizations.md) を参照
 
 1. **大規模構造で最大効果**
    - 100k+ 原子で **2.3x** 高速化
