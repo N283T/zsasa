@@ -155,6 +155,7 @@ def run_zig_batch(
         str(output_dir),
         f"--algorithm={algorithm}",
         f"--threads={n_threads}",
+        "--format=compact",
         "--timing",
         "--quiet",
     ]
