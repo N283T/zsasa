@@ -21,6 +21,7 @@ const OutputFormat = json_writer.OutputFormat;
 const LeeRichardsConfig = lee_richards.LeeRichardsConfig;
 const LeeRichardsConfigf32 = lee_richards.LeeRichardsConfigf32;
 const ClassifierType = classifier.ClassifierType;
+const Parallelism = batch.Parallelism;
 
 const version = build_options.version;
 
@@ -41,6 +42,7 @@ const Args = struct {
     n_slices: u32 = 20, // For Lee-Richards
     algorithm: Algorithm = .sr, // Default: Shrake-Rupley
     precision: Precision = .f64, // f32 or f64 (default: f64)
+    parallelism: Parallelism = .file, // file, atom, or pipeline (batch mode only)
     output_format: OutputFormat = .json,
     classifier_type: ?ClassifierType = null, // Built-in classifier (naccess/protor/oons)
     config_path: ?[]const u8 = null, // Custom config file path
@@ -142,6 +144,21 @@ fn parsePrecision(value: []const u8) Precision {
     } else {
         std.debug.print("Error: Invalid precision: {s}\n", .{value});
         std.debug.print("Valid values: f32 (single), f64 (double)\n", .{});
+        std.process.exit(1);
+    }
+}
+
+/// Parse and validate parallelism strategy value (batch mode only)
+fn parseParallelism(value: []const u8) Parallelism {
+    if (std.mem.eql(u8, value, "file")) {
+        return .file;
+    } else if (std.mem.eql(u8, value, "atom")) {
+        return .atom;
+    } else if (std.mem.eql(u8, value, "pipeline")) {
+        return .pipeline;
+    } else {
+        std.debug.print("Error: Invalid parallelism strategy: {s}\n", .{value});
+        std.debug.print("Valid values: file, atom, pipeline\n", .{});
         std.process.exit(1);
     }
 }
@@ -310,6 +327,18 @@ fn parseArgs(args: []const []const u8) Args {
             }
             result.precision = parsePrecision(args[i]);
         }
+        // --parallelism=MODE or --parallelism MODE (batch mode only)
+        else if (std.mem.startsWith(u8, arg, "--parallelism=")) {
+            const value = arg["--parallelism=".len..];
+            result.parallelism = parseParallelism(value);
+        } else if (std.mem.eql(u8, arg, "--parallelism")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --parallelism\n", .{});
+                std.process.exit(1);
+            }
+            result.parallelism = parseParallelism(args[i]);
+        }
         // --config=FILE or --config FILE
         else if (std.mem.startsWith(u8, arg, "--config=")) {
             const value = arg["--config=".len..];
@@ -473,6 +502,10 @@ fn printHelp(program_name: []const u8) void {
         \\    --format=FORMAT    Output format: json, compact, csv (default: json)
         \\    --precision=PREC   Floating-point precision: f32, f64 (default: f64)
         \\                       f32 is faster but less accurate
+        \\    --parallelism=MODE Batch mode parallelism: file, atom, pipeline (default: file)
+        \\                       file: N files in parallel, 1 thread per file
+        \\                       atom: 1 file at a time, N threads for SASA
+        \\                       pipeline: I/O prefetch + atom-level SASA
         \\    -o, --output=FILE  Output file (alternative to positional argument)
         \\    --validate         Validate input only, do not calculate SASA
         \\    --timing           Show timing breakdown (for benchmarking)
@@ -506,7 +539,12 @@ fn printHelp(program_name: []const u8) void {
         \\    {s} --classifier=naccess structure.cif output.json
         \\    {s} --config=custom.config input.json output.json
         \\
-    , .{ version, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
+        \\BATCH MODE (directory input):
+        \\    {s} input_dir/ output_dir/
+        \\    {s} --threads=8 input_dir/ output_dir/           # file-level parallelism
+        \\    {s} --parallelism=atom --threads=8 input_dir/    # atom-level parallelism
+        \\
+    , .{ version, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 fn printVersion() void {
@@ -696,6 +734,7 @@ fn runBatchMode(allocator: std.mem.Allocator, parsed: Args) !void {
             .sr => .sr,
             .lr => .lr,
         },
+        .parallelism = parsed.parallelism,
         .n_points = parsed.n_points,
         .n_slices = parsed.n_slices,
         .probe_radius = parsed.probe_radius,
@@ -1422,4 +1461,40 @@ test "parseArgs --precision=double" {
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Precision.f64, parsed.precision);
+}
+
+// Tests for --parallelism option
+test "parseArgs --parallelism default is file" {
+    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Parallelism.file, parsed.parallelism);
+}
+
+test "parseArgs --parallelism=file" {
+    const args = [_][]const u8{ "freesasa_zig", "--parallelism=file", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Parallelism.file, parsed.parallelism);
+}
+
+test "parseArgs --parallelism=atom" {
+    const args = [_][]const u8{ "freesasa_zig", "--parallelism=atom", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Parallelism.atom, parsed.parallelism);
+}
+
+test "parseArgs --parallelism atom (space-separated)" {
+    const args = [_][]const u8{ "freesasa_zig", "--parallelism", "atom", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Parallelism.atom, parsed.parallelism);
+}
+
+test "parseArgs --parallelism=pipeline" {
+    const args = [_][]const u8{ "freesasa_zig", "--parallelism=pipeline", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(Parallelism.pipeline, parsed.parallelism);
 }

@@ -4,6 +4,7 @@ const json_parser = @import("json_parser.zig");
 const json_writer = @import("json_writer.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
 const lee_richards = @import("lee_richards.zig");
+const pipeline = @import("pipeline.zig");
 
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
@@ -22,10 +23,18 @@ pub const Algorithm = enum {
     lr, // Lee-Richards (slice method)
 };
 
+/// Parallelism strategy for batch processing
+pub const Parallelism = enum {
+    file, // File-level: N files in parallel, 1 thread per file (default)
+    atom, // Atom-level: 1 file at a time, N threads for SASA calculation
+    pipeline, // Pipelined: I/O prefetch + atom-level SASA calculation
+};
+
 /// Configuration for batch processing
 pub const BatchConfig = struct {
     n_threads: usize = 0, // 0 = auto-detect
     algorithm: Algorithm = .sr,
+    parallelism: Parallelism = .file, // file, atom, or pipeline
     n_points: u32 = 100,
     n_slices: u32 = 20,
     probe_radius: f64 = 1.4,
@@ -130,7 +139,7 @@ pub const BatchResult = struct {
     }
 };
 
-/// Scan directory for JSON files (.json and .json.gz)
+/// Scan directory for JSON files (.json, .json.gz, .json.zst)
 pub fn scanDirectory(allocator: Allocator, dir_path: []const u8) ![][]const u8 {
     var files = std.ArrayListUnmanaged([]const u8){};
     errdefer {
@@ -151,7 +160,11 @@ pub fn scanDirectory(allocator: Allocator, dir_path: []const u8) ![][]const u8 {
         const name = entry.name;
         // Skip filenames with path separators (defense in depth)
         if (std.mem.indexOfAny(u8, name, "/\\") != null) continue;
-        if (std.mem.endsWith(u8, name, ".json") or std.mem.endsWith(u8, name, ".json.gz")) {
+        if (std.mem.endsWith(u8, name, ".json") or
+            std.mem.endsWith(u8, name, ".json.gz") or
+            std.mem.endsWith(u8, name, ".json.zst") or
+            std.mem.endsWith(u8, name, ".json.zstd"))
+        {
             const filename = try allocator.dupe(u8, name);
             try files.append(allocator, filename);
         }
@@ -169,12 +182,14 @@ pub fn scanDirectory(allocator: Allocator, dir_path: []const u8) ![][]const u8 {
 
 /// Process a single file and return result
 /// Uses provided arena allocator for temporary allocations
+/// n_threads: number of threads for SASA calculation (1 = single-threaded)
 fn processOneFile(
     arena: Allocator,
     input_dir: []const u8,
     output_dir: ?[]const u8,
     filename: []const u8,
     config: BatchConfig,
+    n_threads: usize,
 ) FileResult {
     var result = FileResult{
         .filename = filename,
@@ -205,25 +220,49 @@ fn processOneFile(
         return result;
     };
 
-    // Calculate SASA (single-threaded per file in batch mode)
-    // Precision determines which implementation to use
+    // Calculate SASA
+    // Use parallel version when n_threads > 1, otherwise single-threaded
     var total_area: f64 = 0;
     switch (config.precision) {
         .f64 => {
             var sasa_result = switch (config.algorithm) {
-                .sr => shrake_rupley.calculateSasa(arena, input, .{
-                    .n_points = config.n_points,
-                    .probe_radius = config.probe_radius,
-                }) catch {
-                    result.status = .err;
-                    return result;
+                .sr => blk: {
+                    if (n_threads > 1) {
+                        break :blk shrake_rupley.calculateSasaParallel(arena, input, .{
+                            .n_points = config.n_points,
+                            .probe_radius = config.probe_radius,
+                        }, n_threads) catch {
+                            result.status = .err;
+                            return result;
+                        };
+                    } else {
+                        break :blk shrake_rupley.calculateSasa(arena, input, .{
+                            .n_points = config.n_points,
+                            .probe_radius = config.probe_radius,
+                        }) catch {
+                            result.status = .err;
+                            return result;
+                        };
+                    }
                 },
-                .lr => lee_richards.calculateSasa(arena, input, .{
-                    .n_slices = config.n_slices,
-                    .probe_radius = config.probe_radius,
-                }) catch {
-                    result.status = .err;
-                    return result;
+                .lr => blk: {
+                    if (n_threads > 1) {
+                        break :blk lee_richards.calculateSasaParallel(arena, input, .{
+                            .n_slices = config.n_slices,
+                            .probe_radius = config.probe_radius,
+                        }, n_threads) catch {
+                            result.status = .err;
+                            return result;
+                        };
+                    } else {
+                        break :blk lee_richards.calculateSasa(arena, input, .{
+                            .n_slices = config.n_slices,
+                            .probe_radius = config.probe_radius,
+                        }) catch {
+                            result.status = .err;
+                            return result;
+                        };
+                    }
                 },
             };
             defer sasa_result.deinit();
@@ -252,19 +291,43 @@ fn processOneFile(
         },
         .f32 => {
             var sasa_result = switch (config.algorithm) {
-                .sr => shrake_rupley.calculateSasaf32(arena, input, .{
-                    .n_points = config.n_points,
-                    .probe_radius = @floatCast(config.probe_radius),
-                }) catch {
-                    result.status = .err;
-                    return result;
+                .sr => blk: {
+                    if (n_threads > 1) {
+                        break :blk shrake_rupley.calculateSasaParallelf32(arena, input, .{
+                            .n_points = config.n_points,
+                            .probe_radius = @floatCast(config.probe_radius),
+                        }, n_threads) catch {
+                            result.status = .err;
+                            return result;
+                        };
+                    } else {
+                        break :blk shrake_rupley.calculateSasaf32(arena, input, .{
+                            .n_points = config.n_points,
+                            .probe_radius = @floatCast(config.probe_radius),
+                        }) catch {
+                            result.status = .err;
+                            return result;
+                        };
+                    }
                 },
-                .lr => lee_richards.calculateSasaf32(arena, input, .{
-                    .n_slices = config.n_slices,
-                    .probe_radius = @floatCast(config.probe_radius),
-                }) catch {
-                    result.status = .err;
-                    return result;
+                .lr => blk: {
+                    if (n_threads > 1) {
+                        break :blk lee_richards.calculateSasaParallelf32(arena, input, .{
+                            .n_slices = config.n_slices,
+                            .probe_radius = @floatCast(config.probe_radius),
+                        }, n_threads) catch {
+                            result.status = .err;
+                            return result;
+                        };
+                    } else {
+                        break :blk lee_richards.calculateSasaf32(arena, input, .{
+                            .n_slices = config.n_slices,
+                            .probe_radius = @floatCast(config.probe_radius),
+                        }) catch {
+                            result.status = .err;
+                            return result;
+                        };
+                    }
                 },
             };
             defer sasa_result.deinit();
@@ -343,13 +406,14 @@ pub fn runBatchSequential(
         // Copy filename to result allocator
         const filename_copy = try allocator.dupe(u8, filename);
 
-        // Process file
+        // Process file (single-threaded for sequential mode)
         var result = processOneFile(
             arena.allocator(),
             input_dir,
             output_dir,
             filename,
             config,
+            1, // single-threaded
         );
         result.filename = filename_copy;
 
@@ -370,6 +434,368 @@ pub fn runBatchSequential(
             std.debug.print("\rProcessing: {d}/{d}", .{ i + 1, files.len });
         }
     }
+
+    if (!config.quiet) {
+        std.debug.print("\n", .{});
+    }
+
+    const total_time_ns = total_timer.read();
+
+    return BatchResult{
+        .total_files = files.len,
+        .successful = successful,
+        .failed = failed,
+        .total_sasa_time_ns = total_sasa_time_ns,
+        .total_time_ns = total_time_ns,
+        .file_results = file_results,
+        .allocator = allocator,
+    };
+}
+
+/// Run batch processing with atom-level parallelism
+/// Files are processed sequentially, but each file uses multi-threaded SASA
+pub fn runBatchAtomParallel(
+    allocator: Allocator,
+    input_dir: []const u8,
+    output_dir: ?[]const u8,
+    config: BatchConfig,
+) !BatchResult {
+    // Start total timer
+    var total_timer = try std.time.Timer.start();
+
+    // Scan directory for files
+    const files = try scanDirectory(allocator, input_dir);
+    defer {
+        for (files) |f| allocator.free(f);
+        allocator.free(files);
+    }
+
+    // Create output directory if specified
+    if (output_dir) |out_dir| {
+        try std.fs.cwd().makePath(out_dir);
+    }
+
+    // Allocate results
+    const file_results = try allocator.alloc(FileResult, files.len);
+    errdefer allocator.free(file_results);
+
+    // Determine thread count for SASA calculation
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    const n_threads = if (config.n_threads == 0)
+        cpu_count
+    else
+        @min(config.n_threads, cpu_count);
+
+    // Process each file sequentially with multi-threaded SASA
+    var total_sasa_time_ns: u64 = 0;
+    var successful: usize = 0;
+    var failed: usize = 0;
+
+    // Use arena allocator for each file (reset between files)
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    for (files, 0..) |filename, i| {
+        // Copy filename to result allocator
+        const filename_copy = try allocator.dupe(u8, filename);
+
+        // Process file with multi-threaded SASA
+        var result = processOneFile(
+            arena.allocator(),
+            input_dir,
+            output_dir,
+            filename,
+            config,
+            n_threads, // multi-threaded SASA
+        );
+        result.filename = filename_copy;
+
+        if (result.status == .ok) {
+            successful += 1;
+            total_sasa_time_ns += result.sasa_time_ns;
+        } else {
+            failed += 1;
+        }
+
+        file_results[i] = result;
+
+        // Reset arena for next file
+        _ = arena.reset(.retain_capacity);
+
+        // Progress output
+        if (!config.quiet) {
+            std.debug.print("\rProcessing: {d}/{d}", .{ i + 1, files.len });
+        }
+    }
+
+    if (!config.quiet) {
+        std.debug.print("\n", .{});
+    }
+
+    const total_time_ns = total_timer.read();
+
+    return BatchResult{
+        .total_files = files.len,
+        .successful = successful,
+        .failed = failed,
+        .total_sasa_time_ns = total_sasa_time_ns,
+        .total_time_ns = total_time_ns,
+        .file_results = file_results,
+        .allocator = allocator,
+    };
+}
+
+/// Run batch processing with pipelined I/O
+/// I/O thread prefetches files while processing thread calculates SASA
+pub fn runBatchPipelined(
+    allocator: Allocator,
+    input_dir: []const u8,
+    output_dir: ?[]const u8,
+    config: BatchConfig,
+) !BatchResult {
+    // Start total timer
+    var total_timer = try std.time.Timer.start();
+
+    // Scan directory for files
+    const files = try scanDirectory(allocator, input_dir);
+    defer {
+        for (files) |f| allocator.free(f);
+        allocator.free(files);
+    }
+
+    if (files.len == 0) {
+        return BatchResult{
+            .total_files = 0,
+            .successful = 0,
+            .failed = 0,
+            .total_sasa_time_ns = 0,
+            .total_time_ns = total_timer.read(),
+            .file_results = try allocator.alloc(FileResult, 0),
+            .allocator = allocator,
+        };
+    }
+
+    // Create output directory if specified
+    if (output_dir) |out_dir| {
+        try std.fs.cwd().makePath(out_dir);
+    }
+
+    // Allocate results
+    const file_results = try allocator.alloc(FileResult, files.len);
+    errdefer allocator.free(file_results);
+
+    // Determine thread count for SASA calculation
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    const n_threads = if (config.n_threads == 0)
+        cpu_count
+    else
+        @min(config.n_threads, cpu_count);
+
+    // Initialize prefetch queue
+    var queue = pipeline.PrefetchQueue.init(allocator);
+    defer queue.deinit();
+
+    // Create I/O context
+    var io_ctx = pipeline.IoContext{
+        .queue = &queue,
+        .files = files,
+        .input_dir = input_dir,
+        .allocator = allocator,
+    };
+
+    // Spawn I/O thread
+    const io_thread = try std.Thread.spawn(.{}, pipeline.IoContext.run, .{&io_ctx});
+
+    // Process files from queue
+    var total_sasa_time_ns: u64 = 0;
+    var successful: usize = 0;
+    var failed: usize = 0;
+    var file_idx: usize = 0;
+
+    while (queue.pop()) |prefetched| {
+        var pf = prefetched;
+        defer pf.deinit(allocator);
+
+        // Copy filename to result allocator
+        const filename_copy = try allocator.dupe(u8, pf.filename);
+
+        // Time SASA calculation
+        var timer = try std.time.Timer.start();
+
+        // Calculate SASA using prefetched input
+        var total_area: f64 = 0;
+        var sasa_ok = true;
+
+        switch (config.precision) {
+            .f64 => {
+                var sasa_result = switch (config.algorithm) {
+                    .sr => blk: {
+                        if (n_threads > 1) {
+                            break :blk shrake_rupley.calculateSasaParallel(pf.arena.allocator(), pf.input, .{
+                                .n_points = config.n_points,
+                                .probe_radius = config.probe_radius,
+                            }, n_threads) catch {
+                                sasa_ok = false;
+                                break :blk null;
+                            };
+                        } else {
+                            break :blk shrake_rupley.calculateSasa(pf.arena.allocator(), pf.input, .{
+                                .n_points = config.n_points,
+                                .probe_radius = config.probe_radius,
+                            }) catch {
+                                sasa_ok = false;
+                                break :blk null;
+                            };
+                        }
+                    },
+                    .lr => blk: {
+                        if (n_threads > 1) {
+                            break :blk lee_richards.calculateSasaParallel(pf.arena.allocator(), pf.input, .{
+                                .n_slices = config.n_slices,
+                                .probe_radius = config.probe_radius,
+                            }, n_threads) catch {
+                                sasa_ok = false;
+                                break :blk null;
+                            };
+                        } else {
+                            break :blk lee_richards.calculateSasa(pf.arena.allocator(), pf.input, .{
+                                .n_slices = config.n_slices,
+                                .probe_radius = config.probe_radius,
+                            }) catch {
+                                sasa_ok = false;
+                                break :blk null;
+                            };
+                        }
+                    },
+                };
+
+                if (sasa_result) |*result| {
+                    defer result.deinit();
+                    total_area = result.total_area;
+
+                    // Write output if output_dir specified
+                    if (output_dir) |out_dir| {
+                        const output_filename = blk: {
+                            if (std.mem.endsWith(u8, pf.filename, ".gz")) {
+                                break :blk pf.filename[0 .. pf.filename.len - 3];
+                            }
+                            break :blk pf.filename;
+                        };
+
+                        const output_path = std.fs.path.join(pf.arena.allocator(), &.{ out_dir, output_filename }) catch {
+                            sasa_ok = false;
+                            break;
+                        };
+
+                        json_writer.writeSasaResultWithFormat(pf.arena.allocator(), result.*, output_path, config.output_format) catch {
+                            sasa_ok = false;
+                        };
+                    }
+                }
+            },
+            .f32 => {
+                var sasa_result = switch (config.algorithm) {
+                    .sr => blk: {
+                        if (n_threads > 1) {
+                            break :blk shrake_rupley.calculateSasaParallelf32(pf.arena.allocator(), pf.input, .{
+                                .n_points = config.n_points,
+                                .probe_radius = @floatCast(config.probe_radius),
+                            }, n_threads) catch {
+                                sasa_ok = false;
+                                break :blk null;
+                            };
+                        } else {
+                            break :blk shrake_rupley.calculateSasaf32(pf.arena.allocator(), pf.input, .{
+                                .n_points = config.n_points,
+                                .probe_radius = @floatCast(config.probe_radius),
+                            }) catch {
+                                sasa_ok = false;
+                                break :blk null;
+                            };
+                        }
+                    },
+                    .lr => blk: {
+                        if (n_threads > 1) {
+                            break :blk lee_richards.calculateSasaParallelf32(pf.arena.allocator(), pf.input, .{
+                                .n_slices = config.n_slices,
+                                .probe_radius = @floatCast(config.probe_radius),
+                            }, n_threads) catch {
+                                sasa_ok = false;
+                                break :blk null;
+                            };
+                        } else {
+                            break :blk lee_richards.calculateSasaf32(pf.arena.allocator(), pf.input, .{
+                                .n_slices = config.n_slices,
+                                .probe_radius = @floatCast(config.probe_radius),
+                            }) catch {
+                                sasa_ok = false;
+                                break :blk null;
+                            };
+                        }
+                    },
+                };
+
+                if (sasa_result) |*result| {
+                    defer result.deinit();
+                    total_area = @floatCast(result.total_area);
+
+                    // Write output if output_dir specified
+                    if (output_dir) |out_dir| {
+                        const output_filename = blk: {
+                            if (std.mem.endsWith(u8, pf.filename, ".gz")) {
+                                break :blk pf.filename[0 .. pf.filename.len - 3];
+                            }
+                            break :blk pf.filename;
+                        };
+
+                        const output_path = std.fs.path.join(pf.arena.allocator(), &.{ out_dir, output_filename }) catch {
+                            sasa_ok = false;
+                            break;
+                        };
+
+                        // Convert to f64 for output
+                        var result_f64 = result.toF64(pf.arena.allocator()) catch {
+                            sasa_ok = false;
+                            break;
+                        };
+                        defer result_f64.deinit();
+
+                        json_writer.writeSasaResultWithFormat(pf.arena.allocator(), result_f64, output_path, config.output_format) catch {
+                            sasa_ok = false;
+                        };
+                    }
+                }
+            },
+        }
+
+        const sasa_time_ns = timer.read();
+
+        // Store result
+        file_results[file_idx] = FileResult{
+            .filename = filename_copy,
+            .n_atoms = pf.input.atomCount(),
+            .sasa_time_ns = sasa_time_ns,
+            .total_sasa = total_area,
+            .status = if (sasa_ok) .ok else .err,
+        };
+
+        if (sasa_ok) {
+            successful += 1;
+            total_sasa_time_ns += sasa_time_ns;
+        } else {
+            failed += 1;
+        }
+
+        file_idx += 1;
+
+        // Progress output
+        if (!config.quiet) {
+            std.debug.print("\rProcessing: {d}/{d}", .{ file_idx, files.len });
+        }
+    }
+
+    // Wait for I/O thread to finish
+    io_thread.join();
 
     if (!config.quiet) {
         std.debug.print("\n", .{});
@@ -438,13 +864,14 @@ fn parallelWorker(ctx: *ParallelContext) void {
             continue;
         };
 
-        // Process file using thread-local arena
+        // Process file using thread-local arena (single-threaded SASA per file in file-parallel mode)
         var result = processOneFile(
             arena.allocator(),
             ctx.input_dir,
             ctx.output_dir,
             filename,
             ctx.config,
+            1, // single-threaded SASA per file
         );
         result.filename = filename_copy;
 
@@ -574,7 +1001,9 @@ pub fn runBatchParallel(
 }
 
 /// Run batch processing (main entry point)
-/// Uses parallel processing when n_threads > 1
+/// Selects strategy based on config.parallelism:
+/// - file: N files in parallel, 1 thread per file (default)
+/// - atom: 1 file at a time, N threads for SASA calculation
 pub fn runBatch(
     allocator: Allocator,
     input_dir: []const u8,
@@ -587,10 +1016,23 @@ pub fn runBatch(
     else
         config.n_threads;
 
-    if (n_threads <= 1) {
-        return runBatchSequential(allocator, input_dir, output_dir, config);
-    }
-    return runBatchParallel(allocator, input_dir, output_dir, config);
+    return switch (config.parallelism) {
+        .file => {
+            // File-level parallelism: N files in parallel, 1 thread per file
+            if (n_threads <= 1) {
+                return runBatchSequential(allocator, input_dir, output_dir, config);
+            }
+            return runBatchParallel(allocator, input_dir, output_dir, config);
+        },
+        .atom => {
+            // Atom-level parallelism: sequential files, N threads per file
+            return runBatchAtomParallel(allocator, input_dir, output_dir, config);
+        },
+        .pipeline => {
+            // Pipelined: I/O prefetch + atom-level SASA calculation
+            return runBatchPipelined(allocator, input_dir, output_dir, config);
+        },
+    };
 }
 
 // Tests
