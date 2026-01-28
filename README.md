@@ -279,7 +279,7 @@ Validated against FreeSASA on ~100k structures (R² = 1.000, mean error = 0.0004
 
 ## Performance
 
-Benchmarked on ~100k PDB structures. See [docs/benchmark.md](docs/benchmark.md) for details.
+Benchmarked on ~100k PDB structures. See [methodology](docs/benchmark/methodology.md) and [results](docs/benchmark/results.md) for details.
 
 ![Speedup by structure size and thread count](benchmarks/results/plots/speedup_by_bin/grid.png)
 

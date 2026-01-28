@@ -273,7 +273,7 @@ total,1234.560000
 
 ## 性能
 
-約10万PDB構造でベンチマーク。詳細は[docs/benchmark.md](docs/benchmark.md)を参照。
+約10万PDB構造でベンチマーク。詳細は[測定手法](docs/benchmark/methodology.md)と[結果](docs/benchmark/results.md)を参照。
 
 ![構造サイズ・スレッド数別高速化率](benchmarks/results/plots/speedup_by_bin/grid.png)
 
