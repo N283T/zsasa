@@ -140,7 +140,8 @@ pub fn scanDirectory(allocator: Allocator, dir_path: []const u8) ![][]const u8 {
 
     var iter = dir.iterate();
     while (try iter.next()) |entry| {
-        if (entry.kind != .file) continue;
+        // Accept regular files and symlinks (for sampled batch benchmarking)
+        if (entry.kind != .file and entry.kind != .sym_link) continue;
 
         const name = entry.name;
         // Skip filenames with path separators (defense in depth)

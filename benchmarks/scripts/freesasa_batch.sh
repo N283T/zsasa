@@ -35,7 +35,7 @@ mkdir -p "$OUTPUT_DIR"
 JSON_FILES=()
 while IFS= read -r -d '' file; do
     JSON_FILES+=("$file")
-done < <(find "$INPUT_DIR" -maxdepth 1 -type f \( -name "*.json" -o -name "*.json.gz" \) -print0 | sort -z)
+done < <(find -L "$INPUT_DIR" -maxdepth 1 -type f \( -name "*.json" -o -name "*.json.gz" \) -print0 | sort -z)
 
 TOTAL_FILES=${#JSON_FILES[@]}
 

@@ -109,6 +109,10 @@ Supported input formats: JSON, mmCIF (.cif, .cif.gz)
 
 # Polar/Nonpolar surface analysis
 ./zig-out/bin/freesasa_zig --polar structure.cif output.json
+
+# Batch mode (directory input)
+./zig-out/bin/freesasa_zig input_dir/ output_dir/ --threads=8
+./zig-out/bin/freesasa_zig input_dir/ output_dir/ --timing  # For benchmarking
 ```
 
 ### Options
