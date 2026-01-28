@@ -14,6 +14,7 @@ const Args = struct {
 
     // アルゴリズムパラメータ
     algorithm: Algorithm = .sr,     // sr or lr
+    precision: Precision = .f64,    // f32 or f64
     n_threads: usize = 0,           // 0 = 自動検出
     probe_radius: f64 = 1.4,        // デフォルト: 1.4 Å
     n_points: u32 = 100,            // デフォルト: 100 (SR)
@@ -108,6 +109,7 @@ fn printHelp() void {
         \\
         \\Algorithm:
         \\  --algorithm=ALGO   sr (Shrake-Rupley) or lr (Lee-Richards) (default: sr)
+        \\  --precision=P      Floating-point precision: f32 or f64 (default: f64)
         \\  --threads=N        Number of threads (default: auto-detect)
         \\  --probe-radius=R   Probe radius in Angstroms (default: 1.4)
         \\  --n-points=N       Test points per atom, SR only (default: 100)

@@ -27,7 +27,7 @@ SASA（Solvent Accessible Surface Area：溶媒接触可能表面積）は、生
 - 詳細なエラーメッセージ付き入力バリデーション
 - 明示的アロケータによるメモリ安全な実装
 - **マルチスレッド対応** - 並列原子処理
-- **SIMD最適化** - `@Vector(8, f64)`による8並列バッチ計算
+- **SIMD最適化** - `@Vector`による8並列バッチ計算（f32/f64選択可能）
 - **高速三角関数** - LRアルゴリズム向け多項式近似
 - **近傍リスト最適化** - O(N²)からO(N)への計算量削減
 
@@ -70,6 +70,9 @@ freesasa_zig [OPTIONS] <input> [output.json]
 # マルチスレッド（両アルゴリズムで対応）
 ./zig-out/bin/freesasa_zig --threads=4 input.json output.json
 ./zig-out/bin/freesasa_zig --algorithm=lr --threads=4 input.json output.json
+
+# f32精度（高速、RustSASAとの公平比較向け）
+./zig-out/bin/freesasa_zig --precision=f32 input.json output.json
 
 # Shrake-Rupleyパラメータのカスタマイズ
 ./zig-out/bin/freesasa_zig --probe-radius=1.5 --n-points=200 input.json output.json
@@ -120,6 +123,7 @@ freesasa_zig [OPTIONS] <input> [output.json]
 | `--probe-radius=R` | プローブ半径（Å単位、0 < R ≤ 10） | 1.4 |
 | `--n-points=N` | テストポイント数（SR専用、1-10000） | 100 |
 | `--n-slices=N` | スライス数（LR専用、1-1000） | 20 |
+| `--precision=P` | 浮動小数点精度: `f32`, `f64` | f64 |
 | `--format=FORMAT` | 出力形式: `json`, `compact`, `csv` | json |
 | `--chain=ID` | ラベルチェーンIDでフィルタ（例: "A", "B"） | - |
 | `--model=N` | モデル番号選択（マルチモデルファイル用） | 全て |
@@ -315,14 +319,25 @@ RustSASA自身のベンチマーク論文によると、単一タンパク質の
 
 **概要**: 単一タンパク質のSASA計算において、freesasa-zigは**RustSASAより1.7x-3.2x高速**、**FreeSASA Cより2.0x-4.7x高速**。RustSASAはShrake-Rupleyアルゴリズムのみ対応。
 
+**f32での公平比較**: RustSASAは内部でf32を使用。`--precision=f32`で公平比較が可能：
+
+| ツール | 精度 | 時間（10kファイル） | スループット |
+|--------|------|---------------------|--------------|
+| Zig | f32 | 171s | 58.5/s |
+| Rust | f32 | 176s | 57.0/s |
+| Zig | f64 | 176s | 56.7/s |
+
+Zig f32はRust f32より**3%高速**。Zig f64（倍精度）でもRust f32と同等の速度を達成。
+
 ベンチマーク実行: `./benchmarks/scripts/run.py --tool zig --algorithm sr`
 
 ### 最適化技術
 
 1. **近傍リスト**: O(N²)からO(N)への近傍探索
-2. **8並列SIMD**: `@Vector(8, f64)`による8並列バッチ計算
+2. **8並列SIMD**: `@Vector`による8並列バッチ計算（f32/f64選択可能）
 3. **高速三角関数**: LRアルゴリズム向けacos/atan2多項式近似（約37%高速化）
 4. **マルチスレッド**: Work-stealingスレッドプールによる並列原子処理
+5. **精度選択**: f32（高速）/ f64（高精度）切り替え
 
 ## Pythonバインディング
 

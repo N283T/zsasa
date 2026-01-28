@@ -1,48 +1,110 @@
 const std = @import("std");
 
-/// 3D vector/point representation
-pub const Vec3 = struct {
-    x: f64,
-    y: f64,
-    z: f64,
+/// Precision mode for SASA calculation
+pub const Precision = enum {
+    f32,
+    f64,
 
-    /// Add two vectors
-    pub fn add(self: Vec3, other: Vec3) Vec3 {
-        return Vec3{
-            .x = self.x + other.x,
-            .y = self.y + other.y,
-            .z = self.z + other.z,
-        };
-    }
-
-    /// Subtract two vectors
-    pub fn sub(self: Vec3, other: Vec3) Vec3 {
-        return Vec3{
-            .x = self.x - other.x,
-            .y = self.y - other.y,
-            .z = self.z - other.z,
-        };
-    }
-
-    /// Scale vector by scalar
-    pub fn scale(self: Vec3, scalar: f64) Vec3 {
-        return Vec3{
-            .x = self.x * scalar,
-            .y = self.y * scalar,
-            .z = self.z * scalar,
-        };
-    }
-
-    /// Calculate vector length (magnitude)
-    pub fn length(self: Vec3) f64 {
-        return @sqrt(self.x * self.x + self.y * self.y + self.z * self.z);
-    }
-
-    /// Calculate dot product
-    pub fn dot(self: Vec3, other: Vec3) f64 {
-        return self.x * other.x + self.y * other.y + self.z * other.z;
+    pub fn fromString(s: []const u8) ?Precision {
+        if (std.mem.eql(u8, s, "f32") or std.mem.eql(u8, s, "single")) {
+            return .f32;
+        } else if (std.mem.eql(u8, s, "f64") or std.mem.eql(u8, s, "double")) {
+            return .f64;
+        }
+        return null;
     }
 };
+
+/// Epsilon values for floating-point comparisons.
+/// Different use cases may require different tolerances.
+pub fn Epsilon(comptime T: type) type {
+    return struct {
+        /// Default epsilon for general near-zero comparisons (e.g., distance checks)
+        /// f32: 1e-6, f64: 1e-10
+        pub const default: T = if (T == f32) 1e-6 else 1e-10;
+
+        /// Stricter epsilon for trigonometric functions (e.g., atan2 near-zero)
+        /// f32: 1e-7, f64: 1e-10
+        pub const trig: T = if (T == f32) 1e-7 else 1e-10;
+    };
+}
+
+/// Generic 3D vector/point representation
+pub fn Vec3Gen(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        x: T,
+        y: T,
+        z: T,
+
+        /// Add two vectors
+        pub fn add(self: Self, other: Self) Self {
+            return Self{
+                .x = self.x + other.x,
+                .y = self.y + other.y,
+                .z = self.z + other.z,
+            };
+        }
+
+        /// Subtract two vectors
+        pub fn sub(self: Self, other: Self) Self {
+            return Self{
+                .x = self.x - other.x,
+                .y = self.y - other.y,
+                .z = self.z - other.z,
+            };
+        }
+
+        /// Scale vector by scalar
+        pub fn scale(self: Self, scalar: T) Self {
+            return Self{
+                .x = self.x * scalar,
+                .y = self.y * scalar,
+                .z = self.z * scalar,
+            };
+        }
+
+        /// Calculate vector length (magnitude)
+        pub fn length(self: Self) T {
+            return @sqrt(self.x * self.x + self.y * self.y + self.z * self.z);
+        }
+
+        /// Calculate dot product
+        pub fn dot(self: Self, other: Self) T {
+            return self.x * other.x + self.y * other.y + self.z * other.z;
+        }
+
+        /// Convert from f64 Vec3
+        pub fn fromF64(v: Vec3Gen(f64)) Self {
+            if (T == f64) {
+                return v;
+            }
+            return Self{
+                .x = @floatCast(v.x),
+                .y = @floatCast(v.y),
+                .z = @floatCast(v.z),
+            };
+        }
+
+        /// Convert to f64 Vec3
+        pub fn toF64(self: Self) Vec3Gen(f64) {
+            if (T == f64) {
+                return self;
+            }
+            return Vec3Gen(f64){
+                .x = @floatCast(self.x),
+                .y = @floatCast(self.y),
+                .z = @floatCast(self.z),
+            };
+        }
+    };
+}
+
+/// Default Vec3 type (f64 for backward compatibility)
+pub const Vec3 = Vec3Gen(f64);
+/// Single precision Vec3
+pub const Vec3f32 = Vec3Gen(f32);
 
 /// Input data structure for SASA calculation
 pub const AtomInput = struct {
@@ -125,25 +187,64 @@ pub const AtomInput = struct {
     }
 };
 
-/// Output data structure for SASA calculation
-pub const SasaResult = struct {
-    total_area: f64,
-    atom_areas: []f64,
-    allocator: std.mem.Allocator,
+/// Generic output data structure for SASA calculation
+pub fn SasaResultGen(comptime T: type) type {
+    return struct {
+        const Self = @This();
 
-    /// Free allocated memory
-    pub fn deinit(self: *SasaResult) void {
-        self.allocator.free(self.atom_areas);
-    }
-};
+        total_area: T,
+        atom_areas: []T,
+        allocator: std.mem.Allocator,
 
-/// Configuration parameters for SASA calculation
-pub const Config = struct {
-    /// Number of test points per atom
-    n_points: u32 = 100,
-    /// Water probe radius in Angstroms
-    probe_radius: f64 = 1.4,
-};
+        /// Free allocated memory
+        pub fn deinit(self: *Self) void {
+            self.allocator.free(self.atom_areas);
+        }
+
+        /// Convert to f64 result (for output compatibility)
+        pub fn toF64(self: Self, allocator: std.mem.Allocator) !SasaResultGen(f64) {
+            if (T == f64) {
+                // For f64, just copy the slice reference
+                const areas = try allocator.alloc(f64, self.atom_areas.len);
+                @memcpy(areas, self.atom_areas);
+                return SasaResultGen(f64){
+                    .total_area = self.total_area,
+                    .atom_areas = areas,
+                    .allocator = allocator,
+                };
+            }
+            const areas = try allocator.alloc(f64, self.atom_areas.len);
+            for (self.atom_areas, 0..) |area, i| {
+                areas[i] = @floatCast(area);
+            }
+            return SasaResultGen(f64){
+                .total_area = @floatCast(self.total_area),
+                .atom_areas = areas,
+                .allocator = allocator,
+            };
+        }
+    };
+}
+
+/// Default SasaResult type (f64 for backward compatibility)
+pub const SasaResult = SasaResultGen(f64);
+/// Single precision SasaResult
+pub const SasaResultf32 = SasaResultGen(f32);
+
+/// Generic configuration parameters for SASA calculation
+pub fn ConfigGen(comptime T: type) type {
+    return struct {
+        /// Number of test points per atom
+        n_points: u32 = 100,
+        /// Water probe radius in Angstroms
+        probe_radius: T = 1.4,
+    };
+}
+
+/// Default Config type (f64 for backward compatibility)
+pub const Config = ConfigGen(f64);
+/// Single precision Config
+pub const Configf32 = ConfigGen(f32);
 
 // Tests
 test "Vec3 add" {
@@ -242,4 +343,60 @@ test "Config custom values" {
 
     try std.testing.expectEqual(@as(u32, 200), config.n_points);
     try std.testing.expectEqual(@as(f64, 1.8), config.probe_radius);
+}
+
+// Tests for f32 types
+test "Vec3f32 add" {
+    const v1 = Vec3f32{ .x = 1.0, .y = 2.0, .z = 3.0 };
+    const v2 = Vec3f32{ .x = 4.0, .y = 5.0, .z = 6.0 };
+    const result = v1.add(v2);
+
+    try std.testing.expectEqual(@as(f32, 5.0), result.x);
+    try std.testing.expectEqual(@as(f32, 7.0), result.y);
+    try std.testing.expectEqual(@as(f32, 9.0), result.z);
+}
+
+test "Vec3f32 conversion" {
+    const v64 = Vec3{ .x = 1.5, .y = 2.5, .z = 3.5 };
+    const v32 = Vec3f32.fromF64(v64);
+
+    try std.testing.expectEqual(@as(f32, 1.5), v32.x);
+    try std.testing.expectEqual(@as(f32, 2.5), v32.y);
+    try std.testing.expectEqual(@as(f32, 3.5), v32.z);
+
+    const back = v32.toF64();
+    try std.testing.expectEqual(@as(f64, 1.5), back.x);
+    try std.testing.expectEqual(@as(f64, 2.5), back.y);
+    try std.testing.expectEqual(@as(f64, 3.5), back.z);
+}
+
+test "Precision fromString" {
+    try std.testing.expectEqual(Precision.f32, Precision.fromString("f32").?);
+    try std.testing.expectEqual(Precision.f32, Precision.fromString("single").?);
+    try std.testing.expectEqual(Precision.f64, Precision.fromString("f64").?);
+    try std.testing.expectEqual(Precision.f64, Precision.fromString("double").?);
+    try std.testing.expectEqual(@as(?Precision, null), Precision.fromString("invalid"));
+}
+
+test "SasaResultf32 toF64" {
+    const allocator = std.testing.allocator;
+
+    const atom_areas = try allocator.alloc(f32, 3);
+    atom_areas[0] = 10.5;
+    atom_areas[1] = 20.5;
+    atom_areas[2] = 30.5;
+
+    var result32 = SasaResultf32{
+        .total_area = 61.5,
+        .atom_areas = atom_areas,
+        .allocator = allocator,
+    };
+    defer result32.deinit();
+
+    var result64 = try result32.toF64(allocator);
+    defer result64.deinit();
+
+    try std.testing.expectApproxEqAbs(@as(f64, 61.5), result64.total_area, 0.001);
+    try std.testing.expectEqual(@as(usize, 3), result64.atom_areas.len);
+    try std.testing.expectApproxEqAbs(@as(f64, 10.5), result64.atom_areas[0], 0.001);
 }

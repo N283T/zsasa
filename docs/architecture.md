@@ -105,42 +105,55 @@ main.zig
 
 ### Vec3
 
-3次元ベクトル。原子座標やテストポイントの表現に使用。
+3次元ベクトル。原子座標やテストポイントの表現に使用。精度パラメータ（f32/f64）に対応。
 
 ```zig
-pub const Vec3 = struct {
-    x: f64,
-    y: f64,
-    z: f64,
+pub fn Vec3(comptime T: type) type {
+    return struct {
+        x: T,
+        y: T,
+        z: T,
 
-    pub fn sub(self: Vec3, other: Vec3) Vec3 { ... }
-    pub fn scale(self: Vec3, s: f64) Vec3 { ... }
-    pub fn add(self: Vec3, other: Vec3) Vec3 { ... }
-    pub fn lengthSquared(self: Vec3) f64 { ... }
-};
+        pub fn sub(self: @This(), other: @This()) @This() { ... }
+        pub fn scale(self: @This(), s: T) @This() { ... }
+        pub fn add(self: @This(), other: @This()) @This() { ... }
+        pub fn lengthSquared(self: @This()) T { ... }
+    };
+}
+
+// 使用例
+const Vec3f32 = Vec3(f32);  // f32精度
+const Vec3f64 = Vec3(f64);  // f64精度（デフォルト）
 ```
 
 ### AtomInput
 
-入力データ構造。SoA (Structure of Arrays) 形式でメモリ効率とキャッシュ効率を最適化。
+入力データ構造。SoA (Structure of Arrays) 形式でメモリ効率とキャッシュ効率を最適化。精度パラメータ（f32/f64）に対応。
 
 ```zig
-pub const AtomInput = struct {
-    x: []const f64,
-    y: []const f64,
-    z: []const f64,
-    r: []const f64,
+pub fn AtomInput(comptime T: type) type {
+    return struct {
+        x: []const T,
+        y: []const T,
+        z: []const T,
+        r: []const T,
 
-    pub fn len(self: AtomInput) usize {
-        return self.x.len;
-    }
-};
+        pub fn len(self: @This()) usize {
+            return self.x.len;
+        }
+    };
+}
+
+// 使用例
+const AtomInputf32 = AtomInput(f32);  // f32精度（高速）
+const AtomInputf64 = AtomInput(f64);  // f64精度（デフォルト）
 ```
 
 **SoA形式の利点:**
 - SIMD処理との親和性が高い
 - メモリアクセスパターンが連続的
 - キャッシュライン効率が良い
+- f32使用時はデータサイズ半減でさらに効率向上
 
 ### SasaResult
 

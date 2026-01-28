@@ -190,6 +190,7 @@ def run_zig(
     json_path: Path,
     algorithm: str,
     n_threads: int,
+    precision: str = "f64",
 ) -> tuple[float, float]:
     """Run Zig benchmark. Returns (sasa_time_ms, total_sasa)."""
     binary = get_binary_path("zig")
@@ -220,6 +221,7 @@ def run_zig(
             "--timing",
             f"--algorithm={algorithm}",
             f"--threads={n_threads}",
+            f"--precision={precision}",
             str(input_path),
             str(output_path),
         ]
@@ -351,10 +353,11 @@ def run_benchmark(
     json_path: Path,
     algorithm: str,
     n_threads: int,
+    precision: str = "f64",
 ) -> tuple[float, float]:
     """Run benchmark for a specific tool. Returns (sasa_time_ms, total_sasa)."""
     if tool == "zig":
-        return run_zig(json_path, algorithm, n_threads)
+        return run_zig(json_path, algorithm, n_threads, precision)
     elif tool == "freesasa":
         return run_freesasa(json_path, algorithm, n_threads)
     elif tool == "rust":
@@ -383,6 +386,10 @@ def main(
         int,
         typer.Option("--runs", "-r", help="Number of runs per configuration"),
     ] = 3,
+    precision: Annotated[
+        str,
+        typer.Option("--precision", "-p", help="Precision: f32, f64 (zig only)"),
+    ] = "f64",
     output_dir: Annotated[
         Path | None,
         typer.Option("--output-dir", "-o", help="Output directory"),
@@ -416,6 +423,17 @@ def main(
     if tool == "rust" and algorithm == "lr":
         console.print("[red]Error:[/red] RustSASA only supports SR algorithm")
         raise typer.Exit(1)
+
+    # Validate precision
+    if precision not in ("f32", "f64"):
+        console.print(f"[red]Error:[/red] Invalid precision: {precision}")
+        console.print("Available: f32, f64")
+        raise typer.Exit(1)
+
+    # Precision only applies to zig
+    if precision != "f64" and tool != "zig":
+        console.print(f"[yellow]Warning:[/yellow] --precision only applies to zig tool")
+        precision = "f64"
 
     # Validate sample file requires input-dir
     sample_ids: set[str] | None = None
@@ -473,6 +491,7 @@ def main(
         "parameters": {
             "tool": tool,
             "algorithm": algorithm,
+            "precision": precision,
             "thread_counts": thread_counts,
             "runs": runs,
             "structures": [s[0] for s in structures],
@@ -486,7 +505,8 @@ def main(
     # Calculate total runs
     total_runs = len(structures) * len(thread_counts) * runs
 
-    console.print(f"[bold]{tool.upper()} {algorithm.upper()}[/bold]")
+    precision_str = f" ({precision})" if tool == "zig" else ""
+    console.print(f"[bold]{tool.upper()} {algorithm.upper()}{precision_str}[/bold]")
     console.print(f"Threads: {thread_counts}, Runs: {runs}, Total: {total_runs:,}\n")
 
     # Run benchmarks
@@ -500,6 +520,7 @@ def main(
                 "structure",
                 "n_atoms",
                 "algorithm",
+                "precision",
                 "threads",
                 "run",
                 "sasa_time_ms",
@@ -542,7 +563,7 @@ def main(
 
                         try:
                             sasa_time, total_sasa = run_benchmark(
-                                tool, json_path, algorithm, n_threads
+                                tool, json_path, algorithm, n_threads, precision
                             )
 
                             writer.writerow(
@@ -551,6 +572,7 @@ def main(
                                     "structure": pdb_id,
                                     "n_atoms": n_atoms,
                                     "algorithm": algorithm,
+                                    "precision": precision,
                                     "threads": n_threads,
                                     "run": run_num,
                                     "sasa_time_ms": sasa_time,

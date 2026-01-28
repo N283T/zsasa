@@ -109,6 +109,8 @@ fn distance_squared(p1: Vec3, p2: Vec3) f64 {
 
 Zigの `@Vector` 型を使用し、8つの距離計算を同時実行（8-wide SIMD）。4-wide版も用意し、残り原子数に応じて使い分け。
 
+**精度選択**: `--precision`オプションでf32/f64を選択可能。f32はメモリ帯域・キャッシュ効率が向上し、約3%高速化。
+
 ```zig
 pub fn isAnyWithinRadius(
     point: types.Vec3,
@@ -326,17 +328,19 @@ fn getDefaultThreadCount() usize {
 
 ### 解決策: 8-wide SIMD
 
-`@Vector(8, f64)`を使用し、1回の操作で8原子を同時処理。
+`@Vector(8, T)`を使用し、1回の操作で8原子を同時処理（Tはf32またはf64）。
 
 ```zig
+// T = f32 または f64（コンパイル時に決定）
 pub fn isAnyWithinRadiusBatch8(
-    point: types.Vec3,
-    atoms: types.AtomInput,
+    comptime T: type,
+    point: Vec3(T),
+    atoms: AtomInput(T),
     indices: *const [8]usize,
-    probe_radius: f64,
+    probe_radius: T,
 ) bool {
     // 8原子のx座標をロード
-    const x: @Vector(8, f64) = .{
+    const x: @Vector(8, T) = .{
         atoms.x[indices[0]], atoms.x[indices[1]],
         atoms.x[indices[2]], atoms.x[indices[3]],
         atoms.x[indices[4]], atoms.x[indices[5]],
@@ -491,3 +495,46 @@ O(N²×S)    →    O(N×S×K)    →  (1.37x)     →  (並列化)
 - SRは8-wide SIMDが効果的（距離計算がボトルネック）
 - LRは高速三角関数が効果的（acos/atan2がボトルネック）
 - 両方ともマルチスレッドで線形にスケール
+
+---
+
+## 6. 精度選択（f32/f64）
+
+### 問題
+
+デフォルトのf64（倍精度）は高精度だが、メモリ帯域とキャッシュ効率で不利。
+
+### 解決策: コンパイル時精度選択
+
+`--precision`オプションでf32/f64を選択可能。全ての内部計算（座標、距離、SIMD）が指定精度で実行される。
+
+```zig
+// コンパイル時に型パラメータで切り替え
+pub fn calculateSasa(comptime T: type, atoms: AtomInput(T), options: Options) !SasaResult(T) {
+    // T = f32 または f64
+    // @Vector(8, T) で8並列SIMD
+}
+```
+
+### 性能比較（バッチ処理、10,000ファイル、10スレッド）
+
+| 精度 | 時間 | スループット | vs f64 |
+|------|------|-------------|--------|
+| f32 | 171s | 58.5/s | **1.03x** |
+| f64 | 176s | 56.7/s | 1.0x |
+
+### f32の利点
+
+1. **メモリ帯域**: データサイズ半減でキャッシュ効率向上
+2. **SIMD効率**: 同じレジスタ幅で2倍の要素を処理可能（将来の16-wide対応）
+3. **RustSASA互換**: 公平なベンチマーク比較が可能
+
+### f64の利点
+
+1. **高精度**: 大規模構造での累積誤差が小さい
+2. **デフォルト**: FreeSASA Cと同等の精度
+
+### 推奨
+
+- **大量バッチ処理**: `--precision=f32`（速度優先）
+- **高精度が必要な場合**: デフォルト（f64）を使用
