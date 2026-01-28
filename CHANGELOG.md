@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PDB file format support**
+  - Fixed-width PDB parser (`src/pdb_parser.zig`)
+  - Auto-detection of `.pdb` and `.ent` files
+  - MODEL/ENDMDL, alternate location, chain filtering
+  - Element inference from atom names
+
+- **mmCIF parser** (internal)
+  - Native mmCIF parser (`src/mmcif_parser.zig`)
+  - No external dependencies (replaces gemmi for CLI)
+
+- **Gzip support**
+  - Transparent decompression for `.json.gz` and `.cif.gz`
+  - Streaming decompression with zlib
+
+- **Batch processing** (directory input)
+  - Process entire directories: `freesasa-zig ./input_dir/ ./output_dir/`
+  - File-level parallelism with work stealing
+  - Per-thread arena allocators for memory efficiency
+  - Progress bar with file count
+  - `--parallelism` option for concurrent file processing
+
+- **f32 precision option** (`--precision=f32`)
+  - Single-precision mode for reduced memory usage
+  - Comptime generics for zero-cost abstraction
+  - ~Same speed, slightly lower accuracy
+
+- **AVX-512 auto-optimization**
+  - 16-wide SIMD on supported CPUs
+  - Automatic detection and fallback (16 → 8 → 4 → scalar)
+
+- **Benchmark infrastructure**
+  - `benchmarks/scripts/run.py` - Unified benchmark runner
+  - `benchmarks/scripts/analyze.py` - Results analysis and plotting
+  - `benchmarks/scripts/sample.py` - Stratified sampling for large datasets
+  - `benchmarks/scripts/build_index.py` - Dataset indexing
+  - Full PDB dataset benchmark (238,124 structures)
+  - Batch benchmark: Zig +7% faster than RustSASA
+
+- **Example files** (`examples/`)
+  - Sample PDB and mmCIF files for quick testing
+  - README with usage examples
+
 - **8-wide SIMD optimization** for Shrake-Rupley algorithm
   - `@Vector(8, f64)` for processing 8 atoms in parallel
   - Tiered processing: 8-wide → 4-wide → scalar for remaining atoms
