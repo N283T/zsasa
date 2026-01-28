@@ -260,7 +260,7 @@ Slice-based method - mathematically precise.
 |--------|---------------|--------------|
 | Method | Test points | Slice integration |
 | Precision control | `--n-points` | `--n-slices` |
-| Speed (1A0Q, 4 threads) | 2.6ms | 9.9ms |
+| Speed (3HHB, 4 threads) | 4.2ms | - |
 | vs FreeSASA C | 1.2x-2.3x faster | 1.1x-1.7x faster |
 | Best for | Large structures, quick analysis | High precision requirements |
 
@@ -293,47 +293,37 @@ Benchmark comparing Zig (ReleaseFast) vs FreeSASA C (native binary), SASA calcul
 
 | Structure | Atoms | SR Zig (ms) | SR FS-C (ms) | SR Speedup | LR Zig (ms) | LR FS-C (ms) | LR Speedup |
 |-----------|------:|------------:|-------------:|-----------:|------------:|-------------:|-----------:|
-| 1CRN | 327 | 0.44 | 0.53 | 1.20x | 1.45 | 1.64 | 1.13x |
-| 1UBQ | 602 | 0.63 | 0.88 | 1.40x | 2.19 | 2.99 | 1.37x |
-| 1A0Q | 3,183 | 2.64 | 4.42 | 1.67x | 9.90 | 16.09 | 1.62x |
-| 3HHB | 4,384 | 3.54 | 5.95 | 1.68x | 14.15 | 23.44 | 1.66x |
-| 1AON | 58,674 | 45.61 | 98.28 | 2.15x | 182.83 | 317.41 | 1.74x |
-| 4V6X | 237,685 | 189.06 | 424.53 | 2.25x | 741.86 | 1293.48 | 1.74x |
+| 1UBQ | 602 | 0.71 | 0.75 | 1.06x | - | - | - |
+| 3HHB | 4,384 | 4.22 | 5.87 | 1.39x | - | - | - |
+| 1AON | 58,674 | 50.31 | 90.05 | 1.79x | 183.23 | 308.83 | 1.69x |
+| 4V6X | 106,846 | 82.67 | 171.39 | 2.07x | 308.94 | 531.76 | 1.72x |
 
-**Summary**: Both algorithms are faster than FreeSASA C. Shrake-Rupley is **1.2x-2.3x faster**, Lee-Richards is **1.1x-1.7x faster**. Speedup increases with structure size.
+**Summary**: Both algorithms are faster than FreeSASA C. Shrake-Rupley is **1.1x-2.1x faster**, Lee-Richards is **1.7x faster**. Speedup increases with structure size.
 
 ### Comparison with RustSASA
 
-[RustSASA](https://github.com/maxall41/RustSASA) is a Rust implementation that claims to be "5x faster than FreeSASA". However, this claim is for **batch processing of the entire E. coli proteome** (4,391 structures), not for single-protein calculations.
+[RustSASA](https://github.com/maxall41/RustSASA) is a Rust implementation optimized for batch processing. It uses f32 precision internally.
 
-According to RustSASA's own benchmark paper, single-protein performance is essentially identical to FreeSASA:
+**Single-threaded comparison** (n_points=100, Shrake-Rupley):
 
-| Implementation | Single Protein (ms) | E. coli Proteome (s) |
-|----------------|--------------------:|---------------------:|
-| FreeSASA | 4.0 | 28.0 |
-| RustSASA | 4.0 | 5.2 |
-| **Speedup** | 1.0x | 5.4x |
+| Structure | Atoms | Zig (ms) | RustSASA (ms) | FreeSASA C (ms) |
+|-----------|------:|---------:|--------------:|----------------:|
+| 1UBQ | 602 | 1.34 | 1.19 | 1.50 |
+| 3HHB | 4,384 | 10.64 | 8.83 | 11.67 |
+| 1AON | 58,674 | 110.41 | 112.56 | 162.10 |
+| 4V6X | 106,846 | 191.90 | 210.40 | 307.46 |
 
-The "5x" speedup comes from RustSASA's CLI processing multiple files in parallel, not from faster SASA algorithm.
+**Summary**: Performance is comparable across implementations. Zig is faster than FreeSASA C (1.1x-1.6x), similar to RustSASA for large structures. RustSASA only supports Shrake-Rupley algorithm.
 
-**SASA-only comparison** (single-threaded, n_points=100, Shrake-Rupley):
+**Batch processing comparison** (10,000 files, 10 threads):
 
-| Structure | Atoms | Zig (ms) | RustSASA (ms) | FreeSASA C (ms) | vs Rust | vs FS-C |
-|-----------|------:|---------:|--------------:|----------------:|--------:|--------:|
-| 1CRN | 327 | 0.40 | 0.69 | 0.79 | 1.7x | 2.0x |
-| 4V6X | 237,685 | 158.58 | 500.11 | 747.95 | 3.2x | 4.7x |
-
-**Summary**: For single-protein SASA calculation, freesasa-zig is **1.7x-3.2x faster than RustSASA** and **2.0x-4.7x faster than FreeSASA C**. RustSASA only supports Shrake-Rupley algorithm.
-
-**Fair comparison with f32**: RustSASA uses f32 internally. Using `--precision=f32` for fair comparison:
-
-| Tool | Precision | Time (10k files) | Throughput |
-|------|-----------|------------------|------------|
+| Tool | Precision | Time | Throughput |
+|------|-----------|------|------------|
 | Zig | f32 | 171s | 58.5/s |
-| Rust | f32 | 176s | 57.0/s |
-| Zig | f64 | 176s | 56.7/s |
+| Rust | f32 | 176s | 56.8/s |
+| Zig | f64 | 177s | 56.5/s |
 
-Zig f32 is **3% faster** than Rust f32. Even Zig f64 (double precision) matches Rust f32 speed.
+Zig f32 is **3% faster** than RustSASA. Even Zig f64 (double precision) matches RustSASA speed.
 
 Run benchmark: `./benchmarks/scripts/run.py --tool zig --algorithm sr`
 

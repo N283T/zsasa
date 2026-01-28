@@ -33,7 +33,7 @@ Total time = File I/O + SASA calculation + Output
 | 1A0Q | 3,183 | Medium | Lipid transfer protein |
 | 3HHB | 4,384 | Medium | Hemoglobin tetramer |
 | 1AON | 58,674 | Large | GroEL-GroES complex |
-| 4V6X | 237,685 | XLarge | Ribosome |
+| 4V6X | 106,846 | XLarge | Ribosome (non-H atoms) |
 
 ### Parameters
 
@@ -59,66 +59,46 @@ Shrake-Rupley:
 
 | Structure | Atoms | Zig (ms) | FS-C (ms) | Speedup |
 |-----------|------:|--------:|---------:|--------:|
-| 1CRN | 327 | 0.44 | 0.53 | 1.20x |
-| 1UBQ | 602 | 0.63 | 0.88 | 1.40x |
-| 1A0Q | 3,183 | 2.64 | 4.42 | 1.67x |
-| 3HHB | 4,384 | 3.54 | 5.95 | 1.68x |
-| 1AON | 58,674 | 45.61 | 98.28 | 2.15x |
-| 4V6X | 237,685 | 189.06 | 424.53 | 2.25x |
+| 1UBQ | 602 | 0.71 | 0.75 | 1.06x |
+| 3HHB | 4,384 | 4.22 | 5.87 | 1.39x |
+| 1AON | 58,674 | 50.31 | 90.05 | 1.79x |
+| 4V6X | 106,846 | 82.67 | 171.39 | 2.07x |
 
 Lee-Richards:
 
 | Structure | Atoms | Zig (ms) | FS-C (ms) | Speedup |
 |-----------|------:|--------:|---------:|--------:|
-| 1CRN | 327 | 1.45 | 1.64 | 1.13x |
-| 1UBQ | 602 | 2.19 | 2.99 | 1.37x |
-| 1A0Q | 3,183 | 9.90 | 16.09 | 1.62x |
-| 3HHB | 4,384 | 14.15 | 23.44 | 1.66x |
-| 1AON | 58,674 | 182.83 | 317.41 | 1.74x |
-| 4V6X | 237,685 | 741.86 | 1293.48 | 1.74x |
+| 1AON | 58,674 | 183.23 | 308.83 | 1.69x |
+| 4V6X | 106,846 | 308.94 | 531.76 | 1.72x |
 
-**Summary**: SR は **1.2x-2.3x 高速**、LR は **1.1x-1.7x 高速**。構造サイズが大きいほど差が開く。
+**Summary**: SR は **1.1x-2.1x 高速**、LR は **1.7x 高速**。構造サイズが大きいほど差が開く。
 
 ### vs RustSASA
 
-RustSASA は Shrake-Rupley のみ対応。
+RustSASA は Shrake-Rupley のみ対応（内部では f32 精度を使用）。
 
-#### RustSASA の「5x 高速」について
+#### Single-threaded comparison
 
-RustSASA は「FreeSASA より 5x 高速」と謳っているが、これは**バッチ処理**での話：
+| Structure | Atoms | Zig (ms) | RustSASA (ms) | FreeSASA C (ms) |
+|-----------|------:|---------:|--------------:|----------------:|
+| 1UBQ | 602 | 1.34 | 1.19 | 1.50 |
+| 3HHB | 4,384 | 10.64 | 8.83 | 11.67 |
+| 1AON | 58,674 | 110.41 | 112.56 | 162.10 |
+| 4V6X | 106,846 | 191.90 | 210.40 | 307.46 |
 
-| Benchmark | RustSASA | FreeSASA | Speedup |
-|-----------|----------|----------|---------|
-| Single protein | 4.0 ms | 4.0 ms | 1.0x |
-| E. coli proteome (4,391 files) | 5.2 s | 28.0 s | 5.4x |
-
-「5x」は RustSASA の CLI が GNU Parallel 相当の並列処理をしているため。
-**アルゴリズム自体の速度は FreeSASA と同等**。
-
-#### SASA-only comparison (single-threaded)
-
-| Structure | Atoms | Zig (ms) | RustSASA (ms) | FreeSASA C (ms) | vs Rust | vs FS-C |
-|-----------|------:|---------:|--------------:|----------------:|--------:|--------:|
-| 1CRN | 327 | 0.40 | 0.69 | 0.79 | 1.7x | 2.0x |
-| 1UBQ | 602 | 0.53 | 1.23 | 1.44 | 2.3x | 2.8x |
-| 4V6X | 237,685 | 158.58 | 500.11 | 747.95 | 3.2x | 4.7x |
-
-**Summary**: freesasa-zig は**アルゴリズムレベルで高速**。
-- vs RustSASA: **1.7x-3.2x 高速**
-- vs FreeSASA C: **2.0x-4.7x 高速**
+**Summary**: 単一構造での性能は3実装とも同等レベル。Zigは大規模構造でやや優位。
 
 ### Batch Processing Benchmark / バッチ処理ベンチマーク
 
-4,304 構造（層化サンプリング）を 10 スレッドで並列処理：
+10,000 ファイル（層化サンプリング）を 10 スレッドで並列処理：
 
-| Tool | Total Time | Files/sec | Speedup |
-|------|------------|-----------|---------|
-| **Zig** | 162.5 s | 26.5 | **8.3x** |
-| **Rust** | 162.7 s | 26.4 | **8.3x** |
-| FreeSASA | 1,355 s | 3.2 | 1.0x |
+| Tool | Precision | Total Time | Files/sec |
+|------|-----------|------------|-----------|
+| Zig | f32 | 171 s | 58.5 |
+| Rust | f32 | 176 s | 56.8 |
+| Zig | f64 | 177 s | 56.5 |
 
-バッチモードでは各ファイルのSASA計算を1スレッドで実行し、ファイル処理を並列化。
-Zig と Rust は同等の性能で、FreeSASA より約 **8x 高速**。
+バッチモードではファイル処理を並列化。Zig f32 は Rust と同等の性能。
 
 ## Why is Zig Faster? / なぜ Zig が速いか
 
