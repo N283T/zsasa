@@ -114,19 +114,69 @@ pub const PrefetchQueue = struct {
     }
 };
 
+/// Record of a failed file during I/O
+pub const FailedFile = struct {
+    filename: []const u8,
+    reason: FailureReason,
+
+    pub const FailureReason = enum {
+        allocation_failed,
+        path_join_failed,
+        read_parse_failed,
+    };
+};
+
 /// I/O thread context
 pub const IoContext = struct {
     queue: *PrefetchQueue,
     files: []const []const u8,
     input_dir: []const u8,
     allocator: Allocator,
+    // Thread-safe tracking of failed files
+    failed_files: std.ArrayListUnmanaged(FailedFile),
+    failed_mutex: std.Thread.Mutex,
+
+    pub fn init(
+        allocator: Allocator,
+        queue: *PrefetchQueue,
+        files: []const []const u8,
+        input_dir: []const u8,
+    ) IoContext {
+        return IoContext{
+            .queue = queue,
+            .files = files,
+            .input_dir = input_dir,
+            .allocator = allocator,
+            .failed_files = .{},
+            .failed_mutex = .{},
+        };
+    }
+
+    pub fn deinit(self: *IoContext) void {
+        self.failed_files.deinit(self.allocator);
+    }
+
+    /// Record a failed file (thread-safe)
+    fn recordFailure(self: *IoContext, filename: []const u8, reason: FailedFile.FailureReason) void {
+        self.failed_mutex.lock();
+        defer self.failed_mutex.unlock();
+        self.failed_files.append(self.allocator, .{ .filename = filename, .reason = reason }) catch {};
+    }
+
+    /// Get the number of failed files
+    pub fn failedCount(self: *IoContext) usize {
+        self.failed_mutex.lock();
+        defer self.failed_mutex.unlock();
+        return self.failed_files.items.len;
+    }
 
     /// I/O thread function: reads files and pushes to queue
     pub fn run(self: *IoContext) void {
         for (self.files) |filename| {
             // Allocate arena for this file
             const arena = self.allocator.create(std.heap.ArenaAllocator) catch {
-                continue; // Skip on allocation failure
+                self.recordFailure(filename, .allocation_failed);
+                continue;
             };
             arena.* = std.heap.ArenaAllocator.init(std.heap.page_allocator);
 
@@ -134,6 +184,7 @@ pub const IoContext = struct {
             const input_path = std.fs.path.join(arena.allocator(), &.{ self.input_dir, filename }) catch {
                 arena.deinit();
                 self.allocator.destroy(arena);
+                self.recordFailure(filename, .path_join_failed);
                 continue;
             };
 
@@ -141,6 +192,7 @@ pub const IoContext = struct {
             const input = json_parser.readAtomInputFromFile(arena.allocator(), input_path) catch {
                 arena.deinit();
                 self.allocator.destroy(arena);
+                self.recordFailure(filename, .read_parse_failed);
                 continue;
             };
 

@@ -595,13 +595,9 @@ pub fn runBatchPipelined(
     var queue = pipeline.PrefetchQueue.init(allocator);
     defer queue.deinit();
 
-    // Create I/O context
-    var io_ctx = pipeline.IoContext{
-        .queue = &queue,
-        .files = files,
-        .input_dir = input_dir,
-        .allocator = allocator,
-    };
+    // Create I/O context with error tracking
+    var io_ctx = pipeline.IoContext.init(allocator, &queue, files, input_dir);
+    defer io_ctx.deinit();
 
     // Spawn I/O thread
     const io_thread = try std.Thread.spawn(.{}, pipeline.IoContext.run, .{&io_ctx});
@@ -797,8 +793,24 @@ pub fn runBatchPipelined(
     // Wait for I/O thread to finish
     io_thread.join();
 
+    // Include I/O failures in the count
+    const io_failed = io_ctx.failedCount();
+    failed += io_failed;
+
+    // Report I/O failures if not quiet
     if (!config.quiet) {
         std.debug.print("\n", .{});
+        if (io_failed > 0) {
+            std.debug.print("I/O errors: {d} file(s) failed to read/parse\n", .{io_failed});
+            for (io_ctx.failed_files.items) |f| {
+                const reason_str = switch (f.reason) {
+                    .allocation_failed => "allocation failed",
+                    .path_join_failed => "path join failed",
+                    .read_parse_failed => "read/parse failed",
+                };
+                std.debug.print("  - {s}: {s}\n", .{ f.filename, reason_str });
+            }
+        }
     }
 
     const total_time_ns = total_timer.read();
