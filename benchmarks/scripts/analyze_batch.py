@@ -197,8 +197,8 @@ def plot():
     color_map = {
         ("rust", "f32"): "#e74c3c",
         ("rust", "f64"): "#e74c3c",
-        ("zig", "f32"): "#27ae60",
-        ("zig", "f64"): "#2ecc71",
+        ("zig", "f32"): "#f39c12",
+        ("zig", "f64"): "#e67e22",
     }
 
     for row in stats.sort(["tool", "precision"], descending=[True, False]).iter_rows(

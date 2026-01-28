@@ -255,7 +255,7 @@ def export_csv():
 def _plot_scatter(df_algo: pl.DataFrame, algo: str, ax):
     """Plot scatter for a single algorithm."""
     df_sampled = df_algo.sample(n=min(5000, df_algo.height), seed=42)
-    colors = {"zig": "#2ecc71", "freesasa": "#3498db", "rust": "#e74c3c"}
+    colors = {"zig": "#f39c12", "freesasa": "#3498db", "rust": "#e74c3c"}
 
     for tool in sorted(df_sampled["tool"].unique().to_list()):
         df_tool = df_sampled.filter(pl.col("tool") == tool)
@@ -333,7 +333,7 @@ def scatter():
 
 def _plot_threads(df_algo: pl.DataFrame, algo: str, ax):
     """Plot thread scaling for a single algorithm."""
-    colors = {"zig": "#2ecc71", "freesasa": "#3498db", "rust": "#e74c3c"}
+    colors = {"zig": "#f39c12", "freesasa": "#3498db", "rust": "#e74c3c"}
 
     scaling = (
         df_algo.group_by(["tool", "threads"])
@@ -702,7 +702,7 @@ def samples():
     plot_dir = PLOTS_DIR / "samples"
     plot_dir.mkdir(parents=True, exist_ok=True)
 
-    colors = {"zig": "#2ecc71", "freesasa": "#3498db", "rust": "#e74c3c"}
+    colors = {"zig": "#f39c12", "freesasa": "#3498db", "rust": "#e74c3c"}
     bin_order = [b[2] for b in BINS]
 
     # Get thread counts from data
@@ -980,7 +980,7 @@ def efficiency():
     # Summary by size bin and tool
     thread_counts = sorted(df_eff["threads"].unique().to_list())
     tools = ["zig", "freesasa", "rust"]
-    colors = {"zig": "#2ecc71", "freesasa": "#3498db", "rust": "#e74c3c"}
+    colors = {"zig": "#f39c12", "freesasa": "#3498db", "rust": "#e74c3c"}
 
     # Table: efficiency by size bin (t=10)
     t_target = 10
