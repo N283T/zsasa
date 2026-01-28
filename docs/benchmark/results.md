@@ -1,6 +1,10 @@
 # Benchmark Results / ベンチマーク結果
 
-freesasa-zig の大規模ベンチマーク結果。約 10 万構造での層化サンプリングによる公平な比較。
+freesasa-zig の大規模ベンチマーク結果。層化サンプリングによる公平な比較。
+
+- **Shrake-Rupley**: 約 10 万構造
+- **Lee-Richards**: 約 3 万構造（計算コストが高いため）
+- **精度**: Single-file モードは全ツール f64（batch モードのみ Zig f32 / RustSASA f32 オプションあり）
 
 ## Test Environment / テスト環境
 
