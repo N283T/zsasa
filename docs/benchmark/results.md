@@ -424,20 +424,24 @@ cd rustsasa-bench && cargo build --release --features cli && cd ..
 ### Generating Plots / プロット生成
 
 ```bash
-# 個別生成
+# Single-file ベンチマーク
 ./benchmarks/scripts/analyze.py scatter    # 散布図
-./benchmarks/scripts/analyze.py speedup    # サイズ別高速化
-./benchmarks/scripts/analyze.py scaling    # スレッドスケーリング
+./benchmarks/scripts/analyze.py grid       # サイズ別高速化
+./benchmarks/scripts/analyze.py threads    # スレッドスケーリング
 ./benchmarks/scripts/analyze.py efficiency # 並列効率
 ./benchmarks/scripts/analyze.py large      # 大規模構造サマリー
 ./benchmarks/scripts/analyze.py samples    # ビン別サンプル
 ./benchmarks/scripts/analyze.py validation # SASA 検証
+./benchmarks/scripts/analyze.py all        # 全部生成
 
-# 全部生成
-./benchmarks/scripts/analyze.py all
+# バッチベンチマーク
+./benchmarks/scripts/analyze_batch.py plot # バッチ比較グラフ
+
+# データセット分布
+./benchmarks/scripts/plot_distribution.py  # SR/LR 分布グラフ
 
 # CSV エクスポート
-./benchmarks/scripts/analyze.py export_csv
+./benchmarks/scripts/analyze.py export-csv
 ```
 
 ---
