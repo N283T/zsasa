@@ -286,7 +286,7 @@ Benchmarked on ~100k PDB structures. See [methodology](docs/benchmark/methodolog
 **Key findings** (SASA-only timing; single-file: Zig/FreeSASA f64, RustSASA f32):
 - **Single-threaded**: Large structures 1.5x+ faster vs FreeSASA C, 1.1x vs RustSASA
 - **Multi-threaded**: Significant efficiency gains—1.0x+ from 500 atoms, **1.9x-2.3x** for 20k+ atoms
-- **Batch processing**: Higher precision (f64) at same speed as RustSASA; f32 mode achieves better throughput
+- **Batch processing**: +7% faster than RustSASA (f32); even f64 mode is +4% faster
 
 ### Optimization Techniques
 
