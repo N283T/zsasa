@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["rich>=13.0", "typer>=0.9.0"]
+# dependencies = ["rich>=13.0", "typer>=0.9.0", "matplotlib>=3.0"]
 # ///
 """Stratified sampling of benchmark structures by atom count.
 
@@ -251,6 +251,79 @@ def main(
     output.write_text(json.dumps(sample_data, indent=2))
     console.print(f"\n[green]Saved:[/green] {output}")
     console.print(f"  Samples: [cyan]{len(samples):,}[/cyan]")
+
+
+@app.command()
+def plot(
+    sample_path: Annotated[
+        Path,
+        typer.Argument(help="Path to sample JSON file"),
+    ],
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output", "-o", help="Output PNG path (default: plots/dataset/<name>.png)"
+        ),
+    ] = None,
+) -> None:
+    """Generate distribution bar chart for a sample file."""
+    import matplotlib.pyplot as plt
+
+    if not sample_path.exists():
+        console.print(f"[red]Error:[/red] Sample file not found: {sample_path}")
+        raise typer.Exit(1)
+
+    # Load sample data
+    data = json.loads(sample_path.read_text())
+    dist = data.get("distribution", {})
+    total = data.get("total_sampled", 0)
+
+    if not dist:
+        console.print("[red]Error:[/red] No distribution data in sample file")
+        raise typer.Exit(1)
+
+    # Extract data for plotting
+    bins = list(dist.keys())
+    counts = [dist[b]["sampled"] for b in bins]
+
+    # Create plot
+    fig, ax = plt.subplots(figsize=(10, 6))
+    x = range(len(bins))
+    bars = ax.bar(x, counts, color="#f39c12", alpha=0.8, edgecolor="#e67e22")
+
+    ax.set_xlabel("Structure Size (atoms)", fontsize=11)
+    ax.set_ylabel("Number of Structures", fontsize=11)
+    ax.set_title(f"Dataset Distribution (n={total:,})", fontsize=13, fontweight="bold")
+    ax.set_xticks(x)
+    ax.set_xticklabels(bins, rotation=45, ha="right")
+
+    # Add value labels
+    for bar in bars:
+        height = bar.get_height()
+        if height > 0:
+            ax.annotate(
+                f"{int(height):,}",
+                xy=(bar.get_x() + bar.get_width() / 2, height),
+                xytext=(0, 3),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+            )
+
+    plt.tight_layout()
+
+    # Determine output path
+    if output is None:
+        plots_dir = Path(__file__).parent.parent / "results" / "plots" / "dataset"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        output = plots_dir / f"{sample_path.stem}.png"
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    console.print(f"[green]Saved:[/green] {output}")
 
 
 if __name__ == "__main__":
