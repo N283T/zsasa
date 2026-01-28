@@ -52,6 +52,64 @@ fn stripGzExtension(filename: []const u8) []const u8 {
     return filename;
 }
 
+/// Generic SASA calculation dispatcher
+/// Selects appropriate algorithm (SR or LR) and threading mode based on parameters
+fn calculateSasaDispatch(
+    comptime T: type,
+    allocator: Allocator,
+    input: AtomInput,
+    algorithm: Algorithm,
+    n_points: u32,
+    n_slices: u32,
+    probe_radius: T,
+    n_threads: usize,
+) !SasaResultGen(T) {
+    return switch (algorithm) {
+        .sr => if (n_threads > 1)
+            shrake_rupley.ShrakeRupleyGen(T).calculateSasaParallel(allocator, input, .{
+                .n_points = n_points,
+                .probe_radius = probe_radius,
+            }, n_threads)
+        else
+            shrake_rupley.ShrakeRupleyGen(T).calculateSasa(allocator, input, .{
+                .n_points = n_points,
+                .probe_radius = probe_radius,
+            }),
+        .lr => if (n_threads > 1)
+            lee_richards.LeeRichardsGen(T).calculateSasaParallel(allocator, input, .{
+                .n_slices = n_slices,
+                .probe_radius = probe_radius,
+            }, n_threads)
+        else
+            lee_richards.LeeRichardsGen(T).calculateSasa(allocator, input, .{
+                .n_slices = n_slices,
+                .probe_radius = probe_radius,
+            }),
+    };
+}
+
+/// Write SASA result to output file
+/// Handles f32 -> f64 conversion for consistent output format
+fn writeSasaOutput(
+    comptime T: type,
+    allocator: Allocator,
+    result: *const SasaResultGen(T),
+    output_dir: []const u8,
+    filename: []const u8,
+    format: OutputFormat,
+) !void {
+    const output_filename = stripGzExtension(filename);
+    const output_path = try std.fs.path.join(allocator, &.{ output_dir, output_filename });
+
+    if (T == f64) {
+        try json_writer.writeSasaResultWithFormat(allocator, result.*, output_path, format);
+    } else {
+        var result_f64 = try result.toF64(allocator);
+        defer result_f64.deinit();
+        try json_writer.writeSasaResultWithFormat(allocator, result_f64, output_path, format);
+    }
+}
+
 /// Result for a single file
 pub const FileResult = struct {
     filename: []const u8,
@@ -228,130 +286,54 @@ fn processOneFile(
         return result;
     };
 
-    // Calculate SASA
-    // Use parallel version when n_threads > 1, otherwise single-threaded
+    // Calculate SASA using generic dispatcher
     var total_area: f64 = 0;
     switch (config.precision) {
         .f64 => {
-            var sasa_result = switch (config.algorithm) {
-                .sr => blk: {
-                    if (n_threads > 1) {
-                        break :blk shrake_rupley.calculateSasaParallel(arena, input, .{
-                            .n_points = config.n_points,
-                            .probe_radius = config.probe_radius,
-                        }, n_threads) catch {
-                            result.status = .err;
-                            return result;
-                        };
-                    } else {
-                        break :blk shrake_rupley.calculateSasa(arena, input, .{
-                            .n_points = config.n_points,
-                            .probe_radius = config.probe_radius,
-                        }) catch {
-                            result.status = .err;
-                            return result;
-                        };
-                    }
-                },
-                .lr => blk: {
-                    if (n_threads > 1) {
-                        break :blk lee_richards.calculateSasaParallel(arena, input, .{
-                            .n_slices = config.n_slices,
-                            .probe_radius = config.probe_radius,
-                        }, n_threads) catch {
-                            result.status = .err;
-                            return result;
-                        };
-                    } else {
-                        break :blk lee_richards.calculateSasa(arena, input, .{
-                            .n_slices = config.n_slices,
-                            .probe_radius = config.probe_radius,
-                        }) catch {
-                            result.status = .err;
-                            return result;
-                        };
-                    }
-                },
+            var sasa_result = calculateSasaDispatch(
+                f64,
+                arena,
+                input,
+                config.algorithm,
+                config.n_points,
+                config.n_slices,
+                config.probe_radius,
+                n_threads,
+            ) catch {
+                result.status = .err;
+                return result;
             };
             defer sasa_result.deinit();
             result.sasa_time_ns = timer.read();
             total_area = sasa_result.total_area;
 
-            // Write output if output_dir specified
             if (output_dir) |out_dir| {
-                const output_filename = stripGzExtension(filename);
-                const output_path = std.fs.path.join(arena, &.{ out_dir, output_filename }) catch {
-                    result.status = .err;
-                    return result;
-                };
-
-                json_writer.writeSasaResultWithFormat(arena, sasa_result, output_path, config.output_format) catch {
+                writeSasaOutput(f64, arena, &sasa_result, out_dir, filename, config.output_format) catch {
                     result.status = .err;
                     return result;
                 };
             }
         },
         .f32 => {
-            var sasa_result = switch (config.algorithm) {
-                .sr => blk: {
-                    if (n_threads > 1) {
-                        break :blk shrake_rupley.calculateSasaParallelf32(arena, input, .{
-                            .n_points = config.n_points,
-                            .probe_radius = @floatCast(config.probe_radius),
-                        }, n_threads) catch {
-                            result.status = .err;
-                            return result;
-                        };
-                    } else {
-                        break :blk shrake_rupley.calculateSasaf32(arena, input, .{
-                            .n_points = config.n_points,
-                            .probe_radius = @floatCast(config.probe_radius),
-                        }) catch {
-                            result.status = .err;
-                            return result;
-                        };
-                    }
-                },
-                .lr => blk: {
-                    if (n_threads > 1) {
-                        break :blk lee_richards.calculateSasaParallelf32(arena, input, .{
-                            .n_slices = config.n_slices,
-                            .probe_radius = @floatCast(config.probe_radius),
-                        }, n_threads) catch {
-                            result.status = .err;
-                            return result;
-                        };
-                    } else {
-                        break :blk lee_richards.calculateSasaf32(arena, input, .{
-                            .n_slices = config.n_slices,
-                            .probe_radius = @floatCast(config.probe_radius),
-                        }) catch {
-                            result.status = .err;
-                            return result;
-                        };
-                    }
-                },
+            var sasa_result = calculateSasaDispatch(
+                f32,
+                arena,
+                input,
+                config.algorithm,
+                config.n_points,
+                config.n_slices,
+                @as(f32, @floatCast(config.probe_radius)),
+                n_threads,
+            ) catch {
+                result.status = .err;
+                return result;
             };
             defer sasa_result.deinit();
             result.sasa_time_ns = timer.read();
             total_area = @floatCast(sasa_result.total_area);
 
-            // Write output if output_dir specified - convert to f64 for output
             if (output_dir) |out_dir| {
-                const output_filename = stripGzExtension(filename);
-                const output_path = std.fs.path.join(arena, &.{ out_dir, output_filename }) catch {
-                    result.status = .err;
-                    return result;
-                };
-
-                // Convert f32 result to f64 for output
-                var sasa_result_f64 = sasa_result.toF64(arena) catch {
-                    result.status = .err;
-                    return result;
-                };
-                defer sasa_result_f64.deinit();
-
-                json_writer.writeSasaResultWithFormat(arena, sasa_result_f64, output_path, config.output_format) catch {
+                writeSasaOutput(f32, arena, &sasa_result, out_dir, filename, config.output_format) catch {
                     result.status = .err;
                     return result;
                 };
@@ -614,139 +596,57 @@ pub fn runBatchPipelined(
         // Time SASA calculation
         var timer = try std.time.Timer.start();
 
-        // Calculate SASA using prefetched input
+        // Calculate SASA using generic dispatcher
         var total_area: f64 = 0;
         var sasa_ok = true;
 
         switch (config.precision) {
             .f64 => {
-                var sasa_result = switch (config.algorithm) {
-                    .sr => blk: {
-                        if (n_threads > 1) {
-                            break :blk shrake_rupley.calculateSasaParallel(pf.arena.allocator(), pf.input, .{
-                                .n_points = config.n_points,
-                                .probe_radius = config.probe_radius,
-                            }, n_threads) catch {
-                                sasa_ok = false;
-                                break :blk null;
-                            };
-                        } else {
-                            break :blk shrake_rupley.calculateSasa(pf.arena.allocator(), pf.input, .{
-                                .n_points = config.n_points,
-                                .probe_radius = config.probe_radius,
-                            }) catch {
-                                sasa_ok = false;
-                                break :blk null;
-                            };
-                        }
-                    },
-                    .lr => blk: {
-                        if (n_threads > 1) {
-                            break :blk lee_richards.calculateSasaParallel(pf.arena.allocator(), pf.input, .{
-                                .n_slices = config.n_slices,
-                                .probe_radius = config.probe_radius,
-                            }, n_threads) catch {
-                                sasa_ok = false;
-                                break :blk null;
-                            };
-                        } else {
-                            break :blk lee_richards.calculateSasa(pf.arena.allocator(), pf.input, .{
-                                .n_slices = config.n_slices,
-                                .probe_radius = config.probe_radius,
-                            }) catch {
-                                sasa_ok = false;
-                                break :blk null;
-                            };
-                        }
-                    },
-                };
+                if (calculateSasaDispatch(
+                    f64,
+                    pf.arena.allocator(),
+                    pf.input,
+                    config.algorithm,
+                    config.n_points,
+                    config.n_slices,
+                    config.probe_radius,
+                    n_threads,
+                )) |calc_result| {
+                    var sasa_result = calc_result;
+                    defer sasa_result.deinit();
+                    total_area = sasa_result.total_area;
 
-                if (sasa_result) |*result| {
-                    defer result.deinit();
-                    total_area = result.total_area;
-
-                    // Write output if output_dir specified
                     if (output_dir) |out_dir| {
-                        const output_filename = stripGzExtension(pf.filename);
-                        const output_path = std.fs.path.join(pf.arena.allocator(), &.{ out_dir, output_filename }) catch {
-                            sasa_ok = false;
-                            break;
-                        };
-
-                        json_writer.writeSasaResultWithFormat(pf.arena.allocator(), result.*, output_path, config.output_format) catch {
+                        writeSasaOutput(f64, pf.arena.allocator(), &sasa_result, out_dir, pf.filename, config.output_format) catch {
                             sasa_ok = false;
                         };
                     }
+                } else |_| {
+                    sasa_ok = false;
                 }
             },
-            // TODO: Consider unifying f32/f64 code paths using comptime generics
-            // to reduce duplication. The main difference is the function suffix
-            // (f32 vs none) and the probe_radius cast.
             .f32 => {
-                var sasa_result = switch (config.algorithm) {
-                    .sr => blk: {
-                        if (n_threads > 1) {
-                            break :blk shrake_rupley.calculateSasaParallelf32(pf.arena.allocator(), pf.input, .{
-                                .n_points = config.n_points,
-                                .probe_radius = @floatCast(config.probe_radius),
-                            }, n_threads) catch {
-                                sasa_ok = false;
-                                break :blk null;
-                            };
-                        } else {
-                            break :blk shrake_rupley.calculateSasaf32(pf.arena.allocator(), pf.input, .{
-                                .n_points = config.n_points,
-                                .probe_radius = @floatCast(config.probe_radius),
-                            }) catch {
-                                sasa_ok = false;
-                                break :blk null;
-                            };
-                        }
-                    },
-                    .lr => blk: {
-                        if (n_threads > 1) {
-                            break :blk lee_richards.calculateSasaParallelf32(pf.arena.allocator(), pf.input, .{
-                                .n_slices = config.n_slices,
-                                .probe_radius = @floatCast(config.probe_radius),
-                            }, n_threads) catch {
-                                sasa_ok = false;
-                                break :blk null;
-                            };
-                        } else {
-                            break :blk lee_richards.calculateSasaf32(pf.arena.allocator(), pf.input, .{
-                                .n_slices = config.n_slices,
-                                .probe_radius = @floatCast(config.probe_radius),
-                            }) catch {
-                                sasa_ok = false;
-                                break :blk null;
-                            };
-                        }
-                    },
-                };
+                if (calculateSasaDispatch(
+                    f32,
+                    pf.arena.allocator(),
+                    pf.input,
+                    config.algorithm,
+                    config.n_points,
+                    config.n_slices,
+                    @as(f32, @floatCast(config.probe_radius)),
+                    n_threads,
+                )) |calc_result| {
+                    var sasa_result = calc_result;
+                    defer sasa_result.deinit();
+                    total_area = @floatCast(sasa_result.total_area);
 
-                if (sasa_result) |*result| {
-                    defer result.deinit();
-                    total_area = @floatCast(result.total_area);
-
-                    // Write output if output_dir specified
                     if (output_dir) |out_dir| {
-                        const output_filename = stripGzExtension(pf.filename);
-                        const output_path = std.fs.path.join(pf.arena.allocator(), &.{ out_dir, output_filename }) catch {
-                            sasa_ok = false;
-                            break;
-                        };
-
-                        // Convert to f64 for output
-                        var result_f64 = result.toF64(pf.arena.allocator()) catch {
-                            sasa_ok = false;
-                            break;
-                        };
-                        defer result_f64.deinit();
-
-                        json_writer.writeSasaResultWithFormat(pf.arena.allocator(), result_f64, output_path, config.output_format) catch {
+                        writeSasaOutput(f32, pf.arena.allocator(), &sasa_result, out_dir, pf.filename, config.output_format) catch {
                             sasa_ok = false;
                         };
                     }
+                } else |_| {
+                    sasa_ok = false;
                 }
             },
         }
