@@ -260,8 +260,7 @@ Slice-based method - mathematically precise.
 |--------|---------------|--------------|
 | Method | Test points | Slice integration |
 | Precision control | `--n-points` | `--n-slices` |
-| Speed (3HHB, 4 threads) | 4.2ms | - |
-| vs FreeSASA C | 1.2x-2.3x faster | 1.1x-1.7x faster |
+| vs FreeSASA C | 1.2x-2.3x faster | 1.7x faster |
 | Best for | Large structures, quick analysis | High precision requirements |
 
 ### Parameters
