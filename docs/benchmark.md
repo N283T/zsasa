@@ -24,16 +24,20 @@ Total time = File I/O + SASA calculation + Output
 
 ### Benchmark Dataset
 
-6構造、小規模から超大規模まで：
+PDB 全構造（約 238K）から層化サンプリングした約 100K 構造を使用：
 
-| PDB ID | Atoms | Category | Description |
-|--------|------:|----------|-------------|
-| 1CRN | 327 | Tiny | Crambin |
-| 1UBQ | 602 | Small | Ubiquitin |
-| 1A0Q | 3,183 | Medium | Lipid transfer protein |
-| 3HHB | 4,384 | Medium | Hemoglobin tetramer |
-| 1AON | 58,674 | Large | GroEL-GroES complex |
-| 4V6X | 106,846 | XLarge | Ribosome (non-H atoms) |
+| Size Bin | Structures | Description |
+|----------|----------:|-------------|
+| 0-500 | 2,506 | Tiny |
+| 500-1k | 5,744 | Small |
+| 1k-2k | 15,922 | Small-Medium |
+| 2k-5k | 36,123 | Medium |
+| 5k-10k | 19,835 | Medium-Large |
+| 10k-20k | 10,187 | Large |
+| 20k-50k | 5,377 | Large |
+| 50k-100k | 3,133 | XLarge |
+| 100k-200k | 900 | XXLarge |
+| 200k+ | 271 | Massive |
 
 ### Parameters
 
