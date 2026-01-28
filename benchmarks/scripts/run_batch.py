@@ -50,6 +50,7 @@ console = Console()
 
 TOOLS = ["zig", "rust", "freesasa"]
 ALGORITHMS = ["sr", "lr"]
+PARALLELISMS = ["file", "atom", "pipeline"]
 
 
 def get_system_info() -> dict:
@@ -143,6 +144,7 @@ def run_zig_batch(
     algorithm: str,
     n_threads: int,
     precision: str = "f64",
+    parallelism: str = "file",
 ) -> dict:
     """Run Zig batch mode."""
     binary = get_binary_path("zig")
@@ -156,6 +158,7 @@ def run_zig_batch(
         f"--algorithm={algorithm}",
         f"--threads={n_threads}",
         f"--precision={precision}",
+        f"--parallelism={parallelism}",
         "--format=compact",
         "--timing",
         "--quiet",
@@ -241,10 +244,13 @@ def run_batch_benchmark(
     algorithm: str,
     n_threads: int,
     precision: str = "f64",
+    parallelism: str = "file",
 ) -> dict:
     """Run batch benchmark for a specific tool."""
     if tool == "zig":
-        return run_zig_batch(input_dir, output_dir, algorithm, n_threads, precision)
+        return run_zig_batch(
+            input_dir, output_dir, algorithm, n_threads, precision, parallelism
+        )
     elif tool == "rust":
         return run_rust_batch(input_dir, output_dir, n_threads)
     elif tool == "freesasa":
@@ -283,6 +289,12 @@ def main(
         Path | None,
         typer.Option("--sample-file", "-S", help="Sample file from sample.py"),
     ] = None,
+    parallelism: Annotated[
+        str,
+        typer.Option(
+            "--parallelism", "-P", help="Parallelism: file, atom, pipeline (zig only)"
+        ),
+    ] = "file",
 ):
     """Run batch SASA benchmark."""
     thread_counts = parse_threads(threads)
@@ -314,6 +326,19 @@ def main(
     if tool != "zig" and precision != "f64":
         console.print("[yellow]Warning:[/yellow] --precision only applies to zig tool")
         precision = "f64"
+
+    # Validate parallelism
+    if parallelism not in PARALLELISMS:
+        console.print(f"[red]Error:[/red] Unknown parallelism: {parallelism}")
+        console.print(f"Available: {', '.join(PARALLELISMS)}")
+        raise typer.Exit(1)
+
+    # Parallelism only applies to Zig
+    if tool != "zig" and parallelism != "file":
+        console.print(
+            "[yellow]Warning:[/yellow] --parallelism only applies to zig tool"
+        )
+        parallelism = "file"
 
     # Validate sample file requires input-dir
     sample_ids: set[str] | None = None
@@ -353,9 +378,11 @@ def main(
         batch_input, file_count = prepare_input_dir(input_dir, sample_ids, work_dir)
 
         console.print(f"[bold]{tool.upper()} {algorithm.upper()} (Batch Mode)[/bold]")
-        precision_info = f", Precision: {precision}" if tool == "zig" else ""
+        extra_info = ""
+        if tool == "zig":
+            extra_info = f", Precision: {precision}, Parallelism: {parallelism}"
         console.print(
-            f"Files: {file_count:,}, Threads: {thread_counts}, Runs: {runs}{precision_info}"
+            f"Files: {file_count:,}, Threads: {thread_counts}, Runs: {runs}{extra_info}"
         )
         console.print()
 
@@ -372,6 +399,7 @@ def main(
                 "input_dir": str(input_dir),
                 "sample_file": str(sample_file) if sample_file else None,
                 "precision": precision,
+                "parallelism": parallelism,
                 "mode": "batch",
             },
         }
@@ -382,16 +410,16 @@ def main(
         csv_path = output_dir / "results.csv"
         results = []
 
-        total_runs = len(thread_counts) * runs
+        total_structures = len(thread_counts) * runs * file_count
 
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
-            TextColumn("{task.completed}/{task.total}"),
+            TextColumn("{task.completed:,}/{task.total:,} structures"),
             console=console,
         ) as progress:
-            task = progress.add_task("Running", total=total_runs)
+            task = progress.add_task("Running", total=total_structures)
 
             for n_threads in thread_counts:
                 for run_num in range(1, runs + 1):
@@ -409,6 +437,7 @@ def main(
                             algorithm,
                             n_threads,
                             precision,
+                            parallelism,
                         )
                         results.append(
                             {
@@ -441,7 +470,7 @@ def main(
                             }
                         )
 
-                    progress.advance(task)
+                    progress.advance(task, advance=file_count)
 
                     # Clean up output dir
                     shutil.rmtree(batch_output, ignore_errors=True)
