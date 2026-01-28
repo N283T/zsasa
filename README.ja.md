@@ -277,7 +277,7 @@ total,1234.560000
 
 ![構造サイズ・スレッド数別高速化率](benchmarks/results/plots/speedup_by_bin/grid.png)
 
-**主な結果**（Zigはf64精度、RustSASAはf32精度）：
+**主な結果**（SASA計算時間のみ測定、Zig/FreeSASAはf64、RustSASAはf32）：
 - **シングルスレッド**：大規模構造でFreeSASA Cより1.5x以上、RustSASAより1.1x高速
 - **マルチスレッド**：効率大幅向上—500原子以上で1.0x超、20k原子以上で**1.9x-2.3x**高速
 - **バッチ処理**：高精度（f64）でRustSASAと同等速度、f32モードならスループット優位
