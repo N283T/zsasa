@@ -273,30 +273,15 @@ Slice-based method - mathematically precise.
 
 ## Validation
 
-Tested against FreeSASA reference implementation using ProtOr classifier:
+Validated against FreeSASA on ~100k structures (R² = 1.000, mean error = 0.0004%):
 
-| Structure | Atoms | FreeSASA (Å²) | Zig (Å²) | Difference |
-|-----------|------:|-------------:|--------:|----------:|
-| 1CRN | 327 | 3,001.13 | 3,001.13 | 0.000% |
-| 1UBQ | 602 | 4,834.72 | 4,834.72 | 0.000% |
-| 1A0Q | 3,183 | 18,908.90 | 18,908.90 | 0.000% |
-| 3HHB | 4,384 | 25,527.36 | 25,527.36 | 0.000% |
-| 1AON | 58,674 | 316,879.14 | 316,879.14 | 0.000% |
-| 4V6X | 237,685 | 1,325,369.25 | 1,325,369.25 | 0.000% |
-
-Run validation: `./benchmarks/scripts/analyze.py validate`
+![Validation](benchmarks/results/plots/validation/sr.png)
 
 ## Performance
 
-Benchmarked on ~100k PDB structures. See [docs/benchmark.md](docs/benchmark.md) for methodology and detailed results.
+Benchmarked on ~100k PDB structures. See [docs/benchmark.md](docs/benchmark.md) for details.
 
-**Speedup by structure size** (Shrake-Rupley, 10 threads):
-
-| Size Bin | Zig vs FreeSASA C | Zig vs RustSASA |
-|----------|------------------:|----------------:|
-| Small (<2k) | 0.9x-1.3x | 1.0x-1.5x |
-| Medium (2k-20k) | 1.4x-1.7x | 1.7x-2.0x |
-| Large (20k+) | 1.9x-2.3x | 2.1x-2.3x |
+![Speedup by structure size and thread count](benchmarks/results/plots/speedup_by_bin/grid.png)
 
 **Key findings**:
 - Single-threaded: All implementations similar
