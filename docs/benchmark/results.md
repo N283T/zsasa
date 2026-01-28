@@ -1,6 +1,20 @@
 # Benchmark Results / ベンチマーク結果
 
-freesasa-zig の大規模ベンチマーク結果。約 10 万構造での層化サンプリングによる公平な比較。
+freesasa-zig の大規模ベンチマーク結果。層化サンプリングによる公平な比較。
+
+- **Shrake-Rupley**: 約 10 万構造
+- **Lee-Richards**: 約 3 万構造（計算コストが高いため）
+- **精度**: Single-file モードは全ツール f64（batch モードのみ Zig f32 / RustSASA f32 オプションあり）
+
+## Test Environment / テスト環境
+
+| Item | Value |
+|------|-------|
+| Machine | MacBook Pro |
+| Chip | Apple M4 |
+| Cores | 10 (4 performance + 6 efficiency) |
+| Memory | 32 GB |
+| OS | macOS |
 
 ## Executive Summary / エグゼクティブサマリー
 
@@ -16,6 +30,8 @@ freesasa-zig の大規模ベンチマーク結果。約 10 万構造での層化
 ---
 
 ## Dataset / データセット
+
+![Dataset Distribution](../../benchmarks/results/plots/dataset/dataset_distribution.png)
 
 ### 構造数と分布
 
@@ -68,7 +84,7 @@ freesasa-zig の大規模ベンチマーク結果。約 10 万構造での層化
 
 ### Shrake-Rupley (t=10)
 
-![Speedup by Size and Threads](../benchmarks/results/plots/speedup_by_bin/grid.png)
+![Speedup by Size and Threads](../../benchmarks/results/plots/speedup_by_bin/grid.png)
 
 | Size Bin | Count | vs FreeSASA | (IQR) | vs RustSASA | (IQR) |
 |----------|------:|------------:|------:|------------:|------:|
@@ -134,7 +150,7 @@ freesasa-zig の大規模ベンチマーク結果。約 10 万構造での層化
 
 ### Summary (100k+ atoms, n=1,171)
 
-![Zig Speedup on Large Structures](../benchmarks/results/plots/large/speedup_bar.png)
+![Zig Speedup on Large Structures](../../benchmarks/results/plots/large/speedup_bar.png)
 
 | Comparison | Median Speedup | IQR |
 |------------|---------------:|----:|
@@ -144,7 +160,7 @@ freesasa-zig の大規模ベンチマーク結果。約 10 万構造での層化
 
 ### Maximum Structure: 9fqr (4,506,416 atoms)
 
-![Max Structure Scaling](../benchmarks/results/plots/samples/max_structure.png)
+![Max Structure Scaling](../../benchmarks/results/plots/samples/max_structure.png)
 
 PDB 最大構造でのスレッドスケーリング:
 
@@ -167,7 +183,7 @@ PDB 最大構造でのスレッドスケーリング:
 
 ### Scatter Plot: SR Algorithm
 
-![SR Scatter Plot](../benchmarks/results/plots/scatter/sr/grid.png)
+![SR Scatter Plot](../../benchmarks/results/plots/scatter/sr/grid.png)
 
 **観察:**
 - 対数スケールでほぼ線形 → O(N) の近傍リストが効いている
@@ -177,7 +193,7 @@ PDB 最大構造でのスレッドスケーリング:
 
 ### Scatter Plot: LR Algorithm
 
-![LR Scatter Plot](../benchmarks/results/plots/scatter/lr/grid.png)
+![LR Scatter Plot](../../benchmarks/results/plots/scatter/lr/grid.png)
 
 **観察:**
 - SR より全体的に 3-4x 遅い（スライス積分のコスト）
@@ -190,7 +206,7 @@ PDB 最大構造でのスレッドスケーリング:
 
 ### Median Execution Time by Thread Count
 
-![Thread Scaling](../benchmarks/results/plots/thread_scaling/grid.png)
+![Thread Scaling](../../benchmarks/results/plots/thread_scaling/grid.png)
 
 #### Shrake-Rupley
 
@@ -237,7 +253,7 @@ PDB 最大構造でのスレッドスケーリング:
 
 ### Efficiency by Thread Count (SR, Median)
 
-![Parallel Efficiency](../benchmarks/results/plots/efficiency/summary.png)
+![Parallel Efficiency](../../benchmarks/results/plots/efficiency/summary.png)
 
 | Threads | Zig | FreeSASA | Rust | Zig vs FS | Zig vs Rust |
 |--------:|----:|---------:|-----:|----------:|------------:|
@@ -275,16 +291,37 @@ PDB 最大構造でのスレッドスケーリング:
 
 | Bin | Atoms Range | Sample Plot |
 |-----|-------------|-------------|
-| 0-500 | 0-500 | [View](../benchmarks/results/plots/samples/0-500.png) |
-| 500-1k | 500-1,000 | [View](../benchmarks/results/plots/samples/500-1k.png) |
-| 1k-2k | 1,000-2,000 | [View](../benchmarks/results/plots/samples/1k-2k.png) |
-| 2k-5k | 2,000-5,000 | [View](../benchmarks/results/plots/samples/2k-5k.png) |
-| 5k-10k | 5,000-10,000 | [View](../benchmarks/results/plots/samples/5k-10k.png) |
-| 10k-20k | 10,000-20,000 | [View](../benchmarks/results/plots/samples/10k-20k.png) |
-| 20k-50k | 20,000-50,000 | [View](../benchmarks/results/plots/samples/20k-50k.png) |
-| 50k-100k | 50,000-100,000 | [View](../benchmarks/results/plots/samples/50k-100k.png) |
-| 100k-200k | 100,000-200,000 | [View](../benchmarks/results/plots/samples/100k-200k.png) |
-| 200k+ | 200,000+ | [View](../benchmarks/results/plots/samples/200kplus.png) |
+| 0-500 | 0-500 | [View](../../benchmarks/results/plots/samples/0-500.png) |
+| 500-1k | 500-1,000 | [View](../../benchmarks/results/plots/samples/500-1k.png) |
+| 1k-2k | 1,000-2,000 | [View](../../benchmarks/results/plots/samples/1k-2k.png) |
+| 2k-5k | 2,000-5,000 | [View](../../benchmarks/results/plots/samples/2k-5k.png) |
+| 5k-10k | 5,000-10,000 | [View](../../benchmarks/results/plots/samples/5k-10k.png) |
+| 10k-20k | 10,000-20,000 | [View](../../benchmarks/results/plots/samples/10k-20k.png) |
+| 20k-50k | 20,000-50,000 | [View](../../benchmarks/results/plots/samples/20k-50k.png) |
+| 50k-100k | 50,000-100,000 | [View](../../benchmarks/results/plots/samples/50k-100k.png) |
+| 100k-200k | 100,000-200,000 | [View](../../benchmarks/results/plots/samples/100k-200k.png) |
+| 200k+ | 200,000+ | [View](../../benchmarks/results/plots/samples/200kplus.png) |
+
+---
+
+## Batch Processing / バッチ処理
+
+複数ファイルを並列処理するバッチモードの比較。大規模構造（20k+ atoms）10,000ファイルを10スレッドで処理。
+
+> **Note**: FreeSASA C は single-file ベンチマークで Rust より遅いことが判明しているため、バッチ比較からは除外。
+
+![Batch Comparison](../../benchmarks/results/plots/batch/comparison.png)
+
+| Tool | Precision | Total Time | Throughput | vs Rust |
+|------|-----------|------------|------------|---------|
+| **Zig** | f32 | **171s** | **58.5 files/s** | **1.03x** |
+| Zig | f64 | 177s | 56.6 files/s | 0.99x |
+| Rust | f32 | 176s | 57.0 files/s | 1.00x |
+
+**観察:**
+- Zig f32 は Rust f32 より **3% 高速**
+- Zig f64（高精度）でも Rust f32 と同等のスループット
+- ファイルレベル並列化では精度の影響が顕著
 
 ---
 
@@ -300,7 +337,7 @@ FreeSASA C を基準として、Zig と RustSASA の SASA 値を比較。
 
 ### Results / 結果
 
-![SR Validation](../benchmarks/results/plots/validation/sr.png)
+![SR Validation](../../benchmarks/results/plots/validation/sr.png)
 
 | Comparison | Max Error | Mean Error | Pass Rate |
 |------------|----------:|-----------:|----------:|
@@ -422,6 +459,13 @@ cd rustsasa-bench && cargo build --release --features cli && cd ..
     --input-dir benchmarks/inputs \
     --sample-file benchmarks/samples/stratified_100k.json \
     --threads 1,2,4,8,10
+
+# バッチベンチマーク (大規模構造 10,000 ファイル)
+./benchmarks/scripts/run_batch.py \
+    --tool zig,rust --algorithm sr \
+    --input-dir benchmarks/inputs \
+    --sample-file benchmarks/samples/large_20k_10k.json \
+    --threads 10
 ```
 
 ### Generating Plots / プロット生成
@@ -447,7 +491,7 @@ cd rustsasa-bench && cargo build --release --features cli && cd ..
 
 ## Related Documents / 関連ドキュメント
 
-- [benchmark.md](benchmark.md) - ベンチマーク手法・測定方法
-- [cpu-efficiency.md](cpu-efficiency.md) - CPU 効率解析（IPC、命令数）
-- [optimizations.md](optimizations.md) - 最適化技術の詳細
-- [algorithm.md](algorithm.md) - アルゴリズム詳解
+- [methodology.md](methodology.md) - ベンチマーク手法・測定方法
+- [cpu-efficiency.md](../cpu-efficiency.md) - CPU 効率解析（IPC、命令数）
+- [optimizations.md](../optimizations.md) - 最適化技術の詳細
+- [algorithm.md](../algorithm.md) - アルゴリズム詳解
