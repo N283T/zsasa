@@ -289,58 +289,20 @@ Run validation: `./benchmarks/scripts/analyze.py validate`
 
 ## Performance
 
-Benchmark comparing Zig (ReleaseFast) vs FreeSASA C (native binary), SASA calculation time only (4 threads):
+Benchmarked on ~100k PDB structures. See [docs/benchmark.md](docs/benchmark.md) for methodology and detailed results.
 
-| Structure | Atoms | SR Zig (ms) | SR FS-C (ms) | SR Speedup | LR Zig (ms) | LR FS-C (ms) | LR Speedup |
-|-----------|------:|------------:|-------------:|-----------:|------------:|-------------:|-----------:|
-| 1UBQ | 602 | 0.71 | 0.75 | 1.06x | - | - | - |
-| 3HHB | 4,384 | 4.22 | 5.87 | 1.39x | - | - | - |
-| 1AON | 58,674 | 50.31 | 90.05 | 1.79x | 183.23 | 308.83 | 1.69x |
-| 4V6X | 106,846 | 82.67 | 171.39 | 2.07x | 308.94 | 531.76 | 1.72x |
+**Speedup by structure size** (Shrake-Rupley, 10 threads):
 
-**Summary**: Both algorithms are faster than FreeSASA C. Shrake-Rupley is **1.1x-2.1x faster**, Lee-Richards is **1.7x faster**. Speedup increases with structure size.
+| Size Bin | Zig vs FreeSASA C | Zig vs RustSASA |
+|----------|------------------:|----------------:|
+| Small (<2k) | 0.9x-1.3x | 1.0x-1.5x |
+| Medium (2k-20k) | 1.4x-1.7x | 1.7x-2.0x |
+| Large (20k+) | 1.9x-2.3x | 2.1x-2.3x |
 
-### Comparison with RustSASA
-
-[RustSASA](https://github.com/maxall41/RustSASA) is a Rust implementation optimized for batch processing. It uses f32 precision internally.
-
-**Single-threaded comparison** (n_points=100, Shrake-Rupley):
-
-| Structure | Atoms | Zig (ms) | RustSASA (ms) | FreeSASA C (ms) |
-|-----------|------:|---------:|--------------:|----------------:|
-| 1UBQ | 602 | 1.34 | 1.19 | 1.50 |
-| 3HHB | 4,384 | 10.64 | 8.83 | 11.67 |
-| 1AON | 58,674 | 110.41 | 112.56 | 162.10 |
-| 4V6X | 106,846 | 191.90 | 210.40 | 307.46 |
-
-Single-threaded performance is comparable across implementations.
-
-**Multi-threaded comparison by structure size** (10 threads, Shrake-Rupley, ~100k structures):
-
-| Size Bin | Structures | Zig vs FreeSASA | Zig vs RustSASA |
-|----------|----------:|----------------:|----------------:|
-| 0-500 | 2,506 | 0.92x | 0.97x |
-| 500-1k | 5,744 | 1.18x | 1.36x |
-| 1k-2k | 15,922 | 1.26x | 1.54x |
-| 2k-5k | 36,123 | 1.42x | 1.70x |
-| 5k-10k | 19,835 | 1.56x | 1.84x |
-| 10k-20k | 10,187 | 1.68x | 1.95x |
-| 20k-50k | 5,377 | 1.93x | 2.11x |
-| 50k+ | 4,304 | 2.23x-2.31x | 2.25x-2.34x |
-
-**Summary**: Zig's advantage increases with structure size. For large structures (20k+ atoms), Zig is **1.9x-2.3x faster** than both FreeSASA C and RustSASA. RustSASA only supports Shrake-Rupley algorithm.
-
-**Batch processing comparison** (10,000 files, 10 threads):
-
-| Tool | Precision | Time | Throughput |
-|------|-----------|------|------------|
-| Zig | f32 | 171s | 58.5/s |
-| Rust | f32 | 176s | 56.8/s |
-| Zig | f64 | 177s | 56.5/s |
-
-Zig f32 is **3% faster** than RustSASA. Even Zig f64 (double precision) matches RustSASA speed.
-
-Run benchmark: `./benchmarks/scripts/run.py --tool zig --algorithm sr`
+**Key findings**:
+- Single-threaded: All implementations similar
+- Multi-threaded: Zig **1.9x-2.3x faster** for large structures (20k+ atoms)
+- Batch processing: Zig f32 matches RustSASA throughput (~58 files/sec)
 
 ### Optimization Techniques
 
