@@ -56,7 +56,7 @@ zig build -Doptimize=ReleaseFast
 cd benchmarks/external
 git clone https://github.com/N283T/freesasa-bench.git
 cd freesasa-bench && ./configure --enable-threads && make && cd ..
-git clone https://github.com/N283T/rustsasa-bench.git
+git clone --recursive https://github.com/N283T/rustsasa-bench.git
 cd rustsasa-bench && cargo build --release --features cli && cd ..
 ```
 
