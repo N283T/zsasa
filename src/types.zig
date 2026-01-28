@@ -15,6 +15,20 @@ pub const Precision = enum {
     }
 };
 
+/// Epsilon values for floating-point comparisons.
+/// Different use cases may require different tolerances.
+pub fn Epsilon(comptime T: type) type {
+    return struct {
+        /// Default epsilon for general near-zero comparisons (e.g., distance checks)
+        /// f32: 1e-6, f64: 1e-10
+        pub const default: T = if (T == f32) 1e-6 else 1e-10;
+
+        /// Stricter epsilon for trigonometric functions (e.g., atan2 near-zero)
+        /// f32: 1e-7, f64: 1e-10
+        pub const trig: T = if (T == f32) 1e-7 else 1e-10;
+    };
+}
+
 /// Generic 3D vector/point representation
 pub fn Vec3Gen(comptime T: type) type {
     return struct {

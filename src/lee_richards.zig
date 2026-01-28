@@ -240,6 +240,9 @@ fn atomArea(
                 while (sup <= 0) sup += TWOPI;
                 while (sup > TWOPI) sup -= TWOPI;
 
+                // Bounds check before writing (defensive)
+                if (n_arcs + 2 > arc_buffer.len) break;
+
                 if (sup < inf) {
                     arc_buffer[n_arcs] = Arc{ .start = 0, .end = sup };
                     n_arcs += 1;
@@ -331,6 +334,9 @@ fn atomArea(
                 while (sup <= 0) sup += TWOPI;
                 while (sup > TWOPI) sup -= TWOPI;
 
+                // Bounds check before writing (defensive)
+                if (n_arcs + 2 > arc_buffer.len) break;
+
                 if (sup < inf) {
                     arc_buffer[n_arcs] = Arc{ .start = 0, .end = sup };
                     n_arcs += 1;
@@ -386,6 +392,9 @@ fn atomArea(
             while (inf >= TWOPI) inf -= TWOPI;
             while (sup <= 0) sup += TWOPI;
             while (sup > TWOPI) sup -= TWOPI;
+
+            // Bounds check before writing (defensive)
+            if (n_arcs + 2 > arc_buffer.len) break;
 
             if (sup < inf) {
                 arc_buffer[n_arcs] = Arc{ .start = 0, .end = sup };
@@ -794,7 +803,7 @@ pub fn LeeRichardsGen(comptime T: type) type {
                         const Rj_prime2 = Rj_prime * Rj_prime;
 
                         // Handle near-zero distance
-                        const epsilon: T = if (T == f32) 1e-6 else 1e-10;
+                        const epsilon = types.Epsilon(T).default;
                         if (dij < epsilon) {
                             if (Rj_prime > Ri_prime) {
                                 is_buried = true;
@@ -825,6 +834,9 @@ pub fn LeeRichardsGen(comptime T: type) type {
                         while (inf >= Self.TWOPI_T) inf -= Self.TWOPI_T;
                         while (sup <= 0) sup += Self.TWOPI_T;
                         while (sup > Self.TWOPI_T) sup -= Self.TWOPI_T;
+
+                        // Bounds check before writing (defensive)
+                        if (n_arcs + 2 > arc_buffer.len) break;
 
                         if (sup < inf) {
                             arc_buffer[n_arcs] = Self.Arc{ .start = 0, .end = sup };
@@ -880,7 +892,7 @@ pub fn LeeRichardsGen(comptime T: type) type {
                         const dy = batch_y[k] - yi;
                         const Rj_prime2 = Rj_prime * Rj_prime;
 
-                        const epsilon: T = if (T == f32) 1e-6 else 1e-10;
+                        const epsilon = types.Epsilon(T).default;
                         if (dij < epsilon) {
                             if (Rj_prime > Ri_prime) {
                                 is_buried = true;
@@ -906,6 +918,9 @@ pub fn LeeRichardsGen(comptime T: type) type {
                         while (inf >= Self.TWOPI_T) inf -= Self.TWOPI_T;
                         while (sup <= 0) sup += Self.TWOPI_T;
                         while (sup > Self.TWOPI_T) sup -= Self.TWOPI_T;
+
+                        // Bounds check before writing (defensive)
+                        if (n_arcs + 2 > arc_buffer.len) break;
 
                         if (sup < inf) {
                             arc_buffer[n_arcs] = Self.Arc{ .start = 0, .end = sup };
@@ -937,7 +952,7 @@ pub fn LeeRichardsGen(comptime T: type) type {
 
                     if (dij >= Ri_prime + Rj_prime) continue;
 
-                    const epsilon: T = if (T == f32) 1e-6 else 1e-10;
+                    const epsilon = types.Epsilon(T).default;
                     if (dij < epsilon) {
                         if (Rj_prime > Ri_prime) {
                             is_buried = true;
@@ -963,6 +978,9 @@ pub fn LeeRichardsGen(comptime T: type) type {
                     while (inf >= Self.TWOPI_T) inf -= Self.TWOPI_T;
                     while (sup <= 0) sup += Self.TWOPI_T;
                     while (sup > Self.TWOPI_T) sup -= Self.TWOPI_T;
+
+                    // Bounds check before writing (defensive)
+                    if (n_arcs + 2 > arc_buffer.len) break;
 
                     if (sup < inf) {
                         arc_buffer[n_arcs] = Self.Arc{ .start = 0, .end = sup };

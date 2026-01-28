@@ -20,7 +20,10 @@ pub const PrefetchedFile = struct {
 
 /// Bounded queue for prefetched files
 pub const PrefetchQueue = struct {
-    const QUEUE_SIZE = 4; // Number of prefetch slots
+    /// Number of prefetch slots. Sized to keep I/O thread busy while processing,
+    /// but small enough to limit memory usage (each slot holds a fully parsed file).
+    /// 4 slots provides good overlap between I/O and computation without excessive memory.
+    const QUEUE_SIZE = 4;
 
     slots: [QUEUE_SIZE]?PrefetchedFile,
     head: usize, // Consumer reads from here
@@ -218,4 +221,43 @@ test "PrefetchQueue basic operations" {
     queue.markDone();
     const result = queue.pop();
     try std.testing.expectEqual(@as(?PrefetchedFile, null), result);
+}
+
+test "PrefetchQueue count tracking" {
+    const allocator = std.testing.allocator;
+    var queue = PrefetchQueue.init(allocator);
+    defer queue.deinit();
+
+    // Initial state
+    try std.testing.expectEqual(@as(usize, 0), queue.count);
+    try std.testing.expectEqual(false, queue.done);
+
+    // Mark done
+    queue.markDone();
+    try std.testing.expectEqual(true, queue.done);
+}
+
+test "IoContext failure tracking" {
+    const allocator = std.testing.allocator;
+    var queue = PrefetchQueue.init(allocator);
+    defer queue.deinit();
+
+    const files = [_][]const u8{};
+    var ctx = IoContext.init(allocator, &queue, &files, "/nonexistent");
+    defer ctx.deinit();
+
+    // Initially no failures
+    try std.testing.expectEqual(@as(usize, 0), ctx.failedCount());
+
+    // Record some failures
+    ctx.recordFailure("file1.json", .read_parse_failed);
+    try std.testing.expectEqual(@as(usize, 1), ctx.failedCount());
+
+    ctx.recordFailure("file2.json", .allocation_failed);
+    try std.testing.expectEqual(@as(usize, 2), ctx.failedCount());
+
+    // Verify failure details
+    try std.testing.expectEqual(@as(usize, 2), ctx.failed_files.items.len);
+    try std.testing.expectEqualStrings("file1.json", ctx.failed_files.items[0].filename);
+    try std.testing.expectEqual(FailedFile.FailureReason.read_parse_failed, ctx.failed_files.items[0].reason);
 }

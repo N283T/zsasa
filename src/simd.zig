@@ -515,7 +515,7 @@ pub fn fastAtan2Gen(comptime T: type) type {
             const abs_x = @abs(x);
             const abs_y = @abs(y);
 
-            const epsilon: T = if (T == f32) 1e-7 else 1e-10;
+            const epsilon = types.Epsilon(T).trig;
             if (abs_x < epsilon and abs_y < epsilon) {
                 return 0.0;
             }

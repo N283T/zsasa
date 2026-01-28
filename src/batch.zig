@@ -44,6 +44,14 @@ pub const BatchConfig = struct {
     precision: Precision = .f64, // f32 or f64
 };
 
+/// Strip .gz extension from filename if present (for output file naming)
+fn stripGzExtension(filename: []const u8) []const u8 {
+    if (std.mem.endsWith(u8, filename, ".gz")) {
+        return filename[0 .. filename.len - 3];
+    }
+    return filename;
+}
+
 /// Result for a single file
 pub const FileResult = struct {
     filename: []const u8,
@@ -271,13 +279,7 @@ fn processOneFile(
 
             // Write output if output_dir specified
             if (output_dir) |out_dir| {
-                const output_filename = blk: {
-                    if (std.mem.endsWith(u8, filename, ".gz")) {
-                        break :blk filename[0 .. filename.len - 3];
-                    }
-                    break :blk filename;
-                };
-
+                const output_filename = stripGzExtension(filename);
                 const output_path = std.fs.path.join(arena, &.{ out_dir, output_filename }) catch {
                     result.status = .err;
                     return result;
@@ -336,13 +338,7 @@ fn processOneFile(
 
             // Write output if output_dir specified - convert to f64 for output
             if (output_dir) |out_dir| {
-                const output_filename = blk: {
-                    if (std.mem.endsWith(u8, filename, ".gz")) {
-                        break :blk filename[0 .. filename.len - 3];
-                    }
-                    break :blk filename;
-                };
-
+                const output_filename = stripGzExtension(filename);
                 const output_path = std.fs.path.join(arena, &.{ out_dir, output_filename }) catch {
                     result.status = .err;
                     return result;
@@ -671,13 +667,7 @@ pub fn runBatchPipelined(
 
                     // Write output if output_dir specified
                     if (output_dir) |out_dir| {
-                        const output_filename = blk: {
-                            if (std.mem.endsWith(u8, pf.filename, ".gz")) {
-                                break :blk pf.filename[0 .. pf.filename.len - 3];
-                            }
-                            break :blk pf.filename;
-                        };
-
+                        const output_filename = stripGzExtension(pf.filename);
                         const output_path = std.fs.path.join(pf.arena.allocator(), &.{ out_dir, output_filename }) catch {
                             sasa_ok = false;
                             break;
@@ -689,6 +679,9 @@ pub fn runBatchPipelined(
                     }
                 }
             },
+            // TODO: Consider unifying f32/f64 code paths using comptime generics
+            // to reduce duplication. The main difference is the function suffix
+            // (f32 vs none) and the probe_radius cast.
             .f32 => {
                 var sasa_result = switch (config.algorithm) {
                     .sr => blk: {
@@ -737,13 +730,7 @@ pub fn runBatchPipelined(
 
                     // Write output if output_dir specified
                     if (output_dir) |out_dir| {
-                        const output_filename = blk: {
-                            if (std.mem.endsWith(u8, pf.filename, ".gz")) {
-                                break :blk pf.filename[0 .. pf.filename.len - 3];
-                            }
-                            break :blk pf.filename;
-                        };
-
+                        const output_filename = stripGzExtension(pf.filename);
                         const output_path = std.fs.path.join(pf.arena.allocator(), &.{ out_dir, output_filename }) catch {
                             sasa_ok = false;
                             break;
