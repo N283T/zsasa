@@ -28,8 +28,9 @@ pub const cpu_features = struct {
 };
 
 /// Optimal vector widths based on detected CPU features.
-/// - AVX-512: 16 f32s or 8 f64s per vector
-/// - AVX2/NEON: 8 f32s or 4 f64s per vector
+/// - AVX-512: 16 f32s or 8 f64s per vector (512-bit)
+/// - AVX2: 8 f32s or 4 f64s per vector (256-bit)
+/// - NEON: 8 f32s or 2 f64s per vector (128-bit, but efficient for f32)
 /// - Fallback: 4 f32s or 2 f64s per vector
 pub const optimal_vector_width = struct {
     /// Optimal f32 vector width for this CPU
