@@ -315,16 +315,20 @@ Benchmark comparing Zig (ReleaseFast) vs FreeSASA C (native binary), SASA calcul
 
 Single-threaded performance is comparable across implementations.
 
-**Multi-threaded comparison** (Shrake-Rupley):
+**Multi-threaded comparison by structure size** (10 threads, Shrake-Rupley, ~100k structures):
 
-| Structure | Threads | Zig (ms) | RustSASA (ms) | Zig Speedup |
-|-----------|--------:|---------:|--------------:|------------:|
-| 1AON | 4 | 50.31 | 91.65 | 1.82x |
-| 1AON | 10 | 41.37 | 87.26 | 2.11x |
-| 4V6X | 4 | 82.67 | 154.70 | 1.87x |
-| 4V6X | 10 | 64.19 | 146.51 | 2.28x |
+| Size Bin | Structures | Zig vs FreeSASA | Zig vs RustSASA |
+|----------|----------:|----------------:|----------------:|
+| 0-500 | 2,506 | 0.92x | 0.97x |
+| 500-1k | 5,744 | 1.18x | 1.36x |
+| 1k-2k | 15,922 | 1.26x | 1.54x |
+| 2k-5k | 36,123 | 1.42x | 1.70x |
+| 5k-10k | 19,835 | 1.56x | 1.84x |
+| 10k-20k | 10,187 | 1.68x | 1.95x |
+| 20k-50k | 5,377 | 1.93x | 2.11x |
+| 50k+ | 4,304 | 2.23x-2.31x | 2.25x-2.34x |
 
-**Summary**: Single-threaded performance is similar, but Zig is **1.8x-2.3x faster** with multi-threading. RustSASA has limited thread scaling (1.4x from t=1→10), while Zig scales well (2.7x from t=1→10). RustSASA only supports Shrake-Rupley algorithm.
+**Summary**: Zig's advantage increases with structure size. For large structures (20k+ atoms), Zig is **1.9x-2.3x faster** than both FreeSASA C and RustSASA. RustSASA only supports Shrake-Rupley algorithm.
 
 **Batch processing comparison** (10,000 files, 10 threads):
 
