@@ -410,16 +410,16 @@ def main(
         csv_path = output_dir / "results.csv"
         results = []
 
-        total_structures = len(thread_counts) * runs * file_count
+        total_runs = len(thread_counts) * runs
 
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
-            TextColumn("{task.completed:,}/{task.total:,} structures"),
+            TextColumn("{task.completed}/{task.total}"),
             console=console,
         ) as progress:
-            task = progress.add_task("Running", total=total_structures)
+            task = progress.add_task("Running", total=total_runs)
 
             for n_threads in thread_counts:
                 for run_num in range(1, runs + 1):
@@ -470,7 +470,7 @@ def main(
                             }
                         )
 
-                    progress.advance(task, advance=file_count)
+                    progress.advance(task)
 
                     # Clean up output dir
                     shutil.rmtree(batch_output, ignore_errors=True)
