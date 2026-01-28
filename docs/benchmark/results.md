@@ -304,6 +304,25 @@ PDB 最大構造でのスレッドスケーリング:
 
 ---
 
+## Batch Processing / バッチ処理
+
+複数ファイルを並列処理するバッチモードの比較。大規模構造（20k+ atoms）10,000ファイルを10スレッドで処理。
+
+![Batch Comparison](../../benchmarks/results/plots/batch/comparison.png)
+
+| Tool | Precision | Total Time | Throughput | vs Rust |
+|------|-----------|------------|------------|---------|
+| **Zig** | f32 | **171s** | **58.5 files/s** | **1.03x** |
+| Zig | f64 | 177s | 56.6 files/s | 0.99x |
+| Rust | f32 | 176s | 57.0 files/s | 1.00x |
+
+**観察:**
+- Zig f32 は Rust f32 より **3% 高速**
+- Zig f64（高精度）でも Rust f32 と同等のスループット
+- ファイルレベル並列化では精度の影響が顕著
+
+---
+
 ## SASA Validation / SASA 値検証
 
 ### Validation Method / 検証方法

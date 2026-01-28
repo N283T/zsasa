@@ -46,7 +46,6 @@ benchmarks/results/plots/**/individual/
 benchmarks/results/plots/efficiency/by_size.png
 benchmarks/results/plots/large/speedup_by_threads.png
 benchmarks/results/plots/validation/lr.png
-benchmarks/results/plots/batch/
 
 # Benchmark dataset (test JSON files)
 benchmarks/dataset/
