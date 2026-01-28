@@ -23,15 +23,37 @@ app = typer.Typer(help="Generate benchmark plots")
 RESULTS_DIR = Path(__file__).parent.parent / "results"
 PLOTS_DIR = RESULTS_DIR / "plots"
 
+# Common option for directory filtering
+DirsOption = typer.Option(
+    None,
+    "--dirs",
+    "-d",
+    help="Result directories to include (e.g., 'zig_sr,rust_sr'). Default: all except batch/ipc.",
+)
 
-def load_data() -> pl.DataFrame:
-    """Load all results into a single DataFrame (excludes batch/ipc results)."""
-    excluded = ("batch_", "ipc")
-    csv_files = [
-        f
-        for f in RESULTS_DIR.glob("*/results.csv")
-        if not any(f.parent.name.startswith(ex) for ex in excluded)
-    ]
+
+def parse_dirs(dirs: str | None) -> list[str] | None:
+    """Parse comma-separated directory list."""
+    return dirs.split(",") if dirs else None
+
+
+def load_data(dirs: list[str] | None = None) -> pl.DataFrame:
+    """Load results into a single DataFrame.
+
+    Args:
+        dirs: List of directory names to include (e.g., ["zig_sr", "rust_sr"]).
+              If None, loads all except batch_* and ipc directories.
+    """
+    if dirs:
+        csv_files = [RESULTS_DIR / d / "results.csv" for d in dirs]
+        csv_files = [f for f in csv_files if f.exists()]
+    else:
+        excluded = ("batch_", "ipc", "csv")
+        csv_files = [
+            f
+            for f in RESULTS_DIR.glob("*/results.csv")
+            if not any(f.parent.name.startswith(ex) for ex in excluded)
+        ]
     if not csv_files:
         raise FileNotFoundError("No results.csv files found")
 
@@ -71,9 +93,9 @@ def setup_style():
 
 
 @app.command()
-def summary():
+def summary(dirs: str | None = DirsOption):
     """Print summary statistics table."""
-    df = load_data()
+    df = load_data(parse_dirs(dirs))
 
     # Single-threaded comparison
     df_t1 = df.filter(pl.col("threads") == 1)
@@ -363,14 +385,14 @@ def _plot_threads(df_algo: pl.DataFrame, algo: str, ax):
 
 
 @app.command()
-def threads():
+def threads(dirs: str | None = DirsOption):
     """Generate thread scaling plot."""
     setup_style()
     plot_dir = PLOTS_DIR / "thread_scaling"
     individual_dir = plot_dir / "individual"
     individual_dir.mkdir(parents=True, exist_ok=True)
 
-    df = load_data()
+    df = load_data(parse_dirs(dirs))
 
     # Individual plots
     for algo in ["sr", "lr"]:
