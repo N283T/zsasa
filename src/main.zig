@@ -874,6 +874,13 @@ pub fn main() !void {
         json_parser.printValidationErrors(validation.errors);
         std.process.exit(1);
     }
+
+    // Check for duplicate coordinates (warning only)
+    if (!parsed.quiet) {
+        _ = json_parser.checkDuplicateCoordinates(allocator, input) catch |err| {
+            std.debug.print("Warning: Could not check for duplicate coordinates: {s}\n", .{@errorName(err)});
+        };
+    }
     time_parse = timer.read();
 
     // Handle --validate (dry-run)
