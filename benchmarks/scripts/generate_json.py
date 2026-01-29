@@ -128,6 +128,22 @@ def cif_to_benchmark_json(cif_path: Path, output_path: Path) -> tuple[str, int, 
         if len(xs) == 0:
             return (cif_path.stem, 0, 0)
 
+        # Remove duplicate coordinates (some PDB entries have exact duplicates)
+        seen: set[tuple[float, float, float]] = set()
+        unique_xs: list[float] = []
+        unique_ys: list[float] = []
+        unique_zs: list[float] = []
+        unique_rs: list[float] = []
+        for i in range(len(xs)):
+            coord = (xs[i], ys[i], zs[i])
+            if coord not in seen:
+                seen.add(coord)
+                unique_xs.append(xs[i])
+                unique_ys.append(ys[i])
+                unique_zs.append(zs[i])
+                unique_rs.append(rs[i])
+        xs, ys, zs, rs = unique_xs, unique_ys, unique_zs, unique_rs
+
         # Minimal JSON (no residue/atom_name - radii are pre-computed)
         data = {"x": xs, "y": ys, "z": zs, "r": rs}
         json_bytes = json.dumps(data, separators=(",", ":")).encode("utf-8")

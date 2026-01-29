@@ -74,6 +74,7 @@ pub fn atomSasa(
 
             // Check if point is inside this atom
             const radius_sq = other_radius_probe * other_radius_probe;
+            // use <= to mark boundary points as buried
             if (dist_sq < radius_sq) {
                 is_buried = true;
                 break;
@@ -251,7 +252,7 @@ fn atomSasaWithNeighbors(
                 const dz = point.z - other_pos.z;
                 const dist_sq = dx * dx + dy * dy + dz * dz;
 
-                // Check if point is inside this atom
+                // Check if point is inside this atom (strict less-than for open boundary)
                 if (dist_sq < radii_with_probe_sq[j]) {
                     is_buried = true;
                     break;
@@ -648,7 +649,7 @@ pub fn ShrakeRupleyGen(comptime T: type) type {
                         const dz = point.z - other_pos.z;
                         const dist_sq = dx * dx + dy * dy + dz * dz;
 
-                        // Check if point is inside this atom
+                        // Check if point is inside this atom (strict less-than for open boundary)
                         if (dist_sq < radii_with_probe_sq[j]) {
                             is_buried = true;
                             break;

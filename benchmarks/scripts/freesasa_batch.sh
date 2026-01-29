@@ -1,10 +1,73 @@
 #!/bin/bash
 # shellcheck shell=bash
-# FreeSASA batch JSON processing using background jobs
+# FreeSASA batch JSON processing using xargs -P for parallelism
 # Usage: ./freesasa_batch.sh <input_dir> <output_dir> [n_jobs]
 
 set -euo pipefail
 
+SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+FREESASA="${SCRIPT_DIR}/../external/freesasa-bench/src/freesasa"
+
+# Cross-platform nanosecond time
+get_time_ns() {
+    if command -v gdate &>/dev/null; then
+        gdate +%s%N
+    elif [[ "$(date +%s%N 2>/dev/null)" != *N* ]]; then
+        date +%s%N
+    else
+        python3 -c "import time; print(int(time.time_ns()))"
+    fi
+}
+
+# Single file processing mode (called by xargs)
+process_one() {
+    local input_path="$1"
+    local output_dir="$2"
+    local work_dir="$3"
+    local freesasa="$4"
+
+    local filename
+    filename="$(basename "$input_path")"
+    local base_name="${filename%.gz}"
+    base_name="${base_name%.json}"
+
+    local output_filename="${filename%.gz}"
+    local output_path="${output_dir}/${output_filename}"
+
+    local start_ns end_ns
+    start_ns=$(get_time_ns)
+
+    local result
+    result=$("$freesasa" --json-input="$input_path" --no-warnings 2>&1) || true
+
+    end_ns=$(get_time_ns)
+    local sasa_time_ns=$((end_ns - start_ns))
+
+    # Extract total SASA from result
+    local total_sasa
+    total_sasa=$(echo "$result" | grep -E '^Total\s+:' | grep -oE '[0-9]+\.[0-9]+' || echo "0")
+
+    # Write output JSON
+    cat > "$output_path" << EOF
+{
+  "total_area": ${total_sasa},
+  "atom_areas": []
+}
+EOF
+
+    # Write timing to work dir
+    echo "$sasa_time_ns" > "$work_dir/${base_name}.time"
+}
+
+# Check for single-file processing mode
+if [[ "${1:-}" == "--process-one" ]]; then
+    shift
+    process_one "$@"
+    exit 0
+fi
+
+# Main batch mode
 INPUT_DIR="${1:?Usage: $0 <input_dir> <output_dir> [n_jobs]}"
 OUTPUT_DIR="${2:?Usage: $0 <input_dir> <output_dir> [n_jobs]}"
 N_JOBS="${3:-$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)}"
@@ -20,9 +83,6 @@ if ! [[ "$N_JOBS" =~ ^[0-9]+$ ]] || [[ "$N_JOBS" -lt 1 ]]; then
     exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-FREESASA="${SCRIPT_DIR}/../external/freesasa-bench/src/freesasa"
-
 if [[ ! -x "$FREESASA" ]]; then
     echo "Error: freesasa not found at $FREESASA" >&2
     exit 1
@@ -30,6 +90,10 @@ fi
 
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
+
+# Create temp directory for timing results
+WORK_DIR=$(mktemp -d)
+trap 'rm -rf "$WORK_DIR"' EXIT
 
 # Find JSON files
 JSON_FILES=()
@@ -45,100 +109,14 @@ if [[ $TOTAL_FILES -eq 0 ]]; then
 fi
 
 echo "Batch processing: $TOTAL_FILES files" >&2
-echo "Threads: $N_JOBS" >&2
-
-# Create temp directory for results (avoid shadowing TMPDIR)
-WORK_DIR=$(mktemp -d)
-trap 'rm -rf "$WORK_DIR"' EXIT
-
-# Cross-platform nanosecond time
-get_time_ns() {
-    if command -v gdate &>/dev/null; then
-        gdate +%s%N
-    elif [[ "$(date +%s%N 2>/dev/null)" != *N* ]]; then
-        date +%s%N
-    else
-        python3 -c "import time; print(int(time.time_ns()))"
-    fi
-}
-
-# Process single file function
-process_one() {
-    local idx="$1"
-    local input_path="$2"
-    local output_dir="$3"
-    local freesasa="$4"
-    local work_dir="$5"
-
-    local filename
-    filename="$(basename "$input_path")"
-
-    # Remove .gz suffix for output filename
-    local output_filename="${filename%.gz}"
-    local output_path="${output_dir}/${output_filename}"
-
-    # Run freesasa with JSON input and capture timing
-    local start_ns end_ns
-    start_ns=$(get_time_ns)
-
-    local result
-    result=$("$freesasa" --json-input="$input_path" --no-warnings 2>&1) || true
-
-    end_ns=$(get_time_ns)
-
-    local sasa_time_ns=$((end_ns - start_ns))
-
-    # Extract total SASA from result (format: "Total     :    XXXX.XX")
-    local total_sasa
-    total_sasa=$(echo "$result" | grep -E '^Total\s+:' | grep -oE '[0-9]+\.[0-9]+' || echo "0")
-
-    # Write output JSON with atomic rename
-    local tmp_output
-    tmp_output=$(mktemp "$output_dir/.tmp.XXXXXX")
-    cat > "$tmp_output" << EOF
-{
-  "total_area": ${total_sasa},
-  "atom_areas": []
-}
-EOF
-    mv "$tmp_output" "$output_path"
-
-    echo "$sasa_time_ns" > "$work_dir/$idx.time"
-}
+echo "Jobs: $N_JOBS" >&2
 
 START_TIME=$(get_time_ns)
 
-# Process files with limited parallelism
-PIDS=()
-for i in "${!JSON_FILES[@]}"; do
-    process_one "$i" "${JSON_FILES[$i]}" "$OUTPUT_DIR" "$FREESASA" "$WORK_DIR" &
-    PIDS+=($!)
-
-    # Limit concurrent jobs using wait -n if available (Bash 4.3+)
-    if (( ${#PIDS[@]} >= N_JOBS )); then
-        if wait -n 2>/dev/null; then
-            : # Job completed successfully
-        fi
-        # Clean up finished PIDs
-        for j in "${!PIDS[@]}"; do
-            if ! kill -0 "${PIDS[$j]}" 2>/dev/null; then
-                wait "${PIDS[$j]}" 2>/dev/null || true
-                unset 'PIDS[j]'
-            fi
-        done
-        PIDS=("${PIDS[@]}")
-    fi
-
-    echo -ne "\rProcessing: $((i+1))/$TOTAL_FILES" >&2
-done
-
-# Wait for remaining jobs and check exit status
-for pid in "${PIDS[@]}"; do
-    if ! wait "$pid" 2>/dev/null; then
-        echo "Warning: Job $pid failed" >&2
-    fi
-done
-echo >&2
+# Process files in parallel using xargs -P
+printf '%s\0' "${JSON_FILES[@]}" | \
+    xargs -0 -P "$N_JOBS" -I {} \
+    "$SCRIPT_PATH" --process-one {} "$OUTPUT_DIR" "$WORK_DIR" "$FREESASA"
 
 END_TIME=$(get_time_ns)
 TOTAL_TIME_NS=$((END_TIME - START_TIME))
@@ -148,19 +126,19 @@ TOTAL_SASA_TIME_NS=0
 SUCCESSFUL=0
 FAILED=0
 
-for i in "${!JSON_FILES[@]}"; do
-    if [[ -f "$WORK_DIR/$i.time" ]]; then
-        time_ns=$(cat "$WORK_DIR/$i.time")
-        if [[ -n "$time_ns" && "$time_ns" =~ ^[0-9]+$ ]]; then
-            TOTAL_SASA_TIME_NS=$((TOTAL_SASA_TIME_NS + time_ns))
-            ((SUCCESSFUL++)) || true
-        else
-            ((FAILED++)) || true
-        fi
+for time_file in "$WORK_DIR"/*.time; do
+    [[ -e "$time_file" ]] || continue
+    time_ns=$(cat "$time_file")
+    if [[ -n "$time_ns" && "$time_ns" =~ ^[0-9]+$ ]]; then
+        TOTAL_SASA_TIME_NS=$((TOTAL_SASA_TIME_NS + time_ns))
+        ((SUCCESSFUL++)) || true
     else
         ((FAILED++)) || true
     fi
 done
+
+# Calculate failed as total minus successful
+FAILED=$((TOTAL_FILES - SUCCESSFUL))
 
 # Output benchmark format
 SASA_TIME_MS=$(python3 -c "print(f'{$TOTAL_SASA_TIME_NS / 1000000:.2f}')")
