@@ -700,3 +700,112 @@ test "validateInput radius too large" {
     try std.testing.expectEqual(@as(usize, 1), result.errors.len);
     try std.testing.expectEqual(@as(usize, 0), result.errors[0].index.?);
 }
+
+test "checkDuplicateCoordinates no duplicates" {
+    const allocator = std.testing.allocator;
+
+    const x = try allocator.alloc(f64, 3);
+    defer allocator.free(x);
+    const y = try allocator.alloc(f64, 3);
+    defer allocator.free(y);
+    const z = try allocator.alloc(f64, 3);
+    defer allocator.free(z);
+    const r = try allocator.alloc(f64, 3);
+    defer allocator.free(r);
+
+    x[0] = 1.0;
+    x[1] = 2.0;
+    x[2] = 3.0;
+    y[0] = 1.0;
+    y[1] = 2.0;
+    y[2] = 3.0;
+    z[0] = 1.0;
+    z[1] = 2.0;
+    z[2] = 3.0;
+    r[0] = 1.5;
+    r[1] = 1.5;
+    r[2] = 1.5;
+
+    const input = AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .allocator = allocator,
+    };
+
+    const count = try checkDuplicateCoordinates(allocator, input);
+    try std.testing.expectEqual(@as(usize, 0), count);
+}
+
+test "checkDuplicateCoordinates with duplicates" {
+    const allocator = std.testing.allocator;
+
+    const x = try allocator.alloc(f64, 4);
+    defer allocator.free(x);
+    const y = try allocator.alloc(f64, 4);
+    defer allocator.free(y);
+    const z = try allocator.alloc(f64, 4);
+    defer allocator.free(z);
+    const r = try allocator.alloc(f64, 4);
+    defer allocator.free(r);
+
+    // Atoms 0 and 2 have identical coordinates
+    // Atoms 1 and 3 have identical coordinates
+    x[0] = 1.0;
+    x[1] = 2.0;
+    x[2] = 1.0; // duplicate of 0
+    x[3] = 2.0; // duplicate of 1
+    y[0] = 1.0;
+    y[1] = 2.0;
+    y[2] = 1.0;
+    y[3] = 2.0;
+    z[0] = 1.0;
+    z[1] = 2.0;
+    z[2] = 1.0;
+    z[3] = 2.0;
+    r[0] = 1.5;
+    r[1] = 1.5;
+    r[2] = 1.5;
+    r[3] = 1.5;
+
+    const input = AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .allocator = allocator,
+    };
+
+    const count = try checkDuplicateCoordinates(allocator, input);
+    try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+test "checkDuplicateCoordinates single atom" {
+    const allocator = std.testing.allocator;
+
+    const x = try allocator.alloc(f64, 1);
+    defer allocator.free(x);
+    const y = try allocator.alloc(f64, 1);
+    defer allocator.free(y);
+    const z = try allocator.alloc(f64, 1);
+    defer allocator.free(z);
+    const r = try allocator.alloc(f64, 1);
+    defer allocator.free(r);
+
+    x[0] = 1.0;
+    y[0] = 2.0;
+    z[0] = 3.0;
+    r[0] = 1.5;
+
+    const input = AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .allocator = allocator,
+    };
+
+    const count = try checkDuplicateCoordinates(allocator, input);
+    try std.testing.expectEqual(@as(usize, 0), count);
+}

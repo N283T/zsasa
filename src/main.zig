@@ -877,7 +877,9 @@ pub fn main() !void {
 
     // Check for duplicate coordinates (warning only)
     if (!parsed.quiet) {
-        _ = json_parser.checkDuplicateCoordinates(allocator, input) catch {};
+        _ = json_parser.checkDuplicateCoordinates(allocator, input) catch |err| {
+            std.debug.print("Warning: Could not check for duplicate coordinates: {s}\n", .{@errorName(err)});
+        };
     }
     time_parse = timer.read();
 

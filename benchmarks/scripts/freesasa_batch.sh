@@ -29,8 +29,8 @@ process_one() {
 
     local filename
     filename="$(basename "$input_path")"
-    local base_name="${filename%.gz}"
-    base_name="${base_name%.json}"
+    # Use full filename for timing to avoid collisions (e.g., foo.json vs foo.json.gz)
+    local timing_name="${filename}"
 
     local output_filename="${filename%.gz}"
     local output_path="${output_dir}/${output_filename}"
@@ -57,7 +57,7 @@ process_one() {
 EOF
 
     # Write timing to work dir
-    echo "$sasa_time_ns" > "$work_dir/${base_name}.time"
+    echo "$sasa_time_ns" > "$work_dir/${timing_name}.time"
 }
 
 # Check for single-file processing mode
