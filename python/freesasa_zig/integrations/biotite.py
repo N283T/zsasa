@@ -44,10 +44,8 @@ __all__ = [
 ]
 
 # Hydrogen-like elements (includes deuterium and tritium)
+# Note: More comprehensive than gemmi's Element("H") check
 _HYDROGEN_ELEMENTS = frozenset({"H", "D", "T"})
-
-# Common water residue names
-_WATER_RESIDUES = frozenset({"HOH", "DOD", "SOL", "WAT", "H2O", "TIP3", "TIP4", "TIP5"})
 
 
 def _import_biotite():

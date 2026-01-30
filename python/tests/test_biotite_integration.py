@@ -244,6 +244,11 @@ class TestCalculateSasaFromStructure:
         with pytest.raises(IndexError, match="out of range"):
             calculate_sasa_from_structure(simple_structure, model_index=1)
 
+    def test_negative_model_index(self, simple_structure):
+        """Should raise error for negative model index."""
+        with pytest.raises(IndexError, match="out of range"):
+            calculate_sasa_from_structure(simple_structure, model_index=-1)
+
     def test_atom_array_stack(self, simple_structure):
         """Should handle AtomArrayStack (multiple models)."""
         # Create a stack with 2 models
