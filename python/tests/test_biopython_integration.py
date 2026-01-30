@@ -14,12 +14,12 @@ Bio = pytest.importorskip("Bio")
 from Bio.PDB import StructureBuilder  # noqa: E402
 
 from freesasa_zig import AtomClass, ClassifierType  # noqa: E402
+from freesasa_zig.integrations._types import AtomData, SasaResultWithAtoms  # noqa: E402
 from freesasa_zig.integrations.biopython import (  # noqa: E402
     calculate_sasa_from_model,
     calculate_sasa_from_structure,
     extract_atoms_from_model,
 )
-from freesasa_zig.integrations.gemmi import AtomData, SasaResultWithAtoms  # noqa: E402
 
 # =============================================================================
 # Helper functions for creating test structures

@@ -13,20 +13,18 @@ Example:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
-from numpy.typing import NDArray
 
 from freesasa_zig.core import (
     AtomClass,
     ClassifierType,
-    SasaResult,
     calculate_sasa,
     classify_atoms,
 )
+from freesasa_zig.integrations._types import AtomData, SasaResultWithAtoms
 
 if TYPE_CHECKING:
     import gemmi
@@ -38,65 +36,6 @@ __all__ = [
     "calculate_sasa_from_model",
     "calculate_sasa_from_structure",
 ]
-
-
-@dataclass
-class AtomData:
-    """Extracted atom data from a gemmi model.
-
-    Attributes:
-        coords: Atom coordinates as (N, 3) array in Angstroms.
-        residue_names: Residue names for each atom.
-        atom_names: Atom names for each atom.
-        chain_ids: Chain IDs for each atom.
-        residue_ids: Residue sequence numbers for each atom.
-        elements: Element symbols for each atom.
-    """
-
-    coords: NDArray[np.float64]
-    residue_names: list[str]
-    atom_names: list[str]
-    chain_ids: list[str]
-    residue_ids: list[int]
-    elements: list[str]
-
-    def __len__(self) -> int:
-        return len(self.residue_names)
-
-    def __repr__(self) -> str:
-        return f"AtomData(n_atoms={len(self)})"
-
-
-@dataclass
-class SasaResultWithAtoms(SasaResult):
-    """SASA result with atom metadata.
-
-    Extends SasaResult with additional atom information for analysis.
-
-    Attributes:
-        total_area: Total solvent accessible surface area in Å².
-        atom_areas: Per-atom SASA values in Å².
-        atom_classes: Per-atom polarity classes.
-        atom_data: Original atom data from the structure.
-        polar_area: Total polar SASA in Å².
-        apolar_area: Total apolar SASA in Å².
-
-    Note:
-        polar_area + apolar_area may be less than total_area if some atoms
-        have UNKNOWN classification.
-    """
-
-    atom_classes: NDArray[np.int32]
-    atom_data: AtomData
-    polar_area: float
-    apolar_area: float
-
-    def __repr__(self) -> str:
-        return (
-            f"SasaResultWithAtoms(total={self.total_area:.1f}, "
-            f"polar={self.polar_area:.1f}, apolar={self.apolar_area:.1f}, "
-            f"n_atoms={len(self.atom_areas)})"
-        )
 
 
 def _import_gemmi() -> "gemmi":  # noqa: UP037

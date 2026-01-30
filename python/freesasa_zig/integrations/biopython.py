@@ -24,7 +24,7 @@ from freesasa_zig.core import (
     calculate_sasa,
     classify_atoms,
 )
-from freesasa_zig.integrations.gemmi import AtomData, SasaResultWithAtoms
+from freesasa_zig.integrations._types import AtomData, SasaResultWithAtoms
 
 if TYPE_CHECKING:
     from Bio.PDB.Atom import Atom
@@ -53,11 +53,19 @@ def _import_biopython():
 
 
 def _is_hydrogen(atom: Atom) -> bool:
-    """Check if an atom is hydrogen."""
+    """Check if an atom is hydrogen.
+
+    Uses element attribute if available, falls back to name-based heuristic.
+
+    Note:
+        The name-based fallback may have edge cases with unusual atom names.
+        For reliable hydrogen detection, ensure PDB files have element columns
+        populated (columns 77-78 in PDB format).
+    """
     element = getattr(atom, "element", None)
     if element:
         return element.strip().upper() == "H"
-    # Fallback: check atom name
+    # Fallback: check atom name (may have edge cases with unusual naming)
     name = atom.get_name().strip()
     return name.startswith("H") or (len(name) > 1 and name[0].isdigit() and name[1] == "H")
 
