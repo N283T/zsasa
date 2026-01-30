@@ -11,7 +11,7 @@ Example:
     >>> residues = aggregate_from_result(result)
     >>>
     >>> for res in residues:
-    ...     rsa_str = f"{res.rsa:.1%}" if res.rsa else "N/A"
+    ...     rsa_str = f"{res.rsa:.1%}" if res.rsa is not None else "N/A"
     ...     print(f"{res.chain_id}:{res.residue_name}{res.residue_id}: "
     ...           f"{res.total_area:.1f} A^2 (RSA: {rsa_str})")
 """
