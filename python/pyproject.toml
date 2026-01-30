@@ -24,9 +24,10 @@ classifiers = [
 dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
+biopython = ["biopython>=1.80"]
 gemmi = ["gemmi>=0.6.0"]
 dev = ["pytest>=8.0", "pytest-cov>=4.0", "ruff>=0.5", "ty>=0.0.1a0"]
-all = ["freesasa-zig[gemmi]"]
+all = ["freesasa-zig[biopython]", "freesasa-zig[gemmi]"]
 
 [project.urls]
 Homepage = "https://github.com/N283T/freesasa-zig"
