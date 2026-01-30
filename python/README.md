@@ -139,19 +139,31 @@ Calculate Solvent Accessible Surface Area.
 
 **Returns:** `SasaResult`
 
-#### `classify_atoms(residue_names, atom_names, classifier)`
+#### `SasaResult`
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `total_area` | `float` | Total SASA in Å² |
+| `atom_areas` | `NDArray[float64]` | Per-atom SASA values |
+
+#### `classify_atoms(residue_names, atom_names, classifier=NACCESS)`
 
 Classify atoms and get radii.
 
 **Parameters:**
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `residue_names` | `list[str]` | Residue names (e.g., ["ALA", "GLY"]) |
-| `atom_names` | `list[str]` | Atom names (e.g., ["CA", "N"]) |
-| `classifier` | `ClassifierType` | NACCESS, PROTOR, or OONS |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `residue_names` | `list[str]` | required | Residue names (e.g., ["ALA", "GLY"]) |
+| `atom_names` | `list[str]` | required | Atom names (e.g., ["CA", "N"]) |
+| `classifier` | `ClassifierType` | `NACCESS` | NACCESS, PROTOR, or OONS |
+| `include_classes` | `bool` | `True` | Whether to include atom classes |
 
 **Returns:** `ClassificationResult` with `radii` and `classes` arrays
+
+#### `get_version()`
+
+Returns the library version string (e.g., "0.1.0").
 
 #### `calculate_rsa(sasa, residue_name)`
 
@@ -165,6 +177,19 @@ Calculate Relative Solvent Accessibility.
 | `residue_name` | `str` | 3-letter residue code |
 
 **Returns:** `float | None` (None for non-standard amino acids)
+
+### Utility Functions
+
+These functions are available for advanced use cases:
+
+| Function | Description |
+|----------|-------------|
+| `get_radius(residue, atom, classifier)` | Get radius for a specific atom |
+| `get_atom_class(residue, atom, classifier)` | Get polarity class for an atom |
+| `guess_radius(element)` | Guess radius from element symbol |
+| `guess_radius_from_atom_name(atom_name)` | Guess radius from PDB atom name |
+| `get_max_sasa(residue_name)` | Get max SASA reference value for RSA |
+| `calculate_rsa_batch(sasa_values, residue_names)` | Batch RSA calculation |
 
 ### Analysis Functions
 
@@ -273,7 +298,11 @@ from freesasa_zig import classify_atoms, ClassifierType, AtomClass
 residue_names = ["ALA", "ALA", "ALA"]
 atom_names = ["N", "CA", "O"]
 
-result = classify_atoms(residue_names, atom_names, ClassifierType.NACCESS)
+# With default classifier (NACCESS)
+result = classify_atoms(residue_names, atom_names)
+
+# Or with explicit classifier
+result = classify_atoms(residue_names, atom_names, ClassifierType.PROTOR)
 
 print(f"Radii: {result.radii}")
 print(f"Classes: {result.classes}")
