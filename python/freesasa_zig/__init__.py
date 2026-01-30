@@ -26,8 +26,24 @@ Integrations:
     >>> from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
     >>> result = calculate_sasa_from_structure("protein.cif")
     >>> print(f"Total: {result.total_area:.1f} Å²")
+
+Analysis:
+    For per-residue aggregation and RSA calculation:
+
+    >>> from freesasa_zig import aggregate_from_result
+    >>> from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
+    >>> result = calculate_sasa_from_structure("protein.cif")
+    >>> residues = aggregate_from_result(result)
+    >>> for res in residues:
+    ...     if res.rsa is not None:
+    ...         print(f"{res.chain_id}:{res.residue_name}{res.residue_id}: RSA={res.rsa:.1%}")
 """
 
+from freesasa_zig.analysis import (
+    ResidueResult,
+    aggregate_by_residue,
+    aggregate_from_result,
+)
 from freesasa_zig.core import (
     MAX_SASA,
     AtomClass,
@@ -64,6 +80,10 @@ __all__ = [
     "get_max_sasa",
     "calculate_rsa",
     "calculate_rsa_batch",
+    # Analysis
+    "ResidueResult",
+    "aggregate_by_residue",
+    "aggregate_from_result",
     # Utility
     "get_version",
 ]
