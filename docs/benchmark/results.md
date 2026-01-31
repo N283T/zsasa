@@ -1,10 +1,9 @@
 # Benchmark Results
 
-Large-scale benchmark results for freesasa-zig. Fair comparison using stratified sampling.
+Large-scale benchmark results for freesasa-zig using Shrake-Rupley algorithm.
 
-- **Shrake-Rupley (SR)**: ~100k structures
-- **Lee-Richards (LR)**: ~30k structures (supplementary)
-- **Precision**: f64 for all tools
+- **Dataset**: ~100k structures (stratified sampling from PDB)
+- **Precision**: Zig/FreeSASA use f64, RustSASA uses f32
 
 ## Highlights
 
@@ -15,8 +14,7 @@ Zig's key advantage: **Large structures + Multi-threading**
 | ![Speedup](../../benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](../../benchmarks/results/plots/large/speedup_by_threads.png) |
 
 **Key Results (100k+ atoms, n=1,171):**
-- **2.3x** faster than FreeSASA and RustSASA (SR, t=10)
-- **1.8x** faster than FreeSASA (LR, t=10)
+- **2.3x** faster than FreeSASA and RustSASA (t=10)
 - Speedup increases with thread count (parallel efficiency advantage)
 
 ---
@@ -35,8 +33,7 @@ Zig's key advantage: **Large structures + Multi-threading**
 
 | Metric | Zig vs FreeSASA | Zig vs RustSASA |
 |--------|-----------------|-----------------|
-| **Shrake-Rupley (t=10)** | **1.45x** median | **2.07x** median |
-| **Lee-Richards (t=10)** | **1.64x** median | N/A |
+| **Overall (t=10)** | **1.45x** median | **2.07x** median |
 | **Large structures (100k+)** | **2.3x** | **2.3x** |
 | **Largest structure (4.5M atoms)** | **2.5x** | **2.3x** |
 | **Parallel efficiency (t=10)** | **+30%** | **+93%** |
@@ -46,37 +43,54 @@ Zig's key advantage: **Large structures + Multi-threading**
 
 ## Dataset
 
-| SR (~100k structures) | LR (~30k structures) |
-|:---------------------:|:--------------------:|
-| ![SR](../../benchmarks/results/plots/dataset/stratified_100k.png) | ![LR](../../benchmarks/results/plots/dataset/stratified_30k.png) |
+![Dataset Distribution](../../benchmarks/results/plots/dataset/stratified_100k.png)
 
-### Structure Count and Distribution
+| Size Bin | Atoms | Count | Percentage |
+|----------|------:|------:|-----:|
+| 0-500 | 0-500 | 2,506 | 2.5% |
+| 500-1k | 500-1,000 | 5,744 | 5.7% |
+| 1k-2k | 1,000-2,000 | 15,922 | 15.9% |
+| 2k-5k | 2,000-5,000 | 36,123 | 36.1% |
+| 5k-10k | 5,000-10,000 | 19,835 | 19.8% |
+| 10k-20k | 10,000-20,000 | 10,187 | 10.2% |
+| 20k-50k | 20,000-50,000 | 5,377 | 5.4% |
+| 50k-100k | 50,000-100,000 | 3,133 | 3.1% |
+| 100k-200k | 100,000-200,000 | 900 | 0.9% |
+| 200k+ | 200,000+ | 271 | 0.3% |
+| **Total** | | **99,998** | |
 
-| Size Bin | Atoms | SR Count | LR Count | Percentage |
-|----------|------:|---------:|---------:|-----:|
-| 0-500 | 0-500 | 2,506 | 673 | 2.5% |
-| 500-1k | 500-1,000 | 5,744 | 1,543 | 5.7% |
-| 1k-2k | 1,000-2,000 | 15,922 | 4,274 | 15.9% |
-| 2k-5k | 2,000-5,000 | 36,123 | 9,629 | 36.1% |
-| 5k-10k | 5,000-10,000 | 19,835 | 5,396 | 19.8% |
-| 10k-20k | 10,000-20,000 | 10,187 | 2,729 | 10.2% |
-| 20k-50k | 20,000-50,000 | 5,377 | 1,450 | 5.4% |
-| 50k-100k | 50,000-100,000 | 3,133 | 3,133 | 3.1% |
-| 100k-200k | 100,000-200,000 | 900 | 900 | 0.9% |
-| 200k+ | 200,000+ | 271 | 271 | 0.3% |
-| **Total** | | **99,998** | **29,998** | |
-
-### Data Source
-
-- **Original data**: All structures from the Protein Data Bank (PDB)
+- **Source**: All structures from the Protein Data Bank (PDB)
 - **Sampling**: Stratified sampling (seed 42)
 - **Large structures**: 50k+ atoms are all included (due to rarity)
 
 ---
 
-## Performance Summary
+## Single-Thread Performance (t=1)
 
-### Overall Statistics (t=10, SR)
+Single-threaded comparison (excluding parallelization effects):
+
+| Size Bin | vs FreeSASA | vs RustSASA |
+|----------|------------:|------------:|
+| 0-500 | 0.95x | 0.74x |
+| 500-1k | 0.99x | 0.79x |
+| 1k-2k | 1.04x | 0.82x |
+| 2k-5k | 1.13x | 0.86x |
+| 5k-10k | 1.24x | 0.93x |
+| 10k-20k | 1.35x | 1.01x |
+| 20k-50k | 1.48x | 1.09x |
+| 50k-100k | **1.56x** | 1.10x |
+| 100k-200k | **1.60x** | 1.11x |
+| 200k+ | **1.60x** | 1.13x |
+
+**Observations:**
+- Zig vs FreeSASA: **1.6x** on large structures (SIMD optimization)
+- Zig vs Rust: Nearly equal (both use SIMD)
+
+---
+
+## Multi-Thread Performance (t=10)
+
+### Overall Statistics
 
 | Tool | Structures | Median (ms) | Mean (ms) | P95 (ms) |
 |------|----------:|------------:|----------:|---------:|
@@ -84,22 +98,7 @@ Zig's key advantage: **Large structures + Multi-threading**
 | FreeSASA | 99,998 | 4.69 | 14.53 | 57.06 |
 | RustSASA | 99,998 | 5.60 | 15.68 | 60.39 |
 
-### Overall Statistics (t=10, LR)
-
-| Tool | Structures | Median (ms) | Mean (ms) | P95 (ms) |
-|------|----------:|------------:|----------:|---------:|
-| **Zig** | 29,998 | **9.47** | 40.11 | 166.88 |
-| FreeSASA | 29,998 | 15.51 | 71.25 | 302.61 |
-
-**Key Insight**:
-- SR: Zig is **1.45x** faster than FreeSASA and **1.73x** faster than RustSASA (median)
-- LR: Zig is **1.64x** faster than FreeSASA (median)
-
----
-
-## Speedup by Structure Size
-
-### Shrake-Rupley (t=10)
+### Speedup by Structure Size
 
 ![Speedup by Size and Threads](../../benchmarks/results/plots/speedup_by_bin/grid.png)
 
@@ -121,107 +120,9 @@ Zig's key advantage: **Large structures + Multi-threading**
 - **Medium (1k-20k)**: Stable **1.3x-1.9x** speedup
 - **Large (50k+)**: Up to **2.3x** speedup, narrow IQR indicates stability
 
-### Shrake-Rupley (t=1, Single Thread)
-
-Single-threaded comparison (excluding parallelization effects):
-
-| Size Bin | vs FreeSASA | vs RustSASA |
-|----------|------------:|------------:|
-| 0-500 | 0.95x | 0.74x |
-| 500-1k | 0.99x | 0.79x |
-| 1k-2k | 1.04x | 0.82x |
-| 2k-5k | 1.13x | 0.86x |
-| 5k-10k | 1.24x | 0.93x |
-| 10k-20k | 1.35x | 1.01x |
-| 20k-50k | 1.48x | 1.09x |
-| 50k-100k | **1.56x** | 1.10x |
-| 100k-200k | **1.60x** | 1.11x |
-| 200k+ | **1.60x** | 1.13x |
-
-**Observations:**
-- At t=1, Zig vs Rust is nearly equal (SIMD effect)
+**Key Insight:**
+- At t=1, Zig vs Rust is nearly equal
 - At t=10, Zig takes a significant lead → **parallel efficiency difference**
-
-### Lee-Richards (t=10)
-
-| Size Bin | Count | vs FreeSASA | (IQR) |
-|----------|------:|------------:|------:|
-| 0-500 | 673 | 0.92x | 0.70-1.11 |
-| 500-1k | 1,543 | 1.42x | 1.29-1.53 |
-| 1k-2k | 4,274 | 1.53x | 1.44-1.62 |
-| 2k-5k | 9,629 | 1.66x | 1.58-1.73 |
-| 5k-10k | 5,396 | 1.71x | 1.65-1.77 |
-| 10k-20k | 2,729 | 1.72x | 1.66-1.77 |
-| 20k-50k | 1,450 | 1.74x | 1.69-1.79 |
-| 50k-100k | 3,133 | **1.79x** | 1.74-1.83 |
-| 100k-200k | 900 | **1.82x** | 1.78-1.85 |
-| 200k+ | 271 | **1.82x** | 1.79-1.86 |
-
-**Observations:**
-- More modest speedup than SR (slice integration overhead)
-- Still achieves **1.8x** on large structures
-
----
-
-## Large Structure Analysis
-
-### Summary (100k+ atoms, n=1,171)
-
-| Speedup at t=10 | Thread Scaling |
-|:---------------:|:--------------:|
-| ![Speedup](../../benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](../../benchmarks/results/plots/large/speedup_by_threads.png) |
-
-| Comparison | Median Speedup | IQR |
-|------------|---------------:|----:|
-| vs FreeSASA (SR) | **2.31x** | 2.27-2.36 |
-| vs RustSASA (SR) | **2.31x** | 2.26-2.35 |
-| vs FreeSASA (LR) | **1.82x** | 1.78-1.85 |
-
-**Observations:**
-- Speedup improves with thread count (1.6x→2.3x vs FreeSASA)
-- vs Rust: dramatic improvement (1.1x→2.3x) due to parallel efficiency difference
-
-### Maximum Structure: 9fqr (4,506,416 atoms)
-
-![Max Structure Scaling](../../benchmarks/results/plots/samples/max_structure.png)
-
-Thread scaling on the largest PDB structure:
-
-| Threads | Zig (ms) | FreeSASA (ms) | Rust (ms) | Zig vs FS | Zig vs Rust |
-|--------:|---------:|--------------:|----------:|----------:|------------:|
-| 1 | 8,900 | 14,400 | 9,500 | 1.62x | 1.07x |
-| 2 | 5,400 | 10,300 | 8,000 | 1.91x | 1.48x |
-| 4 | 3,700 | 8,400 | 7,200 | 2.27x | 1.95x |
-| 8 | 3,100 | 7,600 | 7,000 | 2.45x | 2.26x |
-| 10 | **3,000** | 7,400 | 6,900 | **2.47x** | **2.30x** |
-
-**Key Insight**:
-- Speedup ratio improves with increasing thread count
-- Achieves **2.5x** speedup at t=10
-- Rust plateaus with increasing threads (parallel efficiency issue)
-
----
-
-## Execution Time Distribution
-
-### Scatter Plot: SR Algorithm
-
-![SR Scatter Plot](../../benchmarks/results/plots/scatter/sr/grid.png)
-
-**Observations:**
-- Nearly linear on log scale → O(N) neighbor list is effective
-- Zig (green) is consistently lower (faster) across all sizes
-- Gap between 3 tools widens with increasing thread count
-- Few outliers → stable performance
-
-### Scatter Plot: LR Algorithm
-
-![LR Scatter Plot](../../benchmarks/results/plots/scatter/lr/grid.png)
-
-**Observations:**
-- Overall 3-4x slower than SR (slice integration cost)
-- RustSASA excluded as it does not support LR
-- Zig's advantage is maintained in LR as well
 
 ---
 
@@ -230,8 +131,6 @@ Thread scaling on the largest PDB structure:
 ### Median Execution Time by Thread Count
 
 ![Thread Scaling](../../benchmarks/results/plots/thread_scaling/grid.png)
-
-#### Shrake-Rupley
 
 | Threads | Zig (ms) | FreeSASA (ms) | Rust (ms) |
 |--------:|---------:|--------------:|----------:|
@@ -245,20 +144,6 @@ Thread scaling on the largest PDB structure:
 - Zig: 8.93 → 3.24 = **2.76x**
 - FreeSASA: 10.09 → 4.69 = **2.15x**
 - Rust: 7.71 → 5.60 = **1.38x**
-
-#### Lee-Richards
-
-| Threads | Zig (ms) | FreeSASA (ms) |
-|--------:|---------:|--------------:|
-| 1 | 45.84 | 71.59 |
-| 2 | 27.14 | 39.31 |
-| 4 | 15.44 | 22.22 |
-| 8 | 10.49 | 16.69 |
-| 10 | **9.47** | 15.51 |
-
-**Speedup from t=1 to t=10:**
-- Zig: 45.84 → 9.47 = **4.84x**
-- FreeSASA: 71.59 → 15.51 = **4.61x**
 
 ---
 
@@ -274,7 +159,7 @@ Parallel Efficiency = T1 / (TN × N)
 - TN = N-thread execution time
 - 1.0 = Ideal linear scaling
 
-### Efficiency by Thread Count (SR, Median)
+### Efficiency by Thread Count
 
 ![Parallel Efficiency](../../benchmarks/results/plots/efficiency/summary.png)
 
@@ -308,6 +193,56 @@ Parallel Efficiency = T1 / (TN × N)
 
 ---
 
+## Large Structure Analysis
+
+### Summary (100k+ atoms, n=1,171)
+
+| Speedup at t=10 | Thread Scaling |
+|:---------------:|:--------------:|
+| ![Speedup](../../benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](../../benchmarks/results/plots/large/speedup_by_threads.png) |
+
+| Comparison | Median Speedup | IQR |
+|------------|---------------:|----:|
+| vs FreeSASA | **2.31x** | 2.27-2.36 |
+| vs RustSASA | **2.31x** | 2.26-2.35 |
+
+**Observations:**
+- Speedup improves with thread count (1.6x→2.3x vs FreeSASA)
+- vs Rust: dramatic improvement (1.1x→2.3x) due to parallel efficiency difference
+
+### Maximum Structure: 9fqr (4,506,416 atoms)
+
+![Max Structure Scaling](../../benchmarks/results/plots/samples/max_structure.png)
+
+Thread scaling on the largest PDB structure:
+
+| Threads | Zig (ms) | FreeSASA (ms) | Rust (ms) | Zig vs FS | Zig vs Rust |
+|--------:|---------:|--------------:|----------:|----------:|------------:|
+| 1 | 8,900 | 14,400 | 9,500 | 1.62x | 1.07x |
+| 2 | 5,400 | 10,300 | 8,000 | 1.91x | 1.48x |
+| 4 | 3,700 | 8,400 | 7,200 | 2.27x | 1.95x |
+| 8 | 3,100 | 7,600 | 7,000 | 2.45x | 2.26x |
+| 10 | **3,000** | 7,400 | 6,900 | **2.47x** | **2.30x** |
+
+**Key Insight**:
+- Speedup ratio improves with increasing thread count
+- Achieves **2.5x** speedup at t=10
+- Rust plateaus with increasing threads (parallel efficiency issue)
+
+---
+
+## Execution Time Distribution
+
+![SR Scatter Plot](../../benchmarks/results/plots/scatter/sr/grid.png)
+
+**Observations:**
+- Nearly linear on log scale → O(N) neighbor list is effective
+- Zig (green) is consistently lower (faster) across all sizes
+- Gap between 3 tools widens with increasing thread count
+- Few outliers → stable performance
+
+---
+
 ## Per-Bin Sample Results
 
 Thread scaling details on representative structures selected from each size bin.
@@ -327,19 +262,11 @@ Thread scaling details on representative structures selected from each size bin.
 
 ---
 
-## Batch Processing
-
-For throughput benchmarks processing multiple files in parallel, see [batch.md](batch.md).
-
-**Summary**: Zig f32 achieves **+7%** higher throughput than Rust f32 when processing all 238k PDB structures.
-
----
-
 ## SASA Validation
 
 ### Validation Method
 
-Comparing SASA values of Zig and RustSASA against FreeSASA C as the reference.
+Comparing SASA values against FreeSASA C as the reference.
 
 ```
 Relative Error = |SASA_zig - SASA_freesasa| / SASA_freesasa × 100%
@@ -351,9 +278,8 @@ Relative Error = |SASA_zig - SASA_freesasa| / SASA_freesasa × 100%
 
 | Comparison | Max Error | Mean Error | Pass Rate |
 |------------|----------:|-----------:|----------:|
-| Zig vs FreeSASA (SR) | 0.08% | 0.002% | 100% |
-| Zig vs FreeSASA (LR) | 0.10% | 0.003% | 100% |
-| Rust vs FreeSASA (SR) | 0.09% | 0.002% | 100% |
+| Zig vs FreeSASA | 0.08% | 0.002% | 100% |
+| Rust vs FreeSASA | 0.09% | 0.002% | 100% |
 
 **Conclusion**: Error within **0.1%** for all structures. Computational accuracy is fully equivalent.
 
@@ -382,6 +308,70 @@ Relative Error = |SASA_zig - SASA_freesasa| / SASA_freesasa × 100%
 5. **Accurate results**
    - Error within **0.1%** of FreeSASA
    - Computational accuracy is fully equivalent
+
+---
+
+## Appendix A: Lee-Richards (LR) Algorithm
+
+Lee-Richards results using ~30k structures. RustSASA does not support LR.
+
+### Dataset
+
+![LR Dataset](../../benchmarks/results/plots/dataset/stratified_30k.png)
+
+### Overall Statistics (t=10)
+
+| Tool | Structures | Median (ms) | Mean (ms) | P95 (ms) |
+|------|----------:|------------:|----------:|---------:|
+| **Zig** | 29,998 | **9.47** | 40.11 | 166.88 |
+| FreeSASA | 29,998 | 15.51 | 71.25 | 302.61 |
+
+**Key Insight**: Zig is **1.64x** faster than FreeSASA (median)
+
+### Speedup by Structure Size (t=10)
+
+| Size Bin | Count | vs FreeSASA | (IQR) |
+|----------|------:|------------:|------:|
+| 0-500 | 673 | 0.92x | 0.70-1.11 |
+| 500-1k | 1,543 | 1.42x | 1.29-1.53 |
+| 1k-2k | 4,274 | 1.53x | 1.44-1.62 |
+| 2k-5k | 9,629 | 1.66x | 1.58-1.73 |
+| 5k-10k | 5,396 | 1.71x | 1.65-1.77 |
+| 10k-20k | 2,729 | 1.72x | 1.66-1.77 |
+| 20k-50k | 1,450 | 1.74x | 1.69-1.79 |
+| 50k-100k | 3,133 | **1.79x** | 1.74-1.83 |
+| 100k-200k | 900 | **1.82x** | 1.78-1.85 |
+| 200k+ | 271 | **1.82x** | 1.79-1.86 |
+
+### Thread Scaling
+
+| Threads | Zig (ms) | FreeSASA (ms) |
+|--------:|---------:|--------------:|
+| 1 | 45.84 | 71.59 |
+| 2 | 27.14 | 39.31 |
+| 4 | 15.44 | 22.22 |
+| 8 | 10.49 | 16.69 |
+| 10 | **9.47** | 15.51 |
+
+**Speedup from t=1 to t=10:**
+- Zig: 45.84 → 9.47 = **4.84x**
+- FreeSASA: 71.59 → 15.51 = **4.61x**
+
+### Execution Time Distribution
+
+![LR Scatter Plot](../../benchmarks/results/plots/scatter/lr/grid.png)
+
+**Observations:**
+- Overall 3-4x slower than SR (slice integration cost)
+- Zig's advantage is maintained in LR as well
+
+---
+
+## Appendix B: Batch Processing
+
+For throughput benchmarks processing multiple files in parallel, see [batch.md](batch.md).
+
+**Summary**: Zig f32 achieves **+7%** higher throughput than Rust f32 when processing all 238k PDB structures.
 
 ---
 
