@@ -614,9 +614,8 @@ fn applyClassifier(
         }
     }
 
-    // Free old radii and replace
-    // TODO: Refactor AtomInput to have mutable radii field instead of using @constCast
-    input.allocator.free(@constCast(input.r));
+    // Free old radii and replace with classified radii
+    input.allocator.free(input.r);
     input.r = new_radii;
 
     if (!quiet) {
@@ -676,9 +675,8 @@ fn applyBuiltinClassifier(
         }
     }
 
-    // Free old radii and replace
-    // TODO: Refactor AtomInput to have mutable radii field instead of using @constCast
-    input.allocator.free(@constCast(input.r));
+    // Free old radii and replace with classified radii
+    input.allocator.free(input.r);
     input.r = new_radii;
 
     if (!quiet) {

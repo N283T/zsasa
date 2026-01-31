@@ -111,7 +111,7 @@ pub const AtomInput = struct {
     x: []const f64,
     y: []const f64,
     z: []const f64,
-    r: []const f64,
+    r: []f64,
     /// Residue names (e.g., "ALA", "GLY") - optional, for classifier
     residue: ?[]const []const u8 = null,
     /// Atom names (e.g., "CA", "CB") - optional, for classifier
