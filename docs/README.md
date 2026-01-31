@@ -15,7 +15,8 @@ freesasa-zig の技術ドキュメント（日本語）。
 | ├─ [methodology.md](benchmark/methodology.md) | Benchmark methodology | 測定手法 |
 | └─ [results.md](benchmark/results.md) | Large-scale benchmark results with plots | 大規模結果 |
 | [cpu-efficiency.md](cpu-efficiency.md) | CPU efficiency analysis (IPC, instructions) | CPU効率解析 |
-| [cli-io.md](cli-io.md) | CLI, I/O, and analysis | CLI・入出力・解析 |
+| [cli.md](cli.md) | CLI Reference (English) | CLIリファレンス（英語） |
+| [cli-io.md](cli-io.md) | CLI, I/O (Japanese) | CLI・入出力（日本語） |
 | [classifier.md](classifier.md) | Atom radius classifiers | 原子分類器詳解 |
 | [ci.md](ci.md) | CI/CD configuration | CI/CD構成 |
 
