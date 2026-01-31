@@ -46,7 +46,7 @@ except ImportError:
         "P": 1.8,
     }
 
-# Default radius for unknown elements
+# Default radius for unknown elements (conservative estimate, larger than most common elements)
 _DEFAULT_RADIUS = 2.0
 
 
@@ -59,14 +59,14 @@ def _get_element(atom) -> str:  # noqa: ANN001
     try:
         if hasattr(atom, "element") and atom.element:
             return str(atom.element).capitalize()
-    except Exception:
+    except (AttributeError, TypeError):
         pass
 
     # Try type attribute (first character)
     try:
         if hasattr(atom, "type") and atom.type:
             return str(atom.type)[0].upper()
-    except Exception:
+    except (AttributeError, TypeError, IndexError):
         pass
 
     # Try name attribute (first character)
@@ -76,7 +76,7 @@ def _get_element(atom) -> str:  # noqa: ANN001
             name = str(atom.name).strip()
             if name:
                 return name[0].upper()
-    except Exception:
+    except (AttributeError, TypeError, IndexError):
         pass
 
     return "C"  # Default to carbon
