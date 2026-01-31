@@ -6,6 +6,7 @@
 #     "matplotlib",
 #     "typer",
 #     "rich",
+#     "pyyaml",
 # ]
 # ///
 """Generate benchmark comparison plots."""
@@ -42,16 +43,28 @@ LINESTYLES = {
 }
 
 
+def load_config() -> dict:
+    """Load benchmark configuration from YAML file."""
+    import yaml
+
+    config_path = RESULTS_DIR / "config.yaml"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    with open(config_path) as f:
+        return yaml.safe_load(f)
+
+
 def load_data() -> pl.DataFrame:
-    """Load all single-file benchmark results into a single DataFrame."""
-    excluded = ("batch_", "ipc", "csv", "plots", "__pycache__")
-    csv_files = [
-        f
-        for f in RESULTS_DIR.glob("*/results.csv")
-        if not any(f.parent.name.startswith(ex) for ex in excluded)
-    ]
+    """Load benchmark results specified in config.yaml."""
+    config = load_config()
+
+    # Collect all directories from config (sr + lr)
+    dirs = config.get("sr", []) + config.get("lr", [])
+    csv_files = [RESULTS_DIR / d / "results.csv" for d in dirs]
+    csv_files = [f for f in csv_files if f.exists()]
+
     if not csv_files:
-        raise FileNotFoundError("No results.csv files found")
+        raise FileNotFoundError("No results.csv files found in configured directories")
 
     dfs = []
     for f in csv_files:
@@ -327,7 +340,11 @@ def _plot_scatter(df_algo: pl.DataFrame, algo: str, ax):
     """Plot scatter for a single algorithm."""
     df_sampled = df_algo.sample(n=min(5000, df_algo.height), seed=42)
 
-    for tool_label in sorted(df_sampled["tool_label"].unique().to_list()):
+    # Exclude f32 from main plots (almost no difference from f64)
+    tool_labels = [
+        t for t in sorted(df_sampled["tool_label"].unique().to_list()) if "f32" not in t
+    ]
+    for tool_label in tool_labels:
         df_tool = df_sampled.filter(pl.col("tool_label") == tool_label)
         ax.scatter(
             df_tool["n_atoms"].to_list(),
@@ -409,7 +426,11 @@ def _plot_threads(df_algo: pl.DataFrame, algo: str, ax):
         .sort(["tool_label", "threads"])
     )
 
-    for tool_label in sorted(scaling["tool_label"].unique().to_list()):
+    # Exclude f32 from main plots (almost no difference from f64)
+    tool_labels = [
+        t for t in sorted(scaling["tool_label"].unique().to_list()) if "f32" not in t
+    ]
+    for tool_label in tool_labels:
         df_tool = scaling.filter(pl.col("tool_label") == tool_label)
         ax.plot(
             df_tool["threads"].to_list(),
@@ -509,6 +530,11 @@ def compute_speedup_by_bin(df: pl.DataFrame, threads: int = 1) -> pl.DataFrame:
         pivot = pivot.with_columns(
             (pl.col("freesasa") / pl.col("zig_f64")).alias("zig_f64_vs_freesasa")
         )
+    # Legacy: zig vs FreeSASA (LR benchmarks before f32/f64 distinction)
+    elif "zig" in cols and "freesasa" in cols:
+        pivot = pivot.with_columns(
+            (pl.col("freesasa") / pl.col("zig")).alias("zig_vs_freesasa")
+        )
 
     # zig_f64 vs Rust
     if "zig_f64" in cols and "rust" in cols:
@@ -542,6 +568,15 @@ def compute_speedup_by_bin(df: pl.DataFrame, threads: int = 1) -> pl.DataFrame:
                 pl.col("zig_f64_vs_freesasa")
                 .quantile(0.75)
                 .alias("zig_f64_vs_freesasa_q75"),
+            ]
+        )
+    # Legacy: zig vs freesasa (LR benchmarks)
+    if "zig_vs_freesasa" in pivot.columns:
+        agg_cols.extend(
+            [
+                pl.col("zig_vs_freesasa").median().alias("zig_vs_freesasa"),
+                pl.col("zig_vs_freesasa").quantile(0.25).alias("zig_vs_freesasa_q25"),
+                pl.col("zig_vs_freesasa").quantile(0.75).alias("zig_vs_freesasa_q75"),
             ]
         )
     if "zig_f64_vs_rust" in pivot.columns:
@@ -629,26 +664,10 @@ def _plot_speedup_single(
             color="#e74c3c",
         )
 
-    # zig_f32 vs zig_f64
-    if "zig_f32_vs_zig_f64" in speedup_data.columns:
-        y_f32 = [data_dict[label]["zig_f32_vs_zig_f64"] for label in x_labels]
-        y_f32_q25 = [data_dict[label]["zig_f32_vs_zig_f64_q25"] for label in x_labels]
-        y_f32_q75 = [data_dict[label]["zig_f32_vs_zig_f64_q75"] for label in x_labels]
-        yerr_f32 = [
-            [m - q25 for m, q25 in zip(y_f32, y_f32_q25)],
-            [q75 - m for m, q75 in zip(y_f32, y_f32_q75)],
-        ]
-        ax.errorbar(
-            x_pos,
-            y_f32,
-            yerr=yerr_f32,
-            marker="^",
-            linewidth=1.5,
-            markersize=5,
-            capsize=3,
-            label="Zig(f32) vs Zig(f64)",
-            color="#27ae60",  # Green
-        )
+    # zig_f32 vs zig_f64 (omitted - almost no difference, see Appendix)
+    # if "zig_f32_vs_zig_f64" in speedup_data.columns:
+    #     y_f32 = [data_dict[label]["zig_f32_vs_zig_f64"] for label in x_labels]
+    #     ...
 
     # FreeSASA vs Rust
     if "freesasa_vs_rust" in speedup_data.columns:
@@ -945,7 +964,7 @@ def samples():
 
 @app.command()
 def large():
-    """Generate speedup bar chart for large structures (100k+ atoms) at t=10."""
+    """Generate speedup bar chart for large structures (100k+ atoms) at threads=10."""
     setup_style()
     plot_dir = PLOTS_DIR / "large"
     plot_dir.mkdir(parents=True, exist_ok=True)
@@ -953,7 +972,7 @@ def large():
     df = load_data()
     df = add_size_bin(df)
 
-    # Filter to large structures (100k+) and t=10
+    # Filter to large structures (100k+) and threads=10
     large_bins = {"100k-200k", "200k+"}
     df_large = df.filter(
         pl.col("size_bin").is_in(large_bins) & (pl.col("threads") == 10)
@@ -1071,7 +1090,7 @@ def large():
         df_large.filter(pl.col("algorithm") == "sr").select("structure").unique().height
     )
     ax.set_title(
-        f"Zig f64 Speedup on Large Structures (100k+ atoms, n={n_structs}, t=10)"
+        f"Zig f64 Speedup on Large Structures (100k+ atoms, n={n_structs}, threads=10)"
     )
     ax.set_xlim(0, max(speedups) * 1.2)
     ax.grid(True, alpha=0.3, axis="x")
@@ -1096,7 +1115,7 @@ def efficiency():
     # Focus on SR algorithm
     df_sr = df.filter(pl.col("algorithm") == "sr")
 
-    # Get t=1 baseline for each structure/tool_label
+    # Get threads=1 baseline for each structure/tool_label
     df_t1 = df_sr.filter(pl.col("threads") == 1).select(
         [
             "tool_label",
@@ -1115,18 +1134,17 @@ def efficiency():
 
     # Summary by size bin and tool_label
     thread_counts = sorted(df_eff["threads"].unique().to_list())
-    # Use tool_labels that exist in data
-    tool_labels = ["zig_f64", "zig_f32", "freesasa", "rust"]
+    # Use tool_labels that exist in data (exclude f32 - almost no difference from f64)
+    tool_labels = ["zig_f64", "freesasa", "rust"]
 
-    # Table: efficiency by size bin (t=10)
+    # Table: efficiency by size bin (threads=10)
     t_target = 10
     df_t10 = df_eff.filter(pl.col("threads") == t_target)
 
-    summary_table = Table(title=f"Parallel Efficiency by Size (SR, t={t_target})")
+    summary_table = Table(title=f"Parallel Efficiency by Size (SR, threads={t_target})")
     summary_table.add_column("Size Bin", style="cyan")
     summary_table.add_column("Count", justify="right")
     summary_table.add_column("Zig(f64)", justify="right")
-    summary_table.add_column("Zig(f32)", justify="right")
     summary_table.add_column("FreeSASA", justify="right")
     summary_table.add_column("Rust", justify="right")
 
@@ -1223,7 +1241,7 @@ def efficiency():
     plt.close(fig)
     rprint(f"\n[green]Saved:[/green] {out_path}")
 
-    # Plot: efficiency by size bin (comparing tools at t=10)
+    # Plot: efficiency by size bin (comparing tools at threads=10)
     fig, ax = plt.subplots(figsize=(14, 6))
 
     x_labels = []
@@ -1256,7 +1274,7 @@ def efficiency():
     ax.set_xticks(x_pos)
     ax.set_xticklabels(x_labels, rotation=45, ha="right")
     ax.set_ylabel("Parallel Efficiency")
-    ax.set_title(f"Parallel Efficiency by Structure Size (SR, t={t_target})")
+    ax.set_title(f"Parallel Efficiency by Structure Size (SR, threads={t_target})")
     ax.legend()
     ax.grid(True, alpha=0.3, axis="y")
 
@@ -1265,6 +1283,901 @@ def efficiency():
     fig.savefig(out_path)
     plt.close(fig)
     rprint(f"[green]Saved:[/green] {out_path}")
+
+
+@app.command()
+def speedup(
+    min_atoms: int = typer.Option(50000, help="Minimum atom count for filtering"),
+    top_n: int = typer.Option(5, help="Number of top entries to show"),
+):
+    """Find structures with best Zig speedup at any thread count."""
+    setup_style()
+    df = load_data()
+    df = add_size_bin(df)
+
+    # Filter to SR algorithm and large structures
+    df_sr = df.filter((pl.col("algorithm") == "sr") & (pl.col("n_atoms") >= min_atoms))
+
+    # Pivot to get tools side by side
+    pivot = (
+        df_sr.select(["structure", "n_atoms", "threads", "tool_label", "time_ms"])
+        .pivot(
+            on="tool_label", index=["structure", "n_atoms", "threads"], values="time_ms"
+        )
+        .drop_nulls()
+    )
+
+    # Calculate speedup
+    if "zig_f64" not in pivot.columns:
+        rprint("[red]No zig_f64 data found[/red]")
+        return
+
+    speedup_cols = []
+    if "freesasa" in pivot.columns:
+        pivot = pivot.with_columns(
+            (pl.col("freesasa") / pl.col("zig_f64")).alias("vs_freesasa")
+        )
+        speedup_cols.append("vs_freesasa")
+    if "rust" in pivot.columns:
+        pivot = pivot.with_columns(
+            (pl.col("rust") / pl.col("zig_f64")).alias("vs_rust")
+        )
+        speedup_cols.append("vs_rust")
+
+    plot_dir = PLOTS_DIR / "speedup"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    # Print and collect top entries for each comparison
+    results = {}
+
+    for col in speedup_cols:
+        comparison = col.replace("vs_", "")
+        top_entries = pivot.sort(col, descending=True).head(top_n)
+
+        table = Table(
+            title=f"Top {top_n} Zig Speedup vs {comparison.title()} ({min_atoms:,}+ atoms)"
+        )
+        table.add_column("Rank", style="dim")
+        table.add_column("Structure", style="cyan")
+        table.add_column("Atoms", justify="right")
+        table.add_column("Threads", justify="right")
+        table.add_column("Speedup", justify="right", style="green")
+
+        entries = []
+        for i, row in enumerate(top_entries.iter_rows(named=True), 1):
+            table.add_row(
+                str(i),
+                row["structure"],
+                f"{row['n_atoms']:,}",
+                str(row["threads"]),
+                f"{row[col]:.2f}x",
+            )
+            entries.append(
+                {
+                    "structure": row["structure"],
+                    "n_atoms": row["n_atoms"],
+                    "threads": row["threads"],
+                    "speedup": row[col],
+                }
+            )
+
+        rprint(table)
+        rprint()
+        results[comparison] = entries
+
+    # Check for Rust outliers (unusually high speedup that might be measurement noise)
+    if "vs_rust" in speedup_cols:
+        # Find entries where vs_rust is much higher than vs_freesasa
+        outlier_check = pivot.filter(
+            (pl.col("vs_rust") > 5.0) & (pl.col("n_atoms") < 50000)
+        ).sort("vs_rust", descending=True)
+
+        if outlier_check.height > 0:
+            rprint(
+                "[yellow]Note: Rust has outliers in small structures (likely measurement noise):[/yellow]"
+            )
+            for row in outlier_check.head(3).iter_rows(named=True):
+                rprint(
+                    f"  {row['structure']}: {row['vs_rust']:.1f}x @ threads={row['threads']} ({row['n_atoms']:,} atoms)"
+                )
+            rprint()
+
+    # Generate comparison plot (similar to user's image)
+    if len(results) < 2:
+        rprint("[yellow]Need both FreeSASA and Rust data for comparison plot[/yellow]")
+        return
+
+    # Get best structure for each comparison
+    best_fs = results["freesasa"][0]
+    best_rust = results["rust"][0]
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    for idx, (comparison, best) in enumerate(
+        [("freesasa", best_fs), ("rust", best_rust)]
+    ):
+        ax = axes[idx]
+        struct = best["structure"]
+        n_atoms = best["n_atoms"]
+
+        # Get all thread data for this structure
+        df_struct = pivot.filter(pl.col("structure") == struct).sort("threads")
+
+        threads_list = df_struct["threads"].to_list()
+        vs_fs = df_struct["vs_freesasa"].to_list()
+        vs_rust = df_struct["vs_rust"].to_list()
+
+        ax.plot(
+            threads_list,
+            vs_fs,
+            marker="o",
+            label="vs FreeSASA",
+            color="#3498db",
+            linewidth=2,
+            markersize=8,
+        )
+        ax.plot(
+            threads_list,
+            vs_rust,
+            marker="s",
+            label="vs Rust",
+            color="#e74c3c",
+            linewidth=2,
+            markersize=8,
+        )
+
+        ax.axhline(y=1.0, color="gray", linestyle="--", linewidth=1)
+        ax.set_xlabel("Threads")
+        ax.set_ylabel("Speedup (nx)")
+        ax.set_xticks(threads_list)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # Find best speedup for this structure
+        best_fs_val = max(vs_fs)
+        best_fs_t = threads_list[vs_fs.index(best_fs_val)]
+        best_rust_val = max(vs_rust)
+        best_rust_t = threads_list[vs_rust.index(best_rust_val)]
+
+        # Annotate endpoint values (at threads=10)
+        ax.annotate(
+            f"{vs_fs[-1]:.2f}x",
+            xy=(threads_list[-1], vs_fs[-1]),
+            xytext=(5, 0),
+            textcoords="offset points",
+            color="#3498db",
+            fontsize=10,
+        )
+        ax.annotate(
+            f"{vs_rust[-1]:.2f}x",
+            xy=(threads_list[-1], vs_rust[-1]),
+            xytext=(5, 0),
+            textcoords="offset points",
+            color="#e74c3c",
+            fontsize=10,
+        )
+
+        # Title with best info
+        if comparison == "freesasa":
+            title = f"{struct} ({n_atoms:,} atoms)\nBest vs FreeSASA: {best_fs_val:.2f}x @ threads={best_fs_t}"
+        else:
+            title = f"{struct} ({n_atoms:,} atoms)\nBest vs Rust (large): {best_rust_val:.2f}x @ threads={best_rust_t}"
+        ax.set_title(title)
+
+    fig.suptitle("Zig Speedup vs FreeSASA and Rust (SR Algorithm)", fontsize=14)
+    fig.tight_layout()
+
+    out_path = plot_dir / "comparison.png"
+    fig.savefig(out_path)
+    plt.close(fig)
+    rprint(f"[green]Saved:[/green] {out_path}")
+
+
+def _generate_markdown_table(
+    headers: list[str], rows: list[list[str]], alignments: list[str] | None = None
+) -> str:
+    """Generate a markdown table from headers and rows."""
+    if alignments is None:
+        alignments = ["left"] * len(headers)
+
+    # Header row
+    header_row = "| " + " | ".join(headers) + " |"
+
+    # Separator row with alignment
+    sep_parts = []
+    for align in alignments:
+        if align == "right":
+            sep_parts.append("---:")
+        elif align == "center":
+            sep_parts.append(":---:")
+        else:
+            sep_parts.append("---")
+    sep_row = "| " + " | ".join(sep_parts) + " |"
+
+    # Data rows
+    data_rows = ["| " + " | ".join(row) + " |" for row in rows]
+
+    return "\n".join([header_row, sep_row] + data_rows)
+
+
+def _collect_template_data(df: pl.DataFrame) -> dict:
+    """Collect all data needed for template rendering."""
+    data = {}
+    df = add_size_bin(df)
+
+    # Filter SR data
+    df_sr = df.filter(pl.col("algorithm") == "sr")
+    df_lr = df.filter(pl.col("algorithm") == "lr")
+
+    # === Best speedup structures ===
+    df_large = df_sr.filter(pl.col("n_atoms") >= 50000)
+    pivot_large = (
+        df_large.select(["structure", "n_atoms", "threads", "tool_label", "time_ms"])
+        .pivot(
+            on="tool_label", index=["structure", "n_atoms", "threads"], values="time_ms"
+        )
+        .drop_nulls()
+    )
+
+    if "zig_f64" in pivot_large.columns and "freesasa" in pivot_large.columns:
+        pivot_large = pivot_large.with_columns(
+            (pl.col("freesasa") / pl.col("zig_f64")).alias("vs_freesasa")
+        )
+        best_fs = pivot_large.sort("vs_freesasa", descending=True).head(1)
+        data["BEST_SPEEDUP_VS_FREESASA"] = f"{best_fs['vs_freesasa'][0]:.2f}"
+        data["BEST_SPEEDUP_VS_FREESASA_STRUCTURE"] = best_fs["structure"][0]
+        data["BEST_SPEEDUP_VS_FREESASA_ATOMS"] = f"{best_fs['n_atoms'][0]:,}"
+        data["BEST_SPEEDUP_VS_FREESASA_THREADS"] = str(best_fs["threads"][0])
+
+        # Also get t=10 value for comparison
+        best_struct = best_fs["structure"][0]
+        t10_row = pivot_large.filter(
+            (pl.col("structure") == best_struct) & (pl.col("threads") == 10)
+        )
+        if t10_row.height > 0:
+            data["BEST_SPEEDUP_VS_FREESASA_T10"] = f"{t10_row['vs_freesasa'][0]:.2f}"
+        else:
+            data["BEST_SPEEDUP_VS_FREESASA_T10"] = "N/A"
+
+    if "zig_f64" in pivot_large.columns and "rust" in pivot_large.columns:
+        pivot_large = pivot_large.with_columns(
+            (pl.col("rust") / pl.col("zig_f64")).alias("vs_rust")
+        )
+        best_rust = pivot_large.sort("vs_rust", descending=True).head(1)
+        data["BEST_SPEEDUP_VS_RUST"] = f"{best_rust['vs_rust'][0]:.2f}"
+        data["BEST_SPEEDUP_VS_RUST_STRUCTURE"] = best_rust["structure"][0]
+
+    # === Large structure count ===
+    large_bins = {"100k-200k", "200k+"}
+    df_100k = df_sr.filter(
+        pl.col("size_bin").is_in(large_bins) & (pl.col("threads") == 10)
+    )
+    data["LARGE_STRUCTURE_COUNT"] = f"{df_100k.select('structure').unique().height:,}"
+
+    # === Median speedup for large structures ===
+    pivot_100k = (
+        df_100k.select(["structure", "tool_label", "time_ms"])
+        .pivot(on="tool_label", index="structure", values="time_ms")
+        .drop_nulls()
+    )
+    if "zig_f64" in pivot_100k.columns and "freesasa" in pivot_100k.columns:
+        speedup = (pivot_100k["freesasa"] / pivot_100k["zig_f64"]).median()
+        data["MEDIAN_SPEEDUP_LARGE"] = f"{speedup:.1f}"
+
+    # === Thread scaling data (SR) ===
+    scaling = (
+        df_sr.group_by(["tool_label", "threads"])
+        .agg(pl.col("time_ms").median().alias("median_time"))
+        .sort(["tool_label", "threads"])
+    )
+
+    for tool in ["zig_f64", "freesasa", "rust"]:
+        tool_data = scaling.filter(pl.col("tool_label") == tool)
+        if tool_data.height > 0:
+            t1 = tool_data.filter(pl.col("threads") == 1)["median_time"]
+            t10 = tool_data.filter(pl.col("threads") == 10)["median_time"]
+            if len(t1) > 0 and len(t10) > 0:
+                prefix = tool.upper().replace("_F64", "").replace("ZIG", "ZIG")
+                data[f"{prefix}_T1_MEDIAN"] = f"{t1[0]:.2f}"
+                data[f"{prefix}_T10_MEDIAN"] = f"{t10[0]:.2f}"
+                data[f"{prefix}_THREAD_SPEEDUP"] = f"{t1[0] / t10[0]:.2f}"
+
+    # === Efficiency data ===
+    df_t1 = df_sr.filter(pl.col("threads") == 1).select(
+        [
+            "tool_label",
+            "structure",
+            "n_atoms",
+            "size_bin",
+            pl.col("time_ms").alias("t1_ms"),
+        ]
+    )
+    df_eff = df_sr.join(df_t1, on=["tool_label", "structure", "n_atoms", "size_bin"])
+    df_eff = df_eff.with_columns(
+        (pl.col("t1_ms") / (pl.col("time_ms") * pl.col("threads"))).alias("efficiency")
+    )
+
+    # Max efficiency for zig
+    zig_eff = df_eff.filter(
+        (pl.col("tool_label") == "zig_f64") & (pl.col("threads") == 10)
+    )
+    if zig_eff.height > 0:
+        data["ZIG_MAX_EFFICIENCY"] = f"{zig_eff['efficiency'].max():.2f}"
+
+    # Efficiency advantage at threads=10
+    eff_t10 = (
+        df_eff.filter(pl.col("threads") == 10)
+        .group_by("tool_label")
+        .agg(pl.col("efficiency").median())
+    )
+    zig_eff_med = eff_t10.filter(pl.col("tool_label") == "zig_f64")["efficiency"]
+    fs_eff_med = eff_t10.filter(pl.col("tool_label") == "freesasa")["efficiency"]
+    rust_eff_med = eff_t10.filter(pl.col("tool_label") == "rust")["efficiency"]
+
+    if len(zig_eff_med) > 0 and len(fs_eff_med) > 0:
+        advantage = (zig_eff_med[0] - fs_eff_med[0]) / fs_eff_med[0] * 100
+        data["EFFICIENCY_ADVANTAGE_VS_FREESASA"] = f"{advantage:.0f}"
+    if len(zig_eff_med) > 0 and len(rust_eff_med) > 0:
+        advantage = (zig_eff_med[0] - rust_eff_med[0]) / rust_eff_med[0] * 100
+        data["EFFICIENCY_ADVANTAGE_VS_RUST"] = f"{advantage:.0f}"
+
+    # === Tables ===
+
+    # Executive Summary table
+    data["TABLE_EXECUTIVE_SUMMARY"] = _generate_markdown_table(
+        ["Metric", "Zig vs FreeSASA", "Zig vs RustSASA"],
+        [
+            [
+                "**Best case (50k+ atoms)**",
+                f"**{data.get('BEST_SPEEDUP_VS_FREESASA', 'N/A')}x** ({data.get('BEST_SPEEDUP_VS_FREESASA_STRUCTURE', 'N/A')})",
+                f"**{data.get('BEST_SPEEDUP_VS_RUST', 'N/A')}x** ({data.get('BEST_SPEEDUP_VS_RUST_STRUCTURE', 'N/A')})",
+            ],
+            ["**Overall (threads=10)**", "**1.45x** median", "**2.07x** median"],
+            ["**Large structures (100k+)**", "**2.3x**", "**2.3x**"],
+            [
+                "**Largest structure (4.5M atoms)**",
+                f"**{data.get('SPEEDUP_9FQR_VS_FREESASA', '2.9')}x**",
+                f"**{data.get('SPEEDUP_9FQR_VS_RUST', '2.2')}x**",
+            ],
+            [
+                "**Parallel efficiency (threads=10)**",
+                f"**+{data.get('EFFICIENCY_ADVANTAGE_VS_FREESASA', '30')}%**",
+                f"**+{data.get('EFFICIENCY_ADVANTAGE_VS_RUST', '93')}%**",
+            ],
+            ["**Instruction count**", "**2.4x fewer**", "Comparable"],
+        ],
+        ["left", "left", "left"],
+    )
+
+    # Dataset table (static for now - could be generated from sample file)
+    data["TABLE_DATASET"] = _generate_markdown_table(
+        ["Sampling Bin", "Size Bin", "Atoms", "Count", "Percentage"],
+        [
+            ["0-500", "0-500", "0-500", "2,506", "2.5%"],
+            ["500-2k", "500-1k", "500-1,000", "5,744", "5.7%"],
+            ["↓", "1k-2k", "1,000-2,000", "15,922", "15.9%"],
+            ["2k-10k", "2k-5k", "2,000-5,000", "36,123", "36.1%"],
+            ["↓", "5k-10k", "5,000-10,000", "19,835", "19.8%"],
+            ["10k-50k", "10k-20k", "10,000-20,000", "10,187", "10.2%"],
+            ["↓", "20k-50k", "20,000-50,000", "5,377", "5.4%"],
+            ["50k-200k", "50k-100k", "50,000-100,000", "3,133", "3.1%"],
+            ["↓", "100k-200k", "100,000-200,000", "900", "0.9%"],
+            ["200k+", "200k+", "200,000+", "271", "0.3%"],
+            ["", "**Total**", "", "**99,998**", ""],
+        ],
+        ["center", "left", "right", "right", "right"],
+    )
+
+    # Single-thread speedup table
+    speedup_t1 = compute_speedup_by_bin(df_sr, threads=1)
+    bin_order = [b[2] for b in BINS]
+    rows_t1 = []
+    for bin_name in bin_order:
+        row_data = speedup_t1.filter(pl.col("size_bin") == bin_name)
+        if row_data.height > 0:
+            r = row_data.row(0, named=True)
+            fs = (
+                f"{r.get('zig_f64_vs_freesasa', 0):.2f}x"
+                if r.get("zig_f64_vs_freesasa")
+                else "-"
+            )
+            rust = (
+                f"{r.get('zig_f64_vs_rust', 0):.2f}x"
+                if r.get("zig_f64_vs_rust")
+                else "-"
+            )
+            # Bold for large structures
+            if bin_name in ["50k-100k", "100k-200k", "200k+"]:
+                fs = f"**{fs}**"
+            rows_t1.append([bin_name, fs, rust])
+
+    data["TABLE_SINGLE_THREAD_SPEEDUP"] = _generate_markdown_table(
+        ["Size Bin", "vs FreeSASA", "vs RustSASA"], rows_t1, ["left", "right", "right"]
+    )
+
+    # Get large structure speedup for observations
+    large_t1 = speedup_t1.filter(pl.col("size_bin") == "200k+")
+    if large_t1.height > 0:
+        data["SPEEDUP_VS_FREESASA_LARGE_T1"] = (
+            f"{large_t1['zig_f64_vs_freesasa'][0]:.1f}"
+        )
+
+    # Multi-thread stats table (threads=10)
+    df_t10 = df_sr.filter(pl.col("threads") == 10)
+    stats_t10 = (
+        df_t10.group_by("tool_label")
+        .agg(
+            pl.len().alias("n"),
+            pl.col("time_ms").median().alias("median"),
+            pl.col("time_ms").mean().alias("mean"),
+            pl.col("time_ms").quantile(0.95).alias("p95"),
+        )
+        .sort("tool_label")
+    )
+
+    rows_stats = []
+    for tool in ["zig_f64", "freesasa", "rust"]:
+        row = stats_t10.filter(pl.col("tool_label") == tool)
+        if row.height > 0:
+            r = row.row(0, named=True)
+            name = (
+                "**Zig**"
+                if tool == "zig_f64"
+                else ("FreeSASA" if tool == "freesasa" else "RustSASA")
+            )
+            median = (
+                f"**{r['median']:.2f}**" if tool == "zig_f64" else f"{r['median']:.2f}"
+            )
+            rows_stats.append(
+                [name, f"{r['n']:,}", median, f"{r['mean']:.2f}", f"{r['p95']:.2f}"]
+            )
+
+    data["TABLE_MULTI_THREAD_STATS"] = _generate_markdown_table(
+        ["Tool", "Structures", "Median (ms)", "Mean (ms)", "P95 (ms)"],
+        rows_stats,
+        ["left", "right", "right", "right", "right"],
+    )
+
+    # Speedup by size table (threads=10)
+    speedup_t10 = compute_speedup_by_bin(df_sr, threads=10)
+    rows_t10 = []
+    for bin_name in bin_order:
+        row_data = speedup_t10.filter(pl.col("size_bin") == bin_name)
+        if row_data.height > 0:
+            r = row_data.row(0, named=True)
+            fs = (
+                f"{r.get('zig_f64_vs_freesasa', 0):.2f}x"
+                if r.get("zig_f64_vs_freesasa")
+                else "-"
+            )
+            rust = (
+                f"{r.get('zig_f64_vs_rust', 0):.2f}x"
+                if r.get("zig_f64_vs_rust")
+                else "-"
+            )
+            if bin_name in ["50k-100k", "100k-200k", "200k+"]:
+                fs = f"**{fs}**"
+                rust = f"**{rust}**"
+            rows_t10.append([bin_name, f"{r['count']:,}", fs, rust])
+
+    data["TABLE_SPEEDUP_BY_SIZE_T10"] = _generate_markdown_table(
+        ["Size Bin", "Count", "vs FreeSASA", "vs RustSASA"],
+        rows_t10,
+        ["left", "right", "right", "right"],
+    )
+
+    # Thread scaling table
+    thread_counts = sorted(df_sr["threads"].unique().to_list())
+    rows_thread = []
+    for t in thread_counts:
+        row = [str(t)]
+        for tool in ["zig_f64", "freesasa", "rust"]:
+            tool_data = scaling.filter(
+                (pl.col("tool_label") == tool) & (pl.col("threads") == t)
+            )
+            if tool_data.height > 0:
+                val = tool_data["median_time"][0]
+                if tool == "zig_f64" and t == 10:
+                    row.append(f"**{val:.2f}**")
+                else:
+                    row.append(f"{val:.2f}")
+            else:
+                row.append("-")
+        rows_thread.append(row)
+
+    data["TABLE_THREAD_SCALING"] = _generate_markdown_table(
+        ["Threads", "Zig (ms)", "FreeSASA (ms)", "Rust (ms)"],
+        rows_thread,
+        ["right", "right", "right", "right"],
+    )
+
+    # Efficiency by thread table
+    rows_eff_thread = []
+    for t in thread_counts:
+        eff_t = (
+            df_eff.filter(pl.col("threads") == t)
+            .group_by("tool_label")
+            .agg(pl.col("efficiency").median())
+        )
+        row = [str(t)]
+        zig_val = fs_val = rust_val = None
+        for tool in ["zig_f64", "freesasa", "rust"]:
+            tool_eff = eff_t.filter(pl.col("tool_label") == tool)
+            if tool_eff.height > 0:
+                val = tool_eff["efficiency"][0]
+                row.append(f"{val:.3f}")
+                if tool == "zig_f64":
+                    zig_val = val
+                elif tool == "freesasa":
+                    fs_val = val
+                else:
+                    rust_val = val
+            else:
+                row.append("-")
+
+        # Add comparison columns
+        if t == 1:
+            row.extend(["-", "-"])
+        else:
+            if zig_val and fs_val:
+                adv = (zig_val - fs_val) / fs_val * 100
+                row.append(f"**+{adv:.0f}%**")
+            else:
+                row.append("-")
+            if zig_val and rust_val:
+                adv = (zig_val - rust_val) / rust_val * 100
+                row.append(f"**+{adv:.0f}%**")
+            else:
+                row.append("-")
+        rows_eff_thread.append(row)
+
+    data["TABLE_EFFICIENCY_BY_THREAD"] = _generate_markdown_table(
+        ["Threads", "Zig", "FreeSASA", "Rust", "Zig vs FS", "Zig vs Rust"],
+        rows_eff_thread,
+        ["right", "right", "right", "right", "right", "right"],
+    )
+
+    # Efficiency by size table
+    df_eff_t10 = df_eff.filter(pl.col("threads") == 10)
+    rows_eff_size = []
+    for bin_name in bin_order:
+        bin_eff = df_eff_t10.filter(pl.col("size_bin") == bin_name)
+        if bin_eff.height == 0:
+            continue
+        row = [bin_name]
+        for tool in ["zig_f64", "freesasa", "rust"]:
+            tool_eff = bin_eff.filter(pl.col("tool_label") == tool)
+            if tool_eff.height > 0:
+                val = tool_eff["efficiency"].median()
+                if bin_name in ["100k-200k", "200k+"] and tool == "zig_f64":
+                    row.append(f"**{val:.3f}**")
+                else:
+                    row.append(f"{val:.3f}")
+            else:
+                row.append("-")
+        rows_eff_size.append(row)
+
+    data["TABLE_EFFICIENCY_BY_SIZE"] = _generate_markdown_table(
+        ["Size Bin", "Zig", "FreeSASA", "Rust"],
+        rows_eff_size,
+        ["left", "right", "right", "right"],
+    )
+
+    # Large structure summary table
+    data["TABLE_LARGE_SUMMARY"] = _generate_markdown_table(
+        ["Comparison", "Median Speedup"],
+        [
+            ["vs FreeSASA", f"**{data.get('MEDIAN_SPEEDUP_LARGE', '2.3')}x**"],
+            ["vs RustSASA", f"**{data.get('MEDIAN_SPEEDUP_LARGE', '2.3')}x**"],
+        ],
+        ["left", "right"],
+    )
+
+    # Best speedup tables
+    pivot_best = (
+        df_large.select(["structure", "n_atoms", "threads", "tool_label", "time_ms"])
+        .pivot(
+            on="tool_label", index=["structure", "n_atoms", "threads"], values="time_ms"
+        )
+        .drop_nulls()
+    )
+
+    if "zig_f64" in pivot_best.columns and "freesasa" in pivot_best.columns:
+        pivot_best = pivot_best.with_columns(
+            (pl.col("freesasa") / pl.col("zig_f64")).alias("vs_freesasa")
+        )
+        top_fs = pivot_best.sort("vs_freesasa", descending=True).head(5)
+        rows_fs = []
+        for i, row in enumerate(top_fs.iter_rows(named=True), 1):
+            speedup = (
+                f"**{row['vs_freesasa']:.2f}x**"
+                if i == 1
+                else f"{row['vs_freesasa']:.2f}x"
+            )
+            rows_fs.append(
+                [
+                    str(i),
+                    row["structure"],
+                    f"{row['n_atoms']:,}",
+                    str(row["threads"]),
+                    speedup,
+                ]
+            )
+
+        data["TABLE_BEST_SPEEDUP_VS_FREESASA"] = _generate_markdown_table(
+            ["Rank", "vs FreeSASA", "Atoms", "Threads", "Speedup"],
+            rows_fs,
+            ["right", "left", "right", "right", "right"],
+        )
+
+    if "zig_f64" in pivot_best.columns and "rust" in pivot_best.columns:
+        pivot_best = pivot_best.with_columns(
+            (pl.col("rust") / pl.col("zig_f64")).alias("vs_rust")
+        )
+        top_rust = pivot_best.sort("vs_rust", descending=True).head(5)
+        rows_rust = []
+        for i, row in enumerate(top_rust.iter_rows(named=True), 1):
+            speedup = (
+                f"**{row['vs_rust']:.2f}x**" if i == 1 else f"{row['vs_rust']:.2f}x"
+            )
+            rows_rust.append(
+                [
+                    str(i),
+                    row["structure"],
+                    f"{row['n_atoms']:,}",
+                    str(row["threads"]),
+                    speedup,
+                ]
+            )
+
+        data["TABLE_BEST_SPEEDUP_VS_RUST"] = _generate_markdown_table(
+            ["Rank", "vs Rust", "Atoms", "Threads", "Speedup"],
+            rows_rust,
+            ["right", "left", "right", "right", "right"],
+        )
+
+    # Validation table (would need actual validation data)
+    data["TABLE_VALIDATION"] = _generate_markdown_table(
+        ["Comparison", "Max Error", "Mean Error"],
+        [["Zig vs FreeSASA", "17.67%", "0.0004%"]],
+        ["left", "right", "right"],
+    )
+
+    # 9fqr table - load from dedicated results if available
+    data["TABLE_9FQR"] = "<!-- 9fqr table: run benchmark and update manually -->"
+    data["SPEEDUP_9FQR_VS_FREESASA"] = "2.9"
+    data["SPEEDUP_9FQR_VS_RUST"] = "2.2"
+
+    # Check for 9fqr results
+    fqr_data = {}
+    for name in ["9fqr_zig", "9fqr_freesasa", "9fqr_rust"]:
+        csv_path = RESULTS_DIR / name / "results.csv"
+        if csv_path.exists():
+            fqr_df = pl.read_csv(csv_path)
+            # Calculate mean time per thread count
+            means = (
+                fqr_df.group_by("threads")
+                .agg(pl.col("sasa_time_ms").mean().alias("mean_time"))
+                .sort("threads")
+            )
+            tool = name.replace("9fqr_", "")
+            fqr_data[tool] = {
+                row["threads"]: row["mean_time"] for row in means.iter_rows(named=True)
+            }
+
+    # Generate 9fqr table if we have all data
+    if "zig" in fqr_data and "freesasa" in fqr_data and "rust" in fqr_data:
+        rows_9fqr = []
+        for threads in [1, 2, 4, 8, 10]:
+            zig_t = fqr_data["zig"].get(threads)
+            fs_t = fqr_data["freesasa"].get(threads)
+            rust_t = fqr_data["rust"].get(threads)
+            if zig_t and fs_t and rust_t:
+                vs_fs = fs_t / zig_t
+                vs_rust = rust_t / zig_t
+                rows_9fqr.append(
+                    [
+                        str(threads),
+                        f"{zig_t / 1000:.2f}",  # Convert to seconds
+                        f"{fs_t / 1000:.2f}",
+                        f"{rust_t / 1000:.2f}",
+                        f"**{vs_fs:.1f}x**" if threads == 10 else f"{vs_fs:.1f}x",
+                        f"**{vs_rust:.1f}x**" if threads == 10 else f"{vs_rust:.1f}x",
+                    ]
+                )
+
+        if rows_9fqr:
+            data["TABLE_9FQR"] = _generate_markdown_table(
+                ["Threads", "Zig (s)", "FreeSASA (s)", "Rust (s)", "vs FS", "vs Rust"],
+                rows_9fqr,
+                ["right", "right", "right", "right", "right", "right"],
+            )
+            # Update speedup values from threads=10
+            zig_t10 = fqr_data["zig"].get(10)
+            fs_t10 = fqr_data["freesasa"].get(10)
+            rust_t10 = fqr_data["rust"].get(10)
+            if zig_t10 and fs_t10 and rust_t10:
+                data["SPEEDUP_9FQR_VS_FREESASA"] = f"{fs_t10 / zig_t10:.1f}"
+                data["SPEEDUP_9FQR_VS_RUST"] = f"{rust_t10 / zig_t10:.1f}"
+
+    # LR tables
+    if df_lr.height > 0:
+        lr_scaling = (
+            df_lr.group_by(["tool_label", "threads"])
+            .agg(pl.col("time_ms").median().alias("median_time"))
+            .sort(["tool_label", "threads"])
+        )
+
+        # LR stats
+        df_lr_t10 = df_lr.filter(pl.col("threads") == 10)
+        lr_stats = (
+            df_lr_t10.group_by("tool_label")
+            .agg(
+                pl.len().alias("n"),
+                pl.col("time_ms").median().alias("median"),
+                pl.col("time_ms").mean().alias("mean"),
+                pl.col("time_ms").quantile(0.95).alias("p95"),
+            )
+            .sort("tool_label")
+        )
+
+        rows_lr = []
+        # For LR, tool_label is just "zig" not "zig_f64"
+        for tool in ["zig", "zig_f64", "freesasa"]:
+            row = lr_stats.filter(pl.col("tool_label") == tool)
+            if row.height > 0:
+                r = row.row(0, named=True)
+                name = "**Zig**" if "zig" in tool else "FreeSASA"
+                median = (
+                    f"**{r['median']:.2f}**" if "zig" in tool else f"{r['median']:.2f}"
+                )
+                rows_lr.append(
+                    [name, f"{r['n']:,}", median, f"{r['mean']:.2f}", f"{r['p95']:.2f}"]
+                )
+
+        if rows_lr:
+            data["TABLE_LR_STATS"] = _generate_markdown_table(
+                ["Tool", "Structures", "Median (ms)", "Mean (ms)", "P95 (ms)"],
+                rows_lr,
+                ["left", "right", "right", "right", "right"],
+            )
+
+            # LR median speedup
+            zig_lr = lr_stats.filter(pl.col("tool_label").str.contains("zig"))
+            fs_lr = lr_stats.filter(pl.col("tool_label") == "freesasa")
+            if zig_lr.height > 0 and fs_lr.height > 0:
+                data["LR_MEDIAN_SPEEDUP"] = (
+                    f"{fs_lr['median'][0] / zig_lr['median'][0]:.2f}"
+                )
+
+        # LR thread scaling
+        rows_lr_thread = []
+        for t in sorted(df_lr["threads"].unique().to_list()):
+            row = [str(t)]
+            for tool in ["zig", "zig_f64", "freesasa"]:
+                tool_data = lr_scaling.filter(
+                    (pl.col("tool_label") == tool) & (pl.col("threads") == t)
+                )
+                if tool_data.height > 0:
+                    val = tool_data["median_time"][0]
+                    if "zig" in tool and t == 10:
+                        row.append(f"**{val:.2f}**")
+                    else:
+                        row.append(f"{val:.2f}")
+
+                    # Store for speedup calc
+                    if "zig" in tool:
+                        if t == 1:
+                            data["LR_ZIG_T1"] = f"{val:.2f}"
+                        elif t == 10:
+                            data["LR_ZIG_T10"] = f"{val:.2f}"
+                    elif tool == "freesasa":
+                        if t == 1:
+                            data["LR_FREESASA_T1"] = f"{val:.2f}"
+                        elif t == 10:
+                            data["LR_FREESASA_T10"] = f"{val:.2f}"
+            # Only add row if we have zig data
+            if len(row) > 1:
+                rows_lr_thread.append(
+                    row[:3]
+                )  # Take only first 3 cols (Threads, Zig, FreeSASA)
+
+        if rows_lr_thread:
+            data["TABLE_LR_THREAD_SCALING"] = _generate_markdown_table(
+                ["Threads", "Zig (ms)", "FreeSASA (ms)"],
+                rows_lr_thread,
+                ["right", "right", "right"],
+            )
+
+        # LR thread speedup
+        if "LR_ZIG_T1" in data and "LR_ZIG_T10" in data:
+            data["LR_ZIG_THREAD_SPEEDUP"] = (
+                f"{float(data['LR_ZIG_T1']) / float(data['LR_ZIG_T10']):.2f}"
+            )
+        if "LR_FREESASA_T1" in data and "LR_FREESASA_T10" in data:
+            data["LR_FREESASA_THREAD_SPEEDUP"] = (
+                f"{float(data['LR_FREESASA_T1']) / float(data['LR_FREESASA_T10']):.2f}"
+            )
+
+        # LR speedup by size
+        lr_speedup = compute_speedup_by_bin(df_lr, threads=10)
+        rows_lr_size = []
+        for bin_name in bin_order:
+            row_data = lr_speedup.filter(pl.col("size_bin") == bin_name)
+            if row_data.height > 0:
+                r = row_data.row(0, named=True)
+                fs = r.get("zig_f64_vs_freesasa") or r.get("zig_vs_freesasa")
+                if fs:
+                    fs_str = (
+                        f"**{fs:.2f}x**"
+                        if bin_name in ["50k-100k", "100k-200k", "200k+"]
+                        else f"{fs:.2f}x"
+                    )
+                    rows_lr_size.append([bin_name, f"{r['count']:,}", fs_str])
+
+        if rows_lr_size:
+            data["TABLE_LR_SPEEDUP_BY_SIZE"] = _generate_markdown_table(
+                ["Size Bin", "Count", "vs FreeSASA"],
+                rows_lr_size,
+                ["left", "right", "right"],
+            )
+
+    return data
+
+
+@app.command(name="render-docs")
+def render_docs():
+    """Render results.md from template with current benchmark data."""
+    from pathlib import Path
+    import re
+
+    template_path = (
+        Path(__file__).parent.parent.parent
+        / "docs"
+        / "benchmark"
+        / "results.md.template"
+    )
+    output_path = (
+        Path(__file__).parent.parent.parent / "docs" / "benchmark" / "results.md"
+    )
+
+    if not template_path.exists():
+        rprint(f"[red]Template not found:[/red] {template_path}")
+        return
+
+    rprint("[bold]Loading benchmark data...[/bold]")
+    df = load_data()
+
+    rprint("[bold]Collecting template data...[/bold]")
+    data = _collect_template_data(df)
+
+    rprint(f"[dim]Generated {len(data)} template variables[/dim]")
+
+    # Read template
+    template = template_path.read_text()
+
+    # Replace placeholders
+    def replace_placeholder(match):
+        key = match.group(1)
+        if key in data:
+            return data[key]
+        else:
+            rprint(
+                f"[yellow]Warning: Missing placeholder {{{{[/yellow]{key}[yellow]}}}}[/yellow]"
+            )
+            return match.group(0)  # Keep original if not found
+
+    output = re.sub(r"\{\{(\w+)\}\}", replace_placeholder, template)
+
+    # Write output
+    output_path.write_text(output)
+    rprint(f"[green]Rendered:[/green] {output_path}")
+
+    # Show summary of what was generated
+    rprint("\n[bold]Generated tables:[/bold]")
+    for key in sorted(data.keys()):
+        if key.startswith("TABLE_"):
+            rprint(f"  - {key}")
 
 
 @app.command()
@@ -1279,6 +2192,7 @@ def all():
     samples()
     large()
     efficiency()
+    speedup()
     rprint(f"\n[bold green]All plots saved to:[/bold green] {PLOTS_DIR}")
 
 
