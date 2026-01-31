@@ -14,7 +14,8 @@ Zig's key advantage: **Large structures + Multi-threading**
 | ![Speedup](../../benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](../../benchmarks/results/plots/large/speedup_by_threads.png) |
 
 **Key Results (100k+ atoms, n=1,171):**
-- **2.3x** faster than FreeSASA and RustSASA (threads=10)
+- **Up to 3x faster** than FreeSASA (8to0: 673k atoms, threads=8)
+- **2.3x** median speedup vs FreeSASA and RustSASA (threads=10)
 - Speedup increases with thread count (parallel efficiency advantage)
 
 ---
@@ -33,6 +34,7 @@ Zig's key advantage: **Large structures + Multi-threading**
 
 | Metric | Zig vs FreeSASA | Zig vs RustSASA |
 |--------|-----------------|-----------------|
+| **Best case (50k+ atoms)** | **3.05x** (8to0) | **2.79x** (5wk6) |
 | **Overall (threads=10)** | **1.45x** median | **2.07x** median |
 | **Large structures (100k+)** | **2.3x** | **2.3x** |
 | **Largest structure (4.5M atoms)** | **2.9x** | **2.2x** |
