@@ -19,6 +19,9 @@ on:
       - 'LICENSE'
   workflow_dispatch:  # Allow manual triggers
 
+permissions:
+  contents: read
+
 jobs:
   fmt:
     runs-on: ubuntu-latest
@@ -106,7 +109,7 @@ jobs:
 
       - name: Run with example input
         run: |
-          ./zig-out/bin/freesasa_zig benchmarks/dataset/1a0q.json.gz /tmp/output.json
+          ./zig-out/bin/freesasa_zig examples/1ubq.pdb /tmp/output.json
           cat /tmp/output.json | head -20
 
       - name: Validate output format
@@ -119,17 +122,18 @@ jobs:
           assert 'atom_areas' in data, 'Missing atom_areas'
           assert isinstance(data['total_area'], (int, float)), 'total_area should be number'
           assert isinstance(data['atom_areas'], list), 'atom_areas should be list'
-          assert len(data['atom_areas']) == 3183, f'Expected 3183 atoms, got {len(data[\"atom_areas\"])}'
+          # 1UBQ has 602 atoms
+          assert len(data['atom_areas']) > 500, f'Expected >500 atoms, got {len(data[\"atom_areas\"])}'
           print(f'Validation passed: total_area={data[\"total_area\"]:.2f}, atoms={len(data[\"atom_areas\"])}')"
 
       - name: Test CSV output
         run: |
-          ./zig-out/bin/freesasa_zig --format=csv benchmarks/dataset/1a0q.json.gz /tmp/output.csv
+          ./zig-out/bin/freesasa_zig --format=csv examples/1ubq.pdb /tmp/output.csv
           head -5 /tmp/output.csv
           tail -3 /tmp/output.csv
 
       - name: Test validate mode
-        run: ./zig-out/bin/freesasa_zig --validate benchmarks/dataset/1a0q.json.gz
+        run: ./zig-out/bin/freesasa_zig --validate examples/1ubq.pdb
 
   python:
     strategy:

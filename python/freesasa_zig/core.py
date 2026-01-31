@@ -48,8 +48,10 @@ _CDEF = """
     );
 
     // Classifier functions
-    double freesasa_classifier_get_radius(int classifier_type, const char* residue, const char* atom);
-    int freesasa_classifier_get_class(int classifier_type, const char* residue, const char* atom);
+    double freesasa_classifier_get_radius(
+        int classifier_type, const char* residue, const char* atom);
+    int freesasa_classifier_get_class(
+        int classifier_type, const char* residue, const char* atom);
     double freesasa_guess_radius(const char* element);
     double freesasa_guess_radius_from_atom_name(const char* atom_name);
 
