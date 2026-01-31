@@ -23,10 +23,28 @@ app = typer.Typer(help="Generate benchmark plots")
 RESULTS_DIR = Path(__file__).parent.parent / "results"
 PLOTS_DIR = RESULTS_DIR / "plots"
 
+# Color palette for tools
+COLORS = {
+    "zig": "#f39c12",  # Orange (legacy, keep for backward compat)
+    "zig_f32": "#e67e22",  # Dark orange
+    "zig_f64": "#f39c12",  # Light orange
+    "freesasa": "#3498db",  # Blue
+    "rust": "#e74c3c",  # Red
+}
+
+# Line styles for tools (solid by default, dashed for f32)
+LINESTYLES = {
+    "zig": "-",
+    "zig_f32": "--",  # Dashed for f32
+    "zig_f64": "-",
+    "freesasa": "-",
+    "rust": "-",
+}
+
 
 def load_data() -> pl.DataFrame:
     """Load all single-file benchmark results into a single DataFrame."""
-    excluded = ("batch_", "ipc", "csv")
+    excluded = ("batch_", "ipc", "csv", "plots", "__pycache__")
     csv_files = [
         f
         for f in RESULTS_DIR.glob("*/results.csv")
@@ -35,17 +53,51 @@ def load_data() -> pl.DataFrame:
     if not csv_files:
         raise FileNotFoundError("No results.csv files found")
 
-    dfs = [pl.read_csv(f) for f in csv_files]
-    df = pl.concat(dfs)
+    dfs = []
+    for f in csv_files:
+        df = pl.read_csv(f)
+        dir_name = f.parent.name  # e.g., "zig_sr_f32", "zig_sr_f64", "freesasa_sr"
+
+        # Extract precision from directory name (only for zig)
+        if "_f32" in dir_name:
+            precision = "f32"
+        elif "_f64" in dir_name:
+            precision = "f64"
+        else:
+            precision = None  # Non-zig tools
+
+        # Add precision column
+        df = df.with_columns(pl.lit(precision).alias("precision"))
+        dfs.append(df)
+
+    df = pl.concat(dfs, how="diagonal")  # diagonal handles schema differences
+
+    # Create compound tool identifier for zig variants
+    df = df.with_columns(
+        pl.when((pl.col("tool") == "zig") & pl.col("precision").is_not_null())
+        .then(pl.concat_str([pl.col("tool"), pl.lit("_"), pl.col("precision")]))
+        .otherwise(pl.col("tool"))
+        .alias("tool_label")
+    )
 
     # Aggregate by structure (mean across runs)
     return (
-        df.group_by(["tool", "structure", "n_atoms", "algorithm", "threads"])
+        df.group_by(
+            [
+                "tool",
+                "tool_label",
+                "structure",
+                "n_atoms",
+                "algorithm",
+                "precision",
+                "threads",
+            ]
+        )
         .agg(
             pl.col("sasa_time_ms").mean().alias("time_ms"),
             pl.col("total_sasa").first(),
         )
-        .sort(["algorithm", "tool", "n_atoms"])
+        .sort(["algorithm", "tool_label", "n_atoms"])
     )
 
 
@@ -87,20 +139,20 @@ def summary():
     table.add_column("P95 (ms)", justify="right")
 
     stats = (
-        df_t1.group_by(["algorithm", "tool"])
+        df_t1.group_by(["algorithm", "tool_label"])
         .agg(
             pl.len().alias("n"),
             pl.col("time_ms").median().alias("median"),
             pl.col("time_ms").mean().alias("mean"),
             pl.col("time_ms").quantile(0.95).alias("p95"),
         )
-        .sort(["algorithm", "tool"])
+        .sort(["algorithm", "tool_label"])
     )
 
     for row in stats.iter_rows(named=True):
         table.add_row(
             row["algorithm"].upper(),
-            row["tool"],
+            row["tool_label"],
             f"{row['n']:,}",
             f"{row['median']:.2f}",
             f"{row['mean']:.2f}",
@@ -109,33 +161,44 @@ def summary():
 
     rprint(table)
 
-    # Speedup summary
+    # Speedup summary - use tool_label for pivoting
     rprint("\n[bold]Speedup Ratios (Zig vs others):[/bold]")
     for algo in ["sr", "lr"]:
         df_algo = df_t1.filter(pl.col("algorithm") == algo)
         pivot = (
-            df_algo.select(["structure", "tool", "time_ms"])
-            .pivot(on="tool", index="structure", values="time_ms")
+            df_algo.select(["structure", "tool_label", "time_ms"])
+            .pivot(on="tool_label", index="structure", values="time_ms")
             .drop_nulls()
         )
 
-        if "zig" in pivot.columns and "freesasa" in pivot.columns:
+        # zig_f64 vs FreeSASA (primary comparison)
+        if "zig_f64" in pivot.columns and "freesasa" in pivot.columns:
             speedup = pivot.select(
-                (pl.col("freesasa") / pl.col("zig")).alias("speedup")
+                (pl.col("freesasa") / pl.col("zig_f64")).alias("speedup")
             )
             med = speedup["speedup"].median()
             mean = speedup["speedup"].mean()
             rprint(
-                f"  {algo.upper()}: Zig vs FreeSASA = [green]{med:.2f}x[/green] (median), {mean:.2f}x (mean)"
+                f"  {algo.upper()}: Zig(f64) vs FreeSASA = [green]{med:.2f}x[/green] (median), {mean:.2f}x (mean)"
             )
 
-        if algo == "sr" and "rust" in pivot.columns:
+        # zig_f32 vs zig_f64 (f32 performance relative to f64)
+        if "zig_f32" in pivot.columns and "zig_f64" in pivot.columns:
+            speedup = pivot.select(
+                (pl.col("zig_f64") / pl.col("zig_f32")).alias("speedup")
+            )
+            med = speedup["speedup"].median()
+            rprint(
+                f"  {algo.upper()}: Zig(f32) vs Zig(f64) = [green]{med:.2f}x[/green] (median)"
+            )
+
+        if algo == "sr" and "rust" in pivot.columns and "zig_f64" in pivot.columns:
             speedup_rust = pivot.select(
-                (pl.col("rust") / pl.col("zig")).alias("speedup")
+                (pl.col("rust") / pl.col("zig_f64")).alias("speedup")
             )
             med = speedup_rust["speedup"].median()
             rprint(
-                f"  {algo.upper()}: Zig vs Rust = [green]{med:.2f}x[/green] (median)"
+                f"  {algo.upper()}: Zig(f64) vs Rust = [green]{med:.2f}x[/green] (median)"
             )
 
     # Speedup by size bin table (SR only)
@@ -146,8 +209,9 @@ def summary():
     bin_table = Table(title="SR Speedup by Structure Size (threads=1)")
     bin_table.add_column("Size Bin", style="cyan")
     bin_table.add_column("Count", justify="right")
-    bin_table.add_column("Zig vs FreeSASA", justify="right")
-    bin_table.add_column("Zig vs Rust", justify="right")
+    bin_table.add_column("Zig(f64) vs FreeSASA", justify="right")
+    bin_table.add_column("Zig(f64) vs Rust", justify="right")
+    bin_table.add_column("Zig(f32) vs Zig(f64)", justify="right")
 
     # Sort by bin order
     bin_order = [b[2] for b in BINS]
@@ -157,11 +221,13 @@ def summary():
         if bin_name not in data_dict:
             continue
         row = data_dict[bin_name]
-        zig_fs = row.get("zig_vs_freesasa")
-        zig_rust = row.get("zig_vs_rust")
+        zig_fs = row.get("zig_f64_vs_freesasa")
+        zig_rust = row.get("zig_f64_vs_rust")
+        f32_f64 = row.get("zig_f32_vs_zig_f64")
 
         fs_str = f"{zig_fs:.2f}x" if zig_fs else "-"
         rust_str = f"{zig_rust:.2f}x" if zig_rust else "-"
+        f32_str = f"{f32_f64:.2f}x" if f32_f64 else "-"
 
         # Color based on speedup
         if zig_fs and zig_fs > 1.0:
@@ -174,10 +240,15 @@ def summary():
         elif zig_rust:
             rust_str = f"[red]{rust_str}[/red]"
 
-        bin_table.add_row(bin_name, f"{row['count']:,}", fs_str, rust_str)
+        if f32_f64 and f32_f64 > 1.0:
+            f32_str = f"[green]{f32_str}[/green]"
+        elif f32_f64:
+            f32_str = f"[red]{f32_str}[/red]"
+
+        bin_table.add_row(bin_name, f"{row['count']:,}", fs_str, rust_str, f32_str)
 
     rprint(bin_table)
-    rprint("\n[dim]Green = Zig faster, Red = Zig slower[/dim]")
+    rprint("\n[dim]Green = faster, Red = slower[/dim]")
 
 
 @app.command()
@@ -197,16 +268,16 @@ def export_csv():
 
         df_t = df.filter(pl.col("threads") == threads)
 
-        # 1. Performance summary
+        # 1. Performance summary (with tool_label for zig variants)
         perf_stats = (
-            df_t.group_by(["algorithm", "tool"])
+            df_t.group_by(["algorithm", "tool_label", "precision"])
             .agg(
                 pl.len().alias("structures"),
                 pl.col("time_ms").median().alias("median_ms"),
                 pl.col("time_ms").mean().alias("mean_ms"),
                 pl.col("time_ms").quantile(0.95).alias("p95_ms"),
             )
-            .sort(["algorithm", "tool"])
+            .sort(["algorithm", "tool_label"])
         )
         perf_path = t_dir / "performance_summary.csv"
         perf_stats.write_csv(perf_path)
@@ -255,17 +326,16 @@ def export_csv():
 def _plot_scatter(df_algo: pl.DataFrame, algo: str, ax):
     """Plot scatter for a single algorithm."""
     df_sampled = df_algo.sample(n=min(5000, df_algo.height), seed=42)
-    colors = {"zig": "#f39c12", "freesasa": "#3498db", "rust": "#e74c3c"}
 
-    for tool in sorted(df_sampled["tool"].unique().to_list()):
-        df_tool = df_sampled.filter(pl.col("tool") == tool)
+    for tool_label in sorted(df_sampled["tool_label"].unique().to_list()):
+        df_tool = df_sampled.filter(pl.col("tool_label") == tool_label)
         ax.scatter(
             df_tool["n_atoms"].to_list(),
             df_tool["time_ms"].to_list(),
-            label=tool.capitalize(),
+            label=tool_label.replace("_", " ").title(),
             alpha=0.4,
             s=10,
-            color=colors.get(tool, "#95a5a6"),
+            color=COLORS.get(tool_label, "#95a5a6"),
         )
 
     ax.set_xscale("log")
@@ -333,22 +403,21 @@ def scatter():
 
 def _plot_threads(df_algo: pl.DataFrame, algo: str, ax):
     """Plot thread scaling for a single algorithm."""
-    colors = {"zig": "#f39c12", "freesasa": "#3498db", "rust": "#e74c3c"}
-
     scaling = (
-        df_algo.group_by(["tool", "threads"])
+        df_algo.group_by(["tool_label", "threads"])
         .agg(pl.col("time_ms").median().alias("median_time"))
-        .sort(["tool", "threads"])
+        .sort(["tool_label", "threads"])
     )
 
-    for tool in sorted(scaling["tool"].unique().to_list()):
-        df_tool = scaling.filter(pl.col("tool") == tool)
+    for tool_label in sorted(scaling["tool_label"].unique().to_list()):
+        df_tool = scaling.filter(pl.col("tool_label") == tool_label)
         ax.plot(
             df_tool["threads"].to_list(),
             df_tool["median_time"].to_list(),
             marker="o",
-            label=tool.capitalize(),
-            color=colors.get(tool, "#95a5a6"),
+            label=tool_label.replace("_", " ").title(),
+            color=COLORS.get(tool_label, "#95a5a6"),
+            linestyle=LINESTYLES.get(tool_label, "-"),
             linewidth=2,
         )
 
@@ -427,21 +496,33 @@ def compute_speedup_by_bin(df: pl.DataFrame, threads: int = 1) -> pl.DataFrame:
     df_t = df.filter(pl.col("threads") == threads)
 
     pivot = (
-        df_t.select(["structure", "tool", "n_atoms", "time_ms"])
-        .pivot(on="tool", index=["structure", "n_atoms"], values="time_ms")
+        df_t.select(["structure", "tool_label", "n_atoms", "time_ms"])
+        .pivot(on="tool_label", index=["structure", "n_atoms"], values="time_ms")
         .drop_nulls()
     )
 
-    # Add speedup columns
+    # Add speedup columns using tool_label (zig_f64, zig_f32, freesasa, rust)
     cols = pivot.columns
-    if "zig" in cols and "freesasa" in cols:
+
+    # zig_f64 vs FreeSASA (primary comparison)
+    if "zig_f64" in cols and "freesasa" in cols:
         pivot = pivot.with_columns(
-            (pl.col("freesasa") / pl.col("zig")).alias("zig_vs_freesasa")
+            (pl.col("freesasa") / pl.col("zig_f64")).alias("zig_f64_vs_freesasa")
         )
-    if "zig" in cols and "rust" in cols:
+
+    # zig_f64 vs Rust
+    if "zig_f64" in cols and "rust" in cols:
         pivot = pivot.with_columns(
-            (pl.col("rust") / pl.col("zig")).alias("zig_vs_rust")
+            (pl.col("rust") / pl.col("zig_f64")).alias("zig_f64_vs_rust")
         )
+
+    # zig_f32 vs zig_f64 (f32 performance relative to f64)
+    if "zig_f32" in cols and "zig_f64" in cols:
+        pivot = pivot.with_columns(
+            (pl.col("zig_f64") / pl.col("zig_f32")).alias("zig_f32_vs_zig_f64")
+        )
+
+    # FreeSASA vs Rust
     if "freesasa" in cols and "rust" in cols:
         pivot = pivot.with_columns(
             (pl.col("rust") / pl.col("freesasa")).alias("freesasa_vs_rust")
@@ -451,20 +532,36 @@ def compute_speedup_by_bin(df: pl.DataFrame, threads: int = 1) -> pl.DataFrame:
 
     # Aggregate by bin - median with IQR for error bars
     agg_cols = [pl.len().alias("count")]
-    if "zig_vs_freesasa" in pivot.columns:
+    if "zig_f64_vs_freesasa" in pivot.columns:
         agg_cols.extend(
             [
-                pl.col("zig_vs_freesasa").median().alias("zig_vs_freesasa"),
-                pl.col("zig_vs_freesasa").quantile(0.25).alias("zig_vs_freesasa_q25"),
-                pl.col("zig_vs_freesasa").quantile(0.75).alias("zig_vs_freesasa_q75"),
+                pl.col("zig_f64_vs_freesasa").median().alias("zig_f64_vs_freesasa"),
+                pl.col("zig_f64_vs_freesasa")
+                .quantile(0.25)
+                .alias("zig_f64_vs_freesasa_q25"),
+                pl.col("zig_f64_vs_freesasa")
+                .quantile(0.75)
+                .alias("zig_f64_vs_freesasa_q75"),
             ]
         )
-    if "zig_vs_rust" in pivot.columns:
+    if "zig_f64_vs_rust" in pivot.columns:
         agg_cols.extend(
             [
-                pl.col("zig_vs_rust").median().alias("zig_vs_rust"),
-                pl.col("zig_vs_rust").quantile(0.25).alias("zig_vs_rust_q25"),
-                pl.col("zig_vs_rust").quantile(0.75).alias("zig_vs_rust_q75"),
+                pl.col("zig_f64_vs_rust").median().alias("zig_f64_vs_rust"),
+                pl.col("zig_f64_vs_rust").quantile(0.25).alias("zig_f64_vs_rust_q25"),
+                pl.col("zig_f64_vs_rust").quantile(0.75).alias("zig_f64_vs_rust_q75"),
+            ]
+        )
+    if "zig_f32_vs_zig_f64" in pivot.columns:
+        agg_cols.extend(
+            [
+                pl.col("zig_f32_vs_zig_f64").median().alias("zig_f32_vs_zig_f64"),
+                pl.col("zig_f32_vs_zig_f64")
+                .quantile(0.25)
+                .alias("zig_f32_vs_zig_f64_q25"),
+                pl.col("zig_f32_vs_zig_f64")
+                .quantile(0.75)
+                .alias("zig_f32_vs_zig_f64_q75"),
             ]
         )
     if "freesasa_vs_rust" in pivot.columns:
@@ -490,10 +587,11 @@ def _plot_speedup_single(
     x_labels = [b for b in bin_labels if b in data_dict]
     x_pos = list(range(len(x_labels)))
 
-    if "zig_vs_freesasa" in speedup_data.columns:
-        y_fs = [data_dict[label]["zig_vs_freesasa"] for label in x_labels]
-        y_fs_q25 = [data_dict[label]["zig_vs_freesasa_q25"] for label in x_labels]
-        y_fs_q75 = [data_dict[label]["zig_vs_freesasa_q75"] for label in x_labels]
+    # zig_f64 vs FreeSASA (primary comparison)
+    if "zig_f64_vs_freesasa" in speedup_data.columns:
+        y_fs = [data_dict[label]["zig_f64_vs_freesasa"] for label in x_labels]
+        y_fs_q25 = [data_dict[label]["zig_f64_vs_freesasa_q25"] for label in x_labels]
+        y_fs_q75 = [data_dict[label]["zig_f64_vs_freesasa_q75"] for label in x_labels]
         yerr_fs = [
             [m - q25 for m, q25 in zip(y_fs, y_fs_q25)],
             [q75 - m for m, q75 in zip(y_fs, y_fs_q75)],
@@ -506,14 +604,15 @@ def _plot_speedup_single(
             linewidth=1.5,
             markersize=5,
             capsize=3,
-            label="Zig vs FreeSASA",
+            label="Zig(f64) vs FreeSASA",
             color="#3498db",
         )
 
-    if "zig_vs_rust" in speedup_data.columns:
-        y_rust = [data_dict[label]["zig_vs_rust"] for label in x_labels]
-        y_rust_q25 = [data_dict[label]["zig_vs_rust_q25"] for label in x_labels]
-        y_rust_q75 = [data_dict[label]["zig_vs_rust_q75"] for label in x_labels]
+    # zig_f64 vs Rust
+    if "zig_f64_vs_rust" in speedup_data.columns:
+        y_rust = [data_dict[label]["zig_f64_vs_rust"] for label in x_labels]
+        y_rust_q25 = [data_dict[label]["zig_f64_vs_rust_q25"] for label in x_labels]
+        y_rust_q75 = [data_dict[label]["zig_f64_vs_rust_q75"] for label in x_labels]
         yerr_rust = [
             [m - q25 for m, q25 in zip(y_rust, y_rust_q25)],
             [q75 - m for m, q75 in zip(y_rust, y_rust_q75)],
@@ -526,10 +625,32 @@ def _plot_speedup_single(
             linewidth=1.5,
             markersize=5,
             capsize=3,
-            label="Zig vs Rust",
+            label="Zig(f64) vs Rust",
             color="#e74c3c",
         )
 
+    # zig_f32 vs zig_f64
+    if "zig_f32_vs_zig_f64" in speedup_data.columns:
+        y_f32 = [data_dict[label]["zig_f32_vs_zig_f64"] for label in x_labels]
+        y_f32_q25 = [data_dict[label]["zig_f32_vs_zig_f64_q25"] for label in x_labels]
+        y_f32_q75 = [data_dict[label]["zig_f32_vs_zig_f64_q75"] for label in x_labels]
+        yerr_f32 = [
+            [m - q25 for m, q25 in zip(y_f32, y_f32_q25)],
+            [q75 - m for m, q75 in zip(y_f32, y_f32_q75)],
+        ]
+        ax.errorbar(
+            x_pos,
+            y_f32,
+            yerr=yerr_f32,
+            marker="^",
+            linewidth=1.5,
+            markersize=5,
+            capsize=3,
+            label="Zig(f32) vs Zig(f64)",
+            color="#27ae60",  # Green
+        )
+
+    # FreeSASA vs Rust
     if "freesasa_vs_rust" in speedup_data.columns:
         y_fsr = [data_dict[label]["freesasa_vs_rust"] for label in x_labels]
         y_fsr_q25 = [data_dict[label]["freesasa_vs_rust_q25"] for label in x_labels]
@@ -542,7 +663,7 @@ def _plot_speedup_single(
             x_pos,
             y_fsr,
             yerr=yerr_fsr,
-            marker="^",
+            marker="D",
             linewidth=1.5,
             markersize=5,
             capsize=3,
@@ -622,7 +743,7 @@ def grid():
 
 @app.command()
 def validation():
-    """Generate SASA validation scatter plot (Zig vs FreeSASA)."""
+    """Generate SASA validation scatter plot (Zig f64 vs FreeSASA)."""
     setup_style()
     plot_dir = PLOTS_DIR / "validation"
     plot_dir.mkdir(parents=True, exist_ok=True)
@@ -632,17 +753,17 @@ def validation():
     for algo in ["sr", "lr"]:
         df_algo = df.filter((pl.col("algorithm") == algo) & (pl.col("threads") == 1))
 
-        # Pivot to get zig and freesasa SASA values side by side
+        # Pivot to get zig_f64 and freesasa SASA values side by side
         pivot = (
-            df_algo.select(["structure", "tool", "total_sasa"])
-            .pivot(on="tool", index="structure", values="total_sasa")
+            df_algo.select(["structure", "tool_label", "total_sasa"])
+            .pivot(on="tool_label", index="structure", values="total_sasa")
             .drop_nulls()
         )
 
-        if "zig" not in pivot.columns or "freesasa" not in pivot.columns:
+        if "zig_f64" not in pivot.columns or "freesasa" not in pivot.columns:
             continue
 
-        zig_sasa = pivot["zig"].to_list()
+        zig_sasa = pivot["zig_f64"].to_list()
         fs_sasa = pivot["freesasa"].to_list()
 
         fig, ax = plt.subplots(figsize=(8, 8))
@@ -665,7 +786,7 @@ def validation():
         max_rel_error = np.max(rel_errors)
         mean_rel_error = np.mean(rel_errors)
 
-        ax.set_xlabel("Zig SASA (Å²)")
+        ax.set_xlabel("Zig(f64) SASA (Å²)")
         ax.set_ylabel("FreeSASA SASA (Å²)")
         ax.set_title(f"{algo.upper()}: SASA Validation (n={len(zig_sasa):,})")
         ax.legend()
@@ -702,7 +823,6 @@ def samples():
     plot_dir = PLOTS_DIR / "samples"
     plot_dir.mkdir(parents=True, exist_ok=True)
 
-    colors = {"zig": "#f39c12", "freesasa": "#3498db", "rust": "#e74c3c"}
     bin_order = [b[2] for b in BINS]
 
     # Get thread counts from data
@@ -747,14 +867,17 @@ def samples():
             df_struct = df_bin.filter(pl.col("structure") == struct)
             n_atoms = df_struct["n_atoms"][0]
 
-            for tool in sorted(df_struct["tool"].unique().to_list()):
-                df_tool = df_struct.filter(pl.col("tool") == tool).sort("threads")
+            for tool_label in sorted(df_struct["tool_label"].unique().to_list()):
+                df_tool = df_struct.filter(pl.col("tool_label") == tool_label).sort(
+                    "threads"
+                )
                 ax.plot(
                     df_tool["threads"].to_list(),
                     df_tool["time_ms"].to_list(),
                     marker="o",
-                    label=tool.capitalize(),
-                    color=colors.get(tool, "#95a5a6"),
+                    label=tool_label.replace("_", " ").title(),
+                    color=COLORS.get(tool_label, "#95a5a6"),
+                    linestyle=LINESTYLES.get(tool_label, "-"),
                     linewidth=1.5,
                 )
 
@@ -793,14 +916,15 @@ def samples():
 
         fig, ax = plt.subplots(figsize=(8, 6))
 
-        for tool in sorted(df_max["tool"].unique().to_list()):
-            df_tool = df_max.filter(pl.col("tool") == tool).sort("threads")
+        for tool_label in sorted(df_max["tool_label"].unique().to_list()):
+            df_tool = df_max.filter(pl.col("tool_label") == tool_label).sort("threads")
             ax.plot(
                 df_tool["threads"].to_list(),
                 df_tool["time_ms"].to_list(),
                 marker="o",
-                label=tool.capitalize(),
-                color=colors.get(tool, "#95a5a6"),
+                label=tool_label.replace("_", " ").title(),
+                color=COLORS.get(tool_label, "#95a5a6"),
+                linestyle=LINESTYLES.get(tool_label, "-"),
                 linewidth=2,
                 markersize=8,
             )
@@ -842,15 +966,15 @@ def large():
     results = []
     colors_algo = {"sr": "#3498db", "lr": "#e74c3c"}  # SR=blue, LR=red
 
-    # Collect data per algorithm
+    # Collect data per algorithm using tool_label
     pivots = {}
     for algo in ["sr", "lr"]:
         df_algo = df_large.filter(pl.col("algorithm") == algo)
         if df_algo.height == 0:
             continue
         pivots[algo] = (
-            df_algo.select(["structure", "tool", "time_ms"])
-            .pivot(on="tool", index="structure", values="time_ms")
+            df_algo.select(["structure", "tool_label", "time_ms"])
+            .pivot(on="tool_label", index="structure", values="time_ms")
             .drop_nulls()
         )
 
@@ -860,13 +984,13 @@ def large():
 
     if (
         "lr" in pivots
-        and "zig" in pivots["lr"].columns
+        and "zig_f64" in pivots["lr"].columns
         and "freesasa" in pivots["lr"].columns
     ):
-        speedup = pivots["lr"]["freesasa"] / pivots["lr"]["zig"]
+        speedup = pivots["lr"]["freesasa"] / pivots["lr"]["zig_f64"]
         results.append(
             {
-                "label": "vs FreeSASA (LR)",
+                "label": "Zig(f64) vs FreeSASA (LR)",
                 "speedup": speedup.median(),
                 "q25": speedup.quantile(0.25),
                 "q75": speedup.quantile(0.75),
@@ -878,13 +1002,13 @@ def large():
     # SR section (will appear at top)
     if (
         "sr" in pivots
-        and "zig" in pivots["sr"].columns
+        and "zig_f64" in pivots["sr"].columns
         and "rust" in pivots["sr"].columns
     ):
-        speedup = pivots["sr"]["rust"] / pivots["sr"]["zig"]
+        speedup = pivots["sr"]["rust"] / pivots["sr"]["zig_f64"]
         results.append(
             {
-                "label": "vs Rust (SR)",
+                "label": "Zig(f64) vs Rust (SR)",
                 "speedup": speedup.median(),
                 "q25": speedup.quantile(0.25),
                 "q75": speedup.quantile(0.75),
@@ -894,17 +1018,34 @@ def large():
 
     if (
         "sr" in pivots
-        and "zig" in pivots["sr"].columns
+        and "zig_f64" in pivots["sr"].columns
         and "freesasa" in pivots["sr"].columns
     ):
-        speedup = pivots["sr"]["freesasa"] / pivots["sr"]["zig"]
+        speedup = pivots["sr"]["freesasa"] / pivots["sr"]["zig_f64"]
         results.append(
             {
-                "label": "vs FreeSASA (SR)",
+                "label": "Zig(f64) vs FreeSASA (SR)",
                 "speedup": speedup.median(),
                 "q25": speedup.quantile(0.25),
                 "q75": speedup.quantile(0.75),
                 "color": colors_algo["sr"],
+            }
+        )
+
+    # f32 vs f64 comparison (SR only)
+    if (
+        "sr" in pivots
+        and "zig_f32" in pivots["sr"].columns
+        and "zig_f64" in pivots["sr"].columns
+    ):
+        speedup = pivots["sr"]["zig_f64"] / pivots["sr"]["zig_f32"]
+        results.append(
+            {
+                "label": "Zig(f32) vs Zig(f64) (SR)",
+                "speedup": speedup.median(),
+                "q25": speedup.quantile(0.25),
+                "q75": speedup.quantile(0.75),
+                "color": "#27ae60",  # Green for f32 comparison
             }
         )
 
@@ -966,21 +1107,27 @@ def efficiency():
     # Focus on SR algorithm
     df_sr = df.filter(pl.col("algorithm") == "sr")
 
-    # Get t=1 baseline for each structure/tool
+    # Get t=1 baseline for each structure/tool_label
     df_t1 = df_sr.filter(pl.col("threads") == 1).select(
-        ["tool", "structure", "n_atoms", "size_bin", pl.col("time_ms").alias("t1_ms")]
+        [
+            "tool_label",
+            "structure",
+            "n_atoms",
+            "size_bin",
+            pl.col("time_ms").alias("t1_ms"),
+        ]
     )
 
     # Join with all thread counts to calculate efficiency
-    df_eff = df_sr.join(df_t1, on=["tool", "structure", "n_atoms", "size_bin"])
+    df_eff = df_sr.join(df_t1, on=["tool_label", "structure", "n_atoms", "size_bin"])
     df_eff = df_eff.with_columns(
         (pl.col("t1_ms") / (pl.col("time_ms") * pl.col("threads"))).alias("efficiency")
     )
 
-    # Summary by size bin and tool
+    # Summary by size bin and tool_label
     thread_counts = sorted(df_eff["threads"].unique().to_list())
-    tools = ["zig", "freesasa", "rust"]
-    colors = {"zig": "#f39c12", "freesasa": "#3498db", "rust": "#e74c3c"}
+    # Use tool_labels that exist in data
+    tool_labels = ["zig_f64", "zig_f32", "freesasa", "rust"]
 
     # Table: efficiency by size bin (t=10)
     t_target = 10
@@ -989,7 +1136,8 @@ def efficiency():
     summary_table = Table(title=f"Parallel Efficiency by Size (SR, t={t_target})")
     summary_table.add_column("Size Bin", style="cyan")
     summary_table.add_column("Count", justify="right")
-    summary_table.add_column("Zig", justify="right")
+    summary_table.add_column("Zig(f64)", justify="right")
+    summary_table.add_column("Zig(f32)", justify="right")
     summary_table.add_column("FreeSASA", justify="right")
     summary_table.add_column("Rust", justify="right")
 
@@ -1000,11 +1148,11 @@ def efficiency():
         if df_bin.height == 0:
             continue
 
-        count = df_bin.filter(pl.col("tool") == "zig").height
+        count = df_bin.filter(pl.col("tool_label") == "zig_f64").height
         row = [bin_name, f"{count:,}"]
 
-        for tool in tools:
-            df_tool = df_bin.filter(pl.col("tool") == tool)
+        for tool_label in tool_labels:
+            df_tool = df_bin.filter(pl.col("tool_label") == tool_label)
             if df_tool.height > 0:
                 eff = df_tool["efficiency"].median()
                 if eff >= 0.3:
@@ -1035,11 +1183,11 @@ def efficiency():
             if df_bin.height == 0:
                 continue
             row = {"size_bin": bin_name}
-            for tool in tools:
-                df_tool = df_bin.filter(pl.col("tool") == tool)
+            for tool_label in tool_labels:
+                df_tool = df_bin.filter(pl.col("tool_label") == tool_label)
                 if df_tool.height > 0:
-                    row[f"{tool}_median"] = df_tool["efficiency"].median()
-                    row[f"{tool}_count"] = df_tool.height
+                    row[f"{tool_label}_median"] = df_tool["efficiency"].median()
+                    row[f"{tool_label}_count"] = df_tool.height
             rows.append(row)
         if rows:
             pl.DataFrame(rows).write_csv(csv_dir / f"t{threads}.csv")
@@ -1049,8 +1197,8 @@ def efficiency():
     # Plot: average efficiency by thread count
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    for tool in tools:
-        df_tool = df_eff.filter(pl.col("tool") == tool)
+    for tool_label in tool_labels:
+        df_tool = df_eff.filter(pl.col("tool_label") == tool_label)
         if df_tool.height == 0:
             continue
 
@@ -1064,8 +1212,9 @@ def efficiency():
             avg_by_thread["threads"].to_list(),
             avg_by_thread["eff"].to_list(),
             marker="o",
-            label=tool.capitalize(),
-            color=colors.get(tool, "#95a5a6"),
+            label=tool_label.replace("_", " ").title(),
+            color=COLORS.get(tool_label, "#95a5a6"),
+            linestyle=LINESTYLES.get(tool_label, "-"),
             linewidth=2,
             markersize=8,
         )
@@ -1086,12 +1235,12 @@ def efficiency():
     rprint(f"\n[green]Saved:[/green] {out_path}")
 
     # Plot: efficiency by size bin (comparing tools at t=10)
-    fig, ax = plt.subplots(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(14, 6))
 
     x_labels = []
     x_pos = []
     pos = 0
-    width = 0.25
+    width = 0.2  # Narrower bars to fit more tools
 
     for bin_name in bin_order:
         df_bin = df_t10.filter(pl.col("size_bin") == bin_name)
@@ -1099,18 +1248,20 @@ def efficiency():
             continue
 
         x_labels.append(bin_name)
-        for i, tool in enumerate(tools):
-            df_tool = df_bin.filter(pl.col("tool") == tool)
+        for i, tool_label in enumerate(tool_labels):
+            df_tool = df_bin.filter(pl.col("tool_label") == tool_label)
             if df_tool.height > 0:
                 eff = df_tool["efficiency"].median()
                 ax.bar(
                     pos + i * width,
                     eff,
                     width,
-                    label=tool.capitalize() if len(x_pos) == 0 else "",
-                    color=colors.get(tool, "#95a5a6"),
+                    label=tool_label.replace("_", " ").title()
+                    if len(x_pos) == 0
+                    else "",
+                    color=COLORS.get(tool_label, "#95a5a6"),
                 )
-        x_pos.append(pos + width)
+        x_pos.append(pos + width * 1.5)  # Center of 4 bars
         pos += 1
 
     ax.set_xticks(x_pos)
