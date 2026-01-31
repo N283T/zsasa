@@ -35,7 +35,7 @@ Zig's key advantage: **Large structures + Multi-threading**
 |--------|-----------------|-----------------|
 | **Overall (threads=10)** | **1.45x** median | **2.07x** median |
 | **Large structures (100k+)** | **2.3x** | **2.3x** |
-| **Largest structure (4.5M atoms)** | **2.5x** | **2.3x** |
+| **Largest structure (4.5M atoms)** | **2.9x** | **2.2x** |
 | **Parallel efficiency (threads=10)** | **+30%** | **+93%** |
 | **Instruction count** | **2.4x fewer** | Comparable |
 
@@ -214,19 +214,19 @@ Parallel Efficiency = T1 / (TN × N)
 
 ![Max Structure Scaling](../../benchmarks/results/plots/samples/max_structure.png)
 
-Thread scaling on the largest PDB structure (9fqr):
+Thread scaling on the largest PDB structure (9fqr, mean of 3 runs):
 
 | Threads | Zig (ms) | FreeSASA (ms) | Rust (ms) | Zig vs FS | Zig vs Rust |
 |--------:|---------:|--------------:|----------:|----------:|------------:|
-| 1 | 8,887 | 14,424 | 9,562 | 1.62x | 1.08x |
-| 2 | 5,450 | 10,325 | 8,015 | 1.89x | 1.47x |
-| 4 | 3,685 | 8,394 | 7,218 | 2.28x | 1.96x |
-| 8 | 3,116 | 7,643 | 6,947 | 2.45x | 2.23x |
-| 10 | **2,962** | 7,460 | 6,866 | **2.52x** | **2.32x** |
+| 1 | 8,736 | 16,607 | 9,132 | 1.90x | 1.05x |
+| 2 | 5,456 | 12,231 | 7,899 | 2.24x | 1.45x |
+| 4 | 3,712 | 9,682 | 7,185 | 2.61x | 1.94x |
+| 8 | 3,156 | 8,849 | 6,942 | 2.80x | 2.20x |
+| 10 | **3,102** | 9,010 | 6,877 | **2.90x** | **2.22x** |
 
 **Key Insight**:
 - Speedup ratio improves with increasing thread count
-- Achieves **2.5x** speedup at threads=10
+- Achieves **2.9x** vs FreeSASA, **2.2x** vs Rust at threads=10
 - Rust plateaus with increasing threads (parallel efficiency issue)
 
 ---
@@ -292,7 +292,7 @@ Relative Error = |SASA_zig - SASA_freesasa| / SASA_freesasa × 100%
 
 1. **Maximum effect on large structures**
    - **2.3x** speedup for 100k+ atoms
-   - **2.5x** speedup for the largest structure (4.5M atoms)
+   - **2.9x** speedup for the largest structure (4.5M atoms)
 
 2. **Consistent advantage**
    - Outperforms FreeSASA across all sizes (1k+ atoms)
