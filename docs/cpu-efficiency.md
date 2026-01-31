@@ -1,69 +1,69 @@
-# CPU Efficiency Analysis / CPU 効率解析
+# CPU Efficiency Analysis
 
-freesasa-zig の CPU レベルでの効率性を解析。実行時間だけでなく、**命令数**と**IPC**を測定して「なぜ速いか」を明らかにする。
+Analysis of freesasa-zig's CPU-level efficiency. Measures not just execution time but **instruction count** and **IPC** to reveal "why it's fast".
 
-## Key Findings / 主要な発見
+## Key Findings
 
 | Metric | Zig vs FreeSASA | Zig vs RustSASA |
 |--------|-----------------|-----------------|
-| **命令数** | **2.4x 少ない** | 同等 |
-| **IPC (t=1)** | やや低い | 同等 |
-| **IPC (t=10)** | 同等 | **より安定** |
-| **並列効率** | **30-45% 高い** | **2x 高い** |
+| **Instruction count** | **2.4x fewer** | Comparable |
+| **IPC (t=1)** | Slightly lower | Comparable |
+| **IPC (t=10)** | Comparable | **More stable** |
+| **Parallel efficiency** | **30-45% higher** | **2x higher** |
 
-**結論**: Zig は SIMD 最適化で命令数を半減し、効率的なスレッドプールで並列効率を維持。
+**Conclusion**: Zig halves instruction count through SIMD optimization and maintains parallel efficiency with an efficient thread pool.
 
-## Metrics / 測定指標
+## Metrics
 
 ### IPC (Instructions Per Cycle)
 
 ```
-IPC = 実行命令数 / CPUサイクル数
+IPC = Instructions executed / CPU cycles
 ```
 
-- **高い IPC** = CPU パイプラインを効率的に使用
-- 現代の CPU は IPC 3.0-4.0 が理想的
-- 低い IPC はメモリ待ち、分岐予測ミス、依存関係による待ちを示唆
+- **High IPC** = Efficient CPU pipeline utilization
+- Modern CPUs ideally achieve IPC 3.0-4.0
+- Low IPC suggests memory waits, branch mispredictions, or dependency stalls
 
-### Instruction Count / 命令数
-
-```
-命令数 = 同じ計算をするのに必要な CPU 命令の総数
-```
-
-- **少ない命令数** = より効率的なコード
-- SIMD は 1 命令で複数データを処理するため命令数を削減
-
-### Parallel Efficiency / 並列効率
+### Instruction Count
 
 ```
-並列効率 = T1 / (TN × N)
+Instruction count = Total CPU instructions needed for the same computation
 ```
 
-- T1 = シングルスレッド実行時間
-- TN = N スレッド実行時間
-- 1.0 = 理想的（線形スケーリング）
+- **Fewer instructions** = More efficient code
+- SIMD processes multiple data with one instruction, reducing instruction count
 
-## Methodology / 測定手法
+### Parallel Efficiency
 
-### IPC 測定
+```
+Parallel Efficiency = T1 / (TN × N)
+```
 
-macOS の `/usr/bin/time -l` を使用：
+- T1 = Single-thread execution time
+- TN = N-thread execution time
+- 1.0 = Ideal (linear scaling)
+
+## Methodology
+
+### IPC Measurement
+
+Using macOS `/usr/bin/time -l`:
 
 ```bash
 /usr/bin/time -l ./freesasa_zig --algorithm=sr input.json output.json
 ```
 
-出力から `instructions retired` と `cycles elapsed` を抽出：
+Extract `instructions retired` and `cycles elapsed` from output:
 
 ```
        8216482889  instructions retired
        2189180558  cycles elapsed
 ```
 
-### 測定対象
+### Test Subjects
 
-各サイズビンから代表構造を 1 つ選択（中央値サイズ）：
+One representative structure selected from each size bin (median size):
 
 | Bin | Atoms | PDB ID |
 |-----|------:|--------|
@@ -78,9 +78,9 @@ macOS の `/usr/bin/time -l` を使用：
 | 100k-200k | 120,748 | 5t9r |
 | 200k+ | 252,840 | 6u0r |
 
-## Results / 結果
+## Results
 
-### Instruction Count Comparison / 命令数比較
+### Instruction Count Comparison
 
 ![Instruction Count Comparison](../benchmarks/results/ipc/instructions.png)
 
@@ -99,17 +99,17 @@ macOS の `/usr/bin/time -l` を使用：
 | 100k-200k | 3.61B | 8.87B | 3.53B | 2.5x |
 | 200k+ | 8.22B | 19.50B | 8.12B | 2.4x |
 
-**Key insight**: Zig は FreeSASA の **約 2.4 倍少ない命令**で同じ計算を完了。
+**Key insight**: Zig completes the same computation with **~2.4x fewer instructions** than FreeSASA.
 
-### Instruction Ratio / 命令数比率
+### Instruction Ratio
 
 ![Instruction Ratio](../benchmarks/results/ipc/instruction_ratio.png)
 
-Zig を 1.0 とした相対比較：
-- **FreeSASA**: 1.7x 〜 2.5x（平均 2.3x）
-- **RustSASA**: 1.0x 〜 1.1x（ほぼ同等）
+Relative comparison with Zig as 1.0:
+- **FreeSASA**: 1.7x - 2.5x (average 2.3x)
+- **RustSASA**: 1.0x - 1.1x (nearly identical)
 
-### IPC Comparison / IPC 比較
+### IPC Comparison
 
 ![IPC Comparison](../benchmarks/results/ipc/ipc.png)
 
@@ -123,9 +123,9 @@ Zig を 1.0 とした相対比較：
 | 50k-100k | 3.69 | 3.65 | 3.53 |
 | 200k+ | 3.75 | 3.62 | 3.49 |
 
-**観察**:
-- 小規模構造: FreeSASA の IPC が高い
-- 大規模構造: Zig の IPC が逆転（SIMD の効果が出やすい）
+**Observations:**
+- Small structures: FreeSASA has higher IPC
+- Large structures: Zig's IPC catches up (SIMD effect more pronounced)
 
 ### Multi-thread IPC (t=10)
 
@@ -136,93 +136,93 @@ Zig を 1.0 とした相対比較：
 | 5k-10k | 3.16 | 3.48 | 3.03 |
 | 200k+ | 3.29 | 3.44 | 3.33 |
 
-**観察**:
-- Rust は小規模構造で IPC が大幅に低下（スレッド同期オーバーヘッド）
-- Zig は比較的安定した IPC を維持
+**Observations:**
+- Rust's IPC drops significantly for small structures (thread synchronization overhead)
+- Zig maintains relatively stable IPC
 
-## Analysis / 解析
+## Analysis
 
-### Why Fewer Instructions? / なぜ命令数が少ない？
+### Why Fewer Instructions?
 
 **SIMD (Single Instruction Multiple Data)**
 
-Zig は 8-wide SIMD ベクトルで距離計算を並列化：
+Zig parallelizes distance calculations with 8-wide SIMD vectors:
 
 ```zig
-// 8 原子の距離を 1 命令で計算
+// Calculate distance for 8 atoms with 1 instruction
 const dx = atom_x - @as(@Vector(8, f64), neighbor_x);
 const dy = atom_y - @as(@Vector(8, f64), neighbor_y);
 const dz = atom_z - @as(@Vector(8, f64), neighbor_z);
 const dist_sq = dx * dx + dy * dy + dz * dz;
 ```
 
-FreeSASA はスカラー演算：
+FreeSASA uses scalar operations:
 
 ```c
-// 1 原子の距離を 1 命令で計算
+// Calculate distance for 1 atom with 1 instruction
 double dx = atom->x - neighbor->x;
 double dy = atom->y - neighbor->y;
 double dz = atom->z - neighbor->z;
 double dist_sq = dx*dx + dy*dy + dz*dz;
 ```
 
-### Why Not 8x Fewer? / なぜ 8 倍じゃない？
+### Why Not 8x Fewer?
 
-SIMD で 8 倍の並列化なのに、命令数は 2.4 倍しか減らない理由：
+SIMD provides 8x parallelization, but instruction count only decreases by 2.4x because:
 
 ```
-SASA 計算の処理内訳:
-├── 距離計算 (SIMD 可能)     : ~65%  → 8x 高速化
-├── 近傍リスト検索           : ~15%  → SIMD 不可（分岐多い）
-├── ループ制御/分岐          : ~10%  → SIMD 不可
-└── メモリ読み書き           : ~10%  → SIMD 効果限定的
+SASA calculation breakdown:
+├── Distance calculation (SIMD-able)  : ~65%  → 8x speedup
+├── Neighbor list lookup              : ~15%  → SIMD not applicable (many branches)
+├── Loop control/branching            : ~10%  → SIMD not applicable
+└── Memory read/write                 : ~10%  → Limited SIMD benefit
 ```
 
-計算：`35% + 65%/8 = 35% + 8% = 43%` → **約 2.3x の差**（実測とほぼ一致）
+Calculation: `35% + 65%/8 = 35% + 8% = 43%` → **~2.3x difference** (matches measurement)
 
-これは**アムダールの法則**の典型例。
+This is a classic example of **Amdahl's Law**.
 
-### Why Lower IPC? / なぜ IPC が低い？
+### Why Lower IPC?
 
-SIMD 命令は「1 命令で多くの仕事」をするが、複雑なため数サイクルかかる：
+SIMD instructions "do more work per instruction" but are complex and take multiple cycles:
 
-| 命令タイプ | 命令数 | サイクル/命令 | 仕事量/命令 |
-|-----------|-------:|-------------:|------------:|
-| スカラー | 多い | 1 | 1 |
-| SIMD | 少ない | 2-3 | 8 |
+| Instruction type | Count | Cycles/instr | Work/instr |
+|------------------|------:|-------------:|-----------:|
+| Scalar | Many | 1 | 1 |
+| SIMD | Few | 2-3 | 8 |
 
-結果として IPC は下がるが、**総サイクル数は減る** → 高速化。
+IPC decreases, but **total cycles decrease** → speedup.
 
-### Why Rust Has Same Instructions but Slower? / Rust は同命令数なのになぜ遅い？
+### Why Is Rust Slower Despite Same Instruction Count?
 
-Rust も SIMD を使用するため命令数は Zig と同等。しかし：
+Rust also uses SIMD so instruction count is similar to Zig. However:
 
-1. **スレッド同期オーバーヘッド**: rayon のワークスティーリングは細かいタスクで非効率
-2. **小規模構造で IPC 低下**: t=10 で IPC が 2.0 まで落ちる（Zig は 2.7 維持）
-3. **並列効率の差**: Zig のスレッドプールはより効率的なワーク分散
+1. **Thread synchronization overhead**: rayon's work-stealing is inefficient for fine-grained tasks
+2. **IPC drops for small structures**: IPC falls to 2.0 at t=10 (Zig maintains 2.7)
+3. **Parallel efficiency difference**: Zig's thread pool has more efficient work distribution
 
-## Running the Analysis / 解析の実行
+## Running the Analysis
 
 ```bash
-# IPC ベンチマーク実行
+# Run IPC benchmark
 ./benchmarks/scripts/ipc.py --tools zig,freesasa,rust --threads 1,10
 
-# プロット生成
+# Generate plots
 ./benchmarks/scripts/ipc.py plot
 
-# 結果
+# Results
 # → benchmarks/results/ipc/results.csv
 # → benchmarks/results/ipc/instructions.png
 # → benchmarks/results/ipc/instruction_ratio.png
 # → benchmarks/results/ipc/ipc.png
 ```
 
-## Summary / まとめ
+## Summary
 
-| 最適化 | 効果 | 対象 |
-|--------|------|------|
-| **8-wide SIMD** | 命令数 2.4x 削減 | vs FreeSASA |
-| **効率的スレッドプール** | 並列効率 2x 向上 | vs RustSASA |
-| **安定した IPC** | マルチスレッドでも効率維持 | vs RustSASA |
+| Optimization | Effect | Target |
+|--------------|--------|--------|
+| **8-wide SIMD** | 2.4x fewer instructions | vs FreeSASA |
+| **Efficient thread pool** | 2x better parallel efficiency | vs RustSASA |
+| **Stable IPC** | Maintains efficiency in multi-threaded | vs RustSASA |
 
-**結論**: freesasa-zig は単に「速い」だけでなく、CPU リソースを効率的に使用している。
+**Conclusion**: freesasa-zig is not just "fast" but uses CPU resources efficiently.

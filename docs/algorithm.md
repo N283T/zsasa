@@ -1,74 +1,74 @@
-# SASAアルゴリズム詳解
+# SASA Algorithms
 
-## 概要
+## Overview
 
-本実装では2つのSASA計算アルゴリズムを提供する：
+This implementation provides two SASA calculation algorithms:
 
-1. **Shrake-Rupley (SR)**: テストポイント法（1973年）
-2. **Lee-Richards (LR)**: スライス法（1971年）
+1. **Shrake-Rupley (SR)**: Test point method (1973)
+2. **Lee-Richards (LR)**: Slice method (1971)
 
-## アルゴリズム比較
+## Algorithm Comparison
 
-| 特性 | Shrake-Rupley | Lee-Richards |
-|------|---------------|--------------|
-| 発表年 | 1973 | 1971 |
-| 手法 | テストポイント | スライス/円弧積分 |
-| 精度制御 | ポイント数 (`--n-points`) | スライス数 (`--n-slices`) |
-| 計算量 | O(N × P × K) | O(N × S × K) |
-| 長所 | 実装が単純、高速 | 数学的に厳密 |
-| 短所 | 統計的誤差 | 計算コスト高 |
-| 推奨用途 | 大規模構造、迅速な解析 | 高精度が必要な場合 |
+| Property | Shrake-Rupley | Lee-Richards |
+|----------|---------------|--------------|
+| Published | 1973 | 1971 |
+| Method | Test points | Slice/arc integration |
+| Precision control | Point count (`--n-points`) | Slice count (`--n-slices`) |
+| Complexity | O(N × P × K) | O(N × S × K) |
+| Strengths | Simple, fast | Mathematically rigorous |
+| Weaknesses | Statistical error | Higher computational cost |
+| Recommended for | Large structures, rapid analysis | High-precision requirements |
 
-**凡例:** N=原子数, P=ポイント数, S=スライス数, K=平均近傍数
+**Legend:** N=atom count, P=point count, S=slice count, K=average neighbor count
 
-### パフォーマンス比較（1A0Q, 3183原子, 4スレッド, ReleaseFast）
+### Performance Comparison (1A0Q, 3183 atoms, 4 threads, ReleaseFast)
 
-| アルゴリズム | Zig | FreeSASA C | 高速化 |
-|-------------|-----|------------|--------|
-| Shrake-Rupley (100点) | 2.6ms | 4.4ms | 1.7x |
-| Lee-Richards (20スライス) | 9.9ms | 16.1ms | 1.6x |
+| Algorithm | Zig | FreeSASA C | Speedup |
+|-----------|-----|------------|---------|
+| Shrake-Rupley (100 points) | 2.6ms | 4.4ms | 1.7x |
+| Lee-Richards (20 slices) | 9.9ms | 16.1ms | 1.6x |
 
-詳細な最適化手法については [docs/optimizations.md](optimizations.md) を参照。
+For detailed optimization techniques, see [optimizations.md](optimizations.md).
 
-### どちらを選ぶべきか
+### Which to Choose?
 
-- **Shrake-Rupley**: デフォルト。ほとんどの用途に適切
-- **Lee-Richards**: 以下の場合に推奨
-  - 絶対値の精度が重要な場合
-  - 他のLee-Richards実装との比較が必要な場合
-  - 円弧の幾何学的な厳密性が必要な場合
+- **Shrake-Rupley**: Default. Suitable for most use cases
+- **Lee-Richards**: Recommended when:
+  - Absolute precision is critical
+  - Comparison with other Lee-Richards implementations is needed
+  - Geometric rigor of arc calculations is required
 
 ---
 
-# Shrake-Rupleyアルゴリズム
+# Shrake-Rupley Algorithm
 
-## 概要
+## Overview
 
-Shrake-Rupley法は、タンパク質などの生体分子の溶媒接触可能表面積（SASA: Solvent Accessible Surface Area）を計算するための数値的手法。1973年にShrakeとRupleyによって提案された。
+The Shrake-Rupley method is a numerical approach for calculating the Solvent Accessible Surface Area (SASA) of biomolecules such as proteins. It was proposed by Shrake and Rupley in 1973.
 
-## 理論的背景
+## Theoretical Background
 
-### 溶媒接触可能表面積とは
+### What is Solvent Accessible Surface Area?
 
-- 分子表面を「プローブ球」（通常は水分子を表す半径1.4Åの球）でなぞったときの軌跡
-- 各原子の「拡張半径」= van der Waals半径 + プローブ半径
-- 生化学的に重要：タンパク質の折り畳み自由エネルギー、結合エネルギーの推定に使用
+- The trajectory traced when rolling a "probe sphere" (typically a 1.4Å radius sphere representing a water molecule) over the molecular surface
+- Each atom's "extended radius" = van der Waals radius + probe radius
+- Biochemically important: Used for estimating protein folding free energy and binding energy
 
-### アルゴリズムの基本原理
+### Algorithm Principles
 
-1. 各原子の表面に均一にテストポイントを配置
-2. 各テストポイントが他の原子の内部にあるかチェック
-3. 露出しているポイントの割合からSASAを計算
+1. Place test points uniformly on each atom's surface
+2. Check whether each test point is inside any other atom
+3. Calculate SASA from the proportion of exposed points
 
 ```
-SASA_i = 4π × r_i² × (露出ポイント数 / 総ポイント数)
+SASA_i = 4π × r_i² × (exposed points / total points)
 ```
 
-## 実装詳細
+## Implementation Details
 
-### ファイル: `src/shrake_rupley.zig`
+### File: `src/shrake_rupley.zig`
 
-#### メインAPI
+#### Main API
 
 ```zig
 pub fn calculateSasa(
@@ -78,38 +78,38 @@ pub fn calculateSasa(
 ) !types.SasaResult
 ```
 
-**パラメータ:**
-- `allocator`: メモリアロケータ
-- `atoms`: 原子座標と半径（SoA形式）
-- `options`: 計算オプション
+**Parameters:**
+- `allocator`: Memory allocator
+- `atoms`: Atom coordinates and radii (SoA format)
+- `options`: Calculation options
 
-**オプション構造体:**
+**Options struct:**
 ```zig
 pub const SasaOptions = struct {
-    n_points: u32 = 100,        // テストポイント数（デフォルト: 100）
-    probe_radius: f64 = 1.4,    // プローブ半径（デフォルト: 1.4 Å）
-    n_threads: usize = 0,       // スレッド数（0 = 自動検出）
+    n_points: u32 = 100,        // Test points (default: 100)
+    probe_radius: f64 = 1.4,    // Probe radius (default: 1.4 Å)
+    n_threads: usize = 0,       // Threads (0 = auto-detect)
 };
 ```
 
-#### 計算フロー
+#### Calculation Flow
 
 ```zig
 pub fn calculateSasa(...) !types.SasaResult {
-    // 1. テストポイント生成（単位球上）
+    // 1. Generate test points (on unit sphere)
     const test_points = try test_points_mod.generateTestPoints(
         allocator,
         options.n_points
     );
     defer allocator.free(test_points);
 
-    // 2. 近傍リスト構築
+    // 2. Build neighbor list
     const max_radius = findMaxRadius(atoms.r);
     const cutoff = 2.0 * (max_radius + options.probe_radius);
     var neighbor_list = try NeighborList.init(allocator, atoms, cutoff);
     defer neighbor_list.deinit();
 
-    // 3. SASA計算（並列または逐次）
+    // 3. Calculate SASA (parallel or sequential)
     if (options.n_threads > 1) {
         return calculateSasaParallel(...);
     } else {
@@ -118,7 +118,7 @@ pub fn calculateSasa(...) !types.SasaResult {
 }
 ```
 
-### 単一原子のSASA計算
+### Single Atom SASA Calculation
 
 ```zig
 fn calculateAtomSasa(
@@ -135,34 +135,34 @@ fn calculateAtomSasa(
     };
     const radius = atoms.r[atom_idx] + probe_radius;
 
-    // 近傍原子を取得（O(1)）
+    // Get neighbor atoms O(1)
     const neighbors = neighbor_list.getNeighbors(atom_idx);
 
     var exposed_count: u32 = 0;
 
-    // 各テストポイントをチェック
+    // Check each test point
     for (test_points) |tp| {
-        // テストポイントを原子表面に配置
+        // Place test point on atom surface
         const point = types.Vec3{
             .x = center.x + tp.x * radius,
             .y = center.y + tp.y * radius,
             .z = center.z + tp.z * radius,
         };
 
-        // 近傍原子との衝突チェック（SIMD最適化）
+        // Collision check with neighbors (SIMD optimized)
         if (!isPointBuried(point, neighbors, atoms, probe_radius)) {
             exposed_count += 1;
         }
     }
 
-    // SASA = 4πr² × (露出率)
+    // SASA = 4πr² × (exposure ratio)
     const total_points: f64 = @floatFromInt(test_points.len);
     const exposed_ratio = @as(f64, @floatFromInt(exposed_count)) / total_points;
     return 4.0 * std.math.pi * radius * radius * exposed_ratio;
 }
 ```
 
-### 埋没判定（SIMD最適化版）
+### Burial Detection (SIMD Optimized)
 
 ```zig
 fn isPointBuried(
@@ -173,7 +173,7 @@ fn isPointBuried(
 ) bool {
     var i: usize = 0;
 
-    // 8原子ずつSIMD処理（8-wide SIMD）
+    // Process 8 atoms at a time with SIMD (8-wide)
     while (i + 8 <= neighbors.len) : (i += 8) {
         const indices = neighbors[i..][0..8];
         if (simd.isAnyWithinRadiusBatch8(point, atoms, indices, probe_radius)) {
@@ -181,7 +181,7 @@ fn isPointBuried(
         }
     }
 
-    // 4原子ずつSIMD処理（残り用）
+    // Process 4 atoms at a time (remainder)
     while (i + 4 <= neighbors.len) : (i += 4) {
         const indices = neighbors[i..][0..4];
         if (simd.isAnyWithinRadius(point, atoms, indices, probe_radius)) {
@@ -189,7 +189,7 @@ fn isPointBuried(
         }
     }
 
-    // 残りを逐次処理
+    // Sequential processing for remaining atoms
     while (i < neighbors.len) : (i += 1) {
         const j = neighbors[i];
         const neighbor_center = types.Vec3{
@@ -209,13 +209,13 @@ fn isPointBuried(
 }
 ```
 
-## テストポイント生成
+## Test Point Generation
 
-### ファイル: `src/test_points.zig`
+### File: `src/test_points.zig`
 
-### Golden Section Spiralアルゴリズム
+### Golden Section Spiral Algorithm
 
-球面上に均一にポイントを分布させる効率的な方法。
+An efficient method for uniformly distributing points on a sphere.
 
 ```zig
 pub fn generateTestPoints(allocator: Allocator, n: u32) ![]types.Vec3 {
@@ -228,13 +228,13 @@ pub fn generateTestPoints(allocator: Allocator, n: u32) ![]types.Vec3 {
         const i_f: f64 = @floatFromInt(i);
         const n_f: f64 = @floatFromInt(n);
 
-        // y座標: -1から1へ均等に分布
+        // y coordinate: uniformly distributed from -1 to 1
         const y = 1.0 - (2.0 * i_f + 1.0) / n_f;
 
-        // xz平面での半径
+        // Radius in xz plane
         const r = @sqrt(1.0 - y * y);
 
-        // 黄金角で回転
+        // Rotate by golden angle
         const theta = golden_angle * i_f;
 
         points[i] = types.Vec3{
@@ -248,111 +248,111 @@ pub fn generateTestPoints(allocator: Allocator, n: u32) ![]types.Vec3 {
 }
 ```
 
-**黄金角の数学的背景:**
-- 黄金角 = π(3 - √5) ≈ 137.5°
-- 連続するポイントがこの角度で回転することで、螺旋パターンが形成
-- ひまわりの種の配置と同じ原理
-- どの視点から見ても均一に分布
+**Mathematical Background of Golden Angle:**
+- Golden angle = π(3 - √5) ≈ 137.5°
+- Consecutive points rotate by this angle, forming a spiral pattern
+- Same principle as sunflower seed arrangement
+- Appears uniform from any viewing angle
 
-**ポイント数と精度のトレードオフ:**
+**Point Count vs Precision Tradeoff:**
 
-| ポイント数 | 精度 | 計算時間（相対） |
-|-----------|------|-----------------|
-| 50 | 低 | 0.5x |
-| 100 | 中（デフォルト） | 1.0x |
-| 200 | 高 | 2.0x |
-| 1000 | 非常に高 | 10.0x |
+| Points | Precision | Relative Time |
+|--------|-----------|---------------|
+| 50 | Low | 0.5x |
+| 100 | Medium (default) | 1.0x |
+| 200 | High | 2.0x |
+| 1000 | Very high | 10.0x |
 
-## 精度検証
+## Precision Validation
 
-### FreeSASAとの比較
+### Comparison with FreeSASA
 
-FreeSASA（C実装の参照実装）との比較結果:
+Comparison results with FreeSASA (C reference implementation):
 
-| 構造 | 原子数 | FreeSASA (Å²) | Zig実装 (Å²) | 差分 |
-|------|--------|---------------|--------------|------|
+| Structure | Atoms | FreeSASA (Å²) | Zig (Å²) | Difference |
+|-----------|-------|---------------|----------|------------|
 | 1A0Q | 3,183 | 18,923.28 | 19,211.19 | 1.52% |
 
-**差分の原因:**
-1. テストポイント生成アルゴリズムの違い（Golden Spiral vs Fibonacci Lattice）
-2. 浮動小数点演算の順序の違い
-3. 近傍リストのカットオフ距離の違い
+**Causes of difference:**
+1. Different test point generation algorithms (Golden Spiral vs Fibonacci Lattice)
+2. Floating-point operation order differences
+3. Neighbor list cutoff distance differences
 
-1.52%の差分は、SASA計算の用途（相対比較、トレンド分析）では許容範囲内。
+The 1.52% difference is acceptable for typical SASA applications (relative comparison, trend analysis).
 
-## 計算量解析
+## Complexity Analysis
 
-| 処理 | 計算量 | 備考 |
-|------|--------|------|
-| テストポイント生成 | O(P) | P = ポイント数、事前計算 |
-| 近傍リスト構築 | O(N) | N = 原子数 |
-| 近傍探索（1原子） | O(1) | 空間ハッシュにより定数時間 |
-| 埋没判定（1ポイント） | O(K) | K = 平均近傍数（通常 < 20） |
-| 全体 | O(N × P × K) | 実質 O(N × P) |
+| Operation | Complexity | Notes |
+|-----------|------------|-------|
+| Test point generation | O(P) | P = point count, precomputed |
+| Neighbor list construction | O(N) | N = atom count |
+| Neighbor lookup (1 atom) | O(1) | Constant time via spatial hash |
+| Burial check (1 point) | O(K) | K = average neighbors (typically < 20) |
+| Total | O(N × P × K) | Effectively O(N × P) |
 
-**従来のナイーブ実装との比較:**
-- ナイーブ: O(N² × P) - 全原子ペアをチェック
-- 最適化版: O(N × P × K) - 近傍のみチェック
-- 大規模分子（N > 1000）では10倍以上の高速化
+**Comparison with naive implementation:**
+- Naive: O(N² × P) - checks all atom pairs
+- Optimized: O(N × P × K) - checks only neighbors
+- 10x+ speedup for large molecules (N > 1000)
 
 ---
 
-# Lee-Richardsアルゴリズム
+# Lee-Richards Algorithm
 
-## 概要
+## Overview
 
-Lee-Richards法は、1971年にLeeとRichardsによって提案されたSASA計算手法。原子球をZ軸方向にスライスし、各スライスでの露出円弧を積分することで表面積を計算する。
+The Lee-Richards method is a SASA calculation approach proposed by Lee and Richards in 1971. It slices atomic spheres along the Z-axis and calculates surface area by integrating exposed arcs at each slice.
 
-## 理論的背景
+## Theoretical Background
 
-### スライスベースのアプローチ
+### Slice-Based Approach
 
 ```
         ╭─────╮
-       ╱   ●   ╲      ← 原子球
+       ╱   ●   ╲      ← Atomic sphere
       │    │    │
-   ───┼────┼────┼───  ← スライス（Z軸に垂直）
+   ───┼────┼────┼───  ← Slice (perpendicular to Z-axis)
       │    │    │
        ╲       ╱
         ╰─────╯
 
-スライス断面:
+Slice cross-section:
     ╭───╮
    ╱     ╲
-  │   ●   │  ← 原子断面（円）
+  │   ●   │  ← Atom cross-section (circle)
    ╲     ╱
     ╰───╯
      ↑
-    露出円弧を計算
+    Calculate exposed arc
 ```
 
-各スライスで：
-1. 原子の断面円を計算
-2. 近傍原子による遮蔽円弧を特定
-3. 露出円弧の長さを計算
-4. スライス厚と掛け合わせて表面積に寄与
+At each slice:
+1. Calculate the atom's cross-sectional circle
+2. Identify obscuring arcs from neighbor atoms
+3. Calculate exposed arc length
+4. Multiply by slice thickness for surface area contribution
 
-### 数学的定式化
+### Mathematical Formulation
 
-スライスzでの原子iの断面半径：
+Cross-sectional radius of atom i at slice z:
 ```
 R'_i(z) = √(R_i² - (z - z_i)²)
 ```
 
-ここで R_i = 原子半径 + プローブ半径
+Where R_i = atom radius + probe radius
 
-総表面積：
+Total surface area:
 ```
 SASA_i = ∫ R_i × L_exposed(z) dz
 ```
 
-ここで L_exposed(z) はスライスzでの露出円弧長。
+Where L_exposed(z) is the exposed arc length at slice z.
 
-## 実装詳細
+## Implementation Details
 
-### ファイル: `src/lee_richards.zig`
+### File: `src/lee_richards.zig`
 
-#### メインAPI
+#### Main API
 
 ```zig
 pub fn calculateSasa(
@@ -362,111 +362,112 @@ pub fn calculateSasa(
 ) !SasaResult
 ```
 
-**設定構造体:**
+**Config struct:**
 ```zig
 pub const LeeRichardsConfig = struct {
-    n_slices: u32 = 20,      // スライス数（デフォルト: 20）
-    probe_radius: f64 = 1.4, // プローブ半径（デフォルト: 1.4 Å）
+    n_slices: u32 = 20,      // Slice count (default: 20)
+    probe_radius: f64 = 1.4, // Probe radius (default: 1.4 Å)
 };
 ```
 
-### 円弧計算
+### Arc Calculation
 
-2つの円の交差から、遮蔽される円弧を計算：
+Calculate obscured arc from intersection of two circles:
 
 ```
-2つの円の交点から、原子1の遮蔽円弧を計算
+Calculate obscured arc of circle 1 from intersection with circle 2
 
     ╭───╮
    ╱  1  ╲╲
-  │   ●───●│ 2  ← 円2が円1を遮蔽
+  │   ●───●│ 2  ← Circle 2 obscures circle 1
    ╲     ╱╱
     ╰───╯
 
-遮蔽角度 α = acos((R'_i² + d_ij² - R'_j²) / (2 × R'_i × d_ij))
-遮蔽円弧の中心角 β = atan2(dy, dx) + π
+Obscuring angle α = acos((R'_i² + d_ij² - R'_j²) / (2 × R'_i × d_ij))
+Arc center angle β = atan2(dy, dx) + π
 ```
 
-### SIMD最適化
+### SIMD Optimization
 
-Lee-Richardsでも8近傍ずつのSIMD処理を行う：
+Lee-Richards also uses 8-wide SIMD processing for neighbors:
 
 ```zig
-// 8-wide SIMD: スライス半径とxy距離を計算
+// 8-wide SIMD: Calculate slice radii and xy distances
 const rj_primes = simd.sliceRadiiBatch8(slice_z, batch_z, batch_r);
 const dij_batch = simd.xyDistanceBatch8(xi, yi, batch_x, batch_y);
 
-// 8-wide SIMD: 円の重なりをチェック
+// 8-wide SIMD: Check circle overlap
 const overlap_mask = simd.circlesOverlapBatch8(dij_batch, Ri_prime, rj_primes);
 ```
 
-### 高速三角関数
+### Fast Trigonometric Functions
 
-円弧角度計算では、標準ライブラリの`acos`/`atan2`の代わりに多項式近似を使用：
+Arc angle calculations use polynomial approximations instead of standard library `acos`/`atan2`:
 
 ```zig
-// 高速近似（最大誤差: acos ~0.02°, atan2 ~0.09°）
+// Fast approximation (max error: acos ~0.02°, atan2 ~0.09°)
 const alpha = simd.fastAcos(cos_alpha);
 const beta = simd.fastAtan2(dy, dx) + std.math.pi;
 ```
 
-これにより約37%の高速化を達成。精度は0.3%以内で実用上問題なし。
+This achieves approximately 37% speedup. Precision is within 0.3%, acceptable for practical use.
 
-### 円弧のマージ
+### Arc Merging
 
-複数の近傍原子からの遮蔽円弧が重なる場合、マージ処理が必要：
+When obscuring arcs from multiple neighbor atoms overlap, merging is required:
 
 ```zig
 fn exposedArcLength(arcs: []Arc) f64 {
-    // 円弧を開始角度でソート
+    // Sort arcs by start angle
     sortArcs(arcs);
 
-    // 重なりをマージして露出長を計算
+    // Merge overlaps and calculate exposed length
     var sum: f64 = arcs[0].start;
     var sup: f64 = arcs[0].end;
 
     for (arcs[1..]) |arc| {
         if (sup < arc.start) {
-            sum += arc.start - sup;  // ギャップ（露出部分）
+            sum += arc.start - sup;  // Gap (exposed portion)
         }
         sup = @max(sup, arc.end);
     }
 
-    sum += TWOPI - sup;  // 最後の円弧以降の露出
+    sum += TWOPI - sup;  // Exposure after last arc
     return sum;
 }
 ```
 
-## スライス数と精度のトレードオフ
+## Slice Count vs Precision Tradeoff
 
-| スライス数 | 精度 | 計算時間（相対） |
-|-----------|------|-----------------|
-| 10 | 低 | 0.5x |
-| 20 | 中（デフォルト） | 1.0x |
-| 50 | 高 | 2.5x |
-| 100 | 非常に高 | 5.0x |
+| Slices | Precision | Relative Time |
+|--------|-----------|---------------|
+| 10 | Low | 0.5x |
+| 20 | Medium (default) | 1.0x |
+| 50 | High | 2.5x |
+| 100 | Very high | 5.0x |
 
-## Shrake-Rupleyとの精度比較
+## Precision Comparison with Shrake-Rupley
 
-同じ構造（1A0Q）での比較：
+Comparison on same structure (1A0Q):
 
-| アルゴリズム | パラメータ | 結果 (Å²) |
-|-------------|-----------|-----------|
-| Shrake-Rupley | 100ポイント | 19,211.19 |
-| Lee-Richards | 20スライス | 19,201.26 |
-| 差分 | | 0.05% |
+| Algorithm | Parameters | Result (Å²) |
+|-----------|------------|-------------|
+| Shrake-Rupley | 100 points | 19,211.19 |
+| Lee-Richards | 20 slices | 19,201.26 |
+| Difference | | 0.05% |
 
-両アルゴリズムは非常に近い結果を出力する。
+Both algorithms produce very similar results.
 
-## 計算量解析
+## Complexity Analysis
 
-| 処理 | 計算量 | 備考 |
-|------|--------|------|
-| 近傍リスト構築 | O(N) | N = 原子数 |
-| スライス処理（1原子） | O(S × K) | S = スライス数, K = 近傍数 |
-| 円弧ソート | O(K log K) | 挿入ソート（小配列に効率的） |
-| 全体 | O(N × S × K) | 実質 O(N × S) |
+| Operation | Complexity | Notes |
+|-----------|------------|-------|
+| Neighbor list construction | O(N) | N = atom count |
+| Slice processing (1 atom) | O(S × K) | S = slice count, K = neighbor count |
+| Arc sorting | O(K log K) | Insertion sort (efficient for small arrays) |
+| Total | O(N × S × K) | Effectively O(N × S) |
 
-## 参考文献
+## References
 
+- Shrake, A., & Rupley, J. A. (1973). Environment and exposure to solvent of protein atoms: Lysozyme and insulin. *Journal of Molecular Biology*, 79(2), 351-371.
 - Lee, B., & Richards, F. M. (1971). The interpretation of protein structures: estimation of static accessibility. *Journal of Molecular Biology*, 55(3), 379-400.

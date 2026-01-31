@@ -1,10 +1,10 @@
-# CI/CD 構成
+# CI/CD Configuration
 
-## 概要
+## Overview
 
-GitHub Actionsによる継続的インテグレーション。
+Continuous integration via GitHub Actions.
 
-## トリガー
+## Triggers
 
 ```yaml
 on:
@@ -18,33 +18,33 @@ on:
       - 'LICENSE'
   pull_request:
     branches: [main]
-    paths-ignore: [同上]
-  workflow_dispatch:  # 手動トリガー
+    paths-ignore: [same as above]
+  workflow_dispatch:  # Manual trigger
 ```
 
-### 除外パス（CIをスキップ）
+### Excluded Paths (CI Skip)
 
-以下のファイル変更ではCIは実行されない:
+CI does not run for changes to these files:
 
-| パス | 理由 |
-|------|------|
-| `*.md` | ドキュメントのみ |
-| `docs/**` | ドキュメントのみ |
-| `plans/**` | 計画ファイルのみ |
-| `benchmarks/**` | ベンチマークデータ・スクリプト |
-| `LICENSE` | ライセンスファイル |
+| Path | Reason |
+|------|--------|
+| `*.md` | Documentation only |
+| `docs/**` | Documentation only |
+| `plans/**` | Plan files only |
+| `benchmarks/**` | Benchmark data and scripts |
+| `LICENSE` | License file |
 
-### 手動トリガー
+### Manual Trigger
 
-`workflow_dispatch`により、GitHub UIから手動でCIを実行可能。
+`workflow_dispatch` allows manual CI execution from the GitHub UI.
 
 Actions → CI → Run workflow
 
-## ジョブ構成
+## Job Structure
 
 ```
 ┌──────────────┐  ┌─────────────────────────────────┐  ┌─────────────────────────────────┐
-│ fmt          │  │ build (並列 x2)                 │  │ python (並列 x2)                │
+│ fmt          │  │ build (parallel x2)             │  │ python (parallel x2)            │
 │ (5min)       │  │ Linux / macOS                   │  │ Linux / macOS                   │
 │              │  │ (15min)                         │  │ (15min)                         │
 └──────┬───────┘  └────────────────┬────────────────┘  └────────────────┬────────────────┘
@@ -53,25 +53,25 @@ Actions → CI → Run workflow
                    ▼                                                    │
          ┌─────────────────┐                                            │
          │ validate        │ ◄──────────────────────────────────────────┘
-         │ (10min)         │   (python は fmt のみに依存)
+         │ (10min)         │   (python depends only on fmt)
          └─────────────────┘
 ```
 
-## ジョブ詳細
+## Job Details
 
 ### 1. Format Check (`fmt`)
 
-**実行環境:** ubuntu-latest
-**タイムアウト:** 5分
-**実行時間:** 約20秒
+**Environment:** ubuntu-latest
+**Timeout:** 5 minutes
+**Runtime:** ~20 seconds
 
 ```bash
 zig fmt --check src/
 ```
 
-`src/`ディレクトリ以下の全`.zig`ファイルを再帰的にチェック。
+Recursively checks all `.zig` files under the `src/` directory.
 
-フォーマット違反があると失敗。修正方法:
+Fails if any formatting violations exist. To fix:
 
 ```bash
 zig fmt src/
@@ -79,88 +79,88 @@ zig fmt src/
 
 ### 2. Build (`build`)
 
-**実行環境:** Linux, macOS（並列実行）
-**タイムアウト:** 15分
-**実行時間:**
-- Linux: 約45秒
-- macOS: 約1分10秒
+**Environment:** Linux, macOS (parallel execution)
+**Timeout:** 15 minutes
+**Runtime:**
+- Linux: ~45 seconds
+- macOS: ~1 minute 10 seconds
 
-| ステップ | コマンド | 目的 |
-|----------|----------|------|
+| Step | Command | Purpose |
+|------|---------|---------|
 | Build | `zig build` | Debug build |
-| Test | `zig build test` | 全テスト実行 |
-| Release | `zig build -Doptimize=ReleaseFast` | 最適化ビルド |
-| Binary check | - | バイナリ存在確認 |
-| CLI test | `--help`, `--version` | CLI動作確認 |
+| Test | `zig build test` | Run all tests |
+| Release | `zig build -Doptimize=ReleaseFast` | Optimized build |
+| Binary check | - | Verify binary exists |
+| CLI test | `--help`, `--version` | CLI functionality check |
 
-**注意:** WindowsはCIマトリックスから除外。WindowsユーザーはWSLを使用してください。
+**Note:** Windows is excluded from the CI matrix. Windows users should use WSL.
 
 ### 3. Validate (`validate`)
 
-**実行環境:** ubuntu-latest
-**タイムアウト:** 10分
-**依存:** fmt, build（両方成功後に実行）
-**実行時間:** 約45秒
+**Environment:** ubuntu-latest
+**Timeout:** 10 minutes
+**Dependencies:** fmt, build (runs after both succeed)
+**Runtime:** ~45 seconds
 
-| ステップ | 内容 |
-|----------|------|
-| Example run | `benchmarks/dataset/1a0q.json.gz`で計算 |
-| JSON validation | 出力フィールド検証（Python） |
-| CSV test | CSV出力テスト |
-| Validate mode | `--validate`フラグテスト |
+| Step | Description |
+|------|-------------|
+| Example run | Compute with `benchmarks/dataset/1a0q.json.gz` |
+| JSON validation | Validate output fields (Python) |
+| CSV test | Test CSV output |
+| Validate mode | Test `--validate` flag |
 
-**JSON検証内容:**
-- `total_area` フィールド存在
-- `atom_areas` フィールド存在
-- 原子数 == 3183（1A0Qの原子数）
+**JSON Validation:**
+- `total_area` field exists
+- `atom_areas` field exists
+- Atom count == 3183 (atom count for 1A0Q)
 
 ### 4. Python (`python`)
 
-**実行環境:** Linux, macOS（並列実行）
-**タイムアウト:** 15分
-**依存:** fmt
-**実行時間:** 約1-2分
+**Environment:** Linux, macOS (parallel execution)
+**Timeout:** 15 minutes
+**Dependencies:** fmt
+**Runtime:** ~1-2 minutes
 
-| ステップ | 内容 |
-|----------|------|
+| Step | Description |
+|------|-------------|
 | Build shared library | `zig build -Doptimize=ReleaseFast` |
-| Library check | 共有ライブラリ存在確認 |
+| Library check | Verify shared library exists |
 | Install package | `uv pip install -e ".[dev]"` |
 | Run tests | `pytest tests/ -v` |
 | Lint | `ruff check` / `ruff format --check` |
-| Integration test | Pythonからの基本動作確認 |
+| Integration test | Basic functionality from Python |
 
-**共有ライブラリ:**
+**Shared Libraries:**
 - Linux: `libfreesasa_zig.so`
 - macOS: `libfreesasa_zig.dylib`
 
-**Pythonテスト内容:**
-- NumPy配列入出力
-- SR/LRアルゴリズム
-- エラーハンドリング
-- パラメータ設定
+**Python Test Coverage:**
+- NumPy array input/output
+- SR/LR algorithms
+- Error handling
+- Parameter configuration
 
-## ローカルでのCI再現
+## Local CI Reproduction
 
 ```bash
-# フォーマットチェック
+# Format check
 zig fmt --check src/
 
-# ビルド・テスト
+# Build and test
 zig build
 zig build test
 zig build -Doptimize=ReleaseFast
 
-# CLIテスト
+# CLI test
 ./zig-out/bin/freesasa_zig --help
 ./zig-out/bin/freesasa_zig --version
 
-# 検証テスト
+# Validation test
 ./zig-out/bin/freesasa_zig benchmarks/dataset/1a0q.json.gz /tmp/output.json
 ./zig-out/bin/freesasa_zig --format=csv benchmarks/dataset/1a0q.json.gz /tmp/output.csv
 ./zig-out/bin/freesasa_zig --validate benchmarks/dataset/1a0q.json.gz
 
-# Pythonテスト
+# Python test
 cd python
 uv pip install -e ".[dev]"
 pytest tests/ -v
@@ -168,48 +168,48 @@ ruff check freesasa_zig/
 ruff format --check freesasa_zig/
 ```
 
-## CI失敗時の対処
+## CI Failure Resolution
 
 ### Format check failed
 
 ```bash
-# ローカルでフォーマット実行
+# Run format locally
 zig fmt src/
 git add -u && git commit -m "style: Format code"
 git push
 ```
 
-**注意:** `--amend` + `git push -f` はプッシュ済みコミットを書き換えるため、共有ブランチでは使用しないでください。
+**Note:** Do not use `--amend` + `git push -f` on pushed commits as this rewrites history. Avoid on shared branches.
 
 ### Build failed
 
-1. エラーメッセージを確認
-2. ローカルで `zig build` を実行して再現
-3. 修正後にプッシュ
+1. Check error messages
+2. Run `zig build` locally to reproduce
+3. Fix and push
 
 ### Test failed
 
-1. `zig build test` をローカルで実行
-2. 失敗したテスト名を確認
-3. 該当テストを修正
+1. Run `zig build test` locally
+2. Identify failing test name
+3. Fix the relevant test
 
 ### Validate failed
 
-1. `benchmarks/dataset/1a0q.json.gz` で実行を確認
-2. 出力JSONの形式を確認
-3. 原子数が3183であることを確認
+1. Verify execution with `benchmarks/dataset/1a0q.json.gz`
+2. Check output JSON format
+3. Confirm atom count is 3183
 
 ### Python tests failed
 
-1. 共有ライブラリがビルドされているか確認
+1. Verify shared library is built
    ```bash
    ls -la zig-out/lib/
    ```
-2. Pythonパッケージをインストール
+2. Install Python package
    ```bash
    cd python && uv pip install -e ".[dev]"
    ```
-3. テストを実行
+3. Run tests
    ```bash
    uv run --with pytest pytest tests/ -v
    ```
@@ -226,19 +226,19 @@ git push
 
 ### Timeout
 
-デフォルトタイムアウト:
-- fmt: 5分
-- build: 15分
-- validate: 10分
-- python: 15分
+Default timeouts:
+- fmt: 5 minutes
+- build: 15 minutes
+- validate: 10 minutes
+- python: 15 minutes
 
-通常これらを超えることはない。超えた場合は無限ループの可能性を調査。
+These should not normally be exceeded. If exceeded, investigate for infinite loops.
 
-## Zigバージョン
+## Zig Version
 
-CI で使用しているZigバージョン: **0.15.2**
+Zig version used in CI: **0.15.2**
 
-`goto-bus-stop/setup-zig@v2` アクションで管理。
+Managed by the `goto-bus-stop/setup-zig@v2` action.
 
 ```yaml
 - uses: goto-bus-stop/setup-zig@v2
@@ -246,12 +246,12 @@ CI で使用しているZigバージョン: **0.15.2**
     version: 0.15.2
 ```
 
-## セキュリティ
+## Security
 
-- サードパーティアクション:
+- Third-party actions:
   - `actions/checkout@v4`
   - `goto-bus-stop/setup-zig@v2`
   - `actions/setup-python@v5`
   - `astral-sh/setup-uv@v4`
-- ハードコードされたシークレット: なし
-- 危険な権限: なし（デフォルト権限を使用）
+- Hardcoded secrets: None
+- Dangerous permissions: None (uses default permissions)

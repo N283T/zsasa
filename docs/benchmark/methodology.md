@@ -1,58 +1,58 @@
-# Benchmark Methodology / ベンチマーク手法
+# Benchmark Methodology
 
-ベンチマークの測定方法と実行手順。結果は [results.md](results.md) を参照。
+Measurement methods and execution procedures for benchmarks. See [results.md](results.md) for results.
 
 ## SASA-Only Timing
 
-公平な比較のため、**SASA計算時間のみ**を測定。ファイルI/Oは除外。
+For fair comparison, we measure **SASA calculation time only**. File I/O is excluded.
 
 ```
 Total time = File I/O + SASA calculation + Output
                         ^^^^^^^^^^^^^^^^
-                        これだけ測定
+                        Only this is measured
 ```
 
-各実装での測定方法：
+Measurement method for each implementation:
 
 | Implementation | Method |
 |----------------|--------|
-| freesasa-zig | `--timing` オプションで内部計測（stderr出力） |
-| FreeSASA C | パッチ版バイナリが SASA 計算時間を stderr に出力 |
-| RustSASA | パッチ版バイナリが `SASA_TIME_US` を stderr に出力 |
+| freesasa-zig | Internal measurement via `--timing` option (stderr output) |
+| FreeSASA C | Patched binary outputs SASA calculation time to stderr |
+| RustSASA | Patched binary outputs `SASA_TIME_US` to stderr |
 
-## Parameters / パラメータ
+## Parameters
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| Algorithm | Shrake-Rupley | 全実装で対応（LRはZig/FreeSASAのみ） |
-| n_points | 100 | テストポイント数 |
-| probe_radius | 1.4 Å | 水分子半径 |
-| Runs | 3 | 平均値を使用 |
+| Algorithm | Shrake-Rupley | Supported by all implementations (LR: Zig/FreeSASA only) |
+| n_points | 100 | Number of test points |
+| probe_radius | 1.4 Å | Water molecule radius |
+| Runs | 3 | Average value used |
 
-## Stratified Sampling / 層化サンプリング
+## Stratified Sampling
 
-PDB 全構造（約 238K）から層化サンプリング：
+Stratified sampling from all PDB structures (~238K):
 
 | Bin | Range | Strategy |
 |-----|-------|----------|
-| 0-500 | 0 〜 500 | 比例配分 |
-| 500-2k | 500 〜 2,000 | 比例配分 |
-| 2k-10k | 2,000 〜 10,000 | 比例配分 |
-| 10k-50k | 10,000 〜 50,000 | 比例配分 |
-| 50k-200k | 50,000 〜 200,000 | **全件採用** |
-| 200k+ | 200,000 〜 | **全件採用** |
+| 0-500 | 0 - 500 | Proportional allocation |
+| 500-2k | 500 - 2,000 | Proportional allocation |
+| 2k-10k | 2,000 - 10,000 | Proportional allocation |
+| 10k-50k | 10,000 - 50,000 | Proportional allocation |
+| 50k-200k | 50,000 - 200,000 | **All included** |
+| 200k+ | 200,000+ | **All included** |
 
-希少な大規模構造（50k 以上）は全件採用し、残りを比例配分。
+Rare large structures (50k+ atoms) are all included; the rest use proportional allocation.
 
-## Running Benchmarks / ベンチマーク実行
+## Running Benchmarks
 
-### Setup / セットアップ
+### Setup
 
 ```bash
-# Zig バイナリをビルド
+# Build Zig binary
 zig build -Doptimize=ReleaseFast
 
-# 外部ツールのセットアップ (比較用)
+# External tools setup (for comparison)
 cd benchmarks/external
 git clone https://github.com/N283T/freesasa-bench.git
 cd freesasa-bench && ./configure --enable-threads && make && cd ..
@@ -60,39 +60,39 @@ git clone --recursive https://github.com/N283T/rustsasa-bench.git
 cd rustsasa-bench && cargo build --release --features cli && cd ..
 ```
 
-### Index & Sample / インデックス＆サンプル生成
+### Index & Sample Generation
 
 ```bash
-# インデックス作成（初回のみ）
+# Create index (first time only)
 ./benchmarks/scripts/build_index.py benchmarks/inputs
 
-# 分布確認
+# Check distribution
 ./benchmarks/scripts/sample.py benchmarks/inputs/index.json --analyze
 
-# サンプル生成
+# Generate sample
 ./benchmarks/scripts/sample.py benchmarks/inputs/index.json \
     --target 100000 --seed 42 \
     -o benchmarks/samples/stratified_100k.json
 ```
 
-### Single-File Mode / 個別ファイルモード
+### Single-File Mode
 
-各ファイルを順番に処理し、アルゴリズム内並列化をテスト：
+Process files sequentially to test intra-algorithm parallelization:
 
 ```bash
 ./benchmarks/scripts/run.py --tool zig --algorithm sr --threads 1-10
 ./benchmarks/scripts/run.py --tool freesasa --algorithm lr --threads 1-10
 
-# サンプルファイル指定
+# With sample file
 ./benchmarks/scripts/run.py --tool zig --algorithm sr \
     --input-dir benchmarks/inputs \
     --sample-file benchmarks/samples/stratified_100k.json \
     --threads 1,2,4,8,10
 ```
 
-### Batch Mode / バッチモード
+### Batch Mode
 
-複数ファイルを並列処理し、スループットをテスト：
+Process multiple files in parallel to test throughput:
 
 ```bash
 ./benchmarks/scripts/run_batch.py --tool zig --algorithm sr \
@@ -107,32 +107,32 @@ cd rustsasa-bench && cargo build --release --features cli && cd ..
 | Rust | `--json-dir` + rayon |
 | FreeSASA | Shell script + background jobs |
 
-### Analysis / 分析
+### Analysis
 
 ```bash
-./benchmarks/scripts/analyze.py summary    # サマリーテーブル
-./benchmarks/scripts/analyze.py validate   # SASA検証
-./benchmarks/scripts/analyze.py plot       # グラフ生成
-./benchmarks/scripts/analyze.py all        # 全部
+./benchmarks/scripts/analyze.py summary    # Summary tables
+./benchmarks/scripts/analyze.py validate   # SASA validation
+./benchmarks/scripts/analyze.py plot       # Generate graphs
+./benchmarks/scripts/analyze.py all        # All of the above
 
-# CSVエクスポート
+# CSV export
 ./benchmarks/scripts/analyze.py export_csv
 ```
 
-## Scripts / スクリプト一覧
+## Scripts
 
 | Script | Purpose |
 |--------|---------|
-| `build_index.py` | 全ファイルから原子数インデックスを作成 |
-| `sample.py` | インデックスから層化サンプリング |
-| `run.py` | 個別ファイルモードでベンチマーク実行 |
-| `run_batch.py` | バッチモードでベンチマーク実行 |
-| `analyze.py` | 結果分析・グラフ生成 |
-| `generate_json.py` | CIF→JSON変換 |
+| `build_index.py` | Create atom count index from all files |
+| `sample.py` | Stratified sampling from index |
+| `run.py` | Run benchmarks in single-file mode |
+| `run_batch.py` | Run benchmarks in batch mode |
+| `analyze.py` | Analyze results and generate graphs |
+| `generate_json.py` | Convert CIF to JSON |
 
-## Reproducibility / 再現性
+## Reproducibility
 
-同一シードで同一サンプル：
+Same seed produces identical samples:
 
 ```bash
 ./benchmarks/scripts/sample.py index.json --target 75000 --seed 42 -o a.json
@@ -156,8 +156,8 @@ Probe radius: 1.4 Å
 Runs: 5
 ```
 
-## Notes / 注意事項
+## Notes
 
-1. **Initial run は遅い**: ファイルキャッシュ、warmup の影響
-2. **Thread 数は CPU に依存**: 物理コア数に合わせるのが最適
-3. **外部ツールは要パッチ**: SASA-only timing には改造版バイナリが必要
+1. **Initial runs are slow**: Due to file cache and warmup effects
+2. **Thread count depends on CPU**: Optimal when matching physical core count
+3. **External tools require patches**: SASA-only timing requires modified binaries

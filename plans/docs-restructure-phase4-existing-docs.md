@@ -26,11 +26,11 @@ Review and update existing docs to be accurate and in English.
 ## Tasks
 
 For each doc:
-- [ ] Read corresponding source code
-- [ ] Translate to English
-- [ ] Verify technical accuracy
-- [ ] Update outdated sections
-- [ ] Fix broken links
+- [x] Read corresponding source code
+- [x] Translate to English
+- [x] Verify technical accuracy
+- [x] Update outdated sections
+- [x] Fix broken links
 
 ## Priority Order
 
@@ -49,4 +49,4 @@ For each doc:
 - `docs/cli-io.md` removed (replaced by `docs/cli.md`)
 
 ---
-- [ ] **DONE** - Phase complete
+- [x] **DONE** - Phase complete
