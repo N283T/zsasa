@@ -5,6 +5,12 @@ Large-scale benchmark results for freesasa-zig using Shrake-Rupley algorithm.
 - **Dataset**: ~100k structures (stratified sampling from PDB)
 - **Precision**: Zig/FreeSASA use f64, RustSASA uses f32
 
+> **Note**:
+> - Absolute execution times are environment-dependent. **Relative speedup ratios** are the meaningful metric for comparison.
+> - All implementations use identical parameters: `n_points=100`, `probe_radius=1.4Å`
+> - Benchmarks measure **SASA calculation time only** (file I/O excluded). See [methodology.md](methodology.md) for details.
+> - SASA accuracy validated: mean error <0.001% vs FreeSASA reference.
+
 ## Highlights
 
 Zig's key advantage: **Large structures + Multi-threading**
