@@ -49,7 +49,7 @@ pub const FREESASA_ATOM_CLASS_APOLAR: c_int = 1;
 pub const FREESASA_ATOM_CLASS_UNKNOWN: c_int = 2;
 
 // Version string
-const VERSION = "0.0.5";
+const VERSION = "0.1.0";
 
 /// Thread-safe allocator for C API (uses C allocator for simplicity)
 const c_allocator = std.heap.c_allocator;
@@ -90,12 +90,18 @@ export fn freesasa_calc_sr(
         return FREESASA_ERROR_INVALID_INPUT;
     }
 
+    // Duplicate radii (AtomInput.r requires []f64 for classifier support)
+    const r_copy = c_allocator.dupe(f64, radii[0..n_atoms]) catch {
+        return FREESASA_ERROR_OUT_OF_MEMORY;
+    };
+    defer c_allocator.free(r_copy);
+
     // Create AtomInput from raw arrays
     const input = AtomInput{
         .x = x[0..n_atoms],
         .y = y[0..n_atoms],
         .z = z[0..n_atoms],
-        .r = radii[0..n_atoms],
+        .r = r_copy,
         .allocator = c_allocator,
     };
 
@@ -156,12 +162,18 @@ export fn freesasa_calc_lr(
         return FREESASA_ERROR_INVALID_INPUT;
     }
 
+    // Duplicate radii (AtomInput.r requires []f64 for classifier support)
+    const r_copy = c_allocator.dupe(f64, radii[0..n_atoms]) catch {
+        return FREESASA_ERROR_OUT_OF_MEMORY;
+    };
+    defer c_allocator.free(r_copy);
+
     // Create AtomInput from raw arrays
     const input = AtomInput{
         .x = x[0..n_atoms],
         .y = y[0..n_atoms],
         .z = z[0..n_atoms],
-        .r = radii[0..n_atoms],
+        .r = r_copy,
         .allocator = c_allocator,
     };
 

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-01-31
+
 ### Added
 
 - **PDB file format support**
@@ -112,6 +114,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Created `scripts/data/` subdirectory for data preparation scripts
   - Renamed: `benchmark_all.py` → `benchmark.py`, `validate_accuracy.py` → `validate.py`
   - Moved data scripts to `scripts/data/` with shorter names
+- **Internal**: Refactored `AtomInput.r` from `[]const f64` to `[]f64` to properly support classifier mutations
+- Added LICENSE (MIT) and CONTRIBUTING.md
 
 ## [0.0.5] - 2025-01-23
 
@@ -181,7 +185,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `calc_reference_sasa.py` - Generate reference SASA
   - `benchmark.py` - Performance benchmarking
 
-[Unreleased]: https://github.com/N283T/freesasa-zig/compare/v0.0.5...HEAD
+[Unreleased]: https://github.com/N283T/freesasa-zig/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/N283T/freesasa-zig/compare/v0.0.5...v0.1.0
 [0.0.5]: https://github.com/N283T/freesasa-zig/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/N283T/freesasa-zig/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/N283T/freesasa-zig/compare/v0.0.2...v0.0.3

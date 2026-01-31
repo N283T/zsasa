@@ -6,7 +6,7 @@ const std = @import("std");
 // for defining build steps and express dependencies between them, allowing the
 // build runner to parallelize the build automatically (and the cache system to
 // know when a step doesn't need to be re-run).
-const version = "0.0.5";
+const version = "0.1.0";
 
 pub fn build(b: *std.Build) void {
     // Standard target options allow the person running `zig build` to choose

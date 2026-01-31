@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "freesasa-zig"
-version = "0.0.5"
+version = "0.1.0"
 description = "Fast SASA calculation using Zig"
 readme = "README.md"
 license = "MIT"
@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
     "Topic :: Scientific/Engineering :: Chemistry",
 ]
-dependencies = ["numpy>=1.24"]
+dependencies = ["numpy>=1.24", "cffi>=1.15"]
 
 [project.optional-dependencies]
 biopython = ["biopython>=1.80"]
@@ -36,6 +36,9 @@ Repository = "https://github.com/N283T/freesasa-zig"
 
 [tool.hatch.build.targets.wheel]
 packages = ["freesasa_zig"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
 
 [tool.ruff]
 target-version = "py311"

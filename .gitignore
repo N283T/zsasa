@@ -7,6 +7,11 @@ wheels/
 *.egg-info
 .venv/
 
+# Bundled native libraries (built during pip install)
+python/freesasa_zig/*.dylib
+python/freesasa_zig/*.so
+python/freesasa_zig/*.dll
+
 # Zig
 .zig-cache/
 zig-out/
