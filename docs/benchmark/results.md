@@ -308,22 +308,9 @@ Thread scaling details on representative structures selected from each size bin.
 
 ## Batch Processing
 
-Comparison of batch mode for parallel processing of multiple files. Processing all **238,124 PDB files** with 10 threads.
+For throughput benchmarks processing multiple files in parallel, see [batch.md](batch.md).
 
-> **Note**: FreeSASA C is excluded from batch comparison as single-file benchmarks show it is slower than Rust.
-
-![Batch Comparison](../../benchmarks/results/plots/batch/comparison.png)
-
-| Tool | Precision | Total Time | Throughput | vs Rust |
-|------|-----------|------------|------------|---------|
-| **Zig** | f32 | **724.6s** | **328.6 files/s** | **+7%** |
-| Zig | f64 | 747.9s | 318.4 files/s | +4% |
-| Rust | f32 | 774.5s | 307.5 files/s | baseline |
-
-**Observations:**
-- Zig f32 is **+7%** faster than Rust f32
-- Zig f64 (double precision) is still **+4%** faster than Rust f32
-- Statistically significant results verified across all 238k files
+**Summary**: Zig f32 achieves **+7%** higher throughput than Rust f32 when processing all 238k PDB structures.
 
 ---
 
@@ -380,6 +367,7 @@ Relative Error = |SASA_zig - SASA_freesasa| / SASA_freesasa × 100%
 ## Related Documents
 
 - [methodology.md](methodology.md) - Benchmark methodology and measurement methods
+- [batch.md](batch.md) - Batch processing benchmarks
 - [cpu-efficiency.md](../cpu-efficiency.md) - CPU efficiency analysis (IPC, instruction count)
 - [optimizations.md](../optimizations.md) - Detailed optimization techniques
 - [algorithm.md](../algorithm.md) - Algorithm details
