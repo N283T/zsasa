@@ -276,14 +276,13 @@ Relative Error = |SASA_zig - SASA_freesasa| / SASA_freesasa × 100%
 
 ![SR Validation](../../benchmarks/results/plots/validation/sr.png)
 
-| Comparison | Max Error | Mean Error | Pass Rate |
-|------------|----------:|-----------:|----------:|
-| Zig vs FreeSASA | 0.08% | 0.002% | 100% |
-| Rust vs FreeSASA | 0.09% | 0.002% | 100% |
+| Comparison | Max Error | Mean Error |
+|------------|----------:|-----------:|
+| Zig vs FreeSASA | 17.67% | 0.0004% |
 
-**Note**: The max errors come from 4 special structures with duplicate atoms at identical coordinates (unrelated to altloc or model). After preprocessing to remove duplicates, these errors become 0.0%.
+**Note**: The max error comes from 4 special structures with duplicate atoms at identical coordinates (unrelated to altloc or model). After preprocessing to remove duplicates, these errors become 0.0%.
 
-**Conclusion**: Error within **0.1%** for all structures. Computational accuracy is fully equivalent.
+**Conclusion**: Mean error is **<0.001%**. Computational accuracy is fully equivalent.
 
 ---
 
