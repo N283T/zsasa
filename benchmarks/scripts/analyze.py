@@ -982,15 +982,19 @@ def large():
     # LR section first (will appear at bottom)
     lr_count = 0
 
+    # For LR, zig_lr directory has no precision suffix, so tool_label is just "zig"
+    zig_lr_col = (
+        "zig_f64" if "zig_f64" in pivots.get("lr", pl.DataFrame()).columns else "zig"
+    )
     if (
         "lr" in pivots
-        and "zig_f64" in pivots["lr"].columns
+        and zig_lr_col in pivots["lr"].columns
         and "freesasa" in pivots["lr"].columns
     ):
-        speedup = pivots["lr"]["freesasa"] / pivots["lr"]["zig_f64"]
+        speedup = pivots["lr"]["freesasa"] / pivots["lr"][zig_lr_col]
         results.append(
             {
-                "label": "Zig(f64) vs FreeSASA (LR)",
+                "label": "vs FreeSASA (LR)",
                 "speedup": speedup.median(),
                 "q25": speedup.quantile(0.25),
                 "q75": speedup.quantile(0.75),
@@ -1008,7 +1012,7 @@ def large():
         speedup = pivots["sr"]["rust"] / pivots["sr"]["zig_f64"]
         results.append(
             {
-                "label": "Zig(f64) vs Rust (SR)",
+                "label": "vs Rust (SR)",
                 "speedup": speedup.median(),
                 "q25": speedup.quantile(0.25),
                 "q75": speedup.quantile(0.75),
@@ -1024,28 +1028,11 @@ def large():
         speedup = pivots["sr"]["freesasa"] / pivots["sr"]["zig_f64"]
         results.append(
             {
-                "label": "Zig(f64) vs FreeSASA (SR)",
+                "label": "vs FreeSASA (SR)",
                 "speedup": speedup.median(),
                 "q25": speedup.quantile(0.25),
                 "q75": speedup.quantile(0.75),
                 "color": colors_algo["sr"],
-            }
-        )
-
-    # f32 vs f64 comparison (SR only)
-    if (
-        "sr" in pivots
-        and "zig_f32" in pivots["sr"].columns
-        and "zig_f64" in pivots["sr"].columns
-    ):
-        speedup = pivots["sr"]["zig_f64"] / pivots["sr"]["zig_f32"]
-        results.append(
-            {
-                "label": "Zig(f32) vs Zig(f64) (SR)",
-                "speedup": speedup.median(),
-                "q25": speedup.quantile(0.25),
-                "q75": speedup.quantile(0.75),
-                "color": "#27ae60",  # Green for f32 comparison
             }
         )
 
@@ -1083,7 +1070,9 @@ def large():
     n_structs = (
         df_large.filter(pl.col("algorithm") == "sr").select("structure").unique().height
     )
-    ax.set_title(f"Zig Speedup on Large Structures (100k+ atoms, n={n_structs}, t=10)")
+    ax.set_title(
+        f"Zig f64 Speedup on Large Structures (100k+ atoms, n={n_structs}, t=10)"
+    )
     ax.set_xlim(0, max(speedups) * 1.2)
     ax.grid(True, alpha=0.3, axis="x")
 
