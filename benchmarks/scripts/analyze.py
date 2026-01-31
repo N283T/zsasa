@@ -1272,6 +1272,194 @@ def efficiency():
 
 
 @app.command()
+def speedup(
+    min_atoms: int = typer.Option(50000, help="Minimum atom count for filtering"),
+    top_n: int = typer.Option(5, help="Number of top entries to show"),
+):
+    """Find structures with best Zig speedup at any thread count."""
+    setup_style()
+    df = load_data()
+    df = add_size_bin(df)
+
+    # Filter to SR algorithm and large structures
+    df_sr = df.filter((pl.col("algorithm") == "sr") & (pl.col("n_atoms") >= min_atoms))
+
+    # Pivot to get tools side by side
+    pivot = (
+        df_sr.select(["structure", "n_atoms", "threads", "tool_label", "time_ms"])
+        .pivot(
+            on="tool_label", index=["structure", "n_atoms", "threads"], values="time_ms"
+        )
+        .drop_nulls()
+    )
+
+    # Calculate speedup
+    if "zig_f64" not in pivot.columns:
+        rprint("[red]No zig_f64 data found[/red]")
+        return
+
+    speedup_cols = []
+    if "freesasa" in pivot.columns:
+        pivot = pivot.with_columns(
+            (pl.col("freesasa") / pl.col("zig_f64")).alias("vs_freesasa")
+        )
+        speedup_cols.append("vs_freesasa")
+    if "rust" in pivot.columns:
+        pivot = pivot.with_columns(
+            (pl.col("rust") / pl.col("zig_f64")).alias("vs_rust")
+        )
+        speedup_cols.append("vs_rust")
+
+    plot_dir = PLOTS_DIR / "speedup"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    # Print and collect top entries for each comparison
+    results = {}
+
+    for col in speedup_cols:
+        comparison = col.replace("vs_", "")
+        top_entries = pivot.sort(col, descending=True).head(top_n)
+
+        table = Table(
+            title=f"Top {top_n} Zig Speedup vs {comparison.title()} ({min_atoms:,}+ atoms)"
+        )
+        table.add_column("Rank", style="dim")
+        table.add_column("Structure", style="cyan")
+        table.add_column("Atoms", justify="right")
+        table.add_column("Threads", justify="right")
+        table.add_column("Speedup", justify="right", style="green")
+
+        entries = []
+        for i, row in enumerate(top_entries.iter_rows(named=True), 1):
+            table.add_row(
+                str(i),
+                row["structure"],
+                f"{row['n_atoms']:,}",
+                str(row["threads"]),
+                f"{row[col]:.2f}x",
+            )
+            entries.append(
+                {
+                    "structure": row["structure"],
+                    "n_atoms": row["n_atoms"],
+                    "threads": row["threads"],
+                    "speedup": row[col],
+                }
+            )
+
+        rprint(table)
+        rprint()
+        results[comparison] = entries
+
+    # Check for Rust outliers (unusually high speedup that might be measurement noise)
+    if "vs_rust" in speedup_cols:
+        # Find entries where vs_rust is much higher than vs_freesasa
+        outlier_check = pivot.filter(
+            (pl.col("vs_rust") > 5.0) & (pl.col("n_atoms") < 50000)
+        ).sort("vs_rust", descending=True)
+
+        if outlier_check.height > 0:
+            rprint(
+                "[yellow]Note: Rust has outliers in small structures (likely measurement noise):[/yellow]"
+            )
+            for row in outlier_check.head(3).iter_rows(named=True):
+                rprint(
+                    f"  {row['structure']}: {row['vs_rust']:.1f}x @ threads={row['threads']} ({row['n_atoms']:,} atoms)"
+                )
+            rprint()
+
+    # Generate comparison plot (similar to user's image)
+    if len(results) < 2:
+        rprint("[yellow]Need both FreeSASA and Rust data for comparison plot[/yellow]")
+        return
+
+    # Get best structure for each comparison
+    best_fs = results["freesasa"][0]
+    best_rust = results["rust"][0]
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    for idx, (comparison, best) in enumerate(
+        [("freesasa", best_fs), ("rust", best_rust)]
+    ):
+        ax = axes[idx]
+        struct = best["structure"]
+        n_atoms = best["n_atoms"]
+
+        # Get all thread data for this structure
+        df_struct = pivot.filter(pl.col("structure") == struct).sort("threads")
+
+        threads_list = df_struct["threads"].to_list()
+        vs_fs = df_struct["vs_freesasa"].to_list()
+        vs_rust = df_struct["vs_rust"].to_list()
+
+        ax.plot(
+            threads_list,
+            vs_fs,
+            marker="o",
+            label="vs FreeSASA",
+            color="#3498db",
+            linewidth=2,
+            markersize=8,
+        )
+        ax.plot(
+            threads_list,
+            vs_rust,
+            marker="s",
+            label="vs Rust",
+            color="#e74c3c",
+            linewidth=2,
+            markersize=8,
+        )
+
+        ax.axhline(y=1.0, color="gray", linestyle="--", linewidth=1)
+        ax.set_xlabel("Threads")
+        ax.set_ylabel("Speedup (nx)")
+        ax.set_xticks(threads_list)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # Find best speedup for this structure
+        best_fs_val = max(vs_fs)
+        best_fs_t = threads_list[vs_fs.index(best_fs_val)]
+        best_rust_val = max(vs_rust)
+        best_rust_t = threads_list[vs_rust.index(best_rust_val)]
+
+        # Annotate endpoint values (at threads=10)
+        ax.annotate(
+            f"{vs_fs[-1]:.2f}x",
+            xy=(threads_list[-1], vs_fs[-1]),
+            xytext=(5, 0),
+            textcoords="offset points",
+            color="#3498db",
+            fontsize=10,
+        )
+        ax.annotate(
+            f"{vs_rust[-1]:.2f}x",
+            xy=(threads_list[-1], vs_rust[-1]),
+            xytext=(5, 0),
+            textcoords="offset points",
+            color="#e74c3c",
+            fontsize=10,
+        )
+
+        # Title with best info
+        if comparison == "freesasa":
+            title = f"{struct} ({n_atoms:,} atoms)\nBest vs FreeSASA: {best_fs_val:.2f}x @ threads={best_fs_t}"
+        else:
+            title = f"{struct} ({n_atoms:,} atoms)\nBest vs Rust (large): {best_rust_val:.2f}x @ threads={best_rust_t}"
+        ax.set_title(title)
+
+    fig.suptitle("Zig Speedup vs FreeSASA and Rust (SR Algorithm)", fontsize=14)
+    fig.tight_layout()
+
+    out_path = plot_dir / "comparison.png"
+    fig.savefig(out_path)
+    plt.close(fig)
+    rprint(f"[green]Saved:[/green] {out_path}")
+
+
+@app.command()
 def all():
     """Generate all plots and summary."""
     summary()
@@ -1283,6 +1471,7 @@ def all():
     samples()
     large()
     efficiency()
+    speedup()
     rprint(f"\n[bold green]All plots saved to:[/bold green] {PLOTS_DIR}")
 
 
