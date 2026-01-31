@@ -27,9 +27,7 @@ class TestAggregateByResidue:
         residue_ids = [1, 1, 1]
         residue_names = ["ALA", "ALA", "ALA"]
 
-        results = aggregate_by_residue(
-            atom_areas, chain_ids, residue_ids, residue_names
-        )
+        results = aggregate_by_residue(atom_areas, chain_ids, residue_ids, residue_names)
 
         assert len(results) == 1
         res = results[0]
@@ -46,9 +44,7 @@ class TestAggregateByResidue:
         residue_ids = [1, 1, 2, 2]
         residue_names = ["ALA", "ALA", "GLY", "GLY"]
 
-        results = aggregate_by_residue(
-            atom_areas, chain_ids, residue_ids, residue_names
-        )
+        results = aggregate_by_residue(atom_areas, chain_ids, residue_ids, residue_names)
 
         assert len(results) == 2
         assert results[0].chain_id == "A"
@@ -70,9 +66,7 @@ class TestAggregateByResidue:
         residue_ids = [1, 1, 1, 1]  # Same residue_id in different chains
         residue_names = ["ALA", "ALA", "GLY", "GLY"]
 
-        results = aggregate_by_residue(
-            atom_areas, chain_ids, residue_ids, residue_names
-        )
+        results = aggregate_by_residue(atom_areas, chain_ids, residue_ids, residue_names)
 
         assert len(results) == 2
         assert results[0].chain_id == "A"
@@ -87,12 +81,15 @@ class TestAggregateByResidue:
         chain_ids = ["A", "A", "A", "A"]
         residue_ids = [1, 1, 1, 1]
         residue_names = ["ALA", "ALA", "ALA", "ALA"]
-        atom_classes = np.array([
-            AtomClass.POLAR,    # 10.0
-            AtomClass.APOLAR,   # 20.0
-            AtomClass.APOLAR,   # 30.0
-            AtomClass.UNKNOWN,  # 5.0 - not counted in polar/apolar
-        ], dtype=np.int32)
+        atom_classes = np.array(
+            [
+                AtomClass.POLAR,  # 10.0
+                AtomClass.APOLAR,  # 20.0
+                AtomClass.APOLAR,  # 30.0
+                AtomClass.UNKNOWN,  # 5.0 - not counted in polar/apolar
+            ],
+            dtype=np.int32,
+        )
 
         results = aggregate_by_residue(
             atom_areas, chain_ids, residue_ids, residue_names, atom_classes
@@ -114,9 +111,7 @@ class TestAggregateByResidue:
         residue_ids = [1]
         residue_names = ["ALA"]
 
-        results = aggregate_by_residue(
-            atom_areas, chain_ids, residue_ids, residue_names
-        )
+        results = aggregate_by_residue(atom_areas, chain_ids, residue_ids, residue_names)
 
         assert len(results) == 1
         assert results[0].rsa == pytest.approx(0.5, rel=1e-3)
@@ -128,9 +123,7 @@ class TestAggregateByResidue:
         residue_ids = [1]
         residue_names = ["HOH"]  # Water - not a standard amino acid
 
-        results = aggregate_by_residue(
-            atom_areas, chain_ids, residue_ids, residue_names
-        )
+        results = aggregate_by_residue(atom_areas, chain_ids, residue_ids, residue_names)
 
         assert len(results) == 1
         assert results[0].rsa is None
@@ -143,9 +136,7 @@ class TestAggregateByResidue:
         residue_ids = [1]
         residue_names = ["GLY"]
 
-        results = aggregate_by_residue(
-            atom_areas, chain_ids, residue_ids, residue_names
-        )
+        results = aggregate_by_residue(atom_areas, chain_ids, residue_ids, residue_names)
 
         assert len(results) == 1
         assert results[0].rsa > 1.0
@@ -158,9 +149,7 @@ class TestAggregateByResidue:
         residue_ids: list[int] = []
         residue_names: list[str] = []
 
-        results = aggregate_by_residue(
-            atom_areas, chain_ids, residue_ids, residue_names
-        )
+        results = aggregate_by_residue(atom_areas, chain_ids, residue_ids, residue_names)
 
         assert results == []
 
@@ -171,9 +160,7 @@ class TestAggregateByResidue:
         residue_ids = [1, 1, 1, 1, 2, 2]
         residue_names = ["ALA", "ALA", "GLY", "GLY", "VAL", "VAL"]
 
-        results = aggregate_by_residue(
-            atom_areas, chain_ids, residue_ids, residue_names
-        )
+        results = aggregate_by_residue(atom_areas, chain_ids, residue_ids, residue_names)
 
         assert len(results) == 3
         # Order should be: A:1, B:1, A:2 (as they appear in input)
@@ -192,9 +179,7 @@ class TestAggregateByResidue:
             residue_ids = [1]
             residue_names = [aa]
 
-            results = aggregate_by_residue(
-                atom_areas, chain_ids, residue_ids, residue_names
-            )
+            results = aggregate_by_residue(atom_areas, chain_ids, residue_ids, residue_names)
 
             assert len(results) == 1
             assert results[0].rsa is not None
@@ -212,9 +197,7 @@ class TestAggregateByResidueValidation:
         residue_names = ["ALA", "ALA"]
 
         with pytest.raises(ValueError, match="chain_ids length"):
-            aggregate_by_residue(
-                atom_areas, chain_ids, residue_ids, residue_names
-            )
+            aggregate_by_residue(atom_areas, chain_ids, residue_ids, residue_names)
 
     def test_mismatched_residue_ids_length(self):
         """Should raise error for mismatched residue_ids length."""
@@ -224,9 +207,7 @@ class TestAggregateByResidueValidation:
         residue_names = ["ALA", "ALA"]
 
         with pytest.raises(ValueError, match="residue_ids length"):
-            aggregate_by_residue(
-                atom_areas, chain_ids, residue_ids, residue_names
-            )
+            aggregate_by_residue(atom_areas, chain_ids, residue_ids, residue_names)
 
     def test_mismatched_residue_names_length(self):
         """Should raise error for mismatched residue_names length."""
@@ -236,9 +217,7 @@ class TestAggregateByResidueValidation:
         residue_names = ["ALA"]  # Wrong length
 
         with pytest.raises(ValueError, match="residue_names length"):
-            aggregate_by_residue(
-                atom_areas, chain_ids, residue_ids, residue_names
-            )
+            aggregate_by_residue(atom_areas, chain_ids, residue_ids, residue_names)
 
     def test_mismatched_atom_classes_length(self):
         """Should raise error for mismatched atom_classes length."""
@@ -249,9 +228,7 @@ class TestAggregateByResidueValidation:
         atom_classes = np.array([AtomClass.POLAR], dtype=np.int32)  # Wrong length
 
         with pytest.raises(ValueError, match="atom_classes length"):
-            aggregate_by_residue(
-                atom_areas, chain_ids, residue_ids, residue_names, atom_classes
-            )
+            aggregate_by_residue(atom_areas, chain_ids, residue_ids, residue_names, atom_classes)
 
 
 class TestResidueResultRepr:
