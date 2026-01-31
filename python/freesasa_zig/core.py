@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 from cffi import FFI
@@ -109,7 +109,7 @@ def _find_library() -> Path:
     raise FileNotFoundError(msg)
 
 
-def _load_library() -> tuple[FFI, any]:
+def _load_library() -> tuple[FFI, Any]:
     """Load the freesasa_zig shared library using cffi."""
     ffi = FFI()
     ffi.cdef(_CDEF)
@@ -120,10 +120,10 @@ def _load_library() -> tuple[FFI, any]:
 
 # Global library instance (lazy loaded)
 _ffi: FFI | None = None
-_lib: any = None
+_lib: Any = None
 
 
-def _get_lib() -> tuple[FFI, any]:
+def _get_lib() -> tuple[FFI, Any]:
     """Get or load the library."""
     global _ffi, _lib
     if _ffi is None:
@@ -347,7 +347,7 @@ def get_radius(
         >>> get_radius("ALA", "XX")  # Unknown atom
         None
     """
-    ffi, lib = _get_lib()
+    _, lib = _get_lib()
     radius = lib.freesasa_classifier_get_radius(
         classifier_type,
         residue.encode("utf-8"),
@@ -380,7 +380,7 @@ def get_atom_class(
         >>> get_atom_class("ALA", "O") == AtomClass.POLAR
         True
     """
-    ffi, lib = _get_lib()
+    _, lib = _get_lib()
     return lib.freesasa_classifier_get_class(
         classifier_type,
         residue.encode("utf-8"),
@@ -407,7 +407,7 @@ def guess_radius(element: str) -> float | None:
         >>> guess_radius("XX")  # Unknown
         None
     """
-    ffi, lib = _get_lib()
+    _, lib = _get_lib()
     radius = lib.freesasa_guess_radius(element.encode("utf-8"))
     if np.isnan(radius):
         return None
@@ -434,7 +434,7 @@ def guess_radius_from_atom_name(atom_name: str) -> float | None:
         >>> guess_radius_from_atom_name("FE  ")  # Iron
         1.26
     """
-    ffi, lib = _get_lib()
+    _, lib = _get_lib()
     radius = lib.freesasa_guess_radius_from_atom_name(atom_name.encode("utf-8"))
     if np.isnan(radius):
         return None
@@ -598,7 +598,7 @@ def get_max_sasa(residue_name: str) -> float | None:
         >>> get_max_sasa("HOH")  # Water - not a standard amino acid
         None
     """
-    ffi, lib = _get_lib()
+    _, lib = _get_lib()
     max_sasa = lib.freesasa_get_max_sasa(residue_name.encode("utf-8"))
     if np.isnan(max_sasa):
         return None
@@ -625,7 +625,7 @@ def calculate_rsa(sasa: float, residue_name: str) -> float | None:
         >>> calculate_rsa(150.0, "GLY")  # RSA > 1.0 is possible
         1.4423076923076923
     """
-    ffi, lib = _get_lib()
+    _, lib = _get_lib()
     rsa = lib.freesasa_calculate_rsa(sasa, residue_name.encode("utf-8"))
     if np.isnan(rsa):
         return None

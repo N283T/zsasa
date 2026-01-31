@@ -39,6 +39,7 @@ class ZigBuildHook(BuildHookInterface):
             # For development, always rebuild if zig-out doesn't exist
             if not lib_src.exists():
                 self._build_zig(root_dir)
+                shutil.copy2(lib_src, lib_dst)
             elif lib_src.stat().st_mtime > lib_dst.stat().st_mtime:
                 self._build_zig(root_dir)
                 shutil.copy2(lib_src, lib_dst)
@@ -70,6 +71,7 @@ class ZigBuildHook(BuildHookInterface):
                 check=True,
                 capture_output=True,
                 text=True,
+                timeout=600,  # 10 minute timeout
             )
             self.app.display_success("Zig library built successfully")
         except subprocess.CalledProcessError as e:
