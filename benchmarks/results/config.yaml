@@ -1,0 +1,21 @@
+# Benchmark results configuration
+# Only directories listed here will be included in analysis
+
+# Single-file benchmark results (SR algorithm)
+sr:
+  - zig_sr_f64
+  - zig_sr_f32
+  - freesasa_sr
+  - rust_sr
+
+# Single-file benchmark results (LR algorithm)
+lr:
+  - zig_lr
+  - freesasa_lr
+
+# Batch processing results (excluded from single-file analysis)
+# batch:
+#   - batch_zig_sr_f32
+#   - batch_zig_sr_f64
+#   - batch_freesasa_sr
+#   - batch_rust_sr

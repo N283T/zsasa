@@ -6,6 +6,7 @@
 #     "matplotlib",
 #     "typer",
 #     "rich",
+#     "pyyaml",
 # ]
 # ///
 """Generate benchmark comparison plots."""
@@ -42,16 +43,28 @@ LINESTYLES = {
 }
 
 
+def load_config() -> dict:
+    """Load benchmark configuration from YAML file."""
+    import yaml
+
+    config_path = RESULTS_DIR / "config.yaml"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    with open(config_path) as f:
+        return yaml.safe_load(f)
+
+
 def load_data() -> pl.DataFrame:
-    """Load all single-file benchmark results into a single DataFrame."""
-    excluded = ("batch_", "ipc", "csv", "plots", "__pycache__")
-    csv_files = [
-        f
-        for f in RESULTS_DIR.glob("*/results.csv")
-        if not any(f.parent.name.startswith(ex) for ex in excluded)
-    ]
+    """Load benchmark results specified in config.yaml."""
+    config = load_config()
+
+    # Collect all directories from config (sr + lr)
+    dirs = config.get("sr", []) + config.get("lr", [])
+    csv_files = [RESULTS_DIR / d / "results.csv" for d in dirs]
+    csv_files = [f for f in csv_files if f.exists()]
+
     if not csv_files:
-        raise FileNotFoundError("No results.csv files found")
+        raise FileNotFoundError("No results.csv files found in configured directories")
 
     dfs = []
     for f in csv_files:
