@@ -110,7 +110,7 @@ def compute_sasa(
     algorithm: Literal["sr", "lr"] = "sr",
     n_slices: int = 20,
     n_threads: int = 0,
-    mode: Literal["atom", "residue"] = "atom",
+    mode: Literal["atom", "residue", "total"] = "atom",
 ) -> NDArray[np.float32]:
     """Compute SASA for MDTraj trajectory using freesasa-zig.
 
@@ -129,11 +129,15 @@ def compute_sasa(
         mode: Output mode:
               - "atom": Return per-atom SASA, shape (n_frames, n_atoms).
               - "residue": Return per-residue SASA, shape (n_frames, n_residues).
+              - "total": Return total SASA per frame, shape (n_frames,).
               Default: "atom".
 
     Returns:
         SASA values in nm² (matching MDTraj's output units).
-        Shape: (n_frames, n_atoms) if mode='atom', (n_frames, n_residues) if mode='residue'.
+        Shape depends on mode:
+        - mode='atom': (n_frames, n_atoms)
+        - mode='residue': (n_frames, n_residues)
+        - mode='total': (n_frames,)
 
     Note:
         - Input coordinates are automatically converted from nm (MDTraj) to Angstrom.
@@ -152,6 +156,10 @@ def compute_sasa(
         >>> # Per-residue SASA
         >>> sasa_residue = compute_sasa(traj, mode='residue')
         >>> print(sasa_residue.shape)  # (n_frames, n_residues)
+        >>>
+        >>> # Total SASA per frame
+        >>> sasa_total = compute_sasa(traj, mode='total')
+        >>> print(sasa_total.shape)  # (n_frames,)
     """
     # Convert coordinates from nm to Angstrom
     coords_angstrom = np.ascontiguousarray(traj.xyz * 10.0, dtype=np.float32)
@@ -185,7 +193,11 @@ def compute_sasa(
     # Convert from Å² to nm² (1 nm² = 100 Å²)
     sasa_nm2 = result.atom_areas / 100.0
 
-    # Aggregate by residue if requested
+    # Handle different output modes
+    if mode == "total":
+        # Return total SASA per frame
+        return sasa_nm2.sum(axis=1)
+
     if mode == "residue":
         n_frames = sasa_nm2.shape[0]
         n_residues = traj.n_residues
@@ -208,6 +220,7 @@ def compute_sasa(
 
         return sasa_residue
 
+    # mode == "atom" (default)
     return sasa_nm2
 
 

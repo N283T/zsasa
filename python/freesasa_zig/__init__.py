@@ -37,6 +37,15 @@ Analysis:
     >>> for res in residues:
     ...     if res.rsa is not None:
     ...         print(f"{res.chain_id}:{res.residue_name}{res.residue_id}: RSA={res.rsa:.1%}")
+
+MDTraj Integration:
+    For MD trajectory analysis (requires mdtraj):
+
+    >>> # pip install mdtraj
+    >>> from freesasa_zig.mdtraj import compute_sasa
+    >>> import mdtraj as md
+    >>> traj = md.load('trajectory.xtc', top='topology.pdb')
+    >>> sasa = compute_sasa(traj)  # Returns (n_frames, n_atoms) in nm²
 """
 
 from freesasa_zig.analysis import (

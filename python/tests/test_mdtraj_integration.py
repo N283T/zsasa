@@ -138,6 +138,15 @@ class TestComputeSasa:
         sasa_atom = compute_sasa(simple_trajectory, mode="atom")
         np.testing.assert_array_almost_equal(sasa[:, 0], sasa_atom.sum(axis=1))
 
+    def test_total_mode(self, simple_trajectory: md.Trajectory) -> None:
+        """Test total SASA per frame output."""
+        sasa_total = compute_sasa(simple_trajectory, mode="total")
+
+        assert sasa_total.shape == (2,)  # (n_frames,)
+        # Total should match atom mode sum
+        sasa_atom = compute_sasa(simple_trajectory, mode="atom")
+        np.testing.assert_array_almost_equal(sasa_total, sasa_atom.sum(axis=1))
+
     def test_algorithm_sr(self, simple_trajectory: md.Trajectory) -> None:
         """Test Shrake-Rupley algorithm."""
         sasa = compute_sasa(simple_trajectory, algorithm="sr", n_points=960)

@@ -132,6 +132,39 @@ class TestCalculateSasaBatch:
         assert result_large.atom_areas[0, 0] > result_small.atom_areas[0, 0]
 
 
+class TestCalculateSasaBatchPerformance:
+    """Performance sanity checks for batch API."""
+
+    def test_batch_faster_than_sequential(self) -> None:
+        """Batch should be faster than sequential single-frame calls."""
+        import time
+
+        from freesasa_zig import calculate_sasa
+
+        n_frames = 20
+        n_atoms = 100
+        rng = np.random.default_rng(42)
+        coords = rng.standard_normal((n_frames, n_atoms, 3)).astype(np.float32) * 3.0
+        radii = np.full(n_atoms, 1.5, dtype=np.float32)
+
+        # Time batch (with multiple threads)
+        start = time.perf_counter()
+        calculate_sasa_batch(coords, radii, n_threads=4)
+        batch_time = time.perf_counter() - start
+
+        # Time sequential
+        start = time.perf_counter()
+        for i in range(n_frames):
+            calculate_sasa(coords[i], radii)
+        seq_time = time.perf_counter() - start
+
+        # Batch should be faster (at least not slower)
+        # Note: On small inputs, overhead may make batch similar speed
+        assert batch_time < seq_time * 1.5, (
+            f"Batch ({batch_time:.3f}s) should not be much slower than sequential ({seq_time:.3f}s)"
+        )
+
+
 class TestCalculateSasaBatchValidation:
     """Tests for input validation in calculate_sasa_batch."""
 
