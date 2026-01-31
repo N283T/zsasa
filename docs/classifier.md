@@ -194,7 +194,7 @@ pub const AtomProperties = struct {
 | Sulfur | 1.85 Å (apolar) | 1.77 Å (polar) | 2.00 Å (polar) |
 | ANY fallback | Yes | No | Yes |
 | Classification | Atom type | Hybridization | Atom type |
-| Reference | João Rodrigues | Tsai et al. 1999 | Ooi et al. |
+| Reference | Hubbard & Thornton 1993 | Tsai et al. 1999 | Ooi et al. 1987 |
 
 ## NACCESS Atom Types
 
@@ -394,8 +394,18 @@ const radius = classifier.getRadius("ALA", "CA");
 
 ## References
 
-- [FreeSASA naccess.config](https://github.com/mittinatten/freesasa/blob/master/share/naccess.config)
-- [FreeSASA protor.config](https://github.com/mittinatten/freesasa/blob/master/share/protor.config)
-- [FreeSASA oons.config](https://github.com/mittinatten/freesasa/blob/master/share/oons.config)
-- Tsai, J., Taylor, R., Chothia, C., & Gerstein, M. (1999). The packing density in proteins: standard radii and volumes. J. Mol. Biol. 290:253-266.
-- Mantina et al. (2009) Consistent van der Waals Radii for the Whole Main Group
+### Classifier Sources
+
+- **NACCESS**: Hubbard, S. J.; Thornton, J. M. NACCESS, Computer Program. Department of Biochemistry and Molecular Biology, University College London, 1993. [Website](https://www.bioinf.manchester.ac.uk/naccess/)
+- **ProtOr**: Tsai, J.; Taylor, R.; Chothia, C.; Gerstein, M. The Packing Density in Proteins: Standard Radii and Volumes. *J. Mol. Biol.* 1999, 290(1), 253–266. [doi:10.1006/jmbi.1999.2829](https://doi.org/10.1006/jmbi.1999.2829)
+- **OONS**: Ooi, T.; Oobatake, M.; Nemethy, G.; Scheraga, H. A. Accessible Surface Areas as a Measure of the Thermodynamic Parameters of Hydration of Peptides. *Proc. Natl. Acad. Sci. U.S.A.* 1987, 84(10), 3086–3090. [doi:10.1073/pnas.84.10.3086](https://doi.org/10.1073/pnas.84.10.3086)
+
+### Element Radii
+
+- Mantina, M.; Chamberlin, A. C.; Valero, R.; Cramer, C. J.; Truhlar, D. G. Consistent van der Waals Radii for the Whole Main Group. *J. Phys. Chem. A* 2009, 113(19), 5806–5812. [doi:10.1021/jp8111556](https://doi.org/10.1021/jp8111556)
+
+### FreeSASA Configuration Files
+
+- [naccess.config](https://github.com/mittinatten/freesasa/blob/master/share/naccess.config)
+- [protor.config](https://github.com/mittinatten/freesasa/blob/master/share/protor.config)
+- [oons.config](https://github.com/mittinatten/freesasa/blob/master/share/oons.config)
