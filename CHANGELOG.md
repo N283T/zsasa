@@ -114,6 +114,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Created `scripts/data/` subdirectory for data preparation scripts
   - Renamed: `benchmark_all.py` → `benchmark.py`, `validate_accuracy.py` → `validate.py`
   - Moved data scripts to `scripts/data/` with shorter names
+- **Internal**: Refactored `AtomInput.r` from `[]const f64` to `[]f64` to properly support classifier mutations
+- Added LICENSE (MIT) and CONTRIBUTING.md
 
 ## [0.0.5] - 2025-01-23
 
