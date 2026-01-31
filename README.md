@@ -82,7 +82,7 @@ Requires Zig 0.15.2+ for building the native library.
 | `--n-slices=N` | Slices per atom (LR) | 20 |
 | `--precision=P` | `f32` (fast) or `f64` (precise) | f64 |
 
-Run `./zig-out/bin/freesasa_zig --help` for all options. See [CLI Reference](docs/cli-io.md) for input/output formats.
+Run `./zig-out/bin/freesasa_zig --help` for all options. See [CLI Reference](docs/cli.md) for detailed documentation.
 
 ### Python Examples
 
@@ -113,7 +113,7 @@ See [Python README](python/README.md) for full documentation.
 
 | Document | Description |
 |----------|-------------|
-| [CLI & I/O](docs/cli-io.md) | Command-line options, input/output formats |
+| [CLI Reference](docs/cli.md) | Command-line options, input/output formats |
 | [Python Bindings](python/README.md) | Python API and integrations |
 | [Algorithms](docs/algorithm.md) | Shrake-Rupley and Lee-Richards details |
 | [Classifiers](docs/classifier.md) | NACCESS, ProtOr, OONS atom classifiers |
