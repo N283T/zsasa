@@ -937,7 +937,7 @@ def samples():
 
 @app.command()
 def large():
-    """Generate speedup bar chart for large structures (100k+ atoms) at t=10."""
+    """Generate speedup bar chart for large structures (100k+ atoms) at threads=10."""
     setup_style()
     plot_dir = PLOTS_DIR / "large"
     plot_dir.mkdir(parents=True, exist_ok=True)
@@ -945,7 +945,7 @@ def large():
     df = load_data()
     df = add_size_bin(df)
 
-    # Filter to large structures (100k+) and t=10
+    # Filter to large structures (100k+) and threads=10
     large_bins = {"100k-200k", "200k+"}
     df_large = df.filter(
         pl.col("size_bin").is_in(large_bins) & (pl.col("threads") == 10)
@@ -1063,7 +1063,7 @@ def large():
         df_large.filter(pl.col("algorithm") == "sr").select("structure").unique().height
     )
     ax.set_title(
-        f"Zig f64 Speedup on Large Structures (100k+ atoms, n={n_structs}, t=10)"
+        f"Zig f64 Speedup on Large Structures (100k+ atoms, n={n_structs}, threads=10)"
     )
     ax.set_xlim(0, max(speedups) * 1.2)
     ax.grid(True, alpha=0.3, axis="x")
@@ -1088,7 +1088,7 @@ def efficiency():
     # Focus on SR algorithm
     df_sr = df.filter(pl.col("algorithm") == "sr")
 
-    # Get t=1 baseline for each structure/tool_label
+    # Get threads=1 baseline for each structure/tool_label
     df_t1 = df_sr.filter(pl.col("threads") == 1).select(
         [
             "tool_label",
@@ -1110,11 +1110,11 @@ def efficiency():
     # Use tool_labels that exist in data (exclude f32 - almost no difference from f64)
     tool_labels = ["zig_f64", "freesasa", "rust"]
 
-    # Table: efficiency by size bin (t=10)
+    # Table: efficiency by size bin (threads=10)
     t_target = 10
     df_t10 = df_eff.filter(pl.col("threads") == t_target)
 
-    summary_table = Table(title=f"Parallel Efficiency by Size (SR, t={t_target})")
+    summary_table = Table(title=f"Parallel Efficiency by Size (SR, threads={t_target})")
     summary_table.add_column("Size Bin", style="cyan")
     summary_table.add_column("Count", justify="right")
     summary_table.add_column("Zig(f64)", justify="right")
@@ -1214,7 +1214,7 @@ def efficiency():
     plt.close(fig)
     rprint(f"\n[green]Saved:[/green] {out_path}")
 
-    # Plot: efficiency by size bin (comparing tools at t=10)
+    # Plot: efficiency by size bin (comparing tools at threads=10)
     fig, ax = plt.subplots(figsize=(14, 6))
 
     x_labels = []
@@ -1247,7 +1247,7 @@ def efficiency():
     ax.set_xticks(x_pos)
     ax.set_xticklabels(x_labels, rotation=45, ha="right")
     ax.set_ylabel("Parallel Efficiency")
-    ax.set_title(f"Parallel Efficiency by Structure Size (SR, t={t_target})")
+    ax.set_title(f"Parallel Efficiency by Structure Size (SR, threads={t_target})")
     ax.legend()
     ax.grid(True, alpha=0.3, axis="y")
 
