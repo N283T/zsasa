@@ -400,6 +400,12 @@ Lee-Richards results using ~30k structures. RustSASA does not support LR.
 - Overall 3-4x slower than SR (slice integration cost)
 - Zig's advantage is maintained in LR as well
 
+### SASA Validation
+
+![LR Validation](../../benchmarks/results/plots/validation/lr.png)
+
+LR uses fast trigonometric approximations (see [optimizations.md](../optimizations.md)), resulting in slightly higher error than SR, but still within acceptable tolerance.
+
 ---
 
 ## Appendix B: Batch Processing
