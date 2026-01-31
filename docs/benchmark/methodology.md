@@ -75,11 +75,10 @@ cd rustsasa-bench && cargo build --release --features cli && cd ..
     -o benchmarks/samples/stratified_100k.json
 ```
 
-### Single-File Mode
-
-Process files sequentially to test intra-algorithm parallelization:
+### Running Benchmarks
 
 ```bash
+# Basic usage
 ./benchmarks/scripts/run.py --tool zig --algorithm sr --threads 1-10
 ./benchmarks/scripts/run.py --tool freesasa --algorithm lr --threads 1-10
 
@@ -88,47 +87,47 @@ Process files sequentially to test intra-algorithm parallelization:
     --input-dir benchmarks/inputs \
     --sample-file benchmarks/samples/stratified_100k.json \
     --threads 1,2,4,8,10
+
+# Single run for quick testing
+./benchmarks/scripts/run.py --tool zig --algorithm sr --threads 1 --runs 1
+
+# With f32 precision (Zig only)
+./benchmarks/scripts/run.py --tool zig --algorithm sr --precision f32
 ```
 
-### Batch Mode
-
-Process multiple files in parallel to test throughput:
+### Analysis & Visualization
 
 ```bash
-./benchmarks/scripts/run_batch.py --tool zig --algorithm sr \
-    --input-dir benchmarks/inputs \
-    --sample-file benchmarks/samples/stratified_1k.json \
-    --threads 1,4,8,10 --runs 3
-```
+# Summary tables
+./benchmarks/scripts/analyze.py summary
 
-| Tool | Batch Implementation |
-|------|---------------------|
-| Zig | Native directory input |
-| Rust | `--json-dir` + rayon |
-| FreeSASA | Shell script + background jobs |
+# Generate all plots
+./benchmarks/scripts/analyze.py all
 
-### Analysis
+# Individual plot types
+./benchmarks/scripts/analyze.py scatter      # Atoms vs time scatter
+./benchmarks/scripts/analyze.py threads      # Thread scaling
+./benchmarks/scripts/analyze.py grid         # Speedup grid by size/threads
+./benchmarks/scripts/analyze.py validation   # SASA validation
+./benchmarks/scripts/analyze.py samples      # Per-bin sample plots
+./benchmarks/scripts/analyze.py large        # Large structure analysis
+./benchmarks/scripts/analyze.py efficiency   # Parallel efficiency
 
-```bash
-./benchmarks/scripts/analyze.py summary    # Summary tables
-./benchmarks/scripts/analyze.py validate   # SASA validation
-./benchmarks/scripts/analyze.py plot       # Generate graphs
-./benchmarks/scripts/analyze.py all        # All of the above
-
-# CSV export
-./benchmarks/scripts/analyze.py export_csv
+# Export to CSV
+./benchmarks/scripts/analyze.py export-csv
 ```
 
 ## Scripts
 
 | Script | Purpose |
 |--------|---------|
-| `build_index.py` | Create atom count index from all files |
+| `build_index.py` | Create atom count index from all input files |
 | `sample.py` | Stratified sampling from index |
-| `run.py` | Run benchmarks in single-file mode |
-| `run_batch.py` | Run benchmarks in batch mode |
-| `analyze.py` | Analyze results and generate graphs |
-| `generate_json.py` | Convert CIF to JSON |
+| `run.py` | Run benchmarks (single-file mode) |
+| `analyze.py` | Analyze results and generate plots |
+| `generate_json.py` | Convert CIF/PDB to JSON format |
+| `ipc.py` | CPU efficiency measurement (IPC, instruction count) |
+| `compare_parallelism.py` | Parallel efficiency comparison |
 
 ## Reproducibility
 
@@ -161,3 +160,9 @@ Runs: 5
 1. **Initial runs are slow**: Due to file cache and warmup effects
 2. **Thread count depends on CPU**: Optimal when matching physical core count
 3. **External tools require patches**: SASA-only timing requires modified binaries
+
+## Related Documents
+
+- [results.md](results.md) - Benchmark results
+- [batch.md](batch.md) - Batch processing benchmarks
+- [../cpu-efficiency.md](../cpu-efficiency.md) - CPU efficiency analysis
