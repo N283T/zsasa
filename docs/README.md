@@ -10,13 +10,15 @@ Technical documentation for freesasa-zig.
 | [algorithm.md](algorithm.md) | SASA algorithms (SR/LR) |
 | [optimizations.md](optimizations.md) | Optimization techniques |
 | [benchmark/](benchmark/) | Benchmark documentation |
+| ├─ [results.md](benchmark/results.md) | Large-scale benchmark results with plots |
 | ├─ [methodology.md](benchmark/methodology.md) | Benchmark methodology |
-| └─ [results.md](benchmark/results.md) | Large-scale benchmark results with plots |
+| └─ [batch.md](benchmark/batch.md) | Batch processing benchmarks |
 | [cpu-efficiency.md](cpu-efficiency.md) | CPU efficiency analysis (IPC, instructions) |
 | [cli.md](cli.md) | CLI Reference |
 | [python.md](python.md) | Python API Reference |
 | [classifier.md](classifier.md) | Atom radius classifiers |
 | [ci.md](ci.md) | CI/CD configuration |
+| [ja/](ja/) | Japanese documentation |
 
 ## Benchmark Environment
 
