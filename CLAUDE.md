@@ -1,5 +1,23 @@
 # Project Rules
 
+freesasa-zig: High-performance SASA (Solvent Accessible Surface Area) calculation in Zig.
+
+## Quick Reference
+
+```bash
+# Build
+zig build -Doptimize=ReleaseFast
+
+# Test
+zig build test
+
+# Format
+zig fmt src/
+
+# Python
+cd python && uv pip install -e ".[dev]" && pytest tests/ -v
+```
+
 ## Build
 
 **ALWAYS use ReleaseFast for Zig builds:**
@@ -8,46 +26,141 @@
 zig build -Doptimize=ReleaseFast
 ```
 
-Never use `zig build` without `-Doptimize=ReleaseFast` - debug builds are 3-10x slower and will give misleading benchmark results.
+Debug builds are 3-10x slower. Use ReleaseFast for:
+- Benchmarking
+- Performance testing
+- Production builds
+
+Output:
+- `zig-out/bin/freesasa_zig` - CLI binary
+- `zig-out/lib/libfreesasa_zig.{so,dylib}` - Shared library for Python
+
+## Testing
+
+### Zig Tests
+
+```bash
+zig build test                    # Run all tests
+zig build test 2>&1 | head -100   # Truncate verbose output
+```
+
+### Python Tests
+
+```bash
+cd python
+uv pip install -e ".[dev]"        # Install with dev dependencies
+pytest tests/ -v                  # Run all tests
+pytest tests/test_sasa.py -v      # Run specific test file
+```
+
+## Code Style
+
+### Zig
+
+```bash
+zig fmt src/                      # Format all source files
+zig fmt --check src/              # Check formatting (CI)
+```
+
+### Python
+
+```bash
+cd python
+ruff check freesasa_zig/          # Lint
+ruff format freesasa_zig/         # Format
+ruff check freesasa_zig/ --fix    # Auto-fix lint issues
+```
+
+## Project Structure
+
+```
+src/                    # Zig source code
+├── main.zig           # CLI entry point
+├── shrake_rupley.zig  # SR algorithm
+├── lee_richards.zig   # LR algorithm
+├── simd.zig           # SIMD optimizations
+└── ...
+
+python/                 # Python bindings
+├── freesasa_zig/      # Python package
+├── tests/             # Python tests
+└── pyproject.toml     # Package config
+
+docs/                   # Documentation
+├── benchmark/         # Benchmark methodology & results
+├── ja/                # Japanese translations
+└── *.md               # English docs
+
+benchmarks/             # Benchmark infrastructure
+├── scripts/           # Benchmark scripts (PEP 723)
+├── results/           # Output data & plots
+└── external/          # Comparison tools (FreeSASA, RustSASA)
+```
 
 ## Benchmark Scripts
 
-Benchmark scripts use typer + rich with PEP 723 metadata. Located in `benchmarks/scripts/`.
+Located in `benchmarks/scripts/`. All scripts use PEP 723 metadata (typer + rich).
+
+### Running Benchmarks
 
 ```bash
-# Run benchmark (single tool, single algorithm)
+# Single-file mode
 ./benchmarks/scripts/run.py --tool zig --algorithm sr --threads 1-10
 ./benchmarks/scripts/run.py --tool freesasa --algorithm lr --threads 1-10
 
-# Large-scale benchmark with stratified sampling
-./benchmarks/scripts/build_index.py benchmarks/inputs              # Build index
-./benchmarks/scripts/sample.py benchmarks/inputs/index.json --analyze  # Check distribution
+# With stratified sampling
+./benchmarks/scripts/build_index.py benchmarks/inputs
 ./benchmarks/scripts/sample.py benchmarks/inputs/index.json \
-    --target 75000 --seed 42 -o benchmarks/samples/stratified_75k.json
+    --target 100000 --seed 42 -o benchmarks/samples/stratified_100k.json
 ./benchmarks/scripts/run.py --tool zig --algorithm sr \
     --input-dir benchmarks/inputs \
-    --sample-file benchmarks/samples/stratified_75k.json
+    --sample-file benchmarks/samples/stratified_100k.json
 
-# Analyze results
-./benchmarks/scripts/analyze.py summary    # Show summary tables
-./benchmarks/scripts/analyze.py validate   # Validate SASA values
-./benchmarks/scripts/analyze.py plot       # Generate graphs
-./benchmarks/scripts/analyze.py all        # All of the above
-
-# Generate JSON input from CIF files
-./benchmarks/scripts/generate_json.py /path/to/cif /path/to/output
-
-# Lint/Type check
-ruff check benchmarks/scripts/*.py
+# Batch mode (throughput testing)
+./benchmarks/scripts/run_batch.py --tool zig --algorithm sr --threads 1,4,8
 ```
 
-## Benchmark
-
-Before benchmarking, ensure:
-1. Zig binary is built with ReleaseFast
-2. FreeSASA C is built with thread support
+### Analysis
 
 ```bash
-zig build -Doptimize=ReleaseFast
-./benchmarks/scripts/run.py --tool zig --algorithm sr
+./benchmarks/scripts/analyze.py summary      # Summary tables
+./benchmarks/scripts/analyze.py all          # Generate all plots
+./benchmarks/scripts/analyze.py scatter      # Atoms vs time
+./benchmarks/scripts/analyze.py threads      # Thread scaling
+./benchmarks/scripts/analyze.py grid         # Speedup by size/threads
+./benchmarks/scripts/analyze.py validation   # SASA validation
+./benchmarks/scripts/analyze.py efficiency   # Parallel efficiency
+./benchmarks/scripts/analyze.py export-csv   # Export to CSV
 ```
+
+### Other Scripts
+
+```bash
+./benchmarks/scripts/generate_json.py /path/to/cif /path/to/output  # CIF→JSON
+./benchmarks/scripts/ipc.py --tools zig,freesasa --threads 1,10     # CPU efficiency
+```
+
+## CI/CD
+
+GitHub Actions runs on push/PR to main:
+
+| Job | Purpose |
+|-----|---------|
+| fmt | `zig fmt --check src/` |
+| build | Build & test on Linux/macOS |
+| python | Python tests & lint |
+| validate | Integration tests with real data |
+
+CI skips for: `*.md`, `docs/**`, `plans/**`, `benchmarks/**`, `LICENSE`
+
+## Documentation
+
+| Doc | Content |
+|-----|---------|
+| `docs/cli.md` | CLI reference |
+| `docs/python.md` | Python API |
+| `docs/algorithm.md` | SR/LR algorithms |
+| `docs/architecture.md` | Code structure |
+| `docs/optimizations.md` | Performance techniques |
+| `docs/benchmark/` | Benchmark methodology & results |
+| `docs/ja/` | Japanese translations |
