@@ -229,6 +229,32 @@ Thread scaling on the largest PDB structure (9fqr, mean of 3 runs):
 - Achieves **2.9x** vs FreeSASA, **2.2x** vs Rust at threads=10
 - Rust plateaus with increasing threads (parallel efficiency issue)
 
+### Best Speedup Structures (50k+ atoms)
+
+![Speedup Comparison](../../benchmarks/results/plots/speedup/comparison.png)
+
+Top 5 structures with highest speedup at any thread count:
+
+| Rank | vs FreeSASA | Atoms | Threads | Speedup |
+|-----:|-------------|------:|--------:|--------:|
+| 1 | 8to0 | 673,884 | 8 | **3.05x** |
+| 2 | 8to0 | 673,884 | 10 | 3.00x |
+| 3 | 7zts | 280,200 | 10 | 2.99x |
+| 4 | 6pwb | 157,148 | 10 | 2.97x |
+| 5 | 7zts | 280,200 | 8 | 2.87x |
+
+| Rank | vs Rust | Atoms | Threads | Speedup |
+|-----:|---------|------:|--------:|--------:|
+| 1 | 5wk6 | 81,139 | 10 | **2.79x** |
+| 2 | 5wlc | 161,064 | 10 | 2.69x |
+| 3 | 8tqe | 100,035 | 10 | 2.58x |
+| 4 | 8sep | 142,736 | 10 | 2.57x |
+| 5 | 8uxk | 72,372 | 10 | 2.53x |
+
+**Note**: threads=8 sometimes outperforms threads=10 (e.g., 8to0: 3.05x vs 3.00x).
+
+**Rust outliers**: Small structures (<50k atoms) show anomalous speedup values (e.g., 17x) likely due to measurement noise. Large structure comparisons are more reliable.
+
 ---
 
 ## Execution Time Distribution
