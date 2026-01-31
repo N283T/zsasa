@@ -393,7 +393,7 @@ ruff check --fix .
 
 ### RSA Reference Values
 
-- **MaxSASA**: Tien, M. Z.; Meyer, A. G.; Sydykova, D. K.; Spielman, S. J.; Wilke, C. O. Maximum Allowed Solvent Accessibilities of Residues in Proteins. *PLoS ONE* 2013, 8(11), e80635. [doi:10.1371/journal.pone.0080635](https://doi.org/10.1371/journal.pone.0080635)
+- **MaxSASA**: Tien, M. Z.; Meyer, A. G.; Sydykova, D. K.; Spielman, S. J.; Wilke, C. O. Maximum Allowed Solvent Accessibilites of Residues in Proteins. *PLoS ONE* 2013, 8(11), e80635. [doi:10.1371/journal.pone.0080635](https://doi.org/10.1371/journal.pone.0080635)
 
 ### Integration Libraries
 
