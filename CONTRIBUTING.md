@@ -10,6 +10,13 @@ Thank you for your interest in contributing to freesasa-zig!
 - **Python 3.11+** - Required for benchmarks and Python bindings
 - **FreeSASA C** (optional) - For benchmark comparisons
 
+### Getting the Source
+
+```bash
+git clone https://github.com/N283T/freesasa-zig.git
+cd freesasa-zig
+```
+
 ### Building
 
 ```bash
@@ -21,11 +28,20 @@ zig build -Doptimize=ReleaseFast
 
 # Run tests
 zig build test
+
+# Verify installation
+./zig-out/bin/freesasa_zig --version
 ```
 
-### Python Environment
+### Python Bindings (Optional)
 
-If working with Python bindings or benchmarks:
+To use the Python bindings, first build the shared library:
+
+```bash
+zig build -Doptimize=ReleaseFast
+```
+
+Then install the Python package in development mode:
 
 ```bash
 cd python
