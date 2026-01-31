@@ -60,6 +60,19 @@ _CDEF = """
         size_t n_threads, float* atom_areas
     );
 
+    // Batch SASA calculation (pure f32 precision for RustSASA compatibility)
+    int freesasa_calc_sr_batch_f32(
+        const float* coordinates, size_t n_frames, size_t n_atoms,
+        const float* radii, uint32_t n_points, float probe_radius,
+        size_t n_threads, float* atom_areas
+    );
+
+    int freesasa_calc_lr_batch_f32(
+        const float* coordinates, size_t n_frames, size_t n_atoms,
+        const float* radii, uint32_t n_slices, float probe_radius,
+        size_t n_threads, float* atom_areas
+    );
+
     // Classifier functions
     double freesasa_classifier_get_radius(
         int classifier_type, const char* residue, const char* atom);
@@ -749,6 +762,7 @@ def calculate_sasa_batch(
     n_slices: int = 20,
     probe_radius: float = 1.4,
     n_threads: int = 0,
+    precision: Literal["f64", "f32"] = "f64",
 ) -> BatchSasaResult:
     """Calculate SASA for multiple frames (batch processing).
 
@@ -763,6 +777,8 @@ def calculate_sasa_batch(
         n_slices: Number of slices per atom (for LR algorithm). Default: 20.
         probe_radius: Water probe radius in Angstroms. Default: 1.4.
         n_threads: Number of threads to use. 0 = auto-detect. Default: 0.
+        precision: Internal calculation precision: "f64" (default, higher precision)
+            or "f32" (matches RustSASA/mdsasa-bolt for comparison). Default: "f64".
 
     Returns:
         BatchSasaResult containing per-atom SASA for all frames.
@@ -824,31 +840,63 @@ def calculate_sasa_batch(
     radii_ptr = ffi.cast("float*", radii.ctypes.data)
     areas_ptr = ffi.cast("float*", atom_areas.ctypes.data)
 
-    # Call the appropriate batch function
-    if algorithm == "sr":
-        result = lib.freesasa_calc_sr_batch(
-            coords_ptr,
-            n_frames,
-            n_atoms,
-            radii_ptr,
-            n_points,
-            probe_radius,
-            n_threads,
-            areas_ptr,
-        )
-    elif algorithm == "lr":
-        result = lib.freesasa_calc_lr_batch(
-            coords_ptr,
-            n_frames,
-            n_atoms,
-            radii_ptr,
-            n_slices,
-            probe_radius,
-            n_threads,
-            areas_ptr,
-        )
+    # Call the appropriate batch function based on algorithm and precision
+    if precision == "f64":
+        # Default: f32 I/O with f64 internal precision
+        if algorithm == "sr":
+            result = lib.freesasa_calc_sr_batch(
+                coords_ptr,
+                n_frames,
+                n_atoms,
+                radii_ptr,
+                n_points,
+                probe_radius,
+                n_threads,
+                areas_ptr,
+            )
+        elif algorithm == "lr":
+            result = lib.freesasa_calc_lr_batch(
+                coords_ptr,
+                n_frames,
+                n_atoms,
+                radii_ptr,
+                n_slices,
+                probe_radius,
+                n_threads,
+                areas_ptr,
+            )
+        else:
+            msg = f"Unknown algorithm: {algorithm}. Use 'sr' or 'lr'."
+            raise ValueError(msg)
+    elif precision == "f32":
+        # Pure f32 precision (matches RustSASA/mdsasa-bolt)
+        if algorithm == "sr":
+            result = lib.freesasa_calc_sr_batch_f32(
+                coords_ptr,
+                n_frames,
+                n_atoms,
+                radii_ptr,
+                n_points,
+                probe_radius,
+                n_threads,
+                areas_ptr,
+            )
+        elif algorithm == "lr":
+            result = lib.freesasa_calc_lr_batch_f32(
+                coords_ptr,
+                n_frames,
+                n_atoms,
+                radii_ptr,
+                n_slices,
+                probe_radius,
+                n_threads,
+                areas_ptr,
+            )
+        else:
+            msg = f"Unknown algorithm: {algorithm}. Use 'sr' or 'lr'."
+            raise ValueError(msg)
     else:
-        msg = f"Unknown algorithm: {algorithm}. Use 'sr' or 'lr'."
+        msg = f"Unknown precision: {precision}. Use 'f64' or 'f32'."
         raise ValueError(msg)
 
     # Check for errors

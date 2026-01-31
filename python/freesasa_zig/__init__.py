@@ -46,6 +46,17 @@ MDTraj Integration:
     >>> import mdtraj as md
     >>> traj = md.load('trajectory.xtc', top='topology.pdb')
     >>> sasa = compute_sasa(traj)  # Returns (n_frames, n_atoms) in nm²
+
+MDAnalysis Integration:
+    For MD trajectory analysis with MDAnalysis (requires MDAnalysis):
+
+    >>> # pip install MDAnalysis
+    >>> import MDAnalysis as mda
+    >>> from freesasa_zig.mdanalysis import SASAAnalysis
+    >>> u = mda.Universe('topology.pdb', 'trajectory.xtc')
+    >>> sasa = SASAAnalysis(u, select='protein')
+    >>> sasa.run()
+    >>> print(sasa.results.total_area)  # Returns per-frame SASA in Å²
 """
 
 from freesasa_zig.analysis import (

@@ -27,8 +27,16 @@ dependencies = ["numpy>=1.24", "cffi>=1.15"]
 biopython = ["biopython>=1.80"]
 biotite = ["biotite>=1.0.0"]
 gemmi = ["gemmi>=0.6.0"]
+mdtraj = ["mdtraj>=1.9.0"]
+mdanalysis = ["MDAnalysis>=2.0.0"]
 dev = ["pytest>=8.0", "pytest-cov>=4.0", "ruff>=0.5", "ty>=0.0.1a0"]
-all = ["freesasa-zig[biopython]", "freesasa-zig[biotite]", "freesasa-zig[gemmi]"]
+all = [
+    "freesasa-zig[biopython]",
+    "freesasa-zig[biotite]",
+    "freesasa-zig[gemmi]",
+    "freesasa-zig[mdtraj]",
+    "freesasa-zig[mdanalysis]",
+]
 
 [project.urls]
 Homepage = "https://github.com/N283T/freesasa-zig"
