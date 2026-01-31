@@ -129,6 +129,8 @@ Located in `benchmarks/scripts/`. All scripts use PEP 723 metadata (typer + rich
 ./benchmarks/scripts/analyze.py threads      # Thread scaling
 ./benchmarks/scripts/analyze.py grid         # Speedup by size/threads
 ./benchmarks/scripts/analyze.py validation   # SASA validation
+./benchmarks/scripts/analyze.py samples      # Per-bin sample plots
+./benchmarks/scripts/analyze.py large        # Large structure (100k+) analysis
 ./benchmarks/scripts/analyze.py efficiency   # Parallel efficiency
 ./benchmarks/scripts/analyze.py export-csv   # Export to CSV
 ```
