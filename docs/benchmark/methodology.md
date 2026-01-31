@@ -137,10 +137,10 @@ Same seed produces identical samples:
 ```bash
 ./benchmarks/scripts/sample.py index.json --target 75000 --seed 42 -o a.json
 ./benchmarks/scripts/sample.py index.json --target 75000 --seed 42 -o b.json
-diff a.json b.json  # 差分なし
+diff a.json b.json  # No differences
 ```
 
-ベンチマーク実行時に表示されるシステム情報：
+System information displayed during benchmark execution:
 
 ```
 === System Info ===
