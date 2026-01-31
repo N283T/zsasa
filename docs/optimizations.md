@@ -1,93 +1,10 @@
 # Optimization Techniques
 
-This project implements five major optimizations. Their combination achieves up to 2.3x speedup for SR and up to 1.7x for LR compared to FreeSASA C (native version).
+This project implements four major optimizations. Their combination achieves up to 2.3x speedup for SR and up to 1.7x for LR compared to FreeSASA C (native version).
 
-## 1. Neighbor List Optimization (Phase 2)
+> **Note:** Neighbor list optimization (spatial hashing) is also implemented but not listed here as it is the same technique used by FreeSASA.
 
-### File: `src/neighbor_list.zig`
-
-### Problem
-
-Naive SASA calculation computes distances to all atoms to determine if each test point is "buried".
-
-```
-Complexity: O(N² × P)
-- N = number of atoms
-- P = number of test points
-```
-
-For 3,183 atoms: 3183² × 100 ≈ 1 billion distance calculations
-
-### Solution: Spatial Hashing
-
-Divide 3D space into cells and record which cell each atom belongs to. During neighbor search, only adjacent cells are searched.
-
-```
-┌─────┬─────┬─────┐
-│     │  ●  │     │
-├─────┼─────┼─────┤
-│  ●  │  ◎  │  ●  │  ◎ = Target atom
-├─────┼─────┼─────┤  ● = Neighbor candidates
-│     │  ●  │     │
-└─────┴─────┴─────┘
-```
-
-### Implementation
-
-```zig
-pub const NeighborList = struct {
-    cells: [][]usize,           // Atom indices per cell
-    cell_size: f64,             // Cell size
-    grid_dims: [3]usize,        // Grid dimensions
-    min_bounds: [3]f64,         // Minimum coordinates
-    neighbor_cache: [][]usize,  // Neighbor cache per atom
-    allocator: Allocator,
-
-    pub fn init(
-        allocator: Allocator,
-        atoms: types.AtomInput,
-        cutoff: f64,
-    ) !NeighborList { ... }
-
-    pub fn getNeighbors(self: *const NeighborList, atom_idx: usize) []const usize {
-        return self.neighbor_cache[atom_idx];
-    }
-
-    pub fn deinit(self: *NeighborList) void { ... }
-};
-```
-
-### Cell Size Determination
-
-```zig
-// Cutoff distance = 2 × (max atom radius + probe radius)
-const cutoff = 2.0 * (max_radius + probe_radius);
-const cell_size = cutoff;  // Cell size = cutoff
-```
-
-**Rationale:**
-- With cell size = cutoff, neighbor atoms are limited to current cell + 26 adjacent cells
-- Searching 3×3×3 = 27 cells covers all neighbors
-
-### Complexity Improvement
-
-```
-Improved: O(N × K)
-- K = average neighbor count (typically 10-20)
-```
-
-For 3,183 atoms: 3183 × 20 ≈ 64,000 distance calculations (**~15,000x reduction**)
-
-### Benchmark Results
-
-| Implementation | Time | Speedup |
-|----------------|------|---------|
-| Naive O(N²) | ~200ms | 1.0x |
-| Neighbor list O(N) | ~13ms | 15x |
-
----
-
-## 2. SIMD Optimization (Phase 3)
+## 1. SIMD Optimization
 
 ### File: `src/simd.zig`
 
@@ -199,7 +116,7 @@ SoA format enables SIMD instructions to efficiently load data from contiguous me
 
 ---
 
-## 3. Multi-thread Optimization (Phase 4)
+## 2. Multi-thread Optimization
 
 ### File: `src/thread_pool.zig`
 
@@ -318,7 +235,7 @@ fn getDefaultThreadCount() usize {
 
 ---
 
-## 4. 8-wide SIMD Optimization
+## 3. 8-wide SIMD Optimization
 
 ### File: `src/simd.zig`
 
@@ -375,9 +292,19 @@ Neighbor count = 25:
 | 4-wide SIMD | ~220ms | 1.0x |
 | 8-wide SIMD | ~189ms | 1.16x |
 
+### Future: 16-wide SIMD with AVX-512
+
+With AVX-512 and f32 precision, 16-wide SIMD (`@Vector(16, f32)`) is theoretically possible. However, wider SIMD does not always result in better performance due to:
+
+- **Frequency throttling**: AVX-512 instructions may cause CPU frequency reduction
+- **Memory bandwidth**: Wider vectors require more data loading
+- **Platform variance**: Performance varies significantly across environments (e.g., slower on WSL in testing)
+
+This remains unverified and is not currently implemented.
+
 ---
 
-## 5. Fast Trigonometric Functions (Lee-Richards only)
+## 4. Fast Trigonometric Functions (Lee-Richards only)
 
 ### File: `src/simd.zig`
 
@@ -498,7 +425,7 @@ O(N²×S)  →   O(N×S×K)    →  (1.37x)     →  (parallel)
 
 ---
 
-## 6. Precision Selection (f32/f64)
+## 5. Precision Selection (f32/f64)
 
 ### Problem
 
