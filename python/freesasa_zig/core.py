@@ -1,8 +1,7 @@
-"""Core ctypes bindings for freesasa-zig library."""
+"""Core cffi bindings for freesasa-zig library."""
 
 from __future__ import annotations
 
-import ctypes
 import os
 import sys
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
+from cffi import FFI
 from numpy.typing import NDArray
 
 # Error codes from C API
@@ -28,6 +28,45 @@ FREESASA_CLASSIFIER_OONS = 2
 FREESASA_ATOM_CLASS_POLAR = 0
 FREESASA_ATOM_CLASS_APOLAR = 1
 FREESASA_ATOM_CLASS_UNKNOWN = 2
+
+# C API definitions for cffi
+_CDEF = """
+    // Version
+    const char* freesasa_version(void);
+
+    // SASA calculation
+    int freesasa_calc_sr(
+        const double* x, const double* y, const double* z, const double* radii,
+        size_t n_atoms, uint32_t n_points, double probe_radius, size_t n_threads,
+        double* atom_areas, double* total_area
+    );
+
+    int freesasa_calc_lr(
+        const double* x, const double* y, const double* z, const double* radii,
+        size_t n_atoms, uint32_t n_slices, double probe_radius, size_t n_threads,
+        double* atom_areas, double* total_area
+    );
+
+    // Classifier functions
+    double freesasa_classifier_get_radius(int classifier_type, const char* residue, const char* atom);
+    int freesasa_classifier_get_class(int classifier_type, const char* residue, const char* atom);
+    double freesasa_guess_radius(const char* element);
+    double freesasa_guess_radius_from_atom_name(const char* atom_name);
+
+    int freesasa_classify_atoms(
+        int classifier_type,
+        const char** residues, const char** atoms, size_t n_atoms,
+        double* radii_out, int* classes_out
+    );
+
+    // RSA functions
+    double freesasa_get_max_sasa(const char* residue_name);
+    double freesasa_calculate_rsa(double sasa, const char* residue_name);
+    int freesasa_calculate_rsa_batch(
+        const double* sasas, const char** residue_names, size_t n_residues,
+        double* rsa_out
+    );
+"""
 
 
 def _find_library() -> Path:
@@ -70,124 +109,32 @@ def _find_library() -> Path:
     raise FileNotFoundError(msg)
 
 
-def _load_library() -> ctypes.CDLL:
-    """Load the freesasa_zig shared library."""
+def _load_library() -> tuple[FFI, any]:
+    """Load the freesasa_zig shared library using cffi."""
+    ffi = FFI()
+    ffi.cdef(_CDEF)
     lib_path = _find_library()
-    lib = ctypes.CDLL(str(lib_path))
-
-    # Define function signatures
-
-    # freesasa_version() -> const char*
-    lib.freesasa_version.argtypes = []
-    lib.freesasa_version.restype = ctypes.c_char_p
-
-    # freesasa_calc_sr(x, y, z, radii, n_atoms, n_points, probe_radius, n_threads,
-    #                  atom_areas, total_area) -> int
-    lib.freesasa_calc_sr.argtypes = [
-        ctypes.POINTER(ctypes.c_double),  # x
-        ctypes.POINTER(ctypes.c_double),  # y
-        ctypes.POINTER(ctypes.c_double),  # z
-        ctypes.POINTER(ctypes.c_double),  # radii
-        ctypes.c_size_t,  # n_atoms
-        ctypes.c_uint32,  # n_points
-        ctypes.c_double,  # probe_radius
-        ctypes.c_size_t,  # n_threads
-        ctypes.POINTER(ctypes.c_double),  # atom_areas (output)
-        ctypes.POINTER(ctypes.c_double),  # total_area (output)
-    ]
-    lib.freesasa_calc_sr.restype = ctypes.c_int
-
-    # freesasa_calc_lr(x, y, z, radii, n_atoms, n_slices, probe_radius, n_threads,
-    #                  atom_areas, total_area) -> int
-    lib.freesasa_calc_lr.argtypes = [
-        ctypes.POINTER(ctypes.c_double),  # x
-        ctypes.POINTER(ctypes.c_double),  # y
-        ctypes.POINTER(ctypes.c_double),  # z
-        ctypes.POINTER(ctypes.c_double),  # radii
-        ctypes.c_size_t,  # n_atoms
-        ctypes.c_uint32,  # n_slices
-        ctypes.c_double,  # probe_radius
-        ctypes.c_size_t,  # n_threads
-        ctypes.POINTER(ctypes.c_double),  # atom_areas (output)
-        ctypes.POINTER(ctypes.c_double),  # total_area (output)
-    ]
-    lib.freesasa_calc_lr.restype = ctypes.c_int
-
-    # Classifier functions
-
-    # freesasa_classifier_get_radius(classifier_type, residue, atom) -> double
-    lib.freesasa_classifier_get_radius.argtypes = [
-        ctypes.c_int,  # classifier_type
-        ctypes.c_char_p,  # residue
-        ctypes.c_char_p,  # atom
-    ]
-    lib.freesasa_classifier_get_radius.restype = ctypes.c_double
-
-    # freesasa_classifier_get_class(classifier_type, residue, atom) -> int
-    lib.freesasa_classifier_get_class.argtypes = [
-        ctypes.c_int,  # classifier_type
-        ctypes.c_char_p,  # residue
-        ctypes.c_char_p,  # atom
-    ]
-    lib.freesasa_classifier_get_class.restype = ctypes.c_int
-
-    # freesasa_guess_radius(element) -> double
-    lib.freesasa_guess_radius.argtypes = [ctypes.c_char_p]
-    lib.freesasa_guess_radius.restype = ctypes.c_double
-
-    # freesasa_guess_radius_from_atom_name(atom_name) -> double
-    lib.freesasa_guess_radius_from_atom_name.argtypes = [ctypes.c_char_p]
-    lib.freesasa_guess_radius_from_atom_name.restype = ctypes.c_double
-
-    # freesasa_classify_atoms(...) -> int
-    lib.freesasa_classify_atoms.argtypes = [
-        ctypes.c_int,  # classifier_type
-        ctypes.POINTER(ctypes.c_char_p),  # residues
-        ctypes.POINTER(ctypes.c_char_p),  # atoms
-        ctypes.c_size_t,  # n_atoms
-        ctypes.POINTER(ctypes.c_double),  # radii_out
-        ctypes.POINTER(ctypes.c_int),  # classes_out (nullable)
-    ]
-    lib.freesasa_classify_atoms.restype = ctypes.c_int
-
-    # RSA functions
-
-    # freesasa_get_max_sasa(residue_name) -> double
-    lib.freesasa_get_max_sasa.argtypes = [ctypes.c_char_p]
-    lib.freesasa_get_max_sasa.restype = ctypes.c_double
-
-    # freesasa_calculate_rsa(sasa, residue_name) -> double
-    lib.freesasa_calculate_rsa.argtypes = [ctypes.c_double, ctypes.c_char_p]
-    lib.freesasa_calculate_rsa.restype = ctypes.c_double
-
-    # freesasa_calculate_rsa_batch(sasas, residue_names, n_residues, rsa_out) -> int
-    lib.freesasa_calculate_rsa_batch.argtypes = [
-        ctypes.POINTER(ctypes.c_double),  # sasas
-        ctypes.POINTER(ctypes.c_char_p),  # residue_names
-        ctypes.c_size_t,  # n_residues
-        ctypes.POINTER(ctypes.c_double),  # rsa_out
-    ]
-    lib.freesasa_calculate_rsa_batch.restype = ctypes.c_int
-
-    return lib
+    lib = ffi.dlopen(str(lib_path))
+    return ffi, lib
 
 
 # Global library instance (lazy loaded)
-_lib: ctypes.CDLL | None = None
+_ffi: FFI | None = None
+_lib: any = None
 
 
-def _get_lib() -> ctypes.CDLL:
+def _get_lib() -> tuple[FFI, any]:
     """Get or load the library."""
-    global _lib
-    if _lib is None:
-        _lib = _load_library()
-    return _lib
+    global _ffi, _lib
+    if _ffi is None:
+        _ffi, _lib = _load_library()
+    return _ffi, _lib
 
 
 def get_version() -> str:
     """Get the library version string."""
-    lib = _get_lib()
-    return lib.freesasa_version().decode("utf-8")
+    ffi, lib = _get_lib()
+    return ffi.string(lib.freesasa_version()).decode("utf-8")
 
 
 @dataclass
@@ -216,7 +163,7 @@ def calculate_sasa(
     """Calculate Solvent Accessible Surface Area (SASA).
 
     Args:
-        coords: Atom coordinates as (N, 3) array or separate x, y, z arrays.
+        coords: Atom coordinates as (N, 3) array.
         radii: Atom radii as (N,) array.
         algorithm: Algorithm to use: "sr" (Shrake-Rupley) or "lr" (Lee-Richards).
         n_points: Number of test points per atom (for SR algorithm). Default: 100.
@@ -240,7 +187,7 @@ def calculate_sasa(
         >>> result = calculate_sasa(coords, radii)
         >>> print(f"Total: {result.total_area:.2f}")
     """
-    lib = _get_lib()
+    ffi, lib = _get_lib()
 
     # Validate parameters
     if n_points <= 0:
@@ -273,21 +220,21 @@ def calculate_sasa(
         msg = "All radii must be non-negative"
         raise ValueError(msg)
 
-    # Extract x, y, z
+    # Extract x, y, z as contiguous arrays
     x = np.ascontiguousarray(coords[:, 0])
     y = np.ascontiguousarray(coords[:, 1])
     z = np.ascontiguousarray(coords[:, 2])
 
     # Allocate output arrays
     atom_areas = np.zeros(n_atoms, dtype=np.float64)
-    total_area = ctypes.c_double(0.0)
+    total_area = ffi.new("double*")
 
-    # Get pointers
-    x_ptr = x.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
-    y_ptr = y.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
-    z_ptr = z.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
-    radii_ptr = radii.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
-    areas_ptr = atom_areas.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    # Get cffi pointers from numpy arrays
+    x_ptr = ffi.cast("double*", x.ctypes.data)
+    y_ptr = ffi.cast("double*", y.ctypes.data)
+    z_ptr = ffi.cast("double*", z.ctypes.data)
+    radii_ptr = ffi.cast("double*", radii.ctypes.data)
+    areas_ptr = ffi.cast("double*", atom_areas.ctypes.data)
 
     # Call the appropriate function
     if algorithm == "sr":
@@ -301,7 +248,7 @@ def calculate_sasa(
             probe_radius,
             n_threads,
             areas_ptr,
-            ctypes.byref(total_area),
+            total_area,
         )
     elif algorithm == "lr":
         result = lib.freesasa_calc_lr(
@@ -314,7 +261,7 @@ def calculate_sasa(
             probe_radius,
             n_threads,
             areas_ptr,
-            ctypes.byref(total_area),
+            total_area,
         )
     else:
         msg = f"Unknown algorithm: {algorithm}. Use 'sr' or 'lr'."
@@ -335,7 +282,7 @@ def calculate_sasa(
         raise RuntimeError(msg)
 
     return SasaResult(
-        total_area=total_area.value,
+        total_area=total_area[0],
         atom_areas=atom_areas,
     )
 
@@ -400,7 +347,7 @@ def get_radius(
         >>> get_radius("ALA", "XX")  # Unknown atom
         None
     """
-    lib = _get_lib()
+    ffi, lib = _get_lib()
     radius = lib.freesasa_classifier_get_radius(
         classifier_type,
         residue.encode("utf-8"),
@@ -433,7 +380,7 @@ def get_atom_class(
         >>> get_atom_class("ALA", "O") == AtomClass.POLAR
         True
     """
-    lib = _get_lib()
+    ffi, lib = _get_lib()
     return lib.freesasa_classifier_get_class(
         classifier_type,
         residue.encode("utf-8"),
@@ -460,7 +407,7 @@ def guess_radius(element: str) -> float | None:
         >>> guess_radius("XX")  # Unknown
         None
     """
-    lib = _get_lib()
+    ffi, lib = _get_lib()
     radius = lib.freesasa_guess_radius(element.encode("utf-8"))
     if np.isnan(radius):
         return None
@@ -487,7 +434,7 @@ def guess_radius_from_atom_name(atom_name: str) -> float | None:
         >>> guess_radius_from_atom_name("FE  ")  # Iron
         1.26
     """
-    lib = _get_lib()
+    ffi, lib = _get_lib()
     radius = lib.freesasa_guess_radius_from_atom_name(atom_name.encode("utf-8"))
     if np.isnan(radius):
         return None
@@ -551,7 +498,7 @@ def classify_atoms(
         >>> result.radii
         array([1.87, 1.4 , 1.65])
     """
-    lib = _get_lib()
+    ffi, lib = _get_lib()
 
     if len(residues) != len(atoms):
         msg = f"residues and atoms must have same length: {len(residues)} != {len(atoms)}"
@@ -564,20 +511,20 @@ def classify_atoms(
             classes=np.array([], dtype=np.int32),
         )
 
-    # Encode strings
-    residues_bytes = [r.encode("utf-8") for r in residues]
-    atoms_bytes = [a.encode("utf-8") for a in atoms]
+    # Encode strings and create cffi arrays
+    # Keep references to prevent garbage collection
+    residues_bytes = [ffi.new("char[]", r.encode("utf-8")) for r in residues]
+    atoms_bytes = [ffi.new("char[]", a.encode("utf-8")) for a in atoms]
 
-    # Create arrays of pointers
-    residues_arr = (ctypes.c_char_p * n_atoms)(*residues_bytes)
-    atoms_arr = (ctypes.c_char_p * n_atoms)(*atoms_bytes)
+    residues_arr = ffi.new("char*[]", residues_bytes)
+    atoms_arr = ffi.new("char*[]", atoms_bytes)
 
     # Allocate output arrays
     radii = np.zeros(n_atoms, dtype=np.float64)
     classes = np.zeros(n_atoms, dtype=np.int32) if include_classes else None
 
-    radii_ptr = radii.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
-    classes_ptr = classes.ctypes.data_as(ctypes.POINTER(ctypes.c_int)) if include_classes else None
+    radii_ptr = ffi.cast("double*", radii.ctypes.data)
+    classes_ptr = ffi.cast("int*", classes.ctypes.data) if include_classes else ffi.NULL
 
     result = lib.freesasa_classify_atoms(
         classifier_type,
@@ -651,7 +598,7 @@ def get_max_sasa(residue_name: str) -> float | None:
         >>> get_max_sasa("HOH")  # Water - not a standard amino acid
         None
     """
-    lib = _get_lib()
+    ffi, lib = _get_lib()
     max_sasa = lib.freesasa_get_max_sasa(residue_name.encode("utf-8"))
     if np.isnan(max_sasa):
         return None
@@ -678,7 +625,7 @@ def calculate_rsa(sasa: float, residue_name: str) -> float | None:
         >>> calculate_rsa(150.0, "GLY")  # RSA > 1.0 is possible
         1.4423076923076923
     """
-    lib = _get_lib()
+    ffi, lib = _get_lib()
     rsa = lib.freesasa_calculate_rsa(sasa, residue_name.encode("utf-8"))
     if np.isnan(rsa):
         return None
@@ -712,7 +659,7 @@ def calculate_rsa_batch(
         >>> rsa
         array([0.5       , 0.5       ,        nan])
     """
-    lib = _get_lib()
+    ffi, lib = _get_lib()
 
     sasas = np.ascontiguousarray(sasas, dtype=np.float64)
     n_residues = len(sasas)
@@ -724,15 +671,16 @@ def calculate_rsa_batch(
     if n_residues == 0:
         return np.array([], dtype=np.float64)
 
-    # Encode strings
-    residues_bytes = [r.encode("utf-8") for r in residue_names]
-    residues_arr = (ctypes.c_char_p * n_residues)(*residues_bytes)
+    # Encode strings and create cffi array
+    # Keep references to prevent garbage collection
+    residues_bytes = [ffi.new("char[]", r.encode("utf-8")) for r in residue_names]
+    residues_arr = ffi.new("char*[]", residues_bytes)
 
     # Allocate output array
     rsa_out = np.zeros(n_residues, dtype=np.float64)
 
-    sasas_ptr = sasas.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
-    rsa_ptr = rsa_out.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    sasas_ptr = ffi.cast("double*", sasas.ctypes.data)
+    rsa_ptr = ffi.cast("double*", rsa_out.ctypes.data)
 
     result = lib.freesasa_calculate_rsa_batch(sasas_ptr, residues_arr, n_residues, rsa_ptr)
     if result != FREESASA_OK:

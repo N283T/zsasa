@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
     "Topic :: Scientific/Engineering :: Chemistry",
 ]
-dependencies = ["numpy>=1.24"]
+dependencies = ["numpy>=1.24", "cffi>=1.15"]
 
 [project.optional-dependencies]
 biopython = ["biopython>=1.80"]
