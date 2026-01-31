@@ -12,6 +12,20 @@ High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 - **High performance**: SIMD optimization, multi-threading, neighbor list O(N)
 - **Python bindings**: NumPy integration with BioPython/Biotite/Gemmi support
 
+## Benchmark Highlights
+
+**Up to 3x faster** than FreeSASA C while maintaining **f64 precision** (mean error: <0.001%).
+
+| Speedup (threads=10) | Thread Scaling (100k+ atoms) |
+|:--------------------:|:----------------------------:|
+| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/large/speedup_by_threads.png) |
+
+**Key Results (100k+ atoms, threads=10):**
+- **2.3x** median speedup vs FreeSASA and RustSASA
+- Speedup increases with thread count (superior parallel efficiency)
+
+See [benchmark results](docs/benchmark/results.md) for detailed analysis.
+
 ## Quick Start
 
 **Requirements**: Zig 0.15.2+ ([download](https://ziglang.org/download/))
@@ -122,15 +136,7 @@ See [Python README](python/README.md) for full documentation.
 
 ## Performance
 
-Validated against FreeSASA C on ~100k structures (mean error: 0.0004%).
-
-**Speedup** (vs FreeSASA C, single-threaded):
-- Shrake-Rupley: 1.2x - 2.3x faster
-- Lee-Richards: ~1.7x faster
-
-Multi-threading provides significant gains for structures with 500+ atoms.
-
-See [benchmark results](docs/benchmark/results.md) for details.
+See [Benchmark Highlights](#benchmark-highlights) above and [detailed results](docs/benchmark/results.md).
 
 ## Project Structure
 
