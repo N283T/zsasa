@@ -47,12 +47,14 @@ from freesasa_zig.analysis import (
 from freesasa_zig.core import (
     MAX_SASA,
     AtomClass,
+    BatchSasaResult,
     ClassificationResult,
     ClassifierType,
     SasaResult,
     calculate_rsa,
     calculate_rsa_batch,
     calculate_sasa,
+    calculate_sasa_batch,
     classify_atoms,
     get_atom_class,
     get_max_sasa,
@@ -65,7 +67,9 @@ from freesasa_zig.core import (
 __all__ = [
     # SASA calculation
     "calculate_sasa",
+    "calculate_sasa_batch",
     "SasaResult",
+    "BatchSasaResult",
     # Classifier
     "ClassifierType",
     "AtomClass",
