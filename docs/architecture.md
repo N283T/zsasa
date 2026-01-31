@@ -1,23 +1,23 @@
-# アーキテクチャ概要
+# Architecture Overview
 
-## プロジェクト構成
+## Project Structure
 
 ```
 src/
-├── main.zig           # CLIエントリーポイント
-├── root.zig           # ライブラリルートモジュール
-├── types.zig          # データ構造定義
-├── json_parser.zig    # JSON入力パース・バリデーション
-├── json_writer.zig    # 出力フォーマット（JSON/CSV）
-├── test_points.zig    # Golden Section Spiralによるテストポイント生成
-├── neighbor_list.zig  # 空間ハッシュによる近傍探索
-├── simd.zig           # SIMD最適化（8-wide距離計算、高速三角関数）
-├── thread_pool.zig    # 汎用スレッドプール
-├── shrake_rupley.zig  # Shrake-Rupleyアルゴリズム
-└── lee_richards.zig   # Lee-Richardsアルゴリズム
+├── main.zig           # CLI entry point
+├── root.zig           # Library root module
+├── types.zig          # Data structure definitions
+├── json_parser.zig    # JSON input parsing and validation
+├── json_writer.zig    # Output formats (JSON/CSV)
+├── test_points.zig    # Test point generation via Golden Section Spiral
+├── neighbor_list.zig  # Neighbor search with spatial hashing
+├── simd.zig           # SIMD optimization (8-wide distance calculation, fast trigonometry)
+├── thread_pool.zig    # Generic thread pool
+├── shrake_rupley.zig  # Shrake-Rupley algorithm
+└── lee_richards.zig   # Lee-Richards algorithm
 ```
 
-## モジュール依存関係
+## Module Dependencies
 
 ```
 main.zig
@@ -37,24 +37,24 @@ main.zig
     └── json_writer.zig ──► types.zig
 ```
 
-## データフロー
+## Data Flow
 
 ```
 ┌─────────────────┐
-│   入力JSON      │
+│   Input JSON    │
 │ (x, y, z, r)    │
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│  json_parser    │  バリデーション
-│  - 配列長チェック │  - 座標がfinite
-│  - 半径チェック   │  - 半径 > 0, ≤ 100
+│  json_parser    │  Validation
+│  - Array length │  - Coordinates are finite
+│  - Radius check │  - Radius > 0, ≤ 100
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│   AtomInput     │  内部データ構造
+│   AtomInput     │  Internal data structure
 │   - x: []f64    │
 │   - y: []f64    │
 │   - z: []f64    │
@@ -65,23 +65,23 @@ main.zig
 ┌─────────────────────────────────────────┐
 │           shrake_rupley                  │
 │  ┌─────────────────┐                    │
-│  │  test_points    │ テストポイント生成   │
-│  │  (事前計算)      │ Golden Section     │
+│  │  test_points    │ Test point generation │
+│  │  (precomputed)  │ Golden Section     │
 │  └────────┬────────┘                    │
 │           │                              │
 │  ┌────────▼────────┐                    │
-│  │  neighbor_list  │ 近傍原子リスト構築   │
-│  │  (O(N)構築)     │ 空間ハッシュ        │
+│  │  neighbor_list  │ Build neighbor list │
+│  │  (O(N) build)   │ Spatial hashing    │
 │  └────────┬────────┘                    │
 │           │                              │
 │  ┌────────▼────────┐                    │
-│  │  thread_pool    │ 並列処理            │
-│  │  (原子ごと)      │ Work-stealing      │
+│  │  thread_pool    │ Parallel processing │
+│  │  (per atom)     │ Work-stealing      │
 │  └────────┬────────┘                    │
 │           │                              │
 │  ┌────────▼────────┐                    │
-│  │     simd        │ 距離計算            │
-│  │  (@Vector 8本)   │ 8原子同時処理      │
+│  │     simd        │ Distance calculation │
+│  │  (@Vector 8)    │ Process 8 atoms    │
 │  └─────────────────┘                    │
 └────────────────────┬────────────────────┘
                      │
@@ -94,18 +94,18 @@ main.zig
          │
          ▼
 ┌─────────────────┐
-│  json_writer    │  出力フォーマット
+│  json_writer    │  Output formats
 │  - JSON (pretty)│
 │  - JSON (compact)│
 │  - CSV          │
 └─────────────────┘
 ```
 
-## 主要な型定義 (types.zig)
+## Key Type Definitions (types.zig)
 
 ### Vec3
 
-3次元ベクトル。原子座標やテストポイントの表現に使用。精度パラメータ（f32/f64）に対応。
+3D vector. Used for atom coordinates and test points. Supports precision parameters (f32/f64).
 
 ```zig
 pub fn Vec3(comptime T: type) type {
@@ -121,14 +121,14 @@ pub fn Vec3(comptime T: type) type {
     };
 }
 
-// 使用例
-const Vec3f32 = Vec3(f32);  // f32精度
-const Vec3f64 = Vec3(f64);  // f64精度（デフォルト）
+// Usage examples
+const Vec3f32 = Vec3(f32);  // f32 precision
+const Vec3f64 = Vec3(f64);  // f64 precision (default)
 ```
 
 ### AtomInput
 
-入力データ構造。SoA (Structure of Arrays) 形式でメモリ効率とキャッシュ効率を最適化。精度パラメータ（f32/f64）に対応。
+Input data structure. Uses SoA (Structure of Arrays) format for optimized memory and cache efficiency. Supports precision parameters (f32/f64).
 
 ```zig
 pub fn AtomInput(comptime T: type) type {
@@ -144,20 +144,20 @@ pub fn AtomInput(comptime T: type) type {
     };
 }
 
-// 使用例
-const AtomInputf32 = AtomInput(f32);  // f32精度（高速）
-const AtomInputf64 = AtomInput(f64);  // f64精度（デフォルト）
+// Usage examples
+const AtomInputf32 = AtomInput(f32);  // f32 precision (fast)
+const AtomInputf64 = AtomInput(f64);  // f64 precision (default)
 ```
 
-**SoA形式の利点:**
-- SIMD処理との親和性が高い
-- メモリアクセスパターンが連続的
-- キャッシュライン効率が良い
-- f32使用時はデータサイズ半減でさらに効率向上
+**Benefits of SoA format:**
+- High affinity with SIMD processing
+- Contiguous memory access patterns
+- Good cache line efficiency
+- With f32, data size is halved for further efficiency gains
 
 ### SasaResult
 
-計算結果を保持。
+Holds computation results.
 
 ```zig
 pub const SasaResult = struct {
@@ -171,17 +171,17 @@ pub const SasaResult = struct {
 };
 ```
 
-## メモリ管理
+## Memory Management
 
-Zigの明示的アロケータパターンを採用。全ての動的メモリ割り当ては `Allocator` を通じて行われる。
+Uses Zig's explicit allocator pattern. All dynamic memory allocations are done through an `Allocator`.
 
 ```zig
-// 典型的なパターン
+// Typical pattern
 pub fn calculate(allocator: Allocator, input: AtomInput) !SasaResult {
     const atom_areas = try allocator.alloc(f64, input.len());
-    errdefer allocator.free(atom_areas);  // エラー時の解放
+    errdefer allocator.free(atom_areas);  // Free on error
 
-    // ... 計算 ...
+    // ... calculation ...
 
     return SasaResult{
         .total_area = total,
@@ -191,14 +191,14 @@ pub fn calculate(allocator: Allocator, input: AtomInput) !SasaResult {
 }
 ```
 
-**利点:**
-- メモリリークの防止（コンパイル時に追跡可能）
-- テスト時に `std.testing.allocator` でリーク検出
-- カスタムアロケータ（アリーナ等）への差し替えが容易
+**Benefits:**
+- Memory leak prevention (trackable at compile time)
+- Leak detection with `std.testing.allocator` during tests
+- Easy substitution with custom allocators (arena, etc.)
 
-## エラーハンドリング
+## Error Handling
 
-Zigのエラーユニオン型を使用。全てのエラーは呼び出し元に伝播可能。
+Uses Zig's error union types. All errors can propagate to the caller.
 
 ```zig
 pub const ParseError = error{
@@ -214,14 +214,14 @@ pub const ValidationError = error{
 };
 
 pub fn parseAtomInput(allocator: Allocator, json: []const u8) !AtomInput {
-    // エラーの場合は自動的に呼び出し元に伝播
+    // Errors automatically propagate to caller
     const parsed = try std.json.parseFromSlice(...);
     // ...
 }
 ```
 
-## スレッドセーフティ
+## Thread Safety
 
-- `thread_pool.zig`: スレッド間の同期は `std.Thread.Mutex` と `std.Thread.Condition` で実装
-- `shrake_rupley.zig`: 各原子の計算は独立しているため、並列実行可能
-- 共有状態: テストポイント配列と近傍リストは読み取り専用として共有
+- `thread_pool.zig`: Inter-thread synchronization implemented with `std.Thread.Mutex` and `std.Thread.Condition`
+- `shrake_rupley.zig`: Each atom's calculation is independent, enabling parallel execution
+- Shared state: Test point array and neighbor list are shared as read-only

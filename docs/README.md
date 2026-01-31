@@ -1,27 +1,24 @@
-# Documentation / ドキュメント
+# Documentation
 
-Technical documentation for freesasa-zig (Japanese).
+Technical documentation for freesasa-zig.
 
-freesasa-zig の技術ドキュメント（日本語）。
+## Contents
 
-## Contents / 目次
+| File | Description |
+|------|-------------|
+| [architecture.md](architecture.md) | Architecture overview |
+| [algorithm.md](algorithm.md) | SASA algorithms (SR/LR) |
+| [optimizations.md](optimizations.md) | Optimization techniques |
+| [benchmark/](benchmark/) | Benchmark documentation |
+| ├─ [methodology.md](benchmark/methodology.md) | Benchmark methodology |
+| └─ [results.md](benchmark/results.md) | Large-scale benchmark results with plots |
+| [cpu-efficiency.md](cpu-efficiency.md) | CPU efficiency analysis (IPC, instructions) |
+| [cli.md](cli.md) | CLI Reference |
+| [python.md](python.md) | Python API Reference |
+| [classifier.md](classifier.md) | Atom radius classifiers |
+| [ci.md](ci.md) | CI/CD configuration |
 
-| File | Description | 内容 |
-|------|-------------|------|
-| [architecture.md](architecture.md) | Architecture overview | アーキテクチャ概要 |
-| [algorithm.md](algorithm.md) | SASA algorithms (SR/LR) | アルゴリズム詳解 |
-| [optimizations.md](optimizations.md) | Optimization techniques | 最適化技術 |
-| [benchmark/](benchmark/) | Benchmark documentation | ベンチマーク |
-| ├─ [methodology.md](benchmark/methodology.md) | Benchmark methodology | 測定手法 |
-| └─ [results.md](benchmark/results.md) | Large-scale benchmark results with plots | 大規模結果 |
-| [cpu-efficiency.md](cpu-efficiency.md) | CPU efficiency analysis (IPC, instructions) | CPU効率解析 |
-| [cli.md](cli.md) | CLI Reference (English) | CLIリファレンス（英語） |
-| [cli-io.md](cli-io.md) | CLI, I/O (Japanese) | CLI・入出力（日本語） |
-| [python.md](python.md) | Python API Reference | Python APIリファレンス |
-| [classifier.md](classifier.md) | Atom radius classifiers | 原子分類器詳解 |
-| [ci.md](ci.md) | CI/CD configuration | CI/CD構成 |
-
-## Benchmark Environment / ベンチマーク環境
+## Benchmark Environment
 
 Performance numbers in this documentation were measured on:
 
