@@ -49,19 +49,19 @@ Requires Zig 0.15.2+ for building the native library.
 
 ```bash
 # Basic SASA calculation
-freesasa_zig structure.cif output.json
+./zig-out/bin/freesasa_zig structure.cif output.json
 
 # Lee-Richards algorithm
-freesasa_zig --algorithm=lr structure.cif output.json
+./zig-out/bin/freesasa_zig --algorithm=lr structure.cif output.json
 
 # Multi-threaded
-freesasa_zig --threads=4 structure.cif output.json
+./zig-out/bin/freesasa_zig --threads=4 structure.cif output.json
 
 # Per-residue analysis with RSA
-freesasa_zig --rsa structure.cif output.json
+./zig-out/bin/freesasa_zig --rsa structure.cif output.json
 
 # CSV output
-freesasa_zig --format=csv structure.cif output.csv
+./zig-out/bin/freesasa_zig --format=csv structure.cif output.csv
 ```
 
 ### Options
@@ -82,7 +82,7 @@ freesasa_zig --format=csv structure.cif output.csv
 | `--n-slices=N` | Slices per atom (LR) | 20 |
 | `--precision=P` | `f32` (fast) or `f64` (precise) | f64 |
 
-See [CLI Reference](docs/cli-io.md) for full options and input/output formats.
+Run `./zig-out/bin/freesasa_zig --help` for all options. See [CLI Reference](docs/cli-io.md) for input/output formats.
 
 ### Python Examples
 
@@ -95,6 +95,7 @@ coords = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
 radii = np.array([1.5, 1.5])
 result = calculate_sasa(coords, radii)
 print(f"Total: {result.total_area:.2f} Å²")
+print(f"Per-atom: {result.atom_areas}")
 ```
 
 With structure files (requires `pip install freesasa-zig[gemmi]`):

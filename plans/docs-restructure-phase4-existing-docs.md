@@ -10,16 +10,18 @@ Review and update existing docs to be accurate and in English.
 
 ## Current Docs (Japanese)
 
-| File | Content | Action |
-|------|---------|--------|
-| `docs/algorithm.md` | SASA algorithms | Translate to English, verify accuracy |
-| `docs/architecture.md` | Code architecture | Translate, update for current structure |
-| `docs/classifier.md` | Atom classifiers | Translate, verify against code |
-| `docs/optimizations.md` | Optimization techniques | Translate, verify |
-| `docs/cli-io.md` | CLI and I/O | **Replace with cli.md** (Phase 2) |
-| `docs/cpu-efficiency.md` | CPU analysis | Translate |
-| `docs/ci.md` | CI/CD config | Translate, update for current CI |
-| `docs/benchmark/` | Benchmark docs | Translate both files |
+**Note**: README.md currently links to these Japanese docs. After translation, English readers can use the links properly.
+
+| File | Content | Action | README Link |
+|------|---------|--------|-------------|
+| `docs/algorithm.md` | SASA algorithms | Translate, verify | Yes |
+| `docs/architecture.md` | Code architecture | Translate, update | No |
+| `docs/classifier.md` | Atom classifiers | Translate, verify | Yes |
+| `docs/optimizations.md` | Optimization techniques | Translate, verify | Yes |
+| `docs/cli-io.md` | CLI and I/O | Translate (or replace) | Yes |
+| `docs/cpu-efficiency.md` | CPU analysis | Translate | No |
+| `docs/ci.md` | CI/CD config | Translate, update | No |
+| `docs/benchmark/` | Benchmark docs | Translate both | Yes |
 
 ## Tasks
 
