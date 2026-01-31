@@ -236,7 +236,7 @@ Thread scaling on the largest PDB structure:
 ![SR Scatter Plot](../../benchmarks/results/plots/scatter/sr/grid.png)
 
 **Observations:**
-- Nearly linear on log scale → O(N) neighbor list is effective
+- Nearly linear on log scale → O(N) neighbor list is effective (all tools use cell list)
 - Zig (green) is consistently lower (faster) across all sizes
 - Gap between 3 tools widens with increasing thread count
 - Few outliers → stable performance
@@ -278,10 +278,12 @@ Relative Error = |SASA_zig - SASA_freesasa| / SASA_freesasa × 100%
 
 | Comparison | Max Error | Mean Error | Pass Rate |
 |------------|----------:|-----------:|----------:|
-| Zig vs FreeSASA | 0.08% | 0.002% | 100% |
-| Rust vs FreeSASA | 0.09% | 0.002% | 100% |
+| Zig vs FreeSASA | 0.00% | 0.00% | 100% |
+| Rust vs FreeSASA | 0.00% | 0.00% | 100% |
 
-**Conclusion**: Error within **0.1%** for all structures. Computational accuracy is fully equivalent.
+**Note**: Initially, 4 structures showed small errors (up to 0.08%). These were special entries with duplicate atoms at identical coordinates (unrelated to altloc or model). After preprocessing to remove duplicates, error rate became **0.0%** for all structures.
+
+**Conclusion**: Computational accuracy is fully equivalent across all tools.
 
 ---
 
