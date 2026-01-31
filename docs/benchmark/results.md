@@ -102,23 +102,23 @@ Single-threaded comparison (excluding parallelization effects):
 
 ![Speedup by Size and Threads](../../benchmarks/results/plots/speedup_by_bin/grid.png)
 
-| Size Bin | Count | vs FreeSASA | (IQR) | vs RustSASA | (IQR) |
-|----------|------:|------------:|------:|------------:|------:|
-| 0-500 | 2,506 | 0.92x | 0.78-1.05 | 0.97x | 0.78-1.14 |
-| 500-1k | 5,744 | 1.18x | 1.08-1.29 | 1.36x | 1.25-1.49 |
-| 1k-2k | 15,922 | 1.26x | 1.17-1.38 | 1.54x | 1.42-1.69 |
-| 2k-5k | 36,123 | 1.42x | 1.31-1.56 | 1.70x | 1.58-1.86 |
-| 5k-10k | 19,835 | 1.56x | 1.44-1.70 | 1.84x | 1.71-2.00 |
-| 10k-20k | 10,187 | 1.68x | 1.55-1.82 | 1.95x | 1.81-2.10 |
-| 20k-50k | 5,377 | 1.93x | 1.79-2.05 | 2.11x | 1.98-2.24 |
-| 50k-100k | 3,133 | **2.22x** | 2.12-2.30 | **2.25x** | 2.17-2.30 |
-| 100k-200k | 900 | **2.31x** | 2.27-2.36 | **2.30x** | 2.26-2.34 |
-| 200k+ | 271 | **2.28x** | 2.23-2.34 | **2.34x** | 2.30-2.37 |
+| Size Bin | Count | vs FreeSASA | vs RustSASA |
+|----------|------:|------------:|------------:|
+| 0-500 | 2,506 | 0.92x | 0.97x |
+| 500-1k | 5,744 | 1.18x | 1.36x |
+| 1k-2k | 15,922 | 1.26x | 1.54x |
+| 2k-5k | 36,123 | 1.42x | 1.70x |
+| 5k-10k | 19,835 | 1.56x | 1.84x |
+| 10k-20k | 10,187 | 1.68x | 1.95x |
+| 20k-50k | 5,377 | 1.93x | 2.11x |
+| 50k-100k | 3,133 | **2.22x** | **2.25x** |
+| 100k-200k | 900 | **2.31x** | **2.30x** |
+| 200k+ | 271 | **2.28x** | **2.34x** |
 
 **Observations:**
 - **Small (0-500)**: Overhead dominant, no speedup
 - **Medium (1k-20k)**: Stable **1.3x-1.9x** speedup
-- **Large (50k+)**: Up to **2.3x** speedup, narrow IQR indicates stability
+- **Large (50k+)**: Up to **2.3x** speedup with consistent results (narrow IQR)
 
 **Key Insight:**
 - At t=1, Zig vs Rust is nearly equal
@@ -201,10 +201,10 @@ Parallel Efficiency = T1 / (TN × N)
 |:---------------:|:--------------:|
 | ![Speedup](../../benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](../../benchmarks/results/plots/large/speedup_by_threads.png) |
 
-| Comparison | Median Speedup | IQR |
-|------------|---------------:|----:|
-| vs FreeSASA | **2.31x** | 2.27-2.36 |
-| vs RustSASA | **2.31x** | 2.26-2.35 |
+| Comparison | Median Speedup |
+|------------|---------------:|
+| vs FreeSASA | **2.31x** |
+| vs RustSASA | **2.31x** |
 
 **Observations:**
 - Speedup improves with thread count (1.6x→2.3x vs FreeSASA)
@@ -331,18 +331,18 @@ Lee-Richards results using ~30k structures. RustSASA does not support LR.
 
 ### Speedup by Structure Size (t=10)
 
-| Size Bin | Count | vs FreeSASA | (IQR) |
-|----------|------:|------------:|------:|
-| 0-500 | 673 | 0.92x | 0.70-1.11 |
-| 500-1k | 1,543 | 1.42x | 1.29-1.53 |
-| 1k-2k | 4,274 | 1.53x | 1.44-1.62 |
-| 2k-5k | 9,629 | 1.66x | 1.58-1.73 |
-| 5k-10k | 5,396 | 1.71x | 1.65-1.77 |
-| 10k-20k | 2,729 | 1.72x | 1.66-1.77 |
-| 20k-50k | 1,450 | 1.74x | 1.69-1.79 |
-| 50k-100k | 3,133 | **1.79x** | 1.74-1.83 |
-| 100k-200k | 900 | **1.82x** | 1.78-1.85 |
-| 200k+ | 271 | **1.82x** | 1.79-1.86 |
+| Size Bin | Count | vs FreeSASA |
+|----------|------:|------------:|
+| 0-500 | 673 | 0.92x |
+| 500-1k | 1,543 | 1.42x |
+| 1k-2k | 4,274 | 1.53x |
+| 2k-5k | 9,629 | 1.66x |
+| 5k-10k | 5,396 | 1.71x |
+| 10k-20k | 2,729 | 1.72x |
+| 20k-50k | 1,450 | 1.74x |
+| 50k-100k | 3,133 | **1.79x** |
+| 100k-200k | 900 | **1.82x** |
+| 200k+ | 271 | **1.82x** |
 
 ### Thread Scaling
 
