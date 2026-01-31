@@ -24,6 +24,8 @@ High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 - **2.3x** median speedup vs FreeSASA and RustSASA
 - Speedup increases with thread count (superior parallel efficiency)
 
+> **Note**: Zig/FreeSASA use f64, RustSASA uses f32.
+
 See [benchmark results](docs/benchmark/results.md) for detailed analysis.
 
 ## Quick Start
