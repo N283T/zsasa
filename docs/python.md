@@ -50,11 +50,13 @@ pip install freesasa-zig[all]
 
 The bindings look for the native library in these locations:
 
-1. `FREESASA_ZIG_LIB` environment variable
-2. `../zig-out/lib/` (relative to package)
-3. `/usr/local/lib/`
-4. `/usr/lib/`
-5. Current working directory
+1. `FREESASA_ZIG_LIB` environment variable (if set)
+2. Bundled in package (wheel installation)
+3. `../zig-out/lib/` (relative to package, for development)
+4. `/usr/local/lib/`
+5. `/usr/lib/`
+6. Current working directory
+7. `./zig-out/lib/` (current directory's zig-out)
 
 ---
 
@@ -336,9 +338,11 @@ All integration modules provide the same interface:
 
 | Function | Description |
 |----------|-------------|
-| `extract_atoms_from_model(model)` | Extract atom data from model object |
-| `calculate_sasa_from_model(model)` | Calculate SASA from model object |
-| `calculate_sasa_from_structure(source)` | Calculate SASA from file or structure |
+| `extract_atoms_from_model(model)` | Extract atom data (gemmi, BioPython) |
+| `extract_atoms_from_atom_array(atom_array)` | Extract atom data (Biotite) |
+| `calculate_sasa_from_model(model)` | Calculate SASA from model (gemmi, BioPython) |
+| `calculate_sasa_from_atom_array(atom_array)` | Calculate SASA from AtomArray (Biotite) |
+| `calculate_sasa_from_structure(source)` | Calculate SASA from file or structure (all) |
 
 ### Common Parameters
 
