@@ -2,9 +2,24 @@
 
 Large-scale benchmark results for freesasa-zig. Fair comparison using stratified sampling.
 
-- **Shrake-Rupley**: ~100k structures
-- **Lee-Richards**: ~30k structures (due to higher computational cost)
-- **Precision**: Single-file mode uses f64 for all tools (batch mode has Zig f32 / RustSASA f32 options)
+- **Shrake-Rupley (SR)**: ~100k structures
+- **Lee-Richards (LR)**: ~30k structures (supplementary)
+- **Precision**: f64 for all tools
+
+## Highlights
+
+Zig's key advantage: **Large structures + Multi-threading**
+
+| Speedup at t=10 | Thread Scaling (100k+ atoms) |
+|:---------------:|:----------------------------:|
+| ![Speedup](../../benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](../../benchmarks/results/plots/large/speedup_by_threads.png) |
+
+**Key Results (100k+ atoms, n=1,171):**
+- **2.3x** faster than FreeSASA and RustSASA (SR, t=10)
+- **1.8x** faster than FreeSASA (LR, t=10)
+- Speedup increases with thread count (parallel efficiency advantage)
+
+---
 
 ## Test Environment
 
@@ -152,13 +167,19 @@ Single-threaded comparison (excluding parallelization effects):
 
 ### Summary (100k+ atoms, n=1,171)
 
-![Zig Speedup on Large Structures](../../benchmarks/results/plots/large/speedup_bar.png)
+| Speedup at t=10 | Thread Scaling |
+|:---------------:|:--------------:|
+| ![Speedup](../../benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](../../benchmarks/results/plots/large/speedup_by_threads.png) |
 
 | Comparison | Median Speedup | IQR |
 |------------|---------------:|----:|
-| Zig vs FreeSASA (SR) | **2.31x** | 2.27-2.36 |
-| Zig vs RustSASA (SR) | **2.31x** | 2.26-2.35 |
-| Zig vs FreeSASA (LR) | **1.82x** | 1.78-1.85 |
+| vs FreeSASA (SR) | **2.31x** | 2.27-2.36 |
+| vs RustSASA (SR) | **2.31x** | 2.26-2.35 |
+| vs FreeSASA (LR) | **1.82x** | 1.78-1.85 |
+
+**Observations:**
+- Speedup improves with thread count (1.6x→2.3x vs FreeSASA)
+- vs Rust: dramatic improvement (1.1x→2.3x) due to parallel efficiency difference
 
 ### Maximum Structure: 9fqr (4,506,416 atoms)
 
