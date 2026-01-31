@@ -17,7 +17,7 @@ Restructure and verify all documentation for v0.1.0 release.
 |-------|-------|--------|
 | [Phase 1](docs-restructure-phase1-readme.md) | README restructure | **Done** |
 | [Phase 2](docs-restructure-phase2-cli-docs.md) | CLI documentation | **Done** |
-| [Phase 3](docs-restructure-phase3-python-docs.md) | Python documentation | Pending |
+| [Phase 3](docs-restructure-phase3-python-docs.md) | Python documentation | **Done** |
 | [Phase 4](docs-restructure-phase4-existing-docs.md) | Review existing docs | Pending |
 | [Phase 5](docs-restructure-phase5-changelog.md) | CHANGELOG review | Pending |
 | [Phase 6](docs-restructure-phase6-japanese.md) | Japanese documentation | Pending |

@@ -10,17 +10,17 @@ Create comprehensive Python API documentation.
 
 ## Tasks
 
-- [ ] Read `python/freesasa_zig/core.py` for all functions
-- [ ] Read `python/freesasa_zig/__init__.py` for public API
-- [ ] Read integration modules (biopython, biotite, gemmi)
-- [ ] Create `docs/python.md` with:
+- [x] Read `python/freesasa_zig/core.py` for all functions
+- [x] Read `python/freesasa_zig/__init__.py` for public API
+- [x] Read integration modules (biopython, biotite, gemmi)
+- [x] Create `docs/python.md` with:
   - Installation (pip, from source)
   - Quick start
   - API reference (all public functions)
   - Integration examples (BioPython, Biotite, Gemmi)
   - Type hints documentation
-- [ ] Verify all examples work
-- [ ] Update `python/README.md` to link to main docs
+- [x] Verify all examples work
+- [x] Update `docs/README.md` to include python.md
 
 ## Files to Read
 
@@ -28,9 +28,9 @@ Create comprehensive Python API documentation.
 |------|---------|
 | `python/freesasa_zig/core.py` | Core API |
 | `python/freesasa_zig/__init__.py` | Public exports |
-| `python/freesasa_zig/biopython.py` | BioPython integration |
-| `python/freesasa_zig/biotite.py` | Biotite integration |
-| `python/freesasa_zig/gemmi.py` | Gemmi integration |
+| `python/freesasa_zig/integrations/biopython.py` | BioPython integration |
+| `python/freesasa_zig/integrations/biotite.py` | Biotite integration |
+| `python/freesasa_zig/integrations/gemmi.py` | Gemmi integration |
 | `python/freesasa_zig/analysis.py` | Analysis functions |
 
 ## Output
@@ -38,4 +38,4 @@ Create comprehensive Python API documentation.
 - `docs/python.md` - Python API reference
 
 ---
-- [ ] **DONE** - Phase complete
+- [x] **DONE** - Phase complete
