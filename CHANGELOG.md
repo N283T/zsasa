@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Per-thread arena allocators for memory efficiency
   - Progress bar with file count
   - `--parallelism` option for concurrent file processing
+  - Duplicate coordinate detection and warning
 
 - **f32 precision option** (`--precision=f32`)
   - Single-precision mode for reduced memory usage
@@ -66,12 +67,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Area difference column** in benchmark output
   - Shows percentage difference between Zig and FreeSASA C results
 
+- **Analysis options** (CLI)
+  - `--per-residue` - Per-residue SASA aggregation
+  - `--rsa` - Relative Solvent Accessibility calculation
+  - `--polar` - Polar/nonpolar SASA classification
+
 - **Python bindings** (`python/freesasa_zig`)
   - C ABI shared library (`libfreesasa_zig.dylib/.so/.dll`)
   - NumPy-based Python API with ctypes bindings
   - Both SR and LR algorithms supported
   - `calculate_sasa(coords, radii, algorithm="sr"|"lr", ...)` function
-  - 12 unit tests with pytest
+  - RSA functions: `calculate_rsa()`, `calculate_rsa_batch()`, `get_max_sasa()`
+  - Per-residue aggregation: `aggregate_by_residue()`, `ResidueResult` class
+  - 161 unit tests with pytest
+
+- **Python integrations** (optional dependencies)
+  - Gemmi integration for mmCIF/PDB file loading
+  - BioPython integration for structure file support
+  - Biotite integration for structure analysis workflows
 
 - **Timing breakdown** (`--timing` flag)
   - Reports detailed timing for each phase: parsing, classification, SASA calculation, output
@@ -116,6 +129,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Moved data scripts to `scripts/data/` with shorter names
 - **Internal**: Refactored `AtomInput.r` from `[]const f64` to `[]f64` to properly support classifier mutations
 - Added LICENSE (MIT) and CONTRIBUTING.md
+- Enabled GitHub Actions CI/CD (format, build, test, Python)
 
 ## [0.0.5] - 2025-01-23
 
