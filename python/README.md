@@ -389,6 +389,18 @@ ruff format .
 ruff check --fix .
 ```
 
+## References
+
+### RSA Reference Values
+
+- **MaxSASA**: Tien, M. Z.; Meyer, A. G.; Sydykova, D. K.; Spielman, S. J.; Wilke, C. O. Maximum Allowed Solvent Accessibilites of Residues in Proteins. *PLoS ONE* 2013, 8(11), e80635. [doi:10.1371/journal.pone.0080635](https://doi.org/10.1371/journal.pone.0080635)
+
+### Integration Libraries
+
+- **Gemmi**: Wojdyr, M. GEMMI: A Library for Structural Biology. *J. Open Source Softw.* 2022, 7(73), 4200. [doi:10.21105/joss.04200](https://doi.org/10.21105/joss.04200)
+- **BioPython**: Cock, P. J. A. et al. Biopython: Freely Available Python Tools for Computational Molecular Biology and Bioinformatics. *Bioinformatics* 2009, 25(11), 1422–1423. [doi:10.1093/bioinformatics/btp163](https://doi.org/10.1093/bioinformatics/btp163)
+- **Biotite**: Kunzmann, P.; Hamacher, K. Biotite: A Unifying Open Source Computational Biology Framework in Python. *BMC Bioinformatics* 2018, 19, 346. [doi:10.1186/s12859-018-2367-z](https://doi.org/10.1186/s12859-018-2367-z)
+
 ## License
 
 MIT

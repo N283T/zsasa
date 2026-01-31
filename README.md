@@ -12,6 +12,22 @@ High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 - **High performance**: SIMD optimization, multi-threading, neighbor list O(N)
 - **Python bindings**: NumPy integration with BioPython/Biotite/Gemmi support
 
+## Benchmark Highlights
+
+**Up to 3x faster** than FreeSASA C while maintaining **f64 precision** (mean error: <0.001%).
+
+| Speedup (threads=10) | Thread Scaling (100k+ atoms) |
+|:--------------------:|:----------------------------:|
+| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/large/speedup_by_threads.png) |
+
+**Key Results (100k+ atoms, threads=10):**
+- **2.3x** median speedup vs FreeSASA and RustSASA
+- Speedup increases with thread count (superior parallel efficiency)
+
+> **Note**: Zig/FreeSASA use f64, RustSASA uses f32.
+
+See [benchmark results](docs/benchmark/results.md) for detailed analysis.
+
 ## Quick Start
 
 **Requirements**: Zig 0.15.2+ ([download](https://ziglang.org/download/))
@@ -122,15 +138,7 @@ See [Python README](python/README.md) for full documentation.
 
 ## Performance
 
-Validated against FreeSASA C on ~100k structures (mean error: 0.0004%).
-
-**Speedup** (vs FreeSASA C, single-threaded):
-- Shrake-Rupley: 1.2x - 2.3x faster
-- Lee-Richards: ~1.7x faster
-
-Multi-threading provides significant gains for structures with 500+ atoms.
-
-See [benchmark results](docs/benchmark/results.md) for details.
+See [Benchmark Highlights](#benchmark-highlights) above and [detailed results](docs/benchmark/results.md).
 
 ## Project Structure
 
@@ -152,6 +160,7 @@ MIT
 
 ## References
 
-- Shrake & Rupley (1973). Environment and exposure to solvent of protein atoms. *J. Mol. Biol.* 79(2), 351-371.
-- Lee & Richards (1971). The interpretation of protein structures. *J. Mol. Biol.* 55(3), 379-400.
-- [FreeSASA](https://github.com/mittinatten/freesasa) - Original C implementation
+- Shrake, A.; Rupley, J. A. Environment and Exposure to Solvent of Protein Atoms. *J. Mol. Biol.* 1973, 79(2), 351–371. [doi:10.1016/0022-2836(73)90011-9](https://doi.org/10.1016/0022-2836(73)90011-9)
+- Lee, B.; Richards, F. M. The Interpretation of Protein Structures: Estimation of Static Accessibility. *J. Mol. Biol.* 1971, 55(3), 379–400. [doi:10.1016/0022-2836(71)90324-x](https://doi.org/10.1016/0022-2836(71)90324-x)
+- Mitternacht, S. FreeSASA: An Open Source C Library for Solvent Accessible Surface Area Calculations. *F1000Res.* 2016, 5, 189. [doi:10.12688/f1000research.7931.1](https://doi.org/10.12688/f1000research.7931.1)
+- Campbell, M. J. RustSASA: A Rust Crate for Accelerated Solvent Accessible Surface Area Calculations. *J. Open Source Softw.* 2026, 11(117), 9537. [doi:10.21105/joss.09537](https://doi.org/10.21105/joss.09537)
