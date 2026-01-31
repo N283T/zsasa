@@ -395,6 +395,237 @@ export fn freesasa_calc_lr_batch(
     );
 }
 
+// =============================================================================
+// Batch Processing Infrastructure (Pure f32 precision)
+// =============================================================================
+
+/// Worker arguments for pure f32 batch processing
+const BatchWorkerArgsF32 = struct {
+    coordinates: [*]const f32,
+    n_atoms: usize,
+    n_frames: usize,
+    radii_f32: []f32,
+    param: u32, // n_points for SR, n_slices for LR
+    probe_radius: f32,
+    atom_areas: [*]f32,
+    error_flag: *std.atomic.Value(bool),
+    thread_id: usize,
+    n_threads: usize,
+    algorithm: BatchAlgorithm,
+};
+
+/// Worker function for pure f32 batch processing
+fn batchWorkerFnF32(args: BatchWorkerArgsF32) void {
+    // Pre-allocate coordinate buffers (f64 for AtomInput compatibility)
+    const x = c_allocator.alloc(f64, args.n_atoms) catch {
+        args.error_flag.store(true, .release);
+        return;
+    };
+    defer c_allocator.free(x);
+
+    const y = c_allocator.alloc(f64, args.n_atoms) catch {
+        args.error_flag.store(true, .release);
+        return;
+    };
+    defer c_allocator.free(y);
+
+    const z = c_allocator.alloc(f64, args.n_atoms) catch {
+        args.error_flag.store(true, .release);
+        return;
+    };
+    defer c_allocator.free(z);
+
+    // f64 radii for AtomInput (will be cast to f32 internally)
+    const radii_f64 = c_allocator.alloc(f64, args.n_atoms) catch {
+        args.error_flag.store(true, .release);
+        return;
+    };
+    defer c_allocator.free(radii_f64);
+
+    for (0..args.n_atoms) |i| {
+        radii_f64[i] = @floatCast(args.radii_f32[i]);
+    }
+
+    // Each thread processes frames: thread_id, thread_id + n_threads, ...
+    var frame_idx = args.thread_id;
+    while (frame_idx < args.n_frames) : (frame_idx += args.n_threads) {
+        if (args.error_flag.load(.acquire)) return;
+
+        const frame_offset = frame_idx * args.n_atoms * 3;
+        const output_offset = frame_idx * args.n_atoms;
+
+        // Convert f32 coordinates to f64 for AtomInput
+        for (0..args.n_atoms) |i| {
+            x[i] = @floatCast(args.coordinates[frame_offset + i * 3]);
+            y[i] = @floatCast(args.coordinates[frame_offset + i * 3 + 1]);
+            z[i] = @floatCast(args.coordinates[frame_offset + i * 3 + 2]);
+        }
+
+        const input = AtomInput{
+            .x = x,
+            .y = y,
+            .z = z,
+            .r = radii_f64,
+            .allocator = c_allocator,
+        };
+
+        // Calculate SASA using f32 precision algorithm
+        const result = switch (args.algorithm) {
+            .shrake_rupley => blk: {
+                const config = types.ConfigGen(f32){
+                    .n_points = args.param,
+                    .probe_radius = args.probe_radius,
+                };
+                break :blk shrake_rupley.calculateSasaf32(c_allocator, input, config) catch {
+                    args.error_flag.store(true, .release);
+                    return;
+                };
+            },
+            .lee_richards => blk: {
+                const config = lee_richards.LeeRichardsConfigGen(f32){
+                    .n_slices = args.param,
+                    .probe_radius = args.probe_radius,
+                };
+                break :blk lee_richards.calculateSasaf32(c_allocator, input, config) catch {
+                    args.error_flag.store(true, .release);
+                    return;
+                };
+            },
+        };
+        defer c_allocator.free(result.atom_areas);
+
+        // Copy f32 results directly (no conversion needed)
+        for (0..args.n_atoms) |i| {
+            args.atom_areas[output_offset + i] = result.atom_areas[i];
+        }
+    }
+}
+
+/// Common batch calculation logic for pure f32 precision
+fn calculateBatchF32(
+    coordinates: [*]const f32,
+    n_frames: usize,
+    n_atoms: usize,
+    radii: [*]const f32,
+    param: u32,
+    probe_radius: f32,
+    n_threads: usize,
+    atom_areas: [*]f32,
+    algorithm: BatchAlgorithm,
+) c_int {
+    if (n_frames == 0 or n_atoms == 0 or param == 0 or probe_radius <= 0.0) {
+        return FREESASA_ERROR_INVALID_INPUT;
+    }
+
+    const actual_threads = if (n_threads == 0)
+        @as(usize, @intCast(std.Thread.getCpuCount() catch 1))
+    else
+        n_threads;
+
+    // Copy radii (kept as f32)
+    const radii_f32 = c_allocator.alloc(f32, n_atoms) catch {
+        return FREESASA_ERROR_OUT_OF_MEMORY;
+    };
+    defer c_allocator.free(radii_f32);
+
+    for (0..n_atoms) |i| {
+        radii_f32[i] = radii[i];
+    }
+
+    var error_flag = std.atomic.Value(bool).init(false);
+
+    const thread_count = @min(actual_threads, n_frames);
+    const threads = c_allocator.alloc(std.Thread, thread_count) catch {
+        return FREESASA_ERROR_OUT_OF_MEMORY;
+    };
+    defer c_allocator.free(threads);
+
+    for (0..thread_count) |i| {
+        threads[i] = std.Thread.spawn(.{}, batchWorkerFnF32, .{BatchWorkerArgsF32{
+            .coordinates = coordinates,
+            .n_atoms = n_atoms,
+            .n_frames = n_frames,
+            .radii_f32 = radii_f32,
+            .param = param,
+            .probe_radius = probe_radius,
+            .atom_areas = atom_areas,
+            .error_flag = &error_flag,
+            .thread_id = i,
+            .n_threads = thread_count,
+            .algorithm = algorithm,
+        }}) catch {
+            error_flag.store(true, .release);
+            for (threads[0..i]) |thread| {
+                thread.join();
+            }
+            return FREESASA_ERROR_CALCULATION;
+        };
+    }
+
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    if (error_flag.load(.acquire)) {
+        return FREESASA_ERROR_CALCULATION;
+    }
+
+    return FREESASA_OK;
+}
+
+/// Calculate SASA for multiple frames using Shrake-Rupley algorithm (pure f32 precision).
+///
+/// Same as freesasa_calc_sr_batch but uses f32 precision throughout the calculation
+/// for consistency with other f32-based tools (e.g., RustSASA).
+export fn freesasa_calc_sr_batch_f32(
+    coordinates: [*]const f32,
+    n_frames: usize,
+    n_atoms: usize,
+    radii: [*]const f32,
+    n_points: u32,
+    probe_radius: f32,
+    n_threads: usize,
+    atom_areas: [*]f32,
+) callconv(.c) c_int {
+    return calculateBatchF32(
+        coordinates,
+        n_frames,
+        n_atoms,
+        radii,
+        n_points,
+        probe_radius,
+        n_threads,
+        atom_areas,
+        .shrake_rupley,
+    );
+}
+
+/// Calculate SASA for multiple frames using Lee-Richards algorithm (pure f32 precision).
+///
+/// Same as freesasa_calc_lr_batch but uses f32 precision throughout the calculation.
+export fn freesasa_calc_lr_batch_f32(
+    coordinates: [*]const f32,
+    n_frames: usize,
+    n_atoms: usize,
+    radii: [*]const f32,
+    n_slices: u32,
+    probe_radius: f32,
+    n_threads: usize,
+    atom_areas: [*]f32,
+) callconv(.c) c_int {
+    return calculateBatchF32(
+        coordinates,
+        n_frames,
+        n_atoms,
+        radii,
+        n_slices,
+        probe_radius,
+        n_threads,
+        atom_areas,
+        .lee_richards,
+    );
+}
+
 /// Calculate SASA using Lee-Richards algorithm.
 ///
 /// Parameters:
