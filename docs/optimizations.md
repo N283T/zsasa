@@ -318,19 +318,7 @@ Meets the acceptable error tolerance of within 2%, no practical issues.
 
 ## Combined Optimization Effects
 
-### Shrake-Rupley (PDB 4V6X, 237,685 atoms, 4 threads)
-
-| Implementation | Time | vs FreeSASA C |
-|----------------|------|---------------|
-| FreeSASA C | 424.53ms | 1.0x |
-| Zig (all optimizations) | 189.06ms | **2.25x** |
-
-### Lee-Richards (PDB 4V6X, 237,685 atoms, 4 threads)
-
-| Implementation | Time | vs FreeSASA C |
-|----------------|------|---------------|
-| FreeSASA C | 1293.48ms | 1.0x |
-| Zig (all optimizations) | 741.86ms | **1.74x** |
+See [benchmark/results.md](benchmark/results.md) for detailed performance data.
 
 ### Synergistic Effects (SR)
 
