@@ -105,15 +105,6 @@ AoS (Array of Structures):     SoA (Structure of Arrays):
 
 SoA format enables SIMD instructions to efficiently load data from contiguous memory.
 
-### Benchmark Results
-
-| Implementation | Time | Speedup |
-|----------------|------|---------|
-| Scalar | ~13ms | 1.0x |
-| SIMD | ~11ms | 1.2x |
-
-**Note:** After neighbor list optimization, the number of distance calculations is significantly reduced, so SIMD's standalone effect is limited. However, when combined with naive implementation, the effect is substantial.
-
 ---
 
 ## 2. Multi-thread Optimization
