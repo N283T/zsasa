@@ -238,7 +238,7 @@ Hybridization-based atom types based on Tsai et al. 1999:
 
 ## OONS Atom Types
 
-Atom types based on Ooi, Oobatake, Nemethy, Scheraga:
+Atom types based on Ooi, Oobatake, Némethy, Scheraga:
 
 | Type | Radius (Å) | Class | Description |
 |------|------------|-------|-------------|
@@ -398,11 +398,11 @@ const radius = classifier.getRadius("ALA", "CA");
 
 - **NACCESS**: Hubbard, S. J.; Thornton, J. M. NACCESS, Computer Program. Department of Biochemistry and Molecular Biology, University College London, 1993. [Website](https://www.bioinf.manchester.ac.uk/naccess/)
 - **ProtOr**: Tsai, J.; Taylor, R.; Chothia, C.; Gerstein, M. The Packing Density in Proteins: Standard Radii and Volumes. *J. Mol. Biol.* 1999, 290(1), 253–266. [doi:10.1006/jmbi.1999.2829](https://doi.org/10.1006/jmbi.1999.2829)
-- **OONS**: Ooi, T.; Oobatake, M.; Nemethy, G.; Scheraga, H. A. Accessible Surface Areas as a Measure of the Thermodynamic Parameters of Hydration of Peptides. *Proc. Natl. Acad. Sci. U.S.A.* 1987, 84(10), 3086–3090. [doi:10.1073/pnas.84.10.3086](https://doi.org/10.1073/pnas.84.10.3086)
+- **OONS**: Ooi, T.; Oobatake, M.; Némethy, G.; Scheraga, H. A. Accessible Surface Areas as a Measure of the Thermodynamic Parameters of Hydration of Peptides. *Proc. Natl. Acad. Sci. U. S. A.* 1987, 84(10), 3086–3090. [doi:10.1073/pnas.84.10.3086](https://doi.org/10.1073/pnas.84.10.3086)
 
 ### Element Radii
 
-- Mantina, M.; Chamberlin, A. C.; Valero, R.; Cramer, C. J.; Truhlar, D. G. Consistent van der Waals Radii for the Whole Main Group. *J. Phys. Chem. A* 2009, 113(19), 5806–5812. [doi:10.1021/jp8111556](https://doi.org/10.1021/jp8111556)
+- Mantina, M.; Chamberlin, A. C.; Valero, R.; Cramer, C. J.; Truhlar, D. G. Consistent van Der Waals Radii for the Whole Main Group. *J. Phys. Chem. A* 2009, 113(19), 5806–5812. [doi:10.1021/jp8111556](https://doi.org/10.1021/jp8111556)
 
 ### FreeSASA Configuration Files
 
