@@ -60,8 +60,8 @@ When `--classifier` is used, atom radii are assigned based on residue and atom n
 | Option | Description |
 |--------|-------------|
 | `--per-residue` | Show per-residue SASA aggregation |
-| `--rsa` | Calculate Relative Solvent Accessibility (implies `--per-residue`) |
-| `--polar` | Show polar/nonpolar SASA summary (implies `--per-residue`) |
+| `--rsa` | Calculate Relative Solvent Accessibility (enables `--per-residue`) |
+| `--polar` | Show polar/nonpolar SASA summary (enables `--per-residue`) |
 
 ### Output Options
 
@@ -94,7 +94,7 @@ The input format is auto-detected from the file extension:
 
 | Extension | Format |
 |-----------|--------|
-| `.json`, `.json.gz` | JSON |
+| `.json`, `.json.gz`, `.json.zst` | JSON |
 | `.cif`, `.mmcif`, `.CIF`, `.mmCIF` | mmCIF |
 | `.pdb`, `.PDB`, `.ent`, `.ENT` | PDB |
 
@@ -257,15 +257,17 @@ Chain  Res    Num       SASA    RSA  Atoms
 
 ### Polar/Nonpolar Summary (`--polar`)
 
-Classifies residues and shows SASA breakdown:
+Classifies residues and shows SASA breakdown. Automatically enables `--per-residue`.
 
 - **Polar**: ARG, ASN, ASP, GLN, GLU, HIS, LYS, SER, THR, TYR
 - **Nonpolar**: ALA, CYS, PHE, GLY, ILE, LEU, MET, PRO, TRP, VAL
+- **Unknown**: Non-standard residues (ligands, modified residues, etc.)
 
 ```
 Polar/Nonpolar SASA:
   Polar:       2345.67 Å² ( 45.2%) - 42 residues
   Nonpolar:    2845.23 Å² ( 54.8%) - 58 residues
+  Unknown:        0.00 Å² (  0.0%) -  0 residues
 ```
 
 ---
