@@ -327,7 +327,11 @@ def _plot_scatter(df_algo: pl.DataFrame, algo: str, ax):
     """Plot scatter for a single algorithm."""
     df_sampled = df_algo.sample(n=min(5000, df_algo.height), seed=42)
 
-    for tool_label in sorted(df_sampled["tool_label"].unique().to_list()):
+    # Exclude f32 from main plots (almost no difference from f64)
+    tool_labels = [
+        t for t in sorted(df_sampled["tool_label"].unique().to_list()) if "f32" not in t
+    ]
+    for tool_label in tool_labels:
         df_tool = df_sampled.filter(pl.col("tool_label") == tool_label)
         ax.scatter(
             df_tool["n_atoms"].to_list(),
@@ -409,7 +413,11 @@ def _plot_threads(df_algo: pl.DataFrame, algo: str, ax):
         .sort(["tool_label", "threads"])
     )
 
-    for tool_label in sorted(scaling["tool_label"].unique().to_list()):
+    # Exclude f32 from main plots (almost no difference from f64)
+    tool_labels = [
+        t for t in sorted(scaling["tool_label"].unique().to_list()) if "f32" not in t
+    ]
+    for tool_label in tool_labels:
         df_tool = scaling.filter(pl.col("tool_label") == tool_label)
         ax.plot(
             df_tool["threads"].to_list(),
@@ -629,26 +637,10 @@ def _plot_speedup_single(
             color="#e74c3c",
         )
 
-    # zig_f32 vs zig_f64
-    if "zig_f32_vs_zig_f64" in speedup_data.columns:
-        y_f32 = [data_dict[label]["zig_f32_vs_zig_f64"] for label in x_labels]
-        y_f32_q25 = [data_dict[label]["zig_f32_vs_zig_f64_q25"] for label in x_labels]
-        y_f32_q75 = [data_dict[label]["zig_f32_vs_zig_f64_q75"] for label in x_labels]
-        yerr_f32 = [
-            [m - q25 for m, q25 in zip(y_f32, y_f32_q25)],
-            [q75 - m for m, q75 in zip(y_f32, y_f32_q75)],
-        ]
-        ax.errorbar(
-            x_pos,
-            y_f32,
-            yerr=yerr_f32,
-            marker="^",
-            linewidth=1.5,
-            markersize=5,
-            capsize=3,
-            label="Zig(f32) vs Zig(f64)",
-            color="#27ae60",  # Green
-        )
+    # zig_f32 vs zig_f64 (omitted - almost no difference, see Appendix)
+    # if "zig_f32_vs_zig_f64" in speedup_data.columns:
+    #     y_f32 = [data_dict[label]["zig_f32_vs_zig_f64"] for label in x_labels]
+    #     ...
 
     # FreeSASA vs Rust
     if "freesasa_vs_rust" in speedup_data.columns:
@@ -1115,8 +1107,8 @@ def efficiency():
 
     # Summary by size bin and tool_label
     thread_counts = sorted(df_eff["threads"].unique().to_list())
-    # Use tool_labels that exist in data
-    tool_labels = ["zig_f64", "zig_f32", "freesasa", "rust"]
+    # Use tool_labels that exist in data (exclude f32 - almost no difference from f64)
+    tool_labels = ["zig_f64", "freesasa", "rust"]
 
     # Table: efficiency by size bin (t=10)
     t_target = 10
@@ -1126,7 +1118,6 @@ def efficiency():
     summary_table.add_column("Size Bin", style="cyan")
     summary_table.add_column("Count", justify="right")
     summary_table.add_column("Zig(f64)", justify="right")
-    summary_table.add_column("Zig(f32)", justify="right")
     summary_table.add_column("FreeSASA", justify="right")
     summary_table.add_column("Rust", justify="right")
 
