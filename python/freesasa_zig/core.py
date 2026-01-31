@@ -46,7 +46,9 @@ def _find_library() -> Path:
 
     # Search paths
     search_paths = [
-        # Relative to this file (development)
+        # Bundled in package (wheel installation)
+        Path(__file__).parent / lib_name,
+        # Relative to this file (development: python/freesasa_zig -> zig-out/lib)
         Path(__file__).parent.parent.parent / "zig-out" / "lib" / lib_name,
         # System paths
         Path("/usr/local/lib") / lib_name,
@@ -62,7 +64,8 @@ def _find_library() -> Path:
 
     msg = (
         f"Could not find {lib_name}. "
-        f"Set FREESASA_ZIG_LIB environment variable or build the library first."
+        f"Please install with: pip install freesasa-zig "
+        f"(requires Zig 0.15.2+ to be installed)"
     )
     raise FileNotFoundError(msg)
 

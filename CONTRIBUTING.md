@@ -35,19 +35,15 @@ zig build test
 
 ### Python Bindings (Optional)
 
-To use the Python bindings, first build the shared library:
-
-```bash
-zig build -Doptimize=ReleaseFast
-```
-
-Then install the Python package in development mode:
+The Python package automatically builds the Zig library during installation:
 
 ```bash
 cd python
 pip install -e ".[dev]"
 pytest tests/ -v
 ```
+
+Note: Requires Zig 0.15.2+ to be installed. The build hook compiles the library with ReleaseFast optimization.
 
 For benchmark scripts:
 
