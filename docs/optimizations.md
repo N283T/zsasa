@@ -298,21 +298,7 @@ pub fn fastAtan2(y: f64, x: f64) f64 {
 }
 ```
 
-### Impact on Precision
-
-| Structure | Area difference (vs FreeSASA C) |
-|-----------|--------------------------------|
-| 1CRN | 0.191% |
-| 4V6X | 0.311% |
-
-Meets the acceptable error tolerance of within 2%, no practical issues.
-
-### Benchmark Results (4V6X, 237,685 atoms, 4 threads)
-
-| Implementation | Time | Speedup |
-|----------------|------|---------|
-| std.math | ~1021ms | 1.0x |
-| Fast trigonometry | ~743ms | **1.37x** |
+The approximation error is within acceptable tolerance (<1% vs FreeSASA C). See [benchmark/results.md](benchmark/results.md) for validation details.
 
 ---
 
