@@ -47,6 +47,19 @@ _CDEF = """
         double* atom_areas, double* total_area
     );
 
+    // Batch SASA calculation (for MD trajectories)
+    int freesasa_calc_sr_batch(
+        const float* coordinates, size_t n_frames, size_t n_atoms,
+        const float* radii, uint32_t n_points, float probe_radius,
+        size_t n_threads, float* atom_areas
+    );
+
+    int freesasa_calc_lr_batch(
+        const float* coordinates, size_t n_frames, size_t n_atoms,
+        const float* radii, uint32_t n_slices, float probe_radius,
+        size_t n_threads, float* atom_areas
+    );
+
     // Classifier functions
     double freesasa_classifier_get_radius(
         int classifier_type, const char* residue, const char* atom);
@@ -690,3 +703,166 @@ def calculate_rsa_batch(
         raise RuntimeError(msg)
 
     return rsa_out
+
+
+# =============================================================================
+# Batch SASA Calculation (for MD trajectories)
+# =============================================================================
+
+
+@dataclass
+class BatchSasaResult:
+    """Result of batch SASA calculation for multiple frames.
+
+    Attributes:
+        atom_areas: Per-atom SASA values for all frames, shape (n_frames, n_atoms).
+                    Values are in Angstrom² (Å²).
+    """
+
+    atom_areas: NDArray[np.float32]
+
+    @property
+    def n_frames(self) -> int:
+        """Number of frames."""
+        return self.atom_areas.shape[0]
+
+    @property
+    def n_atoms(self) -> int:
+        """Number of atoms."""
+        return self.atom_areas.shape[1]
+
+    @property
+    def total_areas(self) -> NDArray[np.float32]:
+        """Total SASA per frame, shape (n_frames,)."""
+        return self.atom_areas.sum(axis=1)
+
+    def __repr__(self) -> str:
+        return f"BatchSasaResult(n_frames={self.n_frames}, n_atoms={self.n_atoms})"
+
+
+def calculate_sasa_batch(
+    coordinates: NDArray[np.floating],
+    radii: NDArray[np.floating],
+    *,
+    algorithm: Literal["sr", "lr"] = "sr",
+    n_points: int = 100,
+    n_slices: int = 20,
+    probe_radius: float = 1.4,
+    n_threads: int = 0,
+) -> BatchSasaResult:
+    """Calculate SASA for multiple frames (batch processing).
+
+    Optimized for MD trajectory analysis where the same atoms are processed
+    across multiple frames. Parallelizes across frames for maximum performance.
+
+    Args:
+        coordinates: Atom coordinates as (n_frames, n_atoms, 3) array in Angstroms.
+        radii: Atom radii as (n_atoms,) array in Angstroms.
+        algorithm: Algorithm to use: "sr" (Shrake-Rupley) or "lr" (Lee-Richards).
+        n_points: Number of test points per atom (for SR algorithm). Default: 100.
+        n_slices: Number of slices per atom (for LR algorithm). Default: 20.
+        probe_radius: Water probe radius in Angstroms. Default: 1.4.
+        n_threads: Number of threads to use. 0 = auto-detect. Default: 0.
+
+    Returns:
+        BatchSasaResult containing per-atom SASA for all frames.
+
+    Raises:
+        ValueError: If input arrays have invalid shapes or calculation fails.
+
+    Example:
+        >>> import numpy as np
+        >>> from freesasa_zig import calculate_sasa_batch
+        >>>
+        >>> # 10 frames, 100 atoms
+        >>> coords = np.random.randn(10, 100, 3).astype(np.float32)
+        >>> radii = np.full(100, 1.5, dtype=np.float32)
+        >>> result = calculate_sasa_batch(coords, radii)
+        >>> print(f"Shape: {result.atom_areas.shape}")  # (10, 100)
+        >>> print(f"Total SASA per frame: {result.total_areas}")
+    """
+    ffi, lib = _get_lib()
+
+    # Validate parameters
+    if n_points <= 0:
+        msg = f"n_points must be positive, got {n_points}"
+        raise ValueError(msg)
+    if n_slices <= 0:
+        msg = f"n_slices must be positive, got {n_slices}"
+        raise ValueError(msg)
+    if probe_radius <= 0:
+        msg = f"probe_radius must be positive, got {probe_radius}"
+        raise ValueError(msg)
+    if n_threads < 0:
+        msg = f"n_threads must be non-negative, got {n_threads}"
+        raise ValueError(msg)
+
+    # Validate and convert inputs
+    coordinates = np.ascontiguousarray(coordinates, dtype=np.float32)
+    radii = np.ascontiguousarray(radii, dtype=np.float32)
+
+    if coordinates.ndim != 3 or coordinates.shape[2] != 3:
+        msg = f"coordinates must be (n_frames, n_atoms, 3) array, got shape {coordinates.shape}"
+        raise ValueError(msg)
+
+    n_frames = coordinates.shape[0]
+    n_atoms = coordinates.shape[1]
+
+    if radii.shape != (n_atoms,):
+        msg = f"radii must be ({n_atoms},) array, got shape {radii.shape}"
+        raise ValueError(msg)
+
+    if np.any(radii < 0):
+        msg = "All radii must be non-negative"
+        raise ValueError(msg)
+
+    # Allocate output array
+    atom_areas = np.zeros((n_frames, n_atoms), dtype=np.float32)
+
+    # Get cffi pointers from numpy arrays
+    coords_ptr = ffi.cast("float*", coordinates.ctypes.data)
+    radii_ptr = ffi.cast("float*", radii.ctypes.data)
+    areas_ptr = ffi.cast("float*", atom_areas.ctypes.data)
+
+    # Call the appropriate batch function
+    if algorithm == "sr":
+        result = lib.freesasa_calc_sr_batch(
+            coords_ptr,
+            n_frames,
+            n_atoms,
+            radii_ptr,
+            n_points,
+            probe_radius,
+            n_threads,
+            areas_ptr,
+        )
+    elif algorithm == "lr":
+        result = lib.freesasa_calc_lr_batch(
+            coords_ptr,
+            n_frames,
+            n_atoms,
+            radii_ptr,
+            n_slices,
+            probe_radius,
+            n_threads,
+            areas_ptr,
+        )
+    else:
+        msg = f"Unknown algorithm: {algorithm}. Use 'sr' or 'lr'."
+        raise ValueError(msg)
+
+    # Check for errors
+    if result == FREESASA_ERROR_INVALID_INPUT:
+        msg = "Invalid input to batch SASA calculation"
+        raise ValueError(msg)
+    elif result == FREESASA_ERROR_OUT_OF_MEMORY:
+        msg = "Out of memory during batch SASA calculation"
+        raise MemoryError(msg)
+    elif result == FREESASA_ERROR_CALCULATION:
+        msg = "Error during batch SASA calculation"
+        raise RuntimeError(msg)
+    elif result != FREESASA_OK:
+        msg = f"Unknown error code: {result}"
+        raise RuntimeError(msg)
+
+    return BatchSasaResult(atom_areas=atom_areas)
