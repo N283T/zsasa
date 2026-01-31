@@ -1,6 +1,6 @@
 # Optimization Techniques
 
-This project implements four major optimizations. Their combination achieves up to 2.3x speedup for SR and up to 1.7x for LR compared to FreeSASA C (native version).
+This project implements three major optimizations. Their combination achieves up to 2.3x speedup for SR and up to 1.7x for LR compared to FreeSASA C (native version).
 
 > **Note:** Neighbor list optimization (spatial hashing) is also implemented but not listed here as it is the same technique used by FreeSASA.
 
@@ -104,6 +104,26 @@ AoS (Array of Structures):     SoA (Structure of Arrays):
 ```
 
 SoA format enables SIMD instructions to efficiently load data from contiguous memory.
+
+### 8-wide SIMD
+
+Using `@Vector(8, T)` to process 8 atoms simultaneously per operation (T is f32 or f64). Select optimal width based on neighbor atom count:
+
+```
+Neighbor count = 25:
+├── 8 atoms × 3 iterations = 24 atoms (8-wide SIMD)
+└── 1 atom × 1 iteration = 1 atom (scalar)
+```
+
+### Future: 16-wide SIMD with AVX-512
+
+With AVX-512 and f32 precision, 16-wide SIMD (`@Vector(16, f32)`) is theoretically possible. However, wider SIMD does not always result in better performance due to:
+
+- **Frequency throttling**: AVX-512 instructions may cause CPU frequency reduction
+- **Memory bandwidth**: Wider vectors require more data loading
+- **Platform variance**: Performance varies significantly across environments (e.g., slower on WSL in testing)
+
+This remains unverified and is not currently implemented.
 
 ---
 
@@ -213,89 +233,9 @@ fn getDefaultThreadCount() usize {
 - Lock scope: Only task acquisition and result storage (lock-free during computation)
 - Shared data: Test points and neighbor list shared as read-only
 
-### Benchmark Results (Apple M2, 8 cores)
-
-| Threads | Time | Speedup |
-|---------|------|---------|
-| 1 | ~13ms | 1.0x |
-| 2 | ~8ms | 1.6x |
-| 4 | ~5ms | 2.6x |
-| 8 | ~8ms | 1.6x |
-
-**Note:** Too many threads cause synchronization overhead and cache contention, resulting in slowdown. Optimal thread count is approximately the physical core count.
-
 ---
 
-## 3. 8-wide SIMD Optimization
-
-### File: `src/simd.zig`
-
-### Problem
-
-4-wide SIMD can only process 4 atoms per operation. AVX-512 capable CPUs and Apple Silicon can utilize wider vector widths.
-
-### Solution: 8-wide SIMD
-
-Using `@Vector(8, T)` to process 8 atoms simultaneously per operation (T is f32 or f64).
-
-```zig
-// T = f32 or f64 (determined at compile time)
-pub fn isAnyWithinRadiusBatch8(
-    comptime T: type,
-    point: Vec3(T),
-    atoms: AtomInput(T),
-    indices: *const [8]usize,
-    probe_radius: T,
-) bool {
-    // Load x coordinates of 8 atoms
-    const x: @Vector(8, T) = .{
-        atoms.x[indices[0]], atoms.x[indices[1]],
-        atoms.x[indices[2]], atoms.x[indices[3]],
-        atoms.x[indices[4]], atoms.x[indices[5]],
-        atoms.x[indices[6]], atoms.x[indices[7]],
-    };
-    // ... y, z, r similarly
-
-    // Distance calculation with 8 parallel
-    const dx = px - x;
-    const dy = py - y;
-    const dz = pz - z;
-    const dist_sq = dx * dx + dy * dy + dz * dz;
-    const within = dist_sq < r_sq;
-    return @reduce(.Or, within);
-}
-```
-
-### Hierarchical Processing
-
-Select optimal width based on neighbor atom count:
-
-```
-Neighbor count = 25:
-├── 8 atoms × 3 iterations = 24 atoms (8-wide SIMD)
-└── 1 atom × 1 iteration = 1 atom (scalar)
-```
-
-### Benchmark Results (4V6X, 237,685 atoms)
-
-| Implementation | Time | Speedup |
-|----------------|------|---------|
-| 4-wide SIMD | ~220ms | 1.0x |
-| 8-wide SIMD | ~189ms | 1.16x |
-
-### Future: 16-wide SIMD with AVX-512
-
-With AVX-512 and f32 precision, 16-wide SIMD (`@Vector(16, f32)`) is theoretically possible. However, wider SIMD does not always result in better performance due to:
-
-- **Frequency throttling**: AVX-512 instructions may cause CPU frequency reduction
-- **Memory bandwidth**: Wider vectors require more data loading
-- **Platform variance**: Performance varies significantly across environments (e.g., slower on WSL in testing)
-
-This remains unverified and is not currently implemented.
-
----
-
-## 4. Fast Trigonometric Functions (Lee-Richards only)
+## 3. Fast Trigonometric Functions (Lee-Richards only)
 
 ### File: `src/simd.zig`
 
@@ -416,7 +356,7 @@ O(N²×S)  →   O(N×S×K)    →  (1.37x)     →  (parallel)
 
 ---
 
-## 5. Precision Selection (f32/f64)
+## Precision Selection (f32/f64)
 
 ### Problem
 
