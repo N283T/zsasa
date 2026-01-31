@@ -131,6 +131,187 @@ export fn freesasa_calc_sr(
     return FREESASA_OK;
 }
 
+// =============================================================================
+// Batch Processing Infrastructure
+// =============================================================================
+
+/// Algorithm type for batch processing
+const BatchAlgorithm = enum {
+    shrake_rupley,
+    lee_richards,
+};
+
+/// Common batch processing arguments
+const BatchWorkerArgs = struct {
+    coordinates: [*]const f32,
+    n_atoms: usize,
+    n_frames: usize,
+    radii_f64: []f64,
+    param: u32, // n_points for SR, n_slices for LR
+    probe_radius: f64,
+    atom_areas: [*]f32,
+    error_flag: *std.atomic.Value(bool),
+    thread_id: usize,
+    n_threads: usize,
+    algorithm: BatchAlgorithm,
+};
+
+/// Worker function for batch processing (shared by SR and LR)
+fn batchWorkerFn(args: BatchWorkerArgs) void {
+    // Pre-allocate coordinate buffers once per thread (reused across frames)
+    const x = c_allocator.alloc(f64, args.n_atoms) catch {
+        args.error_flag.store(true, .release);
+        return;
+    };
+    defer c_allocator.free(x);
+
+    const y = c_allocator.alloc(f64, args.n_atoms) catch {
+        args.error_flag.store(true, .release);
+        return;
+    };
+    defer c_allocator.free(y);
+
+    const z = c_allocator.alloc(f64, args.n_atoms) catch {
+        args.error_flag.store(true, .release);
+        return;
+    };
+    defer c_allocator.free(z);
+
+    // Each thread processes frames: thread_id, thread_id + n_threads, ...
+    var frame_idx = args.thread_id;
+    while (frame_idx < args.n_frames) : (frame_idx += args.n_threads) {
+        // Skip if error already occurred
+        if (args.error_flag.load(.acquire)) return;
+
+        const frame_offset = frame_idx * args.n_atoms * 3;
+        const output_offset = frame_idx * args.n_atoms;
+
+        // Convert f32 coordinates to f64 and split into x, y, z (reuse buffers)
+        for (0..args.n_atoms) |i| {
+            x[i] = @floatCast(args.coordinates[frame_offset + i * 3]);
+            y[i] = @floatCast(args.coordinates[frame_offset + i * 3 + 1]);
+            z[i] = @floatCast(args.coordinates[frame_offset + i * 3 + 2]);
+        }
+
+        // Create AtomInput for this frame
+        const input = AtomInput{
+            .x = x,
+            .y = y,
+            .z = z,
+            .r = args.radii_f64,
+            .allocator = c_allocator,
+        };
+
+        // Calculate SASA using the specified algorithm
+        const result = switch (args.algorithm) {
+            .shrake_rupley => blk: {
+                const config = Config{
+                    .n_points = args.param,
+                    .probe_radius = args.probe_radius,
+                };
+                break :blk shrake_rupley.calculateSasa(c_allocator, input, config) catch {
+                    args.error_flag.store(true, .release);
+                    return;
+                };
+            },
+            .lee_richards => blk: {
+                const config = lee_richards.LeeRichardsConfig{
+                    .n_slices = args.param,
+                    .probe_radius = args.probe_radius,
+                };
+                break :blk lee_richards.calculateSasa(c_allocator, input, config) catch {
+                    args.error_flag.store(true, .release);
+                    return;
+                };
+            },
+        };
+        defer c_allocator.free(result.atom_areas);
+
+        // Copy results to output buffer (convert f64 to f32)
+        for (0..args.n_atoms) |i| {
+            args.atom_areas[output_offset + i] = @floatCast(result.atom_areas[i]);
+        }
+    }
+}
+
+/// Common batch calculation logic
+fn calculateBatch(
+    coordinates: [*]const f32,
+    n_frames: usize,
+    n_atoms: usize,
+    radii: [*]const f32,
+    param: u32, // n_points for SR, n_slices for LR
+    probe_radius: f32,
+    n_threads: usize,
+    atom_areas: [*]f32,
+    algorithm: BatchAlgorithm,
+) c_int {
+    // Validate input
+    if (n_frames == 0 or n_atoms == 0 or param == 0 or probe_radius <= 0.0) {
+        return FREESASA_ERROR_INVALID_INPUT;
+    }
+
+    // Determine actual thread count
+    const actual_threads = if (n_threads == 0)
+        @as(usize, @intCast(std.Thread.getCpuCount() catch 1))
+    else
+        n_threads;
+
+    // Convert radii from f32 to f64 (done once, reused for all frames)
+    const radii_f64 = c_allocator.alloc(f64, n_atoms) catch {
+        return FREESASA_ERROR_OUT_OF_MEMORY;
+    };
+    defer c_allocator.free(radii_f64);
+
+    for (0..n_atoms) |i| {
+        radii_f64[i] = @floatCast(radii[i]);
+    }
+
+    // Error flag shared across threads
+    var error_flag = std.atomic.Value(bool).init(false);
+
+    // Spawn worker threads
+    const thread_count = @min(actual_threads, n_frames);
+    const threads = c_allocator.alloc(std.Thread, thread_count) catch {
+        return FREESASA_ERROR_OUT_OF_MEMORY;
+    };
+    defer c_allocator.free(threads);
+
+    for (0..thread_count) |i| {
+        threads[i] = std.Thread.spawn(.{}, batchWorkerFn, .{BatchWorkerArgs{
+            .coordinates = coordinates,
+            .n_atoms = n_atoms,
+            .n_frames = n_frames,
+            .radii_f64 = radii_f64,
+            .param = param,
+            .probe_radius = @floatCast(probe_radius),
+            .atom_areas = atom_areas,
+            .error_flag = &error_flag,
+            .thread_id = i,
+            .n_threads = thread_count,
+            .algorithm = algorithm,
+        }}) catch {
+            // If thread spawn fails, set error flag and wait for already-spawned threads
+            error_flag.store(true, .release);
+            for (threads[0..i]) |thread| {
+                thread.join();
+            }
+            return FREESASA_ERROR_CALCULATION;
+        };
+    }
+
+    // Wait for all threads to complete
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    if (error_flag.load(.acquire)) {
+        return FREESASA_ERROR_CALCULATION;
+    }
+
+    return FREESASA_OK;
+}
+
 /// Calculate SASA for multiple frames using Shrake-Rupley algorithm (batch processing).
 ///
 /// This function is optimized for MD trajectory analysis where the same atoms
@@ -162,149 +343,17 @@ export fn freesasa_calc_sr_batch(
     n_threads: usize,
     atom_areas: [*]f32,
 ) callconv(.c) c_int {
-    // Validate input
-    if (n_frames == 0 or n_atoms == 0 or n_points == 0 or probe_radius <= 0.0) {
-        return FREESASA_ERROR_INVALID_INPUT;
-    }
-
-    // Determine actual thread count
-    const actual_threads = if (n_threads == 0)
-        @as(usize, @intCast(std.Thread.getCpuCount() catch 1))
-    else
-        n_threads;
-
-    // Convert radii from f32 to f64 (done once, reused for all frames)
-    const radii_f64 = c_allocator.alloc(f64, n_atoms) catch {
-        return FREESASA_ERROR_OUT_OF_MEMORY;
-    };
-    defer c_allocator.free(radii_f64);
-
-    for (0..n_atoms) |i| {
-        radii_f64[i] = @floatCast(radii[i]);
-    }
-
-    // Error flag shared across threads
-    var error_flag = std.atomic.Value(bool).init(false);
-
-    // Worker function that processes a range of frames
-    const WorkerArgs = struct {
-        coordinates: [*]const f32,
-        n_atoms: usize,
-        n_frames: usize,
-        radii_f64: []f64,
-        n_points: u32,
-        probe_radius: f64,
-        atom_areas: [*]f32,
-        error_flag: *std.atomic.Value(bool),
-        thread_id: usize,
-        n_threads: usize,
-    };
-
-    const workerFn = struct {
-        fn run(args: WorkerArgs) void {
-            // Each thread processes frames: thread_id, thread_id + n_threads, ...
-            var frame_idx = args.thread_id;
-            while (frame_idx < args.n_frames) : (frame_idx += args.n_threads) {
-                // Skip if error already occurred
-                if (args.error_flag.load(.acquire)) return;
-
-                const frame_offset = frame_idx * args.n_atoms * 3;
-                const output_offset = frame_idx * args.n_atoms;
-
-                // Extract x, y, z for this frame
-                const x = c_allocator.alloc(f64, args.n_atoms) catch {
-                    args.error_flag.store(true, .release);
-                    return;
-                };
-                defer c_allocator.free(x);
-
-                const y = c_allocator.alloc(f64, args.n_atoms) catch {
-                    args.error_flag.store(true, .release);
-                    return;
-                };
-                defer c_allocator.free(y);
-
-                const z = c_allocator.alloc(f64, args.n_atoms) catch {
-                    args.error_flag.store(true, .release);
-                    return;
-                };
-                defer c_allocator.free(z);
-
-                // Convert f32 coordinates to f64 and split into x, y, z
-                for (0..args.n_atoms) |i| {
-                    x[i] = @floatCast(args.coordinates[frame_offset + i * 3]);
-                    y[i] = @floatCast(args.coordinates[frame_offset + i * 3 + 1]);
-                    z[i] = @floatCast(args.coordinates[frame_offset + i * 3 + 2]);
-                }
-
-                // Create AtomInput for this frame
-                const input = AtomInput{
-                    .x = x,
-                    .y = y,
-                    .z = z,
-                    .r = args.radii_f64,
-                    .allocator = c_allocator,
-                };
-
-                const config = Config{
-                    .n_points = args.n_points,
-                    .probe_radius = args.probe_radius,
-                };
-
-                // Calculate SASA
-                const result = shrake_rupley.calculateSasa(c_allocator, input, config) catch {
-                    args.error_flag.store(true, .release);
-                    return;
-                };
-                defer c_allocator.free(result.atom_areas);
-
-                // Copy results to output buffer (convert f64 to f32)
-                for (0..args.n_atoms) |i| {
-                    args.atom_areas[output_offset + i] = @floatCast(result.atom_areas[i]);
-                }
-            }
-        }
-    }.run;
-
-    // Spawn worker threads
-    const thread_count = @min(actual_threads, n_frames);
-    const threads = c_allocator.alloc(std.Thread, thread_count) catch {
-        return FREESASA_ERROR_OUT_OF_MEMORY;
-    };
-    defer c_allocator.free(threads);
-
-    for (0..thread_count) |i| {
-        threads[i] = std.Thread.spawn(.{}, workerFn, .{WorkerArgs{
-            .coordinates = coordinates,
-            .n_atoms = n_atoms,
-            .n_frames = n_frames,
-            .radii_f64 = radii_f64,
-            .n_points = n_points,
-            .probe_radius = @floatCast(probe_radius),
-            .atom_areas = atom_areas,
-            .error_flag = &error_flag,
-            .thread_id = i,
-            .n_threads = thread_count,
-        }}) catch {
-            // If thread spawn fails, set error flag and wait for already-spawned threads
-            error_flag.store(true, .release);
-            for (threads[0..i]) |thread| {
-                thread.join();
-            }
-            return FREESASA_ERROR_CALCULATION;
-        };
-    }
-
-    // Wait for all threads to complete
-    for (threads) |thread| {
-        thread.join();
-    }
-
-    if (error_flag.load(.acquire)) {
-        return FREESASA_ERROR_CALCULATION;
-    }
-
-    return FREESASA_OK;
+    return calculateBatch(
+        coordinates,
+        n_frames,
+        n_atoms,
+        radii,
+        n_points,
+        probe_radius,
+        n_threads,
+        atom_areas,
+        .shrake_rupley,
+    );
 }
 
 /// Calculate SASA for multiple frames using Lee-Richards algorithm (batch processing).
@@ -333,149 +382,17 @@ export fn freesasa_calc_lr_batch(
     n_threads: usize,
     atom_areas: [*]f32,
 ) callconv(.c) c_int {
-    // Validate input
-    if (n_frames == 0 or n_atoms == 0 or n_slices == 0 or probe_radius <= 0.0) {
-        return FREESASA_ERROR_INVALID_INPUT;
-    }
-
-    // Determine actual thread count
-    const actual_threads = if (n_threads == 0)
-        @as(usize, @intCast(std.Thread.getCpuCount() catch 1))
-    else
-        n_threads;
-
-    // Convert radii from f32 to f64 (done once, reused for all frames)
-    const radii_f64 = c_allocator.alloc(f64, n_atoms) catch {
-        return FREESASA_ERROR_OUT_OF_MEMORY;
-    };
-    defer c_allocator.free(radii_f64);
-
-    for (0..n_atoms) |i| {
-        radii_f64[i] = @floatCast(radii[i]);
-    }
-
-    // Error flag shared across threads
-    var error_flag = std.atomic.Value(bool).init(false);
-
-    // Worker function that processes a range of frames
-    const WorkerArgs = struct {
-        coordinates: [*]const f32,
-        n_atoms: usize,
-        n_frames: usize,
-        radii_f64: []f64,
-        n_slices: u32,
-        probe_radius: f64,
-        atom_areas: [*]f32,
-        error_flag: *std.atomic.Value(bool),
-        thread_id: usize,
-        n_threads: usize,
-    };
-
-    const workerFn = struct {
-        fn run(args: WorkerArgs) void {
-            // Each thread processes frames: thread_id, thread_id + n_threads, ...
-            var frame_idx = args.thread_id;
-            while (frame_idx < args.n_frames) : (frame_idx += args.n_threads) {
-                // Skip if error already occurred
-                if (args.error_flag.load(.acquire)) return;
-
-                const frame_offset = frame_idx * args.n_atoms * 3;
-                const output_offset = frame_idx * args.n_atoms;
-
-                // Extract x, y, z for this frame
-                const x = c_allocator.alloc(f64, args.n_atoms) catch {
-                    args.error_flag.store(true, .release);
-                    return;
-                };
-                defer c_allocator.free(x);
-
-                const y = c_allocator.alloc(f64, args.n_atoms) catch {
-                    args.error_flag.store(true, .release);
-                    return;
-                };
-                defer c_allocator.free(y);
-
-                const z = c_allocator.alloc(f64, args.n_atoms) catch {
-                    args.error_flag.store(true, .release);
-                    return;
-                };
-                defer c_allocator.free(z);
-
-                // Convert f32 coordinates to f64 and split into x, y, z
-                for (0..args.n_atoms) |i| {
-                    x[i] = @floatCast(args.coordinates[frame_offset + i * 3]);
-                    y[i] = @floatCast(args.coordinates[frame_offset + i * 3 + 1]);
-                    z[i] = @floatCast(args.coordinates[frame_offset + i * 3 + 2]);
-                }
-
-                // Create AtomInput for this frame
-                const input = AtomInput{
-                    .x = x,
-                    .y = y,
-                    .z = z,
-                    .r = args.radii_f64,
-                    .allocator = c_allocator,
-                };
-
-                const config = lee_richards.LeeRichardsConfig{
-                    .n_slices = args.n_slices,
-                    .probe_radius = args.probe_radius,
-                };
-
-                // Calculate SASA
-                const result = lee_richards.calculateSasa(c_allocator, input, config) catch {
-                    args.error_flag.store(true, .release);
-                    return;
-                };
-                defer c_allocator.free(result.atom_areas);
-
-                // Copy results to output buffer (convert f64 to f32)
-                for (0..args.n_atoms) |i| {
-                    args.atom_areas[output_offset + i] = @floatCast(result.atom_areas[i]);
-                }
-            }
-        }
-    }.run;
-
-    // Spawn worker threads
-    const thread_count = @min(actual_threads, n_frames);
-    const threads = c_allocator.alloc(std.Thread, thread_count) catch {
-        return FREESASA_ERROR_OUT_OF_MEMORY;
-    };
-    defer c_allocator.free(threads);
-
-    for (0..thread_count) |i| {
-        threads[i] = std.Thread.spawn(.{}, workerFn, .{WorkerArgs{
-            .coordinates = coordinates,
-            .n_atoms = n_atoms,
-            .n_frames = n_frames,
-            .radii_f64 = radii_f64,
-            .n_slices = n_slices,
-            .probe_radius = @floatCast(probe_radius),
-            .atom_areas = atom_areas,
-            .error_flag = &error_flag,
-            .thread_id = i,
-            .n_threads = thread_count,
-        }}) catch {
-            // If thread spawn fails, set error flag and wait for already-spawned threads
-            error_flag.store(true, .release);
-            for (threads[0..i]) |thread| {
-                thread.join();
-            }
-            return FREESASA_ERROR_CALCULATION;
-        };
-    }
-
-    // Wait for all threads to complete
-    for (threads) |thread| {
-        thread.join();
-    }
-
-    if (error_flag.load(.acquire)) {
-        return FREESASA_ERROR_CALCULATION;
-    }
-
-    return FREESASA_OK;
+    return calculateBatch(
+        coordinates,
+        n_frames,
+        n_atoms,
+        radii,
+        n_slices,
+        probe_radius,
+        n_threads,
+        atom_areas,
+        .lee_richards,
+    );
 }
 
 /// Calculate SASA using Lee-Richards algorithm.

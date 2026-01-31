@@ -196,14 +196,15 @@ def compute_sasa(
             dtype=np.int32,
         )
 
-        # Aggregate using numpy bincount
+        # Vectorized aggregation using np.add.at
+        # This avoids Python loop over frames
         sasa_residue = np.zeros((n_frames, n_residues), dtype=np.float32)
-        for frame_idx in range(n_frames):
-            sasa_residue[frame_idx] = np.bincount(
-                atom_to_residue,
-                weights=sasa_nm2[frame_idx],
-                minlength=n_residues,
-            )
+        # Broadcast residue indices across all frames and use add.at for accumulation
+        np.add.at(
+            sasa_residue,
+            (np.arange(n_frames)[:, np.newaxis], atom_to_residue),
+            sasa_nm2,
+        )
 
         return sasa_residue
 
