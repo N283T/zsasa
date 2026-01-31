@@ -574,9 +574,9 @@ test "NACCESS all amino acids with CB have CB radius" {
     // All except GLY have CB
     const residues_with_cb = [_][]const u8{
         "ALA", "ARG", "ASN", "ASP", "CYS",
-        "GLN", "GLU", "HIS", "ILE",
-        "LEU", "LYS", "MET", "PHE", "PRO",
-        "SER", "THR", "TRP", "TYR", "VAL",
+        "GLN", "GLU", "HIS", "ILE", "LEU",
+        "LYS", "MET", "PHE", "PRO", "SER",
+        "THR", "TRP", "TYR", "VAL",
     };
 
     for (residues_with_cb) |res| {
