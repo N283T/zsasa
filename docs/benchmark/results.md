@@ -214,15 +214,15 @@ Parallel Efficiency = T1 / (TN × N)
 
 ![Max Structure Scaling](../../benchmarks/results/plots/samples/max_structure.png)
 
-Thread scaling on the largest PDB structure:
+Thread scaling on the largest PDB structure (9fqr):
 
 | Threads | Zig (ms) | FreeSASA (ms) | Rust (ms) | Zig vs FS | Zig vs Rust |
 |--------:|---------:|--------------:|----------:|----------:|------------:|
-| 1 | 8,900 | 14,400 | 9,500 | 1.62x | 1.07x |
-| 2 | 5,400 | 10,300 | 8,000 | 1.91x | 1.48x |
-| 4 | 3,700 | 8,400 | 7,200 | 2.27x | 1.95x |
-| 8 | 3,100 | 7,600 | 7,000 | 2.45x | 2.26x |
-| 10 | **3,000** | 7,400 | 6,900 | **2.47x** | **2.30x** |
+| 1 | 8,887 | 14,424 | 9,562 | 1.62x | 1.08x |
+| 2 | 5,450 | 10,325 | 8,015 | 1.89x | 1.47x |
+| 4 | 3,685 | 8,394 | 7,218 | 2.28x | 1.96x |
+| 8 | 3,116 | 7,643 | 6,947 | 2.45x | 2.23x |
+| 10 | **2,962** | 7,460 | 6,866 | **2.52x** | **2.32x** |
 
 **Key Insight**:
 - Speedup ratio improves with increasing thread count
