@@ -214,7 +214,7 @@ Parallel Efficiency = T1 / (TN × N)
 
 ![Max Structure Scaling](../../benchmarks/results/plots/samples/max_structure.png)
 
-Thread scaling on the largest PDB structure:
+Thread scaling on the largest PDB structure (mean across runs):
 
 | Threads | Zig (ms) | FreeSASA (ms) | Rust (ms) | Zig vs FS | Zig vs Rust |
 |--------:|---------:|--------------:|----------:|----------:|------------:|
