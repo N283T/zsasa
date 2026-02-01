@@ -1,4 +1,4 @@
-"""Core cffi bindings for freesasa-zig library."""
+"""Core cffi bindings for zsasa library."""
 
 from __future__ import annotations
 
@@ -14,83 +14,83 @@ from cffi import FFI
 from numpy.typing import NDArray
 
 # Error codes from C API
-FREESASA_OK = 0
-FREESASA_ERROR_INVALID_INPUT = -1
-FREESASA_ERROR_OUT_OF_MEMORY = -2
-FREESASA_ERROR_CALCULATION = -3
+ZSASA_OK = 0
+ZSASA_ERROR_INVALID_INPUT = -1
+ZSASA_ERROR_OUT_OF_MEMORY = -2
+ZSASA_ERROR_CALCULATION = -3
 
 # Classifier types
-FREESASA_CLASSIFIER_NACCESS = 0
-FREESASA_CLASSIFIER_PROTOR = 1
-FREESASA_CLASSIFIER_OONS = 2
+ZSASA_CLASSIFIER_NACCESS = 0
+ZSASA_CLASSIFIER_PROTOR = 1
+ZSASA_CLASSIFIER_OONS = 2
 
 # Atom classes
-FREESASA_ATOM_CLASS_POLAR = 0
-FREESASA_ATOM_CLASS_APOLAR = 1
-FREESASA_ATOM_CLASS_UNKNOWN = 2
+ZSASA_ATOM_CLASS_POLAR = 0
+ZSASA_ATOM_CLASS_APOLAR = 1
+ZSASA_ATOM_CLASS_UNKNOWN = 2
 
 # C API definitions for cffi
 _CDEF = """
     // Version
-    const char* freesasa_version(void);
+    const char* zsasa_version(void);
 
     // SASA calculation
-    int freesasa_calc_sr(
+    int zsasa_calc_sr(
         const double* x, const double* y, const double* z, const double* radii,
         size_t n_atoms, uint32_t n_points, double probe_radius, size_t n_threads,
         double* atom_areas, double* total_area
     );
 
-    int freesasa_calc_lr(
+    int zsasa_calc_lr(
         const double* x, const double* y, const double* z, const double* radii,
         size_t n_atoms, uint32_t n_slices, double probe_radius, size_t n_threads,
         double* atom_areas, double* total_area
     );
 
     // Batch SASA calculation (for MD trajectories)
-    int freesasa_calc_sr_batch(
+    int zsasa_calc_sr_batch(
         const float* coordinates, size_t n_frames, size_t n_atoms,
         const float* radii, uint32_t n_points, float probe_radius,
         size_t n_threads, float* atom_areas
     );
 
-    int freesasa_calc_lr_batch(
+    int zsasa_calc_lr_batch(
         const float* coordinates, size_t n_frames, size_t n_atoms,
         const float* radii, uint32_t n_slices, float probe_radius,
         size_t n_threads, float* atom_areas
     );
 
     // Batch SASA calculation (pure f32 precision for RustSASA compatibility)
-    int freesasa_calc_sr_batch_f32(
+    int zsasa_calc_sr_batch_f32(
         const float* coordinates, size_t n_frames, size_t n_atoms,
         const float* radii, uint32_t n_points, float probe_radius,
         size_t n_threads, float* atom_areas
     );
 
-    int freesasa_calc_lr_batch_f32(
+    int zsasa_calc_lr_batch_f32(
         const float* coordinates, size_t n_frames, size_t n_atoms,
         const float* radii, uint32_t n_slices, float probe_radius,
         size_t n_threads, float* atom_areas
     );
 
     // Classifier functions
-    double freesasa_classifier_get_radius(
+    double zsasa_classifier_get_radius(
         int classifier_type, const char* residue, const char* atom);
-    int freesasa_classifier_get_class(
+    int zsasa_classifier_get_class(
         int classifier_type, const char* residue, const char* atom);
-    double freesasa_guess_radius(const char* element);
-    double freesasa_guess_radius_from_atom_name(const char* atom_name);
+    double zsasa_guess_radius(const char* element);
+    double zsasa_guess_radius_from_atom_name(const char* atom_name);
 
-    int freesasa_classify_atoms(
+    int zsasa_classify_atoms(
         int classifier_type,
         const char** residues, const char** atoms, size_t n_atoms,
         double* radii_out, int* classes_out
     );
 
     // RSA functions
-    double freesasa_get_max_sasa(const char* residue_name);
-    double freesasa_calculate_rsa(double sasa, const char* residue_name);
-    int freesasa_calculate_rsa_batch(
+    double zsasa_get_max_sasa(const char* residue_name);
+    double zsasa_calculate_rsa(double sasa, const char* residue_name);
+    int zsasa_calculate_rsa_batch(
         const double* sasas, const char** residue_names, size_t n_residues,
         double* rsa_out
     );
@@ -98,24 +98,24 @@ _CDEF = """
 
 
 def _find_library() -> Path:
-    """Find the freesasa_zig shared library."""
+    """Find the zsasa shared library."""
     # Check environment variable first
-    if lib_path := os.environ.get("FREESASA_ZIG_LIB"):
+    if lib_path := os.environ.get("ZSASA_ZIG_LIB"):
         return Path(lib_path)
 
     # Platform-specific library names
     if sys.platform == "darwin":
-        lib_name = "libfreesasa_zig.dylib"
+        lib_name = "libzsasa.dylib"
     elif sys.platform == "win32":
-        lib_name = "freesasa_zig.dll"
+        lib_name = "zsasa.dll"
     else:
-        lib_name = "libfreesasa_zig.so"
+        lib_name = "libzsasa.so"
 
     # Search paths
     search_paths = [
         # Bundled in package (wheel installation)
         Path(__file__).parent / lib_name,
-        # Relative to this file (development: python/freesasa_zig -> zig-out/lib)
+        # Relative to this file (development: python/zsasa -> zig-out/lib)
         Path(__file__).parent.parent.parent / "zig-out" / "lib" / lib_name,
         # System paths
         Path("/usr/local/lib") / lib_name,
@@ -131,14 +131,14 @@ def _find_library() -> Path:
 
     msg = (
         f"Could not find {lib_name}. "
-        f"Please install with: pip install freesasa-zig "
+        f"Please install with: pip install zsasa "
         f"(requires Zig 0.15.2+ to be installed)"
     )
     raise FileNotFoundError(msg)
 
 
 def _load_library() -> tuple[FFI, Any]:
-    """Load the freesasa_zig shared library using cffi."""
+    """Load the zsasa shared library using cffi."""
     ffi = FFI()
     ffi.cdef(_CDEF)
     lib_path = _find_library()
@@ -162,7 +162,7 @@ def _get_lib() -> tuple[FFI, Any]:
 def get_version() -> str:
     """Get the library version string."""
     ffi, lib = _get_lib()
-    return ffi.string(lib.freesasa_version()).decode("utf-8")
+    return ffi.string(lib.zsasa_version()).decode("utf-8")
 
 
 @dataclass
@@ -207,7 +207,7 @@ def calculate_sasa(
 
     Example:
         >>> import numpy as np
-        >>> from freesasa_zig import calculate_sasa
+        >>> from zsasa import calculate_sasa
         >>>
         >>> # Two atoms
         >>> coords = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
@@ -266,7 +266,7 @@ def calculate_sasa(
 
     # Call the appropriate function
     if algorithm == "sr":
-        result = lib.freesasa_calc_sr(
+        result = lib.zsasa_calc_sr(
             x_ptr,
             y_ptr,
             z_ptr,
@@ -279,7 +279,7 @@ def calculate_sasa(
             total_area,
         )
     elif algorithm == "lr":
-        result = lib.freesasa_calc_lr(
+        result = lib.zsasa_calc_lr(
             x_ptr,
             y_ptr,
             z_ptr,
@@ -296,16 +296,16 @@ def calculate_sasa(
         raise ValueError(msg)
 
     # Check for errors
-    if result == FREESASA_ERROR_INVALID_INPUT:
+    if result == ZSASA_ERROR_INVALID_INPUT:
         msg = "Invalid input to SASA calculation"
         raise ValueError(msg)
-    elif result == FREESASA_ERROR_OUT_OF_MEMORY:
+    elif result == ZSASA_ERROR_OUT_OF_MEMORY:
         msg = "Out of memory during SASA calculation"
         raise MemoryError(msg)
-    elif result == FREESASA_ERROR_CALCULATION:
+    elif result == ZSASA_ERROR_CALCULATION:
         msg = "Error during SASA calculation"
         raise RuntimeError(msg)
-    elif result != FREESASA_OK:
+    elif result != ZSASA_OK:
         msg = f"Unknown error code: {result}"
         raise RuntimeError(msg)
 
@@ -329,9 +329,9 @@ class ClassifierType(IntEnum):
         OONS: Ooi, Oobatake, Nemethy, Scheraga radii (older FreeSASA default).
     """
 
-    NACCESS = FREESASA_CLASSIFIER_NACCESS
-    PROTOR = FREESASA_CLASSIFIER_PROTOR
-    OONS = FREESASA_CLASSIFIER_OONS
+    NACCESS = ZSASA_CLASSIFIER_NACCESS
+    PROTOR = ZSASA_CLASSIFIER_PROTOR
+    OONS = ZSASA_CLASSIFIER_OONS
 
 
 class AtomClass(IntEnum):
@@ -343,9 +343,9 @@ class AtomClass(IntEnum):
         UNKNOWN: Unknown classification.
     """
 
-    POLAR = FREESASA_ATOM_CLASS_POLAR
-    APOLAR = FREESASA_ATOM_CLASS_APOLAR
-    UNKNOWN = FREESASA_ATOM_CLASS_UNKNOWN
+    POLAR = ZSASA_ATOM_CLASS_POLAR
+    APOLAR = ZSASA_ATOM_CLASS_APOLAR
+    UNKNOWN = ZSASA_ATOM_CLASS_UNKNOWN
 
 
 # =============================================================================
@@ -369,14 +369,14 @@ def get_radius(
         Radius in Angstroms, or None if atom is not found in classifier.
 
     Example:
-        >>> from freesasa_zig import get_radius, ClassifierType
+        >>> from zsasa import get_radius, ClassifierType
         >>> get_radius("ALA", "CA")
         1.87
         >>> get_radius("ALA", "XX")  # Unknown atom
         None
     """
     _, lib = _get_lib()
-    radius = lib.freesasa_classifier_get_radius(
+    radius = lib.zsasa_classifier_get_radius(
         classifier_type,
         residue.encode("utf-8"),
         atom.encode("utf-8"),
@@ -402,14 +402,14 @@ def get_atom_class(
         AtomClass constant (POLAR, APOLAR, or UNKNOWN).
 
     Example:
-        >>> from freesasa_zig import get_atom_class, AtomClass
+        >>> from zsasa import get_atom_class, AtomClass
         >>> get_atom_class("ALA", "CA") == AtomClass.APOLAR
         True
         >>> get_atom_class("ALA", "O") == AtomClass.POLAR
         True
     """
     _, lib = _get_lib()
-    return lib.freesasa_classifier_get_class(
+    return lib.zsasa_classifier_get_class(
         classifier_type,
         residue.encode("utf-8"),
         atom.encode("utf-8"),
@@ -427,7 +427,7 @@ def guess_radius(element: str) -> float | None:
         Radius in Angstroms, or None if element is not recognized.
 
     Example:
-        >>> from freesasa_zig import guess_radius
+        >>> from zsasa import guess_radius
         >>> guess_radius("C")
         1.7
         >>> guess_radius("FE")
@@ -436,7 +436,7 @@ def guess_radius(element: str) -> float | None:
         None
     """
     _, lib = _get_lib()
-    radius = lib.freesasa_guess_radius(element.encode("utf-8"))
+    radius = lib.zsasa_guess_radius(element.encode("utf-8"))
     if np.isnan(radius):
         return None
     return radius
@@ -456,14 +456,14 @@ def guess_radius_from_atom_name(atom_name: str) -> float | None:
         Radius in Angstroms, or None if element cannot be determined.
 
     Example:
-        >>> from freesasa_zig import guess_radius_from_atom_name
+        >>> from zsasa import guess_radius_from_atom_name
         >>> guess_radius_from_atom_name(" CA ")  # Carbon alpha
         1.7
         >>> guess_radius_from_atom_name("FE  ")  # Iron
         1.26
     """
     _, lib = _get_lib()
-    radius = lib.freesasa_guess_radius_from_atom_name(atom_name.encode("utf-8"))
+    radius = lib.zsasa_guess_radius_from_atom_name(atom_name.encode("utf-8"))
     if np.isnan(radius):
         return None
     return radius
@@ -518,7 +518,7 @@ def classify_atoms(
         ValueError: If residues and atoms have different lengths.
 
     Example:
-        >>> from freesasa_zig import classify_atoms
+        >>> from zsasa import classify_atoms
         >>> result = classify_atoms(
         ...     ["ALA", "ALA", "GLY"],
         ...     ["CA", "O", "N"],
@@ -554,7 +554,7 @@ def classify_atoms(
     radii_ptr = ffi.cast("double*", radii.ctypes.data)
     classes_ptr = ffi.cast("int*", classes.ctypes.data) if include_classes else ffi.NULL
 
-    result = lib.freesasa_classify_atoms(
+    result = lib.zsasa_classify_atoms(
         classifier_type,
         residues_arr,
         atoms_arr,
@@ -563,10 +563,10 @@ def classify_atoms(
         classes_ptr,
     )
 
-    if result == FREESASA_ERROR_INVALID_INPUT:
+    if result == ZSASA_ERROR_INVALID_INPUT:
         msg = f"Invalid classifier type: {classifier_type}"
         raise ValueError(msg)
-    elif result != FREESASA_OK:
+    elif result != ZSASA_OK:
         msg = f"Classification error: {result}"
         raise RuntimeError(msg)
 
@@ -618,7 +618,7 @@ def get_max_sasa(residue_name: str) -> float | None:
         Maximum SASA in Angstroms², or None if residue is not a standard amino acid.
 
     Example:
-        >>> from freesasa_zig import get_max_sasa
+        >>> from zsasa import get_max_sasa
         >>> get_max_sasa("ALA")
         129.0
         >>> get_max_sasa("TRP")
@@ -627,7 +627,7 @@ def get_max_sasa(residue_name: str) -> float | None:
         None
     """
     _, lib = _get_lib()
-    max_sasa = lib.freesasa_get_max_sasa(residue_name.encode("utf-8"))
+    max_sasa = lib.zsasa_get_max_sasa(residue_name.encode("utf-8"))
     if np.isnan(max_sasa):
         return None
     return max_sasa
@@ -647,14 +647,14 @@ def calculate_rsa(sasa: float, residue_name: str) -> float | None:
         Note: RSA > 1.0 is possible for exposed terminal residues.
 
     Example:
-        >>> from freesasa_zig import calculate_rsa
+        >>> from zsasa import calculate_rsa
         >>> calculate_rsa(64.5, "ALA")  # 64.5 / 129.0 = 0.5
         0.5
         >>> calculate_rsa(150.0, "GLY")  # RSA > 1.0 is possible
         1.4423076923076923
     """
     _, lib = _get_lib()
-    rsa = lib.freesasa_calculate_rsa(sasa, residue_name.encode("utf-8"))
+    rsa = lib.zsasa_calculate_rsa(sasa, residue_name.encode("utf-8"))
     if np.isnan(rsa):
         return None
     return rsa
@@ -680,7 +680,7 @@ def calculate_rsa_batch(
 
     Example:
         >>> import numpy as np
-        >>> from freesasa_zig import calculate_rsa_batch
+        >>> from zsasa import calculate_rsa_batch
         >>> sasas = np.array([64.5, 52.0, 100.0])
         >>> residues = ["ALA", "GLY", "HOH"]  # HOH is not standard
         >>> rsa = calculate_rsa_batch(sasas, residues)
@@ -710,8 +710,8 @@ def calculate_rsa_batch(
     sasas_ptr = ffi.cast("double*", sasas.ctypes.data)
     rsa_ptr = ffi.cast("double*", rsa_out.ctypes.data)
 
-    result = lib.freesasa_calculate_rsa_batch(sasas_ptr, residues_arr, n_residues, rsa_ptr)
-    if result != FREESASA_OK:
+    result = lib.zsasa_calculate_rsa_batch(sasas_ptr, residues_arr, n_residues, rsa_ptr)
+    if result != ZSASA_OK:
         msg = f"RSA batch calculation failed with error code: {result}"
         raise RuntimeError(msg)
 
@@ -788,7 +788,7 @@ def calculate_sasa_batch(
 
     Example:
         >>> import numpy as np
-        >>> from freesasa_zig import calculate_sasa_batch
+        >>> from zsasa import calculate_sasa_batch
         >>>
         >>> # 10 frames, 100 atoms
         >>> coords = np.random.randn(10, 100, 3).astype(np.float32)
@@ -844,7 +844,7 @@ def calculate_sasa_batch(
     if precision == "f64":
         # Default: f32 I/O with f64 internal precision
         if algorithm == "sr":
-            result = lib.freesasa_calc_sr_batch(
+            result = lib.zsasa_calc_sr_batch(
                 coords_ptr,
                 n_frames,
                 n_atoms,
@@ -855,7 +855,7 @@ def calculate_sasa_batch(
                 areas_ptr,
             )
         elif algorithm == "lr":
-            result = lib.freesasa_calc_lr_batch(
+            result = lib.zsasa_calc_lr_batch(
                 coords_ptr,
                 n_frames,
                 n_atoms,
@@ -871,7 +871,7 @@ def calculate_sasa_batch(
     elif precision == "f32":
         # Pure f32 precision (matches RustSASA/mdsasa-bolt)
         if algorithm == "sr":
-            result = lib.freesasa_calc_sr_batch_f32(
+            result = lib.zsasa_calc_sr_batch_f32(
                 coords_ptr,
                 n_frames,
                 n_atoms,
@@ -882,7 +882,7 @@ def calculate_sasa_batch(
                 areas_ptr,
             )
         elif algorithm == "lr":
-            result = lib.freesasa_calc_lr_batch_f32(
+            result = lib.zsasa_calc_lr_batch_f32(
                 coords_ptr,
                 n_frames,
                 n_atoms,
@@ -900,16 +900,16 @@ def calculate_sasa_batch(
         raise ValueError(msg)
 
     # Check for errors
-    if result == FREESASA_ERROR_INVALID_INPUT:
+    if result == ZSASA_ERROR_INVALID_INPUT:
         msg = "Invalid input to batch SASA calculation"
         raise ValueError(msg)
-    elif result == FREESASA_ERROR_OUT_OF_MEMORY:
+    elif result == ZSASA_ERROR_OUT_OF_MEMORY:
         msg = "Out of memory during batch SASA calculation"
         raise MemoryError(msg)
-    elif result == FREESASA_ERROR_CALCULATION:
+    elif result == ZSASA_ERROR_CALCULATION:
         msg = "Error during batch SASA calculation"
         raise RuntimeError(msg)
-    elif result != FREESASA_OK:
+    elif result != ZSASA_OK:
         msg = f"Unknown error code: {result}"
         raise RuntimeError(msg)
 

@@ -1,11 +1,11 @@
-"""MDAnalysis integration for freesasa-zig.
+"""MDAnalysis integration for zsasa.
 
 This module provides a SASAAnalysis class that integrates with MDAnalysis,
 offering a high-performance alternative to mdakit-sasa.
 
 Example:
     >>> import MDAnalysis as mda
-    >>> from freesasa_zig.mdanalysis import SASAAnalysis
+    >>> from zsasa.mdanalysis import SASAAnalysis
     >>>
     >>> u = mda.Universe("topology.pdb", "trajectory.xtc")
     >>> sasa = SASAAnalysis(u, select="protein")
@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 from numpy.typing import NDArray
 
-from freesasa_zig.core import calculate_sasa_batch
+from zsasa.core import calculate_sasa_batch
 
 if TYPE_CHECKING:
     from MDAnalysis.core.groups import AtomGroup
@@ -128,7 +128,7 @@ class SASAAnalysis:
     Example
     -------
     >>> import MDAnalysis as mda
-    >>> from freesasa_zig.mdanalysis import SASAAnalysis
+    >>> from zsasa.mdanalysis import SASAAnalysis
     >>>
     >>> u = mda.Universe("protein.pdb", "trajectory.xtc")
     >>> sasa = SASAAnalysis(u, select="protein")

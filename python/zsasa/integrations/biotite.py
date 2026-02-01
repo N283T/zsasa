@@ -1,18 +1,18 @@
-"""Biotite integration for freesasa-zig.
+"""Biotite integration for zsasa.
 
 This module provides convenience functions for calculating SASA
 from Biotite AtomArray/AtomArrayStack objects.
 
-Requires: pip install freesasa-zig[biotite]
+Requires: pip install zsasa[biotite]
 
 Also works with AtomWorks, which is built on Biotite:
     >>> from atomworks.io.utils.io_utils import load_any
-    >>> from freesasa_zig.integrations.biotite import calculate_sasa_from_atom_array
+    >>> from zsasa.integrations.biotite import calculate_sasa_from_atom_array
     >>> atom_array = load_any("protein.cif")
     >>> result = calculate_sasa_from_atom_array(atom_array)
 
 Example:
-    >>> from freesasa_zig.integrations.biotite import calculate_sasa_from_structure
+    >>> from zsasa.integrations.biotite import calculate_sasa_from_structure
     >>> result = calculate_sasa_from_structure("protein.pdb")
     >>> print(f"Total SASA: {result.total_area:.2f} Å²")
 """
@@ -24,13 +24,13 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
-from freesasa_zig.core import (
+from zsasa.core import (
     AtomClass,
     ClassifierType,
     calculate_sasa,
     classify_atoms,
 )
-from freesasa_zig.integrations._types import AtomData, SasaResultWithAtoms
+from zsasa.integrations._types import AtomData, SasaResultWithAtoms
 
 if TYPE_CHECKING:
     from biotite.structure import AtomArray, AtomArrayStack
@@ -56,10 +56,7 @@ def _import_biotite():
 
         return struc, strucio
     except ImportError as e:
-        msg = (
-            "biotite is required for this functionality. "
-            "Install with: pip install freesasa-zig[biotite]"
-        )
+        msg = "biotite is required for this functionality. Install with: pip install zsasa[biotite]"
         raise ImportError(msg) from e
 
 
@@ -246,7 +243,7 @@ def calculate_sasa_from_structure(
         SasaResultWithAtoms with SASA values and atom metadata.
 
     Example:
-        >>> from freesasa_zig.integrations.biotite import calculate_sasa_from_structure
+        >>> from zsasa.integrations.biotite import calculate_sasa_from_structure
         >>>
         >>> # From file path
         >>> result = calculate_sasa_from_structure("protein.pdb")

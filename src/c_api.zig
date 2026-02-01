@@ -1,4 +1,4 @@
-//! C ABI interface for freesasa-zig library.
+//! C ABI interface for zsasa library.
 //!
 //! This module provides C-compatible functions that can be called from
 //! other languages (Python, C, etc.) via FFI/ctypes.
@@ -17,36 +17,36 @@ const AtomInput = types.AtomInput;
 const Config = types.Config;
 
 /// No error - calculation completed successfully
-pub const FREESASA_OK: c_int = 0;
+pub const ZSASA_OK: c_int = 0;
 /// Invalid input parameters (n_atoms=0, n_points=0, n_slices=0, or invalid probe_radius)
 /// Note: Passing NULL pointers results in undefined behavior
-pub const FREESASA_ERROR_INVALID_INPUT: c_int = -1;
+pub const ZSASA_ERROR_INVALID_INPUT: c_int = -1;
 /// Memory allocation failed during calculation
-pub const FREESASA_ERROR_OUT_OF_MEMORY: c_int = -2;
+pub const ZSASA_ERROR_OUT_OF_MEMORY: c_int = -2;
 /// Internal calculation error
-pub const FREESASA_ERROR_CALCULATION: c_int = -3;
+pub const ZSASA_ERROR_CALCULATION: c_int = -3;
 
 // =============================================================================
 // Classifier Types
 // =============================================================================
 
 /// NACCESS-compatible radii (default)
-pub const FREESASA_CLASSIFIER_NACCESS: c_int = 0;
+pub const ZSASA_CLASSIFIER_NACCESS: c_int = 0;
 /// ProtOr radii based on hybridization state
-pub const FREESASA_CLASSIFIER_PROTOR: c_int = 1;
+pub const ZSASA_CLASSIFIER_PROTOR: c_int = 1;
 /// OONS radii (older FreeSASA default)
-pub const FREESASA_CLASSIFIER_OONS: c_int = 2;
+pub const ZSASA_CLASSIFIER_OONS: c_int = 2;
 
 // =============================================================================
 // Atom Classes
 // =============================================================================
 
 /// Polar atom class
-pub const FREESASA_ATOM_CLASS_POLAR: c_int = 0;
+pub const ZSASA_ATOM_CLASS_POLAR: c_int = 0;
 /// Apolar atom class
-pub const FREESASA_ATOM_CLASS_APOLAR: c_int = 1;
+pub const ZSASA_ATOM_CLASS_APOLAR: c_int = 1;
 /// Unknown atom class
-pub const FREESASA_ATOM_CLASS_UNKNOWN: c_int = 2;
+pub const ZSASA_ATOM_CLASS_UNKNOWN: c_int = 2;
 
 // Version string
 const VERSION = "0.1.0";
@@ -55,7 +55,7 @@ const VERSION = "0.1.0";
 const c_allocator = std.heap.c_allocator;
 
 /// Get library version string.
-export fn freesasa_version() callconv(.c) [*:0]const u8 {
+export fn zsasa_version() callconv(.c) [*:0]const u8 {
     return VERSION;
 }
 
@@ -72,8 +72,8 @@ export fn freesasa_version() callconv(.c) [*:0]const u8 {
 ///   total_area: Output pointer for total SASA
 ///
 /// Returns:
-///   FREESASA_OK (0) on success, negative error code on failure.
-export fn freesasa_calc_sr(
+///   ZSASA_OK (0) on success, negative error code on failure.
+export fn zsasa_calc_sr(
     x: [*]const f64,
     y: [*]const f64,
     z: [*]const f64,
@@ -87,12 +87,12 @@ export fn freesasa_calc_sr(
 ) callconv(.c) c_int {
     // Validate input
     if (n_atoms == 0 or n_points == 0 or probe_radius <= 0.0) {
-        return FREESASA_ERROR_INVALID_INPUT;
+        return ZSASA_ERROR_INVALID_INPUT;
     }
 
     // Duplicate radii (AtomInput.r requires []f64 for classifier support)
     const r_copy = c_allocator.dupe(f64, radii[0..n_atoms]) catch {
-        return FREESASA_ERROR_OUT_OF_MEMORY;
+        return ZSASA_ERROR_OUT_OF_MEMORY;
     };
     defer c_allocator.free(r_copy);
 
@@ -113,11 +113,11 @@ export fn freesasa_calc_sr(
     // Calculate SASA
     const result = if (n_threads == 1)
         shrake_rupley.calculateSasa(c_allocator, input, config) catch {
-            return FREESASA_ERROR_CALCULATION;
+            return ZSASA_ERROR_CALCULATION;
         }
     else
         shrake_rupley.calculateSasaParallel(c_allocator, input, config, n_threads) catch {
-            return FREESASA_ERROR_CALCULATION;
+            return ZSASA_ERROR_CALCULATION;
         };
     defer {
         // Free the result's internal allocation
@@ -128,7 +128,7 @@ export fn freesasa_calc_sr(
     @memcpy(atom_areas[0..n_atoms], result.atom_areas);
     total_area.* = result.total_area;
 
-    return FREESASA_OK;
+    return ZSASA_OK;
 }
 
 // =============================================================================
@@ -248,7 +248,7 @@ fn calculateBatch(
 ) c_int {
     // Validate input
     if (n_frames == 0 or n_atoms == 0 or param == 0 or probe_radius <= 0.0) {
-        return FREESASA_ERROR_INVALID_INPUT;
+        return ZSASA_ERROR_INVALID_INPUT;
     }
 
     // Determine actual thread count
@@ -259,7 +259,7 @@ fn calculateBatch(
 
     // Convert radii from f32 to f64 (done once, reused for all frames)
     const radii_f64 = c_allocator.alloc(f64, n_atoms) catch {
-        return FREESASA_ERROR_OUT_OF_MEMORY;
+        return ZSASA_ERROR_OUT_OF_MEMORY;
     };
     defer c_allocator.free(radii_f64);
 
@@ -273,7 +273,7 @@ fn calculateBatch(
     // Spawn worker threads
     const thread_count = @min(actual_threads, n_frames);
     const threads = c_allocator.alloc(std.Thread, thread_count) catch {
-        return FREESASA_ERROR_OUT_OF_MEMORY;
+        return ZSASA_ERROR_OUT_OF_MEMORY;
     };
     defer c_allocator.free(threads);
 
@@ -296,7 +296,7 @@ fn calculateBatch(
             for (threads[0..i]) |thread| {
                 thread.join();
             }
-            return FREESASA_ERROR_CALCULATION;
+            return ZSASA_ERROR_CALCULATION;
         };
     }
 
@@ -306,10 +306,10 @@ fn calculateBatch(
     }
 
     if (error_flag.load(.acquire)) {
-        return FREESASA_ERROR_CALCULATION;
+        return ZSASA_ERROR_CALCULATION;
     }
 
-    return FREESASA_OK;
+    return ZSASA_OK;
 }
 
 /// Calculate SASA for multiple frames using Shrake-Rupley algorithm (batch processing).
@@ -332,8 +332,8 @@ fn calculateBatch(
 ///               Layout: [frame0_atom0, frame0_atom1, ..., frame1_atom0, ...]
 ///
 /// Returns:
-///   FREESASA_OK (0) on success, negative error code on failure.
-export fn freesasa_calc_sr_batch(
+///   ZSASA_OK (0) on success, negative error code on failure.
+export fn zsasa_calc_sr_batch(
     coordinates: [*]const f32,
     n_frames: usize,
     n_atoms: usize,
@@ -371,8 +371,8 @@ export fn freesasa_calc_sr_batch(
 ///   atom_areas: Output buffer for per-atom SASA (n_frames * n_atoms elements)
 ///
 /// Returns:
-///   FREESASA_OK (0) on success, negative error code on failure.
-export fn freesasa_calc_lr_batch(
+///   ZSASA_OK (0) on success, negative error code on failure.
+export fn zsasa_calc_lr_batch(
     coordinates: [*]const f32,
     n_frames: usize,
     n_atoms: usize,
@@ -514,7 +514,7 @@ fn calculateBatchF32(
     algorithm: BatchAlgorithm,
 ) c_int {
     if (n_frames == 0 or n_atoms == 0 or param == 0 or probe_radius <= 0.0) {
-        return FREESASA_ERROR_INVALID_INPUT;
+        return ZSASA_ERROR_INVALID_INPUT;
     }
 
     const actual_threads = if (n_threads == 0)
@@ -524,7 +524,7 @@ fn calculateBatchF32(
 
     // Copy radii (kept as f32)
     const radii_f32 = c_allocator.alloc(f32, n_atoms) catch {
-        return FREESASA_ERROR_OUT_OF_MEMORY;
+        return ZSASA_ERROR_OUT_OF_MEMORY;
     };
     defer c_allocator.free(radii_f32);
 
@@ -536,7 +536,7 @@ fn calculateBatchF32(
 
     const thread_count = @min(actual_threads, n_frames);
     const threads = c_allocator.alloc(std.Thread, thread_count) catch {
-        return FREESASA_ERROR_OUT_OF_MEMORY;
+        return ZSASA_ERROR_OUT_OF_MEMORY;
     };
     defer c_allocator.free(threads);
 
@@ -558,7 +558,7 @@ fn calculateBatchF32(
             for (threads[0..i]) |thread| {
                 thread.join();
             }
-            return FREESASA_ERROR_CALCULATION;
+            return ZSASA_ERROR_CALCULATION;
         };
     }
 
@@ -567,17 +567,17 @@ fn calculateBatchF32(
     }
 
     if (error_flag.load(.acquire)) {
-        return FREESASA_ERROR_CALCULATION;
+        return ZSASA_ERROR_CALCULATION;
     }
 
-    return FREESASA_OK;
+    return ZSASA_OK;
 }
 
 /// Calculate SASA for multiple frames using Shrake-Rupley algorithm (pure f32 precision).
 ///
 /// Same as freesasa_calc_sr_batch but uses f32 precision throughout the calculation
 /// for consistency with other f32-based tools (e.g., RustSASA).
-export fn freesasa_calc_sr_batch_f32(
+export fn zsasa_calc_sr_batch_f32(
     coordinates: [*]const f32,
     n_frames: usize,
     n_atoms: usize,
@@ -603,7 +603,7 @@ export fn freesasa_calc_sr_batch_f32(
 /// Calculate SASA for multiple frames using Lee-Richards algorithm (pure f32 precision).
 ///
 /// Same as freesasa_calc_lr_batch but uses f32 precision throughout the calculation.
-export fn freesasa_calc_lr_batch_f32(
+export fn zsasa_calc_lr_batch_f32(
     coordinates: [*]const f32,
     n_frames: usize,
     n_atoms: usize,
@@ -639,8 +639,8 @@ export fn freesasa_calc_lr_batch_f32(
 ///   total_area: Output pointer for total SASA
 ///
 /// Returns:
-///   FREESASA_OK (0) on success, negative error code on failure.
-export fn freesasa_calc_lr(
+///   ZSASA_OK (0) on success, negative error code on failure.
+export fn zsasa_calc_lr(
     x: [*]const f64,
     y: [*]const f64,
     z: [*]const f64,
@@ -654,12 +654,12 @@ export fn freesasa_calc_lr(
 ) callconv(.c) c_int {
     // Validate input
     if (n_atoms == 0 or n_slices == 0 or probe_radius <= 0.0) {
-        return FREESASA_ERROR_INVALID_INPUT;
+        return ZSASA_ERROR_INVALID_INPUT;
     }
 
     // Duplicate radii (AtomInput.r requires []f64 for classifier support)
     const r_copy = c_allocator.dupe(f64, radii[0..n_atoms]) catch {
-        return FREESASA_ERROR_OUT_OF_MEMORY;
+        return ZSASA_ERROR_OUT_OF_MEMORY;
     };
     defer c_allocator.free(r_copy);
 
@@ -680,11 +680,11 @@ export fn freesasa_calc_lr(
     // Calculate SASA
     const result = if (n_threads == 1)
         lee_richards.calculateSasa(c_allocator, input, config) catch {
-            return FREESASA_ERROR_CALCULATION;
+            return ZSASA_ERROR_CALCULATION;
         }
     else
         lee_richards.calculateSasaParallel(c_allocator, input, config, n_threads) catch {
-            return FREESASA_ERROR_CALCULATION;
+            return ZSASA_ERROR_CALCULATION;
         };
     defer {
         // Free the result's internal allocation
@@ -695,7 +695,7 @@ export fn freesasa_calc_lr(
     @memcpy(atom_areas[0..n_atoms], result.atom_areas);
     total_area.* = result.total_area;
 
-    return FREESASA_OK;
+    return ZSASA_OK;
 }
 
 // =============================================================================
@@ -705,9 +705,9 @@ export fn freesasa_calc_lr(
 // Internal helper: get radius by classifier type
 fn getRadiusByClassifier(classifier_type: c_int, residue: []const u8, atom: []const u8) ?f64 {
     return switch (classifier_type) {
-        FREESASA_CLASSIFIER_NACCESS => classifier_naccess.getRadius(residue, atom),
-        FREESASA_CLASSIFIER_PROTOR => classifier_protor.getRadius(residue, atom),
-        FREESASA_CLASSIFIER_OONS => classifier_oons.getRadius(residue, atom),
+        ZSASA_CLASSIFIER_NACCESS => classifier_naccess.getRadius(residue, atom),
+        ZSASA_CLASSIFIER_PROTOR => classifier_protor.getRadius(residue, atom),
+        ZSASA_CLASSIFIER_OONS => classifier_oons.getRadius(residue, atom),
         else => null,
     };
 }
@@ -715,9 +715,9 @@ fn getRadiusByClassifier(classifier_type: c_int, residue: []const u8, atom: []co
 // Internal helper: get class by classifier type
 fn getClassByClassifier(classifier_type: c_int, residue: []const u8, atom: []const u8) classifier.AtomClass {
     return switch (classifier_type) {
-        FREESASA_CLASSIFIER_NACCESS => classifier_naccess.getClass(residue, atom),
-        FREESASA_CLASSIFIER_PROTOR => classifier_protor.getClass(residue, atom),
-        FREESASA_CLASSIFIER_OONS => classifier_oons.getClass(residue, atom),
+        ZSASA_CLASSIFIER_NACCESS => classifier_naccess.getClass(residue, atom),
+        ZSASA_CLASSIFIER_PROTOR => classifier_protor.getClass(residue, atom),
+        ZSASA_CLASSIFIER_OONS => classifier_oons.getClass(residue, atom),
         else => .unknown,
     };
 }
@@ -725,22 +725,22 @@ fn getClassByClassifier(classifier_type: c_int, residue: []const u8, atom: []con
 // Internal helper: convert AtomClass to C int
 fn atomClassToInt(atom_class: classifier.AtomClass) c_int {
     return switch (atom_class) {
-        .polar => FREESASA_ATOM_CLASS_POLAR,
-        .apolar => FREESASA_ATOM_CLASS_APOLAR,
-        .unknown => FREESASA_ATOM_CLASS_UNKNOWN,
+        .polar => ZSASA_ATOM_CLASS_POLAR,
+        .apolar => ZSASA_ATOM_CLASS_APOLAR,
+        .unknown => ZSASA_ATOM_CLASS_UNKNOWN,
     };
 }
 
 /// Get van der Waals radius for an atom using the specified classifier.
 ///
 /// Parameters:
-///   classifier_type: Classifier to use (FREESASA_CLASSIFIER_NACCESS, etc.)
+///   classifier_type: Classifier to use (ZSASA_CLASSIFIER_NACCESS, etc.)
 ///   residue: Residue name (e.g., "ALA", "GLY") - null-terminated
 ///   atom: Atom name (e.g., "CA", "CB") - null-terminated
 ///
 /// Returns:
 ///   Radius in Angstroms, or NaN if atom is not found in classifier.
-export fn freesasa_classifier_get_radius(
+export fn zsasa_classifier_get_radius(
     classifier_type: c_int,
     residue: [*:0]const u8,
     atom: [*:0]const u8,
@@ -756,13 +756,13 @@ export fn freesasa_classifier_get_radius(
 /// Get atom polarity class using the specified classifier.
 ///
 /// Parameters:
-///   classifier_type: Classifier to use (FREESASA_CLASSIFIER_NACCESS, etc.)
+///   classifier_type: Classifier to use (ZSASA_CLASSIFIER_NACCESS, etc.)
 ///   residue: Residue name (e.g., "ALA", "GLY") - null-terminated
 ///   atom: Atom name (e.g., "CA", "CB") - null-terminated
 ///
 /// Returns:
-///   Atom class (FREESASA_ATOM_CLASS_POLAR, FREESASA_ATOM_CLASS_APOLAR, or FREESASA_ATOM_CLASS_UNKNOWN)
-export fn freesasa_classifier_get_class(
+///   Atom class (ZSASA_ATOM_CLASS_POLAR, ZSASA_ATOM_CLASS_APOLAR, or ZSASA_ATOM_CLASS_UNKNOWN)
+export fn zsasa_classifier_get_class(
     classifier_type: c_int,
     residue: [*:0]const u8,
     atom: [*:0]const u8,
@@ -783,7 +783,7 @@ export fn freesasa_classifier_get_class(
 ///
 /// Returns:
 ///   Radius in Angstroms, or NaN if element is not recognized.
-export fn freesasa_guess_radius(
+export fn zsasa_guess_radius(
     element: [*:0]const u8,
 ) callconv(.c) f64 {
     const element_slice = std.mem.span(element);
@@ -801,7 +801,7 @@ export fn freesasa_guess_radius(
 ///
 /// Returns:
 ///   Radius in Angstroms, or NaN if element cannot be determined.
-export fn freesasa_guess_radius_from_atom_name(
+export fn zsasa_guess_radius_from_atom_name(
     atom_name: [*:0]const u8,
 ) callconv(.c) f64 {
     const atom_slice = std.mem.span(atom_name);
@@ -814,7 +814,7 @@ export fn freesasa_guess_radius_from_atom_name(
 /// for each atom individually.
 ///
 /// Parameters:
-///   classifier_type: Classifier to use (FREESASA_CLASSIFIER_NACCESS, etc.)
+///   classifier_type: Classifier to use (ZSASA_CLASSIFIER_NACCESS, etc.)
 ///   residues: Array of residue name pointers (null-terminated strings)
 ///   atoms: Array of atom name pointers (null-terminated strings)
 ///   n_atoms: Number of atoms
@@ -824,8 +824,8 @@ export fn freesasa_guess_radius_from_atom_name(
 ///                Can be NULL if classes are not needed
 ///
 /// Returns:
-///   FREESASA_OK on success, negative error code on failure.
-export fn freesasa_classify_atoms(
+///   ZSASA_OK on success, negative error code on failure.
+export fn zsasa_classify_atoms(
     classifier_type: c_int,
     residues: [*]const [*:0]const u8,
     atoms: [*]const [*:0]const u8,
@@ -834,12 +834,12 @@ export fn freesasa_classify_atoms(
     classes_out: ?[*]c_int,
 ) callconv(.c) c_int {
     if (n_atoms == 0) {
-        return FREESASA_OK; // Nothing to do
+        return ZSASA_OK; // Nothing to do
     }
 
     // Validate classifier type
-    if (classifier_type < FREESASA_CLASSIFIER_NACCESS or classifier_type > FREESASA_CLASSIFIER_OONS) {
-        return FREESASA_ERROR_INVALID_INPUT;
+    if (classifier_type < ZSASA_CLASSIFIER_NACCESS or classifier_type > ZSASA_CLASSIFIER_OONS) {
+        return ZSASA_ERROR_INVALID_INPUT;
     }
 
     for (0..n_atoms) |i| {
@@ -857,7 +857,7 @@ export fn freesasa_classify_atoms(
         }
     }
 
-    return FREESASA_OK;
+    return ZSASA_OK;
 }
 
 // =============================================================================
@@ -873,7 +873,7 @@ export fn freesasa_classify_atoms(
 ///
 /// Returns:
 ///   Maximum SASA in Angstroms², or NaN if residue is not a standard amino acid.
-export fn freesasa_get_max_sasa(
+export fn zsasa_get_max_sasa(
     residue_name: [*:0]const u8,
 ) callconv(.c) f64 {
     const residue_slice = std.mem.span(residue_name);
@@ -890,7 +890,7 @@ export fn freesasa_get_max_sasa(
 /// Returns:
 ///   RSA value (0.0-1.0+), or NaN if residue is not a standard amino acid.
 ///   Note: RSA > 1.0 is possible for exposed terminal residues.
-export fn freesasa_calculate_rsa(
+export fn zsasa_calculate_rsa(
     sasa: f64,
     residue_name: [*:0]const u8,
 ) callconv(.c) f64 {
@@ -912,8 +912,8 @@ export fn freesasa_calculate_rsa(
 ///            NaN is written for non-standard amino acids
 ///
 /// Returns:
-///   FREESASA_OK on success.
-export fn freesasa_calculate_rsa_batch(
+///   ZSASA_OK on success.
+export fn zsasa_calculate_rsa_batch(
     sasas: [*]const f64,
     residue_names: [*]const [*:0]const u8,
     n_residues: usize,
@@ -932,18 +932,18 @@ export fn freesasa_calculate_rsa_batch(
             rsa_out[i] = std.math.nan(f64);
         }
     }
-    return FREESASA_OK;
+    return ZSASA_OK;
 }
 
 // Tests
 test "freesasa_version returns valid string" {
-    const version = freesasa_version();
+    const version = zsasa_version();
     try std.testing.expect(version[0] != 0);
 }
 
 test "freesasa_calc_sr with empty input returns error" {
     var total_area: f64 = 0.0;
-    const result = freesasa_calc_sr(
+    const result = zsasa_calc_sr(
         undefined,
         undefined,
         undefined,
@@ -955,7 +955,7 @@ test "freesasa_calc_sr with empty input returns error" {
         undefined,
         &total_area,
     );
-    try std.testing.expectEqual(FREESASA_ERROR_INVALID_INPUT, result);
+    try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, result);
 }
 
 test "freesasa_calc_sr single atom" {
@@ -966,7 +966,7 @@ test "freesasa_calc_sr single atom" {
     var atom_areas = [_]f64{0.0};
     var total_area: f64 = 0.0;
 
-    const result = freesasa_calc_sr(
+    const result = zsasa_calc_sr(
         &x,
         &y,
         &z,
@@ -979,7 +979,7 @@ test "freesasa_calc_sr single atom" {
         &total_area,
     );
 
-    try std.testing.expectEqual(FREESASA_OK, result);
+    try std.testing.expectEqual(ZSASA_OK, result);
     // Expected: 4π * (1.5 + 1.4)² ≈ 105.68 Ų
     try std.testing.expect(total_area > 100.0 and total_area < 110.0);
     try std.testing.expectEqual(total_area, atom_areas[0]);
@@ -993,7 +993,7 @@ test "freesasa_calc_lr single atom" {
     var atom_areas = [_]f64{0.0};
     var total_area: f64 = 0.0;
 
-    const result = freesasa_calc_lr(
+    const result = zsasa_calc_lr(
         &x,
         &y,
         &z,
@@ -1006,7 +1006,7 @@ test "freesasa_calc_lr single atom" {
         &total_area,
     );
 
-    try std.testing.expectEqual(FREESASA_OK, result);
+    try std.testing.expectEqual(ZSASA_OK, result);
     // Expected: 4π * (1.5 + 1.4)² ≈ 105.68 Ų
     try std.testing.expect(total_area > 100.0 and total_area < 110.0);
     try std.testing.expectEqual(total_area, atom_areas[0]);
@@ -1018,81 +1018,81 @@ test "freesasa_calc_lr single atom" {
 
 test "freesasa_classifier_get_radius NACCESS" {
     // Standard backbone atoms
-    const ca_radius = freesasa_classifier_get_radius(FREESASA_CLASSIFIER_NACCESS, "ALA", "CA");
+    const ca_radius = zsasa_classifier_get_radius(ZSASA_CLASSIFIER_NACCESS, "ALA", "CA");
     try std.testing.expectApproxEqAbs(1.87, ca_radius, 0.01);
 
-    const n_radius = freesasa_classifier_get_radius(FREESASA_CLASSIFIER_NACCESS, "ALA", "N");
+    const n_radius = zsasa_classifier_get_radius(ZSASA_CLASSIFIER_NACCESS, "ALA", "N");
     try std.testing.expectApproxEqAbs(1.65, n_radius, 0.01);
 
-    const o_radius = freesasa_classifier_get_radius(FREESASA_CLASSIFIER_NACCESS, "ALA", "O");
+    const o_radius = zsasa_classifier_get_radius(ZSASA_CLASSIFIER_NACCESS, "ALA", "O");
     try std.testing.expectApproxEqAbs(1.40, o_radius, 0.01);
 
     // Unknown atom should return NaN
-    const unknown = freesasa_classifier_get_radius(FREESASA_CLASSIFIER_NACCESS, "ALA", "XX");
+    const unknown = zsasa_classifier_get_radius(ZSASA_CLASSIFIER_NACCESS, "ALA", "XX");
     try std.testing.expect(std.math.isNan(unknown));
 }
 
 test "freesasa_classifier_get_radius ProtoR" {
-    const ca_radius = freesasa_classifier_get_radius(FREESASA_CLASSIFIER_PROTOR, "ALA", "CA");
+    const ca_radius = zsasa_classifier_get_radius(ZSASA_CLASSIFIER_PROTOR, "ALA", "CA");
     try std.testing.expect(ca_radius > 1.0 and ca_radius < 3.0);
 }
 
 test "freesasa_classifier_get_radius OONS" {
-    const ca_radius = freesasa_classifier_get_radius(FREESASA_CLASSIFIER_OONS, "ALA", "CA");
+    const ca_radius = zsasa_classifier_get_radius(ZSASA_CLASSIFIER_OONS, "ALA", "CA");
     try std.testing.expect(ca_radius > 1.0 and ca_radius < 3.0);
 }
 
 test "freesasa_classifier_get_radius invalid classifier" {
-    const radius = freesasa_classifier_get_radius(99, "ALA", "CA");
+    const radius = zsasa_classifier_get_radius(99, "ALA", "CA");
     try std.testing.expect(std.math.isNan(radius));
 }
 
 test "freesasa_classifier_get_class" {
     // Carbon atoms are apolar
-    const ca_class = freesasa_classifier_get_class(FREESASA_CLASSIFIER_NACCESS, "ALA", "CA");
-    try std.testing.expectEqual(FREESASA_ATOM_CLASS_APOLAR, ca_class);
+    const ca_class = zsasa_classifier_get_class(ZSASA_CLASSIFIER_NACCESS, "ALA", "CA");
+    try std.testing.expectEqual(ZSASA_ATOM_CLASS_APOLAR, ca_class);
 
     // Oxygen atoms are polar
-    const o_class = freesasa_classifier_get_class(FREESASA_CLASSIFIER_NACCESS, "ALA", "O");
-    try std.testing.expectEqual(FREESASA_ATOM_CLASS_POLAR, o_class);
+    const o_class = zsasa_classifier_get_class(ZSASA_CLASSIFIER_NACCESS, "ALA", "O");
+    try std.testing.expectEqual(ZSASA_ATOM_CLASS_POLAR, o_class);
 
     // Nitrogen atoms are polar
-    const n_class = freesasa_classifier_get_class(FREESASA_CLASSIFIER_NACCESS, "ALA", "N");
-    try std.testing.expectEqual(FREESASA_ATOM_CLASS_POLAR, n_class);
+    const n_class = zsasa_classifier_get_class(ZSASA_CLASSIFIER_NACCESS, "ALA", "N");
+    try std.testing.expectEqual(ZSASA_ATOM_CLASS_POLAR, n_class);
 
     // Unknown atoms
-    const unknown_class = freesasa_classifier_get_class(FREESASA_CLASSIFIER_NACCESS, "ALA", "XX");
-    try std.testing.expectEqual(FREESASA_ATOM_CLASS_UNKNOWN, unknown_class);
+    const unknown_class = zsasa_classifier_get_class(ZSASA_CLASSIFIER_NACCESS, "ALA", "XX");
+    try std.testing.expectEqual(ZSASA_ATOM_CLASS_UNKNOWN, unknown_class);
 }
 
 test "freesasa_guess_radius" {
     // Common elements
-    try std.testing.expectApproxEqAbs(1.70, freesasa_guess_radius("C"), 0.01);
-    try std.testing.expectApproxEqAbs(1.55, freesasa_guess_radius("N"), 0.01);
-    try std.testing.expectApproxEqAbs(1.52, freesasa_guess_radius("O"), 0.01);
-    try std.testing.expectApproxEqAbs(1.80, freesasa_guess_radius("S"), 0.01);
+    try std.testing.expectApproxEqAbs(1.70, zsasa_guess_radius("C"), 0.01);
+    try std.testing.expectApproxEqAbs(1.55, zsasa_guess_radius("N"), 0.01);
+    try std.testing.expectApproxEqAbs(1.52, zsasa_guess_radius("O"), 0.01);
+    try std.testing.expectApproxEqAbs(1.80, zsasa_guess_radius("S"), 0.01);
 
     // Case insensitive
-    try std.testing.expectApproxEqAbs(1.70, freesasa_guess_radius("c"), 0.01);
+    try std.testing.expectApproxEqAbs(1.70, zsasa_guess_radius("c"), 0.01);
 
     // Two-character elements
-    try std.testing.expectApproxEqAbs(1.26, freesasa_guess_radius("FE"), 0.01);
-    try std.testing.expectApproxEqAbs(1.39, freesasa_guess_radius("ZN"), 0.01);
+    try std.testing.expectApproxEqAbs(1.26, zsasa_guess_radius("FE"), 0.01);
+    try std.testing.expectApproxEqAbs(1.39, zsasa_guess_radius("ZN"), 0.01);
 
     // Unknown element returns NaN
-    const unknown = freesasa_guess_radius("XX");
+    const unknown = zsasa_guess_radius("XX");
     try std.testing.expect(std.math.isNan(unknown));
 }
 
 test "freesasa_guess_radius_from_atom_name" {
     // Standard PDB atom names (leading space = single-char element)
-    try std.testing.expectApproxEqAbs(1.70, freesasa_guess_radius_from_atom_name(" CA "), 0.01);
-    try std.testing.expectApproxEqAbs(1.55, freesasa_guess_radius_from_atom_name(" N  "), 0.01);
-    try std.testing.expectApproxEqAbs(1.52, freesasa_guess_radius_from_atom_name(" O  "), 0.01);
+    try std.testing.expectApproxEqAbs(1.70, zsasa_guess_radius_from_atom_name(" CA "), 0.01);
+    try std.testing.expectApproxEqAbs(1.55, zsasa_guess_radius_from_atom_name(" N  "), 0.01);
+    try std.testing.expectApproxEqAbs(1.52, zsasa_guess_radius_from_atom_name(" O  "), 0.01);
 
     // Metal atoms (no leading space = 2-char element)
-    try std.testing.expectApproxEqAbs(1.26, freesasa_guess_radius_from_atom_name("FE  "), 0.01);
-    try std.testing.expectApproxEqAbs(1.39, freesasa_guess_radius_from_atom_name("ZN  "), 0.01);
+    try std.testing.expectApproxEqAbs(1.26, zsasa_guess_radius_from_atom_name("FE  "), 0.01);
+    try std.testing.expectApproxEqAbs(1.39, zsasa_guess_radius_from_atom_name("ZN  "), 0.01);
 }
 
 test "freesasa_classify_atoms batch" {
@@ -1101,8 +1101,8 @@ test "freesasa_classify_atoms batch" {
     var radii: [3]f64 = undefined;
     var classes: [3]c_int = undefined;
 
-    const result = freesasa_classify_atoms(
-        FREESASA_CLASSIFIER_NACCESS,
+    const result = zsasa_classify_atoms(
+        ZSASA_CLASSIFIER_NACCESS,
         &residues,
         &atoms,
         3,
@@ -1110,7 +1110,7 @@ test "freesasa_classify_atoms batch" {
         &classes,
     );
 
-    try std.testing.expectEqual(FREESASA_OK, result);
+    try std.testing.expectEqual(ZSASA_OK, result);
 
     // Check radii
     try std.testing.expectApproxEqAbs(1.87, radii[0], 0.01); // CA
@@ -1118,9 +1118,9 @@ test "freesasa_classify_atoms batch" {
     try std.testing.expectApproxEqAbs(1.65, radii[2], 0.01); // N
 
     // Check classes
-    try std.testing.expectEqual(FREESASA_ATOM_CLASS_APOLAR, classes[0]); // CA
-    try std.testing.expectEqual(FREESASA_ATOM_CLASS_POLAR, classes[1]); // O
-    try std.testing.expectEqual(FREESASA_ATOM_CLASS_POLAR, classes[2]); // N
+    try std.testing.expectEqual(ZSASA_ATOM_CLASS_APOLAR, classes[0]); // CA
+    try std.testing.expectEqual(ZSASA_ATOM_CLASS_POLAR, classes[1]); // O
+    try std.testing.expectEqual(ZSASA_ATOM_CLASS_POLAR, classes[2]); // N
 }
 
 test "freesasa_classify_atoms without classes" {
@@ -1128,8 +1128,8 @@ test "freesasa_classify_atoms without classes" {
     const atoms = [_][*:0]const u8{ "CA", "CB" };
     var radii: [2]f64 = undefined;
 
-    const result = freesasa_classify_atoms(
-        FREESASA_CLASSIFIER_NACCESS,
+    const result = zsasa_classify_atoms(
+        ZSASA_CLASSIFIER_NACCESS,
         &residues,
         &atoms,
         2,
@@ -1137,7 +1137,7 @@ test "freesasa_classify_atoms without classes" {
         null, // classes_out is null
     );
 
-    try std.testing.expectEqual(FREESASA_OK, result);
+    try std.testing.expectEqual(ZSASA_OK, result);
     try std.testing.expectApproxEqAbs(1.87, radii[0], 0.01);
     try std.testing.expectApproxEqAbs(1.87, radii[1], 0.01);
 }
@@ -1147,8 +1147,8 @@ test "freesasa_classify_atoms empty" {
     const residues: [*]const [*:0]const u8 = undefined;
     const atoms: [*]const [*:0]const u8 = undefined;
 
-    const result = freesasa_classify_atoms(
-        FREESASA_CLASSIFIER_NACCESS,
+    const result = zsasa_classify_atoms(
+        ZSASA_CLASSIFIER_NACCESS,
         residues,
         atoms,
         0,
@@ -1156,7 +1156,7 @@ test "freesasa_classify_atoms empty" {
         null,
     );
 
-    try std.testing.expectEqual(FREESASA_OK, result);
+    try std.testing.expectEqual(ZSASA_OK, result);
 }
 
 test "freesasa_classify_atoms invalid classifier" {
@@ -1164,7 +1164,7 @@ test "freesasa_classify_atoms invalid classifier" {
     const atoms = [_][*:0]const u8{"CA"};
     var radii: [1]f64 = undefined;
 
-    const result = freesasa_classify_atoms(
+    const result = zsasa_classify_atoms(
         99, // Invalid classifier type
         &residues,
         &atoms,
@@ -1173,7 +1173,7 @@ test "freesasa_classify_atoms invalid classifier" {
         null,
     );
 
-    try std.testing.expectEqual(FREESASA_ERROR_INVALID_INPUT, result);
+    try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, result);
 }
 
 // =============================================================================
@@ -1182,38 +1182,38 @@ test "freesasa_classify_atoms invalid classifier" {
 
 test "freesasa_get_max_sasa standard amino acids" {
     // Test known amino acids (values from Tien et al. 2013)
-    try std.testing.expectApproxEqAbs(129.0, freesasa_get_max_sasa("ALA"), 0.01);
-    try std.testing.expectApproxEqAbs(104.0, freesasa_get_max_sasa("GLY"), 0.01);
-    try std.testing.expectApproxEqAbs(285.0, freesasa_get_max_sasa("TRP"), 0.01);
-    try std.testing.expectApproxEqAbs(274.0, freesasa_get_max_sasa("ARG"), 0.01);
-    try std.testing.expectApproxEqAbs(193.0, freesasa_get_max_sasa("ASP"), 0.01);
+    try std.testing.expectApproxEqAbs(129.0, zsasa_get_max_sasa("ALA"), 0.01);
+    try std.testing.expectApproxEqAbs(104.0, zsasa_get_max_sasa("GLY"), 0.01);
+    try std.testing.expectApproxEqAbs(285.0, zsasa_get_max_sasa("TRP"), 0.01);
+    try std.testing.expectApproxEqAbs(274.0, zsasa_get_max_sasa("ARG"), 0.01);
+    try std.testing.expectApproxEqAbs(193.0, zsasa_get_max_sasa("ASP"), 0.01);
 }
 
 test "freesasa_get_max_sasa unknown residue" {
-    const unknown = freesasa_get_max_sasa("XXX");
+    const unknown = zsasa_get_max_sasa("XXX");
     try std.testing.expect(std.math.isNan(unknown));
 
-    const water = freesasa_get_max_sasa("HOH");
+    const water = zsasa_get_max_sasa("HOH");
     try std.testing.expect(std.math.isNan(water));
 }
 
 test "freesasa_calculate_rsa" {
     // ALA: RSA = 64.5 / 129.0 = 0.5
-    const rsa_ala = freesasa_calculate_rsa(64.5, "ALA");
+    const rsa_ala = zsasa_calculate_rsa(64.5, "ALA");
     try std.testing.expectApproxEqAbs(0.5, rsa_ala, 0.001);
 
     // GLY: RSA = 52.0 / 104.0 = 0.5
-    const rsa_gly = freesasa_calculate_rsa(52.0, "GLY");
+    const rsa_gly = zsasa_calculate_rsa(52.0, "GLY");
     try std.testing.expectApproxEqAbs(0.5, rsa_gly, 0.001);
 
     // RSA > 1.0 is possible for exposed terminal residues
-    const rsa_exposed = freesasa_calculate_rsa(150.0, "GLY");
+    const rsa_exposed = zsasa_calculate_rsa(150.0, "GLY");
     try std.testing.expect(rsa_exposed > 1.0);
     try std.testing.expectApproxEqAbs(150.0 / 104.0, rsa_exposed, 0.001);
 }
 
 test "freesasa_calculate_rsa unknown residue" {
-    const rsa = freesasa_calculate_rsa(100.0, "XXX");
+    const rsa = zsasa_calculate_rsa(100.0, "XXX");
     try std.testing.expect(std.math.isNan(rsa));
 }
 
@@ -1222,9 +1222,9 @@ test "freesasa_calculate_rsa_batch" {
     const residues = [_][*:0]const u8{ "ALA", "GLY", "TRP" };
     var rsa_out: [3]f64 = undefined;
 
-    const result = freesasa_calculate_rsa_batch(&sasas, &residues, 3, &rsa_out);
+    const result = zsasa_calculate_rsa_batch(&sasas, &residues, 3, &rsa_out);
 
-    try std.testing.expectEqual(FREESASA_OK, result);
+    try std.testing.expectEqual(ZSASA_OK, result);
     try std.testing.expectApproxEqAbs(0.5, rsa_out[0], 0.001); // ALA: 64.5/129
     try std.testing.expectApproxEqAbs(0.5, rsa_out[1], 0.001); // GLY: 52/104
     try std.testing.expectApproxEqAbs(0.5, rsa_out[2], 0.001); // TRP: 142.5/285
@@ -1235,9 +1235,9 @@ test "freesasa_calculate_rsa_batch with unknown" {
     const residues = [_][*:0]const u8{ "ALA", "HOH" };
     var rsa_out: [2]f64 = undefined;
 
-    const result = freesasa_calculate_rsa_batch(&sasas, &residues, 2, &rsa_out);
+    const result = zsasa_calculate_rsa_batch(&sasas, &residues, 2, &rsa_out);
 
-    try std.testing.expectEqual(FREESASA_OK, result);
+    try std.testing.expectEqual(ZSASA_OK, result);
     try std.testing.expectApproxEqAbs(0.5, rsa_out[0], 0.001); // ALA: known
     try std.testing.expect(std.math.isNan(rsa_out[1])); // HOH: unknown
 }

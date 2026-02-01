@@ -491,7 +491,7 @@ fn parseArgs(args: []const []const u8) Args {
 
 fn printHelp(program_name: []const u8) void {
     std.debug.print(
-        \\freesasa_zig {s} - Solvent Accessible Surface Area calculator
+        \\zsasa {s} - Solvent Accessible Surface Area calculator
         \\
         \\USAGE:
         \\    {s} [OPTIONS] <input> [output.json]
@@ -569,7 +569,7 @@ fn printHelp(program_name: []const u8) void {
 }
 
 fn printVersion() void {
-    std.debug.print("freesasa_zig {s}\n", .{version});
+    std.debug.print("zsasa {s}\n", .{version});
 }
 
 /// Apply a custom classifier to input, replacing radii based on residue/atom names
@@ -1072,7 +1072,7 @@ pub fn main() !void {
 
 // Tests for argument parsing
 test "parseArgs defaults" {
-    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const args = [_][]const u8{ "zsasa", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
@@ -1086,7 +1086,7 @@ test "parseArgs defaults" {
 }
 
 test "parseArgs with output path" {
-    const args = [_][]const u8{ "freesasa_zig", "input.json", "result.json" };
+    const args = [_][]const u8{ "zsasa", "input.json", "result.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
@@ -1094,7 +1094,7 @@ test "parseArgs with output path" {
 }
 
 test "parseArgs --threads=N" {
-    const args = [_][]const u8{ "freesasa_zig", "--threads=4", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--threads=4", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(@as(usize, 4), parsed.n_threads);
@@ -1102,56 +1102,56 @@ test "parseArgs --threads=N" {
 }
 
 test "parseArgs --probe-radius=R" {
-    const args = [_][]const u8{ "freesasa_zig", "--probe-radius=1.5", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--probe-radius=1.5", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(@as(f64, 1.5), parsed.probe_radius);
 }
 
 test "parseArgs --n-points=N" {
-    const args = [_][]const u8{ "freesasa_zig", "--n-points=200", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--n-points=200", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(@as(u32, 200), parsed.n_points);
 }
 
 test "parseArgs --quiet" {
-    const args = [_][]const u8{ "freesasa_zig", "--quiet", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--quiet", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(true, parsed.quiet);
 }
 
 test "parseArgs -q" {
-    const args = [_][]const u8{ "freesasa_zig", "-q", "input.json" };
+    const args = [_][]const u8{ "zsasa", "-q", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(true, parsed.quiet);
 }
 
 test "parseArgs --help" {
-    const args = [_][]const u8{ "freesasa_zig", "--help" };
+    const args = [_][]const u8{ "zsasa", "--help" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(true, parsed.show_help);
 }
 
 test "parseArgs -h" {
-    const args = [_][]const u8{ "freesasa_zig", "-h" };
+    const args = [_][]const u8{ "zsasa", "-h" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(true, parsed.show_help);
 }
 
 test "parseArgs --version" {
-    const args = [_][]const u8{ "freesasa_zig", "--version" };
+    const args = [_][]const u8{ "zsasa", "--version" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(true, parsed.show_version);
 }
 
 test "parseArgs -V" {
-    const args = [_][]const u8{ "freesasa_zig", "-V" };
+    const args = [_][]const u8{ "zsasa", "-V" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(true, parsed.show_version);
@@ -1159,7 +1159,7 @@ test "parseArgs -V" {
 
 test "parseArgs multiple options" {
     const args = [_][]const u8{
-        "freesasa_zig",
+        "zsasa",
         "--threads=8",
         "--probe-radius=1.6",
         "--n-points=150",
@@ -1179,7 +1179,7 @@ test "parseArgs multiple options" {
 
 // Tests for space-separated option syntax
 test "parseArgs --threads N (space-separated)" {
-    const args = [_][]const u8{ "freesasa_zig", "--threads", "4", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--threads", "4", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(@as(usize, 4), parsed.n_threads);
@@ -1187,14 +1187,14 @@ test "parseArgs --threads N (space-separated)" {
 }
 
 test "parseArgs --probe-radius R (space-separated)" {
-    const args = [_][]const u8{ "freesasa_zig", "--probe-radius", "1.5", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--probe-radius", "1.5", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(@as(f64, 1.5), parsed.probe_radius);
 }
 
 test "parseArgs --n-points N (space-separated)" {
-    const args = [_][]const u8{ "freesasa_zig", "--n-points", "200", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--n-points", "200", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(@as(u32, 200), parsed.n_points);
@@ -1202,42 +1202,42 @@ test "parseArgs --n-points N (space-separated)" {
 
 // Tests for --format option
 test "parseArgs --format=json" {
-    const args = [_][]const u8{ "freesasa_zig", "--format=json", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--format=json", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(OutputFormat.json, parsed.output_format);
 }
 
 test "parseArgs --format=compact" {
-    const args = [_][]const u8{ "freesasa_zig", "--format=compact", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--format=compact", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(OutputFormat.compact, parsed.output_format);
 }
 
 test "parseArgs --format=csv" {
-    const args = [_][]const u8{ "freesasa_zig", "--format=csv", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--format=csv", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(OutputFormat.csv, parsed.output_format);
 }
 
 test "parseArgs --format csv (space-separated)" {
-    const args = [_][]const u8{ "freesasa_zig", "--format", "csv", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--format", "csv", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(OutputFormat.csv, parsed.output_format);
 }
 
 test "parseArgs default format is json" {
-    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const args = [_][]const u8{ "zsasa", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(OutputFormat.json, parsed.output_format);
 }
 
 test "parseArgs --validate" {
-    const args = [_][]const u8{ "freesasa_zig", "--validate", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--validate", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(true, parsed.validate_only);
@@ -1245,7 +1245,7 @@ test "parseArgs --validate" {
 }
 
 test "parseArgs default validate_only is false" {
-    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const args = [_][]const u8{ "zsasa", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(false, parsed.validate_only);
@@ -1253,42 +1253,42 @@ test "parseArgs default validate_only is false" {
 
 // Tests for --algorithm option
 test "parseArgs default algorithm is sr" {
-    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const args = [_][]const u8{ "zsasa", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Algorithm.sr, parsed.algorithm);
 }
 
 test "parseArgs --algorithm=sr" {
-    const args = [_][]const u8{ "freesasa_zig", "--algorithm=sr", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--algorithm=sr", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Algorithm.sr, parsed.algorithm);
 }
 
 test "parseArgs --algorithm=lr" {
-    const args = [_][]const u8{ "freesasa_zig", "--algorithm=lr", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--algorithm=lr", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Algorithm.lr, parsed.algorithm);
 }
 
 test "parseArgs --algorithm=shrake-rupley" {
-    const args = [_][]const u8{ "freesasa_zig", "--algorithm=shrake-rupley", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--algorithm=shrake-rupley", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Algorithm.sr, parsed.algorithm);
 }
 
 test "parseArgs --algorithm=lee-richards" {
-    const args = [_][]const u8{ "freesasa_zig", "--algorithm=lee-richards", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--algorithm=lee-richards", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Algorithm.lr, parsed.algorithm);
 }
 
 test "parseArgs --algorithm lr (space-separated)" {
-    const args = [_][]const u8{ "freesasa_zig", "--algorithm", "lr", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--algorithm", "lr", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Algorithm.lr, parsed.algorithm);
@@ -1296,28 +1296,28 @@ test "parseArgs --algorithm lr (space-separated)" {
 
 // Tests for --n-slices option
 test "parseArgs default n_slices is 20" {
-    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const args = [_][]const u8{ "zsasa", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(@as(u32, 20), parsed.n_slices);
 }
 
 test "parseArgs --n-slices=50" {
-    const args = [_][]const u8{ "freesasa_zig", "--n-slices=50", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--n-slices=50", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(@as(u32, 50), parsed.n_slices);
 }
 
 test "parseArgs --n-slices 100 (space-separated)" {
-    const args = [_][]const u8{ "freesasa_zig", "--n-slices", "100", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--n-slices", "100", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(@as(u32, 100), parsed.n_slices);
 }
 
 test "parseArgs combined algorithm and n-slices" {
-    const args = [_][]const u8{ "freesasa_zig", "--algorithm=lr", "--n-slices=50", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--algorithm=lr", "--n-slices=50", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Algorithm.lr, parsed.algorithm);
@@ -1326,35 +1326,35 @@ test "parseArgs combined algorithm and n-slices" {
 
 // Tests for --classifier option
 test "parseArgs default classifier_type is null" {
-    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const args = [_][]const u8{ "zsasa", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(@as(?ClassifierType, null), parsed.classifier_type);
 }
 
 test "parseArgs --classifier=naccess" {
-    const args = [_][]const u8{ "freesasa_zig", "--classifier=naccess", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--classifier=naccess", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(ClassifierType.naccess, parsed.classifier_type.?);
 }
 
 test "parseArgs --classifier=protor" {
-    const args = [_][]const u8{ "freesasa_zig", "--classifier=protor", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--classifier=protor", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(ClassifierType.protor, parsed.classifier_type.?);
 }
 
 test "parseArgs --classifier=oons" {
-    const args = [_][]const u8{ "freesasa_zig", "--classifier=oons", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--classifier=oons", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(ClassifierType.oons, parsed.classifier_type.?);
 }
 
 test "parseArgs --classifier protor (space-separated)" {
-    const args = [_][]const u8{ "freesasa_zig", "--classifier", "protor", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--classifier", "protor", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(ClassifierType.protor, parsed.classifier_type.?);
@@ -1362,28 +1362,28 @@ test "parseArgs --classifier protor (space-separated)" {
 
 // Tests for --config option
 test "parseArgs default config_path is null" {
-    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const args = [_][]const u8{ "zsasa", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(@as(?[]const u8, null), parsed.config_path);
 }
 
 test "parseArgs --config=custom.config" {
-    const args = [_][]const u8{ "freesasa_zig", "--config=custom.config", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--config=custom.config", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqualStrings("custom.config", parsed.config_path.?);
 }
 
 test "parseArgs --config custom.config (space-separated)" {
-    const args = [_][]const u8{ "freesasa_zig", "--config", "custom.config", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--config", "custom.config", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqualStrings("custom.config", parsed.config_path.?);
 }
 
 test "parseArgs combined classifier and config (config takes precedence)" {
-    const args = [_][]const u8{ "freesasa_zig", "--classifier=naccess", "--config=custom.config", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--classifier=naccess", "--config=custom.config", "input.json" };
     const parsed = parseArgs(&args);
 
     // Both are set - config should take precedence in main() logic
@@ -1393,14 +1393,14 @@ test "parseArgs combined classifier and config (config takes precedence)" {
 
 // Tests for --timing option
 test "parseArgs default show_timing is false" {
-    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const args = [_][]const u8{ "zsasa", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(false, parsed.show_timing);
 }
 
 test "parseArgs --timing" {
-    const args = [_][]const u8{ "freesasa_zig", "--timing", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--timing", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(true, parsed.show_timing);
@@ -1408,7 +1408,7 @@ test "parseArgs --timing" {
 }
 
 test "parseArgs -o FILE" {
-    const args = [_][]const u8{ "freesasa_zig", "-o", "result.csv", "input.json" };
+    const args = [_][]const u8{ "zsasa", "-o", "result.csv", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
@@ -1417,7 +1417,7 @@ test "parseArgs -o FILE" {
 }
 
 test "parseArgs --output=FILE" {
-    const args = [_][]const u8{ "freesasa_zig", "--output=result.csv", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--output=result.csv", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
@@ -1426,7 +1426,7 @@ test "parseArgs --output=FILE" {
 }
 
 test "parseArgs --output FILE (space-separated)" {
-    const args = [_][]const u8{ "freesasa_zig", "--output", "result.csv", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--output", "result.csv", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
@@ -1436,54 +1436,54 @@ test "parseArgs --output FILE (space-separated)" {
 
 test "parseArgs -o takes precedence over positional output" {
     // -o before positional
-    const args1 = [_][]const u8{ "freesasa_zig", "-o", "explicit.json", "input.json", "positional.json" };
+    const args1 = [_][]const u8{ "zsasa", "-o", "explicit.json", "input.json", "positional.json" };
     const parsed1 = parseArgs(&args1);
     try std.testing.expectEqualStrings("explicit.json", parsed1.output_path);
 
     // -o after positional (should still win)
-    const args2 = [_][]const u8{ "freesasa_zig", "input.json", "positional.json", "-o", "explicit.json" };
+    const args2 = [_][]const u8{ "zsasa", "input.json", "positional.json", "-o", "explicit.json" };
     const parsed2 = parseArgs(&args2);
     try std.testing.expectEqualStrings("explicit.json", parsed2.output_path);
 }
 
 // Tests for --precision option
 test "parseArgs default precision is f64" {
-    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const args = [_][]const u8{ "zsasa", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Precision.f64, parsed.precision);
 }
 
 test "parseArgs --precision=f32" {
-    const args = [_][]const u8{ "freesasa_zig", "--precision=f32", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--precision=f32", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Precision.f32, parsed.precision);
 }
 
 test "parseArgs --precision=f64" {
-    const args = [_][]const u8{ "freesasa_zig", "--precision=f64", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--precision=f64", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Precision.f64, parsed.precision);
 }
 
 test "parseArgs --precision f32 (space-separated)" {
-    const args = [_][]const u8{ "freesasa_zig", "--precision", "f32", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--precision", "f32", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Precision.f32, parsed.precision);
 }
 
 test "parseArgs --precision=single" {
-    const args = [_][]const u8{ "freesasa_zig", "--precision=single", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--precision=single", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Precision.f32, parsed.precision);
 }
 
 test "parseArgs --precision=double" {
-    const args = [_][]const u8{ "freesasa_zig", "--precision=double", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--precision=double", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Precision.f64, parsed.precision);
@@ -1491,35 +1491,35 @@ test "parseArgs --precision=double" {
 
 // Tests for --parallelism option
 test "parseArgs --parallelism default is file" {
-    const args = [_][]const u8{ "freesasa_zig", "input.json" };
+    const args = [_][]const u8{ "zsasa", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Parallelism.file, parsed.parallelism);
 }
 
 test "parseArgs --parallelism=file" {
-    const args = [_][]const u8{ "freesasa_zig", "--parallelism=file", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--parallelism=file", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Parallelism.file, parsed.parallelism);
 }
 
 test "parseArgs --parallelism=atom" {
-    const args = [_][]const u8{ "freesasa_zig", "--parallelism=atom", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--parallelism=atom", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Parallelism.atom, parsed.parallelism);
 }
 
 test "parseArgs --parallelism atom (space-separated)" {
-    const args = [_][]const u8{ "freesasa_zig", "--parallelism", "atom", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--parallelism", "atom", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Parallelism.atom, parsed.parallelism);
 }
 
 test "parseArgs --parallelism=pipeline" {
-    const args = [_][]const u8{ "freesasa_zig", "--parallelism=pipeline", "input.json" };
+    const args = [_][]const u8{ "zsasa", "--parallelism=pipeline", "input.json" };
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Parallelism.pipeline, parsed.parallelism);

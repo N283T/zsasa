@@ -47,10 +47,10 @@ jobs:
         include:
           - os: ubuntu-latest
             name: Linux
-            binary: freesasa_zig
+            binary: zsasa
           - os: macos-latest
             name: macOS
-            binary: freesasa_zig
+            binary: zsasa
 
     runs-on: ${{ matrix.os }}
     name: Build (${{ matrix.name }})
@@ -109,7 +109,7 @@ jobs:
 
       - name: Run with example input
         run: |
-          ./zig-out/bin/freesasa_zig examples/1ubq.pdb /tmp/output.json
+          ./zig-out/bin/zsasa examples/1ubq.pdb /tmp/output.json
           cat /tmp/output.json | head -20
 
       - name: Validate output format
@@ -128,12 +128,12 @@ jobs:
 
       - name: Test CSV output
         run: |
-          ./zig-out/bin/freesasa_zig --format=csv examples/1ubq.pdb /tmp/output.csv
+          ./zig-out/bin/zsasa --format=csv examples/1ubq.pdb /tmp/output.csv
           head -5 /tmp/output.csv
           tail -3 /tmp/output.csv
 
       - name: Test validate mode
-        run: ./zig-out/bin/freesasa_zig --validate examples/1ubq.pdb
+        run: ./zig-out/bin/zsasa --validate examples/1ubq.pdb
 
   python:
     strategy:
@@ -142,10 +142,10 @@ jobs:
         include:
           - os: ubuntu-latest
             name: Linux
-            lib: libfreesasa_zig.so
+            lib: libzsasa.so
           - os: macos-latest
             name: macOS
-            lib: libfreesasa_zig.dylib
+            lib: libzsasa.dylib
 
     runs-on: ${{ matrix.os }}
     name: Python (${{ matrix.name }})
@@ -193,14 +193,14 @@ jobs:
       - name: Run linter
         working-directory: python
         run: |
-          ruff check freesasa_zig/
-          ruff format --check freesasa_zig/
+          ruff check zsasa/
+          ruff format --check zsasa/
 
       - name: Test import and basic usage
         run: |
           python3 -c "
           import numpy as np
-          from freesasa_zig import calculate_sasa, get_version
+          from zsasa import calculate_sasa, get_version
 
           print(f'Version: {get_version()}')
 

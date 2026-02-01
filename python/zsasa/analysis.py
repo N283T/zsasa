@@ -4,8 +4,8 @@ This module provides functions to aggregate per-atom SASA values to
 per-residue values and calculate RSA (Relative Solvent Accessibility).
 
 Example:
-    >>> from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
-    >>> from freesasa_zig.analysis import aggregate_from_result
+    >>> from zsasa.integrations.gemmi import calculate_sasa_from_structure
+    >>> from zsasa.analysis import aggregate_from_result
     >>>
     >>> result = calculate_sasa_from_structure("protein.cif")
     >>> residues = aggregate_from_result(result)
@@ -24,10 +24,10 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 
-from freesasa_zig.core import MAX_SASA, AtomClass
+from zsasa.core import MAX_SASA, AtomClass
 
 if TYPE_CHECKING:
-    from freesasa_zig.integrations.gemmi import SasaResultWithAtoms
+    from zsasa.integrations.gemmi import SasaResultWithAtoms
 
 __all__ = [
     "ResidueResult",
@@ -95,7 +95,7 @@ def aggregate_by_residue(
 
     Example:
         >>> import numpy as np
-        >>> from freesasa_zig.analysis import aggregate_by_residue
+        >>> from zsasa.analysis import aggregate_by_residue
         >>>
         >>> atom_areas = np.array([10.0, 20.0, 15.0, 25.0])
         >>> chain_ids = ["A", "A", "A", "A"]
@@ -196,8 +196,8 @@ def aggregate_from_result(result: SasaResultWithAtoms) -> list[ResidueResult]:
         List of ResidueResult objects, one per unique residue.
 
     Example:
-        >>> from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
-        >>> from freesasa_zig.analysis import aggregate_from_result
+        >>> from zsasa.integrations.gemmi import calculate_sasa_from_structure
+        >>> from zsasa.analysis import aggregate_from_result
         >>>
         >>> result = calculate_sasa_from_structure("protein.cif")
         >>> residues = aggregate_from_result(result)

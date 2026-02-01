@@ -3,12 +3,12 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "freesasa-zig"
+name = "zsasa"
 version = "0.1.0"
 description = "Fast SASA calculation using Zig"
 readme = "README.md"
 license = "MIT"
-authors = [{ name = "freesasa-zig contributors" }]
+authors = [{ name = "zsasa contributors" }]
 requires-python = ">=3.11"
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -31,19 +31,19 @@ mdtraj = ["mdtraj>=1.9.0"]
 mdanalysis = ["MDAnalysis>=2.0.0"]
 dev = ["pytest>=8.0", "pytest-cov>=4.0", "ruff>=0.5", "ty>=0.0.1a0"]
 all = [
-    "freesasa-zig[biopython]",
-    "freesasa-zig[biotite]",
-    "freesasa-zig[gemmi]",
-    "freesasa-zig[mdtraj]",
-    "freesasa-zig[mdanalysis]",
+    "zsasa[biopython]",
+    "zsasa[biotite]",
+    "zsasa[gemmi]",
+    "zsasa[mdtraj]",
+    "zsasa[mdanalysis]",
 ]
 
 [project.urls]
-Homepage = "https://github.com/N283T/freesasa-zig"
-Repository = "https://github.com/N283T/freesasa-zig"
+Homepage = "https://github.com/N283T/zsasa"
+Repository = "https://github.com/N283T/zsasa"
 
 [tool.hatch.build.targets.wheel]
-packages = ["freesasa_zig"]
+packages = ["zsasa"]
 
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "hatch_build.py"

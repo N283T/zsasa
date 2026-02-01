@@ -1,7 +1,7 @@
 """Tests for Biotite integration.
 
 These tests require Biotite to be installed.
-Run with: pip install freesasa-zig[biotite] pytest
+Run with: pip install zsasa[biotite] pytest
 """
 
 from __future__ import annotations
@@ -13,9 +13,9 @@ import pytest
 biotite = pytest.importorskip("biotite")
 import biotite.structure as struc  # noqa: E402
 
-from freesasa_zig import AtomClass, ClassifierType  # noqa: E402
-from freesasa_zig.integrations._types import AtomData, SasaResultWithAtoms  # noqa: E402
-from freesasa_zig.integrations.biotite import (  # noqa: E402
+from zsasa import AtomClass, ClassifierType  # noqa: E402
+from zsasa.integrations._types import AtomData, SasaResultWithAtoms  # noqa: E402
+from zsasa.integrations.biotite import (  # noqa: E402
     calculate_sasa_from_atom_array,
     calculate_sasa_from_structure,
     extract_atoms_from_atom_array,
@@ -370,7 +370,7 @@ class TestAnalysisIntegration:
 
     def test_aggregate_from_result(self, simple_structure):
         """Should work with aggregate_from_result."""
-        from freesasa_zig.analysis import aggregate_from_result
+        from zsasa.analysis import aggregate_from_result
 
         result = calculate_sasa_from_atom_array(simple_structure)
         residues = aggregate_from_result(result)
@@ -382,7 +382,7 @@ class TestAnalysisIntegration:
 
     def test_multi_residue_aggregation(self):
         """Should correctly aggregate multiple residues."""
-        from freesasa_zig.analysis import aggregate_from_result
+        from zsasa.analysis import aggregate_from_result
 
         atoms = [
             ("A", "ALA", "CA", 1, (0.0, 0.0, 0.0), "C", False),
