@@ -1,4 +1,4 @@
-# freesasa-zig
+# zsasa
 
 [English](README.md) | 日本語
 
@@ -50,7 +50,7 @@ zig build test
 ## 使い方
 
 ```bash
-freesasa_zig [OPTIONS] <input> [output.json]
+zsasa [OPTIONS] <input> [output.json]
 ```
 
 対応入力形式: JSON, mmCIF (.cif, .cif.gz)
@@ -59,57 +59,57 @@ freesasa_zig [OPTIONS] <input> [output.json]
 
 ```bash
 # 基本的な使用法 - Shrake-Rupley（デフォルト）
-./zig-out/bin/freesasa_zig input.json output.json
+./zig-out/bin/zsasa input.json output.json
 
 # Lee-Richardsアルゴリズム
-./zig-out/bin/freesasa_zig --algorithm=lr input.json output.json
+./zig-out/bin/zsasa --algorithm=lr input.json output.json
 
 # Lee-Richardsでスライス数を指定
-./zig-out/bin/freesasa_zig --algorithm=lr --n-slices=50 input.json output.json
+./zig-out/bin/zsasa --algorithm=lr --n-slices=50 input.json output.json
 
 # マルチスレッド（両アルゴリズムで対応）
-./zig-out/bin/freesasa_zig --threads=4 input.json output.json
-./zig-out/bin/freesasa_zig --algorithm=lr --threads=4 input.json output.json
+./zig-out/bin/zsasa --threads=4 input.json output.json
+./zig-out/bin/zsasa --algorithm=lr --threads=4 input.json output.json
 
 # f32精度（高速、RustSASAとの公平比較向け）
-./zig-out/bin/freesasa_zig --precision=f32 input.json output.json
+./zig-out/bin/zsasa --precision=f32 input.json output.json
 
 # Shrake-Rupleyパラメータのカスタマイズ
-./zig-out/bin/freesasa_zig --probe-radius=1.5 --n-points=200 input.json output.json
+./zig-out/bin/zsasa --probe-radius=1.5 --n-points=200 input.json output.json
 
 # CSV出力フォーマット
-./zig-out/bin/freesasa_zig --format=csv input.json output.csv
+./zig-out/bin/zsasa --format=csv input.json output.csv
 
 # コンパクトJSON（1行）
-./zig-out/bin/freesasa_zig --format=compact input.json output.json
+./zig-out/bin/zsasa --format=compact input.json output.json
 
 # 入力バリデーションのみ
-./zig-out/bin/freesasa_zig --validate input.json
+./zig-out/bin/zsasa --validate input.json
 
 # 静寂モード
-./zig-out/bin/freesasa_zig --quiet input.json output.json
+./zig-out/bin/zsasa --quiet input.json output.json
 
 # mmCIF直接入力（形式自動判別）
-./zig-out/bin/freesasa_zig structure.cif output.json
-./zig-out/bin/freesasa_zig structure.cif.gz output.json
+./zig-out/bin/zsasa structure.cif output.json
+./zig-out/bin/zsasa structure.cif.gz output.json
 
 # チェーン/モデル選択
-./zig-out/bin/freesasa_zig --chain=A structure.cif output.json
-./zig-out/bin/freesasa_zig --model=1 structure.cif output.json
-./zig-out/bin/freesasa_zig --auth-chain --chain=A structure.cif output.json
+./zig-out/bin/zsasa --chain=A structure.cif output.json
+./zig-out/bin/zsasa --model=1 structure.cif output.json
+./zig-out/bin/zsasa --auth-chain --chain=A structure.cif output.json
 
 # 残基単位解析
-./zig-out/bin/freesasa_zig --per-residue structure.cif output.json
+./zig-out/bin/zsasa --per-residue structure.cif output.json
 
 # RSA（相対溶媒接触可能性）
-./zig-out/bin/freesasa_zig --rsa structure.cif output.json
+./zig-out/bin/zsasa --rsa structure.cif output.json
 
 # 極性/非極性表面解析
-./zig-out/bin/freesasa_zig --polar structure.cif output.json
+./zig-out/bin/zsasa --polar structure.cif output.json
 
 # バッチモード（ディレクトリ入力）
-./zig-out/bin/freesasa_zig input_dir/ output_dir/ --threads=8
-./zig-out/bin/freesasa_zig input_dir/ output_dir/ --timing  # ベンチマーク用
+./zig-out/bin/zsasa input_dir/ output_dir/ --threads=8
+./zig-out/bin/zsasa input_dir/ output_dir/ --timing  # ベンチマーク用
 ```
 
 ### オプション
@@ -173,8 +173,8 @@ freesasa_zig [OPTIONS] <input> [output.json]
 
 ```bash
 # 構造ファイル直接入力
-./zig-out/bin/freesasa_zig 1CRN.cif output.json
-./zig-out/bin/freesasa_zig 1CRN.cif.gz output.json
+./zig-out/bin/zsasa 1CRN.cif output.json
+./zig-out/bin/zsasa 1CRN.cif.gz output.json
 ```
 
 構造ファイル使用時は分類器が自動適用（デフォルト: NACCESS）。
@@ -292,11 +292,11 @@ total,1234.560000
 
 ## Pythonバインディング
 
-NumPy配列を使ってPythonからfreesasa-zigを利用可能:
+NumPy配列を使ってPythonからzsasaを利用可能:
 
 ```python
 import numpy as np
-from freesasa_zig import calculate_sasa
+from zsasa import calculate_sasa
 
 # 原子座標 (N, 3) と半径 (N,)
 coords = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
@@ -339,12 +339,12 @@ pip install -e .
 
 ```bash
 # 組み込み分類器を使用（入力JSONにresidue/atom_nameが必要）
-./zig-out/bin/freesasa_zig --classifier=naccess input.json output.json
-./zig-out/bin/freesasa_zig --classifier=protor input.json output.json
-./zig-out/bin/freesasa_zig --classifier=oons input.json output.json
+./zig-out/bin/zsasa --classifier=naccess input.json output.json
+./zig-out/bin/zsasa --classifier=protor input.json output.json
+./zig-out/bin/zsasa --classifier=oons input.json output.json
 
 # カスタム設定ファイルを使用（FreeSASA形式）
-./zig-out/bin/freesasa_zig --config=my_radii.config input.json output.json
+./zig-out/bin/zsasa --config=my_radii.config input.json output.json
 ```
 
 分類器を指定すると:
@@ -384,7 +384,7 @@ const r = classifier.guessRadiusFromAtomName(" CA "); // 1.70（炭素）
 ## プロジェクト構成
 
 ```
-freesasa-zig/
+zsasa/
 ├── src/                   # Zigソースコード
 │   ├── main.zig           # CLIエントリーポイント
 │   ├── root.zig           # ライブラリルートモジュール
@@ -407,7 +407,7 @@ freesasa-zig/
 │   ├── inputs/            # 生成データ（gitignore）
 │   └── results/           # ベンチマーク結果
 ├── python/
-│   ├── freesasa_zig/      # Pythonバインディング
+│   ├── zsasa/      # Pythonバインディング
 │   └── tests/             # Pythonテスト
 ├── docs/                  # 技術ドキュメント
 └── plans/                 # 実装計画

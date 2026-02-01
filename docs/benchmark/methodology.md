@@ -16,7 +16,7 @@ Measurement method for each implementation:
 
 | Implementation | Method |
 |----------------|--------|
-| freesasa-zig | Internal measurement via `--timing` option (stderr output) |
+| zsasa | Internal measurement via `--timing` option (stderr output) |
 | FreeSASA C | Patched binary outputs SASA calculation time to stderr |
 | RustSASA | Patched binary outputs `SASA_TIME_US` to stderr |
 

@@ -39,7 +39,7 @@ This allows fair SASA-only timing comparison (excluding file I/O).
 After building both dependencies:
 
 ```bash
-cd /path/to/freesasa-zig
+cd /path/to/zsasa
 ./scripts/benchmark.py
 ```
 

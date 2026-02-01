@@ -1,4 +1,4 @@
-# freesasa-zig
+# zsasa
 
 [日本語](README.ja.md) | English
 
@@ -35,7 +35,7 @@ See [benchmark results](docs/benchmark/results.md) for detailed analysis.
 
 | Implementation | Time (20k atoms × 1k frames) |
 |----------------|------------------------------|
-| freesasa-zig   | 8.8 s                        |
+| zsasa   | 8.8 s                        |
 | mdsasa-bolt    | 30.3 s                       |
 | **Speedup**    | **3.4x**                     |
 
@@ -55,7 +55,7 @@ See [benchmark results](docs/benchmark/results.md) for detailed analysis.
 zig build -Doptimize=ReleaseFast
 
 # Run
-./zig-out/bin/freesasa_zig structure.cif output.json
+./zig-out/bin/zsasa structure.cif output.json
 ```
 
 ## Installation
@@ -63,8 +63,8 @@ zig build -Doptimize=ReleaseFast
 ### CLI
 
 ```bash
-git clone https://github.com/N283T/freesasa-zig.git
-cd freesasa-zig
+git clone https://github.com/N283T/zsasa.git
+cd zsasa
 zig build -Doptimize=ReleaseFast
 ```
 
@@ -83,19 +83,19 @@ Requires Zig 0.15.2+ for building the native library.
 
 ```bash
 # Basic SASA calculation
-./zig-out/bin/freesasa_zig structure.cif output.json
+./zig-out/bin/zsasa structure.cif output.json
 
 # Lee-Richards algorithm
-./zig-out/bin/freesasa_zig --algorithm=lr structure.cif output.json
+./zig-out/bin/zsasa --algorithm=lr structure.cif output.json
 
 # Multi-threaded
-./zig-out/bin/freesasa_zig --threads=4 structure.cif output.json
+./zig-out/bin/zsasa --threads=4 structure.cif output.json
 
 # Per-residue analysis with RSA
-./zig-out/bin/freesasa_zig --rsa structure.cif output.json
+./zig-out/bin/zsasa --rsa structure.cif output.json
 
 # CSV output
-./zig-out/bin/freesasa_zig --format=csv structure.cif output.csv
+./zig-out/bin/zsasa --format=csv structure.cif output.csv
 ```
 
 ### Options
@@ -116,13 +116,13 @@ Requires Zig 0.15.2+ for building the native library.
 | `--n-slices=N` | Slices per atom (LR) | 20 |
 | `--precision=P` | `f32` (fast) or `f64` (precise) | f64 |
 
-Run `./zig-out/bin/freesasa_zig --help` for all options. See [CLI Reference](docs/cli.md) for detailed documentation.
+Run `./zig-out/bin/zsasa --help` for all options. See [CLI Reference](docs/cli.md) for detailed documentation.
 
 ### Python Examples
 
 ```python
 import numpy as np
-from freesasa_zig import calculate_sasa
+from zsasa import calculate_sasa
 
 # Calculate SASA
 coords = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
@@ -132,10 +132,10 @@ print(f"Total: {result.total_area:.2f} Å²")
 print(f"Per-atom: {result.atom_areas}")
 ```
 
-With structure files (requires `pip install freesasa-zig[gemmi]`):
+With structure files (requires `pip install zsasa[gemmi]`):
 
 ```python
-from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
+from zsasa.integrations.gemmi import calculate_sasa_from_structure
 
 result = calculate_sasa_from_structure("protein.cif")
 print(f"Total: {result.total_area:.1f} Å²")
@@ -145,7 +145,7 @@ With MD trajectories (MDAnalysis):
 
 ```python
 import MDAnalysis as mda
-from freesasa_zig.mdanalysis import SASAAnalysis
+from zsasa.mdanalysis import SASAAnalysis
 
 u = mda.Universe("topology.pdb", "trajectory.xtc")
 sasa = SASAAnalysis(u, select="protein")
@@ -175,7 +175,7 @@ See [Benchmark Highlights](#benchmark-highlights) above and [detailed results](d
 ## Project Structure
 
 ```
-freesasa-zig/
+zsasa/
 ├── src/           # Zig source (algorithms, parsers, CLI)
 ├── python/        # Python bindings
 ├── docs/          # Documentation

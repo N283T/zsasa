@@ -58,7 +58,7 @@ def get_size_bin(n_atoms: int) -> str:
 
 def get_binary_path(tool: str) -> Path:
     if tool == "zig":
-        return ROOT / "zig-out" / "bin" / "freesasa_zig"
+        return ROOT / "zig-out" / "bin" / "zsasa"
     elif tool == "freesasa":
         return ROOT / "benchmarks" / "external" / "freesasa-bench" / "src" / "freesasa"
     elif tool == "rust":

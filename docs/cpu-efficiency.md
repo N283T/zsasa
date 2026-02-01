@@ -1,6 +1,6 @@
 # CPU Efficiency Analysis
 
-Analysis of freesasa-zig's CPU-level efficiency. Measures not just execution time but **instruction count** and **IPC** to reveal "why it's fast".
+Analysis of zsasa's CPU-level efficiency. Measures not just execution time but **instruction count** and **IPC** to reveal "why it's fast".
 
 ## Key Findings
 
@@ -51,7 +51,7 @@ Parallel Efficiency = T1 / (TN × N)
 Using macOS `/usr/bin/time -l`:
 
 ```bash
-/usr/bin/time -l ./freesasa_zig --algorithm=sr input.json output.json
+/usr/bin/time -l ./zsasa --algorithm=sr input.json output.json
 ```
 
 Extract `instructions retired` and `cycles elapsed` from output:
@@ -225,4 +225,4 @@ Rust also uses SIMD so instruction count is similar to Zig. However:
 | **Efficient thread pool** | 2x better parallel efficiency | vs RustSASA |
 | **Stable IPC** | Maintains efficiency in multi-threaded | vs RustSASA |
 
-**Conclusion**: freesasa-zig is not just "fast" but uses CPU resources efficiently.
+**Conclusion**: zsasa is not just "fast" but uses CPU resources efficiently.

@@ -1,6 +1,6 @@
 # Benchmark Results
 
-Large-scale benchmark results for freesasa-zig using Shrake-Rupley algorithm.
+Large-scale benchmark results for zsasa using Shrake-Rupley algorithm.
 
 - **Dataset**: ~100k structures (stratified sampling from PDB)
 - **Precision**: Zig/FreeSASA use f64, RustSASA uses f32

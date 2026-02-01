@@ -5,13 +5,13 @@ Support for BioPython Structure objects.
 ## Installation
 
 ```bash
-pip install freesasa-zig[biopython]
+pip install zsasa[biopython]
 ```
 
 ## Import
 
 ```python
-from freesasa_zig.integrations.biopython import (
+from zsasa.integrations.biopython import (
     calculate_sasa_from_structure,
     calculate_sasa_from_model,
     extract_atoms_from_model,
@@ -26,7 +26,7 @@ from freesasa_zig.integrations.biopython import (
 ## Example
 
 ```python
-from freesasa_zig.integrations.biopython import calculate_sasa_from_structure
+from zsasa.integrations.biopython import calculate_sasa_from_structure
 
 # From file
 result = calculate_sasa_from_structure("protein.pdb")

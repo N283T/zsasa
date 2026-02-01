@@ -111,7 +111,7 @@ The `precision` parameter controls the floating-point precision used internally:
 
 ```python
 import numpy as np
-from freesasa_zig import calculate_sasa_batch
+from zsasa import calculate_sasa_batch
 
 # Multiple frames
 n_frames = 100

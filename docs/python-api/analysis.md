@@ -47,7 +47,7 @@ class ResidueResult:
 
 ```python
 import numpy as np
-from freesasa_zig import calculate_sasa
+from zsasa import calculate_sasa
 
 coords = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
 radii = np.array([1.5, 1.5])
@@ -64,7 +64,7 @@ print(f"LR: {result_lr.total_area:.2f} Å²")
 ### Multi-threading
 
 ```python
-from freesasa_zig import calculate_sasa
+from zsasa import calculate_sasa
 
 # Auto-detect CPU cores (default)
 result = calculate_sasa(coords, radii, n_threads=0)
@@ -79,8 +79,8 @@ result = calculate_sasa(coords, radii, n_threads=1)
 ### Finding Buried Residues
 
 ```python
-from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
-from freesasa_zig import aggregate_from_result
+from zsasa.integrations.gemmi import calculate_sasa_from_structure
+from zsasa import aggregate_from_result
 
 result = calculate_sasa_from_structure("protein.cif")
 residues = aggregate_from_result(result)
@@ -97,7 +97,7 @@ for r in buried:
 
 ```python
 import numpy as np
-from freesasa_zig import calculate_sasa, classify_atoms
+from zsasa import calculate_sasa, classify_atoms
 
 # Get radii from classifier
 residues = ["ALA", "ALA", "ALA"]

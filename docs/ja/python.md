@@ -1,6 +1,6 @@
 # Python API リファレンス
 
-freesasa-zig Python バインディングの包括的なドキュメントです。
+zsasa Python バインディングの包括的なドキュメントです。
 
 ## 概要
 
@@ -26,7 +26,7 @@ Python バインディングは以下を提供します:
 
 ```bash
 # 1. Zig共有ライブラリをビルド
-cd freesasa-zig
+cd zsasa
 zig build -Doptimize=ReleaseFast
 
 # 2. Pythonパッケージをインストール
@@ -38,19 +38,19 @@ pip install -e .
 
 ```bash
 # 構造ファイルサポート用
-pip install freesasa-zig[gemmi]     # gemmi (高速mmCIF/PDB)
-pip install freesasa-zig[biopython] # BioPython
-pip install freesasa-zig[biotite]   # Biotite (AtomWorksでも動作)
+pip install zsasa[gemmi]     # gemmi (高速mmCIF/PDB)
+pip install zsasa[biopython] # BioPython
+pip install zsasa[biotite]   # Biotite (AtomWorksでも動作)
 
 # すべての連携
-pip install freesasa-zig[all]
+pip install zsasa[all]
 ```
 
 ### ライブラリの場所
 
 バインディングは以下の場所でネイティブライブラリを検索します:
 
-1. `FREESASA_ZIG_LIB` 環境変数 (設定されている場合)
+1. `ZSASA_LIB` 環境変数 (設定されている場合)
 2. パッケージにバンドル (wheelインストール)
 3. `../zig-out/lib/` (パッケージからの相対パス、開発用)
 4. `/usr/local/lib/`
@@ -66,7 +66,7 @@ pip install freesasa-zig[all]
 
 ```python
 import numpy as np
-from freesasa_zig import calculate_sasa
+from zsasa import calculate_sasa
 
 # 原子座標 (N, 3) と半径 (N,) を定義
 coords = np.array([
@@ -84,8 +84,8 @@ print(f"原子ごと: {result.atom_areas}")
 ### 構造ファイルから (推奨)
 
 ```python
-# gemmi使用 (pip install freesasa-zig[gemmi])
-from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
+# gemmi使用 (pip install zsasa[gemmi])
+from zsasa.integrations.gemmi import calculate_sasa_from_structure
 
 result = calculate_sasa_from_structure("protein.cif")
 print(f"合計: {result.total_area:.1f} Å²")
@@ -96,8 +96,8 @@ print(f"非極性: {result.apolar_area:.1f} Å²")
 ### RSA付き残基ごとの解析
 
 ```python
-from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
-from freesasa_zig import aggregate_from_result
+from zsasa.integrations.gemmi import calculate_sasa_from_structure
+from zsasa import aggregate_from_result
 
 result = calculate_sasa_from_structure("protein.cif")
 residues = aggregate_from_result(result)
@@ -203,7 +203,7 @@ def classify_atoms(
 **例:**
 
 ```python
-from freesasa_zig import classify_atoms, ClassifierType
+from zsasa import classify_atoms, ClassifierType
 
 result = classify_atoms(
     ["ALA", "ALA", "GLY"],
@@ -263,7 +263,7 @@ def calculate_rsa(sasa: float, residue_name: str) -> float | None
 **例:**
 
 ```python
-from freesasa_zig import calculate_rsa
+from zsasa import calculate_rsa
 
 rsa = calculate_rsa(64.5, "ALA")  # 64.5 / 129.0 = 0.5
 ```
@@ -387,21 +387,21 @@ class AtomData:
 ## Gemmi連携
 
 ```python
-from freesasa_zig.integrations.gemmi import (
+from zsasa.integrations.gemmi import (
     calculate_sasa_from_structure,
     calculate_sasa_from_model,
     extract_atoms_from_model,
 )
 ```
 
-**必要:** `pip install freesasa-zig[gemmi]`
+**必要:** `pip install zsasa[gemmi]`
 
 **サポート形式:** mmCIF, PDB
 
 **例:**
 
 ```python
-from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
+from zsasa.integrations.gemmi import calculate_sasa_from_structure
 
 # ファイルから
 result = calculate_sasa_from_structure("protein.cif")
@@ -417,21 +417,21 @@ result = calculate_sasa_from_structure(structure)
 ## BioPython連携
 
 ```python
-from freesasa_zig.integrations.biopython import (
+from zsasa.integrations.biopython import (
     calculate_sasa_from_structure,
     calculate_sasa_from_model,
     extract_atoms_from_model,
 )
 ```
 
-**必要:** `pip install freesasa-zig[biopython]`
+**必要:** `pip install zsasa[biopython]`
 
 **サポート形式:** PDB, mmCIF
 
 **例:**
 
 ```python
-from freesasa_zig.integrations.biopython import calculate_sasa_from_structure
+from zsasa.integrations.biopython import calculate_sasa_from_structure
 
 # ファイルから
 result = calculate_sasa_from_structure("protein.pdb")
@@ -448,14 +448,14 @@ result = calculate_sasa_from_structure(structure)
 ## Biotite連携
 
 ```python
-from freesasa_zig.integrations.biotite import (
+from zsasa.integrations.biotite import (
     calculate_sasa_from_structure,
     calculate_sasa_from_atom_array,
     extract_atoms_from_atom_array,
 )
 ```
 
-**必要:** `pip install freesasa-zig[biotite]`
+**必要:** `pip install zsasa[biotite]`
 
 **サポート形式:** PDB, mmCIF, BinaryCIF
 
@@ -463,7 +463,7 @@ from freesasa_zig.integrations.biotite import (
 
 ```python
 from atomworks.io.utils.io_utils import load_any
-from freesasa_zig.integrations.biotite import calculate_sasa_from_atom_array
+from zsasa.integrations.biotite import calculate_sasa_from_atom_array
 
 atom_array = load_any("protein.cif.gz")
 result = calculate_sasa_from_atom_array(atom_array)
@@ -477,7 +477,7 @@ result = calculate_sasa_from_atom_array(atom_array)
 
 ```python
 import numpy as np
-from freesasa_zig import calculate_sasa
+from zsasa import calculate_sasa
 
 coords = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
 radii = np.array([1.5, 1.5])
@@ -494,7 +494,7 @@ print(f"LR: {result_lr.total_area:.2f} Å²")
 ### マルチスレッド
 
 ```python
-from freesasa_zig import calculate_sasa
+from zsasa import calculate_sasa
 
 # CPUコアを自動検出 (デフォルト)
 result = calculate_sasa(coords, radii, n_threads=0)
@@ -509,8 +509,8 @@ result = calculate_sasa(coords, radii, n_threads=1)
 ### 埋没残基の検索
 
 ```python
-from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
-from freesasa_zig import aggregate_from_result
+from zsasa.integrations.gemmi import calculate_sasa_from_structure
+from zsasa import aggregate_from_result
 
 result = calculate_sasa_from_structure("protein.cif")
 residues = aggregate_from_result(result)
@@ -527,7 +527,7 @@ for r in buried:
 
 ```python
 import numpy as np
-from freesasa_zig import calculate_sasa, classify_atoms
+from zsasa import calculate_sasa, classify_atoms
 
 # 分類器から半径を取得
 residues = ["ALA", "ALA", "ALA"]
@@ -560,7 +560,7 @@ result = calculate_sasa(coords, classification.radii)
 ### 例
 
 ```python
-from freesasa_zig import calculate_sasa
+from zsasa import calculate_sasa
 import numpy as np
 
 try:
@@ -603,6 +603,6 @@ def get_version() -> str
 ライブラリバージョン文字列を返します (例: "0.1.0")。
 
 ```python
-from freesasa_zig import get_version
+from zsasa import get_version
 print(get_version())  # "0.1.0"
 ```

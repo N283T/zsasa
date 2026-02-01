@@ -1,6 +1,6 @@
 # Project Rules
 
-freesasa-zig: High-performance SASA (Solvent Accessible Surface Area) calculation in Zig.
+zsasa: High-performance SASA (Solvent Accessible Surface Area) calculation in Zig.
 
 ## Quick Reference
 
@@ -32,8 +32,8 @@ Debug builds are 3-10x slower. Use ReleaseFast for:
 - Production builds
 
 Output:
-- `zig-out/bin/freesasa_zig` - CLI binary
-- `zig-out/lib/libfreesasa_zig.{so,dylib}` - Shared library for Python
+- `zig-out/bin/zsasa` - CLI binary
+- `zig-out/lib/libzsasa.{so,dylib}` - Shared library for Python
 
 ## Testing
 
@@ -66,9 +66,9 @@ zig fmt --check src/              # Check formatting (CI)
 
 ```bash
 cd python
-ruff check freesasa_zig/          # Lint
-ruff format freesasa_zig/         # Format
-ruff check freesasa_zig/ --fix    # Auto-fix lint issues
+ruff check zsasa/          # Lint
+ruff format zsasa/         # Format
+ruff check zsasa/ --fix    # Auto-fix lint issues
 ```
 
 ## Project Structure
@@ -82,7 +82,7 @@ src/                    # Zig source code
 └── ...
 
 python/                 # Python bindings
-├── freesasa_zig/      # Python package
+├── zsasa/      # Python package
 ├── tests/             # Python tests
 └── pyproject.toml     # Package config
 

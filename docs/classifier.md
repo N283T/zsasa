@@ -26,20 +26,20 @@ SASA calculation requires the van der Waals radius of each atom. The classifier 
 
 ```bash
 # NACCESS classifier (recommended default)
-./zig-out/bin/freesasa_zig --classifier=naccess input.json output.json
+./zig-out/bin/zsasa --classifier=naccess input.json output.json
 
 # ProtOr classifier (hybridization-based)
-./zig-out/bin/freesasa_zig --classifier=protor input.json output.json
+./zig-out/bin/zsasa --classifier=protor input.json output.json
 
 # OONS classifier (former FreeSASA default)
-./zig-out/bin/freesasa_zig --classifier=oons input.json output.json
+./zig-out/bin/zsasa --classifier=oons input.json output.json
 ```
 
 ### Custom Configuration File
 
 ```bash
 # Use FreeSASA format configuration file
-./zig-out/bin/freesasa_zig --config=my_radii.config input.json output.json
+./zig-out/bin/zsasa --config=my_radii.config input.json output.json
 ```
 
 ### Input Requirements
