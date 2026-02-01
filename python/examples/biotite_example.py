@@ -178,8 +178,8 @@ def biotite_filtering() -> None:
     protein_atoms = atom_array[protein_mask]
     print(f"Protein atoms: {len(protein_atoms)}")
 
-    # Filter backbone atoms
-    backbone_mask = struc.filter_backbone(atom_array)
+    # Filter backbone atoms (peptide backbone: N, CA, C, O)
+    backbone_mask = struc.filter_peptide_backbone(atom_array)
     backbone_atoms = atom_array[backbone_mask]
     print(f"Backbone atoms: {len(backbone_atoms)}")
 
@@ -215,8 +215,8 @@ def per_residue_analysis() -> None:
     buried = len([r for r in residues_with_rsa if r.rsa < 0.25])
 
     print(f"Total residues with RSA: {total_residues}")
-    print(f"Exposed (RSA > 25%): {exposed} ({exposed/total_residues:.1%})")
-    print(f"Buried (RSA < 25%):  {buried} ({buried/total_residues:.1%})")
+    print(f"Exposed (RSA > 25%): {exposed} ({exposed / total_residues:.1%})")
+    print(f"Buried (RSA < 25%):  {buried} ({buried / total_residues:.1%})")
 
 
 def atomworks_compatibility() -> None:
@@ -258,8 +258,12 @@ def hetatm_comparison() -> None:
     result_with = calculate_sasa_from_structure(structure_file, include_hetatm=True)
     result_without = calculate_sasa_from_structure(structure_file, include_hetatm=False)
 
-    print(f"With HETATM:    {len(result_with.atom_areas):4d} atoms, {result_with.total_area:.1f} Å²")
-    print(f"Without HETATM: {len(result_without.atom_areas):4d} atoms, {result_without.total_area:.1f} Å²")
+    print(
+        f"With HETATM:    {len(result_with.atom_areas):4d} atoms, {result_with.total_area:.1f} Å²"
+    )
+    print(
+        f"Without HETATM: {len(result_without.atom_areas):4d} atoms, {result_without.total_area:.1f} Å²"
+    )
 
 
 def main() -> None:
