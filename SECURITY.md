@@ -9,9 +9,9 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in freesasa-zig, please report it privately:
+If you discover a security vulnerability in zsasa, please report it privately:
 
-1. **GitHub Security Advisories** (preferred): Use [GitHub's private vulnerability reporting](https://github.com/N283T/freesasa-zig/security/advisories/new)
+1. **GitHub Security Advisories** (preferred): Use [GitHub's private vulnerability reporting](https://github.com/N283T/zsasa/security/advisories/new)
 2. **Email**: Contact the maintainer directly
 
 Please include:
@@ -24,7 +24,7 @@ We aim to respond within 48 hours and will work with you to understand and addre
 
 ## Security Considerations
 
-freesasa-zig processes molecular structure data. While the library itself does not handle sensitive data, users should be aware of:
+zsasa processes molecular structure data. While the library itself does not handle sensitive data, users should be aware of:
 
 - **Input validation**: The library validates input data (coordinates, radii) but malformed files could potentially cause issues
 - **Memory safety**: Written in Zig with explicit memory management; no garbage collection

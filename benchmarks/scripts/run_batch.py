@@ -67,7 +67,7 @@ def get_binary_path(tool: str) -> Path:
     """Get path to tool binary."""
     root = Path(__file__).parent.parent.parent
     if tool == "zig":
-        return root / "zig-out" / "bin" / "freesasa_zig"
+        return root / "zig-out" / "bin" / "zsasa"
     elif tool == "freesasa":
         return root / "benchmarks" / "scripts" / "freesasa_batch.sh"
     elif tool == "rust":

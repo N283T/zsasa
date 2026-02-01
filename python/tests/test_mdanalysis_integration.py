@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 MDAnalysis = pytest.importorskip("MDAnalysis")
 
-from freesasa_zig.mdanalysis import (  # noqa: E402
+from zsasa.mdanalysis import (  # noqa: E402
     SASAAnalysis,
     _get_element,
     _get_radii_from_atomgroup,

@@ -28,7 +28,7 @@ class TestGemmiRealStructures:
 
     def test_1crn_pdb(self):
         """Test SASA calculation for crambin (1CRN) from PDB."""
-        from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
+        from zsasa.integrations.gemmi import calculate_sasa_from_structure
 
         pdb_path = EXAMPLES_DIR / "1crn.pdb"
         _skip_if_missing(pdb_path)
@@ -44,7 +44,7 @@ class TestGemmiRealStructures:
 
     def test_1ubq_cif(self):
         """Test SASA calculation for ubiquitin (1UBQ) from mmCIF."""
-        from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
+        from zsasa.integrations.gemmi import calculate_sasa_from_structure
 
         cif_path = EXAMPLES_DIR / "1ubq.cif"
         _skip_if_missing(cif_path)
@@ -58,8 +58,8 @@ class TestGemmiRealStructures:
 
     def test_1crn_residue_aggregation(self):
         """Test per-residue aggregation for crambin."""
-        from freesasa_zig.analysis import aggregate_from_result
-        from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
+        from zsasa.analysis import aggregate_from_result
+        from zsasa.integrations.gemmi import calculate_sasa_from_structure
 
         pdb_path = EXAMPLES_DIR / "1crn.pdb"
         _skip_if_missing(pdb_path)
@@ -87,7 +87,7 @@ class TestBioPythonRealStructures:
 
     def test_1crn_pdb(self):
         """Test SASA calculation for crambin (1CRN) from PDB."""
-        from freesasa_zig.integrations.biopython import calculate_sasa_from_structure
+        from zsasa.integrations.biopython import calculate_sasa_from_structure
 
         pdb_path = EXAMPLES_DIR / "1crn.pdb"
         _skip_if_missing(pdb_path)
@@ -100,7 +100,7 @@ class TestBioPythonRealStructures:
 
     def test_1ubq_pdb(self):
         """Test SASA calculation for ubiquitin (1UBQ) from PDB."""
-        from freesasa_zig.integrations.biopython import calculate_sasa_from_structure
+        from zsasa.integrations.biopython import calculate_sasa_from_structure
 
         pdb_path = EXAMPLES_DIR / "1ubq.pdb"
         _skip_if_missing(pdb_path)
@@ -113,8 +113,8 @@ class TestBioPythonRealStructures:
 
     def test_1crn_residue_aggregation(self):
         """Test per-residue aggregation for crambin."""
-        from freesasa_zig.analysis import aggregate_from_result
-        from freesasa_zig.integrations.biopython import calculate_sasa_from_structure
+        from zsasa.analysis import aggregate_from_result
+        from zsasa.integrations.biopython import calculate_sasa_from_structure
 
         pdb_path = EXAMPLES_DIR / "1crn.pdb"
         _skip_if_missing(pdb_path)
@@ -136,7 +136,7 @@ class TestBiotiteRealStructures:
 
     def test_1crn_pdb(self):
         """Test SASA calculation for crambin (1CRN) from PDB."""
-        from freesasa_zig.integrations.biotite import calculate_sasa_from_structure
+        from zsasa.integrations.biotite import calculate_sasa_from_structure
 
         pdb_path = EXAMPLES_DIR / "1crn.pdb"
         _skip_if_missing(pdb_path)
@@ -149,7 +149,7 @@ class TestBiotiteRealStructures:
 
     def test_1ubq_pdb(self):
         """Test SASA calculation for ubiquitin (1UBQ) from PDB."""
-        from freesasa_zig.integrations.biotite import calculate_sasa_from_structure
+        from zsasa.integrations.biotite import calculate_sasa_from_structure
 
         pdb_path = EXAMPLES_DIR / "1ubq.pdb"
         _skip_if_missing(pdb_path)
@@ -162,8 +162,8 @@ class TestBiotiteRealStructures:
 
     def test_1crn_residue_aggregation(self):
         """Test per-residue aggregation for crambin."""
-        from freesasa_zig.analysis import aggregate_from_result
-        from freesasa_zig.integrations.biotite import calculate_sasa_from_structure
+        from zsasa.analysis import aggregate_from_result
+        from zsasa.integrations.biotite import calculate_sasa_from_structure
 
         pdb_path = EXAMPLES_DIR / "1crn.pdb"
         _skip_if_missing(pdb_path)
@@ -187,13 +187,13 @@ class TestCrossLibraryConsistency:
 
     def test_1crn_consistency(self):
         """All libraries should produce similar SASA for 1CRN."""
-        from freesasa_zig.integrations.biopython import (
+        from zsasa.integrations.biopython import (
             calculate_sasa_from_structure as bp_calc,
         )
-        from freesasa_zig.integrations.biotite import (
+        from zsasa.integrations.biotite import (
             calculate_sasa_from_structure as bt_calc,
         )
-        from freesasa_zig.integrations.gemmi import (
+        from zsasa.integrations.gemmi import (
             calculate_sasa_from_structure as gm_calc,
         )
 

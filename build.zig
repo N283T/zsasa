@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
     // to our consumers. We must give it a name because a Zig package can expose
     // multiple modules and consumers will need to be able to specify which
     // module they want to access.
-    const mod = b.addModule("freesasa_zig", .{
+    const mod = b.addModule("zsasa", .{
         // The root source file is the "entry point" of this module. Users of
         // this module will only be able to access public declarations contained
         // in this file, which means that if you have declarations that you
@@ -64,7 +64,7 @@ pub fn build(b: *std.Build) void {
     options.addOption([]const u8, "version", version);
 
     const exe = b.addExecutable(.{
-        .name = "freesasa_zig",
+        .name = "zsasa",
         .root_module = b.createModule(.{
             // b.createModule defines a new module just like b.addModule but,
             // unlike b.addModule, it does not expose the module to consumers of
@@ -79,12 +79,12 @@ pub fn build(b: *std.Build) void {
             // List of modules available for import in source files part of the
             // root module.
             .imports = &.{
-                // Here "freesasa_zig" is the name you will use in your source code to
-                // import this module (e.g. `@import("freesasa_zig")`). The name is
+                // Here "zsasa" is the name you will use in your source code to
+                // import this module (e.g. `@import("zsasa")`). The name is
                 // repeated because you are allowed to rename your imports, which
                 // can be extremely useful in case of collisions (which can happen
                 // importing modules from different packages).
-                .{ .name = "freesasa_zig", .module = mod },
+                .{ .name = "zsasa", .module = mod },
                 .{ .name = "build_options", .module = options.createModule() },
             },
         }),
@@ -99,7 +99,7 @@ pub fn build(b: *std.Build) void {
     // Shared library for C API / Python bindings
     const lib = b.addLibrary(.{
         .linkage = .dynamic,
-        .name = "freesasa_zig",
+        .name = "zsasa",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/c_api.zig"),
             .target = target,

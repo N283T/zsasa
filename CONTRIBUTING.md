@@ -1,6 +1,6 @@
-# Contributing to freesasa-zig
+# Contributing to zsasa
 
-Thank you for your interest in contributing to freesasa-zig!
+Thank you for your interest in contributing to zsasa!
 
 ## Development Setup
 
@@ -13,8 +13,8 @@ Thank you for your interest in contributing to freesasa-zig!
 ### Getting the Source
 
 ```bash
-git clone https://github.com/N283T/freesasa-zig.git
-cd freesasa-zig
+git clone https://github.com/N283T/zsasa.git
+cd zsasa
 ```
 
 ### Building
@@ -30,7 +30,7 @@ zig build -Doptimize=ReleaseFast
 zig build test
 
 # Verify installation
-./zig-out/bin/freesasa_zig --version
+./zig-out/bin/zsasa --version
 ```
 
 ### Python Bindings (Optional)

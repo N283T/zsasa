@@ -1,28 +1,28 @@
 # CLI Reference
 
-This document provides complete documentation for the freesasa_zig command-line interface.
+This document provides complete documentation for the zsasa command-line interface.
 
 ## Synopsis
 
 ```
-freesasa_zig [OPTIONS] <input> [output.json]
-freesasa_zig [OPTIONS] <input_dir/> <output_dir/>
+zsasa [OPTIONS] <input> [output.json]
+zsasa [OPTIONS] <input_dir/> <output_dir/>
 ```
 
 ## Basic Usage
 
 ```bash
 # Basic SASA calculation
-./zig-out/bin/freesasa_zig structure.cif output.json
+./zig-out/bin/zsasa structure.cif output.json
 
 # With algorithm selection
-./zig-out/bin/freesasa_zig --algorithm=lr structure.cif output.json
+./zig-out/bin/zsasa --algorithm=lr structure.cif output.json
 
 # Multi-threaded
-./zig-out/bin/freesasa_zig --threads=4 structure.cif output.json
+./zig-out/bin/zsasa --threads=4 structure.cif output.json
 
 # With analysis features
-./zig-out/bin/freesasa_zig --rsa --polar structure.cif output.json
+./zig-out/bin/zsasa --rsa --polar structure.cif output.json
 ```
 
 ## Options
@@ -278,16 +278,16 @@ Process all structure files in a directory:
 
 ```bash
 # Basic batch processing
-./zig-out/bin/freesasa_zig input_dir/ output_dir/
+./zig-out/bin/zsasa input_dir/ output_dir/
 
 # File-level parallelism (N files in parallel, 1 thread each)
-./zig-out/bin/freesasa_zig --threads=8 input_dir/ output_dir/
+./zig-out/bin/zsasa --threads=8 input_dir/ output_dir/
 
 # Atom-level parallelism (1 file at a time, N threads for SASA)
-./zig-out/bin/freesasa_zig --parallelism=atom --threads=8 input_dir/
+./zig-out/bin/zsasa --parallelism=atom --threads=8 input_dir/
 
 # Pipeline mode (I/O prefetch + atom-level SASA)
-./zig-out/bin/freesasa_zig --parallelism=pipeline --threads=8 input_dir/
+./zig-out/bin/zsasa --parallelism=pipeline --threads=8 input_dir/
 ```
 
 **Parallelism strategies:**
@@ -338,95 +338,95 @@ atom ALA O  1.40
 
 ```bash
 # mmCIF input
-./zig-out/bin/freesasa_zig structure.cif output.json
+./zig-out/bin/zsasa structure.cif output.json
 
 # PDB input
-./zig-out/bin/freesasa_zig structure.pdb output.json
+./zig-out/bin/zsasa structure.pdb output.json
 
 # JSON input
-./zig-out/bin/freesasa_zig atoms.json output.json
+./zig-out/bin/zsasa atoms.json output.json
 ```
 
 ### Algorithm Selection
 
 ```bash
 # Lee-Richards with 50 slices
-./zig-out/bin/freesasa_zig --algorithm=lr --n-slices=50 structure.cif output.json
+./zig-out/bin/zsasa --algorithm=lr --n-slices=50 structure.cif output.json
 
 # Shrake-Rupley with 200 test points
-./zig-out/bin/freesasa_zig --algorithm=sr --n-points=200 structure.cif output.json
+./zig-out/bin/zsasa --algorithm=sr --n-points=200 structure.cif output.json
 ```
 
 ### Performance Tuning
 
 ```bash
 # Fast mode: f32 precision
-./zig-out/bin/freesasa_zig --precision=f32 structure.cif output.json
+./zig-out/bin/zsasa --precision=f32 structure.cif output.json
 
 # Multi-threaded
-./zig-out/bin/freesasa_zig --threads=4 structure.cif output.json
+./zig-out/bin/zsasa --threads=4 structure.cif output.json
 
 # Show timing breakdown
-./zig-out/bin/freesasa_zig --timing structure.cif output.json
+./zig-out/bin/zsasa --timing structure.cif output.json
 ```
 
 ### Classifier Usage
 
 ```bash
 # NACCESS classifier
-./zig-out/bin/freesasa_zig --classifier=naccess structure.cif output.json
+./zig-out/bin/zsasa --classifier=naccess structure.cif output.json
 
 # Custom config
-./zig-out/bin/freesasa_zig --config=custom.config structure.cif output.json
+./zig-out/bin/zsasa --config=custom.config structure.cif output.json
 ```
 
 ### Chain/Model Filtering
 
 ```bash
 # Single chain
-./zig-out/bin/freesasa_zig --chain=A structure.cif output.json
+./zig-out/bin/zsasa --chain=A structure.cif output.json
 
 # Multiple chains
-./zig-out/bin/freesasa_zig --chain=A,B,C structure.cif output.json
+./zig-out/bin/zsasa --chain=A,B,C structure.cif output.json
 
 # Specific model (NMR)
-./zig-out/bin/freesasa_zig --model=1 nmr_structure.cif output.json
+./zig-out/bin/zsasa --model=1 nmr_structure.cif output.json
 
 # Use auth chain IDs
-./zig-out/bin/freesasa_zig --auth-chain --chain=A structure.cif output.json
+./zig-out/bin/zsasa --auth-chain --chain=A structure.cif output.json
 ```
 
 ### Analysis Features
 
 ```bash
 # Per-residue output
-./zig-out/bin/freesasa_zig --per-residue structure.cif output.json
+./zig-out/bin/zsasa --per-residue structure.cif output.json
 
 # RSA calculation
-./zig-out/bin/freesasa_zig --rsa structure.cif output.json
+./zig-out/bin/zsasa --rsa structure.cif output.json
 
 # Polar/nonpolar summary
-./zig-out/bin/freesasa_zig --polar structure.cif output.json
+./zig-out/bin/zsasa --polar structure.cif output.json
 
 # Combined analysis
-./zig-out/bin/freesasa_zig --rsa --polar structure.cif output.json
+./zig-out/bin/zsasa --rsa --polar structure.cif output.json
 ```
 
 ### Output Formats
 
 ```bash
 # CSV output
-./zig-out/bin/freesasa_zig --format=csv structure.cif output.csv
+./zig-out/bin/zsasa --format=csv structure.cif output.csv
 
 # Compact JSON
-./zig-out/bin/freesasa_zig --format=compact structure.cif output.json
+./zig-out/bin/zsasa --format=compact structure.cif output.json
 ```
 
 ### Validation Only
 
 ```bash
 # Validate without calculation
-./zig-out/bin/freesasa_zig --validate structure.cif
+./zig-out/bin/zsasa --validate structure.cif
 ```
 
 ---

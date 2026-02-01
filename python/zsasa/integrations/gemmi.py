@@ -1,12 +1,12 @@
-"""Gemmi integration for freesasa-zig.
+"""Gemmi integration for zsasa.
 
 This module provides convenience functions for calculating SASA
 from gemmi Structure/Model objects.
 
-Requires: pip install freesasa-zig[gemmi]
+Requires: pip install zsasa[gemmi]
 
 Example:
-    >>> from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
+    >>> from zsasa.integrations.gemmi import calculate_sasa_from_structure
     >>> result = calculate_sasa_from_structure("protein.cif")
     >>> print(f"Total SASA: {result.total_area:.2f} Å²")
 """
@@ -18,13 +18,13 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
-from freesasa_zig.core import (
+from zsasa.core import (
     AtomClass,
     ClassifierType,
     calculate_sasa,
     classify_atoms,
 )
-from freesasa_zig.integrations._types import AtomData, SasaResultWithAtoms
+from zsasa.integrations._types import AtomData, SasaResultWithAtoms
 
 if TYPE_CHECKING:
     import gemmi
@@ -45,10 +45,7 @@ def _import_gemmi() -> "gemmi":  # noqa: UP037
 
         return gemmi
     except ImportError as e:
-        msg = (
-            "gemmi is required for this functionality. "
-            "Install with: pip install freesasa-zig[gemmi]"
-        )
+        msg = "gemmi is required for this functionality. Install with: pip install zsasa[gemmi]"
         raise ImportError(msg) from e
 
 
@@ -236,7 +233,7 @@ def calculate_sasa_from_structure(
         SasaResultWithAtoms with SASA values and atom metadata.
 
     Example:
-        >>> from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
+        >>> from zsasa.integrations.gemmi import calculate_sasa_from_structure
         >>>
         >>> # From file path
         >>> result = calculate_sasa_from_structure("protein.cif")

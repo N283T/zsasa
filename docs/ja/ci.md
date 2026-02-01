@@ -131,8 +131,8 @@ zig fmt src/
 | 統合テスト | Pythonから基本機能を確認 |
 
 **共有ライブラリ:**
-- Linux: `libfreesasa_zig.so`
-- macOS: `libfreesasa_zig.dylib`
+- Linux: `libzsasa.so`
+- macOS: `libzsasa.dylib`
 
 **Pythonテストカバレッジ:**
 - NumPy配列入出力
@@ -152,20 +152,20 @@ zig build test
 zig build -Doptimize=ReleaseFast
 
 # CLIテスト
-./zig-out/bin/freesasa_zig --help
-./zig-out/bin/freesasa_zig --version
+./zig-out/bin/zsasa --help
+./zig-out/bin/zsasa --version
 
 # 検証テスト
-./zig-out/bin/freesasa_zig benchmarks/dataset/1a0q.json.gz /tmp/output.json
-./zig-out/bin/freesasa_zig --format=csv benchmarks/dataset/1a0q.json.gz /tmp/output.csv
-./zig-out/bin/freesasa_zig --validate benchmarks/dataset/1a0q.json.gz
+./zig-out/bin/zsasa benchmarks/dataset/1a0q.json.gz /tmp/output.json
+./zig-out/bin/zsasa --format=csv benchmarks/dataset/1a0q.json.gz /tmp/output.csv
+./zig-out/bin/zsasa --validate benchmarks/dataset/1a0q.json.gz
 
 # Pythonテスト
 cd python
 uv pip install -e ".[dev]"
 pytest tests/ -v
-ruff check freesasa_zig/
-ruff format --check freesasa_zig/
+ruff check zsasa/
+ruff format --check zsasa/
 ```
 
 ## CI失敗時の対処
@@ -218,8 +218,8 @@ git push
 
 ```bash
 cd python
-ruff check freesasa_zig/ --fix
-ruff format freesasa_zig/
+ruff check zsasa/ --fix
+ruff format zsasa/
 git add -u && git commit -m "style: Fix Python lint issues"
 git push
 ```

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from freesasa_zig import BatchSasaResult, calculate_sasa_batch
+from zsasa import BatchSasaResult, calculate_sasa_batch
 
 
 class TestBatchSasaResult:
@@ -139,7 +139,7 @@ class TestCalculateSasaBatchPerformance:
         """Batch should be faster than sequential single-frame calls."""
         import time
 
-        from freesasa_zig import calculate_sasa
+        from zsasa import calculate_sasa
 
         n_frames = 20
         n_atoms = 100

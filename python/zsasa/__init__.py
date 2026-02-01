@@ -1,12 +1,12 @@
-"""freesasa-zig: Fast SASA calculation using Zig.
+"""zsasa: Fast SASA calculation using Zig.
 
-This package provides Python bindings for the freesasa-zig library,
+This package provides Python bindings for the zsasa library,
 a high-performance implementation of Solvent Accessible Surface Area (SASA)
 calculation algorithms.
 
 Example:
     >>> import numpy as np
-    >>> from freesasa_zig import calculate_sasa
+    >>> from zsasa import calculate_sasa
     >>>
     >>> # Single atom
     >>> coords = np.array([[0.0, 0.0, 0.0]])
@@ -15,23 +15,23 @@ Example:
     >>> print(f"Total SASA: {result.total_area:.2f} Å²")
 
     >>> # Classify atoms
-    >>> from freesasa_zig import classify_atoms, get_radius
+    >>> from zsasa import classify_atoms, get_radius
     >>> result = classify_atoms(["ALA", "ALA"], ["CA", "O"])
     >>> print(result.radii)  # [1.87, 1.4]
 
 Integrations:
     For structure file support, use the gemmi integration:
 
-    >>> # pip install freesasa-zig[gemmi]
-    >>> from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
+    >>> # pip install zsasa[gemmi]
+    >>> from zsasa.integrations.gemmi import calculate_sasa_from_structure
     >>> result = calculate_sasa_from_structure("protein.cif")
     >>> print(f"Total: {result.total_area:.1f} Å²")
 
 Analysis:
     For per-residue aggregation and RSA calculation:
 
-    >>> from freesasa_zig import aggregate_from_result
-    >>> from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
+    >>> from zsasa import aggregate_from_result
+    >>> from zsasa.integrations.gemmi import calculate_sasa_from_structure
     >>> result = calculate_sasa_from_structure("protein.cif")
     >>> residues = aggregate_from_result(result)
     >>> for res in residues:
@@ -42,7 +42,7 @@ MDTraj Integration:
     For MD trajectory analysis (requires mdtraj):
 
     >>> # pip install mdtraj
-    >>> from freesasa_zig.mdtraj import compute_sasa
+    >>> from zsasa.mdtraj import compute_sasa
     >>> import mdtraj as md
     >>> traj = md.load('trajectory.xtc', top='topology.pdb')
     >>> sasa = compute_sasa(traj)  # Returns (n_frames, n_atoms) in nm²
@@ -52,19 +52,19 @@ MDAnalysis Integration:
 
     >>> # pip install MDAnalysis
     >>> import MDAnalysis as mda
-    >>> from freesasa_zig.mdanalysis import SASAAnalysis
+    >>> from zsasa.mdanalysis import SASAAnalysis
     >>> u = mda.Universe('topology.pdb', 'trajectory.xtc')
     >>> sasa = SASAAnalysis(u, select='protein')
     >>> sasa.run()
     >>> print(sasa.results.total_area)  # Returns per-frame SASA in Å²
 """
 
-from freesasa_zig.analysis import (
+from zsasa.analysis import (
     ResidueResult,
     aggregate_by_residue,
     aggregate_from_result,
 )
-from freesasa_zig.core import (
+from zsasa.core import (
     MAX_SASA,
     AtomClass,
     BatchSasaResult,

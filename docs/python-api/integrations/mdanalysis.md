@@ -11,7 +11,7 @@ pip install MDAnalysis
 ## Import
 
 ```python
-from freesasa_zig.mdanalysis import SASAAnalysis, compute_sasa
+from zsasa.mdanalysis import SASAAnalysis, compute_sasa
 ```
 
 ## Overview
@@ -99,7 +99,7 @@ After calling `run()`, results are available in the `results` attribute:
 
 ```python
 import MDAnalysis as mda
-from freesasa_zig.mdanalysis import SASAAnalysis
+from zsasa.mdanalysis import SASAAnalysis
 
 # Load trajectory
 u = mda.Universe("topology.pdb", "trajectory.xtc")
@@ -147,7 +147,7 @@ def compute_sasa(
 **Example:**
 
 ```python
-from freesasa_zig.mdanalysis import compute_sasa
+from zsasa.mdanalysis import compute_sasa
 import MDAnalysis as mda
 
 u = mda.Universe("topology.pdb", "trajectory.xtc")

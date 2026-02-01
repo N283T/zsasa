@@ -12,14 +12,14 @@ if TYPE_CHECKING:
 
 mdtraj = pytest.importorskip("mdtraj")
 
-from freesasa_zig.mdtraj import (  # noqa: E402
+from zsasa.mdtraj import (  # noqa: E402
     _get_radii_from_topology,
     compute_sasa,
 )
 
 
 class TestUnitConversions:
-    """Test unit conversions between MDTraj (nm) and freesasa-zig (Angstrom)."""
+    """Test unit conversions between MDTraj (nm) and zsasa (Angstrom)."""
 
     def test_coordinates_nm_to_angstrom(self) -> None:
         """Verify coordinates are converted from nm to Angstrom (x10)."""
@@ -230,6 +230,6 @@ class TestShrakeRupleyAlias:
 
     def test_alias_exists(self) -> None:
         """Test that shrake_rupley is an alias for compute_sasa."""
-        from freesasa_zig.mdtraj import compute_sasa, shrake_rupley
+        from zsasa.mdtraj import compute_sasa, shrake_rupley
 
         assert shrake_rupley is compute_sasa

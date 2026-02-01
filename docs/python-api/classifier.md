@@ -48,7 +48,7 @@ Classify multiple atoms at once (batch operation).
 **Example:**
 
 ```python
-from freesasa_zig import classify_atoms, ClassifierType
+from zsasa import classify_atoms, ClassifierType
 
 result = classify_atoms(
     ["ALA", "ALA", "GLY"],
@@ -110,7 +110,7 @@ Calculate Relative Solvent Accessibility (RSA = SASA / MaxSASA).
 **Example:**
 
 ```python
-from freesasa_zig import calculate_rsa
+from zsasa import calculate_rsa
 
 rsa = calculate_rsa(64.5, "ALA")  # 64.5 / 129.0 = 0.5
 ```

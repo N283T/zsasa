@@ -1,12 +1,12 @@
-"""BioPython integration for freesasa-zig.
+"""BioPython integration for zsasa.
 
 This module provides convenience functions for calculating SASA
 from BioPython Structure/Model objects.
 
-Requires: pip install freesasa-zig[biopython]
+Requires: pip install zsasa[biopython]
 
 Example:
-    >>> from freesasa_zig.integrations.biopython import calculate_sasa_from_structure
+    >>> from zsasa.integrations.biopython import calculate_sasa_from_structure
     >>> result = calculate_sasa_from_structure("protein.pdb")
     >>> print(f"Total SASA: {result.total_area:.2f} A^2")
 """
@@ -18,13 +18,13 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
-from freesasa_zig.core import (
+from zsasa.core import (
     AtomClass,
     ClassifierType,
     calculate_sasa,
     classify_atoms,
 )
-from freesasa_zig.integrations._types import AtomData, SasaResultWithAtoms
+from zsasa.integrations._types import AtomData, SasaResultWithAtoms
 
 if TYPE_CHECKING:
     from Bio.PDB.Atom import Atom
@@ -47,7 +47,7 @@ def _import_biopython():
     except ImportError as e:
         msg = (
             "BioPython is required for this functionality. "
-            "Install with: pip install freesasa-zig[biopython]"
+            "Install with: pip install zsasa[biopython]"
         )
         raise ImportError(msg) from e
 
@@ -276,7 +276,7 @@ def calculate_sasa_from_structure(
         SasaResultWithAtoms with SASA values and atom metadata.
 
     Example:
-        >>> from freesasa_zig.integrations.biopython import calculate_sasa_from_structure
+        >>> from zsasa.integrations.biopython import calculate_sasa_from_structure
         >>>
         >>> # From file path
         >>> result = calculate_sasa_from_structure("protein.pdb")

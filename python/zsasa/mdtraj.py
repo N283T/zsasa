@@ -1,11 +1,11 @@
-"""MDTraj integration for freesasa-zig.
+"""MDTraj integration for zsasa.
 
 This module provides functions to calculate SASA for MDTraj trajectories,
 offering a drop-in replacement for mdtraj.shrake_rupley() with better performance.
 
 Example:
     >>> import mdtraj as md
-    >>> from freesasa_zig.mdtraj import compute_sasa
+    >>> from zsasa.mdtraj import compute_sasa
     >>>
     >>> traj = md.load('trajectory.xtc', top='topology.pdb')
     >>> sasa = compute_sasa(traj)  # Returns (n_frames, n_atoms) array
@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 from numpy.typing import NDArray
 
-from freesasa_zig.core import calculate_sasa_batch
+from zsasa.core import calculate_sasa_batch
 
 if TYPE_CHECKING:
     import mdtraj as md
@@ -112,7 +112,7 @@ def compute_sasa(
     n_threads: int = 0,
     mode: Literal["atom", "residue", "total"] = "atom",
 ) -> NDArray[np.float32]:
-    """Compute SASA for MDTraj trajectory using freesasa-zig.
+    """Compute SASA for MDTraj trajectory using zsasa.
 
     This function is a drop-in replacement for mdtraj.shrake_rupley() with
     better performance through SIMD optimization and frame-level parallelization.
@@ -145,7 +145,7 @@ def compute_sasa(
 
     Example:
         >>> import mdtraj as md
-        >>> from freesasa_zig.mdtraj import compute_sasa
+        >>> from zsasa.mdtraj import compute_sasa
         >>>
         >>> traj = md.load('trajectory.xtc', top='topology.pdb')
         >>>

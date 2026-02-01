@@ -44,7 +44,7 @@ console = Console()
 
 def get_zig_binary() -> Path:
     root = Path(__file__).parent.parent.parent
-    return root / "zig-out" / "bin" / "freesasa_zig"
+    return root / "zig-out" / "bin" / "zsasa"
 
 
 def run_batch(

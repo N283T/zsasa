@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from freesasa_zig import MAX_SASA, AtomClass
-from freesasa_zig.analysis import (
+from zsasa import MAX_SASA, AtomClass
+from zsasa.analysis import (
     ResidueResult,
     aggregate_by_residue,
     aggregate_from_result,
@@ -275,7 +275,7 @@ class TestResidueResultRepr:
 # Skip these tests if gemmi is not installed
 gemmi = pytest.importorskip("gemmi")
 
-from freesasa_zig.integrations.gemmi import (  # noqa: E402
+from zsasa.integrations.gemmi import (  # noqa: E402
     calculate_sasa_from_model,
 )
 

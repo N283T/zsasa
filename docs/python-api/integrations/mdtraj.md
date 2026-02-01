@@ -11,7 +11,7 @@ pip install mdtraj
 ## Import
 
 ```python
-from freesasa_zig.mdtraj import compute_sasa, shrake_rupley
+from zsasa.mdtraj import compute_sasa, shrake_rupley
 ```
 
 ## Overview
@@ -61,7 +61,7 @@ def compute_sasa(
 
 ```python
 import mdtraj as md
-from freesasa_zig.mdtraj import compute_sasa
+from zsasa.mdtraj import compute_sasa
 
 # Load trajectory
 traj = md.load('trajectory.xtc', top='topology.pdb')
@@ -88,7 +88,7 @@ sasa = compute_sasa(traj, n_threads=8)
 `shrake_rupley` is an alias for `compute_sasa` for compatibility with MDTraj's naming convention.
 
 ```python
-from freesasa_zig.mdtraj import shrake_rupley
+from zsasa.mdtraj import shrake_rupley
 
 # Same as compute_sasa
 sasa = shrake_rupley(traj)
@@ -101,8 +101,8 @@ sasa = shrake_rupley(traj)
 import mdtraj as md
 sasa = md.shrake_rupley(traj, probe_radius=0.14)  # nm
 
-# After (freesasa-zig)
-from freesasa_zig.mdtraj import compute_sasa
+# After (zsasa)
+from zsasa.mdtraj import compute_sasa
 sasa = compute_sasa(traj, probe_radius=1.4)  # Å (same value, different units)
 ```
 

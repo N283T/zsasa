@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Streaming decompression with zlib
 
 - **Batch processing** (directory input)
-  - Process entire directories: `freesasa-zig ./input_dir/ ./output_dir/`
+  - Process entire directories: `zsasa ./input_dir/ ./output_dir/`
   - File-level parallelism with work stealing
   - Per-thread arena allocators for memory efficiency
   - Progress bar with file count
@@ -72,8 +72,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `--rsa` - Relative Solvent Accessibility calculation
   - `--polar` - Polar/nonpolar SASA classification
 
-- **Python bindings** (`python/freesasa_zig`)
-  - C ABI shared library (`libfreesasa_zig.dylib/.so/.dll`)
+- **Python bindings** (`python/zsasa`)
+  - C ABI shared library (`libzsasa.dylib/.so/.dll`)
   - NumPy-based Python API with ctypes bindings
   - Both SR and LR algorithms supported
   - `calculate_sasa(coords, radii, algorithm="sr"|"lr", ...)` function
@@ -199,10 +199,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `calc_reference_sasa.py` - Generate reference SASA
   - `benchmark.py` - Performance benchmarking
 
-[Unreleased]: https://github.com/N283T/freesasa-zig/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/N283T/freesasa-zig/compare/v0.0.5...v0.1.0
-[0.0.5]: https://github.com/N283T/freesasa-zig/compare/v0.0.4...v0.0.5
-[0.0.4]: https://github.com/N283T/freesasa-zig/compare/v0.0.3...v0.0.4
-[0.0.3]: https://github.com/N283T/freesasa-zig/compare/v0.0.2...v0.0.3
-[0.0.2]: https://github.com/N283T/freesasa-zig/compare/v0.0.1...v0.0.2
-[0.0.1]: https://github.com/N283T/freesasa-zig/releases/tag/v0.0.1
+[Unreleased]: https://github.com/N283T/zsasa/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/N283T/zsasa/compare/v0.0.5...v0.1.0
+[0.0.5]: https://github.com/N283T/zsasa/compare/v0.0.4...v0.0.5
+[0.0.4]: https://github.com/N283T/zsasa/compare/v0.0.3...v0.0.4
+[0.0.3]: https://github.com/N283T/zsasa/compare/v0.0.2...v0.0.3
+[0.0.2]: https://github.com/N283T/zsasa/compare/v0.0.1...v0.0.2
+[0.0.1]: https://github.com/N283T/zsasa/releases/tag/v0.0.1

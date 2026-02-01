@@ -1,7 +1,7 @@
 """Tests for BioPython integration.
 
 These tests require BioPython to be installed.
-Run with: pip install freesasa-zig[biopython] pytest
+Run with: pip install zsasa[biopython] pytest
 """
 
 from __future__ import annotations
@@ -13,9 +13,9 @@ import pytest
 Bio = pytest.importorskip("Bio")
 from Bio.PDB import StructureBuilder  # noqa: E402
 
-from freesasa_zig import AtomClass, ClassifierType  # noqa: E402
-from freesasa_zig.integrations._types import AtomData, SasaResultWithAtoms  # noqa: E402
-from freesasa_zig.integrations.biopython import (  # noqa: E402
+from zsasa import AtomClass, ClassifierType  # noqa: E402
+from zsasa.integrations._types import AtomData, SasaResultWithAtoms  # noqa: E402
+from zsasa.integrations.biopython import (  # noqa: E402
     calculate_sasa_from_model,
     calculate_sasa_from_structure,
     extract_atoms_from_model,
@@ -397,7 +397,7 @@ class TestAnalysisIntegration:
 
     def test_aggregate_from_result(self, simple_structure):
         """Should work with aggregate_from_result."""
-        from freesasa_zig.analysis import aggregate_from_result
+        from zsasa.analysis import aggregate_from_result
 
         result = calculate_sasa_from_model(simple_structure[0])
         residues = aggregate_from_result(result)
@@ -409,7 +409,7 @@ class TestAnalysisIntegration:
 
     def test_multi_residue_aggregation(self):
         """Should correctly aggregate multiple residues."""
-        from freesasa_zig.analysis import aggregate_from_result
+        from zsasa.analysis import aggregate_from_result
 
         sb = _create_structure("multi_res")
         _add_model(sb)

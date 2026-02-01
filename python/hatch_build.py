@@ -21,15 +21,15 @@ class ZigBuildHook(BuildHookInterface):
         # Determine paths
         root_dir = Path(self.root).parent  # Go up from python/ to project root
         python_dir = Path(self.root)
-        package_dir = python_dir / "freesasa_zig"
+        package_dir = python_dir / "zsasa"
 
         # Platform-specific library name
         if sys.platform == "darwin":
-            lib_name = "libfreesasa_zig.dylib"
+            lib_name = "libzsasa.dylib"
         elif sys.platform == "win32":
-            lib_name = "freesasa_zig.dll"
+            lib_name = "zsasa.dll"
         else:
-            lib_name = "libfreesasa_zig.so"
+            lib_name = "libzsasa.so"
 
         lib_src = root_dir / "zig-out" / "lib" / lib_name
         lib_dst = package_dir / lib_name
@@ -50,7 +50,7 @@ class ZigBuildHook(BuildHookInterface):
             shutil.copy2(lib_src, lib_dst)
 
         # Include the library in the wheel
-        build_data["force_include"][str(lib_dst)] = f"freesasa_zig/{lib_name}"
+        build_data["force_include"][str(lib_dst)] = f"zsasa/{lib_name}"
 
     def _build_zig(self, root_dir: Path) -> None:
         """Run zig build command."""
@@ -60,7 +60,7 @@ class ZigBuildHook(BuildHookInterface):
         if shutil.which("zig") is None:
             msg = (
                 "Zig compiler not found. Please install Zig 0.15.2+ from https://ziglang.org/download/ "
-                "or set FREESASA_ZIG_LIB to point to a pre-built library."
+                "or set ZSASA_LIB to point to a pre-built library."
             )
             raise RuntimeError(msg)
 

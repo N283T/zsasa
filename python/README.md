@@ -1,6 +1,6 @@
-# freesasa-zig Python Bindings
+# zsasa Python Bindings
 
-Python bindings for the freesasa-zig library - a high-performance implementation of Solvent Accessible Surface Area (SASA) calculation.
+Python bindings for the zsasa library - a high-performance implementation of Solvent Accessible Surface Area (SASA) calculation.
 
 ## Features
 
@@ -19,7 +19,7 @@ Python bindings for the freesasa-zig library - a high-performance implementation
 
 ```bash
 # 1. Build the Zig shared library
-cd /path/to/freesasa-zig
+cd /path/to/zsasa
 zig build -Doptimize=ReleaseFast
 
 # 2. Install Python package
@@ -31,23 +31,23 @@ pip install -e .
 
 ```bash
 # For gemmi integration
-pip install freesasa-zig[gemmi]
+pip install zsasa[gemmi]
 
 # For BioPython integration
-pip install freesasa-zig[biopython]
+pip install zsasa[biopython]
 
 # For Biotite integration (also works with AtomWorks)
-pip install freesasa-zig[biotite]
+pip install zsasa[biotite]
 
 # All integrations
-pip install freesasa-zig[all]
+pip install zsasa[all]
 ```
 
 ### Library Location
 
-The Python bindings look for `libfreesasa_zig.dylib` (macOS), `libfreesasa_zig.so` (Linux), or `freesasa_zig.dll` (Windows) in these locations:
+The Python bindings look for `libzsasa.dylib` (macOS), `libzsasa.so` (Linux), or `zsasa.dll` (Windows) in these locations:
 
-1. `FREESASA_ZIG_LIB` environment variable (if set)
+1. `ZSASA_LIB` environment variable (if set)
 2. `../zig-out/lib/` (relative to package)
 3. `/usr/local/lib/`
 4. `/usr/lib/`
@@ -59,7 +59,7 @@ The Python bindings look for `libfreesasa_zig.dylib` (macOS), `libfreesasa_zig.s
 
 ```python
 import numpy as np
-from freesasa_zig import calculate_sasa, get_version
+from zsasa import calculate_sasa, get_version
 
 print(f"Library version: {get_version()}")
 
@@ -83,15 +83,15 @@ The easiest way to calculate SASA from structure files:
 
 ```python
 # With gemmi (fast mmCIF/PDB parser)
-from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
+from zsasa.integrations.gemmi import calculate_sasa_from_structure
 result = calculate_sasa_from_structure("protein.cif")
 
 # With BioPython
-from freesasa_zig.integrations.biopython import calculate_sasa_from_structure
+from zsasa.integrations.biopython import calculate_sasa_from_structure
 result = calculate_sasa_from_structure("protein.pdb")
 
 # With Biotite (also works with AtomWorks)
-from freesasa_zig.integrations.biotite import calculate_sasa_from_structure
+from zsasa.integrations.biotite import calculate_sasa_from_structure
 result = calculate_sasa_from_structure("protein.pdb")
 
 print(f"Total: {result.total_area:.1f} Å²")
@@ -102,8 +102,8 @@ print(f"Apolar: {result.apolar_area:.1f} Å²")
 ### Per-Residue Analysis with RSA
 
 ```python
-from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
-from freesasa_zig.analysis import aggregate_from_result
+from zsasa.integrations.gemmi import calculate_sasa_from_structure
+from zsasa.analysis import aggregate_from_result
 
 # Calculate SASA
 result = calculate_sasa_from_structure("protein.cif")
@@ -263,7 +263,7 @@ Extended result with atom metadata:
 
 ```python
 import numpy as np
-from freesasa_zig import calculate_sasa
+from zsasa import calculate_sasa
 
 coords = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
 radii = np.array([1.5, 1.5])
@@ -293,7 +293,7 @@ result = calculate_sasa(coords, radii, n_threads=1)
 ### Atom Classification
 
 ```python
-from freesasa_zig import classify_atoms, ClassifierType, AtomClass
+from zsasa import classify_atoms, ClassifierType, AtomClass
 
 residue_names = ["ALA", "ALA", "ALA"]
 atom_names = ["N", "CA", "O"]
@@ -316,8 +316,8 @@ print(f"Polar: {polar_count}, Apolar: {apolar_count}")
 ### Finding Buried Residues
 
 ```python
-from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
-from freesasa_zig.analysis import aggregate_from_result
+from zsasa.integrations.gemmi import calculate_sasa_from_structure
+from zsasa.analysis import aggregate_from_result
 
 result = calculate_sasa_from_structure("protein.cif")
 residues = aggregate_from_result(result)
@@ -335,13 +335,13 @@ for r in buried:
 ```python
 # AtomWorks is built on Biotite, so use the biotite integration
 from atomworks.io.utils.io_utils import load_any
-from freesasa_zig.integrations.biotite import calculate_sasa_from_atom_array
-from freesasa_zig.analysis import aggregate_from_result
+from zsasa.integrations.biotite import calculate_sasa_from_atom_array
+from zsasa.analysis import aggregate_from_result
 
 # Load with AtomWorks
 atom_array = load_any("protein.cif.gz")
 
-# Calculate SASA with freesasa-zig
+# Calculate SASA with zsasa
 result = calculate_sasa_from_atom_array(atom_array)
 residues = aggregate_from_result(result)
 
@@ -379,7 +379,7 @@ uv run --with pytest pytest tests/ -v
 
 ```bash
 cd python
-uv run --with ty ty check freesasa_zig/
+uv run --with ty ty check zsasa/
 ```
 
 ### Linting

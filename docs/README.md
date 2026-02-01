@@ -1,6 +1,6 @@
 # Documentation
 
-Technical documentation for freesasa-zig.
+Technical documentation for zsasa.
 
 ## Contents
 

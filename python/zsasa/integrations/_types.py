@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from freesasa_zig.core import SasaResult
+from zsasa.core import SasaResult
 
 __all__ = [
     "AtomData",

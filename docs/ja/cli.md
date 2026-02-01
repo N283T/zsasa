@@ -1,28 +1,28 @@
 # CLI リファレンス
 
-freesasa_zig コマンドラインインターフェースの完全なドキュメントです。
+zsasa コマンドラインインターフェースの完全なドキュメントです。
 
 ## 概要
 
 ```
-freesasa_zig [OPTIONS] <input> [output.json]
-freesasa_zig [OPTIONS] <input_dir/> <output_dir/>
+zsasa [OPTIONS] <input> [output.json]
+zsasa [OPTIONS] <input_dir/> <output_dir/>
 ```
 
 ## 基本的な使い方
 
 ```bash
 # 基本的なSASA計算
-./zig-out/bin/freesasa_zig structure.cif output.json
+./zig-out/bin/zsasa structure.cif output.json
 
 # アルゴリズム選択
-./zig-out/bin/freesasa_zig --algorithm=lr structure.cif output.json
+./zig-out/bin/zsasa --algorithm=lr structure.cif output.json
 
 # マルチスレッド
-./zig-out/bin/freesasa_zig --threads=4 structure.cif output.json
+./zig-out/bin/zsasa --threads=4 structure.cif output.json
 
 # 解析機能付き
-./zig-out/bin/freesasa_zig --rsa --polar structure.cif output.json
+./zig-out/bin/zsasa --rsa --polar structure.cif output.json
 ```
 
 ## オプション
@@ -278,16 +278,16 @@ Polar/Nonpolar SASA:
 
 ```bash
 # 基本的なバッチ処理
-./zig-out/bin/freesasa_zig input_dir/ output_dir/
+./zig-out/bin/zsasa input_dir/ output_dir/
 
 # ファイルレベル並列処理 (N個のファイルを並列、各1スレッド)
-./zig-out/bin/freesasa_zig --threads=8 input_dir/ output_dir/
+./zig-out/bin/zsasa --threads=8 input_dir/ output_dir/
 
 # 原子レベル並列処理 (1ファイルずつ、SASAにNスレッド)
-./zig-out/bin/freesasa_zig --parallelism=atom --threads=8 input_dir/
+./zig-out/bin/zsasa --parallelism=atom --threads=8 input_dir/
 
 # パイプラインモード (I/Oプリフェッチ + 原子レベルSASA)
-./zig-out/bin/freesasa_zig --parallelism=pipeline --threads=8 input_dir/
+./zig-out/bin/zsasa --parallelism=pipeline --threads=8 input_dir/
 ```
 
 **並列化戦略:**
@@ -338,95 +338,95 @@ atom ALA O  1.40
 
 ```bash
 # mmCIF入力
-./zig-out/bin/freesasa_zig structure.cif output.json
+./zig-out/bin/zsasa structure.cif output.json
 
 # PDB入力
-./zig-out/bin/freesasa_zig structure.pdb output.json
+./zig-out/bin/zsasa structure.pdb output.json
 
 # JSON入力
-./zig-out/bin/freesasa_zig atoms.json output.json
+./zig-out/bin/zsasa atoms.json output.json
 ```
 
 ### アルゴリズム選択
 
 ```bash
 # Lee-Richards (50スライス)
-./zig-out/bin/freesasa_zig --algorithm=lr --n-slices=50 structure.cif output.json
+./zig-out/bin/zsasa --algorithm=lr --n-slices=50 structure.cif output.json
 
 # Shrake-Rupley (200テスト点)
-./zig-out/bin/freesasa_zig --algorithm=sr --n-points=200 structure.cif output.json
+./zig-out/bin/zsasa --algorithm=sr --n-points=200 structure.cif output.json
 ```
 
 ### パフォーマンスチューニング
 
 ```bash
 # 高速モード: f32精度
-./zig-out/bin/freesasa_zig --precision=f32 structure.cif output.json
+./zig-out/bin/zsasa --precision=f32 structure.cif output.json
 
 # マルチスレッド
-./zig-out/bin/freesasa_zig --threads=4 structure.cif output.json
+./zig-out/bin/zsasa --threads=4 structure.cif output.json
 
 # タイミング内訳を表示
-./zig-out/bin/freesasa_zig --timing structure.cif output.json
+./zig-out/bin/zsasa --timing structure.cif output.json
 ```
 
 ### 分類器の使用
 
 ```bash
 # NACCESS分類器
-./zig-out/bin/freesasa_zig --classifier=naccess structure.cif output.json
+./zig-out/bin/zsasa --classifier=naccess structure.cif output.json
 
 # カスタム設定
-./zig-out/bin/freesasa_zig --config=custom.config structure.cif output.json
+./zig-out/bin/zsasa --config=custom.config structure.cif output.json
 ```
 
 ### チェーン/モデルフィルタリング
 
 ```bash
 # 単一チェーン
-./zig-out/bin/freesasa_zig --chain=A structure.cif output.json
+./zig-out/bin/zsasa --chain=A structure.cif output.json
 
 # 複数チェーン
-./zig-out/bin/freesasa_zig --chain=A,B,C structure.cif output.json
+./zig-out/bin/zsasa --chain=A,B,C structure.cif output.json
 
 # 特定のモデル (NMR)
-./zig-out/bin/freesasa_zig --model=1 nmr_structure.cif output.json
+./zig-out/bin/zsasa --model=1 nmr_structure.cif output.json
 
 # authチェーンIDを使用
-./zig-out/bin/freesasa_zig --auth-chain --chain=A structure.cif output.json
+./zig-out/bin/zsasa --auth-chain --chain=A structure.cif output.json
 ```
 
 ### 解析機能
 
 ```bash
 # 残基ごとの出力
-./zig-out/bin/freesasa_zig --per-residue structure.cif output.json
+./zig-out/bin/zsasa --per-residue structure.cif output.json
 
 # RSA計算
-./zig-out/bin/freesasa_zig --rsa structure.cif output.json
+./zig-out/bin/zsasa --rsa structure.cif output.json
 
 # 極性/非極性サマリー
-./zig-out/bin/freesasa_zig --polar structure.cif output.json
+./zig-out/bin/zsasa --polar structure.cif output.json
 
 # 組み合わせ解析
-./zig-out/bin/freesasa_zig --rsa --polar structure.cif output.json
+./zig-out/bin/zsasa --rsa --polar structure.cif output.json
 ```
 
 ### 出力形式
 
 ```bash
 # CSV出力
-./zig-out/bin/freesasa_zig --format=csv structure.cif output.csv
+./zig-out/bin/zsasa --format=csv structure.cif output.csv
 
 # コンパクトJSON
-./zig-out/bin/freesasa_zig --format=compact structure.cif output.json
+./zig-out/bin/zsasa --format=compact structure.cif output.json
 ```
 
 ### 検証のみ
 
 ```bash
 # 計算なしで検証
-./zig-out/bin/freesasa_zig --validate structure.cif
+./zig-out/bin/zsasa --validate structure.cif
 ```
 
 ---

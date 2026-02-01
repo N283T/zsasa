@@ -1,6 +1,6 @@
 # Python API Reference
 
-Comprehensive documentation for the freesasa-zig Python bindings.
+Comprehensive documentation for the zsasa Python bindings.
 
 ## Overview
 
@@ -42,7 +42,7 @@ The Python bindings provide:
 
 ```bash
 # 1. Build the Zig shared library
-cd freesasa-zig
+cd zsasa
 zig build -Doptimize=ReleaseFast
 
 # 2. Install Python package
@@ -54,23 +54,23 @@ pip install -e .
 
 ```bash
 # For structure file support
-pip install freesasa-zig[gemmi]     # gemmi (fast mmCIF/PDB)
-pip install freesasa-zig[biopython] # BioPython
-pip install freesasa-zig[biotite]   # Biotite (also works with AtomWorks)
+pip install zsasa[gemmi]     # gemmi (fast mmCIF/PDB)
+pip install zsasa[biopython] # BioPython
+pip install zsasa[biotite]   # Biotite (also works with AtomWorks)
 
 # For MD trajectory analysis
 pip install mdtraj                   # MDTraj
 pip install MDAnalysis               # MDAnalysis
 
 # All integrations
-pip install freesasa-zig[all]
+pip install zsasa[all]
 ```
 
 ### Library Location
 
 The bindings look for the native library in these locations:
 
-1. `FREESASA_ZIG_LIB` environment variable (if set)
+1. `ZSASA_LIB` environment variable (if set)
 2. Bundled in package (wheel installation)
 3. `../zig-out/lib/` (relative to package, for development)
 4. `/usr/local/lib/`
@@ -86,7 +86,7 @@ The bindings look for the native library in these locations:
 
 ```python
 import numpy as np
-from freesasa_zig import calculate_sasa
+from zsasa import calculate_sasa
 
 # Define atom coordinates (N, 3) and radii (N,)
 coords = np.array([
@@ -104,8 +104,8 @@ print(f"Per-atom: {result.atom_areas}")
 ### From Structure Files (Recommended)
 
 ```python
-# With gemmi (pip install freesasa-zig[gemmi])
-from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
+# With gemmi (pip install zsasa[gemmi])
+from zsasa.integrations.gemmi import calculate_sasa_from_structure
 
 result = calculate_sasa_from_structure("protein.cif")
 print(f"Total: {result.total_area:.1f} Å²")
@@ -116,8 +116,8 @@ print(f"Apolar: {result.apolar_area:.1f} Å²")
 ### Per-Residue Analysis with RSA
 
 ```python
-from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
-from freesasa_zig import aggregate_from_result
+from zsasa.integrations.gemmi import calculate_sasa_from_structure
+from zsasa import aggregate_from_result
 
 result = calculate_sasa_from_structure("protein.cif")
 residues = aggregate_from_result(result)
@@ -131,7 +131,7 @@ for res in residues:
 
 ```python
 import MDAnalysis as mda
-from freesasa_zig.mdanalysis import SASAAnalysis
+from zsasa.mdanalysis import SASAAnalysis
 
 u = mda.Universe("topology.pdb", "trajectory.xtc")
 sasa = SASAAnalysis(u, select="protein")
@@ -164,7 +164,7 @@ Comparison with mdsasa-bolt (RustSASA) for MD trajectory SASA:
 
 | Implementation | Time (20k atoms × 1k frames) | Notes |
 |----------------|------------------------------|-------|
-| freesasa-zig   | 8.8 s                        | f64, controllable threads |
+| zsasa   | 8.8 s                        | f64, controllable threads |
 | mdsasa-bolt    | 30.3 s                       | f32, rayon global pool |
 | **Speedup**    | **3.4x**                     | |
 
@@ -194,7 +194,7 @@ Comparison with mdsasa-bolt (RustSASA) for MD trajectory SASA:
 ### Example
 
 ```python
-from freesasa_zig import calculate_sasa
+from zsasa import calculate_sasa
 import numpy as np
 
 try:
@@ -219,6 +219,6 @@ def get_version() -> str
 Returns the library version string (e.g., "0.1.0").
 
 ```python
-from freesasa_zig import get_version
+from zsasa import get_version
 print(get_version())  # "0.1.0"
 ```

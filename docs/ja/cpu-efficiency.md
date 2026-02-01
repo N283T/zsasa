@@ -1,6 +1,6 @@
 # CPU効率分析
 
-freesasa-zigのCPUレベルでの効率性を分析。実行時間だけでなく**命令数**と**IPC**を測定し、「なぜ速いのか」を明らかにします。
+zsasaのCPUレベルでの効率性を分析。実行時間だけでなく**命令数**と**IPC**を測定し、「なぜ速いのか」を明らかにします。
 
 ## 主な発見
 
@@ -51,7 +51,7 @@ IPC = 実行命令数 / CPUサイクル
 macOSの`/usr/bin/time -l`を使用:
 
 ```bash
-/usr/bin/time -l ./freesasa_zig --algorithm=sr input.json output.json
+/usr/bin/time -l ./zsasa --algorithm=sr input.json output.json
 ```
 
 出力から`instructions retired`と`cycles elapsed`を抽出:
@@ -225,4 +225,4 @@ RustもSIMDを使用するため命令数はZigとほぼ同等。しかし:
 | **効率的なスレッドプール** | 並列効率2倍向上 | vs RustSASA |
 | **安定したIPC** | マルチスレッドで効率維持 | vs RustSASA |
 
-**結論**: freesasa-zigは単に「速い」だけでなく、CPUリソースを効率的に使用しています。
+**結論**: zsasaは単に「速い」だけでなく、CPUリソースを効率的に使用しています。

@@ -165,11 +165,11 @@ def parse_threads(threads_str: str) -> list[int]:
 
 def get_binary_path(tool: str) -> Path:
     """Get binary path for a tool."""
-    # Project root (freesasa-zig/)
+    # Project root (zsasa/)
     root = Path(__file__).parent.parent.parent
 
     if tool == "zig":
-        return root / "zig-out" / "bin" / "freesasa_zig"
+        return root / "zig-out" / "bin" / "zsasa"
     elif tool == "freesasa":
         return root / "benchmarks" / "external" / "freesasa-bench" / "src" / "freesasa"
     elif tool == "rust":

@@ -1,6 +1,6 @@
 # Example Files
 
-Sample structure files for testing freesasa-zig.
+Sample structure files for testing zsasa.
 
 | File | Format | Structure | Atoms |
 |------|--------|-----------|-------|
@@ -17,11 +17,11 @@ Sample structure files for testing freesasa-zig.
 zig build -Doptimize=ReleaseFast
 
 # Run on example files
-./zig-out/bin/freesasa-zig examples/1crn.pdb
-./zig-out/bin/freesasa-zig examples/1ubq.cif
-./zig-out/bin/freesasa-zig examples/3hhb.cif.gz
+./zig-out/bin/zsasa examples/1crn.pdb
+./zig-out/bin/zsasa examples/1ubq.cif
+./zig-out/bin/zsasa examples/3hhb.cif.gz
 
 # With options
-./zig-out/bin/freesasa-zig examples/1crn.pdb --algorithm=lr --n-threads=4
-./zig-out/bin/freesasa-zig examples/1ubq.cif --probe-radius=1.2
+./zig-out/bin/zsasa examples/1crn.pdb --algorithm=lr --n-threads=4
+./zig-out/bin/zsasa examples/1ubq.cif --probe-radius=1.2
 ```

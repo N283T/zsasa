@@ -5,13 +5,13 @@ Fast mmCIF and PDB parsing with gemmi.
 ## Installation
 
 ```bash
-pip install freesasa-zig[gemmi]
+pip install zsasa[gemmi]
 ```
 
 ## Import
 
 ```python
-from freesasa_zig.integrations.gemmi import (
+from zsasa.integrations.gemmi import (
     calculate_sasa_from_structure,
     calculate_sasa_from_model,
     extract_atoms_from_model,
@@ -26,7 +26,7 @@ from freesasa_zig.integrations.gemmi import (
 ## Example
 
 ```python
-from freesasa_zig.integrations.gemmi import calculate_sasa_from_structure
+from zsasa.integrations.gemmi import calculate_sasa_from_structure
 
 # From file
 result = calculate_sasa_from_structure("protein.cif")

@@ -1,7 +1,7 @@
 """Tests for gemmi integration.
 
 These tests require gemmi to be installed.
-Run with: pip install freesasa-zig[gemmi] pytest
+Run with: pip install zsasa[gemmi] pytest
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ import pytest
 # Skip all tests if gemmi is not installed
 gemmi = pytest.importorskip("gemmi")
 
-from freesasa_zig import AtomClass, ClassifierType  # noqa: E402
-from freesasa_zig.integrations.gemmi import (  # noqa: E402
+from zsasa import AtomClass, ClassifierType  # noqa: E402
+from zsasa.integrations.gemmi import (  # noqa: E402
     AtomData,
     SasaResultWithAtoms,
     calculate_sasa_from_model,
