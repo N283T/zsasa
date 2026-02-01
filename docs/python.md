@@ -13,6 +13,7 @@ The Python bindings provide:
 - **RSA calculation**: Relative Solvent Accessibility
 - **Per-residue aggregation**: Aggregate atom SASA to residue level
 - **Library integrations**: gemmi, BioPython, and Biotite support
+- **MD trajectory analysis**: MDTraj and MDAnalysis integration (3.4x faster than mdsasa-bolt)
 
 ## Installation
 
@@ -41,6 +42,10 @@ pip install -e .
 pip install freesasa-zig[gemmi]     # gemmi (fast mmCIF/PDB)
 pip install freesasa-zig[biopython] # BioPython
 pip install freesasa-zig[biotite]   # Biotite (also works with AtomWorks)
+
+# For MD trajectory analysis
+pip install mdtraj                   # MDTraj
+pip install MDAnalysis               # MDAnalysis
 
 # All integrations
 pip install freesasa-zig[all]
@@ -107,6 +112,19 @@ for res in residues:
     print(f"{res.chain_id}:{res.residue_name}{res.residue_id}: RSA={rsa_str}")
 ```
 
+### MD Trajectory Analysis
+
+```python
+import MDAnalysis as mda
+from freesasa_zig.mdanalysis import SASAAnalysis
+
+u = mda.Universe("topology.pdb", "trajectory.xtc")
+sasa = SASAAnalysis(u, select="protein")
+sasa.run()
+
+print(f"Mean SASA: {sasa.results.mean_total_area:.2f} Å²")
+```
+
 ---
 
 ## Core API
@@ -151,6 +169,89 @@ Calculate Solvent Accessible Surface Area.
 class SasaResult:
     total_area: float           # Total SASA in Å²
     atom_areas: NDArray[float64] # Per-atom SASA values
+```
+
+---
+
+## Batch API
+
+For trajectory analysis with multiple frames.
+
+### calculate_sasa_batch
+
+```python
+def calculate_sasa_batch(
+    coordinates: NDArray[np.floating],
+    radii: NDArray[np.floating],
+    *,
+    algorithm: Literal["sr", "lr"] = "sr",
+    n_points: int = 100,
+    n_slices: int = 20,
+    probe_radius: float = 1.4,
+    n_threads: int = 0,
+    precision: Literal["f64", "f32"] = "f64",
+) -> BatchSasaResult
+```
+
+Calculate SASA for multiple frames in batch.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `coordinates` | `NDArray[floating]` | required | Coordinates as (n_frames, n_atoms, 3) array |
+| `radii` | `NDArray[floating]` | required | Atom radii as (n_atoms,) array |
+| `algorithm` | `"sr"` or `"lr"` | `"sr"` | Shrake-Rupley or Lee-Richards |
+| `n_points` | `int` | `100` | Test points per atom (SR only) |
+| `n_slices` | `int` | `20` | Slices per atom (LR only) |
+| `probe_radius` | `float` | `1.4` | Water probe radius in Å |
+| `n_threads` | `int` | `0` | Number of threads (0 = auto) |
+| `precision` | `"f64"` or `"f32"` | `"f64"` | Floating-point precision |
+
+**Returns:** `BatchSasaResult`
+
+### BatchSasaResult
+
+```python
+@dataclass
+class BatchSasaResult:
+    atom_areas: NDArray[float32]  # Per-atom SASA, shape (n_frames, n_atoms)
+
+    # Properties
+    n_frames: int                  # Number of frames
+    n_atoms: int                   # Number of atoms
+    total_areas: NDArray[float32]  # Total SASA per frame, shape (n_frames,)
+```
+
+### Precision Parameter
+
+The `precision` parameter controls the floating-point precision used internally:
+
+| Precision | Description | Use Case |
+|-----------|-------------|----------|
+| `"f64"` (default) | 64-bit double precision | Higher accuracy, recommended |
+| `"f32"` | 32-bit single precision | Comparison with RustSASA/mdsasa-bolt |
+
+**Note:** The difference between f64 and f32 is typically < 0.01% for SASA calculations. f64 is recommended unless you need exact comparison with f32-based implementations.
+
+**Example:**
+
+```python
+import numpy as np
+from freesasa_zig import calculate_sasa_batch
+
+# Multiple frames
+n_frames = 100
+n_atoms = 1000
+coords = np.random.rand(n_frames, n_atoms, 3).astype(np.float32) * 50
+radii = np.full(n_atoms, 1.5, dtype=np.float32)
+
+# f64 precision (default)
+result = calculate_sasa_batch(coords, radii, n_threads=4)
+print(f"Shape: {result.atom_areas.shape}")  # (100, 1000)
+
+# f32 precision (for comparison with RustSASA)
+result_f32 = calculate_sasa_batch(coords, radii, precision="f32")
 ```
 
 ---
@@ -471,6 +572,230 @@ result = calculate_sasa_from_atom_array(atom_array)
 
 ---
 
+## MDTraj Integration
+
+```python
+from freesasa_zig.mdtraj import compute_sasa, shrake_rupley
+```
+
+**Requires:** MDTraj (`pip install mdtraj`)
+
+A drop-in replacement for `mdtraj.shrake_rupley()` with better performance through SIMD optimization and frame-level parallelization.
+
+### compute_sasa
+
+```python
+def compute_sasa(
+    traj: md.Trajectory,
+    *,
+    probe_radius: float = 1.4,
+    n_points: int = 960,
+    algorithm: Literal["sr", "lr"] = "sr",
+    n_slices: int = 20,
+    n_threads: int = 0,
+    mode: Literal["atom", "residue", "total"] = "atom",
+) -> NDArray[np.float32]
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `traj` | `md.Trajectory` | required | MDTraj Trajectory object |
+| `probe_radius` | `float` | `1.4` | Water probe radius in Å (MDTraj uses 0.14 nm) |
+| `n_points` | `int` | `960` | Test points per atom (SR) |
+| `algorithm` | `"sr"` or `"lr"` | `"sr"` | Algorithm to use |
+| `n_slices` | `int` | `20` | Slices per atom (LR) |
+| `n_threads` | `int` | `0` | Threads (0 = auto) |
+| `mode` | `"atom"`, `"residue"`, `"total"` | `"atom"` | Output mode |
+
+**Returns:** SASA values in nm² (matching MDTraj's output units).
+
+| Mode | Shape |
+|------|-------|
+| `"atom"` | `(n_frames, n_atoms)` |
+| `"residue"` | `(n_frames, n_residues)` |
+| `"total"` | `(n_frames,)` |
+
+**Note:** Coordinates are automatically converted from nm (MDTraj) to Angstrom internally, and output is converted back to nm².
+
+**Example:**
+
+```python
+import mdtraj as md
+from freesasa_zig.mdtraj import compute_sasa
+
+# Load trajectory
+traj = md.load('trajectory.xtc', top='topology.pdb')
+
+# Per-atom SASA (default)
+sasa_atom = compute_sasa(traj, mode='atom')
+print(f"Shape: {sasa_atom.shape}")  # (n_frames, n_atoms)
+
+# Per-residue SASA
+sasa_residue = compute_sasa(traj, mode='residue')
+
+# Total SASA per frame
+sasa_total = compute_sasa(traj, mode='total')
+
+# Use Lee-Richards algorithm
+sasa_lr = compute_sasa(traj, algorithm='lr', n_slices=40)
+```
+
+### shrake_rupley (alias)
+
+`shrake_rupley` is an alias for `compute_sasa` for compatibility with MDTraj's naming convention.
+
+---
+
+## MDAnalysis Integration
+
+```python
+from freesasa_zig.mdanalysis import SASAAnalysis, compute_sasa
+```
+
+**Requires:** MDAnalysis (`pip install MDAnalysis`)
+
+High-performance SASA analysis compatible with MDAnalysis' `AnalysisBase` pattern.
+
+### SASAAnalysis
+
+```python
+class SASAAnalysis:
+    """SASA analysis for MDAnalysis trajectories."""
+
+    def __init__(
+        self,
+        universe_or_atomgroup: Universe | AtomGroup,
+        select: str = "all",
+    ) -> None
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `universe_or_atomgroup` | `Universe` or `AtomGroup` | required | MDAnalysis object to analyze |
+| `select` | `str` | `"all"` | Atom selection string |
+
+**Attributes:**
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `atomgroup` | `AtomGroup` | The atoms being analyzed |
+| `results` | `Results` | Results object (after `run()`) |
+| `n_frames` | `int` | Number of frames analyzed |
+| `times` | `NDArray[float64]` | Frame times |
+| `frames` | `NDArray[int64]` | Frame indices |
+
+### run()
+
+```python
+def run(
+    self,
+    start: int = 0,
+    stop: int | None = None,
+    step: int = 1,
+    *,
+    probe_radius: float = 1.4,
+    n_points: int = 960,
+    algorithm: Literal["sr", "lr"] = "sr",
+    n_slices: int = 20,
+    n_threads: int = 0,
+) -> SASAAnalysis
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `start` | `int` | `0` | First frame to analyze |
+| `stop` | `int` | `None` | Last frame (None = last) |
+| `step` | `int` | `1` | Step between frames |
+| `probe_radius` | `float` | `1.4` | Probe radius in Å |
+| `n_points` | `int` | `960` | Test points per atom (SR) |
+| `algorithm` | `"sr"` or `"lr"` | `"sr"` | Algorithm to use |
+| `n_slices` | `int` | `20` | Slices per atom (LR) |
+| `n_threads` | `int` | `0` | Threads (0 = auto) |
+
+**Returns:** `self` for method chaining.
+
+### Results
+
+After calling `run()`, results are available in the `results` attribute:
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `atom_area` | `NDArray[float32]` | Per-atom SASA, shape `(n_frames, n_atoms)` |
+| `residue_area` | `NDArray[float32]` | Per-residue SASA, shape `(n_frames, n_residues)` |
+| `total_area` | `NDArray[float32]` | Total SASA, shape `(n_frames,)` |
+| `mean_total_area` | `float` | Mean total SASA across all frames |
+
+**Units:** All SASA values are in Å² (matching MDAnalysis conventions).
+
+**Example:**
+
+```python
+import MDAnalysis as mda
+from freesasa_zig.mdanalysis import SASAAnalysis
+
+# Load trajectory
+u = mda.Universe("topology.pdb", "trajectory.xtc")
+
+# Analyze protein only
+sasa = SASAAnalysis(u, select="protein")
+sasa.run(start=0, stop=100, step=10)
+
+# Access results
+print(f"Mean SASA: {sasa.results.mean_total_area:.2f} Å²")
+print(f"Per-frame: {sasa.results.total_area}")
+print(f"Per-residue shape: {sasa.results.residue_area.shape}")
+print(f"Per-atom shape: {sasa.results.atom_area.shape}")
+```
+
+### compute_sasa (function)
+
+```python
+def compute_sasa(
+    universe_or_atomgroup: Universe | AtomGroup,
+    *,
+    select: str = "all",
+    start: int = 0,
+    stop: int | None = None,
+    step: int = 1,
+    probe_radius: float = 1.4,
+    n_points: int = 960,
+    algorithm: Literal["sr", "lr"] = "sr",
+    n_slices: int = 20,
+    n_threads: int = 0,
+    mode: Literal["atom", "residue", "total"] = "atom",
+) -> NDArray[np.float32]
+```
+
+Convenience function for simple use cases. Parameters match `SASAAnalysis`.
+
+**Returns:** SASA values in Å².
+
+| Mode | Shape |
+|------|-------|
+| `"atom"` | `(n_frames, n_atoms)` |
+| `"residue"` | `(n_frames, n_residues)` |
+| `"total"` | `(n_frames,)` |
+
+**Example:**
+
+```python
+from freesasa_zig.mdanalysis import compute_sasa
+import MDAnalysis as mda
+
+u = mda.Universe("topology.pdb", "trajectory.xtc")
+
+# Simple one-liner
+total_sasa = compute_sasa(u, select="protein", mode="total")
+```
+
+---
+
 ## Examples
 
 ### Algorithm Comparison
@@ -589,6 +914,24 @@ Comparison with FreeSASA Python bindings (single-threaded):
 - **SR algorithm**: 1.4-3.7x faster (speedup increases with size)
 - **LR algorithm**: 2.9-5.5x faster
 - **Accuracy**: Results match FreeSASA (< 0.01% difference)
+
+### MD Trajectory Analysis
+
+Comparison with mdsasa-bolt (RustSASA) for MD trajectory SASA:
+
+| Implementation | Time (20k atoms × 1k frames) | Notes |
+|----------------|------------------------------|-------|
+| freesasa-zig   | 8.8 s                        | f64, controllable threads |
+| mdsasa-bolt    | 30.3 s                       | f32, rayon global pool |
+| **Speedup**    | **3.4x**                     | |
+
+*Benchmark: MD ATLAS 6qfk_A trajectory (20,391 atoms, 1,001 frames, n_points=100, 8 threads)*
+
+**Key advantages:**
+
+- **Controllable parallelism**: Set exact thread count with `n_threads`, unlike rayon's global pool
+- **Higher precision**: f64 by default (f32 available for comparison)
+- **Efficient scaling**: 5.2x speedup from 1→8 threads
 
 ---
 
