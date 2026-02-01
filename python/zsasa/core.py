@@ -94,6 +94,19 @@ _CDEF = """
         const double* sasas, const char** residue_names, size_t n_residues,
         double* rsa_out
     );
+
+    // XTC trajectory reader
+    void* zsasa_xtc_open(const char* path, int* natoms_out, int* error_code);
+    void zsasa_xtc_close(void* handle);
+    int zsasa_xtc_read_frame(
+        void* handle,
+        float* coords_out,
+        int* step_out,
+        float* time_out,
+        float* box_out,
+        float* precision_out
+    );
+    int zsasa_xtc_get_natoms(void* handle);
 """
 
 

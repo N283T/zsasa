@@ -22,6 +22,7 @@ The Python bindings provide:
 | [Core API](core.md) | `calculate_sasa`, batch API, precision |
 | [Classifier](classifier.md) | Atom classification, RSA calculation |
 | [Analysis](analysis.md) | Per-residue aggregation, examples |
+| [Native XTC Reader](xtc.md) | Standalone XTC reading, no dependencies |
 | **Integrations** | |
 | [Common Interface](integrations/README.md) | Shared API for all integrations |
 | [Gemmi](integrations/gemmi.md) | Fast mmCIF/PDB parsing |
@@ -138,6 +139,23 @@ sasa = SASAAnalysis(u, select="protein")
 sasa.run()
 
 print(f"Mean SASA: {sasa.results.mean_total_area:.2f} Å²")
+```
+
+### Native XTC Reading (No Dependencies)
+
+```python
+import numpy as np
+from zsasa.xtc import XtcReader, compute_sasa_trajectory
+
+# Low-level reader
+with XtcReader("trajectory.xtc") as reader:
+    for frame in reader:
+        print(f"Step {frame.step}: {frame.natoms} atoms")
+
+# High-level SASA calculation
+radii = np.full(304, 1.7)  # Atomic radii in Angstroms
+result = compute_sasa_trajectory("trajectory.xtc", radii)
+print(f"Total SASA: {result.total_areas}")
 ```
 
 ---

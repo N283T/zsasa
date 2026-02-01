@@ -57,6 +57,19 @@ MDAnalysis Integration:
     >>> sasa = SASAAnalysis(u, select='protein')
     >>> sasa.run()
     >>> print(sasa.results.total_area)  # Returns per-frame SASA in Å²
+
+Native XTC Reader:
+    For standalone XTC reading without MDTraj/MDAnalysis dependencies:
+
+    >>> from zsasa.xtc import XtcReader, compute_sasa_trajectory
+    >>> # Low-level reader API
+    >>> with XtcReader("trajectory.xtc") as reader:
+    ...     for frame in reader:
+    ...         print(f"Step {frame.step}")
+    >>>
+    >>> # High-level SASA calculation (radii from topology)
+    >>> result = compute_sasa_trajectory("trajectory.xtc", radii)
+    >>> print(result.total_areas)  # Per-frame SASA in Å²
 """
 
 from zsasa.analysis import (
