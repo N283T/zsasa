@@ -114,7 +114,8 @@ def benchmark_zsasa_sasa(
         n_atoms = result.n_atoms
 
     return {
-        "name": f"zsasa SASA (threads={n_threads or 'auto'})",
+        "name": "zsasa",
+        "threads": str(n_threads) if n_threads > 0 else "auto",
         "times": times,
         "mean": np.mean(times),
         "std": np.std(times),
@@ -140,7 +141,8 @@ def benchmark_mdtraj_sasa(xtc_path: Path, top_path: Path, n_runs: int = 3) -> di
         n_atoms = traj.n_atoms
 
     return {
-        "name": "MDTraj shrake_rupley (single)",
+        "name": "MDTraj",
+        "threads": "1",
         "times": times,
         "mean": np.mean(times),
         "std": np.std(times),
@@ -174,7 +176,8 @@ def benchmark_mdsasa_bolt(
         n_atoms = len(u.atoms)
 
     return {
-        "name": "mdsasa-bolt (all cores)",
+        "name": "mdsasa-bolt",
+        "threads": "all",
         "times": times,
         "mean": np.mean(times),
         "std": np.std(times),
@@ -287,62 +290,37 @@ def main(
         console.print()
         sasa_table = Table(title="SASA Calculation Benchmark Results")
         sasa_table.add_column("Method", style="cyan")
+        sasa_table.add_column("Threads", justify="right")
         sasa_table.add_column("Mean (s)", justify="right")
-        sasa_table.add_column("Std (s)", justify="right")
-        sasa_table.add_column("Throughput (frames/s)", justify="right")
-        sasa_table.add_column("vs baseline", justify="right")
+        sasa_table.add_column("fps", justify="right")
+        sasa_table.add_column("vs MDTraj", justify="right")
+        if bolt_result:
+            sasa_table.add_column("vs mdsasa-bolt", justify="right")
 
-        # Use mdsasa-bolt as baseline if available, else first MDTraj result
-        baseline_result = bolt_result if bolt_result else sasa_results[-1]
-        baseline = baseline_result["mean"]
-        baseline_name = baseline_result["name"]
-
-        console.print(f"[dim]Baseline: {baseline_name}[/dim]\n")
+        # Find MDTraj result for comparison
+        mdtraj_time = mdtraj_sasa_result["mean"]
+        bolt_time = bolt_result["mean"] if bolt_result else None
 
         for r in sasa_results:
-            speedup = baseline / r["mean"] if r["mean"] > 0 else 0
-            speedup_str = f"{speedup:.2f}x" if r["name"] != baseline_name else "-"
             throughput = r["n_frames"] / r["mean"]
-            sasa_table.add_row(
+            vs_mdtraj = mdtraj_time / r["mean"] if r["mean"] > 0 else 0
+            vs_mdtraj_str = f"{vs_mdtraj:.1f}x" if "MDTraj" not in r["name"] else "-"
+
+            row = [
                 r["name"],
-                f"{r['mean']:.3f}",
-                f"{r['std']:.3f}",
+                r.get("threads", "-"),
+                f"{r['mean']:.2f}",
                 f"{throughput:.0f}",
-                speedup_str,
-            )
+                vs_mdtraj_str,
+            ]
+            if bolt_result:
+                vs_bolt = bolt_time / r["mean"] if r["mean"] > 0 else 0
+                vs_bolt_str = f"{vs_bolt:.1f}x" if "mdsasa" not in r["name"] else "-"
+                row.append(vs_bolt_str)
+
+            sasa_table.add_row(*row)
 
         console.print(sasa_table)
-
-    # Results table
-    console.print()
-    table = Table(title="XTC Reader Benchmark Results")
-    table.add_column("Reader", style="cyan")
-    table.add_column("Mean (s)", justify="right")
-    table.add_column("Std (s)", justify="right")
-    table.add_column("Throughput (frames/s)", justify="right")
-    table.add_column("Speedup", justify="right")
-
-    baseline = results[0]["mean"]  # zsasa as baseline
-    for r in results:
-        speedup = baseline / r["mean"] if r["mean"] > 0 else 0
-        speedup_str = f"{speedup:.2f}x" if r["name"] != "zsasa (Zig)" else "-"
-        throughput = r["n_frames"] / r["mean"]
-        table.add_row(
-            r["name"],
-            f"{r['mean']:.3f}",
-            f"{r['std']:.3f}",
-            f"{throughput:.0f}",
-            speedup_str,
-        )
-
-    console.print(table)
-
-    # File read speed
-    file_size_mb = xtc_path.stat().st_size / 1024 / 1024
-    console.print(f"\n[bold]File read speed:[/bold]")
-    for r in results:
-        speed = file_size_mb / r["mean"]
-        console.print(f"  {r['name']}: {speed:.1f} MB/s")
 
 
 if __name__ == "__main__":
