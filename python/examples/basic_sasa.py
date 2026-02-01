@@ -24,7 +24,7 @@ import time
 
 import numpy as np
 
-from zsasa import calculate_sasa, get_version
+from zsasa import calculate_sasa, calculate_sasa_batch, get_version
 
 
 def example_single_atom() -> None:
@@ -201,6 +201,98 @@ def example_multithreaded() -> None:
     print(f"Results match: {match}")
 
 
+def example_precision_comparison() -> None:
+    """Compare f64 (double) and f32 (float) precision modes.
+
+    zsasa supports two precision modes via calculate_sasa_batch:
+
+    f64 (default):
+    - Double precision (64-bit)
+    - Higher accuracy
+    - Standard for most applications
+
+    f32:
+    - Single precision (32-bit)
+    - Faster on some hardware
+    - Sufficient for many use cases
+    - Lower memory usage for large systems
+    """
+    print("\n5. Precision comparison (f64 vs f32)")
+    print("-" * 30)
+
+    # Create test system
+    np.random.seed(42)
+    n_atoms = 500
+    coords = np.random.uniform(-15, 15, (n_atoms, 3))
+    radii = np.random.uniform(1.2, 2.0, n_atoms)
+
+    # Reshape for batch API: (n_frames, n_atoms, 3)
+    coords_batch = coords.reshape(1, n_atoms, 3)
+
+    # Calculate with f64 precision (default)
+    result_f64 = calculate_sasa_batch(coords_batch, radii, precision="f64")
+
+    # Calculate with f32 precision
+    result_f32 = calculate_sasa_batch(coords_batch, radii, precision="f32")
+
+    print(f"Number of atoms: {n_atoms}")
+    print()
+    print(f"f64 (double): {result_f64.total_areas[0]:.6f} Å²")
+    print(f"f32 (float):  {result_f32.total_areas[0]:.6f} Å²")
+    print()
+
+    diff = abs(result_f64.total_areas[0] - result_f32.total_areas[0])
+    print(f"Absolute difference: {diff:.6f} Å²")
+    print(f"Relative difference: {diff / result_f64.total_areas[0]:.6%}")
+
+
+def example_batch_calculation() -> None:
+    """Process multiple frames in a single call.
+
+    calculate_sasa_batch accepts 3D arrays:
+    - Shape: (n_frames, n_atoms, 3)
+    - All frames processed efficiently
+    - Automatic parallelization across frames
+
+    This is useful for:
+    - MD trajectory analysis
+    - Conformational ensembles
+    - Multiple structure comparison
+    """
+    print("\n6. Batch calculation (multiple frames)")
+    print("-" * 30)
+
+    # Create a multi-frame dataset (simulating MD trajectory)
+    np.random.seed(42)
+    n_frames = 5
+    n_atoms = 100
+
+    # Base coordinates
+    base_coords = np.random.uniform(-10, 10, (n_atoms, 3))
+    radii = np.random.uniform(1.2, 2.0, n_atoms)
+
+    # Create frames with small perturbations (simulating dynamics)
+    coords_batch = np.zeros((n_frames, n_atoms, 3))
+    for i in range(n_frames):
+        perturbation = np.random.normal(0, 0.5, (n_atoms, 3))
+        coords_batch[i] = base_coords + perturbation
+
+    # Calculate SASA for all frames at once
+    result = calculate_sasa_batch(coords_batch, radii)
+
+    print(f"Number of frames: {n_frames}")
+    print(f"Atoms per frame: {n_atoms}")
+    print()
+    print("Per-frame total SASA:")
+    for i, area in enumerate(result.total_areas):
+        print(f"  Frame {i}: {area:.2f} Å²")
+    print()
+    print(f"Mean SASA: {np.mean(result.total_areas):.2f} Å²")
+    print(f"Std SASA:  {np.std(result.total_areas):.2f} Å²")
+    print()
+    print(f"Per-atom SASA shape: {result.atom_areas.shape}")  # (n_frames, n_atoms)
+
+
 def main() -> None:
     """Run all SASA calculation examples."""
     print(f"zsasa version: {get_version()}")
@@ -213,6 +305,8 @@ def main() -> None:
     example_two_atoms()
     example_algorithm_comparison()
     example_multithreaded()
+    example_precision_comparison()
+    example_batch_calculation()
 
     print()
     print("=" * 50)
