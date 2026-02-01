@@ -18,7 +18,6 @@ Technical documentation for zsasa.
 | [python-api/](python-api/) | Python API Reference |
 | [classifier.md](classifier.md) | Atom radius classifiers |
 | [ci.md](ci.md) | CI/CD configuration |
-| [ja/](ja/) | Japanese documentation |
 
 ## Benchmark Environment
 
