@@ -12,6 +12,7 @@ const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_protor = @import("classifier_protor.zig");
 const classifier_oons = @import("classifier_oons.zig");
 const analysis = @import("analysis.zig");
+const xtc = @import("xtc.zig");
 
 const AtomInput = types.AtomInput;
 const Config = types.Config;
@@ -935,6 +936,144 @@ export fn zsasa_calculate_rsa_batch(
     return ZSASA_OK;
 }
 
+// =============================================================================
+// XTC Trajectory Reader Functions
+// =============================================================================
+
+/// Error code: End of file reached
+pub const ZSASA_XTC_END_OF_FILE: c_int = 1;
+
+/// XTC reader handle (opaque pointer to internal struct)
+const XtcHandle = struct {
+    reader: xtc.XtcReader,
+};
+
+/// Open an XTC trajectory file.
+///
+/// Parameters:
+///   path: Path to XTC file (null-terminated string)
+///   natoms_out: Output pointer for number of atoms (set on success)
+///   error_code: Output pointer for error code (set on failure)
+///
+/// Returns:
+///   Opaque handle on success, null on failure.
+///   Caller must call zsasa_xtc_close() to free resources.
+export fn zsasa_xtc_open(
+    path: [*:0]const u8,
+    natoms_out: *i32,
+    error_code: *c_int,
+) callconv(.c) ?*anyopaque {
+    const path_slice = std.mem.span(path);
+
+    const handle = c_allocator.create(XtcHandle) catch {
+        error_code.* = ZSASA_ERROR_OUT_OF_MEMORY;
+        return null;
+    };
+
+    handle.reader = xtc.XtcReader.open(c_allocator, path_slice) catch |err| {
+        c_allocator.destroy(handle);
+        error_code.* = switch (err) {
+            xtc.XtcError.FileNotFound => ZSASA_ERROR_INVALID_INPUT,
+            xtc.XtcError.InvalidMagic => ZSASA_ERROR_INVALID_INPUT,
+            xtc.XtcError.OutOfMemory => ZSASA_ERROR_OUT_OF_MEMORY,
+            else => ZSASA_ERROR_CALCULATION,
+        };
+        return null;
+    };
+
+    natoms_out.* = handle.reader.getNumAtoms();
+    error_code.* = ZSASA_OK;
+    return handle;
+}
+
+/// Close an XTC trajectory file and free resources.
+///
+/// Parameters:
+///   handle: Handle returned by zsasa_xtc_open()
+export fn zsasa_xtc_close(
+    handle: ?*anyopaque,
+) callconv(.c) void {
+    if (handle) |h| {
+        const xtc_handle: *XtcHandle = @ptrCast(@alignCast(h));
+        xtc_handle.reader.close();
+        c_allocator.destroy(xtc_handle);
+    }
+}
+
+/// Read the next frame from an XTC trajectory.
+///
+/// Parameters:
+///   handle: Handle returned by zsasa_xtc_open()
+///   coords_out: Output buffer for coordinates (natoms * 3 floats, in nm)
+///   step_out: Output pointer for step number
+///   time_out: Output pointer for frame time
+///   box_out: Output buffer for box matrix (9 floats, row-major 3x3)
+///   precision_out: Output pointer for precision value
+///
+/// Returns:
+///   ZSASA_OK (0) on success
+///   ZSASA_XTC_END_OF_FILE (1) when no more frames
+///   Negative error code on failure
+export fn zsasa_xtc_read_frame(
+    handle: ?*anyopaque,
+    coords_out: [*]f32,
+    step_out: *i32,
+    time_out: *f32,
+    box_out: [*]f32,
+    precision_out: *f32,
+) callconv(.c) c_int {
+    if (handle == null) {
+        return ZSASA_ERROR_INVALID_INPUT;
+    }
+
+    const xtc_handle: *XtcHandle = @ptrCast(@alignCast(handle.?));
+
+    var frame = xtc_handle.reader.readFrame() catch |err| {
+        return switch (err) {
+            xtc.XtcError.EndOfFile => ZSASA_XTC_END_OF_FILE,
+            xtc.XtcError.InvalidMagic => ZSASA_ERROR_INVALID_INPUT,
+            xtc.XtcError.DecompressionError => ZSASA_ERROR_CALCULATION,
+            else => ZSASA_ERROR_CALCULATION,
+        };
+    };
+    defer frame.deinit(c_allocator);
+
+    // Copy step, time, precision
+    step_out.* = frame.step;
+    time_out.* = frame.time;
+    precision_out.* = frame.precision;
+
+    // Copy box (3x3 matrix, row-major)
+    for (0..3) |i| {
+        for (0..3) |j| {
+            box_out[i * 3 + j] = frame.box[i][j];
+        }
+    }
+
+    // Copy coordinates
+    const natoms: usize = @intCast(xtc_handle.reader.getNumAtoms());
+    @memcpy(coords_out[0 .. natoms * 3], frame.coords);
+
+    return ZSASA_OK;
+}
+
+/// Get the number of atoms in an opened XTC file.
+///
+/// Parameters:
+///   handle: Handle returned by zsasa_xtc_open()
+///
+/// Returns:
+///   Number of atoms, or -1 if handle is invalid
+export fn zsasa_xtc_get_natoms(
+    handle: ?*anyopaque,
+) callconv(.c) i32 {
+    if (handle == null) {
+        return -1;
+    }
+    const xtc_handle: *XtcHandle = @ptrCast(@alignCast(handle.?));
+    return xtc_handle.reader.getNumAtoms();
+}
+
 // Tests
 test "zsasa_version returns valid string" {
     const version = zsasa_version();
@@ -1240,4 +1379,104 @@ test "zsasa_calculate_rsa_batch with unknown" {
     try std.testing.expectEqual(ZSASA_OK, result);
     try std.testing.expectApproxEqAbs(0.5, rsa_out[0], 0.001); // ALA: known
     try std.testing.expect(std.math.isNan(rsa_out[1])); // HOH: unknown
+}
+
+// =============================================================================
+// XTC Reader Tests
+// =============================================================================
+
+test "zsasa_xtc_open and close" {
+    var natoms: i32 = 0;
+    var error_code: c_int = 0;
+
+    const handle = zsasa_xtc_open("test_data/1l2y.xtc", &natoms, &error_code);
+    try std.testing.expect(handle != null);
+    try std.testing.expectEqual(ZSASA_OK, error_code);
+    try std.testing.expectEqual(@as(i32, 304), natoms);
+
+    // Get natoms via function
+    try std.testing.expectEqual(@as(i32, 304), zsasa_xtc_get_natoms(handle));
+
+    zsasa_xtc_close(handle);
+}
+
+test "zsasa_xtc_open invalid file" {
+    var natoms: i32 = 0;
+    var error_code: c_int = 0;
+
+    const handle = zsasa_xtc_open("nonexistent.xtc", &natoms, &error_code);
+    try std.testing.expect(handle == null);
+    try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, error_code);
+}
+
+test "zsasa_xtc_read_frame" {
+    var natoms: i32 = 0;
+    var error_code: c_int = 0;
+
+    const handle = zsasa_xtc_open("test_data/1l2y.xtc", &natoms, &error_code);
+    try std.testing.expect(handle != null);
+    defer zsasa_xtc_close(handle);
+
+    // Allocate buffers
+    const natoms_u: usize = @intCast(natoms);
+    const coords = c_allocator.alloc(f32, natoms_u * 3) catch unreachable;
+    defer c_allocator.free(coords);
+    var box: [9]f32 = undefined;
+    var step: i32 = 0;
+    var time: f32 = 0;
+    var precision: f32 = 0;
+
+    // Read first frame
+    const result = zsasa_xtc_read_frame(handle, coords.ptr, &step, &time, &box, &precision);
+    try std.testing.expectEqual(ZSASA_OK, result);
+    try std.testing.expectEqual(@as(i32, 1), step);
+
+    // Check first atom coordinates (in nm)
+    const tolerance: f32 = 0.0001;
+    try std.testing.expectApproxEqAbs(@as(f32, -0.8901), coords[0], tolerance);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.4127), coords[1], tolerance);
+    try std.testing.expectApproxEqAbs(@as(f32, -0.0555), coords[2], tolerance);
+}
+
+test "zsasa_xtc_read_all_frames" {
+    var natoms: i32 = 0;
+    var error_code: c_int = 0;
+
+    const handle = zsasa_xtc_open("test_data/1l2y.xtc", &natoms, &error_code);
+    try std.testing.expect(handle != null);
+    defer zsasa_xtc_close(handle);
+
+    const natoms_u: usize = @intCast(natoms);
+    const coords = c_allocator.alloc(f32, natoms_u * 3) catch unreachable;
+    defer c_allocator.free(coords);
+    var box: [9]f32 = undefined;
+    var step: i32 = 0;
+    var time: f32 = 0;
+    var precision: f32 = 0;
+
+    var frame_count: usize = 0;
+    while (true) {
+        const result = zsasa_xtc_read_frame(handle, coords.ptr, &step, &time, &box, &precision);
+        if (result == ZSASA_XTC_END_OF_FILE) break;
+        try std.testing.expectEqual(ZSASA_OK, result);
+        frame_count += 1;
+    }
+
+    // 1l2y.xtc has 38 frames
+    try std.testing.expectEqual(@as(usize, 38), frame_count);
+}
+
+test "zsasa_xtc_get_natoms null handle" {
+    try std.testing.expectEqual(@as(i32, -1), zsasa_xtc_get_natoms(null));
+}
+
+test "zsasa_xtc_read_frame null handle" {
+    var coords: [3]f32 = undefined;
+    var box: [9]f32 = undefined;
+    var step: i32 = 0;
+    var time: f32 = 0;
+    var precision: f32 = 0;
+
+    const result = zsasa_xtc_read_frame(null, &coords, &step, &time, &box, &precision);
+    try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, result);
 }
