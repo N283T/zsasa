@@ -54,7 +54,7 @@ def get_structure_file() -> Optional[Path]:
     return None
 
 
-def example_basic_sasa() -> None:
+def basic_sasa() -> None:
     """Calculate SASA from a structure file.
 
     The simplest usage: pass a file path.
@@ -76,7 +76,7 @@ def example_basic_sasa() -> None:
     print(f"Number of atoms: {len(result.atom_areas)}")
 
 
-def example_atom_array() -> None:
+def atom_array() -> None:
     """Work with Biotite AtomArray objects.
 
     Biotite stores structure data in AtomArray objects.
@@ -109,7 +109,7 @@ def example_atom_array() -> None:
     print(f"SASA: {result.total_area:.1f} Å²")
 
 
-def example_atom_inspection() -> None:
+def atom_inspection() -> None:
     """Extract and inspect atom data.
 
     See what atoms are being used for SASA calculation.
@@ -149,7 +149,7 @@ def example_atom_inspection() -> None:
         )
 
 
-def example_biotite_filtering() -> None:
+def biotite_filtering() -> None:
     """Use Biotite's powerful filtering capabilities.
 
     Biotite provides many filter functions for atom selection:
@@ -192,7 +192,7 @@ def example_biotite_filtering() -> None:
     print(f"Full protein SASA: {result_protein.total_area:.1f} Å²")
 
 
-def example_per_residue_analysis() -> None:
+def per_residue_analysis() -> None:
     """Analyze SASA per residue with RSA.
 
     Calculate burial statistics for the protein.
@@ -219,7 +219,7 @@ def example_per_residue_analysis() -> None:
     print(f"Buried (RSA < 25%):  {buried} ({buried/total_residues:.1%})")
 
 
-def example_atomworks_compatibility() -> None:
+def atomworks_compatibility() -> None:
     """AtomWorks compatibility.
 
     AtomWorks is built on Biotite, so you can use zsasa's
@@ -239,7 +239,7 @@ def example_atomworks_compatibility() -> None:
     print("The same integration works for both libraries.")
 
 
-def example_hetatm_comparison() -> None:
+def hetatm_comparison() -> None:
     """Compare SASA with and without HETATM.
 
     HETATM includes non-protein atoms:
@@ -275,13 +275,13 @@ def main() -> None:
     print(f"Using structure file: {structure_file.name}")
 
     # Run each example
-    example_basic_sasa()
-    example_atom_array()
-    example_atom_inspection()
-    example_biotite_filtering()
-    example_per_residue_analysis()
-    example_atomworks_compatibility()
-    example_hetatm_comparison()
+    basic_sasa()
+    atom_array()
+    atom_inspection()
+    biotite_filtering()
+    per_residue_analysis()
+    atomworks_compatibility()
+    hetatm_comparison()
 
     print()
     print("=" * 50)

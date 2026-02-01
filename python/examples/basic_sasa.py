@@ -27,7 +27,7 @@ import numpy as np
 from zsasa import calculate_sasa, calculate_sasa_batch, get_version
 
 
-def example_single_atom() -> None:
+def single_atom() -> None:
     """Calculate SASA for a single isolated atom.
 
     For an isolated atom, the SASA equals the surface area of a sphere
@@ -60,7 +60,7 @@ def example_single_atom() -> None:
     print(f"Theoretical: {expected:.2f} Å²")
 
 
-def example_two_atoms() -> None:
+def two_atoms() -> None:
     """Calculate SASA for two overlapping atoms.
 
     When atoms are close together, their solvent-accessible surfaces
@@ -99,7 +99,7 @@ def example_two_atoms() -> None:
     print(f"Buried area: {211.4 - result.total_area:.2f} Å²")
 
 
-def example_algorithm_comparison() -> None:
+def algorithm_comparison() -> None:
     """Compare Shrake-Rupley and Lee-Richards algorithms.
 
     zsasa supports two SASA algorithms:
@@ -155,7 +155,7 @@ def example_algorithm_comparison() -> None:
     print(f"Relative difference: {diff / result_sr.total_area:.2%}")
 
 
-def example_multithreaded() -> None:
+def multithreaded() -> None:
     """Demonstrate multi-threaded SASA calculation.
 
     zsasa automatically parallelizes calculations across CPU cores:
@@ -201,7 +201,7 @@ def example_multithreaded() -> None:
     print(f"Results match: {match}")
 
 
-def example_precision_comparison() -> None:
+def precision_comparison() -> None:
     """Compare f64 (double) and f32 (float) precision modes.
 
     zsasa supports two precision modes via calculate_sasa_batch:
@@ -246,7 +246,7 @@ def example_precision_comparison() -> None:
     print(f"Relative difference: {diff / result_f64.total_areas[0]:.6%}")
 
 
-def example_batch_calculation() -> None:
+def batch_calculation() -> None:
     """Process multiple frames in a single call.
 
     calculate_sasa_batch accepts 3D arrays:
@@ -301,12 +301,12 @@ def main() -> None:
     print("=" * 50)
 
     # Run each example
-    example_single_atom()
-    example_two_atoms()
-    example_algorithm_comparison()
-    example_multithreaded()
-    example_precision_comparison()
-    example_batch_calculation()
+    single_atom()
+    two_atoms()
+    algorithm_comparison()
+    multithreaded()
+    precision_comparison()
+    batch_calculation()
 
     print()
     print("=" * 50)

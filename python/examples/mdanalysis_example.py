@@ -46,7 +46,7 @@ def get_structure_file() -> Optional[Path]:
     return None
 
 
-def example_basic_sasa() -> None:
+def basic_sasa() -> None:
     """Calculate SASA using SASAAnalysis class.
 
     SASAAnalysis follows MDAnalysis conventions:
@@ -83,7 +83,7 @@ def example_basic_sasa() -> None:
     print(f"Per-atom SASA shape: {sasa.results.atom_area.shape}")
 
 
-def example_selection_based() -> None:
+def selection_based() -> None:
     """Use different atom selections.
 
     MDAnalysis selection syntax allows flexible atom selection:
@@ -117,7 +117,7 @@ def example_selection_based() -> None:
     print(f"Protein only: {sasa_protein.results.total_area[0]:.2f} Å²")
 
 
-def example_per_residue_sasa() -> None:
+def per_residue_sasa() -> None:
     """Aggregate per-atom SASA to per-residue.
 
     Map atom-level SASA to residue-level for analysis.
@@ -161,7 +161,7 @@ def example_per_residue_sasa() -> None:
         print(f"{resname}{resid:<8} {sasa_val:>12.2f}")
 
 
-def example_algorithm_options() -> None:
+def algorithm_options() -> None:
     """Use different SASA algorithms.
 
     Algorithm options are passed to run():
@@ -198,7 +198,7 @@ def example_algorithm_options() -> None:
     print(f"LR (20 slices):  {sasa_lr.results.total_area[0]:.2f} Å²")
 
 
-def example_probe_radius() -> None:
+def probe_radius() -> None:
     """Effect of probe radius on SASA.
 
     Probe radius represents the water molecule size.
@@ -226,7 +226,7 @@ def example_probe_radius() -> None:
         print(f"Probe {probe:.1f} Å: {sasa.results.total_area[0]:.2f} Å²")
 
 
-def example_trajectory_usage() -> None:
+def trajectory_usage() -> None:
     """Usage pattern for real trajectories.
 
     This shows the typical usage for MD trajectory analysis.
@@ -247,7 +247,7 @@ def example_trajectory_usage() -> None:
     print("  print(sasa.results.atom_area)  # Shape: (n_frames, n_atoms)")
 
 
-def example_chain_analysis() -> None:
+def chain_analysis() -> None:
     """Analyze SASA by chain/segment.
 
     MDAnalysis segments can be used to analyze multi-chain structures.
@@ -277,7 +277,7 @@ def example_chain_analysis() -> None:
         print(f"Segment {seg.segid}: {n_atoms} atoms, {sasa.results.total_area[0]:.2f} Å²")
 
 
-def example_convenience_function() -> None:
+def convenience_function() -> None:
     """Use compute_sasa convenience function.
 
     For quick one-off calculations without creating an analysis object.
@@ -323,14 +323,14 @@ def main() -> None:
     print(f"Using structure file: {structure_file.name}")
 
     # Run each example
-    example_basic_sasa()
-    example_selection_based()
-    example_per_residue_sasa()
-    example_algorithm_options()
-    example_probe_radius()
-    example_trajectory_usage()
-    example_chain_analysis()
-    example_convenience_function()
+    basic_sasa()
+    selection_based()
+    per_residue_sasa()
+    algorithm_options()
+    probe_radius()
+    trajectory_usage()
+    chain_analysis()
+    convenience_function()
 
     print()
     print("=" * 50)

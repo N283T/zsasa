@@ -52,7 +52,7 @@ def get_structure_file() -> Optional[Path]:
     return None
 
 
-def example_basic_sasa() -> None:
+def basic_sasa() -> None:
     """Calculate SASA from a structure file.
 
     The simplest way to calculate SASA: just pass a file path.
@@ -84,7 +84,7 @@ def example_basic_sasa() -> None:
     print(f"Number of atoms: {len(result.atom_areas)}")
 
 
-def example_gemmi_structure() -> None:
+def gemmi_structure() -> None:
     """Work with gemmi Structure objects directly.
 
     If you already have a gemmi.Structure (e.g., from custom loading),
@@ -121,7 +121,7 @@ def example_gemmi_structure() -> None:
     print(f"Model 0 SASA: {result.total_area:.1f} Å²")
 
 
-def example_atom_inspection() -> None:
+def atom_inspection() -> None:
     """Extract and inspect atom data.
 
     The extract_atoms_from_model() function provides direct access
@@ -167,7 +167,7 @@ def example_atom_inspection() -> None:
         )
 
 
-def example_per_residue_analysis() -> None:
+def per_residue_analysis() -> None:
     """Aggregate SASA to per-residue values with RSA.
 
     aggregate_from_result() converts per-atom SASA to per-residue
@@ -216,7 +216,7 @@ def example_per_residue_analysis() -> None:
     print(f"Buried (RSA < 25%): {total - exposed} ({(total-exposed)/total:.1%})")
 
 
-def example_algorithm_comparison() -> None:
+def algorithm_comparison() -> None:
     """Compare Shrake-Rupley and Lee-Richards algorithms.
 
     Both algorithms should give similar results for proteins.
@@ -254,7 +254,7 @@ def example_algorithm_comparison() -> None:
     print(f"Relative difference: {diff / result_sr.total_area:.2%}")
 
 
-def example_filter_options() -> None:
+def filter_options() -> None:
     """Control which atoms are included in SASA calculation.
 
     Key filter options:
@@ -291,7 +291,7 @@ def example_filter_options() -> None:
     print("For most analyses, exclude HETATM to focus on protein surface")
 
 
-def example_classifier_comparison() -> None:
+def classifier_comparison() -> None:
     """Compare different atomic radii classifiers.
 
     zsasa includes three classifier databases:
@@ -328,7 +328,7 @@ def example_classifier_comparison() -> None:
     print("Note: NACCESS is the most widely used in published literature")
 
 
-def example_compressed_files() -> None:
+def compressed_files() -> None:
     """Load compressed structure files.
 
     Gemmi natively supports gzip-compressed files.
@@ -366,14 +366,14 @@ def main() -> None:
     print(f"Using structure file: {structure_file.name}")
 
     # Run each example
-    example_basic_sasa()
-    example_gemmi_structure()
-    example_atom_inspection()
-    example_per_residue_analysis()
-    example_algorithm_comparison()
-    example_filter_options()
-    example_classifier_comparison()
-    example_compressed_files()
+    basic_sasa()
+    gemmi_structure()
+    atom_inspection()
+    per_residue_analysis()
+    algorithm_comparison()
+    filter_options()
+    classifier_comparison()
+    compressed_files()
 
     print()
     print("=" * 50)

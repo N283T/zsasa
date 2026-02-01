@@ -49,7 +49,7 @@ def get_structure_file() -> Optional[Path]:
     return None
 
 
-def example_basic_sasa() -> None:
+def basic_sasa() -> None:
     """Calculate SASA from a structure file.
 
     The simplest usage: pass a file path to calculate_sasa_from_structure().
@@ -71,7 +71,7 @@ def example_basic_sasa() -> None:
     print(f"Number of atoms: {len(result.atom_areas)}")
 
 
-def example_biopython_structure() -> None:
+def biopython_structure() -> None:
     """Work with BioPython Structure objects.
 
     If you already have a Bio.PDB.Structure object from your own
@@ -104,7 +104,7 @@ def example_biopython_structure() -> None:
     print(f"Model 0 SASA: {result.total_area:.1f} Å²")
 
 
-def example_atom_inspection() -> None:
+def atom_inspection() -> None:
     """Extract and inspect atom data from a model.
 
     This shows what atoms are included in the SASA calculation
@@ -144,7 +144,7 @@ def example_atom_inspection() -> None:
         )
 
 
-def example_per_residue_analysis() -> None:
+def per_residue_analysis() -> None:
     """Analyze per-residue SASA with RSA.
 
     Find exposed and buried residues based on their
@@ -182,7 +182,7 @@ def example_per_residue_analysis() -> None:
         print(f"  {res.chain_id}:{res.residue_name}{res.residue_id} RSA={res.rsa:.1%}")
 
 
-def example_chain_analysis() -> None:
+def chain_analysis() -> None:
     """Analyze SASA by chain.
 
     Useful for multi-chain structures to see contribution
@@ -217,7 +217,7 @@ def example_chain_analysis() -> None:
     print("SASA per chain by extracting atoms from specific chains")
 
 
-def example_mmcif_support() -> None:
+def mmcif_support() -> None:
     """Load mmCIF format files.
 
     BioPython supports mmCIF through the MMCIFParser.
@@ -245,7 +245,7 @@ def example_mmcif_support() -> None:
         print("Example files not found")
 
 
-def example_filter_comparison() -> None:
+def filter_comparison() -> None:
     """Compare SASA with different atom filters.
 
     HETATM records include:
@@ -291,13 +291,13 @@ def main() -> None:
     print(f"Using structure file: {structure_file.name}")
 
     # Run each example
-    example_basic_sasa()
-    example_biopython_structure()
-    example_atom_inspection()
-    example_per_residue_analysis()
-    example_chain_analysis()
-    example_mmcif_support()
-    example_filter_comparison()
+    basic_sasa()
+    biopython_structure()
+    atom_inspection()
+    per_residue_analysis()
+    chain_analysis()
+    mmcif_support()
+    filter_comparison()
 
     print()
     print("=" * 50)

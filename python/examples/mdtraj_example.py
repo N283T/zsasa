@@ -45,7 +45,7 @@ def get_structure_file() -> Optional[Path]:
     return None
 
 
-def example_basic_sasa() -> None:
+def basic_sasa() -> None:
     """Calculate SASA for a trajectory.
 
     The compute_sasa function is a drop-in replacement for
@@ -79,7 +79,7 @@ def example_basic_sasa() -> None:
     print(f"Total SASA: {sasa.sum() * 100:.2f} Å²")  # Convert to Å²
 
 
-def example_mdtraj_comparison() -> None:
+def mdtraj_comparison() -> None:
     """Compare with MDTraj's built-in shrake_rupley.
 
     zsasa should give very similar results to MDTraj's implementation,
@@ -117,7 +117,7 @@ def example_mdtraj_comparison() -> None:
     print(f"Per-atom correlation: {corr:.6f}")
 
 
-def example_algorithm_options() -> None:
+def algorithm_options() -> None:
     """Use different SASA algorithms.
 
     Shrake-Rupley (SR):
@@ -154,7 +154,7 @@ def example_algorithm_options() -> None:
     print(f"LR (20 slices):  {sasa_lr.sum():.6f} nm²")
 
 
-def example_per_residue_sasa() -> None:
+def per_residue_sasa() -> None:
     """Aggregate per-atom SASA to per-residue.
 
     MDTraj provides topology information to map atoms to residues.
@@ -194,7 +194,7 @@ def example_per_residue_sasa() -> None:
         print(f"{res.name}{res.resSeq:<8} {residue_sasa[i]:>12.6f} {residue_sasa[i]*100:>12.2f}")
 
 
-def example_selection() -> None:
+def selection() -> None:
     """Calculate SASA for atom selections.
 
     MDTraj supports selection syntax to extract subsets of atoms.
@@ -231,7 +231,7 @@ def example_selection() -> None:
     print(f"Backbone SASA: {sasa_backbone.sum():.6f} nm²")
 
 
-def example_multiframe_trajectory() -> None:
+def multiframe_trajectory() -> None:
     """Process multi-frame trajectories.
 
     zsasa automatically parallelizes across frames for
@@ -280,7 +280,7 @@ def example_multiframe_trajectory() -> None:
     print(f"  Max:  {total_per_frame.max():.6f}")
 
 
-def example_performance_note() -> None:
+def performance_note() -> None:
     """Performance comparison notes.
 
     zsasa provides significant speedups over MDTraj's shrake_rupley.
@@ -312,13 +312,13 @@ def main() -> None:
     print(f"Using structure file: {structure_file.name}")
 
     # Run each example
-    example_basic_sasa()
-    example_mdtraj_comparison()
-    example_algorithm_options()
-    example_per_residue_sasa()
-    example_selection()
-    example_multiframe_trajectory()
-    example_performance_note()
+    basic_sasa()
+    mdtraj_comparison()
+    algorithm_options()
+    per_residue_sasa()
+    selection()
+    multiframe_trajectory()
+    performance_note()
 
     print()
     print("=" * 50)

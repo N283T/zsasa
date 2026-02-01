@@ -40,7 +40,7 @@ from zsasa import (
 )
 
 
-def example_single_atom_radius() -> None:
+def single_atom_radius() -> None:
     """Look up radius for a specific atom type.
 
     The get_radius() function returns the van der Waals radius
@@ -63,7 +63,7 @@ def example_single_atom_radius() -> None:
     print("Note: Small differences reflect different parameterization methods")
 
 
-def example_polarity_classification() -> None:
+def polarity_classification() -> None:
     """Classify atoms as polar or apolar.
 
     Polar atoms (N, O, etc.) can form hydrogen bonds with water.
@@ -100,7 +100,7 @@ def example_polarity_classification() -> None:
         print(f"{res:<8} {atom:<6} {class_name:<8} {desc}")
 
 
-def example_guess_from_element() -> None:
+def guess_from_element() -> None:
     """Guess atomic radius from element symbol.
 
     When residue/atom names are unavailable (e.g., for ligands),
@@ -137,7 +137,7 @@ def example_guess_from_element() -> None:
             print(f"{elem:<10} {'Unknown':>8}  {name}")
 
 
-def example_guess_from_atom_name() -> None:
+def guess_from_atom_name() -> None:
     """Guess radius from PDB atom name.
 
     PDB atom names encode element information:
@@ -172,7 +172,7 @@ def example_guess_from_atom_name() -> None:
             print(f"{name:<12} {'Unknown':>8}  {desc}")
 
 
-def example_batch_classification() -> None:
+def batch_classification() -> None:
     """Classify multiple atoms at once.
 
     For efficiency, use classify_atoms() to process many atoms
@@ -208,7 +208,7 @@ def example_batch_classification() -> None:
     print(f"Polar: {n_polar}, Apolar: {n_apolar}")
 
 
-def example_max_sasa_lookup() -> None:
+def max_sasa_lookup() -> None:
     """Look up maximum SASA for residues.
 
     Max SASA values represent the theoretical maximum solvent-accessible
@@ -240,7 +240,7 @@ def example_max_sasa_lookup() -> None:
             print(f"{res:<6} {'Unknown':>12}  {desc}")
 
 
-def example_rsa_calculation() -> None:
+def rsa_calculation() -> None:
     """Calculate Relative Solvent Accessibility (RSA).
 
     RSA = observed_SASA / max_SASA × 100%
@@ -277,7 +277,7 @@ def example_rsa_calculation() -> None:
         print(f"{observed:>15.1f} {rsa:>10.1%} {description}")
 
 
-def example_complete_workflow() -> None:
+def complete_workflow() -> None:
     """Complete workflow: classify atoms, calculate SASA, analyze polarity.
 
     This demonstrates a realistic workflow:
@@ -342,14 +342,14 @@ def main() -> None:
     print("=" * 50)
 
     # Run each example
-    example_single_atom_radius()
-    example_polarity_classification()
-    example_guess_from_element()
-    example_guess_from_atom_name()
-    example_batch_classification()
-    example_max_sasa_lookup()
-    example_rsa_calculation()
-    example_complete_workflow()
+    single_atom_radius()
+    polarity_classification()
+    guess_from_element()
+    guess_from_atom_name()
+    batch_classification()
+    max_sasa_lookup()
+    rsa_calculation()
+    complete_workflow()
 
     print()
     print("=" * 50)
