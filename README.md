@@ -162,7 +162,7 @@ See [Python API](docs/python.md) for full documentation.
 | Document | Description |
 |----------|-------------|
 | [CLI Reference](docs/cli.md) | Command-line options, input/output formats |
-| [Python API](docs/python.md) | Core API, integrations, MD trajectory support |
+| [Python API](docs/python-api/) | Core API, integrations, MD trajectory support |
 | [Algorithms](docs/algorithm.md) | Shrake-Rupley and Lee-Richards details |
 | [Classifiers](docs/classifier.md) | NACCESS, ProtOr, OONS atom classifiers |
 | [Optimizations](docs/optimizations.md) | SIMD, threading, performance techniques |

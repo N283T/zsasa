@@ -15,7 +15,7 @@ Technical documentation for freesasa-zig.
 | └─ [batch.md](benchmark/batch.md) | Batch processing benchmarks |
 | [cpu-efficiency.md](cpu-efficiency.md) | CPU efficiency analysis (IPC, instructions) |
 | [cli.md](cli.md) | CLI Reference |
-| [python.md](python.md) | Python API Reference |
+| [python-api/](python-api/) | Python API Reference |
 | [classifier.md](classifier.md) | Atom radius classifiers |
 | [ci.md](ci.md) | CI/CD configuration |
 | [ja/](ja/) | Japanese documentation |
