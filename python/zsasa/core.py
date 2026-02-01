@@ -100,7 +100,7 @@ _CDEF = """
 def _find_library() -> Path:
     """Find the zsasa shared library."""
     # Check environment variable first
-    if lib_path := os.environ.get("ZSASA_ZIG_LIB"):
+    if lib_path := os.environ.get("ZSASA_LIB"):
         return Path(lib_path)
 
     # Platform-specific library names

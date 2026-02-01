@@ -358,7 +358,7 @@ export fn zsasa_calc_sr_batch(
 
 /// Calculate SASA for multiple frames using Lee-Richards algorithm (batch processing).
 ///
-/// Similar to freesasa_calc_sr_batch but uses Lee-Richards algorithm.
+/// Similar to zsasa_calc_sr_batch but uses Lee-Richards algorithm.
 ///
 /// Parameters:
 ///   coordinates: Atom coordinates as contiguous array (n_frames * n_atoms * 3)
@@ -575,7 +575,7 @@ fn calculateBatchF32(
 
 /// Calculate SASA for multiple frames using Shrake-Rupley algorithm (pure f32 precision).
 ///
-/// Same as freesasa_calc_sr_batch but uses f32 precision throughout the calculation
+/// Same as zsasa_calc_sr_batch but uses f32 precision throughout the calculation
 /// for consistency with other f32-based tools (e.g., RustSASA).
 export fn zsasa_calc_sr_batch_f32(
     coordinates: [*]const f32,
@@ -602,7 +602,7 @@ export fn zsasa_calc_sr_batch_f32(
 
 /// Calculate SASA for multiple frames using Lee-Richards algorithm (pure f32 precision).
 ///
-/// Same as freesasa_calc_lr_batch but uses f32 precision throughout the calculation.
+/// Same as zsasa_calc_lr_batch but uses f32 precision throughout the calculation.
 export fn zsasa_calc_lr_batch_f32(
     coordinates: [*]const f32,
     n_frames: usize,
@@ -810,7 +810,7 @@ export fn zsasa_guess_radius_from_atom_name(
 
 /// Classify multiple atoms at once (batch operation).
 ///
-/// This is more efficient than calling freesasa_classifier_get_radius
+/// This is more efficient than calling zsasa_classifier_get_radius
 /// for each atom individually.
 ///
 /// Parameters:
@@ -936,12 +936,12 @@ export fn zsasa_calculate_rsa_batch(
 }
 
 // Tests
-test "freesasa_version returns valid string" {
+test "zsasa_version returns valid string" {
     const version = zsasa_version();
     try std.testing.expect(version[0] != 0);
 }
 
-test "freesasa_calc_sr with empty input returns error" {
+test "zsasa_calc_sr with empty input returns error" {
     var total_area: f64 = 0.0;
     const result = zsasa_calc_sr(
         undefined,
@@ -958,7 +958,7 @@ test "freesasa_calc_sr with empty input returns error" {
     try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, result);
 }
 
-test "freesasa_calc_sr single atom" {
+test "zsasa_calc_sr single atom" {
     const x = [_]f64{0.0};
     const y = [_]f64{0.0};
     const z = [_]f64{0.0};
@@ -985,7 +985,7 @@ test "freesasa_calc_sr single atom" {
     try std.testing.expectEqual(total_area, atom_areas[0]);
 }
 
-test "freesasa_calc_lr single atom" {
+test "zsasa_calc_lr single atom" {
     const x = [_]f64{0.0};
     const y = [_]f64{0.0};
     const z = [_]f64{0.0};
@@ -1016,7 +1016,7 @@ test "freesasa_calc_lr single atom" {
 // Classifier Tests
 // =============================================================================
 
-test "freesasa_classifier_get_radius NACCESS" {
+test "zsasa_classifier_get_radius NACCESS" {
     // Standard backbone atoms
     const ca_radius = zsasa_classifier_get_radius(ZSASA_CLASSIFIER_NACCESS, "ALA", "CA");
     try std.testing.expectApproxEqAbs(1.87, ca_radius, 0.01);
@@ -1032,22 +1032,22 @@ test "freesasa_classifier_get_radius NACCESS" {
     try std.testing.expect(std.math.isNan(unknown));
 }
 
-test "freesasa_classifier_get_radius ProtoR" {
+test "zsasa_classifier_get_radius ProtoR" {
     const ca_radius = zsasa_classifier_get_radius(ZSASA_CLASSIFIER_PROTOR, "ALA", "CA");
     try std.testing.expect(ca_radius > 1.0 and ca_radius < 3.0);
 }
 
-test "freesasa_classifier_get_radius OONS" {
+test "zsasa_classifier_get_radius OONS" {
     const ca_radius = zsasa_classifier_get_radius(ZSASA_CLASSIFIER_OONS, "ALA", "CA");
     try std.testing.expect(ca_radius > 1.0 and ca_radius < 3.0);
 }
 
-test "freesasa_classifier_get_radius invalid classifier" {
+test "zsasa_classifier_get_radius invalid classifier" {
     const radius = zsasa_classifier_get_radius(99, "ALA", "CA");
     try std.testing.expect(std.math.isNan(radius));
 }
 
-test "freesasa_classifier_get_class" {
+test "zsasa_classifier_get_class" {
     // Carbon atoms are apolar
     const ca_class = zsasa_classifier_get_class(ZSASA_CLASSIFIER_NACCESS, "ALA", "CA");
     try std.testing.expectEqual(ZSASA_ATOM_CLASS_APOLAR, ca_class);
@@ -1065,7 +1065,7 @@ test "freesasa_classifier_get_class" {
     try std.testing.expectEqual(ZSASA_ATOM_CLASS_UNKNOWN, unknown_class);
 }
 
-test "freesasa_guess_radius" {
+test "zsasa_guess_radius" {
     // Common elements
     try std.testing.expectApproxEqAbs(1.70, zsasa_guess_radius("C"), 0.01);
     try std.testing.expectApproxEqAbs(1.55, zsasa_guess_radius("N"), 0.01);
@@ -1084,7 +1084,7 @@ test "freesasa_guess_radius" {
     try std.testing.expect(std.math.isNan(unknown));
 }
 
-test "freesasa_guess_radius_from_atom_name" {
+test "zsasa_guess_radius_from_atom_name" {
     // Standard PDB atom names (leading space = single-char element)
     try std.testing.expectApproxEqAbs(1.70, zsasa_guess_radius_from_atom_name(" CA "), 0.01);
     try std.testing.expectApproxEqAbs(1.55, zsasa_guess_radius_from_atom_name(" N  "), 0.01);
@@ -1095,7 +1095,7 @@ test "freesasa_guess_radius_from_atom_name" {
     try std.testing.expectApproxEqAbs(1.39, zsasa_guess_radius_from_atom_name("ZN  "), 0.01);
 }
 
-test "freesasa_classify_atoms batch" {
+test "zsasa_classify_atoms batch" {
     const residues = [_][*:0]const u8{ "ALA", "ALA", "GLY" };
     const atoms = [_][*:0]const u8{ "CA", "O", "N" };
     var radii: [3]f64 = undefined;
@@ -1123,7 +1123,7 @@ test "freesasa_classify_atoms batch" {
     try std.testing.expectEqual(ZSASA_ATOM_CLASS_POLAR, classes[2]); // N
 }
 
-test "freesasa_classify_atoms without classes" {
+test "zsasa_classify_atoms without classes" {
     const residues = [_][*:0]const u8{ "ALA", "ALA" };
     const atoms = [_][*:0]const u8{ "CA", "CB" };
     var radii: [2]f64 = undefined;
@@ -1142,7 +1142,7 @@ test "freesasa_classify_atoms without classes" {
     try std.testing.expectApproxEqAbs(1.87, radii[1], 0.01);
 }
 
-test "freesasa_classify_atoms empty" {
+test "zsasa_classify_atoms empty" {
     var radii: [0]f64 = undefined;
     const residues: [*]const [*:0]const u8 = undefined;
     const atoms: [*]const [*:0]const u8 = undefined;
@@ -1159,7 +1159,7 @@ test "freesasa_classify_atoms empty" {
     try std.testing.expectEqual(ZSASA_OK, result);
 }
 
-test "freesasa_classify_atoms invalid classifier" {
+test "zsasa_classify_atoms invalid classifier" {
     const residues = [_][*:0]const u8{"ALA"};
     const atoms = [_][*:0]const u8{"CA"};
     var radii: [1]f64 = undefined;
@@ -1180,7 +1180,7 @@ test "freesasa_classify_atoms invalid classifier" {
 // RSA Tests
 // =============================================================================
 
-test "freesasa_get_max_sasa standard amino acids" {
+test "zsasa_get_max_sasa standard amino acids" {
     // Test known amino acids (values from Tien et al. 2013)
     try std.testing.expectApproxEqAbs(129.0, zsasa_get_max_sasa("ALA"), 0.01);
     try std.testing.expectApproxEqAbs(104.0, zsasa_get_max_sasa("GLY"), 0.01);
@@ -1189,7 +1189,7 @@ test "freesasa_get_max_sasa standard amino acids" {
     try std.testing.expectApproxEqAbs(193.0, zsasa_get_max_sasa("ASP"), 0.01);
 }
 
-test "freesasa_get_max_sasa unknown residue" {
+test "zsasa_get_max_sasa unknown residue" {
     const unknown = zsasa_get_max_sasa("XXX");
     try std.testing.expect(std.math.isNan(unknown));
 
@@ -1197,7 +1197,7 @@ test "freesasa_get_max_sasa unknown residue" {
     try std.testing.expect(std.math.isNan(water));
 }
 
-test "freesasa_calculate_rsa" {
+test "zsasa_calculate_rsa" {
     // ALA: RSA = 64.5 / 129.0 = 0.5
     const rsa_ala = zsasa_calculate_rsa(64.5, "ALA");
     try std.testing.expectApproxEqAbs(0.5, rsa_ala, 0.001);
@@ -1212,12 +1212,12 @@ test "freesasa_calculate_rsa" {
     try std.testing.expectApproxEqAbs(150.0 / 104.0, rsa_exposed, 0.001);
 }
 
-test "freesasa_calculate_rsa unknown residue" {
+test "zsasa_calculate_rsa unknown residue" {
     const rsa = zsasa_calculate_rsa(100.0, "XXX");
     try std.testing.expect(std.math.isNan(rsa));
 }
 
-test "freesasa_calculate_rsa_batch" {
+test "zsasa_calculate_rsa_batch" {
     const sasas = [_]f64{ 64.5, 52.0, 142.5 };
     const residues = [_][*:0]const u8{ "ALA", "GLY", "TRP" };
     var rsa_out: [3]f64 = undefined;
@@ -1230,7 +1230,7 @@ test "freesasa_calculate_rsa_batch" {
     try std.testing.expectApproxEqAbs(0.5, rsa_out[2], 0.001); // TRP: 142.5/285
 }
 
-test "freesasa_calculate_rsa_batch with unknown" {
+test "zsasa_calculate_rsa_batch with unknown" {
     const sasas = [_]f64{ 64.5, 100.0 };
     const residues = [_][*:0]const u8{ "ALA", "HOH" };
     var rsa_out: [2]f64 = undefined;
