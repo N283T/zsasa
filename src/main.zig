@@ -2,6 +2,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const analysis = @import("analysis.zig");
 const batch = @import("batch.zig");
+const traj = @import("traj.zig");
 const json_parser = @import("json_parser.zig");
 const json_writer = @import("json_writer.zig");
 const mmcif_parser = @import("mmcif_parser.zig");
@@ -803,6 +804,21 @@ pub fn main() !void {
     if (args.len < 2) {
         printHelp(args[0]);
         std.process.exit(1);
+    }
+
+    // Check for subcommands
+    if (std.mem.eql(u8, args[1], "traj")) {
+        // Trajectory mode
+        const traj_args = traj.parseArgs(args, 2);
+        if (traj_args.show_help) {
+            traj.printHelp(args[0]);
+            return;
+        }
+        traj.run(allocator, traj_args) catch |err| {
+            std.debug.print("Error in trajectory mode: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+        return;
     }
 
     const parsed = parseArgs(args);
