@@ -1,18 +1,34 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.11"
 # dependencies = [
-#     "numpy>=2.0",
-#     "mdtraj>=1.10",
-#     "typer>=0.15",
+#     "cffi",
+#     "MDAnalysis",
+#     "mdsasa-bolt",
+#     "mdtraj",
+#     "numpy",
 #     "rich>=13.0",
-#     "cffi>=1.16",
+#     "typer>=0.9.0",
 # ]
 # ///
-"""Benchmark MD trajectory SASA calculation."""
+"""Benchmark SASA calculation: zsasa vs MDTraj vs mdsasa-bolt.
 
+Compares SASA calculation performance across implementations:
+- zsasa (Zig, configurable threads)
+- MDTraj shrake_rupley (single-threaded)
+- mdsasa-bolt (RustSASA, all cores)
+
+Usage:
+    ./benchmarks/scripts/benchmark_md.py trajectory.xtc topology.pdb
+    ./benchmarks/scripts/benchmark_md.py trajectory.xtc topology.pdb -t "1,4,8"
+"""
+
+from __future__ import annotations
+
+import sys
 import time
 from pathlib import Path
+from typing import Annotated
 
 import mdtraj as md
 import numpy as np
@@ -20,210 +36,186 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-# Add python directory to path
-import sys
-
+# Add zsasa to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "python"))
 
-from zsasa import calculate_sasa_batch
-from zsasa.mdtraj import compute_sasa
+from zsasa.xtc import compute_sasa_trajectory
 
 console = Console()
 app = typer.Typer()
 
 
-def time_func(func, *args, n_runs: int = 3, **kwargs):
-    """Time a function and return mean/std."""
+def benchmark_zsasa(
+    xtc_path: Path, top_path: Path, n_threads: int = 0, n_runs: int = 3
+) -> dict:
+    """Benchmark zsasa SASA calculation."""
+    traj = md.load_frame(str(xtc_path), 0, top=str(top_path))
+    radii = np.array([1.7] * traj.n_atoms, dtype=np.float32)
+
     times = []
     for _ in range(n_runs):
         start = time.perf_counter()
-        result = func(*args, **kwargs)
+        result = compute_sasa_trajectory(xtc_path, radii, n_threads=n_threads)
         elapsed = time.perf_counter() - start
         times.append(elapsed)
-    return result, np.mean(times), np.std(times)
+        n_frames = result.n_frames
+        n_atoms = result.n_atoms
+
+    return {
+        "name": "zsasa",
+        "threads": str(n_threads) if n_threads > 0 else "auto",
+        "mean": np.mean(times),
+        "std": np.std(times),
+        "n_frames": n_frames,
+        "n_atoms": n_atoms,
+    }
+
+
+def benchmark_mdtraj(xtc_path: Path, top_path: Path, n_runs: int = 3) -> dict:
+    """Benchmark MDTraj shrake_rupley (single-threaded)."""
+    times = []
+    for _ in range(n_runs):
+        start = time.perf_counter()
+        traj = md.load(str(xtc_path), top=str(top_path))
+        _ = md.shrake_rupley(traj, n_sphere_points=100)
+        elapsed = time.perf_counter() - start
+        times.append(elapsed)
+        n_frames = traj.n_frames
+        n_atoms = traj.n_atoms
+
+    return {
+        "name": "MDTraj",
+        "threads": "1",
+        "mean": np.mean(times),
+        "std": np.std(times),
+        "n_frames": n_frames,
+        "n_atoms": n_atoms,
+    }
+
+
+def benchmark_mdsasa_bolt(
+    xtc_path: Path, top_path: Path, n_runs: int = 3
+) -> dict | None:
+    """Benchmark mdsasa-bolt (RustSASA, all cores)."""
+    try:
+        import MDAnalysis as mda
+        from mdsasa_bolt import SASAAnalysis
+    except ImportError:
+        return None
+
+    times = []
+    for _ in range(n_runs):
+        start = time.perf_counter()
+        u = mda.Universe(str(top_path), str(xtc_path))
+        sasa = SASAAnalysis(u.atoms, n_points=100)
+        sasa.run()
+        elapsed = time.perf_counter() - start
+        times.append(elapsed)
+        n_frames = len(u.trajectory)
+        n_atoms = len(u.atoms)
+
+    return {
+        "name": "mdsasa-bolt",
+        "threads": "all",
+        "mean": np.mean(times),
+        "std": np.std(times),
+        "n_frames": n_frames,
+        "n_atoms": n_atoms,
+    }
 
 
 @app.command()
 def benchmark(
-    trajectory: Path = typer.Argument(..., help="Path to trajectory file (.xtc)"),
-    topology: Path = typer.Argument(..., help="Path to topology file (.pdb or .tpr)"),
-    n_frames: int = typer.Option(100, "--frames", "-f", help="Number of frames to use"),
-    n_threads: int = typer.Option(
-        0, "--threads", "-t", help="Number of threads (0=auto)"
-    ),
-    algorithm: str = typer.Option(
-        "sr", "--algorithm", "-a", help="Algorithm: sr or lr"
-    ),
-    n_runs: int = typer.Option(3, "--runs", "-r", help="Number of runs for timing"),
-):
-    """Benchmark MD trajectory SASA calculation."""
-    console.print(f"\n[bold]Loading trajectory:[/bold] {trajectory}")
-    console.print(f"[bold]Topology:[/bold] {topology}")
+    xtc_path: Annotated[Path, typer.Argument(help="Path to XTC trajectory file")],
+    top_path: Annotated[Path, typer.Argument(help="Path to topology file (PDB/GRO)")],
+    n_runs: Annotated[int, typer.Option("--runs", "-n", help="Number of runs")] = 3,
+    threads: Annotated[
+        str,
+        typer.Option("--threads", "-t", help="Thread counts for zsasa (e.g., '1,4,8')"),
+    ] = "1,4,8",
+) -> None:
+    """Benchmark SASA calculation across implementations."""
+    if not xtc_path.exists():
+        console.print(f"[red]Error: XTC file not found: {xtc_path}[/red]")
+        raise typer.Exit(1)
+    if not top_path.exists():
+        console.print(f"[red]Error: Topology file not found: {top_path}[/red]")
+        raise typer.Exit(1)
 
-    # Load trajectory
-    traj = md.load(str(trajectory), top=str(topology))
-    console.print(f"[bold]Total frames:[/bold] {traj.n_frames}")
-    console.print(f"[bold]Atoms:[/bold] {traj.n_atoms}")
+    # Get trajectory info
+    traj = md.load_frame(str(xtc_path), 0, top=str(top_path))
+    with md.open(str(xtc_path)) as f:
+        n_frames = len(f)
 
-    # Subsample if needed
-    if n_frames < traj.n_frames:
-        step = traj.n_frames // n_frames
-        traj = traj[::step][:n_frames]
-        console.print(f"[bold]Using frames:[/bold] {traj.n_frames}")
+    console.print(f"\n[bold]SASA Benchmark[/bold]")
+    console.print(f"Trajectory: {xtc_path}")
+    console.print(f"Frames: {n_frames}, Atoms: {traj.n_atoms}")
+    console.print(f"Runs: {n_runs}\n")
 
-    # Warm up
-    console.print("\n[yellow]Warming up...[/yellow]")
-    _ = compute_sasa(traj[:10], n_threads=n_threads, algorithm=algorithm)
+    results = []
 
-    # Benchmark zsasa
-    console.print(f"\n[green]Benchmarking zsasa ({algorithm.upper()})...[/green]")
-    _, zsasa_mean, zsasa_std = time_func(
-        compute_sasa,
-        traj,
-        n_threads=n_threads,
-        algorithm=algorithm,
-        n_runs=n_runs,
-    )
+    # zsasa with different thread counts
+    thread_counts = [int(t) for t in threads.split(",")]
+    for n_threads in thread_counts:
+        console.print(f"[cyan]zsasa (threads={n_threads})...[/cyan]")
+        results.append(benchmark_zsasa(xtc_path, top_path, n_threads, n_runs))
 
-    # Benchmark mdtraj.shrake_rupley for comparison
-    console.print("\n[green]Benchmarking MDTraj shrake_rupley...[/green]")
-    _, mdtraj_mean, mdtraj_std = time_func(
-        md.shrake_rupley,
-        traj,
-        n_runs=n_runs,
-    )
+    # MDTraj (single-threaded)
+    console.print("[cyan]MDTraj (single-threaded)...[/cyan]")
+    mdtraj_result = benchmark_mdtraj(xtc_path, top_path, n_runs)
+    results.append(mdtraj_result)
+
+    # mdsasa-bolt (all cores)
+    console.print("[cyan]mdsasa-bolt (all cores)...[/cyan]")
+    bolt_result = benchmark_mdsasa_bolt(xtc_path, top_path, n_runs)
+    if bolt_result:
+        results.append(bolt_result)
+    else:
+        console.print("[yellow]  mdsasa-bolt not installed, skipping[/yellow]")
 
     # Results table
-    table = Table(
-        title=f"Benchmark Results ({traj.n_frames} frames, {traj.n_atoms} atoms)"
-    )
-    table.add_column("Implementation", style="cyan")
+    console.print()
+    table = Table(title="SASA Benchmark Results")
+    table.add_column("Method", style="cyan")
+    table.add_column("Threads", justify="right")
     table.add_column("Time (s)", justify="right")
-    table.add_column("Per-frame (ms)", justify="right")
-    table.add_column("Speedup", justify="right", style="green")
+    table.add_column("fps", justify="right")
+    table.add_column("vs MDTraj", justify="right")
+    if bolt_result:
+        table.add_column("vs mdsasa-bolt", justify="right")
 
-    mdtraj_per_frame = (mdtraj_mean / traj.n_frames) * 1000
-    zsasa_per_frame = (zsasa_mean / traj.n_frames) * 1000
-    speedup = mdtraj_mean / zsasa_mean
+    mdtraj_time = mdtraj_result["mean"]
+    bolt_time = bolt_result["mean"] if bolt_result else None
 
-    table.add_row(
-        "MDTraj",
-        f"{mdtraj_mean:.3f} ± {mdtraj_std:.3f}",
-        f"{mdtraj_per_frame:.2f}",
-        "1.00x",
-    )
-    table.add_row(
-        f"zsasa ({algorithm.upper()})",
-        f"{zsasa_mean:.3f} ± {zsasa_std:.3f}",
-        f"{zsasa_per_frame:.2f}",
-        f"{speedup:.2f}x",
-    )
+    for r in results:
+        fps = r["n_frames"] / r["mean"]
+        vs_mdtraj = mdtraj_time / r["mean"]
+        vs_mdtraj_str = f"{vs_mdtraj:.1f}x" if r["name"] != "MDTraj" else "-"
 
-    console.print(table)
+        row = [r["name"], r["threads"], f"{r['mean']:.2f}", f"{fps:.0f}", vs_mdtraj_str]
 
-    # Throughput info
-    console.print(f"\n[bold]Throughput:[/bold]")
-    console.print(f"  MDTraj: {traj.n_frames / mdtraj_mean:.1f} frames/s")
-    console.print(f"  zsasa:  {traj.n_frames / zsasa_mean:.1f} frames/s")
+        if bolt_result:
+            vs_bolt = bolt_time / r["mean"]
+            vs_bolt_str = f"{vs_bolt:.1f}x" if r["name"] != "mdsasa-bolt" else "-"
+            row.append(vs_bolt_str)
 
-    # Atoms per second
-    atoms_per_frame = traj.n_atoms
-    console.print(f"\n[bold]Atoms per second:[/bold]")
-    console.print(
-        f"  MDTraj: {atoms_per_frame * traj.n_frames / mdtraj_mean / 1e6:.2f}M atoms/s"
-    )
-    console.print(
-        f"  zsasa:  {atoms_per_frame * traj.n_frames / zsasa_mean / 1e6:.2f}M atoms/s"
-    )
-
-
-@app.command()
-def profile(
-    trajectory: Path = typer.Argument(..., help="Path to trajectory file (.xtc)"),
-    topology: Path = typer.Argument(..., help="Path to topology file (.pdb or .tpr)"),
-    n_frames: int = typer.Option(100, "--frames", "-f", help="Number of frames to use"),
-    n_threads: int = typer.Option(1, "--threads", "-t", help="Number of threads"),
-    algorithm: str = typer.Option(
-        "sr", "--algorithm", "-a", help="Algorithm: sr or lr"
-    ),
-):
-    """Profile time breakdown of SASA calculation.
-
-    This profiles individual component times:
-    - Coordinate extraction
-    - Radii extraction
-    - SASA calculation (which includes neighbor list building)
-    """
-    console.print(f"\n[bold]Loading trajectory:[/bold] {trajectory}")
-
-    # Load trajectory
-    traj = md.load(str(trajectory), top=str(topology))
-
-    # Subsample
-    if n_frames < traj.n_frames:
-        step = traj.n_frames // n_frames
-        traj = traj[::step][:n_frames]
-
-    console.print(
-        f"[bold]Frames:[/bold] {traj.n_frames}, [bold]Atoms:[/bold] {traj.n_atoms}"
-    )
-
-    # Time coordinate extraction
-    start = time.perf_counter()
-    coords = traj.xyz * 10.0  # nm -> Angstrom
-    coords = np.ascontiguousarray(coords.astype(np.float32))
-    coord_time = time.perf_counter() - start
-
-    # Time radii extraction
-    from zsasa.mdtraj import _get_radii_from_topology
-
-    start = time.perf_counter()
-    radii = _get_radii_from_topology(traj.topology)
-    radii_time = time.perf_counter() - start
-
-    # Time SASA calculation
-    start = time.perf_counter()
-    result = calculate_sasa_batch(
-        coords, radii, n_threads=n_threads, algorithm=algorithm
-    )
-    sasa_time = time.perf_counter() - start
-
-    total_time = coord_time + radii_time + sasa_time
-
-    # Results
-    table = Table(title="Time Breakdown")
-    table.add_column("Component", style="cyan")
-    table.add_column("Time (ms)", justify="right")
-    table.add_column("Percentage", justify="right")
-
-    table.add_row(
-        "Coordinate extraction",
-        f"{coord_time * 1000:.1f}",
-        f"{coord_time / total_time * 100:.1f}%",
-    )
-    table.add_row(
-        "Radii extraction",
-        f"{radii_time * 1000:.1f}",
-        f"{radii_time / total_time * 100:.1f}%",
-    )
-    table.add_row(
-        "SASA calculation",
-        f"{sasa_time * 1000:.1f}",
-        f"{sasa_time / total_time * 100:.1f}%",
-    )
-    table.add_row(
-        "[bold]Total[/bold]",
-        f"[bold]{total_time * 1000:.1f}[/bold]",
-        "[bold]100%[/bold]",
-    )
+        table.add_row(*row)
 
     console.print(table)
 
-    # Per-frame breakdown
-    console.print(f"\n[bold]Per-frame timing:[/bold]")
-    console.print(f"  Total:       {total_time / traj.n_frames * 1000:.3f} ms/frame")
-    console.print(f"  SASA only:   {sasa_time / traj.n_frames * 1000:.3f} ms/frame")
+
+def main(
+    xtc_path: Annotated[Path, typer.Argument(help="Path to XTC trajectory file")],
+    top_path: Annotated[Path, typer.Argument(help="Path to topology file (PDB/GRO)")],
+    n_runs: Annotated[int, typer.Option("--runs", "-n", help="Number of runs")] = 3,
+    threads: Annotated[
+        str,
+        typer.Option("--threads", "-t", help="Thread counts for zsasa (e.g., '1,4,8')"),
+    ] = "1,4,8",
+) -> None:
+    """Benchmark SASA calculation across implementations."""
+    benchmark(xtc_path, top_path, n_runs, threads)
 
 
 if __name__ == "__main__":
-    app()
+    typer.run(main)
