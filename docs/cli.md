@@ -7,7 +7,20 @@ This document provides complete documentation for the zsasa command-line interfa
 ```
 zsasa [OPTIONS] <input> [output.json]
 zsasa [OPTIONS] <input_dir/> <output_dir/>
+zsasa traj <xtc> <topology> [OPTIONS]
 ```
+
+## Subcommands
+
+### `traj` - Trajectory Analysis
+
+Calculate SASA for each frame in an XTC trajectory file.
+
+```bash
+zsasa traj trajectory.xtc topology.pdb [OPTIONS]
+```
+
+See [Trajectory Mode](#trajectory-mode) section below for details.
 
 ## Basic Usage
 
@@ -428,6 +441,79 @@ atom ALA O  1.40
 # Validate without calculation
 ./zig-out/bin/zsasa --validate structure.cif
 ```
+
+---
+
+## Trajectory Mode
+
+Calculate SASA for each frame in an XTC trajectory file.
+
+### Usage
+
+```bash
+zsasa traj <xtc> <topology> [OPTIONS]
+```
+
+### Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `<xtc>` | XTC trajectory file (GROMACS format) |
+| `<topology>` | Topology file (PDB or mmCIF) for atom names and radii |
+
+### Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--algorithm=ALGO` | `sr` (Shrake-Rupley) or `lr` (Lee-Richards) | `sr` |
+| `--classifier=TYPE` | Built-in classifier: `naccess`, `protor`, `oons` | none |
+| `--threads=N` | Number of threads (0 = auto-detect) | `0` |
+| `--probe-radius=R` | Probe radius in Å | `1.4` |
+| `--n-points=N` | Test points per atom (SR only) | `100` |
+| `--n-slices=N` | Slices per atom diameter (LR only) | `20` |
+| `--precision=P` | Floating-point precision: `f32` or `f64` | `f32` |
+| `--stride=N` | Process every Nth frame | `1` |
+| `--start=N` | Start from frame N | `0` |
+| `--end=N` | End at frame N | all |
+| `-o, --output=FILE` | Output CSV file | `traj_sasa.csv` |
+| `-q, --quiet` | Suppress progress output | off |
+| `-h, --help` | Show help message | |
+
+### Output Format (CSV)
+
+```csv
+frame,step,time,total_sasa
+0,1,1.000,1866.44
+1,2,2.000,1977.96
+2,3,3.000,1884.93
+...
+```
+
+### Examples
+
+```bash
+# Basic trajectory analysis
+zsasa traj trajectory.xtc topology.pdb
+
+# With NACCESS classifier
+zsasa traj trajectory.xtc topology.pdb --classifier=naccess
+
+# Every 10th frame
+zsasa traj trajectory.xtc topology.xtc --stride=10
+
+# Frames 100-200 only
+zsasa traj trajectory.xtc topology.pdb --start=100 --end=200
+
+# Lee-Richards algorithm with f64 precision
+zsasa traj trajectory.xtc topology.pdb --algorithm=lr --precision=f64
+```
+
+### Notes
+
+- XTC coordinates are in nm; they are automatically converted to Å
+- Topology file provides atom names for radius classification
+- The number of atoms in XTC must match the topology
+- Default precision is `f32` (faster for trajectory processing)
 
 ---
 
