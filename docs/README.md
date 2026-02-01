@@ -16,9 +16,9 @@ Technical documentation for zsasa.
 | [cpu-efficiency.md](cpu-efficiency.md) | CPU efficiency analysis (IPC, instructions) |
 | [cli.md](cli.md) | CLI Reference |
 | [python-api/](python-api/) | Python API Reference |
+| [xtc.md](xtc.md) | XTC trajectory file reader |
 | [classifier.md](classifier.md) | Atom radius classifiers |
 | [ci.md](ci.md) | CI/CD configuration |
-| [ja/](ja/) | Japanese documentation |
 
 ## Benchmark Environment
 

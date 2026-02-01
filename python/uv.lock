@@ -514,66 +514,6 @@ wheels = [
 ]
 
 [[package]]
-name = "freesasa-zig"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "cffi" },
-    { name = "numpy" },
-]
-
-[package.optional-dependencies]
-all = [
-    { name = "biopython" },
-    { name = "biotite" },
-    { name = "gemmi" },
-    { name = "mdanalysis" },
-    { name = "mdtraj" },
-]
-biopython = [
-    { name = "biopython" },
-]
-biotite = [
-    { name = "biotite" },
-]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-    { name = "ty" },
-]
-gemmi = [
-    { name = "gemmi" },
-]
-mdanalysis = [
-    { name = "mdanalysis" },
-]
-mdtraj = [
-    { name = "mdtraj" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "biopython", marker = "extra == 'biopython'", specifier = ">=1.80" },
-    { name = "biotite", marker = "extra == 'biotite'", specifier = ">=1.0.0" },
-    { name = "cffi", specifier = ">=1.15" },
-    { name = "freesasa-zig", extras = ["biopython"], marker = "extra == 'all'" },
-    { name = "freesasa-zig", extras = ["biotite"], marker = "extra == 'all'" },
-    { name = "freesasa-zig", extras = ["gemmi"], marker = "extra == 'all'" },
-    { name = "freesasa-zig", extras = ["mdanalysis"], marker = "extra == 'all'" },
-    { name = "freesasa-zig", extras = ["mdtraj"], marker = "extra == 'all'" },
-    { name = "gemmi", marker = "extra == 'gemmi'", specifier = ">=0.6.0" },
-    { name = "mdanalysis", marker = "extra == 'mdanalysis'", specifier = ">=2.0.0" },
-    { name = "mdtraj", marker = "extra == 'mdtraj'", specifier = ">=1.9.0" },
-    { name = "numpy", specifier = ">=1.24" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
-    { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a0" },
-]
-provides-extras = ["biopython", "biotite", "gemmi", "mdtraj", "mdanalysis", "dev", "all"]
-
-[[package]]
 name = "gemmi"
 version = "0.7.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1454,3 +1394,63 @@ sdist = { url = "https://files.pythonhosted.org/packages/c7/24/5f1b3bdffd70275f6
 wheels = [
     { url = "https://files.pythonhosted.org/packages/39/08/aaaad47bc4e9dc8c725e68f9d04865dbcb2052843ff09c97b08904852d84/urllib3-2.6.3-py3-none-any.whl", hash = "sha256:bf272323e553dfb2e87d9bfd225ca7b0f467b919d7bbd355436d3fd37cb0acd4", size = 131584, upload-time = "2026-01-07T16:24:42.685Z" },
 ]
+
+[[package]]
+name = "zsasa"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "cffi" },
+    { name = "numpy" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "biopython" },
+    { name = "biotite" },
+    { name = "gemmi" },
+    { name = "mdanalysis" },
+    { name = "mdtraj" },
+]
+biopython = [
+    { name = "biopython" },
+]
+biotite = [
+    { name = "biotite" },
+]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+    { name = "ty" },
+]
+gemmi = [
+    { name = "gemmi" },
+]
+mdanalysis = [
+    { name = "mdanalysis" },
+]
+mdtraj = [
+    { name = "mdtraj" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "biopython", marker = "extra == 'biopython'", specifier = ">=1.80" },
+    { name = "biotite", marker = "extra == 'biotite'", specifier = ">=1.0.0" },
+    { name = "cffi", specifier = ">=1.15" },
+    { name = "gemmi", marker = "extra == 'gemmi'", specifier = ">=0.6.0" },
+    { name = "mdanalysis", marker = "extra == 'mdanalysis'", specifier = ">=2.0.0" },
+    { name = "mdtraj", marker = "extra == 'mdtraj'", specifier = ">=1.9.0" },
+    { name = "numpy", specifier = ">=1.24" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
+    { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a0" },
+    { name = "zsasa", extras = ["biopython"], marker = "extra == 'all'" },
+    { name = "zsasa", extras = ["biotite"], marker = "extra == 'all'" },
+    { name = "zsasa", extras = ["gemmi"], marker = "extra == 'all'" },
+    { name = "zsasa", extras = ["mdanalysis"], marker = "extra == 'all'" },
+    { name = "zsasa", extras = ["mdtraj"], marker = "extra == 'all'" },
+]
+provides-extras = ["biopython", "biotite", "gemmi", "mdtraj", "mdanalysis", "dev", "all"]
