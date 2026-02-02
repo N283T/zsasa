@@ -94,21 +94,26 @@ The optimization primarily benefits multi-threaded workloads where parsing overh
 ## Running the Benchmark
 
 ```bash
-cd benchmarks/ecoli_bench
-
 # Run all tools
-./benchmark.sh --runs 5 --threads 8
+./benchmarks/scripts/batch_bench.py \
+  --input benchmarks/UP000000625_83333_ECOLI_v6/pdb \
+  --name ecoli \
+  --runs 5 --threads 8
 
 # Run specific tool
-./benchmark.sh --tool zig --runs 5 --threads 8
-./benchmark.sh --tool freesasa --runs 5
-./benchmark.sh --tool rustsasa --runs 5 --threads 8
+./benchmarks/scripts/batch_bench.py \
+  -i benchmarks/UP000000625_83333_ECOLI_v6/pdb \
+  -n ecoli \
+  --tool zig --runs 5
 
 # Dry run (show commands only)
-./benchmark.sh --dry-run
+./benchmarks/scripts/batch_bench.py \
+  -i benchmarks/UP000000625_83333_ECOLI_v6/pdb \
+  -n ecoli-test \
+  --dry-run
 ```
 
-Results are saved to `benchmarks/ecoli_bench/results/`.
+Results are saved to `benchmarks/results/batch/<name>/`.
 
 ## Related Documents
 

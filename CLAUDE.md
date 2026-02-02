@@ -118,8 +118,8 @@ Located in `benchmarks/scripts/`. All scripts use PEP 723 metadata (typer + rich
     --input-dir benchmarks/inputs \
     --sample-file benchmarks/samples/stratified_100k.json
 
-# Batch mode (throughput testing)
-./benchmarks/scripts/run_batch.py --tool zig --algorithm sr --threads 1,4,8
+# Batch mode (hyperfine-based, RustSASA paper style)
+./benchmarks/scripts/batch_bench.py -i benchmarks/UP000000625_83333_ECOLI_v6/pdb -n ecoli --threads 8
 ```
 
 ### Analysis
