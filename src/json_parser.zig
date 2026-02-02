@@ -336,10 +336,10 @@ test "parseAtomInput with residue and atom_name" {
     const residue = input.residue.?;
     const atom_name = input.atom_name.?;
 
-    try std.testing.expectEqualStrings("ALA", residue[0]);
-    try std.testing.expectEqualStrings("GLY", residue[1]);
-    try std.testing.expectEqualStrings("CA", atom_name[0]);
-    try std.testing.expectEqualStrings("N", atom_name[1]);
+    try std.testing.expectEqualStrings("ALA", residue[0].slice());
+    try std.testing.expectEqualStrings("GLY", residue[1].slice());
+    try std.testing.expectEqualStrings("CA", atom_name[0].slice());
+    try std.testing.expectEqualStrings("N", atom_name[1].slice());
 }
 
 test "parseAtomInput with element atomic numbers" {
