@@ -58,6 +58,17 @@ benchmarks/dataset/
 # Benchmark samples (large files)
 benchmarks/samples/
 
+# E. coli proteome dataset (AlphaFold structures)
+benchmarks/UP000000625_83333_ECOLI_v6/
+
+# E. coli benchmark temp files
+benchmarks/ecoli_bench/temp_out/
+benchmarks/ecoli_bench/results/
+benchmarks/ecoli_bench/sasa_batch
+
+# XTC reader cache files
+test_data/.*.xtc_offsets.*
+
 # Archived plans
 plans/archive/
 
