@@ -12,6 +12,8 @@ Comparison of SASA calculation performance for molecular dynamics trajectories.
 
 ## Benchmark Results
 
+### 6QFK (Medium: 20k atoms)
+
 **System**: 6QFK protein (20,391 atoms, 1,001 frames, 90.5 MB XTC)
 
 ```
@@ -28,6 +30,22 @@ Comparison of SASA calculation performance for molecular dynamics trajectories.
 └─────────────┴─────────┴──────────┴─────┴───────────┴────────────────┘
 ```
 
+### 5LTJ (Large: 11k atoms, 10k frames)
+
+**System**: 5LTJ protein (11,487 atoms, 10,001 frames, 535 MB XTC)
+
+```
+┏━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━┳━━━━━━━━━━━━━━━━┓
+┃ Method      ┃ Threads ┃ Time (s) ┃ fps ┃ vs mdsasa-bolt ┃
+┡━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━╇━━━━━━━━━━━━━━━━┩
+│ zsasa       │       8 │    56.91 │ 176 │          11.3x │
+│ zsasa       │      10 │    49.91 │ 200 │          12.8x │
+│ mdsasa-bolt │     all │   640.89 │  16 │              - │
+└─────────────┴─────────┴──────────┴─────┴────────────────┘
+```
+
+MDTraj skipped (too slow for 10k frames).
+
 **Environment**: macOS, Apple M2 Pro (10 cores)
 
 ## Key Findings
@@ -41,10 +59,14 @@ MDTraj's `shrake_rupley` is single-threaded only (no `n_jobs` parameter).
 
 ### zsasa vs mdsasa-bolt
 
+**6QFK (20k atoms, 1k frames)**:
 - **Single-threaded zsasa vs all-core mdsasa-bolt**: mdsasa-bolt is 2x faster
 - **10-thread zsasa vs all-core mdsasa-bolt**: zsasa is **2.7x faster**
 
-mdsasa-bolt uses Rust's rayon for parallelization but has no thread control - it always uses all available cores.
+**5LTJ (11k atoms, 10k frames)**:
+- zsasa (10 threads) is **12.8x faster** than mdsasa-bolt (all cores)
+
+mdsasa-bolt performance varies significantly between datasets. See [Parallelization Strategy](#parallelization-strategy) for details.
 
 ### Thread Scaling
 
@@ -70,6 +92,41 @@ Near-linear scaling up to 4 threads, with diminishing returns beyond 8 threads.
 Options:
 - `--threads`, `-t`: Comma-separated thread counts for zsasa (default: "1,4,8")
 - `--runs`, `-n`: Number of runs per configuration (default: 3)
+
+## Parallelization Strategy
+
+Both zsasa and mdsasa-bolt use the same parallelization approach:
+
+| Level | zsasa | mdsasa-bolt |
+|-------|-------|-------------|
+| Frame-level | Parallel (configurable threads) | Parallel (rayon, all cores) |
+| Per-frame SASA | Single-threaded | Single-threaded (`n_threads=1` hardcoded) |
+
+The key difference is **per-frame SASA implementation**:
+- **zsasa**: Zig with SIMD optimizations (fast)
+- **mdsasa-bolt**: rust_sasa library (slower)
+
+### mdsasa-bolt Observations
+
+- CPU utilization during mdsasa-bolt runs was lower than expected for "all cores"
+- Performance varies significantly between datasets:
+  - 6QFK: Competitive (2.7x slower than zsasa)
+  - 5LTJ: Much slower (12.8x slower than zsasa)
+- Possible causes: memory allocation overhead, Python/Rust boundary costs
+
+## Running the Benchmark
+
+```bash
+./benchmarks/scripts/benchmark_md.py \
+    trajectory.xtc \
+    topology.pdb \
+    --threads "1,2,4,8,10"
+```
+
+Options:
+- `--threads`, `-t`: Comma-separated thread counts for zsasa (default: "1,4,8")
+- `--runs`, `-n`: Number of runs per configuration (default: 3)
+- `--skip-mdtraj`: Skip MDTraj benchmark (for large structures)
 
 ## Notes
 

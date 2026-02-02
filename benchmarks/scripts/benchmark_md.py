@@ -133,6 +133,12 @@ def benchmark(
         str,
         typer.Option("--threads", "-t", help="Thread counts for zsasa (e.g., '1,4,8')"),
     ] = "1,4,8",
+    skip_mdtraj: Annotated[
+        bool,
+        typer.Option(
+            "--skip-mdtraj", help="Skip MDTraj benchmark (for large structures)"
+        ),
+    ] = False,
 ) -> None:
     """Benchmark SASA calculation across implementations."""
     if not xtc_path.exists():
@@ -161,9 +167,13 @@ def benchmark(
         results.append(benchmark_zsasa(xtc_path, top_path, n_threads, n_runs))
 
     # MDTraj (single-threaded)
-    console.print("[cyan]MDTraj (single-threaded)...[/cyan]")
-    mdtraj_result = benchmark_mdtraj(xtc_path, top_path, n_runs)
-    results.append(mdtraj_result)
+    mdtraj_result = None
+    if not skip_mdtraj:
+        console.print("[cyan]MDTraj (single-threaded)...[/cyan]")
+        mdtraj_result = benchmark_mdtraj(xtc_path, top_path, n_runs)
+        results.append(mdtraj_result)
+    else:
+        console.print("[yellow]MDTraj skipped[/yellow]")
 
     # mdsasa-bolt (all cores)
     console.print("[cyan]mdsasa-bolt (all cores)...[/cyan]")
@@ -180,19 +190,22 @@ def benchmark(
     table.add_column("Threads", justify="right")
     table.add_column("Time (s)", justify="right")
     table.add_column("fps", justify="right")
-    table.add_column("vs MDTraj", justify="right")
+    if mdtraj_result:
+        table.add_column("vs MDTraj", justify="right")
     if bolt_result:
         table.add_column("vs mdsasa-bolt", justify="right")
 
-    mdtraj_time = mdtraj_result["mean"]
+    mdtraj_time = mdtraj_result["mean"] if mdtraj_result else None
     bolt_time = bolt_result["mean"] if bolt_result else None
 
     for r in results:
         fps = r["n_frames"] / r["mean"]
-        vs_mdtraj = mdtraj_time / r["mean"]
-        vs_mdtraj_str = f"{vs_mdtraj:.1f}x" if r["name"] != "MDTraj" else "-"
+        row = [r["name"], r["threads"], f"{r['mean']:.2f}", f"{fps:.0f}"]
 
-        row = [r["name"], r["threads"], f"{r['mean']:.2f}", f"{fps:.0f}", vs_mdtraj_str]
+        if mdtraj_result:
+            vs_mdtraj = mdtraj_time / r["mean"]
+            vs_mdtraj_str = f"{vs_mdtraj:.1f}x" if r["name"] != "MDTraj" else "-"
+            row.append(vs_mdtraj_str)
 
         if bolt_result:
             vs_bolt = bolt_time / r["mean"]
@@ -212,9 +225,15 @@ def main(
         str,
         typer.Option("--threads", "-t", help="Thread counts for zsasa (e.g., '1,4,8')"),
     ] = "1,4,8",
+    skip_mdtraj: Annotated[
+        bool,
+        typer.Option(
+            "--skip-mdtraj", help="Skip MDTraj benchmark (for large structures)"
+        ),
+    ] = False,
 ) -> None:
     """Benchmark SASA calculation across implementations."""
-    benchmark(xtc_path, top_path, n_runs, threads)
+    benchmark(xtc_path, top_path, n_runs, threads, skip_mdtraj)
 
 
 if __name__ == "__main__":
