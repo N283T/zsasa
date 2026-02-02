@@ -110,9 +110,22 @@ The key difference is **per-frame SASA implementation**:
 
 - CPU utilization during mdsasa-bolt runs was lower than expected for "all cores"
 - Performance varies significantly between datasets:
-  - 6QFK: Competitive (2.7x slower than zsasa)
-  - 5LTJ: Much slower (12.8x slower than zsasa)
-- Possible causes: memory allocation overhead, Python/Rust boundary costs
+  - 6QFK (1k frames): 2.7x slower than zsasa
+  - 5LTJ (10k frames): 12.8x slower than zsasa
+
+**Hypothesis**: The performance degradation with more frames may be due to Python/Rust boundary overhead:
+
+```python
+# mdsasa-bolt collects all frames into Python lists before Rust call
+input_atoms_per_frame = []
+for _ in trajectory:
+    input_atoms = [(tuple(pos), radius, resnum) for ...]  # Nested tuples
+    input_atoms_per_frame.append(input_atoms)
+```
+
+- 10k frames × 11k atoms = 110M Python tuples created
+- Inefficient memory layout (nested lists vs contiguous arrays)
+- zsasa passes numpy arrays directly via CFFI (minimal overhead)
 
 ## Running the Benchmark
 
