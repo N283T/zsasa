@@ -231,12 +231,12 @@ pub fn parseAtomInput(allocator: Allocator, json_str: []const u8) !AtomInput {
     @memcpy(z, data.z);
     @memcpy(r, data.r);
 
-    // Copy optional residue names (using FixedString4)
-    var residue: ?[]types.FixedString4 = null;
+    // Copy optional residue names (using FixedString5 for mmCIF 5-char comp_id)
+    var residue: ?[]types.FixedString5 = null;
     if (data.residue) |res| {
-        const res_copy = try allocator.alloc(types.FixedString4, n);
+        const res_copy = try allocator.alloc(types.FixedString5, n);
         for (res, 0..) |s, i| {
-            res_copy[i] = types.FixedString4.fromSlice(s);
+            res_copy[i] = types.FixedString5.fromSlice(s);
         }
         residue = res_copy;
     }
@@ -336,10 +336,10 @@ test "parseAtomInput with residue and atom_name" {
     const residue = input.residue.?;
     const atom_name = input.atom_name.?;
 
-    try std.testing.expectEqualStrings("ALA", residue[0]);
-    try std.testing.expectEqualStrings("GLY", residue[1]);
-    try std.testing.expectEqualStrings("CA", atom_name[0]);
-    try std.testing.expectEqualStrings("N", atom_name[1]);
+    try std.testing.expectEqualStrings("ALA", residue[0].slice());
+    try std.testing.expectEqualStrings("GLY", residue[1].slice());
+    try std.testing.expectEqualStrings("CA", atom_name[0].slice());
+    try std.testing.expectEqualStrings("N", atom_name[1].slice());
 }
 
 test "parseAtomInput with element atomic numbers" {

@@ -271,7 +271,7 @@ pub const MmcifParser = struct {
         defer z_list.deinit(self.allocator);
         var r_list = std.ArrayListUnmanaged(f64){};
         defer r_list.deinit(self.allocator);
-        var residue_list = std.ArrayListUnmanaged(types.FixedString4){};
+        var residue_list = std.ArrayListUnmanaged(types.FixedString5){};
         defer residue_list.deinit(self.allocator);
         var atom_name_list = std.ArrayListUnmanaged(types.FixedString4){};
         defer atom_name_list.deinit(self.allocator);
@@ -339,12 +339,12 @@ pub const MmcifParser = struct {
                             if (columns.getResNameCol()) |res_col| {
                                 const res = row_values[res_col];
                                 if (cif.isNull(res)) {
-                                    try residue_list.append(self.allocator, types.FixedString4.fromSlice("UNK"));
+                                    try residue_list.append(self.allocator, types.FixedString5.fromSlice("UNK"));
                                 } else {
-                                    try residue_list.append(self.allocator, types.FixedString4.fromSlice(res));
+                                    try residue_list.append(self.allocator, types.FixedString5.fromSlice(res));
                                 }
                             } else {
-                                try residue_list.append(self.allocator, types.FixedString4.fromSlice("UNK"));
+                                try residue_list.append(self.allocator, types.FixedString5.fromSlice("UNK"));
                             }
 
                             // Get atom name

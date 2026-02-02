@@ -80,7 +80,7 @@ pub const PdbParser = struct {
         defer element_list.deinit(self.allocator);
         var atom_name_list = std.ArrayListUnmanaged(types.FixedString4){};
         defer atom_name_list.deinit(self.allocator);
-        var residue_list = std.ArrayListUnmanaged(types.FixedString4){};
+        var residue_list = std.ArrayListUnmanaged(types.FixedString5){};
         defer residue_list.deinit(self.allocator);
         var chain_id_list = std.ArrayListUnmanaged(types.FixedString4){};
         defer chain_id_list.deinit(self.allocator);
@@ -173,7 +173,7 @@ pub const PdbParser = struct {
 
             // Use FixedString4 - no per-atom allocation needed
             try atom_name_list.append(self.allocator, types.FixedString4.fromSlice(atom.atom_name));
-            try residue_list.append(self.allocator, types.FixedString4.fromSlice(atom.residue));
+            try residue_list.append(self.allocator, types.FixedString5.fromSlice(atom.residue));
             try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(atom.chain_id));
             try residue_num_list.append(self.allocator, atom.residue_num);
             try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(atom.insertion_code));
