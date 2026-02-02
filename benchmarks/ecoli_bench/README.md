@@ -2,6 +2,8 @@
 
 RustSASA論文との比較用ベンチマーク。
 
+> **Results**: See [docs/benchmark/ecoli-proteome.md](../../docs/benchmark/ecoli-proteome.md) for detailed benchmark results.
+
 ## Dataset
 
 - Source: AlphaFold E. coli proteome (UP000000625_83333_ECOLI_v6)
