@@ -231,38 +231,23 @@ pub fn parseAtomInput(allocator: Allocator, json_str: []const u8) !AtomInput {
     @memcpy(z, data.z);
     @memcpy(r, data.r);
 
-    // Copy optional residue names
-    var residue: ?[][]const u8 = null;
+    // Copy optional residue names (using FixedString4)
+    var residue: ?[]types.FixedString4 = null;
     if (data.residue) |res| {
-        const res_copy = try allocator.alloc([]const u8, n);
-        var res_allocated: usize = 0;
-        errdefer {
-            for (res_copy[0..res_allocated]) |s| allocator.free(s);
-            allocator.free(res_copy);
-        }
+        const res_copy = try allocator.alloc(types.FixedString4, n);
         for (res, 0..) |s, i| {
-            res_copy[i] = try allocator.dupe(u8, s);
-            res_allocated += 1;
+            res_copy[i] = types.FixedString4.fromSlice(s);
         }
         residue = res_copy;
     }
-    errdefer if (residue) |res| {
-        for (res) |s| allocator.free(s);
-        allocator.free(res);
-    };
+    errdefer if (residue) |res| allocator.free(res);
 
-    // Copy optional atom names
-    var atom_name: ?[][]const u8 = null;
+    // Copy optional atom names (using FixedString4)
+    var atom_name: ?[]types.FixedString4 = null;
     if (data.atom_name) |names| {
-        const names_copy = try allocator.alloc([]const u8, n);
-        var names_allocated: usize = 0;
-        errdefer {
-            for (names_copy[0..names_allocated]) |s| allocator.free(s);
-            allocator.free(names_copy);
-        }
+        const names_copy = try allocator.alloc(types.FixedString4, n);
         for (names, 0..) |s, i| {
-            names_copy[i] = try allocator.dupe(u8, s);
-            names_allocated += 1;
+            names_copy[i] = types.FixedString4.fromSlice(s);
         }
         atom_name = names_copy;
     }

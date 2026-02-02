@@ -271,17 +271,17 @@ pub const MmcifParser = struct {
         defer z_list.deinit(self.allocator);
         var r_list = std.ArrayListUnmanaged(f64){};
         defer r_list.deinit(self.allocator);
-        var residue_list = std.ArrayListUnmanaged([]const u8){};
+        var residue_list = std.ArrayListUnmanaged(types.FixedString4){};
         defer residue_list.deinit(self.allocator);
-        var atom_name_list = std.ArrayListUnmanaged([]const u8){};
+        var atom_name_list = std.ArrayListUnmanaged(types.FixedString4){};
         defer atom_name_list.deinit(self.allocator);
         var element_list = std.ArrayListUnmanaged(u8){};
         defer element_list.deinit(self.allocator);
-        var chain_id_list = std.ArrayListUnmanaged([]const u8){};
+        var chain_id_list = std.ArrayListUnmanaged(types.FixedString4){};
         defer chain_id_list.deinit(self.allocator);
         var residue_num_list = std.ArrayListUnmanaged(i32){};
         defer residue_num_list.deinit(self.allocator);
-        var insertion_code_list = std.ArrayListUnmanaged([]const u8){};
+        var insertion_code_list = std.ArrayListUnmanaged(types.FixedString4){};
         defer insertion_code_list.deinit(self.allocator);
 
         // Buffer for current row values
@@ -339,36 +339,36 @@ pub const MmcifParser = struct {
                             if (columns.getResNameCol()) |res_col| {
                                 const res = row_values[res_col];
                                 if (cif.isNull(res)) {
-                                    try residue_list.append(self.allocator, try self.allocator.dupe(u8, "UNK"));
+                                    try residue_list.append(self.allocator, types.FixedString4.fromSlice("UNK"));
                                 } else {
-                                    try residue_list.append(self.allocator, try self.allocator.dupe(u8, res));
+                                    try residue_list.append(self.allocator, types.FixedString4.fromSlice(res));
                                 }
                             } else {
-                                try residue_list.append(self.allocator, try self.allocator.dupe(u8, "UNK"));
+                                try residue_list.append(self.allocator, types.FixedString4.fromSlice("UNK"));
                             }
 
                             // Get atom name
                             if (columns.getAtomNameCol()) |atom_col| {
                                 const name = row_values[atom_col];
                                 if (cif.isNull(name)) {
-                                    try atom_name_list.append(self.allocator, try self.allocator.dupe(u8, "X"));
+                                    try atom_name_list.append(self.allocator, types.FixedString4.fromSlice("X"));
                                 } else {
-                                    try atom_name_list.append(self.allocator, try self.allocator.dupe(u8, name));
+                                    try atom_name_list.append(self.allocator, types.FixedString4.fromSlice(name));
                                 }
                             } else {
-                                try atom_name_list.append(self.allocator, try self.allocator.dupe(u8, "X"));
+                                try atom_name_list.append(self.allocator, types.FixedString4.fromSlice("X"));
                             }
 
                             // Get chain ID
                             if (columns.getChainCol(self.use_auth_chain)) |chain_col| {
                                 const chain = row_values[chain_col];
                                 if (cif.isNull(chain)) {
-                                    try chain_id_list.append(self.allocator, try self.allocator.dupe(u8, ""));
+                                    try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(""));
                                 } else {
-                                    try chain_id_list.append(self.allocator, try self.allocator.dupe(u8, chain));
+                                    try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(chain));
                                 }
                             } else {
-                                try chain_id_list.append(self.allocator, try self.allocator.dupe(u8, ""));
+                                try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(""));
                             }
 
                             // Get residue sequence number
@@ -388,12 +388,12 @@ pub const MmcifParser = struct {
                             if (columns.getInsCodeCol()) |ins_col| {
                                 const ins_code = row_values[ins_col];
                                 if (cif.isNull(ins_code)) {
-                                    try insertion_code_list.append(self.allocator, try self.allocator.dupe(u8, ""));
+                                    try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(""));
                                 } else {
-                                    try insertion_code_list.append(self.allocator, try self.allocator.dupe(u8, ins_code));
+                                    try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(ins_code));
                                 }
                             } else {
-                                try insertion_code_list.append(self.allocator, try self.allocator.dupe(u8, ""));
+                                try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(""));
                             }
                         }
 
@@ -585,12 +585,12 @@ test "parse simple mmCIF" {
     try std.testing.expectApproxEqAbs(@as(f64, 31.0), input.z[1], 0.001);
 
     // Check residue names
-    try std.testing.expectEqualStrings("ALA", input.residue.?[0]);
-    try std.testing.expectEqualStrings("ALA", input.residue.?[1]);
+    try std.testing.expectEqualStrings("ALA", input.residue.?[0].slice());
+    try std.testing.expectEqualStrings("ALA", input.residue.?[1].slice());
 
     // Check atom names
-    try std.testing.expectEqualStrings("CA", input.atom_name.?[0]);
-    try std.testing.expectEqualStrings("N", input.atom_name.?[1]);
+    try std.testing.expectEqualStrings("CA", input.atom_name.?[0].slice());
+    try std.testing.expectEqualStrings("N", input.atom_name.?[1].slice());
 
     // Check elements
     try std.testing.expectEqual(@as(u8, 6), input.element.?[0]); // C
@@ -625,9 +625,9 @@ test "parse with alternate locations" {
     // Should have 3 atoms (CB with alt B should be excluded)
     try std.testing.expectEqual(@as(usize, 3), input.atomCount());
 
-    try std.testing.expectEqualStrings("CA", input.atom_name.?[0]);
-    try std.testing.expectEqualStrings("CB", input.atom_name.?[1]); // alt A
-    try std.testing.expectEqualStrings("N", input.atom_name.?[2]);
+    try std.testing.expectEqualStrings("CA", input.atom_name.?[0].slice());
+    try std.testing.expectEqualStrings("CB", input.atom_name.?[1].slice()); // alt A
+    try std.testing.expectEqualStrings("N", input.atom_name.?[2].slice());
 }
 
 test "parse with parenthetical uncertainty" {

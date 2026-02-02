@@ -82,7 +82,7 @@ pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: [
     for (0..n) |i| {
         // Chain
         if (input.chain_id) |chains| {
-            try writer.writeAll(chains[i]);
+            try writer.writeAll(chains[i].slice());
         } else {
             try writer.writeAll("-");
         }
@@ -90,7 +90,7 @@ pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: [
 
         // Residue name
         if (input.residue) |residues| {
-            try writer.writeAll(residues[i]);
+            try writer.writeAll(residues[i].slice());
         } else {
             try writer.writeAll("-");
         }
@@ -106,7 +106,7 @@ pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: [
 
         // Atom name
         if (input.atom_name) |names| {
-            try writer.writeAll(names[i]);
+            try writer.writeAll(names[i].slice());
         } else {
             try writer.writeAll("-");
         }
@@ -492,30 +492,30 @@ test "sasaResultToRichCsv with full info" {
     r[1] = 1.7;
 
     // Create metadata arrays
-    const chain_ids = try allocator.alloc([]const u8, 2);
+    const chain_ids = try allocator.alloc(types.FixedString4, 2);
     defer allocator.free(chain_ids);
-    chain_ids[0] = "A";
-    chain_ids[1] = "A";
+    chain_ids[0] = types.FixedString4.fromSlice("A");
+    chain_ids[1] = types.FixedString4.fromSlice("A");
 
-    const residues = try allocator.alloc([]const u8, 2);
+    const residues = try allocator.alloc(types.FixedString4, 2);
     defer allocator.free(residues);
-    residues[0] = "ALA";
-    residues[1] = "ALA";
+    residues[0] = types.FixedString4.fromSlice("ALA");
+    residues[1] = types.FixedString4.fromSlice("ALA");
 
-    const atom_names = try allocator.alloc([]const u8, 2);
+    const atom_names = try allocator.alloc(types.FixedString4, 2);
     defer allocator.free(atom_names);
-    atom_names[0] = "N";
-    atom_names[1] = "CA";
+    atom_names[0] = types.FixedString4.fromSlice("N");
+    atom_names[1] = types.FixedString4.fromSlice("CA");
 
     const residue_nums = try allocator.alloc(i32, 2);
     defer allocator.free(residue_nums);
     residue_nums[0] = 1;
     residue_nums[1] = 1;
 
-    const insertion_codes = try allocator.alloc([]const u8, 2);
+    const insertion_codes = try allocator.alloc(types.FixedString4, 2);
     defer allocator.free(insertion_codes);
-    insertion_codes[0] = "";
-    insertion_codes[1] = "";
+    insertion_codes[0] = types.FixedString4.fromSlice("");
+    insertion_codes[1] = types.FixedString4.fromSlice("");
 
     const input = AtomInput{
         .x = x,

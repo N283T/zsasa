@@ -106,6 +106,37 @@ pub const Vec3 = Vec3Gen(f64);
 /// Single precision Vec3
 pub const Vec3f32 = Vec3Gen(f32);
 
+/// Fixed-size string for atom/residue names (max 4 characters)
+/// Eliminates per-atom string allocations
+pub const FixedString4 = struct {
+    data: [4]u8 = .{ 0, 0, 0, 0 },
+    len: u8 = 0,
+
+    /// Create from a slice (truncates if > 4 chars)
+    pub fn fromSlice(s: []const u8) FixedString4 {
+        var result = FixedString4{};
+        const copy_len: u8 = @intCast(@min(s.len, 4));
+        @memcpy(result.data[0..copy_len], s[0..copy_len]);
+        result.len = copy_len;
+        return result;
+    }
+
+    /// Get as slice
+    pub fn slice(self: *const FixedString4) []const u8 {
+        return self.data[0..self.len];
+    }
+
+    /// Check equality with another FixedString4
+    pub fn eql(self: *const FixedString4, other: *const FixedString4) bool {
+        return self.len == other.len and std.mem.eql(u8, self.slice(), other.slice());
+    }
+
+    /// Check equality with a slice
+    pub fn eqlSlice(self: *const FixedString4, s: []const u8) bool {
+        return self.len == s.len and std.mem.eql(u8, self.slice(), s);
+    }
+};
+
 /// Input data structure for SASA calculation
 pub const AtomInput = struct {
     x: []const f64,
@@ -113,18 +144,18 @@ pub const AtomInput = struct {
     z: []const f64,
     r: []f64,
     /// Residue names (e.g., "ALA", "GLY") - optional, for classifier
-    residue: ?[]const []const u8 = null,
+    residue: ?[]const FixedString4 = null,
     /// Atom names (e.g., "CA", "CB") - optional, for classifier
-    atom_name: ?[]const []const u8 = null,
+    atom_name: ?[]const FixedString4 = null,
     /// Element atomic numbers (e.g., 6=C, 7=N, 8=O, 20=Ca) - optional
     /// Used to disambiguate atom names like "CA" (Carbon alpha vs Calcium)
     element: ?[]const u8 = null,
     /// Chain IDs (e.g., "A", "B") - optional, for per-chain analysis
-    chain_id: ?[]const []const u8 = null,
+    chain_id: ?[]const FixedString4 = null,
     /// Residue sequence numbers - optional, for per-residue analysis
     residue_num: ?[]const i32 = null,
     /// Insertion codes (e.g., "", "A", "B") - optional, for per-residue analysis
-    insertion_code: ?[]const []const u8 = null,
+    insertion_code: ?[]const FixedString4 = null,
     allocator: std.mem.Allocator,
 
     /// Get number of atoms
@@ -154,34 +185,23 @@ pub const AtomInput = struct {
         self.allocator.free(self.y);
         self.allocator.free(self.z);
         self.allocator.free(self.r);
+        // FixedString4 arrays: single allocation, no per-element free needed
         if (self.residue) |res| {
-            for (res) |s| {
-                self.allocator.free(s);
-            }
             self.allocator.free(res);
         }
         if (self.atom_name) |names| {
-            for (names) |s| {
-                self.allocator.free(s);
-            }
             self.allocator.free(names);
         }
         if (self.element) |elem| {
             self.allocator.free(elem);
         }
         if (self.chain_id) |chains| {
-            for (chains) |s| {
-                self.allocator.free(s);
-            }
             self.allocator.free(chains);
         }
         if (self.residue_num) |nums| {
             self.allocator.free(nums);
         }
         if (self.insertion_code) |codes| {
-            for (codes) |s| {
-                self.allocator.free(s);
-            }
             self.allocator.free(codes);
         }
     }
@@ -399,4 +419,35 @@ test "SasaResultf32 toF64" {
     try std.testing.expectApproxEqAbs(@as(f64, 61.5), result64.total_area, 0.001);
     try std.testing.expectEqual(@as(usize, 3), result64.atom_areas.len);
     try std.testing.expectApproxEqAbs(@as(f64, 10.5), result64.atom_areas[0], 0.001);
+}
+
+test "FixedString4 fromSlice and slice" {
+    const s1 = FixedString4.fromSlice("CA");
+    try std.testing.expectEqualStrings("CA", s1.slice());
+    try std.testing.expectEqual(@as(u8, 2), s1.len);
+
+    const s2 = FixedString4.fromSlice("ALA");
+    try std.testing.expectEqualStrings("ALA", s2.slice());
+    try std.testing.expectEqual(@as(u8, 3), s2.len);
+
+    // Truncation for > 4 chars
+    const s3 = FixedString4.fromSlice("WATER");
+    try std.testing.expectEqualStrings("WATE", s3.slice());
+    try std.testing.expectEqual(@as(u8, 4), s3.len);
+
+    // Empty string
+    const s4 = FixedString4.fromSlice("");
+    try std.testing.expectEqualStrings("", s4.slice());
+    try std.testing.expectEqual(@as(u8, 0), s4.len);
+}
+
+test "FixedString4 equality" {
+    const s1 = FixedString4.fromSlice("CA");
+    const s2 = FixedString4.fromSlice("CA");
+    const s3 = FixedString4.fromSlice("CB");
+
+    try std.testing.expect(s1.eql(&s2));
+    try std.testing.expect(!s1.eql(&s3));
+    try std.testing.expect(s1.eqlSlice("CA"));
+    try std.testing.expect(!s1.eqlSlice("CB"));
 }

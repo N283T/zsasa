@@ -78,16 +78,29 @@ pub const PdbParser = struct {
         defer r_list.deinit(self.allocator);
         var element_list = std.ArrayListUnmanaged(u8){};
         defer element_list.deinit(self.allocator);
-        var atom_name_list = std.ArrayListUnmanaged([]const u8){};
+        var atom_name_list = std.ArrayListUnmanaged(types.FixedString4){};
         defer atom_name_list.deinit(self.allocator);
-        var residue_list = std.ArrayListUnmanaged([]const u8){};
+        var residue_list = std.ArrayListUnmanaged(types.FixedString4){};
         defer residue_list.deinit(self.allocator);
-        var chain_id_list = std.ArrayListUnmanaged([]const u8){};
+        var chain_id_list = std.ArrayListUnmanaged(types.FixedString4){};
         defer chain_id_list.deinit(self.allocator);
         var residue_num_list = std.ArrayListUnmanaged(i32){};
         defer residue_num_list.deinit(self.allocator);
-        var insertion_code_list = std.ArrayListUnmanaged([]const u8){};
+        var insertion_code_list = std.ArrayListUnmanaged(types.FixedString4){};
         defer insertion_code_list.deinit(self.allocator);
+
+        // Pre-allocate based on estimated atom count (PDB line ~80 chars)
+        const estimated_atoms = source.len / 80;
+        try x_list.ensureTotalCapacity(self.allocator, estimated_atoms);
+        try y_list.ensureTotalCapacity(self.allocator, estimated_atoms);
+        try z_list.ensureTotalCapacity(self.allocator, estimated_atoms);
+        try r_list.ensureTotalCapacity(self.allocator, estimated_atoms);
+        try element_list.ensureTotalCapacity(self.allocator, estimated_atoms);
+        try atom_name_list.ensureTotalCapacity(self.allocator, estimated_atoms);
+        try residue_list.ensureTotalCapacity(self.allocator, estimated_atoms);
+        try chain_id_list.ensureTotalCapacity(self.allocator, estimated_atoms);
+        try residue_num_list.ensureTotalCapacity(self.allocator, estimated_atoms);
+        try insertion_code_list.ensureTotalCapacity(self.allocator, estimated_atoms);
 
         // Track alt location for filtering
         var first_alt_loc: u8 = ' ';
@@ -158,24 +171,12 @@ pub const PdbParser = struct {
             try r_list.append(self.allocator, atom.radius);
             try element_list.append(self.allocator, atom.element.atomicNumber());
 
-            // Copy strings (need to own them)
-            const atom_name_copy = try self.allocator.dupe(u8, atom.atom_name);
-            errdefer self.allocator.free(atom_name_copy);
-            try atom_name_list.append(self.allocator, atom_name_copy);
-
-            const residue_copy = try self.allocator.dupe(u8, atom.residue);
-            errdefer self.allocator.free(residue_copy);
-            try residue_list.append(self.allocator, residue_copy);
-
-            const chain_copy = try self.allocator.dupe(u8, atom.chain_id);
-            errdefer self.allocator.free(chain_copy);
-            try chain_id_list.append(self.allocator, chain_copy);
-
+            // Use FixedString4 - no per-atom allocation needed
+            try atom_name_list.append(self.allocator, types.FixedString4.fromSlice(atom.atom_name));
+            try residue_list.append(self.allocator, types.FixedString4.fromSlice(atom.residue));
+            try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(atom.chain_id));
             try residue_num_list.append(self.allocator, atom.residue_num);
-
-            const ins_code_copy = try self.allocator.dupe(u8, atom.insertion_code);
-            errdefer self.allocator.free(ins_code_copy);
-            try insertion_code_list.append(self.allocator, ins_code_copy);
+            try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(atom.insertion_code));
         }
 
         if (x_list.items.len == 0) {
@@ -294,10 +295,55 @@ pub const PdbParser = struct {
 };
 
 /// Parse a coordinate value from a fixed-width field
+/// Fast implementation avoiding std.fmt.parseFloat overhead
 fn parseCoordinate(field: []const u8) ?f64 {
-    const trimmed = std.mem.trim(u8, field, " ");
-    if (trimmed.len == 0) return null;
-    return std.fmt.parseFloat(f64, trimmed) catch null;
+    const len = field.len;
+    if (len == 0) return null;
+
+    // Skip leading whitespace
+    var start: usize = 0;
+    while (start < len and field[start] == ' ') : (start += 1) {}
+    if (start == len) return null;
+
+    // Check for negative sign
+    var negative = false;
+    if (field[start] == '-') {
+        negative = true;
+        start += 1;
+    } else if (field[start] == '+') {
+        start += 1;
+    }
+
+    // Parse integer part with overflow detection
+    var int_part: i64 = 0;
+    var has_int_digits = false;
+    while (start < len and field[start] >= '0' and field[start] <= '9') : (start += 1) {
+        has_int_digits = true;
+        const mul_result = @mulWithOverflow(int_part, 10);
+        if (mul_result[1] != 0) return null; // Overflow
+        const add_result = @addWithOverflow(mul_result[0], @as(i64, field[start] - '0'));
+        if (add_result[1] != 0) return null; // Overflow
+        int_part = add_result[0];
+    }
+
+    // Parse fractional part
+    var frac: f64 = 0;
+    var has_frac_digits = false;
+    if (start < len and field[start] == '.') {
+        start += 1;
+        var mult: f64 = 0.1;
+        while (start < len and field[start] >= '0' and field[start] <= '9') : (start += 1) {
+            has_frac_digits = true;
+            frac += @as(f64, @floatFromInt(field[start] - '0')) * mult;
+            mult *= 0.1;
+        }
+    }
+
+    // Reject sign-only input (e.g., "-" or "+")
+    if (!has_int_digits and !has_frac_digits) return null;
+
+    const result = @as(f64, @floatFromInt(int_part)) + frac;
+    return if (negative) -result else result;
 }
 
 /// Parse MODEL record to get model number
@@ -340,10 +386,25 @@ fn inferElementFromAtomName(atom_name: []const u8) elem.Element {
 test "parseCoordinate" {
     const testing = std.testing;
 
+    // Basic cases
     try testing.expectEqual(@as(?f64, 11.104), parseCoordinate("  11.104"));
     try testing.expectEqual(@as(?f64, -6.504), parseCoordinate("  -6.504"));
     try testing.expectEqual(@as(?f64, 0.0), parseCoordinate("   0.000"));
     try testing.expectEqual(@as(?f64, null), parseCoordinate("        "));
+
+    // Positive sign
+    try testing.expectEqual(@as(?f64, 12.34), parseCoordinate("  +12.34"));
+
+    // Sign-only input (should be null)
+    try testing.expectEqual(@as(?f64, null), parseCoordinate("   -   "));
+    try testing.expectEqual(@as(?f64, null), parseCoordinate("   +   "));
+
+    // Decimal point only with digits
+    try testing.expectEqual(@as(?f64, 0.5), parseCoordinate("     .5"));
+
+    // Large numbers (PDB typical range)
+    try testing.expect(parseCoordinate(" 9999.99") != null);
+    try testing.expect(parseCoordinate("-9999.99") != null);
 }
 
 test "inferElementFromAtomName" {

@@ -3,6 +3,7 @@ const build_options = @import("build_options");
 const analysis = @import("analysis.zig");
 const batch = @import("batch.zig");
 const traj = @import("traj.zig");
+const format_detect = @import("format_detect.zig");
 const json_parser = @import("json_parser.zig");
 const json_writer = @import("json_writer.zig");
 const mmcif_parser = @import("mmcif_parser.zig");
@@ -165,26 +166,6 @@ fn parseParallelism(value: []const u8) Parallelism {
     }
 }
 
-/// Input file format
-const InputFormat = enum {
-    json,
-    mmcif,
-    pdb,
-};
-
-/// Detect input file format from extension
-fn detectInputFormat(path: []const u8) InputFormat {
-    if (std.mem.endsWith(u8, path, ".cif")) return .mmcif;
-    if (std.mem.endsWith(u8, path, ".mmcif")) return .mmcif;
-    if (std.mem.endsWith(u8, path, ".CIF")) return .mmcif;
-    if (std.mem.endsWith(u8, path, ".mmCIF")) return .mmcif;
-    if (std.mem.endsWith(u8, path, ".pdb")) return .pdb;
-    if (std.mem.endsWith(u8, path, ".PDB")) return .pdb;
-    if (std.mem.endsWith(u8, path, ".ent")) return .pdb;
-    if (std.mem.endsWith(u8, path, ".ENT")) return .pdb;
-    return .json;
-}
-
 /// Parse chain filter string into array of chain IDs
 fn parseChainFilter(allocator: std.mem.Allocator, filter_str: []const u8) ![]const []const u8 {
     var chains = std.ArrayListUnmanaged([]const u8){};
@@ -203,7 +184,7 @@ fn parseChainFilter(allocator: std.mem.Allocator, filter_str: []const u8) ![]con
 
 /// Read input file (auto-detect format)
 fn readInputFile(allocator: std.mem.Allocator, path: []const u8, args: Args) !types.AtomInput {
-    const format = detectInputFormat(path);
+    const format = format_detect.detectInputFormat(path);
     return switch (format) {
         .json => json_parser.readAtomInputFromFile(allocator, path),
         .mmcif => blk: {
@@ -593,7 +574,7 @@ fn applyClassifier(
 
     for (0..n) |i| {
         // Try classifier lookup
-        if (custom_classifier.getRadius(residues[i], atom_names[i])) |r| {
+        if (custom_classifier.getRadius(residues[i].slice(), atom_names[i].slice())) |r| {
             new_radii[i] = r;
             classified_count += 1;
         } else if (input.element) |elements| {
@@ -605,7 +586,7 @@ fn applyClassifier(
                 // Keep original radius
                 new_radii[i] = input.r[i];
             }
-        } else if (classifier.guessRadiusFromAtomName(atom_names[i])) |r| {
+        } else if (classifier.guessRadiusFromAtomName(atom_names[i].slice())) |r| {
             // Fall back to atom name-based radius
             new_radii[i] = r;
             fallback_count += 1;
@@ -649,9 +630,9 @@ fn applyBuiltinClassifier(
     for (0..n) |i| {
         // Try built-in classifier lookup
         const maybe_radius: ?f64 = switch (ct) {
-            .naccess => classifier_naccess.getRadius(residues[i], atom_names[i]),
-            .protor => classifier_protor.getRadius(residues[i], atom_names[i]),
-            .oons => classifier_oons.getRadius(residues[i], atom_names[i]),
+            .naccess => classifier_naccess.getRadius(residues[i].slice(), atom_names[i].slice()),
+            .protor => classifier_protor.getRadius(residues[i].slice(), atom_names[i].slice()),
+            .oons => classifier_oons.getRadius(residues[i].slice(), atom_names[i].slice()),
         };
 
         if (maybe_radius) |r| {
@@ -666,7 +647,7 @@ fn applyBuiltinClassifier(
                 // Keep original radius
                 new_radii[i] = input.r[i];
             }
-        } else if (classifier.guessRadiusFromAtomName(atom_names[i])) |r| {
+        } else if (classifier.guessRadiusFromAtomName(atom_names[i].slice())) |r| {
             // Fall back to atom name-based radius
             new_radii[i] = r;
             fallback_count += 1;
@@ -690,11 +671,11 @@ fn applyBuiltinClassifier(
 }
 
 /// Print per-chain SASA results
-fn printPerChainResults(chain_ids: []const []const u8, atom_areas: []const f64) void {
+fn printPerChainResults(chain_ids: []const types.FixedString4, atom_areas: []const f64) void {
     // Use a simple approach: iterate through to find unique chains and sum areas
     // For efficiency, we'll use a fixed-size buffer for up to 64 unique chains
     const max_chains = 64;
-    var chain_names: [max_chains][]const u8 = undefined;
+    var chain_names: [max_chains]types.FixedString4 = undefined;
     var chain_areas: [max_chains]f64 = undefined;
     var chain_counts: [max_chains]usize = undefined;
     var num_chains: usize = 0;
@@ -704,7 +685,7 @@ fn printPerChainResults(chain_ids: []const []const u8, atom_areas: []const f64) 
         // Find if this chain already exists
         var found_idx: ?usize = null;
         for (0..num_chains) |j| {
-            if (std.mem.eql(u8, chain_names[j], chain_id)) {
+            if (std.mem.eql(u8, chain_names[j].slice(), chain_id.slice())) {
                 found_idx = j;
                 break;
             }
@@ -731,7 +712,7 @@ fn printPerChainResults(chain_ids: []const []const u8, atom_areas: []const f64) 
         std.debug.print("\nPer-chain SASA:\n", .{});
         for (0..num_chains) |i| {
             std.debug.print("  {s}: {d:.2} Å² ({d} atoms)\n", .{
-                chain_names[i],
+                chain_names[i].slice(),
                 chain_areas[i],
                 chain_counts[i],
             });
