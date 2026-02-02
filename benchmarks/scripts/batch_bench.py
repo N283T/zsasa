@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.12"
 # dependencies = ["rich>=13.0", "typer>=0.9.0"]
 # ///
 """Batch SASA benchmark using hyperfine (RustSASA paper methodology).
@@ -104,7 +104,7 @@ def run_benchmark(
     ]
 
     try:
-        subprocess.run(hyperfine_cmd, check=True)
+        subprocess.run(hyperfine_cmd, check=True, capture_output=False)
         console.print()
 
         # Parse results
@@ -115,6 +115,7 @@ def run_benchmark(
                     return data["results"][0]
     except subprocess.CalledProcessError as e:
         console.print(f"[red]Error running benchmark: {e}[/]")
+        console.print("[yellow]Check hyperfine output above for details[/]")
 
     return None
 
