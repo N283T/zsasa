@@ -182,7 +182,7 @@ pub fn printPolarSummary(summary: PolarSummary) void {
 /// Per-residue SASA data
 pub const ResidueSasa = struct {
     chain_id: types.FixedString4,
-    residue_name: types.FixedString4,
+    residue_name: types.FixedString5,
     residue_num: i32,
     insertion_code: types.FixedString4,
     sasa: f64,
@@ -393,12 +393,12 @@ test "aggregateByResidue basic" {
     chain_ids[3] = types.FixedString4.fromSlice("A");
 
     // Residue names
-    var residue_names = try allocator.alloc(types.FixedString4, 4);
+    var residue_names = try allocator.alloc(types.FixedString5, 4);
     defer allocator.free(residue_names);
-    residue_names[0] = types.FixedString4.fromSlice("ALA");
-    residue_names[1] = types.FixedString4.fromSlice("ALA");
-    residue_names[2] = types.FixedString4.fromSlice("GLY");
-    residue_names[3] = types.FixedString4.fromSlice("GLY");
+    residue_names[0] = types.FixedString5.fromSlice("ALA");
+    residue_names[1] = types.FixedString5.fromSlice("ALA");
+    residue_names[2] = types.FixedString5.fromSlice("GLY");
+    residue_names[3] = types.FixedString5.fromSlice("GLY");
 
     // Residue numbers
     var residue_nums = try allocator.alloc(i32, 4);
@@ -474,7 +474,7 @@ test "ResidueSasa calculateRsa" {
     // Known residue
     var res_ala = ResidueSasa{
         .chain_id = types.FixedString4.fromSlice("A"),
-        .residue_name = types.FixedString4.fromSlice("ALA"),
+        .residue_name = types.FixedString5.fromSlice("ALA"),
         .residue_num = 1,
         .insertion_code = types.FixedString4.fromSlice(""),
         .sasa = 64.5, // 50% of MaxSASA
@@ -487,7 +487,7 @@ test "ResidueSasa calculateRsa" {
     // Unknown residue
     var res_unk = ResidueSasa{
         .chain_id = types.FixedString4.fromSlice("A"),
-        .residue_name = types.FixedString4.fromSlice("UNK"),
+        .residue_name = types.FixedString5.fromSlice("UNK"),
         .residue_num = 1,
         .insertion_code = types.FixedString4.fromSlice(""),
         .sasa = 100.0,
@@ -499,7 +499,7 @@ test "ResidueSasa calculateRsa" {
     // RSA > 1.0 is possible for exposed terminal residues
     var res_gly = ResidueSasa{
         .chain_id = types.FixedString4.fromSlice("A"),
-        .residue_name = types.FixedString4.fromSlice("GLY"),
+        .residue_name = types.FixedString5.fromSlice("GLY"),
         .residue_num = 1,
         .insertion_code = types.FixedString4.fromSlice(""),
         .sasa = 150.0, // Exceeds MaxSASA of 104.0
@@ -534,10 +534,10 @@ test "ResidueClass classification" {
 
 test "calculatePolarSummary" {
     const residues = [_]ResidueSasa{
-        .{ .chain_id = types.FixedString4.fromSlice("A"), .residue_name = types.FixedString4.fromSlice("ALA"), .residue_num = 1, .insertion_code = types.FixedString4.fromSlice(""), .sasa = 50.0, .atom_count = 5 },
-        .{ .chain_id = types.FixedString4.fromSlice("A"), .residue_name = types.FixedString4.fromSlice("SER"), .residue_num = 2, .insertion_code = types.FixedString4.fromSlice(""), .sasa = 30.0, .atom_count = 6 },
-        .{ .chain_id = types.FixedString4.fromSlice("A"), .residue_name = types.FixedString4.fromSlice("LEU"), .residue_num = 3, .insertion_code = types.FixedString4.fromSlice(""), .sasa = 40.0, .atom_count = 8 },
-        .{ .chain_id = types.FixedString4.fromSlice("A"), .residue_name = types.FixedString4.fromSlice("ASP"), .residue_num = 4, .insertion_code = types.FixedString4.fromSlice(""), .sasa = 20.0, .atom_count = 8 },
+        .{ .chain_id = types.FixedString4.fromSlice("A"), .residue_name = types.FixedString5.fromSlice("ALA"), .residue_num = 1, .insertion_code = types.FixedString4.fromSlice(""), .sasa = 50.0, .atom_count = 5 },
+        .{ .chain_id = types.FixedString4.fromSlice("A"), .residue_name = types.FixedString5.fromSlice("SER"), .residue_num = 2, .insertion_code = types.FixedString4.fromSlice(""), .sasa = 30.0, .atom_count = 6 },
+        .{ .chain_id = types.FixedString4.fromSlice("A"), .residue_name = types.FixedString5.fromSlice("LEU"), .residue_num = 3, .insertion_code = types.FixedString4.fromSlice(""), .sasa = 40.0, .atom_count = 8 },
+        .{ .chain_id = types.FixedString4.fromSlice("A"), .residue_name = types.FixedString5.fromSlice("ASP"), .residue_num = 4, .insertion_code = types.FixedString4.fromSlice(""), .sasa = 20.0, .atom_count = 8 },
     };
 
     const summary = calculatePolarSummary(&residues);

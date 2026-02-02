@@ -64,14 +64,23 @@ pub const FixedString4 = struct {
 3. **Copy semantics**: No pointer management needed
 4. **5 bytes vs 16 bytes**: Smaller than a slice (pointer + length)
 
+### Variants
+
+| Type | Size | Use Case |
+|------|------|----------|
+| `FixedString4` | 5 bytes | atom_name, chain_id (max 4 chars) |
+| `FixedString5` | 6 bytes | residue name (mmCIF comp_id up to 5 chars) |
+
+Since 2023, wwPDB issues 5-character CCD IDs for new chemical components. `FixedString5` supports these extended identifiers while maintaining the zero-allocation benefit.
+
 ### Usage
 
 ```zig
-// AtomInput fields use FixedString4
+// AtomInput fields use appropriate FixedString types
 pub const AtomInput = struct {
-    atom_name: []FixedString4,  // was: [][]const u8
-    res_name: []FixedString4,   // was: [][]const u8
-    chain_id: []FixedString4,   // was: [][]const u8
+    atom_name: []FixedString4,  // max 4 chars
+    residue: []FixedString5,    // max 5 chars (mmCIF comp_id)
+    chain_id: []FixedString4,   // max 4 chars
     // ... coordinates, radii, etc.
 };
 

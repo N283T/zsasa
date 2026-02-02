@@ -497,10 +497,10 @@ test "sasaResultToRichCsv with full info" {
     chain_ids[0] = types.FixedString4.fromSlice("A");
     chain_ids[1] = types.FixedString4.fromSlice("A");
 
-    const residues = try allocator.alloc(types.FixedString4, 2);
+    const residues = try allocator.alloc(types.FixedString5, 2);
     defer allocator.free(residues);
-    residues[0] = types.FixedString4.fromSlice("ALA");
-    residues[1] = types.FixedString4.fromSlice("ALA");
+    residues[0] = types.FixedString5.fromSlice("ALA");
+    residues[1] = types.FixedString5.fromSlice("ALA");
 
     const atom_names = try allocator.alloc(types.FixedString4, 2);
     defer allocator.free(atom_names);

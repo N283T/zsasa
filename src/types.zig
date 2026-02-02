@@ -106,7 +106,7 @@ pub const Vec3 = Vec3Gen(f64);
 /// Single precision Vec3
 pub const Vec3f32 = Vec3Gen(f32);
 
-/// Fixed-size string for atom/residue names (max 4 characters)
+/// Fixed-size string for atom/chain names (max 4 characters)
 /// Eliminates per-atom string allocations
 pub const FixedString4 = struct {
     data: [4]u8 = .{ 0, 0, 0, 0 },
@@ -137,6 +137,37 @@ pub const FixedString4 = struct {
     }
 };
 
+/// Fixed-size string for residue names (max 5 characters)
+/// Supports mmCIF 5-character comp_id (extended CCD IDs)
+pub const FixedString5 = struct {
+    data: [5]u8 = .{ 0, 0, 0, 0, 0 },
+    len: u8 = 0,
+
+    /// Create from a slice (truncates if > 5 chars)
+    pub fn fromSlice(s: []const u8) FixedString5 {
+        var result = FixedString5{};
+        const copy_len: u8 = @intCast(@min(s.len, 5));
+        @memcpy(result.data[0..copy_len], s[0..copy_len]);
+        result.len = copy_len;
+        return result;
+    }
+
+    /// Get as slice
+    pub fn slice(self: *const FixedString5) []const u8 {
+        return self.data[0..self.len];
+    }
+
+    /// Check equality with another FixedString5
+    pub fn eql(self: *const FixedString5, other: *const FixedString5) bool {
+        return self.len == other.len and std.mem.eql(u8, self.slice(), other.slice());
+    }
+
+    /// Check equality with a slice
+    pub fn eqlSlice(self: *const FixedString5, s: []const u8) bool {
+        return self.len == s.len and std.mem.eql(u8, self.slice(), s);
+    }
+};
+
 /// Input data structure for SASA calculation
 pub const AtomInput = struct {
     x: []const f64,
@@ -144,7 +175,8 @@ pub const AtomInput = struct {
     z: []const f64,
     r: []f64,
     /// Residue names (e.g., "ALA", "GLY") - optional, for classifier
-    residue: ?[]const FixedString4 = null,
+    /// Uses FixedString5 for mmCIF 5-character comp_id support
+    residue: ?[]const FixedString5 = null,
     /// Atom names (e.g., "CA", "CB") - optional, for classifier
     atom_name: ?[]const FixedString4 = null,
     /// Element atomic numbers (e.g., 6=C, 7=N, 8=O, 20=Ca) - optional
@@ -450,4 +482,36 @@ test "FixedString4 equality" {
     try std.testing.expect(!s1.eql(&s3));
     try std.testing.expect(s1.eqlSlice("CA"));
     try std.testing.expect(!s1.eqlSlice("CB"));
+}
+
+test "FixedString5 fromSlice and slice" {
+    const s1 = FixedString5.fromSlice("ALA");
+    try std.testing.expectEqualStrings("ALA", s1.slice());
+    try std.testing.expectEqual(@as(u8, 3), s1.len);
+
+    // 5-character comp_id (mmCIF extended CCD)
+    const s2 = FixedString5.fromSlice("A1234");
+    try std.testing.expectEqualStrings("A1234", s2.slice());
+    try std.testing.expectEqual(@as(u8, 5), s2.len);
+
+    // Truncation for > 5 chars
+    const s3 = FixedString5.fromSlice("ABCDEF");
+    try std.testing.expectEqualStrings("ABCDE", s3.slice());
+    try std.testing.expectEqual(@as(u8, 5), s3.len);
+
+    // Empty string
+    const s4 = FixedString5.fromSlice("");
+    try std.testing.expectEqualStrings("", s4.slice());
+    try std.testing.expectEqual(@as(u8, 0), s4.len);
+}
+
+test "FixedString5 equality" {
+    const s1 = FixedString5.fromSlice("ALA");
+    const s2 = FixedString5.fromSlice("ALA");
+    const s3 = FixedString5.fromSlice("GLY");
+
+    try std.testing.expect(s1.eql(&s2));
+    try std.testing.expect(!s1.eql(&s3));
+    try std.testing.expect(s1.eqlSlice("ALA"));
+    try std.testing.expect(!s1.eqlSlice("GLY"));
 }

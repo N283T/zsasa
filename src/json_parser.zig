@@ -231,12 +231,12 @@ pub fn parseAtomInput(allocator: Allocator, json_str: []const u8) !AtomInput {
     @memcpy(z, data.z);
     @memcpy(r, data.r);
 
-    // Copy optional residue names (using FixedString4)
-    var residue: ?[]types.FixedString4 = null;
+    // Copy optional residue names (using FixedString5 for mmCIF 5-char comp_id)
+    var residue: ?[]types.FixedString5 = null;
     if (data.residue) |res| {
-        const res_copy = try allocator.alloc(types.FixedString4, n);
+        const res_copy = try allocator.alloc(types.FixedString5, n);
         for (res, 0..) |s, i| {
-            res_copy[i] = types.FixedString4.fromSlice(s);
+            res_copy[i] = types.FixedString5.fromSlice(s);
         }
         residue = res_copy;
     }

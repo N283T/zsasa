@@ -92,7 +92,7 @@ pub const AtomProperties = struct {
 /// Key for atom lookup: (residue_name, atom_name)
 /// Uses fixed-size arrays to avoid allocation for keys
 pub const AtomKey = struct {
-    residue: [4]u8, // PDB residue names are max 3-4 chars
+    residue: [5]u8, // mmCIF comp_id can be up to 5 chars
     residue_len: u8,
     atom: [4]u8, // PDB atom names are max 4 chars
     atom_len: u8,
@@ -104,10 +104,10 @@ pub const AtomKey = struct {
     }
 
     pub fn initInPlace(self: *AtomKey, residue: []const u8, atom: []const u8) void {
-        const res_len: usize = @min(residue.len, 4);
+        const res_len: usize = @min(residue.len, 5);
         const atm_len: usize = @min(atom.len, 4);
 
-        self.residue = .{ 0, 0, 0, 0 };
+        self.residue = .{ 0, 0, 0, 0, 0 };
         self.atom = .{ 0, 0, 0, 0 };
         self.residue_len = @intCast(res_len);
         self.atom_len = @intCast(atm_len);
@@ -545,9 +545,10 @@ test "Classifier residue-specific override" {
 }
 
 test "AtomKey truncation behavior" {
-    // Names longer than 4 chars are truncated
+    // Residue names longer than 5 chars are truncated (mmCIF comp_id support)
+    // Atom names longer than 4 chars are truncated
     const key = AtomKey.init("TOOLONG", "VERYLONGNAME");
-    try std.testing.expectEqualStrings("TOOL", key.residueName());
+    try std.testing.expectEqualStrings("TOOLO", key.residueName());
     try std.testing.expectEqualStrings("VERY", key.atomName());
 }
 
