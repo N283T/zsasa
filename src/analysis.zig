@@ -385,20 +385,20 @@ test "aggregateByResidue basic" {
     defer allocator.free(r);
 
     // Chain IDs
-    var chain_ids = try allocator.alloc([]const u8, 4);
+    var chain_ids = try allocator.alloc(types.FixedString4, 4);
     defer allocator.free(chain_ids);
-    chain_ids[0] = "A";
-    chain_ids[1] = "A";
-    chain_ids[2] = "A";
-    chain_ids[3] = "A";
+    chain_ids[0] = types.FixedString4.fromSlice("A");
+    chain_ids[1] = types.FixedString4.fromSlice("A");
+    chain_ids[2] = types.FixedString4.fromSlice("A");
+    chain_ids[3] = types.FixedString4.fromSlice("A");
 
     // Residue names
-    var residue_names = try allocator.alloc([]const u8, 4);
+    var residue_names = try allocator.alloc(types.FixedString4, 4);
     defer allocator.free(residue_names);
-    residue_names[0] = "ALA";
-    residue_names[1] = "ALA";
-    residue_names[2] = "GLY";
-    residue_names[3] = "GLY";
+    residue_names[0] = types.FixedString4.fromSlice("ALA");
+    residue_names[1] = types.FixedString4.fromSlice("ALA");
+    residue_names[2] = types.FixedString4.fromSlice("GLY");
+    residue_names[3] = types.FixedString4.fromSlice("GLY");
 
     // Residue numbers
     var residue_nums = try allocator.alloc(i32, 4);
@@ -409,12 +409,12 @@ test "aggregateByResidue basic" {
     residue_nums[3] = 2;
 
     // Insertion codes (all empty)
-    var insertion_codes = try allocator.alloc([]const u8, 4);
+    var insertion_codes = try allocator.alloc(types.FixedString4, 4);
     defer allocator.free(insertion_codes);
-    insertion_codes[0] = "";
-    insertion_codes[1] = "";
-    insertion_codes[2] = "";
-    insertion_codes[3] = "";
+    insertion_codes[0] = types.FixedString4.fromSlice("");
+    insertion_codes[1] = types.FixedString4.fromSlice("");
+    insertion_codes[2] = types.FixedString4.fromSlice("");
+    insertion_codes[3] = types.FixedString4.fromSlice("");
 
     const input = types.AtomInput{
         .x = x,
@@ -437,13 +437,13 @@ test "aggregateByResidue basic" {
     try std.testing.expectEqual(@as(usize, 2), result.residues.len);
 
     // First residue: ALA-1 with SASA = 10 + 15 = 25
-    try std.testing.expectEqualStrings("ALA", result.residues[0].residue_name);
+    try std.testing.expectEqualStrings("ALA", result.residues[0].residue_name.slice());
     try std.testing.expectEqual(@as(i32, 1), result.residues[0].residue_num);
     try std.testing.expectEqual(@as(f64, 25.0), result.residues[0].sasa);
     try std.testing.expectEqual(@as(usize, 2), result.residues[0].atom_count);
 
     // Second residue: GLY-2 with SASA = 20 + 25 = 45
-    try std.testing.expectEqualStrings("GLY", result.residues[1].residue_name);
+    try std.testing.expectEqualStrings("GLY", result.residues[1].residue_name.slice());
     try std.testing.expectEqual(@as(i32, 2), result.residues[1].residue_num);
     try std.testing.expectEqual(@as(f64, 45.0), result.residues[1].sasa);
     try std.testing.expectEqual(@as(usize, 2), result.residues[1].atom_count);
@@ -473,10 +473,10 @@ test "MaxSASA lookup" {
 test "ResidueSasa calculateRsa" {
     // Known residue
     var res_ala = ResidueSasa{
-        .chain_id = "A",
-        .residue_name = "ALA",
+        .chain_id = types.FixedString4.fromSlice("A"),
+        .residue_name = types.FixedString4.fromSlice("ALA"),
         .residue_num = 1,
-        .insertion_code = "",
+        .insertion_code = types.FixedString4.fromSlice(""),
         .sasa = 64.5, // 50% of MaxSASA
         .atom_count = 5,
     };
@@ -486,10 +486,10 @@ test "ResidueSasa calculateRsa" {
 
     // Unknown residue
     var res_unk = ResidueSasa{
-        .chain_id = "A",
-        .residue_name = "UNK",
+        .chain_id = types.FixedString4.fromSlice("A"),
+        .residue_name = types.FixedString4.fromSlice("UNK"),
         .residue_num = 1,
-        .insertion_code = "",
+        .insertion_code = types.FixedString4.fromSlice(""),
         .sasa = 100.0,
         .atom_count = 10,
     };
@@ -498,10 +498,10 @@ test "ResidueSasa calculateRsa" {
 
     // RSA > 1.0 is possible for exposed terminal residues
     var res_gly = ResidueSasa{
-        .chain_id = "A",
-        .residue_name = "GLY",
+        .chain_id = types.FixedString4.fromSlice("A"),
+        .residue_name = types.FixedString4.fromSlice("GLY"),
         .residue_num = 1,
-        .insertion_code = "",
+        .insertion_code = types.FixedString4.fromSlice(""),
         .sasa = 150.0, // Exceeds MaxSASA of 104.0
         .atom_count = 4,
     };
@@ -534,10 +534,10 @@ test "ResidueClass classification" {
 
 test "calculatePolarSummary" {
     const residues = [_]ResidueSasa{
-        .{ .chain_id = "A", .residue_name = "ALA", .residue_num = 1, .insertion_code = "", .sasa = 50.0, .atom_count = 5 },
-        .{ .chain_id = "A", .residue_name = "SER", .residue_num = 2, .insertion_code = "", .sasa = 30.0, .atom_count = 6 },
-        .{ .chain_id = "A", .residue_name = "LEU", .residue_num = 3, .insertion_code = "", .sasa = 40.0, .atom_count = 8 },
-        .{ .chain_id = "A", .residue_name = "ASP", .residue_num = 4, .insertion_code = "", .sasa = 20.0, .atom_count = 8 },
+        .{ .chain_id = types.FixedString4.fromSlice("A"), .residue_name = types.FixedString4.fromSlice("ALA"), .residue_num = 1, .insertion_code = types.FixedString4.fromSlice(""), .sasa = 50.0, .atom_count = 5 },
+        .{ .chain_id = types.FixedString4.fromSlice("A"), .residue_name = types.FixedString4.fromSlice("SER"), .residue_num = 2, .insertion_code = types.FixedString4.fromSlice(""), .sasa = 30.0, .atom_count = 6 },
+        .{ .chain_id = types.FixedString4.fromSlice("A"), .residue_name = types.FixedString4.fromSlice("LEU"), .residue_num = 3, .insertion_code = types.FixedString4.fromSlice(""), .sasa = 40.0, .atom_count = 8 },
+        .{ .chain_id = types.FixedString4.fromSlice("A"), .residue_name = types.FixedString4.fromSlice("ASP"), .residue_num = 4, .insertion_code = types.FixedString4.fromSlice(""), .sasa = 20.0, .atom_count = 8 },
     };
 
     const summary = calculatePolarSummary(&residues);

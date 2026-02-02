@@ -314,22 +314,33 @@ fn parseCoordinate(field: []const u8) ?f64 {
         start += 1;
     }
 
-    // Parse integer part
+    // Parse integer part with overflow detection
     var int_part: i64 = 0;
+    var has_int_digits = false;
     while (start < len and field[start] >= '0' and field[start] <= '9') : (start += 1) {
-        int_part = int_part * 10 + @as(i64, field[start] - '0');
+        has_int_digits = true;
+        const mul_result = @mulWithOverflow(int_part, 10);
+        if (mul_result[1] != 0) return null; // Overflow
+        const add_result = @addWithOverflow(mul_result[0], @as(i64, field[start] - '0'));
+        if (add_result[1] != 0) return null; // Overflow
+        int_part = add_result[0];
     }
 
     // Parse fractional part
     var frac: f64 = 0;
+    var has_frac_digits = false;
     if (start < len and field[start] == '.') {
         start += 1;
         var mult: f64 = 0.1;
         while (start < len and field[start] >= '0' and field[start] <= '9') : (start += 1) {
+            has_frac_digits = true;
             frac += @as(f64, @floatFromInt(field[start] - '0')) * mult;
             mult *= 0.1;
         }
     }
+
+    // Reject sign-only input (e.g., "-" or "+")
+    if (!has_int_digits and !has_frac_digits) return null;
 
     const result = @as(f64, @floatFromInt(int_part)) + frac;
     return if (negative) -result else result;
@@ -375,10 +386,25 @@ fn inferElementFromAtomName(atom_name: []const u8) elem.Element {
 test "parseCoordinate" {
     const testing = std.testing;
 
+    // Basic cases
     try testing.expectEqual(@as(?f64, 11.104), parseCoordinate("  11.104"));
     try testing.expectEqual(@as(?f64, -6.504), parseCoordinate("  -6.504"));
     try testing.expectEqual(@as(?f64, 0.0), parseCoordinate("   0.000"));
     try testing.expectEqual(@as(?f64, null), parseCoordinate("        "));
+
+    // Positive sign
+    try testing.expectEqual(@as(?f64, 12.34), parseCoordinate("  +12.34"));
+
+    // Sign-only input (should be null)
+    try testing.expectEqual(@as(?f64, null), parseCoordinate("   -   "));
+    try testing.expectEqual(@as(?f64, null), parseCoordinate("   +   "));
+
+    // Decimal point only with digits
+    try testing.expectEqual(@as(?f64, 0.5), parseCoordinate("     .5"));
+
+    // Large numbers (PDB typical range)
+    try testing.expect(parseCoordinate(" 9999.99") != null);
+    try testing.expect(parseCoordinate("-9999.99") != null);
 }
 
 test "inferElementFromAtomName" {
