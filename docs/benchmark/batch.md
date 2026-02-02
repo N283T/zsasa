@@ -1,104 +1,131 @@
 # Batch Processing Benchmarks
 
-Throughput benchmarks for processing multiple files in parallel. This measures total wall-clock time for processing a large set of structures.
+Throughput benchmarks for processing a complete dataset using hyperfine timing.
 
-> **Note**: This is supplementary to the main [single-file benchmarks](results.md) which measure per-structure performance.
+> **Note**: This measures total wall-clock time for processing an entire directory of PDB files.
 
 ## Overview
 
-Unlike single-file benchmarks that measure SASA calculation time per structure, batch benchmarks measure **total throughput** when processing many files concurrently.
+Batch benchmarks measure **total throughput** when processing many files with native multi-threading.
 
-| Mode | Measures | Use Case |
-|------|----------|----------|
-| Single-file | Per-structure SASA time | Algorithm comparison |
-| **Batch** | Total wall-clock time | Production throughput |
-
-## Batch Implementation
-
-Each tool uses its native batch processing capability:
-
-| Tool | Implementation |
-|------|----------------|
-| Zig | Native directory input (auto-detected) |
-| Rust | `--json-dir` flag with rayon parallelism |
-| FreeSASA | Shell script wrapper with background jobs |
+| Benchmark | Measures | Tool |
+|-----------|----------|------|
+| [Single-file](results.md) | Per-structure SASA time | run.py |
+| **Batch** | Total wall-clock time | batch_bench.py |
+| [E. coli](ecoli-proteome.md) | Proteome throughput | batch_bench.py |
 
 ## Running Batch Benchmarks
 
 ### Basic Usage
 
 ```bash
-# Run batch benchmark
-./benchmarks/scripts/run_batch.py --tool zig --algorithm sr --threads 1,4,8
+# E. coli proteome benchmark
+./benchmarks/scripts/batch_bench.py \
+  --input benchmarks/UP000000625_83333_ECOLI_v6/pdb \
+  --name ecoli \
+  --runs 5 --threads 8
 
-# With sample file
-./benchmarks/scripts/run_batch.py --tool zig --algorithm sr \
-    --input-dir benchmarks/inputs \
-    --sample-file benchmarks/samples/stratified_1k.json \
-    --threads 1,4,8 --runs 3
+# Custom dataset
+./benchmarks/scripts/batch_bench.py \
+  -i /path/to/pdb_dir \
+  -n my-benchmark \
+  --runs 3
+
+# Single tool only
+./benchmarks/scripts/batch_bench.py \
+  -i benchmarks/UP000000625_83333_ECOLI_v6/pdb \
+  -n ecoli \
+  --tool zig --runs 3
+
+# Dry run (show commands)
+./benchmarks/scripts/batch_bench.py \
+  -i benchmarks/UP000000625_83333_ECOLI_v6/pdb \
+  -n test \
+  --dry-run
 ```
 
 ### Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--tool` | Tool: zig, rust, freesasa | (required) |
-| `--algorithm` | Algorithm: sr, lr | sr |
-| `--threads` | Thread counts | 1,4,8 |
-| `--runs` | Runs per configuration | 3 |
-| `--precision` | f32 or f64 (Zig only) | f64 |
-| `--parallelism` | file, atom, pipeline (Zig only) | file |
+| `--input`, `-i` | Input directory (PDB files) | (required) |
+| `--name`, `-n` | Benchmark name | (required) |
+| `--threads`, `-T` | Thread count for multi-threaded runs | 8 |
+| `--runs`, `-r` | Number of benchmark runs | 3 |
+| `--warmup`, `-w` | Number of warmup runs | 3 |
+| `--tool`, `-t` | Tool: zig, freesasa, rustsasa, all | all |
+| `--output`, `-o` | Output directory | results/batch/<name> |
+| `--dry-run` | Show commands without running | false |
 
-### Parallelism Modes (Zig only)
+## Benchmark Configurations
 
-| Mode | Description |
-|------|-------------|
-| `file` | Process multiple files in parallel |
-| `atom` | Parallelize within single file (default for single-file) |
-| `pipeline` | Combination of file and atom parallelism |
+For each tool, the following configurations are tested:
 
-## Analysis
+| Tool | Configurations |
+|------|----------------|
+| zsasa (Zig) | f64 Nt, f64 1t, f32 Nt, f32 1t |
+| FreeSASA | 1t only (sequential) |
+| RustSASA | Nt, 1t |
 
-```bash
-# Summary table
-./benchmarks/scripts/analyze_batch.py summary
-
-# Generate comparison plots
-./benchmarks/scripts/analyze_batch.py plot
-
-# Both
-./benchmarks/scripts/analyze_batch.py all
-```
+Where N = `--threads` value (default 8).
 
 ## Output
 
 Results are saved to:
 
 ```
-benchmarks/results/batch_{tool}_{algorithm}/
-├── config.json   # System info and parameters
-└── results.csv   # Benchmark results (per-run timing)
+benchmarks/results/batch/<name>/
+├── bench_zsasa_f64_8t.json
+├── bench_zsasa_f64_1t.json
+├── bench_zsasa_f32_8t.json
+├── bench_zsasa_f32_1t.json
+├── bench_freesasa_1t.json
+├── bench_rustsasa_8t.json
+└── bench_rustsasa_1t.json
 ```
+
+Each JSON file contains hyperfine output:
+
+```json
+{
+  "results": [{
+    "command": "...",
+    "mean": 4.614,
+    "stddev": 0.066,
+    "min": 4.511,
+    "max": 4.688,
+    "times": [4.51, 4.65, ...],
+    "memory_usage_byte": [...],
+    "exit_codes": [...]
+  }]
+}
+```
+
+## Methodology
+
+Uses [hyperfine](https://github.com/sharkdp/hyperfine) for timing:
+
+1. Warmup runs (default 3) to eliminate cold-start effects
+2. Multiple timed runs (default 3-5) for statistical reliability
+3. Reports mean, stddev, min, max
+
+This methodology matches the [RustSASA paper](https://github.com/OWissett/rustsasa) for direct comparison.
 
 ## Results
 
-Processing all **238,124 PDB structures** with 10 threads:
+See [E. coli Proteome Benchmark](ecoli-proteome.md) for detailed results.
 
-| Tool | Precision | Total Time | Throughput | vs Rust |
-|------|-----------|------------|------------|---------|
-| **Zig** | f32 | **724.6s** | **328.6 files/s** | **+7%** |
-| Zig | f64 | 747.9s | 318.4 files/s | +4% |
-| Rust | f32 | 774.5s | 307.5 files/s | baseline |
+**Key findings (E. coli proteome, 4,370 structures):**
 
-> FreeSASA C excluded as single-file benchmarks show it is slower than Rust.
-
-## Notes
-
-1. **Different from single-file benchmarks**: Batch benchmarks include file I/O overhead
-2. **Parallelism strategy matters**: File-level parallelism vs atom-level parallelism
-3. **Memory usage**: Batch mode may use more memory for concurrent file processing
+| Tool | Threads | Time | vs FreeSASA |
+|------|--------:|-----:|------------:|
+| zsasa f32 | 8 | 4.4s | **10.4x** |
+| zsasa f64 | 8 | 4.6s | **9.9x** |
+| RustSASA | 8 | 5.5s | 8.3x |
+| FreeSASA | 1 | 45.8s | baseline |
 
 ## Related Documents
 
 - [methodology.md](methodology.md) - Benchmark methodology
 - [results.md](results.md) - Single-file benchmark results
+- [ecoli-proteome.md](ecoli-proteome.md) - E. coli proteome benchmark details
