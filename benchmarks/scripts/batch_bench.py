@@ -387,7 +387,7 @@ def main(
     else:
         results_dir = output_dir
 
-    temp_out = root.joinpath("benchmarks", "temp_out")
+    temp_out = results_dir.joinpath("temp_out")
     binaries = get_binary_paths()
 
     # Create directories
