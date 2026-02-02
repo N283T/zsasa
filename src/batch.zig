@@ -47,12 +47,30 @@ pub const BatchConfig = struct {
     precision: Precision = .f64, // f32 or f64
 };
 
-/// Strip .gz extension from filename if present (for output file naming)
-fn stripGzExtension(filename: []const u8) []const u8 {
-    if (std.mem.endsWith(u8, filename, ".gz")) {
-        return filename[0 .. filename.len - 3];
+/// Get output extension based on format
+fn getOutputExtension(format: OutputFormat) []const u8 {
+    return switch (format) {
+        .json, .compact => ".json",
+        .csv => ".csv",
+    };
+}
+
+/// Replace file extension for output (e.g., "file.pdb" -> "file.json")
+fn replaceExtension(allocator: Allocator, filename: []const u8, new_ext: []const u8) ![]const u8 {
+    // Strip .gz if present
+    var base = filename;
+    if (std.mem.endsWith(u8, base, ".gz")) {
+        base = base[0 .. base.len - 3];
     }
-    return filename;
+
+    // Find and strip existing extension
+    if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot_idx| {
+        const stem = base[0..dot_idx];
+        return std.fmt.allocPrint(allocator, "{s}{s}", .{ stem, new_ext });
+    }
+
+    // No extension found, just append
+    return std.fmt.allocPrint(allocator, "{s}{s}", .{ base, new_ext });
 }
 
 /// Generic SASA calculation dispatcher
@@ -101,7 +119,8 @@ fn writeSasaOutput(
     filename: []const u8,
     format: OutputFormat,
 ) !void {
-    const output_filename = stripGzExtension(filename);
+    const output_filename = try replaceExtension(allocator, filename, getOutputExtension(format));
+    defer allocator.free(output_filename);
     const output_path = try std.fs.path.join(allocator, &.{ output_dir, output_filename });
 
     if (T == f64) {
