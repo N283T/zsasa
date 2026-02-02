@@ -99,6 +99,8 @@ benchmarks/             # Benchmark infrastructure
 
 ## Benchmark Scripts
 
+**DO NOT run benchmarks.** The user runs benchmarks manually. Only modify benchmark scripts when requested.
+
 Located in `benchmarks/scripts/`. All scripts use PEP 723 metadata (typer + rich).
 
 ### Running Benchmarks

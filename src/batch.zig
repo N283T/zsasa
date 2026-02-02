@@ -1,7 +1,10 @@
 const std = @import("std");
 const types = @import("types.zig");
+const format_detect = @import("format_detect.zig");
 const json_parser = @import("json_parser.zig");
 const json_writer = @import("json_writer.zig");
+const mmcif_parser = @import("mmcif_parser.zig");
+const pdb_parser = @import("pdb_parser.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
 const lee_richards = @import("lee_richards.zig");
 const pipeline = @import("pipeline.zig");
@@ -205,7 +208,23 @@ pub const BatchResult = struct {
     }
 };
 
-/// Scan directory for JSON files (.json, .json.gz, .json.zst)
+/// Read input file with auto-format detection
+fn readInputFile(allocator: Allocator, path: []const u8) !AtomInput {
+    const format = format_detect.detectInputFormat(path);
+    return switch (format) {
+        .json => json_parser.readAtomInputFromFile(allocator, path),
+        .mmcif => blk: {
+            var parser = mmcif_parser.MmcifParser.init(allocator);
+            break :blk parser.parseFile(path);
+        },
+        .pdb => blk: {
+            var parser = pdb_parser.PdbParser.init(allocator);
+            break :blk parser.parseFile(path);
+        },
+    };
+}
+
+/// Scan directory for structure files (.json, .pdb, .cif, .mmcif, .ent and compressed variants)
 pub fn scanDirectory(allocator: Allocator, dir_path: []const u8) ![][]const u8 {
     var files = std.ArrayListUnmanaged([]const u8){};
     errdefer {
@@ -226,11 +245,7 @@ pub fn scanDirectory(allocator: Allocator, dir_path: []const u8) ![][]const u8 {
         const name = entry.name;
         // Skip filenames with path separators (defense in depth)
         if (std.mem.indexOfAny(u8, name, "/\\") != null) continue;
-        if (std.mem.endsWith(u8, name, ".json") or
-            std.mem.endsWith(u8, name, ".json.gz") or
-            std.mem.endsWith(u8, name, ".json.zst") or
-            std.mem.endsWith(u8, name, ".json.zstd"))
-        {
+        if (format_detect.isSupportedFile(name)) {
             const filename = try allocator.dupe(u8, name);
             try files.append(allocator, filename);
         }
@@ -271,8 +286,8 @@ fn processOneFile(
         return result;
     };
 
-    // Read and parse input
-    var input = json_parser.readAtomInputFromFile(arena, input_path) catch {
+    // Read and parse input (auto-detect format from extension)
+    var input = readInputFile(arena, input_path) catch {
         result.status = .err;
         return result;
     };

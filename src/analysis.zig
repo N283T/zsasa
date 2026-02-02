@@ -138,7 +138,7 @@ pub fn calculatePolarSummary(residues: []const ResidueSasa) PolarSummary {
     };
 
     for (residues) |res| {
-        switch (ResidueClass.fromResidueName(res.residue_name)) {
+        switch (ResidueClass.fromResidueName(res.residue_name.slice())) {
             .polar => {
                 summary.polar_sasa += res.sasa;
                 summary.polar_residue_count += 1;
@@ -181,10 +181,10 @@ pub fn printPolarSummary(summary: PolarSummary) void {
 
 /// Per-residue SASA data
 pub const ResidueSasa = struct {
-    chain_id: []const u8,
-    residue_name: []const u8,
+    chain_id: types.FixedString4,
+    residue_name: types.FixedString4,
     residue_num: i32,
-    insertion_code: []const u8,
+    insertion_code: types.FixedString4,
     sasa: f64,
     atom_count: usize,
     /// Relative Solvent Accessibility (0.0-1.0+), null if MaxSASA unknown
@@ -193,7 +193,7 @@ pub const ResidueSasa = struct {
     /// Calculate RSA from SASA and residue name.
     /// RSA values > 1.0 are possible for exposed terminal residues.
     pub fn calculateRsa(self: *ResidueSasa) void {
-        if (MaxSASA.get(self.residue_name)) |max_sasa| {
+        if (MaxSASA.get(self.residue_name.slice())) |max_sasa| {
             if (max_sasa > 0) {
                 self.rsa = self.sasa / max_sasa;
             } else {
@@ -253,8 +253,8 @@ pub fn aggregateByResidue(
         var found_idx: ?usize = null;
         for (residue_list.items, 0..) |*res, j| {
             if (res.residue_num == res_num and
-                std.mem.eql(u8, res.chain_id, chain) and
-                std.mem.eql(u8, res.insertion_code, ins_code))
+                std.mem.eql(u8, res.chain_id.slice(), chain.slice()) and
+                std.mem.eql(u8, res.insertion_code.slice(), ins_code.slice()))
             {
                 found_idx = j;
                 break;
@@ -306,17 +306,17 @@ pub fn printResidueResults(residues: []const ResidueSasa) void {
 
         if (res.insertion_code.len > 0) {
             std.debug.print("{s:>5} {s:>4} {s:>5}{s:<1} {d:>10.2} {d:>6}\n", .{
-                res.chain_id,
-                res.residue_name,
+                res.chain_id.slice(),
+                res.residue_name.slice(),
                 num_str,
-                res.insertion_code,
+                res.insertion_code.slice(),
                 res.sasa,
                 res.atom_count,
             });
         } else {
             std.debug.print("{s:>5} {s:>4} {s:>6} {d:>10.2} {d:>6}\n", .{
-                res.chain_id,
-                res.residue_name,
+                res.chain_id.slice(),
+                res.residue_name.slice(),
                 num_str,
                 res.sasa,
                 res.atom_count,
@@ -349,18 +349,18 @@ pub fn printResidueResultsWithRsa(residues: []const ResidueSasa) void {
 
         if (res.insertion_code.len > 0) {
             std.debug.print("{s:>5} {s:>4} {s:>5}{s:<1} {d:>10.2} {s:>6} {d:>6}\n", .{
-                res.chain_id,
-                res.residue_name,
+                res.chain_id.slice(),
+                res.residue_name.slice(),
                 num_str,
-                res.insertion_code,
+                res.insertion_code.slice(),
                 res.sasa,
                 rsa_str,
                 res.atom_count,
             });
         } else {
             std.debug.print("{s:>5} {s:>4} {s:>6} {d:>10.2} {s:>6} {d:>6}\n", .{
-                res.chain_id,
-                res.residue_name,
+                res.chain_id.slice(),
+                res.residue_name.slice(),
                 num_str,
                 res.sasa,
                 rsa_str,

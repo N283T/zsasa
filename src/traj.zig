@@ -473,9 +473,9 @@ fn applyBuiltinClassifier(
 
     for (0..n) |i| {
         const radius_opt: ?f64 = switch (ct) {
-            .naccess => classifier_naccess.getRadius(residues[i], atom_names[i]),
-            .protor => classifier_protor.getRadius(residues[i], atom_names[i]),
-            .oons => classifier_oons.getRadius(residues[i], atom_names[i]),
+            .naccess => classifier_naccess.getRadius(residues[i].slice(), atom_names[i].slice()),
+            .protor => classifier_protor.getRadius(residues[i].slice(), atom_names[i].slice()),
+            .oons => classifier_oons.getRadius(residues[i].slice(), atom_names[i].slice()),
         };
         if (radius_opt) |r| {
             input.r[i] = r;
@@ -485,7 +485,7 @@ fn applyBuiltinClassifier(
                 input.r[i] = r;
                 fallback_count += 1;
             }
-        } else if (classifier.guessRadiusFromAtomName(atom_names[i])) |r| {
+        } else if (classifier.guessRadiusFromAtomName(atom_names[i].slice())) |r| {
             input.r[i] = r;
             fallback_count += 1;
         }
