@@ -61,6 +61,10 @@ benchmarks/samples/
 # E. coli proteome dataset (AlphaFold structures)
 benchmarks/UP000000625_83333_ECOLI_v6/
 
+# SwissProt PDB dataset
+benchmarks/swissprot_pdb_v6/
+benchmarks/swissprot_pdb_v6.tar
+
 # E. coli benchmark temp files
 benchmarks/ecoli_bench/temp_out/
 benchmarks/ecoli_bench/results/

@@ -18,6 +18,12 @@ Usage:
     # Single tool test
     ./batch_bench.py -i /path/to/pdb -n test --tool zig --runs 1
 
+    # Multiple tools (skip freesasa)
+    ./batch_bench.py -i /path/to/pdb -n test --tool zig --tool rustsasa
+
+    # Skip single-thread baseline
+    ./batch_bench.py -i /path/to/pdb -n test --skip-1t
+
 Output:
     benchmarks/results/batch/<name>/
     ├── bench_zsasa_f64_8t.json
@@ -48,7 +54,9 @@ class Tool(str, Enum):
     zig = "zig"
     freesasa = "freesasa"
     rustsasa = "rustsasa"
-    all = "all"
+
+
+ALL_TOOLS = [Tool.zig, Tool.freesasa, Tool.rustsasa]
 
 
 def get_root_dir() -> Path:
@@ -129,6 +137,7 @@ def run_zig(
     runs: int,
     dry_run: bool,
     binaries: dict[str, Path],
+    skip_single_thread: bool = False,
 ) -> list[dict]:
     """Run zsasa benchmarks."""
     zsasa = binaries["zsasa"]
@@ -155,16 +164,17 @@ def run_zig(
     if result:
         results.append({"name": f"zsasa_f64_{threads}t", **result})
 
-    result = run_benchmark(
-        "zsasa_f64_1t",
-        f"{zsasa} {input_dir} {out_dir} --threads=1 --precision=f64",
-        results_dir,
-        warmup,
-        runs,
-        dry_run,
-    )
-    if result:
-        results.append({"name": "zsasa_f64_1t", **result})
+    if not skip_single_thread:
+        result = run_benchmark(
+            "zsasa_f64_1t",
+            f"{zsasa} {input_dir} {out_dir} --threads=1 --precision=f64",
+            results_dir,
+            warmup,
+            runs,
+            dry_run,
+        )
+        if result:
+            results.append({"name": "zsasa_f64_1t", **result})
 
     # f32 precision
     result = run_benchmark(
@@ -178,16 +188,17 @@ def run_zig(
     if result:
         results.append({"name": f"zsasa_f32_{threads}t", **result})
 
-    result = run_benchmark(
-        "zsasa_f32_1t",
-        f"{zsasa} {input_dir} {out_dir} --threads=1 --precision=f32",
-        results_dir,
-        warmup,
-        runs,
-        dry_run,
-    )
-    if result:
-        results.append({"name": "zsasa_f32_1t", **result})
+    if not skip_single_thread:
+        result = run_benchmark(
+            "zsasa_f32_1t",
+            f"{zsasa} {input_dir} {out_dir} --threads=1 --precision=f32",
+            results_dir,
+            warmup,
+            runs,
+            dry_run,
+        )
+        if result:
+            results.append({"name": "zsasa_f32_1t", **result})
 
     return results
 
@@ -237,6 +248,7 @@ def run_rustsasa(
     runs: int,
     dry_run: bool,
     binaries: dict[str, Path],
+    skip_single_thread: bool = False,
 ) -> list[dict]:
     """Run RustSASA benchmarks."""
     rustsasa = binaries["rustsasa"]
@@ -262,16 +274,17 @@ def run_rustsasa(
     if result:
         results.append({"name": f"rustsasa_{threads}t", **result})
 
-    result = run_benchmark(
-        "rustsasa_1t",
-        f"{rustsasa} {input_dir} {out_dir} --format json -t 1",
-        results_dir,
-        warmup,
-        runs,
-        dry_run,
-    )
-    if result:
-        results.append({"name": "rustsasa_1t", **result})
+    if not skip_single_thread:
+        result = run_benchmark(
+            "rustsasa_1t",
+            f"{rustsasa} {input_dir} {out_dir} --format json -t 1",
+            results_dir,
+            warmup,
+            runs,
+            dry_run,
+        )
+        if result:
+            results.append({"name": "rustsasa_1t", **result})
 
     return results
 
@@ -351,14 +364,22 @@ def main(
             help="Number of warmup runs",
         ),
     ] = 3,
-    tool: Annotated[
-        Tool,
+    tools: Annotated[
+        list[Tool] | None,
         typer.Option(
             "--tool",
             "-t",
-            help="Tool to benchmark (zig, freesasa, rustsasa, or all)",
+            help="Tools to benchmark (can specify multiple: --tool zig --tool rustsasa). Default: all",
         ),
-    ] = Tool.all,
+    ] = None,
+    skip_single_thread: Annotated[
+        bool,
+        typer.Option(
+            "--skip-single-thread",
+            "--skip-1t",
+            help="Skip single-thread baseline benchmarks",
+        ),
+    ] = False,
     output_dir: Annotated[
         Path | None,
         typer.Option(
@@ -396,31 +417,53 @@ def main(
         results_dir.mkdir(parents=True, exist_ok=True)
         temp_out.mkdir(parents=True, exist_ok=True)
 
+    # Default to all tools if none specified
+    selected_tools = tools if tools else ALL_TOOLS
+
     # Print header
     console.print(f"[bold]=== Batch SASA Benchmark: {name} ===[/]")
     console.print(f"Input: {input_dir}")
     console.print(f"Output: {results_dir}")
+    console.print(f"Tools: {', '.join(t.value for t in selected_tools)}")
     console.print(f"Warmup: {warmup}, Runs: {runs}, Threads: {threads}")
+    if skip_single_thread:
+        console.print("[yellow]Single-thread baseline: skipped[/]")
     console.print()
 
     all_results = []
 
     # Run benchmarks
-    if tool in (Tool.zig, Tool.all):
+    if Tool.zig in selected_tools:
         results = run_zig(
-            input_dir, temp_out, results_dir, threads, warmup, runs, dry_run, binaries
+            input_dir,
+            temp_out,
+            results_dir,
+            threads,
+            warmup,
+            runs,
+            dry_run,
+            binaries,
+            skip_single_thread,
         )
         all_results.extend(results)
 
-    if tool in (Tool.freesasa, Tool.all):
+    if Tool.freesasa in selected_tools:
         results = run_freesasa(
             input_dir, temp_out, results_dir, warmup, runs, dry_run, binaries
         )
         all_results.extend(results)
 
-    if tool in (Tool.rustsasa, Tool.all):
+    if Tool.rustsasa in selected_tools:
         results = run_rustsasa(
-            input_dir, temp_out, results_dir, threads, warmup, runs, dry_run, binaries
+            input_dir,
+            temp_out,
+            results_dir,
+            threads,
+            warmup,
+            runs,
+            dry_run,
+            binaries,
+            skip_single_thread,
         )
         all_results.extend(results)
 
