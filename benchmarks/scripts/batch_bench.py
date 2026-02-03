@@ -30,6 +30,11 @@ Output:
     ├── bench_zsasa_f32_8t.json
     ├── bench_freesasa_1t.json
     ├── bench_rustsasa_8t.json
+    ├── temp_out/
+    │   ├── zig_f64/          # f64 SASA results (separate from f32)
+    │   ├── zig_f32/          # f32 SASA results
+    │   ├── freesasa/
+    │   └── rustsasa/
     └── ...
 """
 
@@ -145,60 +150,38 @@ def run_zig(
         console.print("[yellow][SKIP] zsasa not found[/]")
         return []
 
-    out_dir = temp_out.joinpath("zig")
-    if not dry_run:
-        shutil.rmtree(out_dir, ignore_errors=True)
-        out_dir.mkdir(parents=True, exist_ok=True)
-
     results = []
 
-    # f64 precision
-    result = run_benchmark(
-        f"zsasa_f64_{threads}t",
-        f"{zsasa} {input_dir} {out_dir} --threads={threads} --parallelism=file --precision=f64",
-        results_dir,
-        warmup,
-        runs,
-        dry_run,
-    )
-    if result:
-        results.append({"name": f"zsasa_f64_{threads}t", **result})
+    for precision in ["f64", "f32"]:
+        out_dir = temp_out.joinpath(f"zig_{precision}")
+        if not dry_run:
+            shutil.rmtree(out_dir, ignore_errors=True)
+            out_dir.mkdir(parents=True, exist_ok=True)
 
-    if not skip_single_thread:
+        # Multi-thread
         result = run_benchmark(
-            "zsasa_f64_1t",
-            f"{zsasa} {input_dir} {out_dir} --threads=1 --precision=f64",
+            f"zsasa_{precision}_{threads}t",
+            f"{zsasa} {input_dir} {out_dir} --threads={threads} --parallelism=file --precision={precision}",
             results_dir,
             warmup,
             runs,
             dry_run,
         )
         if result:
-            results.append({"name": "zsasa_f64_1t", **result})
+            results.append({"name": f"zsasa_{precision}_{threads}t", **result})
 
-    # f32 precision
-    result = run_benchmark(
-        f"zsasa_f32_{threads}t",
-        f"{zsasa} {input_dir} {out_dir} --threads={threads} --parallelism=file --precision=f32",
-        results_dir,
-        warmup,
-        runs,
-        dry_run,
-    )
-    if result:
-        results.append({"name": f"zsasa_f32_{threads}t", **result})
-
-    if not skip_single_thread:
-        result = run_benchmark(
-            "zsasa_f32_1t",
-            f"{zsasa} {input_dir} {out_dir} --threads=1 --precision=f32",
-            results_dir,
-            warmup,
-            runs,
-            dry_run,
-        )
-        if result:
-            results.append({"name": "zsasa_f32_1t", **result})
+        # Single-thread
+        if not skip_single_thread:
+            result = run_benchmark(
+                f"zsasa_{precision}_1t",
+                f"{zsasa} {input_dir} {out_dir} --threads=1 --precision={precision}",
+                results_dir,
+                warmup,
+                runs,
+                dry_run,
+            )
+            if result:
+                results.append({"name": f"zsasa_{precision}_1t", **result})
 
     return results
 
