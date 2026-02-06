@@ -8,6 +8,10 @@ const pdb_parser = @import("pdb_parser.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
 const lee_richards = @import("lee_richards.zig");
 const pipeline = @import("pipeline.zig");
+const classifier = @import("classifier.zig");
+const classifier_protor = @import("classifier_protor.zig");
+const classifier_naccess = @import("classifier_naccess.zig");
+const classifier_oons = @import("classifier_oons.zig");
 
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
@@ -16,6 +20,7 @@ const SasaResultGen = types.SasaResultGen;
 const Config = types.Config;
 const ConfigGen = types.ConfigGen;
 const Precision = types.Precision;
+const ClassifierType = classifier.ClassifierType;
 const OutputFormat = json_writer.OutputFormat;
 const LeeRichardsConfig = lee_richards.LeeRichardsConfig;
 const LeeRichardsConfigGen = lee_richards.LeeRichardsConfigGen;
@@ -45,6 +50,7 @@ pub const BatchConfig = struct {
     show_timing: bool = false,
     quiet: bool = false,
     precision: Precision = .f64, // f32 or f64
+    classifier_type: ?ClassifierType = .protor, // Default: protor (matches FreeSASA/RustSASA)
 };
 
 /// Get output extension based on format
@@ -243,6 +249,41 @@ fn readInputFile(allocator: Allocator, path: []const u8) !AtomInput {
     };
 }
 
+/// Apply built-in classifier to replace radii based on residue/atom names
+fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType) !void {
+    const n = input.atomCount();
+    const residues = input.residue orelse return error.MissingClassificationInfo;
+    const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
+
+    const new_radii = try input.allocator.alloc(f64, n);
+    errdefer input.allocator.free(new_radii);
+
+    for (0..n) |i| {
+        const maybe_radius: ?f64 = switch (ct) {
+            .naccess => classifier_naccess.getRadius(residues[i].slice(), atom_names[i].slice()),
+            .protor => classifier_protor.getRadius(residues[i].slice(), atom_names[i].slice()),
+            .oons => classifier_oons.getRadius(residues[i].slice(), atom_names[i].slice()),
+        };
+
+        if (maybe_radius) |r| {
+            new_radii[i] = r;
+        } else if (input.element) |elements| {
+            if (classifier.guessRadiusFromAtomicNumber(elements[i])) |r| {
+                new_radii[i] = r;
+            } else {
+                new_radii[i] = input.r[i];
+            }
+        } else if (classifier.guessRadiusFromAtomName(atom_names[i].slice())) |r| {
+            new_radii[i] = r;
+        } else {
+            new_radii[i] = input.r[i];
+        }
+    }
+
+    input.allocator.free(input.r);
+    input.r = new_radii;
+}
+
 /// Scan directory for structure files (.json, .pdb, .cif, .mmcif, .ent and compressed variants)
 pub fn scanDirectory(allocator: Allocator, dir_path: []const u8) ![][]const u8 {
     var files = std.ArrayListUnmanaged([]const u8){};
@@ -311,6 +352,17 @@ fn processOneFile(
         return result;
     };
     defer input.deinit();
+
+    // Apply classifier for PDB/mmCIF input (skip for JSON which has radii embedded)
+    if (config.classifier_type) |ct| {
+        const format = format_detect.detectInputFormat(input_path);
+        if (format != .json and input.hasClassificationInfo()) {
+            applyBuiltinClassifier(&input, ct) catch {
+                result.status = .err;
+                return result;
+            };
+        }
+    }
 
     result.n_atoms = input.atomCount();
 
