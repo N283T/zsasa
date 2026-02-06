@@ -46,7 +46,7 @@ benchmarks/results/zig_*/
 benchmarks/results/freesasa_*/
 benchmarks/results/rust_*/
 benchmarks/results/batch_*/
-benchmarks/results/ipc/results.csv
+benchmarks/results/batch/*/temp_out/
 benchmarks/results/plots/**/individual/
 benchmarks/results/plots/efficiency/by_size.png
 benchmarks/results/plots/large/speedup_by_threads.png
@@ -64,6 +64,13 @@ benchmarks/UP000000625_83333_ECOLI_v6/
 # SwissProt PDB dataset
 benchmarks/swissprot_pdb_v6/
 benchmarks/swissprot_pdb_v6.tar
+
+# Human proteome dataset (AlphaFold structures)
+benchmarks/UP000005640_9606_HUMAN_v6/
+benchmarks/UP000005640_9606_HUMAN_v6.tar
+
+# Archived benchmark results (v1: 100k PDB structures)
+benchmarks/results_v1/
 
 # E. coli benchmark temp files
 benchmarks/ecoli_bench/temp_out/
