@@ -6,28 +6,28 @@
 """SASA benchmark runner.
 
 Runs benchmark for a single tool and algorithm with configurable thread counts.
+Uses internal timing (SASA-only) with warmup runs for statistical reliability.
 Results are saved to CSV with execution config in JSON.
 
 Usage:
-    # Default dataset (6 structures)
-    ./benchmarks/scripts/run.py --tool zig --algorithm sr --threads 1-10
-    ./benchmarks/scripts/run.py --tool freesasa --algorithm lr --threads 1-10
+    # Default dataset (benchmarks/dataset/json/, ~2k structures)
+    ./benchmarks/scripts/bench.py --tool zig --algorithm sr --threads 1,4,10
 
-    # Custom input directory (all .json.gz files)
-    ./benchmarks/scripts/run.py --tool zig --algorithm sr --input-dir benchmarks/inputs
+    # Quick test (no warmup, 1 run)
+    ./benchmarks/scripts/bench.py --tool zig --algorithm sr --threads 1 --warmup 0 --runs 1
 
-    # Stratified sample (from sample.py output)
-    ./benchmarks/scripts/run.py --tool zig --algorithm sr \\
+    # Custom input directory
+    ./benchmarks/scripts/bench.py --tool zig --algorithm sr --input-dir /path/to/json
+
+    # With sample file (v2 format)
+    ./benchmarks/scripts/bench.py --tool zig --algorithm sr \\
         --input-dir benchmarks/inputs \\
-        --sample-file benchmarks/samples/stratified_75k.json
-
-    # Single run for testing
-    ./benchmarks/scripts/run.py --tool zig --algorithm sr --threads 1 --runs 1
+        --sample-file benchmarks/dataset/sample.json
 
 Output:
     benchmarks/results/{tool}_{algorithm}/
     ├── config.json   # System info and parameters
-    └── results.csv   # Benchmark results
+    └── results.csv   # Benchmark results (warmup runs excluded)
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from __future__ import annotations
 import csv
 import gzip
 import json
+import math
 import os
 import platform
 import re
@@ -48,19 +49,13 @@ from typing import Annotated
 import typer
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
+from rich.table import Table
 
-app = typer.Typer(help="SASA benchmark with separated tool execution")
+app = typer.Typer(help="SASA benchmark runner")
 console = Console()
 
-# Default benchmark structures (used when --input-dir is not specified)
-DEFAULT_STRUCTURES = [
-    ("1crn", 327, "Crambin"),
-    ("1ubq", 602, "Ubiquitin"),
-    ("1a0q", 3183, "Lipid transfer protein"),
-    ("3hhb", 4384, "Hemoglobin"),
-    ("1aon", 58674, "GroEL-GroES"),
-    ("4v6x", 237685, "Ribosome"),
-]
+TOOLS = ["zig", "freesasa", "rust"]
+ALGORITHMS = ["sr", "lr"]
 
 
 def get_n_atoms_from_json(json_path: Path) -> int:
@@ -77,17 +72,11 @@ def get_n_atoms_from_json(json_path: Path) -> int:
         return 0
 
 
-def scan_input_directory(input_dir: Path) -> list[tuple[str, int, str]]:
-    """Scan directory for .json.gz files and return structures list.
+def scan_input_directory(input_dir: Path) -> list[tuple[str, int]]:
+    """Scan directory for .json.gz files and return (id, n_atoms=0) list.
 
-    Note: n_atoms is set to 0 initially for performance (avoids reading all files).
-    Actual n_atoms is determined during benchmark run.
-
-    Uses os.scandir for fast scanning of large directories.
+    Uses os.scandir for fast scanning. n_atoms is resolved lazily during run.
     """
-    structures = []
-
-    # Use os.scandir for fast directory scanning
     entries = []
     with os.scandir(input_dir) as it:
         for entry in it:
@@ -96,30 +85,44 @@ def scan_input_directory(input_dir: Path) -> list[tuple[str, int, str]]:
             ):
                 entries.append(entry.name)
 
-    # Sort by name
     entries.sort()
 
+    structures = []
     for filename in entries:
         if filename.endswith(".json.gz"):
-            pdb_id = filename[:-8]  # Remove .json.gz
+            pdb_id = filename[:-8]
         else:
-            pdb_id = filename[:-5]  # Remove .json
-        structures.append((pdb_id, 0, ""))
+            pdb_id = filename[:-5]
+        structures.append((pdb_id, 0))
 
     return structures
 
 
 def load_sample_file(sample_path: Path) -> list[str]:
-    """Load sample file and return list of PDB IDs."""
+    """Load sample file and return list of IDs.
+
+    Supports both formats:
+    - v1: {"samples": ["id1", "id2", ...]}
+    - v2: {"samples": {"bin": [{"id": "...", ...}, ...], ...}}
+    """
     with open(sample_path) as f:
         data = json.load(f)
+
     if "samples" not in data:
         raise ValueError(f"Invalid sample file: missing 'samples' key in {sample_path}")
-    return data["samples"]
 
+    samples = data["samples"]
 
-TOOLS = ["zig", "freesasa", "rust"]
-ALGORITHMS = ["sr", "lr"]
+    # v1: flat list
+    if isinstance(samples, list):
+        return samples
+
+    # v2: dict of bins
+    ids = []
+    for entries in samples.values():
+        for entry in entries:
+            ids.append(entry["id"])
+    return ids
 
 
 def get_system_info() -> dict:
@@ -165,22 +168,22 @@ def parse_threads(threads_str: str) -> list[int]:
 
 def get_binary_path(tool: str) -> Path:
     """Get binary path for a tool."""
-    # Project root (zsasa/)
     root = Path(__file__).parent.parent.parent
 
     if tool == "zig":
-        return root / "zig-out" / "bin" / "zsasa"
+        return root.joinpath("zig-out", "bin", "zsasa")
     elif tool == "freesasa":
-        return root / "benchmarks" / "external" / "freesasa-bench" / "src" / "freesasa"
+        return root.joinpath(
+            "benchmarks", "external", "freesasa-bench", "src", "freesasa"
+        )
     elif tool == "rust":
-        return (
-            root
-            / "benchmarks"
-            / "external"
-            / "rustsasa-bench"
-            / "target"
-            / "release"
-            / "rust-sasa"
+        return root.joinpath(
+            "benchmarks",
+            "external",
+            "rustsasa-bench",
+            "target",
+            "release",
+            "rust-sasa",
         )
     else:
         raise ValueError(f"Unknown tool: {tool}")
@@ -202,7 +205,6 @@ def run_zig(
     cleanup_input = False
 
     try:
-        # Decompress if needed
         if str(json_path).endswith(".gz"):
             with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
                 input_path = Path(f.name)
@@ -231,7 +233,6 @@ def run_zig(
         if result.returncode != 0:
             raise RuntimeError(f"Zig failed: {result.stderr}")
 
-        # Parse timing
         sasa_time_ms = 0.0
         for line in result.stderr.split("\n"):
             match = re.search(r"SASA calculation:\s*([\d.]+)\s*ms", line)
@@ -239,7 +240,6 @@ def run_zig(
                 sasa_time_ms = float(match.group(1))
                 break
 
-        # Parse output
         with open(output_path) as f:
             data = json.load(f)
 
@@ -281,7 +281,6 @@ def run_freesasa(
     if result.returncode != 0:
         raise RuntimeError(f"FreeSASA failed: {result.stderr}")
 
-    # Parse total SASA
     total_sasa = 0.0
     for line in result.stdout.split("\n"):
         if line.startswith("Total"):
@@ -290,7 +289,6 @@ def run_freesasa(
                 total_sasa = float(match.group())
                 break
 
-    # Parse timing
     sasa_time_ms = 0.0
     for line in result.stderr.split("\n"):
         match = re.search(r"SASA calculation time:\s*([\d.]+)\s*ms", line)
@@ -326,7 +324,6 @@ def run_rust(
     if result.returncode != 0:
         raise RuntimeError(f"RustSASA failed: {result.stderr}")
 
-    # Parse timing
     sasa_time_ms = 0.0
     for line in result.stderr.split("\n"):
         if "SASA_TIME_US:" in line:
@@ -337,7 +334,6 @@ def run_rust(
                 pass
             break
 
-    # Parse total SASA
     total_sasa = 0.0
     for line in result.stdout.split("\n"):
         match = re.search(r"Total SASA:\s*([\d.]+)", line)
@@ -368,6 +364,52 @@ def run_benchmark(
         raise ValueError(f"Unknown tool: {tool}")
 
 
+def print_summary(csv_path: Path, warmup: int, runs: int) -> None:
+    """Print summary statistics from results CSV."""
+    # Aggregate: per (threads, structure) → list of sasa_time_ms
+    from collections import defaultdict
+
+    by_threads: dict[int, list[float]] = defaultdict(list)
+
+    with open(csv_path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            t = int(row["threads"])
+            by_threads[t].append(float(row["sasa_time_ms"]))
+
+    if not by_threads:
+        return
+
+    table = Table(title="Summary (SASA time per structure)")
+    table.add_column("Threads", style="cyan", justify="right")
+    table.add_column("N", justify="right")
+    table.add_column("Mean (ms)", justify="right")
+    table.add_column("Std (ms)", justify="right")
+    table.add_column("Min (ms)", justify="right")
+    table.add_column("Max (ms)", justify="right")
+    table.add_column("Total (s)", justify="right")
+
+    for t in sorted(by_threads):
+        times = by_threads[t]
+        n = len(times)
+        mean = sum(times) / n
+        variance = sum((x - mean) ** 2 for x in times) / n if n > 1 else 0.0
+        std = math.sqrt(variance)
+        total_s = sum(times) / 1000.0
+        table.add_row(
+            str(t),
+            f"{n:,}",
+            f"{mean:.3f}",
+            f"{std:.3f}",
+            f"{min(times):.3f}",
+            f"{max(times):.3f}",
+            f"{total_s:.1f}",
+        )
+
+    console.print()
+    console.print(table)
+
+
 @app.command()
 def main(
     tool: Annotated[
@@ -380,12 +422,16 @@ def main(
     ],
     threads: Annotated[
         str,
-        typer.Option("--threads", "-T", help="Thread counts: '1-10' or '1,4,8'"),
-    ] = "1-10",
+        typer.Option("--threads", "-T", help="Thread counts: '1,4,10' or '1-10'"),
+    ] = "1,4,10",
     runs: Annotated[
         int,
-        typer.Option("--runs", "-r", help="Number of runs per configuration"),
-    ] = 3,
+        typer.Option("--runs", "-r", help="Number of measured runs per configuration"),
+    ] = 5,
+    warmup: Annotated[
+        int,
+        typer.Option("--warmup", "-w", help="Warmup runs (not recorded)"),
+    ] = 1,
     precision: Annotated[
         str,
         typer.Option("--precision", "-p", help="Precision: f32, f64 (zig only)"),
@@ -400,7 +446,11 @@ def main(
     ] = None,
     sample_file: Annotated[
         Path | None,
-        typer.Option("--sample-file", "-S", help="Sample file from sample.py"),
+        typer.Option(
+            "--sample-file",
+            "-S",
+            help="Sample file to filter structures (v1 or v2 format)",
+        ),
     ] = None,
 ) -> None:
     """Run SASA benchmark for a single tool and algorithm."""
@@ -419,28 +469,22 @@ def main(
         console.print(f"Available: {', '.join(ALGORITHMS)}")
         raise typer.Exit(1)
 
-    # RustSASA only supports SR
     if tool == "rust" and algorithm == "lr":
         console.print("[red]Error:[/red] RustSASA only supports SR algorithm")
         raise typer.Exit(1)
 
-    # Validate precision
     if precision not in ("f32", "f64"):
         console.print(f"[red]Error:[/red] Invalid precision: {precision}")
         console.print("Available: f32, f64")
         raise typer.Exit(1)
 
-    # Precision only applies to zig
     if precision != "f64" and tool != "zig":
-        console.print(f"[yellow]Warning:[/yellow] --precision only applies to zig tool")
+        console.print("[yellow]Warning:[/yellow] --precision only applies to zig tool")
         precision = "f64"
 
-    # Validate sample file requires input-dir
+    # Load sample filter
     sample_ids: set[str] | None = None
     if sample_file is not None:
-        if input_dir is None:
-            console.print("[red]Error:[/red] --sample-file requires --input-dir")
-            raise typer.Exit(1)
         if not sample_file.exists():
             console.print(f"[red]Error:[/red] Sample file not found: {sample_file}")
             raise typer.Exit(1)
@@ -449,39 +493,43 @@ def main(
             f"Loaded [cyan]{len(sample_ids):,}[/cyan] samples from {sample_file}"
         )
 
-    # Setup input directory and structures
+    # Setup input directory
     if input_dir is not None:
         if not input_dir.exists():
             console.print(f"[red]Error:[/red] Input directory not found: {input_dir}")
             raise typer.Exit(1)
         json_dir = input_dir
-        structures = scan_input_directory(input_dir)
-        if not structures:
-            console.print(f"[red]Error:[/red] No .json.gz files found in {input_dir}")
+    else:
+        json_dir = Path(__file__).parent.parent.joinpath("dataset", "json")
+        if not json_dir.exists():
+            console.print(f"[red]Error:[/red] Default dataset not found: {json_dir}")
+            console.print("Run sampling first or specify --input-dir")
             raise typer.Exit(1)
 
-        # Filter by sample file if provided
-        if sample_ids is not None:
-            structures = [
-                (pdb_id, n, desc)
-                for pdb_id, n, desc in structures
-                if pdb_id in sample_ids
-            ]
-            if not structures:
-                console.print("[red]Error:[/red] No matching structures found")
-                raise typer.Exit(1)
+    structures = scan_input_directory(json_dir)
+    if not structures:
+        console.print(f"[red]Error:[/red] No .json.gz files found in {json_dir}")
+        raise typer.Exit(1)
 
-        console.print(
-            f"Found [cyan]{len(structures):,}[/cyan] structures in {input_dir}"
-        )
-    else:
-        json_dir = Path(__file__).parent.parent / "dataset"
-        structures = DEFAULT_STRUCTURES
+    # Filter by sample file if provided
+    if sample_ids is not None:
+        structures = [
+            (pdb_id, n) for pdb_id, n in structures if pdb_id in sample_ids
+        ]
+        if not structures:
+            console.print("[red]Error:[/red] No matching structures found")
+            raise typer.Exit(1)
+
+    console.print(
+        f"Found [cyan]{len(structures):,}[/cyan] structures in {json_dir}"
+    )
 
     # Setup output directory
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     if output_dir is None:
-        output_dir = Path(__file__).parent.parent / "results" / f"{tool}_{algorithm}"
+        output_dir = Path(__file__).parent.parent.joinpath(
+            "results", f"{tool}_{algorithm}"
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Save config
@@ -493,24 +541,31 @@ def main(
             "algorithm": algorithm,
             "precision": precision,
             "thread_counts": thread_counts,
+            "warmup": warmup,
             "runs": runs,
-            "structures": [s[0] for s in structures],
-            "input_dir": str(input_dir) if input_dir else None,
+            "n_structures": len(structures),
+            "input_dir": str(json_dir),
             "sample_file": str(sample_file) if sample_file else None,
         },
     }
-    config_path = output_dir / "config.json"
+    config_path = output_dir.joinpath("config.json")
     config_path.write_text(json.dumps(config, indent=2))
 
-    # Calculate total runs
-    total_runs = len(structures) * len(thread_counts) * runs
+    # Calculate totals
+    total_measured = len(structures) * len(thread_counts) * runs
+    total_warmup = len(structures) * len(thread_counts) * warmup
+    total_all = total_measured + total_warmup
 
     precision_str = f" ({precision})" if tool == "zig" else ""
-    console.print(f"[bold]{tool.upper()} {algorithm.upper()}{precision_str}[/bold]")
-    console.print(f"Threads: {thread_counts}, Runs: {runs}, Total: {total_runs:,}\n")
+    console.print(f"\n[bold]{tool.upper()} {algorithm.upper()}{precision_str}[/bold]")
+    console.print(
+        f"Threads: {thread_counts}, "
+        f"Warmup: {warmup}, Runs: {runs}, "
+        f"Total: {total_all:,} ({total_warmup:,} warmup + {total_measured:,} measured)\n"
+    )
 
     # Run benchmarks
-    csv_path = output_dir / "results.csv"
+    csv_path = output_dir.joinpath("results.csv")
 
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(
@@ -536,34 +591,53 @@ def main(
             TextColumn("{task.completed}/{task.total}"),
             console=console,
         ) as progress:
-            task = progress.add_task("Running", total=total_runs)
+            task = progress.add_task("Running", total=total_all)
 
-            # Cache for n_atoms (lazy loading)
             n_atoms_cache: dict[str, int] = {}
 
             for n_threads in thread_counts:
-                for pdb_id, n_atoms, _ in structures:
-                    # Try .json.gz first, then .json
-                    json_path = json_dir / f"{pdb_id}.json.gz"
+                for pdb_id, n_atoms in structures:
+                    json_path = json_dir.joinpath(f"{pdb_id}.json.gz")
                     if not json_path.exists():
-                        json_path = json_dir / f"{pdb_id}.json"
+                        json_path = json_dir.joinpath(f"{pdb_id}.json")
                     if not json_path.exists():
-                        console.print(f"[yellow]Skip {pdb_id}: not found[/yellow]")
+                        console.print(
+                            f"[yellow]Skip {pdb_id}: not found[/yellow]"
+                        )
                         continue
 
-                    # Get n_atoms lazily (once per structure)
+                    # Resolve n_atoms lazily
                     if n_atoms == 0:
                         if pdb_id not in n_atoms_cache:
-                            n_atoms_cache[pdb_id] = get_n_atoms_from_json(json_path)
+                            n_atoms_cache[pdb_id] = get_n_atoms_from_json(
+                                json_path
+                            )
                         n_atoms = n_atoms_cache[pdb_id]
 
+                    # Warmup runs (not recorded)
+                    for w in range(warmup):
+                        desc = f"{pdb_id} t={n_threads} warmup {w + 1}/{warmup}"
+                        progress.update(task, description=desc)
+                        try:
+                            run_benchmark(
+                                tool, json_path, algorithm, n_threads, precision
+                            )
+                        except Exception:
+                            pass
+                        progress.advance(task)
+
+                    # Measured runs
                     for run_num in range(1, runs + 1):
-                        desc = f"{pdb_id} t={n_threads} #{run_num}"
+                        desc = f"{pdb_id} t={n_threads} run {run_num}/{runs}"
                         progress.update(task, description=desc)
 
                         try:
                             sasa_time, total_sasa = run_benchmark(
-                                tool, json_path, algorithm, n_threads, precision
+                                tool,
+                                json_path,
+                                algorithm,
+                                n_threads,
+                                precision,
                             )
 
                             writer.writerow(
@@ -582,14 +656,18 @@ def main(
                             f.flush()
 
                         except Exception as e:
-                            err = f"{pdb_id} t={n_threads}"
-                            console.print(f"[red]Error: {err}: {e}[/red]")
+                            console.print(
+                                f"[red]Error: {pdb_id} t={n_threads}: {e}[/red]"
+                            )
 
                         progress.advance(task)
 
     console.print(f"\n[green]Done![/green] Results saved to: {output_dir}")
     console.print(f"  - {csv_path.name}")
     console.print(f"  - {config_path.name}")
+
+    # Print summary
+    print_summary(csv_path, warmup, runs)
 
 
 if __name__ == "__main__":
