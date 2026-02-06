@@ -107,19 +107,19 @@ Located in `benchmarks/scripts/`. All scripts use PEP 723 metadata (typer + rich
 
 ```bash
 # Single-file mode
-./benchmarks/scripts/run.py --tool zig --algorithm sr --threads 1-10
-./benchmarks/scripts/run.py --tool freesasa --algorithm lr --threads 1-10
+./benchmarks/scripts/bench.py --tool zig --algorithm sr --threads 1-10
+./benchmarks/scripts/bench.py --tool freesasa --algorithm lr --threads 1-10
 
 # With stratified sampling
 ./benchmarks/scripts/build_index.py benchmarks/inputs
 ./benchmarks/scripts/sample.py benchmarks/inputs/index.json \
     --target 100000 --seed 42 -o benchmarks/samples/stratified_100k.json
-./benchmarks/scripts/run.py --tool zig --algorithm sr \
+./benchmarks/scripts/bench.py --tool zig --algorithm sr \
     --input-dir benchmarks/inputs \
     --sample-file benchmarks/samples/stratified_100k.json
 
 # Batch mode (hyperfine-based, RustSASA paper style)
-./benchmarks/scripts/batch_bench.py -i benchmarks/UP000000625_83333_ECOLI_v6/pdb -n ecoli --threads 8
+./benchmarks/scripts/bench_batch.py -i benchmarks/UP000000625_83333_ECOLI_v6/pdb -n ecoli --threads 8
 ```
 
 ### Analysis
@@ -141,7 +141,6 @@ Located in `benchmarks/scripts/`. All scripts use PEP 723 metadata (typer + rich
 
 ```bash
 ./benchmarks/scripts/generate_json.py /path/to/cif /path/to/output  # CIF→JSON
-./benchmarks/scripts/ipc.py --tools zig,freesasa --threads 1,10     # CPU efficiency
 ```
 
 ## CI/CD

@@ -10,19 +10,19 @@ Uses hyperfine for timing measurements (warmup + multiple runs).
 
 Usage:
     # E. coli proteome benchmark
-    ./batch_bench.py -i benchmarks/UP000000625_83333_ECOLI_v6/pdb -n ecoli
+    ./benchmarks/scripts/bench_batch.py -i benchmarks/UP000000625_83333_ECOLI_v6/pdb -n ecoli
 
     # SwissProt benchmark
-    ./batch_bench.py -i benchmarks/swissprot_pdb_v6 -n swissprot --threads 10
+    ./benchmarks/scripts/bench_batch.py -i benchmarks/swissprot_pdb_v6 -n swissprot --threads 10
 
     # Single tool test
-    ./batch_bench.py -i /path/to/pdb -n test --tool zig --runs 1
+    ./benchmarks/scripts/bench_batch.py -i /path/to/pdb -n test --tool zig --runs 1
 
     # Multiple tools (skip freesasa)
-    ./batch_bench.py -i /path/to/pdb -n test --tool zig --tool rustsasa
+    ./benchmarks/scripts/bench_batch.py -i /path/to/pdb -n test --tool zig --tool rustsasa
 
     # Skip single-thread baseline
-    ./batch_bench.py -i /path/to/pdb -n test --skip-1t
+    ./benchmarks/scripts/bench_batch.py -i /path/to/pdb -n test --skip-1t
 
 Output:
     benchmarks/results/batch/<name>/

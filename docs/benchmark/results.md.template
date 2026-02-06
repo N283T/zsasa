@@ -309,6 +309,5 @@ For throughput benchmarks processing multiple files in parallel, see [batch.md](
 
 - [methodology.md](methodology.md) - Benchmark methodology and measurement methods
 - [batch.md](batch.md) - Batch processing benchmarks
-- [cpu-efficiency.md](../cpu-efficiency.md) - CPU efficiency analysis (IPC, instruction count)
 - [optimizations.md](../optimizations.md) - Detailed optimization techniques
 - [algorithm.md](../algorithm.md) - Algorithm details

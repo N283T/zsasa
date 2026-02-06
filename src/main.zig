@@ -487,7 +487,7 @@ fn printHelp(program_name: []const u8) void {
         \\    --algorithm=ALGO   Algorithm: sr (shrake-rupley), lr (lee-richards)
         \\                       Default: sr
         \\    --classifier=TYPE  Built-in classifier: naccess, protor, oons
-        \\                       Use with residue/atom_name input for auto-radius
+        \\                       Default: protor for PDB/mmCIF, none for JSON
         \\    --config=FILE      Custom classifier config file (FreeSASA format)
         \\    --chain=ID         Filter by chain ID (e.g., --chain=A or --chain=A,B,C)
         \\                       Default: label_asym_id (mmCIF standard)
@@ -520,8 +520,8 @@ fn printHelp(program_name: []const u8) void {
         \\    lr, lee-richards   Slice-based method
         \\
         \\CLASSIFIERS:
-        \\    naccess  NACCESS-compatible radii (default if --classifier used)
-        \\    protor   ProtOr radii (Tsai et al. 1999)
+        \\    protor   ProtOr radii (Tsai et al. 1999) - default for PDB/mmCIF
+        \\    naccess  NACCESS-compatible radii
         \\    oons     OONS radii (Ooi et al.)
         \\
         \\OUTPUT FORMATS:
@@ -729,6 +729,7 @@ fn runBatchMode(allocator: std.mem.Allocator, parsed: Args) !void {
         null;
 
     // Build batch config from parsed args
+    // classifier_type: use explicit --classifier if set, otherwise default protor
     const config = batch.BatchConfig{
         .n_threads = parsed.n_threads,
         .algorithm = switch (parsed.algorithm) {
@@ -743,6 +744,7 @@ fn runBatchMode(allocator: std.mem.Allocator, parsed: Args) !void {
         .output_format = parsed.output_format,
         .show_timing = parsed.show_timing,
         .quiet = parsed.quiet,
+        .classifier_type = parsed.classifier_type orelse .protor,
     };
 
     if (!parsed.quiet) {
@@ -886,9 +888,14 @@ pub fn main() !void {
         return;
     }
 
-    // Apply classifier if specified (--config takes precedence over --classifier)
+    // Apply classifier (--config takes precedence over --classifier)
+    // Default: protor for PDB/mmCIF input (matches FreeSASA/RustSASA defaults)
     timer.reset();
-    if (parsed.config_path != null or parsed.classifier_type != null) {
+    const input_format = format_detect.detectInputFormat(parsed.input_path.?);
+    const effective_classifier: ?ClassifierType = parsed.classifier_type orelse
+        if (parsed.config_path == null and input_format != .json) .protor else null;
+
+    if (parsed.config_path != null or effective_classifier != null) {
         // Warn if both are specified
         if (parsed.config_path != null and parsed.classifier_type != null) {
             if (!parsed.quiet) {
@@ -898,7 +905,7 @@ pub fn main() !void {
 
         // Check if input has classification info
         if (!input.hasClassificationInfo()) {
-            std.debug.print("Error: Classifier requires 'residue' and 'atom_name' fields in input JSON\n", .{});
+            std.debug.print("Error: Classifier requires 'residue' and 'atom_name' fields in input\n", .{});
             std.process.exit(1);
         }
 
@@ -915,7 +922,7 @@ pub fn main() !void {
                 std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
                 std.process.exit(1);
             };
-        } else if (parsed.classifier_type) |ct| {
+        } else if (effective_classifier) |ct| {
             // Use built-in classifier
             applyBuiltinClassifier(allocator, &input, ct, parsed.quiet) catch |err| {
                 std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
