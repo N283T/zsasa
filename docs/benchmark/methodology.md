@@ -123,11 +123,10 @@ cd rustsasa-bench && cargo build --release --features cli && cd ..
 |--------|---------|
 | `build_index.py` | Create atom count index from all input files |
 | `sample.py` | Stratified sampling from index |
-| `run.py` | Run benchmarks (single-file mode) |
+| `bench.py` | Run benchmarks (single-file mode) |
+| `bench_batch.py` | Batch benchmarks (hyperfine-based) |
 | `analyze.py` | Analyze results and generate plots |
 | `generate_json.py` | Convert CIF/PDB to JSON format |
-| `ipc.py` | CPU efficiency measurement (IPC, instruction count) |
-| `compare_parallelism.py` | Parallel efficiency comparison |
 
 ## Reproducibility
 
@@ -165,4 +164,3 @@ Runs: 5
 
 - [results.md](results.md) - Benchmark results
 - [batch.md](batch.md) - Batch processing benchmarks
-- [../cpu-efficiency.md](../cpu-efficiency.md) - CPU efficiency analysis

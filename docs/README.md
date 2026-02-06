@@ -13,7 +13,6 @@ Technical documentation for zsasa.
 | ├─ [results.md](benchmark/results.md) | Large-scale benchmark results with plots |
 | ├─ [methodology.md](benchmark/methodology.md) | Benchmark methodology |
 | └─ [batch.md](benchmark/batch.md) | Batch processing benchmarks |
-| [cpu-efficiency.md](cpu-efficiency.md) | CPU efficiency analysis (IPC, instructions) |
 | [cli.md](cli.md) | CLI Reference |
 | [python-api/](python-api/) | Python API Reference |
 | [xtc.md](xtc.md) | XTC trajectory file reader |
