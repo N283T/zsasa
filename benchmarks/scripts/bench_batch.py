@@ -21,28 +21,27 @@ Usage:
     # Multiple tools (skip freesasa)
     ./benchmarks/scripts/bench_batch.py -i /path/to/pdb -n test --tool zig --tool rustsasa
 
-    # Skip single-thread baseline
-    ./benchmarks/scripts/bench_batch.py -i /path/to/pdb -n test --skip-1t
+    # Multiple thread counts
+    ./benchmarks/scripts/bench_batch.py -i /path/to/pdb -n test --threads 1,8,10
 
 Output:
     benchmarks/results/batch/<name>/
+    ├── config.json             # System info and parameters
     ├── bench_zsasa_f64_8t.json
     ├── bench_zsasa_f32_8t.json
     ├── bench_freesasa_1t.json
-    ├── bench_rustsasa_8t.json
-    ├── temp_out/
-    │   ├── zig_f64/          # f64 SASA results (separate from f32)
-    │   ├── zig_f32/          # f32 SASA results
-    │   ├── freesasa/
-    │   └── rustsasa/
-    └── ...
+    └── bench_rustsasa_8t.json
 """
 
 from __future__ import annotations
 
 import json
+import os
+import platform
 import shutil
 import subprocess
+import tempfile
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
@@ -81,6 +80,47 @@ def get_binary_paths() -> dict[str, Path]:
             "benchmarks", "external", "rustsasa-bench", "target", "release", "rust-sasa"
         ),
     }
+
+
+def get_system_info() -> dict:
+    """Get system information."""
+    info = {
+        "os": platform.system(),
+        "os_version": platform.release(),
+        "arch": platform.machine(),
+        "cpu_cores": os.cpu_count() or 1,
+    }
+
+    if platform.system() == "Darwin":
+        try:
+            result = subprocess.run(
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                info["cpu_model"] = result.stdout.strip()
+            result = subprocess.run(
+                ["sysctl", "-n", "hw.memsize"], capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                info["memory_gb"] = int(result.stdout.strip()) // (1024**3)
+        except Exception:
+            pass
+
+    return info
+
+
+def parse_threads(threads_str: str) -> list[int]:
+    """Parse thread specification like '1,8,10' or '1-10'."""
+    result = []
+    for part in threads_str.split(","):
+        if "-" in part:
+            start, end = part.split("-", 1)
+            result.extend(range(int(start), int(end) + 1))
+        else:
+            result.append(int(part))
+    return sorted(set(result))
 
 
 def check_hyperfine() -> bool:
@@ -135,14 +175,12 @@ def run_benchmark(
 
 def run_zig(
     input_dir: Path,
-    temp_out: Path,
     results_dir: Path,
-    threads: int,
+    thread_counts: list[int],
     warmup: int,
     runs: int,
     dry_run: bool,
     binaries: dict[str, Path],
-    skip_single_thread: bool = False,
 ) -> list[dict]:
     """Run zsasa benchmarks."""
     zsasa = binaries["zsasa"]
@@ -153,42 +191,29 @@ def run_zig(
     results = []
 
     for precision in ["f64", "f32"]:
-        out_dir = temp_out.joinpath(f"zig_{precision}")
-        if not dry_run:
-            shutil.rmtree(out_dir, ignore_errors=True)
-            out_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=f"zsasa_{precision}_") as tmp:
+            out_dir = Path(tmp)
 
-        # Multi-thread
-        result = run_benchmark(
-            f"zsasa_{precision}_{threads}t",
-            f"{zsasa} {input_dir} {out_dir} --threads={threads} --parallelism=file --precision={precision}",
-            results_dir,
-            warmup,
-            runs,
-            dry_run,
-        )
-        if result:
-            results.append({"name": f"zsasa_{precision}_{threads}t", **result})
-
-        # Single-thread
-        if not skip_single_thread:
-            result = run_benchmark(
-                f"zsasa_{precision}_1t",
-                f"{zsasa} {input_dir} {out_dir} --threads=1 --precision={precision}",
-                results_dir,
-                warmup,
-                runs,
-                dry_run,
-            )
-            if result:
-                results.append({"name": f"zsasa_{precision}_1t", **result})
+            for n_threads in thread_counts:
+                parallelism = " --parallelism=file" if n_threads > 1 else ""
+                result = run_benchmark(
+                    f"zsasa_{precision}_{n_threads}t",
+                    f"{zsasa} {input_dir} {out_dir} --threads={n_threads}{parallelism} --precision={precision}",
+                    results_dir,
+                    warmup,
+                    runs,
+                    dry_run,
+                )
+                if result:
+                    results.append(
+                        {"name": f"zsasa_{precision}_{n_threads}t", **result}
+                    )
 
     return results
 
 
 def run_freesasa(
     input_dir: Path,
-    temp_out: Path,
     results_dir: Path,
     warmup: int,
     runs: int,
@@ -201,37 +226,33 @@ def run_freesasa(
         console.print("[yellow][SKIP] sasa_batch not found[/]")
         return []
 
-    out_dir = temp_out.joinpath("freesasa")
-    if not dry_run:
-        shutil.rmtree(out_dir, ignore_errors=True)
-        out_dir.mkdir(parents=True, exist_ok=True)
-
     results = []
 
-    result = run_benchmark(
-        "freesasa_1t",
-        f"{sasa_batch} {input_dir} {out_dir}",
-        results_dir,
-        warmup,
-        runs,
-        dry_run,
-    )
-    if result:
-        results.append({"name": "freesasa_1t", **result})
+    with tempfile.TemporaryDirectory(prefix="freesasa_") as tmp:
+        out_dir = Path(tmp)
+
+        result = run_benchmark(
+            "freesasa_1t",
+            f"{sasa_batch} {input_dir} {out_dir}",
+            results_dir,
+            warmup,
+            runs,
+            dry_run,
+        )
+        if result:
+            results.append({"name": "freesasa_1t", **result})
 
     return results
 
 
 def run_rustsasa(
     input_dir: Path,
-    temp_out: Path,
     results_dir: Path,
-    threads: int,
+    thread_counts: list[int],
     warmup: int,
     runs: int,
     dry_run: bool,
     binaries: dict[str, Path],
-    skip_single_thread: bool = False,
 ) -> list[dict]:
     """Run RustSASA benchmarks."""
     rustsasa = binaries["rustsasa"]
@@ -239,35 +260,22 @@ def run_rustsasa(
         console.print("[yellow][SKIP] RustSASA not found[/]")
         return []
 
-    out_dir = temp_out.joinpath("rustsasa")
-    if not dry_run:
-        shutil.rmtree(out_dir, ignore_errors=True)
-        out_dir.mkdir(parents=True, exist_ok=True)
-
     results = []
 
-    result = run_benchmark(
-        f"rustsasa_{threads}t",
-        f"{rustsasa} {input_dir} {out_dir} --format json -t {threads}",
-        results_dir,
-        warmup,
-        runs,
-        dry_run,
-    )
-    if result:
-        results.append({"name": f"rustsasa_{threads}t", **result})
+    with tempfile.TemporaryDirectory(prefix="rustsasa_") as tmp:
+        out_dir = Path(tmp)
 
-    if not skip_single_thread:
-        result = run_benchmark(
-            "rustsasa_1t",
-            f"{rustsasa} {input_dir} {out_dir} --format json -t 1",
-            results_dir,
-            warmup,
-            runs,
-            dry_run,
-        )
-        if result:
-            results.append({"name": "rustsasa_1t", **result})
+        for n_threads in thread_counts:
+            result = run_benchmark(
+                f"rustsasa_{n_threads}t",
+                f"{rustsasa} {input_dir} {out_dir} --format json -t {n_threads}",
+                results_dir,
+                warmup,
+                runs,
+                dry_run,
+            )
+            if result:
+                results.append({"name": f"rustsasa_{n_threads}t", **result})
 
     return results
 
@@ -324,13 +332,13 @@ def main(
         ),
     ],
     threads: Annotated[
-        int,
+        str,
         typer.Option(
             "--threads",
             "-T",
-            help="Number of threads for multi-threaded benchmarks",
+            help="Thread counts: '1,8,10' or '1-10' (freesasa always 1t)",
         ),
-    ] = 8,
+    ] = "1,8",
     runs: Annotated[
         int,
         typer.Option(
@@ -355,14 +363,6 @@ def main(
             help="Tools to benchmark (can specify multiple: --tool zig --tool rustsasa). Default: all",
         ),
     ] = None,
-    skip_single_thread: Annotated[
-        bool,
-        typer.Option(
-            "--skip-single-thread",
-            "--skip-1t",
-            help="Skip single-thread baseline benchmarks",
-        ),
-    ] = False,
     output_dir: Annotated[
         Path | None,
         typer.Option(
@@ -385,6 +385,8 @@ def main(
         console.print("[red]Error: hyperfine not found. Please install it first.[/]")
         raise typer.Exit(1)
 
+    thread_counts = parse_threads(threads)
+
     # Set up paths
     root = get_root_dir()
     if output_dir is None:
@@ -392,25 +394,43 @@ def main(
     else:
         results_dir = output_dir
 
-    temp_out = results_dir.joinpath("temp_out")
     binaries = get_binary_paths()
 
     # Create directories
     if not dry_run:
         results_dir.mkdir(parents=True, exist_ok=True)
-        temp_out.mkdir(parents=True, exist_ok=True)
 
     # Default to all tools if none specified
     selected_tools = tools if tools else ALL_TOOLS
+
+    # Count input files
+    n_files = sum(1 for f in input_dir.iterdir() if f.is_file())
+
+    # Save config
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    config = {
+        "timestamp": timestamp,
+        "system": get_system_info(),
+        "parameters": {
+            "name": name,
+            "input_dir": str(input_dir),
+            "n_files": n_files,
+            "tools": [t.value for t in selected_tools],
+            "thread_counts": thread_counts,
+            "warmup": warmup,
+            "runs": runs,
+        },
+    }
+    if not dry_run:
+        config_path = results_dir.joinpath("config.json")
+        config_path.write_text(json.dumps(config, indent=2))
 
     # Print header
     console.print(f"[bold]=== Batch SASA Benchmark: {name} ===[/]")
     console.print(f"Input: {input_dir}")
     console.print(f"Output: {results_dir}")
     console.print(f"Tools: {', '.join(t.value for t in selected_tools)}")
-    console.print(f"Warmup: {warmup}, Runs: {runs}, Threads: {threads}")
-    if skip_single_thread:
-        console.print("[yellow]Single-thread baseline: skipped[/]")
+    console.print(f"Warmup: {warmup}, Runs: {runs}, Threads: {thread_counts}")
     console.print()
 
     all_results = []
@@ -419,39 +439,35 @@ def main(
     if Tool.zig in selected_tools:
         results = run_zig(
             input_dir,
-            temp_out,
             results_dir,
-            threads,
+            thread_counts,
             warmup,
             runs,
             dry_run,
             binaries,
-            skip_single_thread,
         )
         all_results.extend(results)
 
     if Tool.freesasa in selected_tools:
-        results = run_freesasa(
-            input_dir, temp_out, results_dir, warmup, runs, dry_run, binaries
-        )
+        results = run_freesasa(input_dir, results_dir, warmup, runs, dry_run, binaries)
         all_results.extend(results)
 
     if Tool.rustsasa in selected_tools:
         results = run_rustsasa(
             input_dir,
-            temp_out,
             results_dir,
-            threads,
+            thread_counts,
             warmup,
             runs,
             dry_run,
             binaries,
-            skip_single_thread,
         )
         all_results.extend(results)
 
     # Print summary
     console.print(f"[bold green]=== Done! Results: {results_dir} ===[/]")
+    if not dry_run:
+        console.print(f"  - config.json")
 
     if not dry_run and results_dir.exists():
         print_summary(results_dir)

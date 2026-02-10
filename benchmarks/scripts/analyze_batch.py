@@ -2,7 +2,6 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "numpy",
 #     "polars",
 #     "matplotlib",
 #     "typer",
@@ -12,12 +11,12 @@
 """Analyze batch benchmark results (hyperfine JSON format).
 
 Usage:
-    ./benchmarks/scripts/analyze_batch.py summary           # Show summary table
-    ./benchmarks/scripts/analyze_batch.py summary -n ecoli  # Specific benchmark
-    ./benchmarks/scripts/analyze_batch.py plot -n ecoli     # Time comparison chart
-    ./benchmarks/scripts/analyze_batch.py memory -n ecoli   # Memory comparison chart
-    ./benchmarks/scripts/analyze_batch.py validate -n ecoli # SASA area validation
-    ./benchmarks/scripts/analyze_batch.py all               # Everything
+    ./benchmarks/scripts/analyze_batch.py summary            # Summary table + files/sec
+    ./benchmarks/scripts/analyze_batch.py summary -n ecoli   # Specific benchmark
+    ./benchmarks/scripts/analyze_batch.py plot -n ecoli      # Time comparison chart
+    ./benchmarks/scripts/analyze_batch.py speedup -n ecoli   # Speedup bar chart
+    ./benchmarks/scripts/analyze_batch.py memory -n ecoli    # Memory comparison chart
+    ./benchmarks/scripts/analyze_batch.py all                # Everything
 """
 
 from __future__ import annotations
@@ -41,10 +40,10 @@ PLOTS_DIR = Path(__file__).parent.parent.joinpath("results", "plots", "batch")
 TOOL_ORDER = {"freesasa": 0, "rustsasa": 1, "zsasa": 2}
 
 COLOR_MAP = {
-    ("freesasa", None): "#3498db",  # Blue (same as analyze.py)
-    ("rustsasa", None): "#e74c3c",  # Red (same as analyze.py)
-    ("zsasa", "f32"): "#e67e22",  # Dark orange (same as analyze.py)
-    ("zsasa", "f64"): "#f39c12",  # Light orange (same as analyze.py)
+    ("freesasa", None): "#3498db",
+    ("rustsasa", None): "#e74c3c",
+    ("zsasa", "f32"): "#e67e22",
+    ("zsasa", "f64"): "#f39c12",
 }
 
 
@@ -81,6 +80,15 @@ def parse_benchmark_name(filename: str) -> dict:
         name = name.replace("_f64", "")
 
     return {"tool": name, "precision": precision, "threads": threads}
+
+
+def load_config(benchmark_name: str) -> dict | None:
+    """Load config.json for a benchmark."""
+    config_path = RESULTS_DIR.joinpath(benchmark_name, "config.json")
+    if not config_path.exists():
+        return None
+    with open(config_path) as f:
+        return json.load(f)
 
 
 def load_batch_data(benchmark_name: str | None = None) -> pl.DataFrame:
@@ -143,14 +151,6 @@ def _sort_df(df: pl.DataFrame) -> pl.DataFrame:
     ).sort(["threads", "_order", "precision"], descending=[False, False, False])
 
 
-def _get_baseline(df: pl.DataFrame, tool: str) -> float | None:
-    """Get baseline time for a tool. Returns None if not found."""
-    rows = df.filter(pl.col("tool") == tool)
-    if rows.height == 0:
-        return None
-    return rows["mean_s"][0]
-
-
 def setup_style():
     """Set up matplotlib style."""
     plt.rcParams.update(
@@ -195,19 +195,26 @@ def summary(
         typer.Option("--name", "-n", help="Benchmark name (e.g., ecoli)"),
     ] = None,
 ):
-    """Print summary table with vs FreeSASA and vs RustSASA."""
+    """Print summary table with speedup ratios and throughput."""
     df = load_batch_data(name)
 
     for bench_name in df["benchmark"].unique().sort().to_list():
         df_bench = _sort_df(df.filter(pl.col("benchmark") == bench_name))
 
-        fs_time = _get_baseline(df_bench, "freesasa")
+        # Load config for n_files
+        config = load_config(bench_name)
+        n_files = config["parameters"]["n_files"] if config else None
 
-        # Build RustSASA baseline per thread count
+        # FreeSASA baseline (always 1t)
+        fs_rows = df_bench.filter(pl.col("tool") == "freesasa")
+        fs_time = fs_rows["mean_s"][0] if fs_rows.height > 0 else None
+
+        # RustSASA baseline per thread count
         rs_by_threads: dict[int, float] = {}
         for row in df_bench.filter(pl.col("tool") == "rustsasa").iter_rows(named=True):
             rs_by_threads[row["threads"]] = row["mean_s"]
 
+        # Build table
         table = Table(title=f"Batch Benchmark: {bench_name}")
         table.add_column("Tool", style="cyan")
         table.add_column("Precision")
@@ -215,6 +222,8 @@ def summary(
         table.add_column("Mean", justify="right")
         table.add_column("Std Dev", justify="right")
         table.add_column("RSS", justify="right")
+        if n_files:
+            table.add_column("files/sec", justify="right")
         if fs_time is not None:
             table.add_column("vs FreeSASA", justify="right")
         if rs_by_threads:
@@ -234,13 +243,13 @@ def summary(
             vs_fs = _format_ratio(
                 fs_time / mean if fs_time else None, is_baseline=is_fs
             )
-
             rs_time = rs_by_threads.get(threads)
             vs_rs = _format_ratio(
                 rs_time / mean if rs_time else None, is_baseline=is_rs
             )
 
             rss_str = f"{rss:.0f} MB" if rss > 0 else "-"
+            fps_str = f"{n_files / mean:,.0f}" if n_files else ""
 
             cols = [
                 tool,
@@ -250,6 +259,8 @@ def summary(
                 f"±{stddev:.3f}",
                 rss_str,
             ]
+            if n_files:
+                cols.append(fps_str)
             if fs_time is not None:
                 cols.append(vs_fs)
             if rs_by_threads:
@@ -258,6 +269,8 @@ def summary(
             table.add_row(*cols)
 
         rprint(table)
+        if n_files:
+            rprint(f"[dim]  {n_files:,} files in dataset[/dim]")
         rprint()
 
     rprint("[dim]>1x = faster than baseline[/dim]")
@@ -280,25 +293,16 @@ def plot(
 
 def _plot_time(df: pl.DataFrame, bench_name: str):
     """Generate time comparison bar chart for one benchmark."""
-    fs_time = _get_baseline(df, "freesasa")
-
-    # RustSASA baseline per thread count
-    rs_by_threads: dict[int, float] = {}
-    for row in df.filter(pl.col("tool") == "rustsasa").iter_rows(named=True):
-        rs_by_threads[row["threads"]] = row["mean_s"]
-
     labels = []
     times = []
     errors = []
     colors = []
-    thread_counts = []
 
     for row in df.iter_rows(named=True):
         labels.append(_make_label(row["tool"], row["precision"], row["threads"]))
         times.append(row["mean_s"])
         errors.append(row["stddev_s"])
         colors.append(_get_color(row["tool"], row["precision"]))
-        thread_counts.append(row["threads"])
 
     fig, ax = plt.subplots(figsize=(max(8, len(labels) * 1.5), 6))
 
@@ -307,22 +311,14 @@ def _plot_time(df: pl.DataFrame, bench_name: str):
         x, times, yerr=errors, color=colors, width=0.6, edgecolor="white", capsize=4
     )
 
-    # Annotate bars with time and speedup (same thread count comparison)
-    for bar, t, tc in zip(bars, times, thread_counts):
-        rs_time = rs_by_threads.get(tc)
-        parts = [f"{t:.1f}s"]
-        if fs_time and t != fs_time:
-            parts.append(f"vs FS: {fs_time / t:.1f}x")
-        if rs_time and t != rs_time:
-            parts.append(f"vs RS: {rs_time / t:.1f}x")
-
+    for bar, t in zip(bars, times):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + bar.get_height() * 0.03,
-            "\n".join(parts),
+            bar.get_height() + max(times) * 0.02,
+            f"{t:.2f}s",
             ha="center",
             va="bottom",
-            fontsize=9,
+            fontsize=10,
             fontweight="bold",
         )
 
@@ -331,13 +327,136 @@ def _plot_time(df: pl.DataFrame, bench_name: str):
     ax.set_ylabel("Time (seconds)")
     ax.grid(True, alpha=0.3, axis="y")
     ax.set_title(f"Batch Processing Time: {bench_name}")
-
-    # Add margin at top for labels
-    ymax = max(times) * 1.25
-    ax.set_ylim(0, ymax)
+    ax.set_ylim(0, max(times) * 1.15)
 
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = PLOTS_DIR.joinpath(f"{bench_name}_time.png")
+    fig.savefig(out_path)
+    plt.close(fig)
+    rprint(f"[green]Saved:[/green] {out_path}")
+
+
+@app.command()
+def speedup(
+    name: Annotated[
+        str | None,
+        typer.Option("--name", "-n", help="Benchmark name (e.g., ecoli)"),
+    ] = None,
+):
+    """Generate speedup bar chart (zsasa vs FreeSASA / RustSASA)."""
+    setup_style()
+
+    for bench_name in _get_benchmarks(name):
+        df = _sort_df(load_batch_data(bench_name))
+        _plot_speedup(df, bench_name)
+
+
+def _plot_speedup(df: pl.DataFrame, bench_name: str):
+    """Generate separate speedup bar charts vs FreeSASA and vs RustSASA."""
+    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # vs FreeSASA (1t baseline) — all other tools
+    fs_rows = df.filter(pl.col("tool") == "freesasa")
+    if fs_rows.height > 0:
+        fs_time = fs_rows["mean_s"][0]
+        fs_std = fs_rows["stddev_s"][0]
+
+        entries = []
+        other_rows = _sort_df(df.filter(pl.col("tool") != "freesasa"))
+        for row in other_rows.iter_rows(named=True):
+            tool = row["tool"]
+            prec = row["precision"]
+            threads = row["threads"]
+            mean = row["mean_s"]
+            stddev = row["stddev_s"]
+
+            ratio = fs_time / mean
+            err = ratio * ((fs_std / fs_time) ** 2 + (stddev / mean) ** 2) ** 0.5
+            entries.append(
+                {
+                    "label": _make_label(tool, prec, threads),
+                    "speedup": ratio,
+                    "error": err,
+                    "color": _get_color(tool, prec),
+                }
+            )
+
+        _draw_speedup_bar(
+            entries,
+            f"Speedup vs FreeSASA (1t): {bench_name}",
+            PLOTS_DIR.joinpath(f"{bench_name}_speedup_vs_freesasa.png"),
+        )
+
+    # vs RustSASA (matched threads) — zsasa only
+    rs_rows = df.filter(pl.col("tool") == "rustsasa")
+    zsasa_rows = df.filter(pl.col("tool") == "zsasa")
+    if rs_rows.height > 0 and zsasa_rows.height > 0:
+        rs_by_threads: dict[int, tuple[float, float]] = {}
+        for row in rs_rows.iter_rows(named=True):
+            rs_by_threads[row["threads"]] = (row["mean_s"], row["stddev_s"])
+
+        entries = []
+        for row in zsasa_rows.iter_rows(named=True):
+            prec = row["precision"]
+            threads = row["threads"]
+            mean = row["mean_s"]
+            stddev = row["stddev_s"]
+
+            if threads not in rs_by_threads:
+                continue
+            rs_time, rs_std = rs_by_threads[threads]
+            ratio = rs_time / mean
+            err = ratio * ((rs_std / rs_time) ** 2 + (stddev / mean) ** 2) ** 0.5
+            entries.append(
+                {
+                    "label": f"zsasa ({prec}, {threads}t)",
+                    "speedup": ratio,
+                    "error": err,
+                    "color": _get_color("zsasa", prec),
+                }
+            )
+
+        if entries:
+            _draw_speedup_bar(
+                entries,
+                f"zsasa Speedup vs RustSASA (matched threads): {bench_name}",
+                PLOTS_DIR.joinpath(f"{bench_name}_speedup_vs_rustsasa.png"),
+            )
+
+
+def _draw_speedup_bar(entries: list[dict], title: str, out_path: Path):
+    """Draw and save a horizontal speedup bar chart."""
+    fig, ax = plt.subplots(figsize=(10, max(3, len(entries) * 0.7)))
+
+    labels = [e["label"] for e in entries]
+    speedups = [e["speedup"] for e in entries]
+    errors = [e["error"] for e in entries]
+    colors = [e["color"] for e in entries]
+
+    y_pos = range(len(labels))
+    ax.barh(
+        y_pos,
+        speedups,
+        xerr=errors,
+        color=colors,
+        capsize=4,
+        height=0.6,
+        edgecolor="white",
+    )
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(labels)
+    ax.set_xlabel("Speedup (mean ± propagated std)")
+    ax.axvline(x=1.0, color="gray", linestyle="--", linewidth=1.5)
+
+    for i, s in enumerate(speedups):
+        ax.text(s + max(speedups) * 0.02, i, f"{s:.2f}x", va="center", fontsize=10)
+
+    ax.set_title(title)
+    ax.set_xlim(0, max(speedups) * 1.2)
+    ax.grid(True, alpha=0.3, axis="x")
+
+    fig.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)
     rprint(f"[green]Saved:[/green] {out_path}")
@@ -404,218 +523,6 @@ def _plot_memory(df: pl.DataFrame, bench_name: str):
     rprint(f"[green]Saved:[/green] {out_path}")
 
 
-def _load_sasa_values(
-    temp_out: Path,
-) -> dict[str, dict[str, float]]:
-    """Load total SASA from each tool's output files.
-
-    Returns {tool_name: {structure_name: total_sasa}}.
-    """
-    tools: dict[str, dict[str, float]] = {}
-
-    for tool_dir in sorted(temp_out.iterdir()):
-        if not tool_dir.is_dir():
-            continue
-
-        tool_name = tool_dir.name
-        sasa_map: dict[str, float] = {}
-
-        # Determine parser based on directory name
-        if tool_name.startswith("zig"):
-            parser = "zig"
-        elif tool_name == "freesasa":
-            parser = "freesasa"
-        elif tool_name == "rustsasa":
-            parser = "rustsasa"
-        else:
-            continue
-
-        for json_file in sorted(tool_dir.glob("*.json")):
-            structure = json_file.stem
-            try:
-                with open(json_file) as f:
-                    data = json.load(f)
-
-                if parser == "zig":
-                    total = data.get("total_area", 0.0)
-                elif parser == "freesasa":
-                    total = 0.0
-                    for struct in data.get("results", [{}])[0].get("structure", []):
-                        for chain in struct.get("chains", []):
-                            total += chain.get("area", {}).get("total", 0.0)
-                elif parser == "rustsasa":
-                    total = sum(r.get("value", 0.0) for r in data.get("Residue", []))
-                else:
-                    continue
-
-                sasa_map[structure] = total
-            except (json.JSONDecodeError, KeyError, IndexError):
-                continue
-
-        if sasa_map:
-            tools[tool_name] = sasa_map
-
-    return tools
-
-
-def _compute_pairwise_stats(
-    values_a: list[float], values_b: list[float]
-) -> dict[str, float]:
-    """Compute pairwise comparison statistics."""
-    import numpy as np
-
-    a = np.array(values_a)
-    b = np.array(values_b)
-    diff = a - b
-    abs_diff = np.abs(diff)
-
-    # Relative error (avoid division by zero)
-    nonzero = b != 0
-    rel_errors = np.zeros_like(a)
-    rel_errors[nonzero] = np.abs(diff[nonzero]) / b[nonzero] * 100
-
-    r_squared = np.corrcoef(a, b)[0, 1] ** 2
-
-    return {
-        "n": len(a),
-        "r_squared": float(r_squared),
-        "mean_abs_diff": float(np.mean(abs_diff)),
-        "max_abs_diff": float(np.max(abs_diff)),
-        "mean_rel_error_pct": float(np.mean(rel_errors)),
-        "max_rel_error_pct": float(np.max(rel_errors)),
-        "median_rel_error_pct": float(np.median(rel_errors)),
-    }
-
-
-@app.command()
-def validate(
-    name: Annotated[
-        str,
-        typer.Option("--name", "-n", help="Benchmark name (e.g., ecoli)"),
-    ] = "ecoli",
-):
-    """Validate SASA areas across tools (zig vs FreeSASA vs RustSASA)."""
-    bench_dir = RESULTS_DIR.joinpath(name)
-    temp_out = bench_dir.joinpath("temp_out")
-
-    if not temp_out.exists():
-        rprint(f"[red]No temp_out directory found in {bench_dir}[/red]")
-        raise typer.Exit(1)
-
-    tools = _load_sasa_values(temp_out)
-    tool_names = sorted(tools.keys())
-    rprint(f"[bold]SASA Validation: {name}[/bold]")
-    rprint(f"Tools: {', '.join(tool_names)}")
-    for t in tool_names:
-        rprint(f"  {t}: {len(tools[t])} structures")
-    rprint()
-
-    # Pairwise comparison table
-    pairs = []
-    for i, t1 in enumerate(tool_names):
-        for t2 in tool_names[i + 1 :]:
-            pairs.append((t1, t2))
-
-    table = Table(title="Pairwise SASA Comparison")
-    table.add_column("Pair", style="cyan")
-    table.add_column("N", justify="right")
-    table.add_column("R\u00b2", justify="right")
-    table.add_column("Mean |diff|", justify="right")
-    table.add_column("Max |diff|", justify="right")
-    table.add_column("Mean rel err", justify="right")
-    table.add_column("Max rel err", justify="right")
-    table.add_column("Median rel err", justify="right")
-
-    pair_data: dict[tuple[str, str], tuple[list[str], list[float], list[float]]] = {}
-    for t1, t2 in pairs:
-        common = sorted(set(tools[t1].keys()) & set(tools[t2].keys()))
-        if not common:
-            continue
-
-        vals_a = [tools[t1][s] for s in common]
-        vals_b = [tools[t2][s] for s in common]
-        stats = _compute_pairwise_stats(vals_a, vals_b)
-        pair_data[(t1, t2)] = (common, vals_a, vals_b)
-
-        table.add_row(
-            f"{t1} vs {t2}",
-            str(stats["n"]),
-            f"{stats['r_squared']:.8f}",
-            f"{stats['mean_abs_diff']:.4f} \u00c5\u00b2",
-            f"{stats['max_abs_diff']:.4f} \u00c5\u00b2",
-            f"{stats['mean_rel_error_pct']:.4f}%",
-            f"{stats['max_rel_error_pct']:.4f}%",
-            f"{stats['median_rel_error_pct']:.4f}%",
-        )
-
-    rprint(table)
-    rprint()
-
-    # Generate scatter plots
-    setup_style()
-    plot_dir = PLOTS_DIR.joinpath(f"{name}")
-    plot_dir.mkdir(parents=True, exist_ok=True)
-
-    for (t1, t2), (common, vals_a, vals_b) in pair_data.items():
-        import numpy as np
-
-        a = np.array(vals_a)
-        b = np.array(vals_b)
-        stats = _compute_pairwise_stats(vals_a, vals_b)
-
-        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-
-        # Left: scatter plot
-        ax = axes[0]
-        ax.scatter(a, b, alpha=0.3, s=8, color="#3498db", edgecolors="none")
-        max_val = max(a.max(), b.max()) * 1.05
-        ax.plot([0, max_val], [0, max_val], "r--", linewidth=1, label="y = x")
-        ax.set_xlabel(f"{t1} SASA (\u00c5\u00b2)")
-        ax.set_ylabel(f"{t2} SASA (\u00c5\u00b2)")
-        ax.set_title(f"{t1} vs {t2} (n={len(common):,})")
-        ax.set_aspect("equal")
-        ax.legend(loc="lower right")
-
-        stats_text = (
-            f"R\u00b2 = {stats['r_squared']:.8f}\n"
-            f"Mean err = {stats['mean_rel_error_pct']:.4f}%\n"
-            f"Max err = {stats['max_rel_error_pct']:.4f}%"
-        )
-        ax.text(
-            0.05,
-            0.95,
-            stats_text,
-            transform=ax.transAxes,
-            fontsize=9,
-            verticalalignment="top",
-            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.7),
-        )
-
-        # Right: relative error histogram
-        ax2 = axes[1]
-        nonzero = b != 0
-        rel_err = np.abs(a[nonzero] - b[nonzero]) / b[nonzero] * 100
-        ax2.hist(rel_err, bins=50, color="#3498db", edgecolor="white", alpha=0.8)
-        ax2.axvline(
-            np.median(rel_err),
-            color="red",
-            linestyle="--",
-            label=f"median={np.median(rel_err):.4f}%",
-        )
-        ax2.set_xlabel("Relative Error (%)")
-        ax2.set_ylabel("Count")
-        ax2.set_title("Relative Error Distribution")
-        ax2.legend()
-
-        fig.suptitle(f"SASA Validation: {name}", fontsize=14, fontweight="bold")
-        fig.tight_layout()
-
-        out_path = plot_dir.joinpath(f"{name}_validate_{t1}_vs_{t2}.png")
-        fig.savefig(out_path)
-        plt.close(fig)
-        rprint(f"[green]Saved:[/green] {out_path}")
-
-
 @app.command("all")
 def all_commands(
     name: Annotated[
@@ -623,15 +530,14 @@ def all_commands(
         typer.Option("--name", "-n", help="Benchmark name (e.g., ecoli)"),
     ] = None,
 ):
-    """Generate summary, time chart, memory chart, and validation."""
+    """Generate summary, time chart, speedup chart, and memory chart."""
     summary(name)
     rprint()
     plot(name)
     rprint()
+    speedup(name)
+    rprint()
     memory(name)
-    if name:
-        rprint()
-        validate(name)
 
 
 if __name__ == "__main__":
