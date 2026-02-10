@@ -105,7 +105,7 @@ def summary():
     rprint(table)
 
     # Speedup summary
-    rprint("\n[bold]Speedup Ratios (Zig vs others):[/bold]")
+    rprint("\n[bold]Speedup Ratios (zsasa vs others):[/bold]")
     for algo in ["sr", "lr"]:
         df_algo = df_t1.filter(pl.col("algorithm") == algo)
         if df_algo.height == 0:
@@ -117,34 +117,34 @@ def summary():
             .drop_nulls()
         )
 
-        zig_col = "zig_f64" if "zig_f64" in pivot.columns else "zig"
+        zsasa_col = "zsasa_f64" if "zsasa_f64" in pivot.columns else "zsasa"
 
-        if zig_col in pivot.columns and "freesasa" in pivot.columns:
+        if zsasa_col in pivot.columns and "freesasa" in pivot.columns:
             speedup = pivot.select(
-                (pl.col("freesasa") / pl.col(zig_col)).alias("speedup")
+                (pl.col("freesasa") / pl.col(zsasa_col)).alias("speedup")
             )
             med = speedup["speedup"].median()
             mean = speedup["speedup"].mean()
             rprint(
-                f"  {algo.upper()}: Zig vs FreeSASA = [green]{med:.2f}x[/green] (median), {mean:.2f}x (mean)"
+                f"  {algo.upper()}: zsasa vs FreeSASA = [green]{med:.2f}x[/green] (median), {mean:.2f}x (mean)"
             )
 
-        if "zig_f32" in pivot.columns and "zig_f64" in pivot.columns:
+        if "zsasa_f32" in pivot.columns and "zsasa_f64" in pivot.columns:
             speedup = pivot.select(
-                (pl.col("zig_f64") / pl.col("zig_f32")).alias("speedup")
+                (pl.col("zsasa_f64") / pl.col("zsasa_f32")).alias("speedup")
             )
             med = speedup["speedup"].median()
             rprint(
-                f"  {algo.upper()}: Zig(f32) vs Zig(f64) = [green]{med:.2f}x[/green] (median)"
+                f"  {algo.upper()}: zsasa(f32) vs zsasa(f64) = [green]{med:.2f}x[/green] (median)"
             )
 
-        if algo == "sr" and "rust" in pivot.columns and zig_col in pivot.columns:
+        if algo == "sr" and "rustsasa" in pivot.columns and zsasa_col in pivot.columns:
             speedup_rust = pivot.select(
-                (pl.col("rust") / pl.col(zig_col)).alias("speedup")
+                (pl.col("rustsasa") / pl.col(zsasa_col)).alias("speedup")
             )
             med = speedup_rust["speedup"].median()
             rprint(
-                f"  {algo.upper()}: Zig vs Rust = [green]{med:.2f}x[/green] (median)"
+                f"  {algo.upper()}: zsasa vs RustSASA = [green]{med:.2f}x[/green] (median)"
             )
 
     # Speedup by size bin table (SR only)
@@ -158,8 +158,8 @@ def summary():
     bin_table = Table(title="SR Speedup by Structure Size (threads=1)")
     bin_table.add_column("Size Bin", style="cyan")
     bin_table.add_column("Count", justify="right")
-    bin_table.add_column("Zig vs FreeSASA", justify="right")
-    bin_table.add_column("Zig vs Rust", justify="right")
+    bin_table.add_column("zsasa vs FreeSASA", justify="right")
+    bin_table.add_column("zsasa vs RustSASA", justify="right")
     bin_table.add_column("f32 vs f64", justify="right")
 
     bin_order = [b[2] for b in BINS]
@@ -169,9 +169,9 @@ def summary():
         if bin_name not in data_dict:
             continue
         row = data_dict[bin_name]
-        zig_fs = row.get("zig_f64_vs_freesasa")
-        zig_rust = row.get("zig_f64_vs_rust")
-        f32_f64 = row.get("zig_f32_vs_zig_f64")
+        zig_fs = row.get("zsasa_f64_vs_freesasa")
+        zig_rust = row.get("zsasa_f64_vs_rustsasa")
+        f32_f64 = row.get("zsasa_f32_vs_zsasa_f64")
 
         fs_str = f"{zig_fs:.2f}x" if zig_fs else "-"
         rust_str = f"{zig_rust:.2f}x" if zig_rust else "-"
@@ -290,7 +290,7 @@ def grid():
 
 @app.command()
 def validation():
-    """Generate SASA validation scatter plot (Zig vs FreeSASA)."""
+    """Generate SASA validation scatter plot (zsasa vs FreeSASA)."""
     plot_validation()
 
 
@@ -317,7 +317,7 @@ def speedup(
     min_atoms: int = typer.Option(50000, help="Minimum atom count for filtering"),
     top_n: int = typer.Option(5, help="Number of top entries to show"),
 ):
-    """Find structures with best Zig speedup at any thread count."""
+    """Find structures with best zsasa speedup at any thread count."""
     plot_speedup(min_atoms=min_atoms, top_n=top_n)
 
 
