@@ -11,6 +11,7 @@ from analyze_data import (
     PLOTS_DIR,
     add_size_bin,
     compute_speedup_by_bin,
+    display_name,
     load_data,
     setup_style,
 )
@@ -31,7 +32,7 @@ def _plot_scatter(df_algo: pl.DataFrame, algo: str, ax):
         ax.scatter(
             df_tool["n_atoms"].to_list(),
             df_tool["time_ms"].to_list(),
-            label=tool_label.replace("_", " ").title(),
+            label=display_name(tool_label),
             alpha=0.4,
             s=10,
             color=COLORS.get(tool_label, "#95a5a6"),
@@ -61,7 +62,7 @@ def _plot_threads(df_algo: pl.DataFrame, algo: str, ax):
             df_tool["threads"].to_list(),
             df_tool["median_time"].to_list(),
             marker="o",
-            label=tool_label.replace("_", " ").title(),
+            label=display_name(tool_label),
             color=COLORS.get(tool_label, "#95a5a6"),
             linestyle=LINESTYLES.get(tool_label, "-"),
             linewidth=2,
@@ -88,9 +89,9 @@ def _plot_speedup_single(
     x_pos = list(range(len(x_labels)))
 
     comparisons = [
-        ("zig_f64_vs_freesasa", "Zig(f64) vs FreeSASA", "o", "#3498db"),
-        ("zig_f64_vs_rust", "Zig(f64) vs Rust", "s", "#e74c3c"),
-        ("freesasa_vs_rust", "FreeSASA vs Rust", "D", "#9b59b6"),
+        ("zsasa_f64_vs_freesasa", "zsasa(f64) vs FreeSASA", "o", "#3498db"),
+        ("zsasa_f64_vs_rustsasa", "zsasa(f64) vs RustSASA", "s", "#e74c3c"),
+        ("freesasa_vs_rustsasa", "FreeSASA vs RustSASA", "D", "#9b59b6"),
     ]
 
     for col_name, label, marker, color in comparisons:
@@ -248,8 +249,8 @@ def plot_grid():
         fig_single, ax_single = plt.subplots(figsize=(12, 6))
         _plot_speedup_single(df_sr, threads, ax_single, show_legend=True)
         ax_single.set_xlabel("Structure Size (atoms)")
-        ax_single.set_ylabel("Speedup Ratio (>1 = Zig faster)")
-        ax_single.set_title(f"SR Algorithm: Zig Speedup (threads={threads})")
+        ax_single.set_ylabel("Speedup Ratio (>1 = zsasa faster)")
+        ax_single.set_title(f"SR Algorithm: zsasa Speedup (threads={threads})")
         fig_single.tight_layout()
         out_path = individual_dir.joinpath(f"t{threads}.png")
         fig_single.savefig(out_path)
@@ -277,7 +278,7 @@ def plot_grid():
         axes[row][col].set_visible(False)
 
     fig.suptitle(
-        "SR Algorithm: Zig Speedup by Structure Size and Thread Count", fontsize=14
+        "SR Algorithm: zsasa Speedup by Structure Size and Thread Count", fontsize=14
     )
     fig.tight_layout()
 
@@ -288,7 +289,7 @@ def plot_grid():
 
 
 def plot_validation():
-    """Generate SASA validation scatter plot (Zig f64 vs FreeSASA)."""
+    """Generate SASA validation scatter plot (zsasa f64 vs FreeSASA)."""
     import numpy as np
 
     setup_style()
@@ -309,32 +310,32 @@ def plot_validation():
         )
 
         # Try zig_f64 first, fall back to zig
-        zig_col = "zig_f64" if "zig_f64" in pivot.columns else "zig"
-        if zig_col not in pivot.columns or "freesasa" not in pivot.columns:
+        zsasa_col = "zsasa_f64" if "zsasa_f64" in pivot.columns else "zsasa"
+        if zsasa_col not in pivot.columns or "freesasa" not in pivot.columns:
             continue
 
-        zig_sasa = pivot[zig_col].to_list()
+        zsasa_sasa = pivot[zsasa_col].to_list()
         fs_sasa = pivot["freesasa"].to_list()
 
         fig, ax = plt.subplots(figsize=(8, 8))
-        ax.scatter(zig_sasa, fs_sasa, alpha=0.3, s=10, color="#3498db")
+        ax.scatter(zsasa_sasa, fs_sasa, alpha=0.3, s=10, color="#3498db")
 
-        max_val = max(max(zig_sasa), max(fs_sasa))
+        max_val = max(max(zsasa_sasa), max(fs_sasa))
         ax.plot([0, max_val], [0, max_val], "r--", linewidth=1.5, label="y = x")
 
-        zig_arr = np.array(zig_sasa)
+        zsasa_arr = np.array(zsasa_sasa)
         fs_arr = np.array(fs_sasa)
-        correlation = np.corrcoef(zig_arr, fs_arr)[0, 1]
+        correlation = np.corrcoef(zsasa_arr, fs_arr)[0, 1]
         r_squared = correlation**2
 
-        rel_errors = np.abs(zig_arr - fs_arr) / fs_arr * 100
+        rel_errors = np.abs(zsasa_arr - fs_arr) / fs_arr * 100
         max_rel_error = np.max(rel_errors)
         mean_rel_error = np.mean(rel_errors)
 
-        zig_label = "Zig(f64)" if zig_col == "zig_f64" else "Zig"
-        ax.set_xlabel(f"{zig_label} SASA")
+        zsasa_label = "zsasa (f64)" if zsasa_col == "zsasa_f64" else "zsasa"
+        ax.set_xlabel(f"{zsasa_label} SASA")
         ax.set_ylabel("FreeSASA SASA")
-        ax.set_title(f"{algo.upper()}: SASA Validation (n={len(zig_sasa):,})")
+        ax.set_title(f"{algo.upper()}: SASA Validation (n={len(zsasa_sasa):,})")
         ax.legend()
 
         stats_text = f"R² = {r_squared:.6f}\nMean error = {mean_rel_error:.4f}%\nMax error = {max_rel_error:.4f}%"
@@ -419,7 +420,7 @@ def plot_samples():
                     df_tool["threads"].to_list(),
                     df_tool["time_ms"].to_list(),
                     marker="o",
-                    label=tool_label.replace("_", " ").title(),
+                    label=display_name(tool_label),
                     color=COLORS.get(tool_label, "#95a5a6"),
                     linestyle=LINESTYLES.get(tool_label, "-"),
                     linewidth=1.5,
@@ -465,7 +466,7 @@ def plot_samples():
                 df_tool["threads"].to_list(),
                 df_tool["time_ms"].to_list(),
                 marker="o",
-                label=tool_label.replace("_", " ").title(),
+                label=display_name(tool_label),
                 color=COLORS.get(tool_label, "#95a5a6"),
                 linestyle=LINESTYLES.get(tool_label, "-"),
                 linewidth=2,
@@ -523,15 +524,17 @@ def plot_large():
         )
 
     # LR section
-    zig_lr_col = (
-        "zig_f64" if "zig_f64" in pivots.get("lr", pl.DataFrame()).columns else "zig"
+    zsasa_lr_col = (
+        "zsasa_f64"
+        if "zsasa_f64" in pivots.get("lr", pl.DataFrame()).columns
+        else "zsasa"
     )
     if (
         "lr" in pivots
-        and zig_lr_col in pivots["lr"].columns
+        and zsasa_lr_col in pivots["lr"].columns
         and "freesasa" in pivots["lr"].columns
     ):
-        speedup = pivots["lr"]["freesasa"] / pivots["lr"][zig_lr_col]
+        speedup = pivots["lr"]["freesasa"] / pivots["lr"][zsasa_lr_col]
         results.append(
             {
                 "label": "vs FreeSASA (LR)",
@@ -545,13 +548,13 @@ def plot_large():
     # SR section
     if (
         "sr" in pivots
-        and "zig_f64" in pivots["sr"].columns
-        and "rust" in pivots["sr"].columns
+        and "zsasa_f64" in pivots["sr"].columns
+        and "rustsasa" in pivots["sr"].columns
     ):
-        speedup = pivots["sr"]["rust"] / pivots["sr"]["zig_f64"]
+        speedup = pivots["sr"]["rustsasa"] / pivots["sr"]["zsasa_f64"]
         results.append(
             {
-                "label": "vs Rust (SR)",
+                "label": "vs RustSASA (SR)",
                 "speedup": speedup.median(),
                 "q25": speedup.quantile(0.25),
                 "q75": speedup.quantile(0.75),
@@ -561,10 +564,10 @@ def plot_large():
 
     if (
         "sr" in pivots
-        and "zig_f64" in pivots["sr"].columns
+        and "zsasa_f64" in pivots["sr"].columns
         and "freesasa" in pivots["sr"].columns
     ):
-        speedup = pivots["sr"]["freesasa"] / pivots["sr"]["zig_f64"]
+        speedup = pivots["sr"]["freesasa"] / pivots["sr"]["zsasa_f64"]
         results.append(
             {
                 "label": "vs FreeSASA (SR)",
@@ -604,7 +607,7 @@ def plot_large():
         df_large.filter(pl.col("algorithm") == "sr").select("structure").unique().height
     )
     ax.set_title(
-        f"Zig Speedup on Large Structures (50k+ atoms, n={n_structs}, threads={max_threads})"
+        f"zsasa Speedup on Large Structures (50k+ atoms, n={n_structs}, threads={max_threads})"
     )
     ax.set_xlim(0, max(speedups) * 1.2)
     ax.grid(True, alpha=0.3, axis="x")
@@ -648,7 +651,7 @@ def plot_efficiency():
         (pl.col("t1_ms") / (pl.col("time_ms") * pl.col("threads"))).alias("efficiency")
     )
 
-    tool_labels = ["zig_f64", "freesasa", "rust"]
+    tool_labels = ["zsasa_f64", "freesasa", "rustsasa"]
     max_threads = df_sr["threads"].max()
 
     df_tmax = df_eff.filter(pl.col("threads") == max_threads)
@@ -658,9 +661,9 @@ def plot_efficiency():
     )
     summary_table.add_column("Size Bin", style="cyan")
     summary_table.add_column("Count", justify="right")
-    summary_table.add_column("Zig(f64)", justify="right")
+    summary_table.add_column("zsasa (f64)", justify="right")
     summary_table.add_column("FreeSASA", justify="right")
-    summary_table.add_column("Rust", justify="right")
+    summary_table.add_column("RustSASA", justify="right")
 
     bin_order = [b[2] for b in BINS]
 
@@ -683,9 +686,7 @@ def plot_efficiency():
         summary_table.add_row(*row_values)
 
     rprint(summary_table)
-    rprint(
-        "[dim]Efficiency = T1 / (TN * N). Higher = better thread utilization[/dim]"
-    )
+    rprint("[dim]Efficiency = T1 / (TN * N). Higher = better thread utilization[/dim]")
 
     # Plot efficiency by size bin
     fig, ax = plt.subplots(figsize=(14, 6))
@@ -710,7 +711,7 @@ def plot_efficiency():
             [x + offset for x in x_pos],
             tool_eff,
             bar_width,
-            label=tool.replace("_", " ").title(),
+            label=display_name(tool),
             color=COLORS.get(tool, "#95a5a6"),
         )
 
@@ -731,7 +732,7 @@ def plot_efficiency():
 
 
 def plot_speedup(min_atoms: int = 50000, top_n: int = 5):
-    """Find structures with best Zig speedup at any thread count."""
+    """Find structures with best zsasa speedup at any thread count."""
     from rich.table import Table
 
     setup_style()
@@ -752,22 +753,22 @@ def plot_speedup(min_atoms: int = 50000, top_n: int = 5):
         .drop_nulls()
     )
 
-    zig_col = "zig_f64" if "zig_f64" in pivot.columns else "zig"
-    if zig_col not in pivot.columns:
-        rprint("[red]No zig data found[/red]")
+    zsasa_col = "zsasa_f64" if "zsasa_f64" in pivot.columns else "zsasa"
+    if zsasa_col not in pivot.columns:
+        rprint("[red]No zsasa data found[/red]")
         return
 
     speedup_cols = []
     if "freesasa" in pivot.columns:
         pivot = pivot.with_columns(
-            (pl.col("freesasa") / pl.col(zig_col)).alias("vs_freesasa")
+            (pl.col("freesasa") / pl.col(zsasa_col)).alias("vs_freesasa")
         )
         speedup_cols.append("vs_freesasa")
-    if "rust" in pivot.columns:
+    if "rustsasa" in pivot.columns:
         pivot = pivot.with_columns(
-            (pl.col("rust") / pl.col(zig_col)).alias("vs_rust")
+            (pl.col("rustsasa") / pl.col(zsasa_col)).alias("vs_rustsasa")
         )
-        speedup_cols.append("vs_rust")
+        speedup_cols.append("vs_rustsasa")
 
     plot_dir = PLOTS_DIR.joinpath("speedup")
     plot_dir.mkdir(parents=True, exist_ok=True)
@@ -779,7 +780,7 @@ def plot_speedup(min_atoms: int = 50000, top_n: int = 5):
         top_entries = pivot.sort(col, descending=True).head(top_n)
 
         table = Table(
-            title=f"Top {top_n} Zig Speedup vs {comparison.title()} ({min_atoms:,}+ atoms)"
+            title=f"Top {top_n} zsasa Speedup vs {display_name(comparison)} ({min_atoms:,}+ atoms)"
         )
         table.add_column("Rank", style="dim")
         table.add_column("Structure", style="cyan")
@@ -814,12 +815,12 @@ def plot_speedup(min_atoms: int = 50000, top_n: int = 5):
         return
 
     best_fs = results["freesasa"][0]
-    best_rust = results["rust"][0]
+    best_rs = results["rustsasa"][0]
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     for idx, (comparison, best) in enumerate(
-        [("freesasa", best_fs), ("rust", best_rust)]
+        [("freesasa", best_fs), ("rustsasa", best_rs)]
     ):
         ax = axes[idx]
         struct = best["structure"]
@@ -829,7 +830,7 @@ def plot_speedup(min_atoms: int = 50000, top_n: int = 5):
 
         threads_list = df_struct["threads"].to_list()
         vs_fs = df_struct["vs_freesasa"].to_list()
-        vs_rust = df_struct["vs_rust"].to_list()
+        vs_rs = df_struct["vs_rustsasa"].to_list()
 
         ax.plot(
             threads_list,
@@ -842,9 +843,9 @@ def plot_speedup(min_atoms: int = 50000, top_n: int = 5):
         )
         ax.plot(
             threads_list,
-            vs_rust,
+            vs_rs,
             marker="s",
-            label="vs Rust",
+            label="vs RustSASA",
             color="#e74c3c",
             linewidth=2,
             markersize=8,
@@ -866,8 +867,8 @@ def plot_speedup(min_atoms: int = 50000, top_n: int = 5):
             fontsize=10,
         )
         ax.annotate(
-            f"{vs_rust[-1]:.2f}x",
-            xy=(threads_list[-1], vs_rust[-1]),
+            f"{vs_rs[-1]:.2f}x",
+            xy=(threads_list[-1], vs_rs[-1]),
             xytext=(5, 0),
             textcoords="offset points",
             color="#e74c3c",
@@ -876,16 +877,16 @@ def plot_speedup(min_atoms: int = 50000, top_n: int = 5):
 
         best_fs_val = max(vs_fs)
         best_fs_t = threads_list[vs_fs.index(best_fs_val)]
-        best_rust_val = max(vs_rust)
-        best_rust_t = threads_list[vs_rust.index(best_rust_val)]
+        best_rs_val = max(vs_rs)
+        best_rs_t = threads_list[vs_rs.index(best_rs_val)]
 
         if comparison == "freesasa":
             title = f"{struct} ({n_atoms:,} atoms)\nBest vs FreeSASA: {best_fs_val:.2f}x @ threads={best_fs_t}"
         else:
-            title = f"{struct} ({n_atoms:,} atoms)\nBest vs Rust: {best_rust_val:.2f}x @ threads={best_rust_t}"
+            title = f"{struct} ({n_atoms:,} atoms)\nBest vs RustSASA: {best_rs_val:.2f}x @ threads={best_rs_t}"
         ax.set_title(title)
 
-    fig.suptitle("Zig Speedup vs FreeSASA and Rust (SR Algorithm)", fontsize=14)
+    fig.suptitle("zsasa Speedup vs FreeSASA and RustSASA (SR Algorithm)", fontsize=14)
     fig.tight_layout()
 
     out_path = plot_dir.joinpath("comparison.png")

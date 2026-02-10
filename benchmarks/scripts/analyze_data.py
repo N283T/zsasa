@@ -13,20 +13,34 @@ PLOTS_DIR = RESULTS_DIR.joinpath("plots")
 # === Visual Constants ===
 
 COLORS = {
-    "zig": "#f39c12",  # Orange (LR uses plain "zig")
-    "zig_f32": "#e67e22",  # Dark orange
-    "zig_f64": "#f39c12",  # Light orange
+    "zsasa": "#f39c12",  # Orange (LR uses plain "zsasa")
+    "zsasa_f32": "#e67e22",  # Dark orange
+    "zsasa_f64": "#f39c12",  # Light orange
     "freesasa": "#3498db",  # Blue
-    "rust": "#e74c3c",  # Red
+    "rustsasa": "#e74c3c",  # Red
 }
 
 LINESTYLES = {
-    "zig": "-",
-    "zig_f32": "--",
-    "zig_f64": "-",
+    "zsasa": "-",
+    "zsasa_f32": "--",
+    "zsasa_f64": "-",
     "freesasa": "-",
-    "rust": "-",
+    "rustsasa": "-",
 }
+
+DISPLAY_NAMES = {
+    "zsasa_f64": "zsasa (f64)",
+    "zsasa_f32": "zsasa (f32)",
+    "zsasa": "zsasa",
+    "freesasa": "FreeSASA",
+    "rustsasa": "RustSASA",
+}
+
+
+def display_name(tool_label: str) -> str:
+    """Get display name for a tool label."""
+    return DISPLAY_NAMES.get(tool_label, tool_label)
+
 
 # === Size Bin Definitions (v2: 14 bins) ===
 
@@ -74,9 +88,14 @@ def load_data() -> pl.DataFrame:
     if "precision" not in df.columns:
         df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias("precision"))
 
-    # Create tool_label: zig_f64, zig_f32, freesasa, rust
+    # Remap tool names: zig → zsasa, rust → rustsasa
     df = df.with_columns(
-        pl.when((pl.col("tool") == "zig") & pl.col("precision").is_not_null())
+        pl.col("tool").replace({"zig": "zsasa", "rust": "rustsasa"}).alias("tool"),
+    )
+
+    # Create tool_label: zsasa_f64, zsasa_f32, freesasa, rustsasa
+    df = df.with_columns(
+        pl.when((pl.col("tool") == "zsasa") & pl.col("precision").is_not_null())
         .then(pl.concat_str([pl.col("tool"), pl.lit("_"), pl.col("precision")]))
         .otherwise(pl.col("tool"))
         .alias("tool_label")
@@ -128,33 +147,33 @@ def compute_speedup_by_bin(df: pl.DataFrame, threads: int = 1) -> pl.DataFrame:
 
     cols = pivot.columns
 
-    # zig_f64 vs FreeSASA
-    if "zig_f64" in cols and "freesasa" in cols:
+    # zsasa_f64 vs FreeSASA
+    if "zsasa_f64" in cols and "freesasa" in cols:
         pivot = pivot.with_columns(
-            (pl.col("freesasa") / pl.col("zig_f64")).alias("zig_f64_vs_freesasa")
+            (pl.col("freesasa") / pl.col("zsasa_f64")).alias("zsasa_f64_vs_freesasa")
         )
-    # Legacy: zig vs FreeSASA (LR without precision suffix)
-    elif "zig" in cols and "freesasa" in cols:
+    # Legacy: zsasa vs FreeSASA (LR without precision suffix)
+    elif "zsasa" in cols and "freesasa" in cols:
         pivot = pivot.with_columns(
-            (pl.col("freesasa") / pl.col("zig")).alias("zig_vs_freesasa")
-        )
-
-    # zig_f64 vs Rust
-    if "zig_f64" in cols and "rust" in cols:
-        pivot = pivot.with_columns(
-            (pl.col("rust") / pl.col("zig_f64")).alias("zig_f64_vs_rust")
+            (pl.col("freesasa") / pl.col("zsasa")).alias("zsasa_vs_freesasa")
         )
 
-    # zig_f32 vs zig_f64
-    if "zig_f32" in cols and "zig_f64" in cols:
+    # zsasa_f64 vs RustSASA
+    if "zsasa_f64" in cols and "rustsasa" in cols:
         pivot = pivot.with_columns(
-            (pl.col("zig_f64") / pl.col("zig_f32")).alias("zig_f32_vs_zig_f64")
+            (pl.col("rustsasa") / pl.col("zsasa_f64")).alias("zsasa_f64_vs_rustsasa")
         )
 
-    # FreeSASA vs Rust
-    if "freesasa" in cols and "rust" in cols:
+    # zsasa_f32 vs zsasa_f64
+    if "zsasa_f32" in cols and "zsasa_f64" in cols:
         pivot = pivot.with_columns(
-            (pl.col("rust") / pl.col("freesasa")).alias("freesasa_vs_rust")
+            (pl.col("zsasa_f64") / pl.col("zsasa_f32")).alias("zsasa_f32_vs_zsasa_f64")
+        )
+
+    # FreeSASA vs RustSASA
+    if "freesasa" in cols and "rustsasa" in cols:
+        pivot = pivot.with_columns(
+            (pl.col("rustsasa") / pl.col("freesasa")).alias("freesasa_vs_rustsasa")
         )
 
     pivot = add_size_bin(pivot)
@@ -163,7 +182,7 @@ def compute_speedup_by_bin(df: pl.DataFrame, threads: int = 1) -> pl.DataFrame:
     speedup_cols = [
         c
         for c in pivot.columns
-        if c.endswith(("_vs_freesasa", "_vs_rust", "_vs_zig_f64"))
+        if c.endswith(("_vs_freesasa", "_vs_rustsasa", "_vs_zsasa_f64"))
     ]
 
     agg_exprs = [pl.len().alias("count")]
