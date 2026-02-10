@@ -9,25 +9,26 @@ Runs benchmark for a single tool and algorithm with configurable thread counts.
 Uses internal timing (SASA-only) with warmup runs for statistical reliability.
 Results are saved to CSV with execution config in JSON.
 
+Tools: zig_f64 (default), zig_f32, freesasa, rust (zig = zig_f64 alias)
+
 Usage:
     # Default dataset (benchmarks/dataset/json/, ~2k structures)
-    ./benchmarks/scripts/bench.py --tool zig --algorithm sr --threads 1,4,10
+    ./benchmarks/scripts/bench.py --tool zig_f64 --algorithm sr
+    ./benchmarks/scripts/bench.py --tool zig_f32 --algorithm sr
+    ./benchmarks/scripts/bench.py --tool freesasa --algorithm sr
+
+    # "zig" is shorthand for "zig_f64"
+    ./benchmarks/scripts/bench.py --tool zig --algorithm sr
 
     # Quick test (no warmup, 1 run)
     ./benchmarks/scripts/bench.py --tool zig --algorithm sr --threads 1 --warmup 0 --runs 1
-
-    # Custom input directory
-    ./benchmarks/scripts/bench.py --tool zig --algorithm sr --input-dir /path/to/json
-
-    # With sample file (v2 format)
-    ./benchmarks/scripts/bench.py --tool zig --algorithm sr \\
-        --input-dir benchmarks/inputs \\
-        --sample-file benchmarks/dataset/sample.json
 
 Output:
     benchmarks/results/{tool}_{algorithm}/
     ├── config.json   # System info and parameters
     └── results.csv   # Benchmark results (warmup runs excluded)
+
+    Examples: zig_f64_sr/, zig_f32_sr/, freesasa_sr/, rust_sr/
 """
 
 from __future__ import annotations
@@ -54,8 +55,25 @@ from rich.table import Table
 app = typer.Typer(help="SASA benchmark runner")
 console = Console()
 
-TOOLS = ["zig", "freesasa", "rust"]
+TOOLS = ["zig_f64", "zig_f32", "freesasa", "rust"]
+TOOL_ALIASES = {"zig": "zig_f64"}
 ALGORITHMS = ["sr", "lr"]
+
+
+def parse_tool(tool: str) -> tuple[str, str, str]:
+    """Parse tool name into (canonical, base, precision).
+
+    Examples:
+        "zig_f64" -> ("zig_f64", "zig", "f64")
+        "zig_f32" -> ("zig_f32", "zig", "f32")
+        "zig"     -> ("zig_f64", "zig", "f64")  # alias
+        "freesasa" -> ("freesasa", "freesasa", "f64")
+        "rust"     -> ("rust", "rust", "f64")
+    """
+    tool = TOOL_ALIASES.get(tool, tool)
+    if tool.startswith("zig_f"):
+        return tool, "zig", tool.split("_")[1]
+    return tool, tool, "f64"
 
 
 def get_n_atoms_from_json(json_path: Path) -> int:
@@ -414,7 +432,11 @@ def print_summary(csv_path: Path, warmup: int, runs: int) -> None:
 def main(
     tool: Annotated[
         str,
-        typer.Option("--tool", "-t", help="Tool: zig, freesasa, rust"),
+        typer.Option(
+            "--tool",
+            "-t",
+            help="Tool: zig_f64, zig_f32, freesasa, rust (zig = zig_f64)",
+        ),
     ],
     algorithm: Annotated[
         str,
@@ -432,10 +454,6 @@ def main(
         int,
         typer.Option("--warmup", "-w", help="Warmup runs (not recorded)"),
     ] = 1,
-    precision: Annotated[
-        str,
-        typer.Option("--precision", "-p", help="Precision: f32, f64 (zig only)"),
-    ] = "f64",
     output_dir: Annotated[
         Path | None,
         typer.Option("--output-dir", "-o", help="Output directory"),
@@ -457,11 +475,14 @@ def main(
 
     thread_counts = parse_threads(threads)
 
-    # Validate tool
-    if tool not in TOOLS:
+    # Parse and validate tool
+    all_valid = list(TOOLS) + list(TOOL_ALIASES.keys())
+    if tool not in all_valid:
         console.print(f"[red]Error:[/red] Unknown tool: {tool}")
-        console.print(f"Available: {', '.join(TOOLS)}")
+        console.print(f"Available: {', '.join(TOOLS)} (zig = zig_f64)")
         raise typer.Exit(1)
+
+    tool_canonical, tool_base, precision = parse_tool(tool)
 
     # Validate algorithm
     if algorithm not in ALGORITHMS:
@@ -469,18 +490,9 @@ def main(
         console.print(f"Available: {', '.join(ALGORITHMS)}")
         raise typer.Exit(1)
 
-    if tool == "rust" and algorithm == "lr":
+    if tool_base == "rust" and algorithm == "lr":
         console.print("[red]Error:[/red] RustSASA only supports SR algorithm")
         raise typer.Exit(1)
-
-    if precision not in ("f32", "f64"):
-        console.print(f"[red]Error:[/red] Invalid precision: {precision}")
-        console.print("Available: f32, f64")
-        raise typer.Exit(1)
-
-    if precision != "f64" and tool != "zig":
-        console.print("[yellow]Warning:[/yellow] --precision only applies to zig tool")
-        precision = "f64"
 
     # Load sample filter
     sample_ids: set[str] | None = None
@@ -513,22 +525,18 @@ def main(
 
     # Filter by sample file if provided
     if sample_ids is not None:
-        structures = [
-            (pdb_id, n) for pdb_id, n in structures if pdb_id in sample_ids
-        ]
+        structures = [(pdb_id, n) for pdb_id, n in structures if pdb_id in sample_ids]
         if not structures:
             console.print("[red]Error:[/red] No matching structures found")
             raise typer.Exit(1)
 
-    console.print(
-        f"Found [cyan]{len(structures):,}[/cyan] structures in {json_dir}"
-    )
+    console.print(f"Found [cyan]{len(structures):,}[/cyan] structures in {json_dir}")
 
     # Setup output directory
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     if output_dir is None:
         output_dir = Path(__file__).parent.parent.joinpath(
-            "results", f"{tool}_{algorithm}"
+            "results", f"{tool_canonical}_{algorithm}"
         )
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -537,7 +545,8 @@ def main(
         "timestamp": timestamp,
         "system": get_system_info(),
         "parameters": {
-            "tool": tool,
+            "tool": tool_canonical,
+            "tool_base": tool_base,
             "algorithm": algorithm,
             "precision": precision,
             "thread_counts": thread_counts,
@@ -556,8 +565,7 @@ def main(
     total_warmup = len(structures) * len(thread_counts) * warmup
     total_all = total_measured + total_warmup
 
-    precision_str = f" ({precision})" if tool == "zig" else ""
-    console.print(f"\n[bold]{tool.upper()} {algorithm.upper()}{precision_str}[/bold]")
+    console.print(f"\n[bold]{tool_canonical.upper()} {algorithm.upper()}[/bold]")
     console.print(
         f"Threads: {thread_counts}, "
         f"Warmup: {warmup}, Runs: {runs}, "
@@ -601,17 +609,13 @@ def main(
                     if not json_path.exists():
                         json_path = json_dir.joinpath(f"{pdb_id}.json")
                     if not json_path.exists():
-                        console.print(
-                            f"[yellow]Skip {pdb_id}: not found[/yellow]"
-                        )
+                        console.print(f"[yellow]Skip {pdb_id}: not found[/yellow]")
                         continue
 
                     # Resolve n_atoms lazily
                     if n_atoms == 0:
                         if pdb_id not in n_atoms_cache:
-                            n_atoms_cache[pdb_id] = get_n_atoms_from_json(
-                                json_path
-                            )
+                            n_atoms_cache[pdb_id] = get_n_atoms_from_json(json_path)
                         n_atoms = n_atoms_cache[pdb_id]
 
                     # Warmup runs (not recorded)
@@ -620,7 +624,7 @@ def main(
                         progress.update(task, description=desc)
                         try:
                             run_benchmark(
-                                tool, json_path, algorithm, n_threads, precision
+                                tool_base, json_path, algorithm, n_threads, precision
                             )
                         except Exception:
                             pass
@@ -633,7 +637,7 @@ def main(
 
                         try:
                             sasa_time, total_sasa = run_benchmark(
-                                tool,
+                                tool_base,
                                 json_path,
                                 algorithm,
                                 n_threads,
@@ -642,7 +646,7 @@ def main(
 
                             writer.writerow(
                                 {
-                                    "tool": tool,
+                                    "tool": tool_base,
                                     "structure": pdb_id,
                                     "n_atoms": n_atoms,
                                     "algorithm": algorithm,
