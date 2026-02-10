@@ -1,0 +1,29 @@
+{
+  "results": [
+    {
+      "command": "/Users/nagaet/freesasa-zig/zig-out/bin/zsasa ../swissprot_pdb_v6 /Users/nagaet/freesasa-zig/benchmarks/results/batch/swissprot/temp_out/zig --threads=8 --parallelism=file --precision=f32",
+      "mean": 1487.1316872736934,
+      "stddev": 24.3827964944854,
+      "median": 1494.68748242736,
+      "user": 2985.657779326666,
+      "system": 139.05516236666665,
+      "min": 1459.8654258843599,
+      "max": 1506.8421535093598,
+      "times": [
+        1506.8421535093598,
+        1494.68748242736,
+        1459.8654258843599
+      ],
+      "memory_usage_byte": [
+        188612608,
+        188612608,
+        188612608
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

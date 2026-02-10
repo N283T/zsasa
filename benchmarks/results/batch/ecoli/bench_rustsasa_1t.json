@@ -1,0 +1,35 @@
+{
+  "results": [
+    {
+      "command": "/Users/nagaet/freesasa-zig/benchmarks/external/rustsasa-bench/target/release/rust-sasa benchmarks/UP000000625_83333_ECOLI_v6/pdb /Users/nagaet/freesasa-zig/benchmarks/results/batch/ecoli/temp_out/rustsasa --format json -t 1",
+      "mean": 29.532644896479997,
+      "stddev": 0.12321951939210816,
+      "median": 29.53539389668,
+      "user": 24.81024534,
+      "system": 0.66161672,
+      "min": 29.35058464668,
+      "max": 29.69808993768,
+      "times": [
+        29.35058464668,
+        29.53214460468,
+        29.54701139668,
+        29.69808993768,
+        29.53539389668
+      ],
+      "memory_usage_byte": [
+        40828928,
+        40828928,
+        40828928,
+        40828928,
+        40828928
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

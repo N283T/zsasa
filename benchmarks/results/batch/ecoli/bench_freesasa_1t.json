@@ -1,0 +1,35 @@
+{
+  "results": [
+    {
+      "command": "/Users/nagaet/freesasa-zig/benchmarks/external/freesasa-batch/sasa_batch benchmarks/UP000000625_83333_ECOLI_v6/pdb /Users/nagaet/freesasa-zig/benchmarks/results/batch/ecoli/temp_out/freesasa",
+      "mean": 45.185056155000005,
+      "stddev": 0.0723367429667183,
+      "median": 45.2075042634,
+      "user": 39.01945149999999,
+      "system": 2.13444856,
+      "min": 45.1127365554,
+      "max": 45.2829321384,
+      "times": [
+        45.2083003464,
+        45.1138074714,
+        45.2829321384,
+        45.1127365554,
+        45.2075042634
+      ],
+      "memory_usage_byte": [
+        135282688,
+        135282688,
+        135282688,
+        135282688,
+        135282688
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

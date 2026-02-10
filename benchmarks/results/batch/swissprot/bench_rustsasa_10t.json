@@ -1,0 +1,29 @@
+{
+  "results": [
+    {
+      "command": "/Users/nagaet/freesasa-zig/benchmarks/external/rustsasa-bench/target/release/rust-sasa benchmarks/swissprot_pdb_v6 /Users/nagaet/freesasa-zig/benchmarks/results/batch/swissprot/temp_out/rustsasa --format json -t 10",
+      "mean": 1488.4564577097133,
+      "stddev": 19.90824577550389,
+      "median": 1498.92791700138,
+      "user": 4135.426708413333,
+      "system": 289.70613613333336,
+      "min": 1465.49787120938,
+      "max": 1500.9435849183799,
+      "times": [
+        1498.92791700138,
+        1465.49787120938,
+        1500.9435849183799
+      ],
+      "memory_usage_byte": [
+        1186152448,
+        1186152448,
+        1186168832
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}
