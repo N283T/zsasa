@@ -53,7 +53,11 @@ pub const ParseError = error{
 pub const PdbParser = struct {
     allocator: Allocator,
     /// Filter to include only ATOM records (exclude HETATM)
-    atom_only: bool = false,
+    /// Default: true (matches FreeSASA/RustSASA behavior)
+    atom_only: bool = true,
+    /// Skip hydrogen atoms
+    /// Default: true (matches FreeSASA/RustSASA behavior)
+    skip_hydrogens: bool = true,
     /// Filter to include only first alternate location
     first_alt_loc_only: bool = true,
     /// Model number to extract (null = first model)
@@ -140,6 +144,16 @@ pub const PdbParser = struct {
 
             // Parse atom record
             const atom = try self.parseAtomRecord(line) orelse continue;
+
+            // Hydrogen filtering (also skip deuterium D, an isotope of H)
+            if (self.skip_hydrogens) {
+                if (atom.element == .H) continue;
+                // Check element column for deuterium (element symbol "D" maps to .X)
+                if (line.len >= 78) {
+                    const elem_sym = std.mem.trim(u8, line[76..78], " ");
+                    if (std.mem.eql(u8, elem_sym, "D")) continue;
+                }
+            }
 
             // Alt location filtering
             if (self.first_alt_loc_only) {
@@ -429,17 +443,38 @@ test "PdbParser basic" {
         \\END
     ;
 
+    // Default: atom_only=true, skip_hydrogens=true (HETATM excluded)
     var parser = PdbParser.init(allocator);
     var input = try parser.parse(pdb_content);
     defer input.deinit();
 
-    try testing.expectEqual(@as(usize, 4), input.atomCount());
+    try testing.expectEqual(@as(usize, 3), input.atomCount());
     try testing.expectApproxEqAbs(@as(f64, 11.104), input.x[0], 0.001);
     try testing.expectApproxEqAbs(@as(f64, 6.134), input.y[0], 0.001);
     try testing.expectApproxEqAbs(@as(f64, -6.504), input.z[0], 0.001);
 }
 
-test "PdbParser atom_only filter" {
+test "PdbParser include HETATM" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const pdb_content =
+        \\ATOM      1  N   ALA A   1      11.104   6.134  -6.504  1.00 11.68           N
+        \\ATOM      2  CA  ALA A   1      11.639   6.071  -5.147  1.00  9.13           C
+        \\ATOM      3  C   ALA A   1      10.480   5.927  -4.153  1.00  7.65           C
+        \\HETATM  100  O   HOH A 101       5.000   5.000   5.000  1.00 20.00           O
+        \\END
+    ;
+
+    var parser = PdbParser.init(allocator);
+    parser.atom_only = false;
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try testing.expectEqual(@as(usize, 4), input.atomCount());
+}
+
+test "PdbParser atom_only filter (default)" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -449,10 +484,58 @@ test "PdbParser atom_only filter" {
         \\END
     ;
 
+    // Default atom_only=true excludes HETATM
     var parser = PdbParser.init(allocator);
-    parser.atom_only = true;
     var input = try parser.parse(pdb_content);
     defer input.deinit();
 
     try testing.expectEqual(@as(usize, 1), input.atomCount());
+}
+
+test "PdbParser skip_hydrogens filter" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const pdb_content =
+        \\ATOM      1  N   ALA A   1      11.104   6.134  -6.504  1.00 11.68           N
+        \\ATOM      2  CA  ALA A   1      11.639   6.071  -5.147  1.00  9.13           C
+        \\ATOM      3 1HB  ALA A   1      12.000   7.000  -5.000  1.00 10.00           H
+        \\ATOM      4  H   ALA A   1      10.500   6.500  -7.000  1.00 12.00           H
+        \\ATOM      5  O   ALA A   1      10.480   5.927  -4.153  1.00  7.65           O
+        \\END
+    ;
+
+    // Default skip_hydrogens=true: should exclude H atoms
+    var parser = PdbParser.init(allocator);
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try testing.expectEqual(@as(usize, 3), input.atomCount()); // N, CA, O
+
+    // Include hydrogens
+    var parser2 = PdbParser.init(allocator);
+    parser2.skip_hydrogens = false;
+    var input2 = try parser2.parse(pdb_content);
+    defer input2.deinit();
+
+    try testing.expectEqual(@as(usize, 5), input2.atomCount()); // All atoms
+}
+
+test "PdbParser deuterium filter" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const pdb_content =
+        \\ATOM      1  N   ALA A   1      11.104   6.134  -6.504  1.00 11.68           N
+        \\ATOM      2  D   ALA A   1      12.000   7.000  -5.000  1.00 10.00           D
+        \\ATOM      3  CA  ALA A   1      11.639   6.071  -5.147  1.00  9.13           C
+        \\END
+    ;
+
+    // Default skip_hydrogens=true should also skip deuterium
+    var parser = PdbParser.init(allocator);
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try testing.expectEqual(@as(usize, 2), input.atomCount()); // N, CA only
 }

@@ -1,5 +1,8 @@
 const std = @import("std");
+const format_detect = @import("format_detect.zig");
 const json_parser = @import("json_parser.zig");
+const mmcif_parser = @import("mmcif_parser.zig");
+const pdb_parser = @import("pdb_parser.zig");
 const types = @import("types.zig");
 
 const Allocator = std.mem.Allocator;
@@ -139,6 +142,10 @@ pub const IoContext = struct {
     failed_files: std.ArrayListUnmanaged(FailedFile),
     failed_mutex: std.Thread.Mutex,
 
+    /// Filter options for parsers
+    skip_hydrogens: bool,
+    atom_only: bool,
+
     pub fn init(
         allocator: Allocator,
         queue: *PrefetchQueue,
@@ -152,6 +159,8 @@ pub const IoContext = struct {
             .allocator = allocator,
             .failed_files = .{},
             .failed_mutex = .{},
+            .skip_hydrogens = true,
+            .atom_only = true,
         };
     }
 
@@ -191,8 +200,23 @@ pub const IoContext = struct {
                 continue;
             };
 
-            // Read and parse input
-            const input = json_parser.readAtomInputFromFile(arena.allocator(), input_path) catch {
+            // Read and parse input (auto-detect format)
+            const format = format_detect.detectInputFormat(input_path);
+            const input = switch (format) {
+                .json => json_parser.readAtomInputFromFile(arena.allocator(), input_path),
+                .mmcif => blk: {
+                    var parser = mmcif_parser.MmcifParser.init(arena.allocator());
+                    parser.skip_hydrogens = self.skip_hydrogens;
+                    parser.atom_only = self.atom_only;
+                    break :blk parser.parseFile(input_path);
+                },
+                .pdb => blk: {
+                    var parser = pdb_parser.PdbParser.init(arena.allocator());
+                    parser.skip_hydrogens = self.skip_hydrogens;
+                    parser.atom_only = self.atom_only;
+                    break :blk parser.parseFile(input_path);
+                },
+            } catch {
                 arena.deinit();
                 self.allocator.destroy(arena);
                 self.recordFailure(filename, .read_parse_failed);
