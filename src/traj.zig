@@ -40,6 +40,7 @@ pub const TrajArgs = struct {
     stride: u32 = 1, // Process every Nth frame
     start_frame: u32 = 0, // Start frame
     end_frame: ?u32 = null, // End frame (null = all)
+    include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
     quiet: bool = false,
     show_help: bool = false,
 };
@@ -112,6 +113,8 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) TrajArgs {
             } else if (std.mem.startsWith(u8, arg, "-o=") or std.mem.startsWith(u8, arg, "--output=")) {
                 const prefix_len = if (std.mem.startsWith(u8, arg, "-o=")) "-o=".len else "--output=".len;
                 result.output_path = arg[prefix_len..];
+            } else if (std.mem.eql(u8, arg, "--include-hydrogens")) {
+                result.include_hydrogens = true;
             } else if (std.mem.eql(u8, arg, "-q") or std.mem.eql(u8, arg, "--quiet")) {
                 result.quiet = true;
             } else {
@@ -205,7 +208,9 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --probe-radius=R   Probe radius in Angstroms (default: 1.4)
         \\    --n-points=N       Test points per atom (default: 100, for sr)
         \\    --n-slices=N       Slices per atom diameter (default: 20, for lr)
-        \\    --precision=PREC   Floating-point precision: f32, f64 (default: f32)
+        \\    --precision=PREC    Floating-point precision: f32, f64 (default: f32)
+        \\    --include-hydrogens
+        \\                       Include hydrogen atoms (default: excluded)
         \\    --stride=N         Process every Nth frame (default: 1)
         \\    --start=N          Start from frame N (default: 0)
         \\    --end=N            End at frame N (default: all)
@@ -257,10 +262,12 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
     var topology = switch (detectTopologyFormat(topology_path)) {
         .pdb => blk: {
             var parser = pdb_parser.PdbParser.init(allocator);
+            parser.skip_hydrogens = !args.include_hydrogens;
             break :blk try parser.parseFile(topology_path);
         },
         .mmcif => blk: {
             var parser = mmcif_parser.MmcifParser.init(allocator);
+            parser.skip_hydrogens = !args.include_hydrogens;
             break :blk try parser.parseFile(topology_path);
         },
     };
