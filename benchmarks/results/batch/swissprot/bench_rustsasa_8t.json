@@ -1,18 +1,18 @@
 {
   "results": [
     {
-      "command": "/Users/nagaet/freesasa-zig/benchmarks/external/rustsasa-bench/target/release/rust-sasa ../swissprot_pdb_v6 /Users/nagaet/freesasa-zig/benchmarks/results/batch/swissprot/temp_out/rustsasa --format json -t 8",
-      "mean": 1617.1073307934066,
-      "stddev": 6.2781785221635085,
-      "median": 1619.46701308474,
-      "user": 3954.3285789999995,
-      "system": 232.10611925333333,
-      "min": 1609.99120712674,
-      "max": 1621.86377216874,
+      "command": "/Users/nagaet/freesasa-zig/benchmarks/external/rustsasa-bench/target/release/rust-sasa swissprot_pdb_v6 /var/folders/jd/5292ykl96gs7wwvtwny4rxdr0000gn/T/rustsasa_ap9xo400 --format json -t 8",
+      "mean": 1635.4191627301468,
+      "stddev": 36.73833942892616,
+      "median": 1619.3424926324801,
+      "user": 3965.6408787266664,
+      "system": 241.1052867933333,
+      "min": 1609.4595405914802,
+      "max": 1677.4554549664801,
       "times": [
-        1619.46701308474,
-        1621.86377216874,
-        1609.99120712674
+        1609.4595405914802,
+        1619.3424926324801,
+        1677.4554549664801
       ],
       "memory_usage_byte": [
         1185857536,

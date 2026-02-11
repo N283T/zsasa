@@ -1,0 +1,29 @@
+{
+  "results": [
+    {
+      "command": "/Users/nagaet/freesasa-zig/benchmarks/external/rustsasa-bench/target/release/rust-sasa UP000005640_9606_HUMAN_v6/pdb /var/folders/jd/5292ykl96gs7wwvtwny4rxdr0000gn/T/rustsasa_d3jktph3 --format json -t 8",
+      "mean": 52.835504397886666,
+      "stddev": 0.022361586419301475,
+      "median": 52.837853759219996,
+      "user": 351.58064207333337,
+      "system": 16.975428193333332,
+      "min": 52.812060884219996,
+      "max": 52.85659855022,
+      "times": [
+        52.85659855022,
+        52.837853759219996,
+        52.812060884219996
+      ],
+      "memory_usage_byte": [
+        287653888,
+        287653888,
+        287653888
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

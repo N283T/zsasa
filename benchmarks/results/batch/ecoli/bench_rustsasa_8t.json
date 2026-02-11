@@ -1,27 +1,27 @@
 {
   "results": [
     {
-      "command": "/Users/nagaet/freesasa-zig/benchmarks/external/rustsasa-bench/target/release/rust-sasa benchmarks/UP000000625_83333_ECOLI_v6/pdb /Users/nagaet/freesasa-zig/benchmarks/results/batch/ecoli/temp_out/rustsasa --format json -t 8",
-      "mean": 5.32785870106,
-      "stddev": 0.09114632923936068,
-      "median": 5.31693001746,
-      "user": 34.3509479,
-      "system": 1.3189699400000001,
-      "min": 5.23020126746,
-      "max": 5.46262747646,
+      "command": "/Users/nagaet/freesasa-zig/benchmarks/external/rustsasa-bench/target/release/rust-sasa UP000000625_83333_ECOLI_v6/pdb /var/folders/jd/5292ykl96gs7wwvtwny4rxdr0000gn/T/rustsasa_2361xc3e --format json -t 8",
+      "mean": 5.270688306239999,
+      "stddev": 0.100442009999898,
+      "median": 5.23987901464,
+      "user": 34.370066980000004,
+      "system": 1.37570138,
+      "min": 5.18120163964,
+      "max": 5.43859455664,
       "times": [
-        5.46262747646,
-        5.36511026746,
-        5.26442447646,
-        5.31693001746,
-        5.23020126746
+        5.23987901464,
+        5.2790657226399995,
+        5.18120163964,
+        5.214700597639999,
+        5.43859455664
       ],
       "memory_usage_byte": [
-        149569536,
-        150241280,
-        150241280,
-        150241280,
-        151437312
+        151699456,
+        151699456,
+        151699456,
+        151699456,
+        151699456
       ],
       "exit_codes": [
         0,

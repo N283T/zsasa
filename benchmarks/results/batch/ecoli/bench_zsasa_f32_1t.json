@@ -1,27 +1,27 @@
 {
   "results": [
     {
-      "command": "/Users/nagaet/freesasa-zig/zig-out/bin/zsasa benchmarks/UP000000625_83333_ECOLI_v6/pdb /Users/nagaet/freesasa-zig/benchmarks/results/batch/ecoli/temp_out/zig_f32 --threads=1 --precision=f32",
-      "mean": 24.70796630484,
-      "stddev": 0.026054330947460094,
-      "median": 24.71005907964,
-      "user": 20.143820679999997,
-      "system": 0.55777666,
-      "min": 24.67911532964,
-      "max": 24.74665516264,
+      "command": "/Users/nagaet/freesasa-zig/zig-out/bin/zsasa UP000000625_83333_ECOLI_v6/pdb /var/folders/jd/5292ykl96gs7wwvtwny4rxdr0000gn/T/zsasa_f32_oapg3ved --threads=1 --precision=f32",
+      "mean": 24.27239830326,
+      "stddev": 0.05279312132051312,
+      "median": 24.26107621106,
+      "user": 19.950871080000002,
+      "system": 0.6110515,
+      "min": 24.20323742006,
+      "max": 24.33281883706,
       "times": [
-        24.71005907964,
-        24.71446203864,
-        24.68953991364,
-        24.74665516264,
-        24.67911532964
+        24.26107621106,
+        24.31696317006,
+        24.24789587806,
+        24.33281883706,
+        24.20323742006
       ],
       "memory_usage_byte": [
-        13418496,
-        13418496,
-        13418496,
-        13418496,
-        13418496
+        13500416,
+        13500416,
+        13500416,
+        13500416,
+        13500416
       ],
       "exit_codes": [
         0,
