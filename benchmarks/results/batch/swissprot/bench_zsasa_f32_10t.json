@@ -1,23 +1,23 @@
 {
   "results": [
     {
-      "command": "/Users/nagaet/freesasa-zig/zig-out/bin/zsasa benchmarks/swissprot_pdb_v6 /Users/nagaet/freesasa-zig/benchmarks/results/batch/swissprot/temp_out/zig_f32 --threads=10 --parallelism=file --precision=f32",
-      "mean": 1390.1305100531933,
-      "stddev": 3.4073667751389984,
-      "median": 1390.87707945586,
-      "user": 3262.3931318066666,
-      "system": 152.0740711933333,
-      "min": 1386.41176216486,
-      "max": 1393.10268853886,
+      "command": "/Users/nagaet/freesasa-zig/zig-out/bin/zsasa swissprot_pdb_v6 /var/folders/jd/5292ykl96gs7wwvtwny4rxdr0000gn/T/zsasa_f32_ir7mcznr --threads=10 --parallelism=file --precision=f32",
+      "mean": 1320.1785345362132,
+      "stddev": 14.071568273150248,
+      "median": 1327.9514308138798,
+      "user": 3271.0248877999998,
+      "system": 162.95467696,
+      "min": 1303.9350804388798,
+      "max": 1328.64909235588,
       "times": [
-        1390.87707945586,
-        1393.10268853886,
-        1386.41176216486
+        1328.64909235588,
+        1327.9514308138798,
+        1303.9350804388798
       ],
       "memory_usage_byte": [
-        217972736,
-        217972736,
-        218267648
+        218103808,
+        218103808,
+        218103808
       ],
       "exit_codes": [
         0,

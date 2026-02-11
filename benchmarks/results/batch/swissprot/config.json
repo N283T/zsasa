@@ -1,0 +1,26 @@
+{
+  "timestamp": "2026-02-10_172559",
+  "system": {
+    "os": "Darwin",
+    "os_version": "24.6.0",
+    "arch": "arm64",
+    "cpu_cores": 10,
+    "cpu_model": "Apple M4",
+    "memory_gb": 32
+  },
+  "parameters": {
+    "name": "swissprot",
+    "input_dir": "swissprot_pdb_v6",
+    "n_files": 550122,
+    "tools": [
+      "zig",
+      "rustsasa"
+    ],
+    "thread_counts": [
+      8,
+      10
+    ],
+    "warmup": 3,
+    "runs": 3
+  }
+}

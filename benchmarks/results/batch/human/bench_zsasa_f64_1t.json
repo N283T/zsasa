@@ -1,0 +1,29 @@
+{
+  "results": [
+    {
+      "command": "/Users/nagaet/freesasa-zig/zig-out/bin/zsasa UP000005640_9606_HUMAN_v6/pdb /var/folders/jd/5292ykl96gs7wwvtwny4rxdr0000gn/T/zsasa_f64_3qqumlqx --threads=1 --precision=f64",
+      "mean": 385.73566704344665,
+      "stddev": 109.98719565273963,
+      "median": 358.29418747377997,
+      "user": 221.4229686,
+      "system": 6.638292373333333,
+      "min": 292.06736126578,
+      "max": 506.84545239078,
+      "times": [
+        358.29418747377997,
+        292.06736126578,
+        506.84545239078
+      ],
+      "memory_usage_byte": [
+        19267584,
+        19267584,
+        19267584
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

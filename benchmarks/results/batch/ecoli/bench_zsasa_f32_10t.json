@@ -1,0 +1,35 @@
+{
+  "results": [
+    {
+      "command": "/Users/nagaet/freesasa-zig/zig-out/bin/zsasa UP000000625_83333_ECOLI_v6/pdb /var/folders/jd/5292ykl96gs7wwvtwny4rxdr0000gn/T/zsasa_f32_oapg3ved --threads=10 --parallelism=file --precision=f32",
+      "mean": 4.139997063139999,
+      "stddev": 0.27452992827790257,
+      "median": 4.217912446340001,
+      "user": 28.140241279999998,
+      "system": 1.0775957999999999,
+      "min": 3.80678465434,
+      "max": 4.43748398834,
+      "times": [
+        4.217912446340001,
+        3.80678465434,
+        3.9009836133399998,
+        4.3368206133400005,
+        4.43748398834
+      ],
+      "memory_usage_byte": [
+        78512128,
+        78512128,
+        78512128,
+        78512128,
+        78512128
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}
