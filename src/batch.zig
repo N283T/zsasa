@@ -51,6 +51,8 @@ pub const BatchConfig = struct {
     quiet: bool = false,
     precision: Precision = .f64, // f32 or f64
     classifier_type: ?ClassifierType = .protor, // Default: protor (matches FreeSASA/RustSASA)
+    include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
+    include_hetatm: bool = false, // Include HETATM records (default: exclude)
 };
 
 /// Get output extension based on format
@@ -234,16 +236,20 @@ pub const BatchResult = struct {
 };
 
 /// Read input file with auto-format detection
-fn readInputFile(allocator: Allocator, path: []const u8) !AtomInput {
+fn readInputFile(allocator: Allocator, path: []const u8, config: BatchConfig) !AtomInput {
     const format = format_detect.detectInputFormat(path);
     return switch (format) {
         .json => json_parser.readAtomInputFromFile(allocator, path),
         .mmcif => blk: {
             var parser = mmcif_parser.MmcifParser.init(allocator);
+            parser.skip_hydrogens = !config.include_hydrogens;
+            parser.atom_only = !config.include_hetatm;
             break :blk parser.parseFile(path);
         },
         .pdb => blk: {
             var parser = pdb_parser.PdbParser.init(allocator);
+            parser.skip_hydrogens = !config.include_hydrogens;
+            parser.atom_only = !config.include_hetatm;
             break :blk parser.parseFile(path);
         },
     };
@@ -347,7 +353,7 @@ fn processOneFile(
     };
 
     // Read and parse input (auto-detect format from extension)
-    var input = readInputFile(arena, input_path) catch {
+    var input = readInputFile(arena, input_path, config) catch {
         result.status = .err;
         return result;
     };
@@ -661,6 +667,8 @@ pub fn runBatchPipelined(
 
     // Create I/O context with error tracking
     var io_ctx = pipeline.IoContext.init(allocator, &queue, files, input_dir);
+    io_ctx.skip_hydrogens = !config.include_hydrogens;
+    io_ctx.atom_only = !config.include_hetatm;
     defer io_ctx.deinit();
 
     // Spawn I/O thread

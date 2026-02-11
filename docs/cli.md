@@ -67,6 +67,8 @@ When `--classifier` is used, atom radii are assigned based on residue and atom n
 | `--chain=ID` | Filter by chain ID (e.g., `A` or `A,B,C`) | all chains |
 | `--model=N` | Model number for NMR structures (≥1) | all models |
 | `--auth-chain` | Use auth_asym_id instead of label_asym_id | label_asym_id |
+| `--include-hydrogens` | Include hydrogen atoms | excluded |
+| `--include-hetatm` | Include HETATM records | excluded |
 
 ### Analysis Options
 
@@ -407,6 +409,21 @@ atom ALA O  1.40
 
 # Use auth chain IDs
 ./zig-out/bin/zsasa --auth-chain --chain=A structure.cif output.json
+```
+
+### Atom Filtering
+
+By default, hydrogen atoms and HETATM records are excluded (matching FreeSASA/RustSASA defaults).
+
+```bash
+# Include hydrogen atoms
+./zig-out/bin/zsasa --include-hydrogens structure.pdb output.json
+
+# Include HETATM records (water, ligands, etc.)
+./zig-out/bin/zsasa --include-hetatm structure.pdb output.json
+
+# Include both
+./zig-out/bin/zsasa --include-hydrogens --include-hetatm structure.pdb output.json
 ```
 
 ### Analysis Features

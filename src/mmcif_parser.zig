@@ -103,7 +103,11 @@ const AtomSiteColumns = struct {
 pub const MmcifParser = struct {
     allocator: Allocator,
     /// Filter to include only ATOM records (exclude HETATM)
-    atom_only: bool = false,
+    /// Default: true (matches FreeSASA/RustSASA behavior)
+    atom_only: bool = true,
+    /// Skip hydrogen atoms
+    /// Default: true (matches FreeSASA/RustSASA behavior)
+    skip_hydrogens: bool = true,
     /// Filter to include only first alternate location
     first_alt_loc_only: bool = true,
     /// Model number to extract (null = first model or all)
@@ -450,6 +454,16 @@ pub const MmcifParser = struct {
             }
         }
 
+        // Check hydrogen filter
+        if (self.skip_hydrogens) {
+            if (columns.type_symbol) |col| {
+                const symbol = row_values[col];
+                if (!cif.isNull(symbol) and (std.mem.eql(u8, symbol, "H") or std.mem.eql(u8, symbol, "D"))) {
+                    return false;
+                }
+            }
+        }
+
         // Check alternate location filter
         if (self.first_alt_loc_only) {
             if (columns.label_alt_id) |col| {
@@ -704,6 +718,101 @@ test "no atom_site loop" {
     var parser = MmcifParser.init(std.testing.allocator);
     const result = parser.parse(source);
     try std.testing.expectError(ParseError.NoAtomSiteLoop, result);
+}
+
+test "parse with HETATM filter (default atom_only=true)" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.group_PDB
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 N N   ALA ATOM   10.0 20.0 30.0
+        \\2 C CA  ALA ATOM   11.0 21.0 31.0
+        \\3 O O   HOH HETATM 12.0 22.0 32.0
+        \\#
+    ;
+
+    // Default: atom_only=true -> HETATM excluded
+    var parser = MmcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+
+    // Include HETATM
+    var parser2 = MmcifParser.init(std.testing.allocator);
+    parser2.atom_only = false;
+    var input2 = try parser2.parse(source);
+    defer input2.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), input2.atomCount());
+}
+
+test "parse with hydrogen filter (default skip_hydrogens=true)" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.group_PDB
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 N N   ALA ATOM 10.0 20.0 30.0
+        \\2 C CA  ALA ATOM 11.0 21.0 31.0
+        \\3 H H   ALA ATOM 12.0 22.0 32.0
+        \\4 H HB  ALA ATOM 13.0 23.0 33.0
+        \\5 O O   ALA ATOM 14.0 24.0 34.0
+        \\#
+    ;
+
+    // Default: skip_hydrogens=true -> H atoms excluded
+    var parser = MmcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), input.atomCount()); // N, CA, O
+
+    // Include hydrogens
+    var parser2 = MmcifParser.init(std.testing.allocator);
+    parser2.skip_hydrogens = false;
+    var input2 = try parser2.parse(source);
+    defer input2.deinit();
+
+    try std.testing.expectEqual(@as(usize, 5), input2.atomCount()); // All atoms
+}
+
+test "parse with deuterium filter" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 N N  ALA 10.0 20.0 30.0
+        \\2 D D  ALA 11.0 21.0 31.0
+        \\3 C CA ALA 12.0 22.0 32.0
+        \\#
+    ;
+
+    // Default: skip_hydrogens=true also skips deuterium (D)
+    var parser = MmcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount()); // N, CA
 }
 
 test "eqlIgnoreCase" {

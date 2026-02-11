@@ -52,6 +52,8 @@ const Args = struct {
     chain_filter: ?[]const u8 = null, // Chain filter (e.g., "A" or "A,B,C")
     model_num: ?u32 = null, // Model number for NMR structures
     use_auth_chain: bool = false, // Use auth_asym_id instead of label_asym_id
+    include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
+    include_hetatm: bool = false, // Include HETATM records (default: exclude)
     per_residue: bool = false, // Show per-residue SASA
     rsa: bool = false, // Show RSA (Relative Solvent Accessibility)
     polar: bool = false, // Show polar/nonpolar SASA summary
@@ -191,6 +193,8 @@ fn readInputFile(allocator: std.mem.Allocator, path: []const u8, args: Args) !ty
             var parser = mmcif_parser.MmcifParser.init(allocator);
             parser.model_num = args.model_num;
             parser.use_auth_chain = args.use_auth_chain;
+            parser.skip_hydrogens = !args.include_hydrogens;
+            parser.atom_only = !args.include_hetatm;
 
             // Parse chain filter if specified
             var chain_filter_slice: ?[]const []const u8 = null;
@@ -205,6 +209,8 @@ fn readInputFile(allocator: std.mem.Allocator, path: []const u8, args: Args) !ty
         .pdb => blk: {
             var parser = pdb_parser.PdbParser.init(allocator);
             parser.model_num = args.model_num;
+            parser.skip_hydrogens = !args.include_hydrogens;
+            parser.atom_only = !args.include_hetatm;
 
             // Parse chain filter if specified
             var chain_filter_slice: ?[]const []const u8 = null;
@@ -397,6 +403,14 @@ fn parseArgs(args: []const []const u8) Args {
         else if (std.mem.eql(u8, arg, "--auth-chain")) {
             result.use_auth_chain = true;
         }
+        // --include-hydrogens (include hydrogen atoms, default: exclude)
+        else if (std.mem.eql(u8, arg, "--include-hydrogens")) {
+            result.include_hydrogens = true;
+        }
+        // --include-hetatm (include HETATM records, default: exclude)
+        else if (std.mem.eql(u8, arg, "--include-hetatm")) {
+            result.include_hetatm = true;
+        }
         // --per-residue (show per-residue SASA)
         else if (std.mem.eql(u8, arg, "--per-residue")) {
             result.per_residue = true;
@@ -492,6 +506,8 @@ fn printHelp(program_name: []const u8) void {
         \\    --chain=ID         Filter by chain ID (e.g., --chain=A or --chain=A,B,C)
         \\                       Default: label_asym_id (mmCIF standard)
         \\    --auth-chain       Use auth_asym_id instead of label_asym_id
+        \\    --include-hydrogens Include hydrogen atoms (default: excluded)
+        \\    --include-hetatm   Include HETATM records (default: excluded)
         \\    --model=N          Model number for NMR structures (default: all)
         \\    --per-residue      Show per-residue SASA aggregation
         \\    --rsa              Show RSA (Relative Solvent Accessibility)
@@ -745,6 +761,8 @@ fn runBatchMode(allocator: std.mem.Allocator, parsed: Args) !void {
         .show_timing = parsed.show_timing,
         .quiet = parsed.quiet,
         .classifier_type = parsed.classifier_type orelse .protor,
+        .include_hydrogens = parsed.include_hydrogens,
+        .include_hetatm = parsed.include_hetatm,
     };
 
     if (!parsed.quiet) {
@@ -1527,4 +1545,33 @@ test "parseArgs --parallelism=pipeline" {
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(Parallelism.pipeline, parsed.parallelism);
+}
+
+// Tests for --include-hydrogens and --include-hetatm
+test "parseArgs default include_hydrogens is false" {
+    const args = [_][]const u8{ "zsasa", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(false, parsed.include_hydrogens);
+}
+
+test "parseArgs --include-hydrogens" {
+    const args = [_][]const u8{ "zsasa", "--include-hydrogens", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(true, parsed.include_hydrogens);
+}
+
+test "parseArgs default include_hetatm is false" {
+    const args = [_][]const u8{ "zsasa", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(false, parsed.include_hetatm);
+}
+
+test "parseArgs --include-hetatm" {
+    const args = [_][]const u8{ "zsasa", "--include-hetatm", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(true, parsed.include_hetatm);
 }
