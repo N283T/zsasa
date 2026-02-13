@@ -216,6 +216,15 @@ def setup_style() -> None:
     )
 
 
+def _format_memory(memory_bytes: int) -> str:
+    """Format memory size with appropriate unit."""
+    mem_gb = memory_bytes / (1024**3)
+    if mem_gb >= 1.0:
+        return f"{mem_gb:.1f} GB"
+    mem_mb = memory_bytes / (1024**2)
+    return f"{mem_mb:.0f} MB"
+
+
 def _threads_label(threads: int | None) -> str:
     """Format thread count for display."""
     if threads is None:
@@ -259,14 +268,13 @@ def summary(
     table.add_column("Stddev", justify="right")
     table.add_column("Min (s)", justify="right")
     table.add_column("Max (s)", justify="right")
-    table.add_column("Memory (GB)", justify="right")
+    table.add_column("Memory", justify="right")
     if mdtraj_baseline is not None:
         table.add_column("vs MDTraj", justify="right")
 
     sorted_results = sorted(results, key=lambda r: r.mean)
 
     for r in sorted_results:
-        mem_gb = r.memory_bytes / (1024**3)
         stddev_str = f"{r.stddev:.3f}" if r.stddev is not None else "-"
 
         row = [
@@ -276,7 +284,7 @@ def summary(
             stddev_str,
             f"{r.min_time:.3f}",
             f"{r.max_time:.3f}",
-            f"{mem_gb:.1f}",
+            _format_memory(r.memory_bytes),
         ]
 
         if mdtraj_baseline is not None and r.mean > 0:
@@ -433,34 +441,34 @@ def memory(
     ordered.sort(key=lambda t: best[t].memory_bytes, reverse=True)
 
     labels = []
-    mem_gbs = []
+    mem_mbs = []
     colors = []
     for tool in ordered:
         r = best[tool]
         labels.append(display_name(tool))
-        mem_gbs.append(r.memory_bytes / (1024**3))
+        mem_mbs.append(r.memory_bytes / (1024**2))
         colors.append(COLORS.get(tool, "#95a5a6"))
 
     fig, ax = plt.subplots(figsize=(10, max(4, len(labels) * 0.8)))
     y_pos = range(len(labels))
-    bars = ax.barh(y_pos, mem_gbs, color=colors, height=0.6, edgecolor="white")
+    bars = ax.barh(y_pos, mem_mbs, color=colors, height=0.6, edgecolor="white")
 
     ax.set_yticks(y_pos)
     ax.set_yticklabels(labels)
-    ax.set_xlabel("Peak Memory (GB)")
+    ax.set_xlabel("Peak Memory (MB)")
     ax.set_title(f"Memory Usage: {name}")
     ax.grid(True, alpha=0.3, axis="x")
 
-    for bar_item, mem in zip(bars, mem_gbs):
+    for bar_item, mem_mb in zip(bars, mem_mbs):
         ax.text(
-            bar_item.get_width() + max(mem_gbs) * 0.01,
+            bar_item.get_width() + max(mem_mbs) * 0.01,
             bar_item.get_y() + bar_item.get_height() / 2,
-            f"{mem:.1f} GB",
+            _format_memory(int(mem_mb * (1024**2))),
             va="center",
             fontsize=10,
         )
 
-    ax.set_xlim(0, max(mem_gbs) * 1.15)
+    ax.set_xlim(0, max(mem_mbs) * 1.15)
     fig.tight_layout()
 
     out_path = get_plots_dir(name).joinpath("memory.png")
