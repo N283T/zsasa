@@ -137,6 +137,17 @@ Located in `benchmarks/scripts/`. All scripts use PEP 723 metadata (typer + rich
 ./benchmarks/scripts/analyze.py export-csv   # Export to CSV
 ```
 
+### MD Trajectory Analysis
+
+```bash
+./benchmarks/scripts/analyze_md.py summary --name 6sup_R1   # Summary table
+./benchmarks/scripts/analyze_md.py all --name 6sup_R1       # All plots + summary
+./benchmarks/scripts/analyze_md.py bar --name 6sup_R1       # Tool comparison bar chart
+./benchmarks/scripts/analyze_md.py threads --name 6sup_R1   # Thread scaling
+./benchmarks/scripts/analyze_md.py memory --name 6sup_R1    # Memory usage
+./benchmarks/scripts/analyze_md.py speedup --name 6sup_R1   # Speedup ratios
+```
+
 ### Other Scripts
 
 ```bash

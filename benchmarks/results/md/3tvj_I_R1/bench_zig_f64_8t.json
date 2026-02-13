@@ -1,0 +1,29 @@
+{
+  "results": [
+    {
+      "command": "/Users/nagaet/freesasa-zig/zig-out/bin/zsasa traj md_data/3tvj_I_analysis/3tvj_I_R1.xtc md_data/3tvj_I_analysis/3tvj_I.pdb --include-hydrogens --threads=8 --precision=f64 --stride=1 --n-points=100 -o /var/folders/jd/5292ykl96gs7wwvtwny4rxdr0000gn/T/zsasa_zwa37hm4.csv -q",
+      "mean": 0.4652724233,
+      "stddev": 0.0005560085993040012,
+      "median": 0.4651431733,
+      "user": 1.26096154,
+      "system": 0.2721303,
+      "min": 0.46479242330000003,
+      "max": 0.4658816733,
+      "times": [
+        0.46479242330000003,
+        0.4658816733,
+        0.4651431733
+      ],
+      "memory_usage_byte": [
+        2899968,
+        2916352,
+        2916352
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

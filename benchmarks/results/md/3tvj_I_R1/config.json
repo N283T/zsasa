@@ -1,0 +1,32 @@
+{
+  "timestamp": "2026-02-12_162718",
+  "system": {
+    "os": "Darwin",
+    "os_version": "24.6.0",
+    "arch": "arm64",
+    "cpu_cores": 10,
+    "cpu_model": "Apple M4",
+    "memory_gb": 32
+  },
+  "parameters": {
+    "name": "3tvj_I_R1",
+    "xtc": "md_data/3tvj_I_analysis/3tvj_I_R1.xtc",
+    "pdb": "md_data/3tvj_I_analysis/3tvj_I.pdb",
+    "tools": [
+      "zig",
+      "zsasa_mdtraj",
+      "zsasa_mdanalysis",
+      "mdtraj",
+      "mdsasa_bolt"
+    ],
+    "thread_counts": [
+      1,
+      8,
+      10
+    ],
+    "warmup": 1,
+    "runs": 3,
+    "stride": 1,
+    "n_points": 100
+  }
+}

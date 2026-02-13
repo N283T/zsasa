@@ -1,0 +1,29 @@
+{
+  "results": [
+    {
+      "command": "uv run --script /Users/nagaet/freesasa-zig/benchmarks/scripts/bench_md_runner.py --tool zsasa_mdtraj --xtc md_data/3tvj_I_analysis/3tvj_I_R1.xtc --pdb md_data/3tvj_I_analysis/3tvj_I.pdb --n-points 100 --stride 1 --threads 8",
+      "mean": 0.35077632432666667,
+      "stddev": 0.0338762522746178,
+      "median": 0.33227825466,
+      "user": 1.4789192266666664,
+      "system": 0.023951280000000002,
+      "min": 0.33017629666,
+      "max": 0.38987442166,
+      "times": [
+        0.33227825466,
+        0.38987442166,
+        0.33017629666
+      ],
+      "memory_usage_byte": [
+        78217216,
+        78331904,
+        78331904
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}
