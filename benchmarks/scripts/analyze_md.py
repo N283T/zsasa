@@ -113,6 +113,12 @@ def load_results(name: str) -> list[BenchResult]:
             f"Dataset '{name}' not found. Available: {', '.join(sorted(available))}"
         )
 
+    # Resolve "all" threads from config cpu_cores
+    config = load_config(name)
+    cpu_cores = (
+        config.get("system", {}).get("cpu_cores") if config is not None else None
+    )
+
     results: list[BenchResult] = []
     for json_file in sorted(results_dir.glob("bench_*.json")):
         try:
@@ -121,6 +127,10 @@ def load_results(name: str) -> list[BenchResult]:
                 continue
             r = data["results"][0]
             tool, threads = _parse_filename(json_file.name)
+
+            # "all" threads -> cpu_cores from config
+            if threads is None and cpu_cores is not None:
+                threads = cpu_cores
 
             mem_list = r.get("memory_usage_byte", [0])
             peak_mem = max(mem_list) if mem_list else 0
