@@ -118,10 +118,15 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) TrajArgs {
                 };
             } else if (std.mem.startsWith(u8, arg, "--batch-size=")) {
                 const value = arg["--batch-size=".len..];
-                result.batch_size = std.fmt.parseInt(u32, value, 10) catch {
+                const bs = std.fmt.parseInt(u32, value, 10) catch {
                     std.debug.print("Error: Invalid batch size: {s}\n", .{value});
                     std.process.exit(1);
                 };
+                if (bs == 0) {
+                    std.debug.print("Error: Batch size must be >= 1 (omit for auto)\n", .{});
+                    std.process.exit(1);
+                }
+                result.batch_size = bs;
             } else if (std.mem.startsWith(u8, arg, "-o=") or std.mem.startsWith(u8, arg, "--output=")) {
                 const prefix_len = if (std.mem.startsWith(u8, arg, "-o=")) "-o=".len else "--output=".len;
                 result.output_path = arg[prefix_len..];
@@ -285,6 +290,7 @@ const BatchWorkerArgs = struct {
     natoms: usize,
     radii: []f64,
     error_flag: *std.atomic.Value(bool),
+    error_msg: *[128]u8,
     thread_id: usize,
     n_threads: usize,
     algorithm: Algorithm,
@@ -294,30 +300,39 @@ const BatchWorkerArgs = struct {
     n_slices: u32,
 };
 
+/// Set error flag and store a descriptive message (first writer wins).
+fn setWorkerError(args: BatchWorkerArgs, comptime fmt: []const u8, fmt_args: anytype) void {
+    // Only the first error writes the message
+    if (!args.error_flag.load(.acquire)) {
+        _ = std.fmt.bufPrint(args.error_msg, fmt, fmt_args) catch {};
+    }
+    args.error_flag.store(true, .release);
+}
+
 /// Worker function for batch frame processing.
 /// Each thread processes frames at indices: thread_id, thread_id + n_threads, ...
 /// Allocates per-thread coordinate buffers and reuses them across frames.
 fn batchWorkerFn(args: BatchWorkerArgs) void {
-    const thread_alloc = std.heap.page_allocator;
+    // Arena over page_allocator: sub-page allocations don't waste full pages
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const thread_alloc = arena.allocator();
 
     // Pre-allocate coordinate buffers (reused across all frames in this thread)
     const x = thread_alloc.alloc(f64, args.natoms) catch {
-        args.error_flag.store(true, .release);
+        setWorkerError(args, "thread {d}: failed to allocate x buffer", .{args.thread_id});
         return;
     };
-    defer thread_alloc.free(x);
 
     const y = thread_alloc.alloc(f64, args.natoms) catch {
-        args.error_flag.store(true, .release);
+        setWorkerError(args, "thread {d}: failed to allocate y buffer", .{args.thread_id});
         return;
     };
-    defer thread_alloc.free(y);
 
     const z = thread_alloc.alloc(f64, args.natoms) catch {
-        args.error_flag.store(true, .release);
+        setWorkerError(args, "thread {d}: failed to allocate z buffer", .{args.thread_id});
         return;
     };
-    defer thread_alloc.free(z);
 
     // Process assigned frames (stride distribution across threads)
     var batch_idx = args.thread_id;
@@ -343,14 +358,15 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
 
         // Calculate SASA (single-threaded per frame)
         var total_sasa: f64 = 0;
+        const frame_id = args.frame_data[batch_idx].frame_idx;
 
         if (args.precision == .f32) {
             const config = Configf32{
                 .probe_radius = @floatCast(args.probe_radius),
                 .n_points = args.n_points,
             };
-            var result = shrake_rupley.calculateSasaf32(thread_alloc, input, config) catch {
-                args.error_flag.store(true, .release);
+            var result = shrake_rupley.calculateSasaf32(thread_alloc, input, config) catch |err| {
+                setWorkerError(args, "frame {d}: SR-f32 SASA failed: {s}", .{ frame_id, @errorName(err) });
                 return;
             };
             total_sasa = @floatCast(result.total_area);
@@ -361,8 +377,8 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
                     .probe_radius = args.probe_radius,
                     .n_points = args.n_points,
                 };
-                var result = shrake_rupley.calculateSasa(thread_alloc, input, config) catch {
-                    args.error_flag.store(true, .release);
+                var result = shrake_rupley.calculateSasa(thread_alloc, input, config) catch |err| {
+                    setWorkerError(args, "frame {d}: SR-f64 SASA failed: {s}", .{ frame_id, @errorName(err) });
                     return;
                 };
                 total_sasa = result.total_area;
@@ -372,8 +388,8 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
                     .probe_radius = args.probe_radius,
                     .n_slices = args.n_slices,
                 };
-                var result = lee_richards.calculateSasa(thread_alloc, input, config) catch {
-                    args.error_flag.store(true, .release);
+                var result = lee_richards.calculateSasa(thread_alloc, input, config) catch |err| {
+                    setWorkerError(args, "frame {d}: LR SASA failed: {s}", .{ frame_id, @errorName(err) });
                     return;
                 };
                 total_sasa = result.total_area;
@@ -382,7 +398,7 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
         }
 
         args.results[batch_idx] = .{
-            .frame_idx = args.frame_data[batch_idx].frame_idx,
+            .frame_idx = frame_id,
             .step = args.frame_data[batch_idx].step,
             .time = args.frame_data[batch_idx].time,
             .total_sasa = total_sasa,
@@ -721,6 +737,7 @@ fn runBatchParallel(
         // Phase 2: Compute batch (parallel, frame-level distribution)
         const thread_count = @min(n_threads, read_result.count);
         var error_flag = std.atomic.Value(bool).init(false);
+        var error_msg: [128]u8 = @splat(0);
 
         const threads = try allocator.alloc(std.Thread, thread_count);
         defer allocator.free(threads);
@@ -734,6 +751,7 @@ fn runBatchParallel(
                 .natoms = natoms,
                 .radii = topology.r,
                 .error_flag = &error_flag,
+                .error_msg = &error_msg,
                 .thread_id = i,
                 .n_threads = thread_count,
                 .algorithm = args.algorithm,
@@ -756,6 +774,10 @@ fn runBatchParallel(
         }
 
         if (error_flag.load(.acquire)) {
+            const msg = std.mem.sliceTo(&error_msg, 0);
+            if (msg.len > 0) {
+                std.debug.print("Error: {s}\n", .{msg});
+            }
             return error.BatchCalculationFailed;
         }
 
