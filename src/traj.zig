@@ -1,6 +1,10 @@
 // Trajectory analysis mode
 // Calculates SASA for each frame in an XTC trajectory
 //
+// Supports two parallelism strategies:
+//   - Sequential (1 thread): processes frames one at a time
+//   - Batch parallel (N threads): reads batches of frames, distributes across threads
+//
 const std = @import("std");
 const xtc = @import("xtc.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
@@ -14,6 +18,7 @@ const classifier_protor = @import("classifier_protor.zig");
 const classifier_oons = @import("classifier_oons.zig");
 
 const Allocator = std.mem.Allocator;
+const AtomInput = types.AtomInput;
 const Config = types.Config;
 const Configf32 = types.Configf32;
 const Precision = types.Precision;
@@ -41,6 +46,7 @@ pub const TrajArgs = struct {
     start_frame: u32 = 0, // Start frame
     end_frame: ?u32 = null, // End frame (null = all)
     include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
+    batch_size: u32 = 0, // Frames per batch for parallel processing (0 = auto)
     quiet: bool = false,
     show_help: bool = false,
 };
@@ -110,6 +116,17 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) TrajArgs {
                     std.debug.print("Error: Invalid end frame: {s}\n", .{value});
                     std.process.exit(1);
                 };
+            } else if (std.mem.startsWith(u8, arg, "--batch-size=")) {
+                const value = arg["--batch-size=".len..];
+                const bs = std.fmt.parseInt(u32, value, 10) catch {
+                    std.debug.print("Error: Invalid batch size: {s}\n", .{value});
+                    std.process.exit(1);
+                };
+                if (bs == 0) {
+                    std.debug.print("Error: Batch size must be >= 1 (omit for auto)\n", .{});
+                    std.process.exit(1);
+                }
+                result.batch_size = bs;
             } else if (std.mem.startsWith(u8, arg, "-o=") or std.mem.startsWith(u8, arg, "--output=")) {
                 const prefix_len = if (std.mem.startsWith(u8, arg, "-o=")) "-o=".len else "--output=".len;
                 result.output_path = arg[prefix_len..];
@@ -214,6 +231,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --stride=N         Process every Nth frame (default: 1)
         \\    --start=N          Start from frame N (default: 0)
         \\    --end=N            End at frame N (default: all)
+        \\    --batch-size=N     Frames per batch for parallel processing
+        \\                       Default: auto (threads * 2)
         \\    -o, --output=FILE  Output CSV file (default: traj_sasa.csv)
         \\    -q, --quiet        Suppress progress output
         \\    -h, --help         Show this help message
@@ -230,8 +249,9 @@ pub fn printHelp(program_name: []const u8) void {
         \\    {s} traj trajectory.xtc topology.pdb --stride=10
         \\    {s} traj trajectory.xtc topology.pdb --classifier=naccess
         \\    {s} traj trajectory.xtc topology.pdb --algorithm=lr --n-slices=50
+        \\    {s} traj trajectory.xtc topology.pdb --threads=8
         \\
-    , .{ program_name, program_name, program_name, program_name, program_name, program_name });
+    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 /// Detect topology file format
@@ -241,6 +261,206 @@ fn detectTopologyFormat(path: []const u8) enum { pdb, mmcif } {
     }
     return .pdb;
 }
+
+// =============================================================================
+// Batch Processing Infrastructure
+// =============================================================================
+
+/// Frame metadata for batch processing
+const FrameData = struct {
+    frame_idx: u32,
+    step: i32,
+    time: f32,
+};
+
+/// SASA result for one frame
+const FrameResult = struct {
+    frame_idx: u32 = 0,
+    step: i32 = 0,
+    time: f32 = 0,
+    total_sasa: f64 = 0,
+};
+
+/// Worker arguments for batch frame processing
+const BatchWorkerArgs = struct {
+    coord_pool: []const f32,
+    frame_data: []const FrameData,
+    results: []FrameResult,
+    batch_count: usize,
+    natoms: usize,
+    radii: []f64,
+    error_flag: *std.atomic.Value(bool),
+    error_msg: *[128]u8,
+    thread_id: usize,
+    n_threads: usize,
+    algorithm: Algorithm,
+    precision: Precision,
+    probe_radius: f64,
+    n_points: u32,
+    n_slices: u32,
+};
+
+/// Set error flag and store a descriptive message (first writer wins).
+fn setWorkerError(args: BatchWorkerArgs, comptime fmt: []const u8, fmt_args: anytype) void {
+    // Only the first error writes the message
+    if (!args.error_flag.load(.acquire)) {
+        _ = std.fmt.bufPrint(args.error_msg, fmt, fmt_args) catch {};
+    }
+    args.error_flag.store(true, .release);
+}
+
+/// Worker function for batch frame processing.
+/// Each thread processes frames at indices: thread_id, thread_id + n_threads, ...
+/// Allocates per-thread coordinate buffers and reuses them across frames.
+fn batchWorkerFn(args: BatchWorkerArgs) void {
+    // Arena over page_allocator: sub-page allocations don't waste full pages
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const thread_alloc = arena.allocator();
+
+    // Pre-allocate coordinate buffers (reused across all frames in this thread)
+    const x = thread_alloc.alloc(f64, args.natoms) catch {
+        setWorkerError(args, "thread {d}: failed to allocate x buffer", .{args.thread_id});
+        return;
+    };
+
+    const y = thread_alloc.alloc(f64, args.natoms) catch {
+        setWorkerError(args, "thread {d}: failed to allocate y buffer", .{args.thread_id});
+        return;
+    };
+
+    const z = thread_alloc.alloc(f64, args.natoms) catch {
+        setWorkerError(args, "thread {d}: failed to allocate z buffer", .{args.thread_id});
+        return;
+    };
+
+    // Process assigned frames (stride distribution across threads)
+    var batch_idx = args.thread_id;
+    while (batch_idx < args.batch_count) : (batch_idx += args.n_threads) {
+        if (args.error_flag.load(.acquire)) return;
+
+        const coord_offset = batch_idx * args.natoms * 3;
+
+        // Convert f32 XTC coordinates (nm) to f64 (Angstrom)
+        for (0..args.natoms) |i| {
+            x[i] = @as(f64, args.coord_pool[coord_offset + i * 3 + 0]) * 10.0;
+            y[i] = @as(f64, args.coord_pool[coord_offset + i * 3 + 1]) * 10.0;
+            z[i] = @as(f64, args.coord_pool[coord_offset + i * 3 + 2]) * 10.0;
+        }
+
+        const input = AtomInput{
+            .x = x,
+            .y = y,
+            .z = z,
+            .r = args.radii,
+            .allocator = thread_alloc,
+        };
+
+        // Calculate SASA (single-threaded per frame)
+        var total_sasa: f64 = 0;
+        const frame_id = args.frame_data[batch_idx].frame_idx;
+
+        if (args.precision == .f32) {
+            const config = Configf32{
+                .probe_radius = @floatCast(args.probe_radius),
+                .n_points = args.n_points,
+            };
+            var result = shrake_rupley.calculateSasaf32(thread_alloc, input, config) catch |err| {
+                setWorkerError(args, "frame {d}: SR-f32 SASA failed: {s}", .{ frame_id, @errorName(err) });
+                return;
+            };
+            total_sasa = @floatCast(result.total_area);
+            result.deinit();
+        } else {
+            if (args.algorithm == .sr) {
+                const config = Config{
+                    .probe_radius = args.probe_radius,
+                    .n_points = args.n_points,
+                };
+                var result = shrake_rupley.calculateSasa(thread_alloc, input, config) catch |err| {
+                    setWorkerError(args, "frame {d}: SR-f64 SASA failed: {s}", .{ frame_id, @errorName(err) });
+                    return;
+                };
+                total_sasa = result.total_area;
+                result.deinit();
+            } else {
+                const config = lee_richards.LeeRichardsConfig{
+                    .probe_radius = args.probe_radius,
+                    .n_slices = args.n_slices,
+                };
+                var result = lee_richards.calculateSasa(thread_alloc, input, config) catch |err| {
+                    setWorkerError(args, "frame {d}: LR SASA failed: {s}", .{ frame_id, @errorName(err) });
+                    return;
+                };
+                total_sasa = result.total_area;
+                result.deinit();
+            }
+        }
+
+        args.results[batch_idx] = .{
+            .frame_idx = frame_id,
+            .step = args.frame_data[batch_idx].step,
+            .time = args.frame_data[batch_idx].time,
+            .total_sasa = total_sasa,
+        };
+    }
+}
+
+/// Read frames into batch buffer, applying stride/start/end filtering.
+/// Returns the number of frames read and whether EOF was reached.
+fn readBatch(
+    reader: *xtc.XtcReader,
+    allocator: Allocator,
+    coord_pool: []f32,
+    frame_data: []FrameData,
+    batch_size: usize,
+    natoms: usize,
+    frame_idx: *u32,
+    traj_args: TrajArgs,
+) !struct { count: usize, eof: bool } {
+    var batch_count: usize = 0;
+
+    while (batch_count < batch_size) {
+        var frame = reader.readFrame() catch |err| {
+            if (err == xtc.XtcError.EndOfFile) return .{ .count = batch_count, .eof = true };
+            return err;
+        };
+        defer frame.deinit(allocator);
+
+        // Apply frame range filter
+        if (frame_idx.* < traj_args.start_frame) {
+            frame_idx.* += 1;
+            continue;
+        }
+        if (traj_args.end_frame) |end| {
+            if (frame_idx.* > end) return .{ .count = batch_count, .eof = true };
+        }
+
+        // Apply stride filter
+        if ((frame_idx.* - traj_args.start_frame) % traj_args.stride != 0) {
+            frame_idx.* += 1;
+            continue;
+        }
+
+        // Copy coordinates to pool
+        const offset = batch_count * natoms * 3;
+        @memcpy(coord_pool[offset .. offset + natoms * 3], frame.coords[0 .. natoms * 3]);
+
+        frame_data[batch_count] = .{
+            .frame_idx = frame_idx.*,
+            .step = frame.step,
+            .time = frame.time,
+        };
+        batch_count += 1;
+        frame_idx.* += 1;
+    }
+
+    return .{ .count = batch_count, .eof = false };
+}
+
+// =============================================================================
+// Main Entry Point
+// =============================================================================
 
 /// Run trajectory analysis
 pub fn run(allocator: Allocator, args: TrajArgs) !void {
@@ -283,30 +503,6 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
         try applyBuiltinClassifier(allocator, &topology, ct, args.quiet);
     }
 
-    // Allocate mutable coordinate buffers for frame-by-frame updates
-    const frame_x = try allocator.alloc(f64, natoms);
-    defer allocator.free(frame_x);
-    const frame_y = try allocator.alloc(f64, natoms);
-    defer allocator.free(frame_y);
-    const frame_z = try allocator.alloc(f64, natoms);
-    defer allocator.free(frame_z);
-
-    // Create AtomInput that references our mutable coordinate buffers
-    // but uses topology's radii and metadata
-    const frame_input = types.AtomInput{
-        .x = frame_x,
-        .y = frame_y,
-        .z = frame_z,
-        .r = topology.r,
-        .residue = topology.residue,
-        .atom_name = topology.atom_name,
-        .element = topology.element,
-        .chain_id = topology.chain_id,
-        .residue_num = topology.residue_num,
-        .insertion_code = topology.insertion_code,
-        .allocator = allocator,
-    };
-
     // Open XTC file
     if (!args.quiet) {
         std.debug.print("Opening trajectory: {s}\n", .{xtc_path});
@@ -334,7 +530,7 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
     // Write CSV header
     try writer.writeAll("frame,step,time,total_sasa\n");
 
-    // Build SASA config
+    // Resolve thread count
     const n_threads = if (args.n_threads == 0)
         @as(usize, @intCast(std.Thread.getCpuCount() catch 1))
     else
@@ -358,95 +554,12 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
     var processed_count: u32 = 0;
     const timer_start = std.time.milliTimestamp();
 
-    while (true) {
-        // Read frame
-        var frame = reader.readFrame() catch |err| {
-            if (err == xtc.XtcError.EndOfFile) break;
-            return err;
-        };
-        defer frame.deinit(allocator);
-
-        // Check frame range
-        if (frame_idx < args.start_frame) {
-            frame_idx += 1;
-            continue;
-        }
-        if (args.end_frame) |end| {
-            if (frame_idx > end) break;
-        }
-
-        // Check stride
-        if ((frame_idx - args.start_frame) % args.stride != 0) {
-            frame_idx += 1;
-            continue;
-        }
-
-        // Update frame coordinates from XTC (nm -> Å)
-        for (0..natoms) |i| {
-            frame_x[i] = @as(f64, frame.coords[i * 3 + 0]) * 10.0;
-            frame_y[i] = @as(f64, frame.coords[i * 3 + 1]) * 10.0;
-            frame_z[i] = @as(f64, frame.coords[i * 3 + 2]) * 10.0;
-        }
-
-        // Calculate SASA
-        const total_sasa: f64 = switch (args.precision) {
-            .f32 => blk: {
-                const config = Configf32{
-                    .probe_radius = @floatCast(args.probe_radius),
-                    .n_points = args.n_points,
-                };
-                var result = if (n_threads > 1)
-                    try shrake_rupley.calculateSasaParallelf32(allocator, frame_input, config, n_threads)
-                else
-                    try shrake_rupley.calculateSasaf32(allocator, frame_input, config);
-                defer result.deinit();
-                break :blk @floatCast(result.total_area);
-            },
-            .f64 => blk: {
-                switch (args.algorithm) {
-                    .sr => {
-                        const config = Config{
-                            .probe_radius = args.probe_radius,
-                            .n_points = args.n_points,
-                        };
-                        var result = if (n_threads > 1)
-                            try shrake_rupley.calculateSasaParallel(allocator, frame_input, config, n_threads)
-                        else
-                            try shrake_rupley.calculateSasa(allocator, frame_input, config);
-                        defer result.deinit();
-                        break :blk result.total_area;
-                    },
-                    .lr => {
-                        const config = lee_richards.LeeRichardsConfig{
-                            .probe_radius = args.probe_radius,
-                            .n_slices = args.n_slices,
-                        };
-                        var result = if (n_threads > 1)
-                            try lee_richards.calculateSasaParallel(allocator, frame_input, config, n_threads)
-                        else
-                            try lee_richards.calculateSasa(allocator, frame_input, config);
-                        defer result.deinit();
-                        break :blk result.total_area;
-                    },
-                }
-            },
-        };
-
-        // Write result
-        try writer.print("{d},{d},{d:.3},{d:.2}\n", .{
-            frame_idx,
-            frame.step,
-            frame.time,
-            total_sasa,
-        });
-
-        processed_count += 1;
-        frame_idx += 1;
-
-        // Progress indicator
-        if (!args.quiet and processed_count % 100 == 0) {
-            std.debug.print("\r  Processed {d} frames...", .{processed_count});
-        }
+    if (n_threads <= 1) {
+        // Sequential path: single-threaded SASA per frame
+        try runSequential(allocator, &reader, writer, &topology, args, &frame_idx, &processed_count);
+    } else {
+        // Batch parallel path: frame-level parallelism across threads
+        try runBatchParallel(allocator, &reader, writer, &topology, args, n_threads, natoms, &frame_idx, &processed_count);
     }
 
     // Flush buffered output
@@ -464,10 +577,234 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
     }
 }
 
+/// Sequential frame processing (single-threaded SASA per frame)
+fn runSequential(
+    allocator: Allocator,
+    reader: *xtc.XtcReader,
+    writer: anytype,
+    topology: *AtomInput,
+    args: TrajArgs,
+    frame_idx: *u32,
+    processed_count: *u32,
+) !void {
+    const natoms = topology.atomCount();
+
+    // Allocate mutable coordinate buffers
+    const frame_x = try allocator.alloc(f64, natoms);
+    defer allocator.free(frame_x);
+    const frame_y = try allocator.alloc(f64, natoms);
+    defer allocator.free(frame_y);
+    const frame_z = try allocator.alloc(f64, natoms);
+    defer allocator.free(frame_z);
+
+    const frame_input = AtomInput{
+        .x = frame_x,
+        .y = frame_y,
+        .z = frame_z,
+        .r = topology.r,
+        .residue = topology.residue,
+        .atom_name = topology.atom_name,
+        .element = topology.element,
+        .chain_id = topology.chain_id,
+        .residue_num = topology.residue_num,
+        .insertion_code = topology.insertion_code,
+        .allocator = allocator,
+    };
+
+    while (true) {
+        var frame = reader.readFrame() catch |err| {
+            if (err == xtc.XtcError.EndOfFile) break;
+            return err;
+        };
+        defer frame.deinit(allocator);
+
+        // Check frame range
+        if (frame_idx.* < args.start_frame) {
+            frame_idx.* += 1;
+            continue;
+        }
+        if (args.end_frame) |end| {
+            if (frame_idx.* > end) break;
+        }
+
+        // Check stride
+        if ((frame_idx.* - args.start_frame) % args.stride != 0) {
+            frame_idx.* += 1;
+            continue;
+        }
+
+        // Update frame coordinates from XTC (nm -> Angstrom)
+        for (0..natoms) |i| {
+            frame_x[i] = @as(f64, frame.coords[i * 3 + 0]) * 10.0;
+            frame_y[i] = @as(f64, frame.coords[i * 3 + 1]) * 10.0;
+            frame_z[i] = @as(f64, frame.coords[i * 3 + 2]) * 10.0;
+        }
+
+        // Calculate SASA (single-threaded)
+        const total_sasa: f64 = switch (args.precision) {
+            .f32 => blk: {
+                const config = Configf32{
+                    .probe_radius = @floatCast(args.probe_radius),
+                    .n_points = args.n_points,
+                };
+                var result = try shrake_rupley.calculateSasaf32(allocator, frame_input, config);
+                defer result.deinit();
+                break :blk @floatCast(result.total_area);
+            },
+            .f64 => blk: {
+                switch (args.algorithm) {
+                    .sr => {
+                        const config = Config{
+                            .probe_radius = args.probe_radius,
+                            .n_points = args.n_points,
+                        };
+                        var result = try shrake_rupley.calculateSasa(allocator, frame_input, config);
+                        defer result.deinit();
+                        break :blk result.total_area;
+                    },
+                    .lr => {
+                        const config = lee_richards.LeeRichardsConfig{
+                            .probe_radius = args.probe_radius,
+                            .n_slices = args.n_slices,
+                        };
+                        var result = try lee_richards.calculateSasa(allocator, frame_input, config);
+                        defer result.deinit();
+                        break :blk result.total_area;
+                    },
+                }
+            },
+        };
+
+        // Write result
+        try writer.print("{d},{d},{d:.3},{d:.2}\n", .{
+            frame_idx.*,
+            frame.step,
+            frame.time,
+            total_sasa,
+        });
+
+        processed_count.* += 1;
+        frame_idx.* += 1;
+
+        // Progress indicator
+        if (!args.quiet and processed_count.* % 100 == 0) {
+            std.debug.print("\r  Processed {d} frames...", .{processed_count.*});
+        }
+    }
+}
+
+/// Batch parallel frame processing (frame-level parallelism)
+fn runBatchParallel(
+    allocator: Allocator,
+    reader: *xtc.XtcReader,
+    writer: anytype,
+    topology: *AtomInput,
+    args: TrajArgs,
+    n_threads: usize,
+    natoms: usize,
+    frame_idx: *u32,
+    processed_count: *u32,
+) !void {
+    const batch_size: usize = if (args.batch_size > 0) args.batch_size else n_threads * 2;
+
+    if (!args.quiet) {
+        std.debug.print("Batch size: {d} frames\n", .{batch_size});
+    }
+
+    // Pre-allocate batch buffers
+    const coord_pool = try allocator.alloc(f32, batch_size * natoms * 3);
+    defer allocator.free(coord_pool);
+    const frame_data = try allocator.alloc(FrameData, batch_size);
+    defer allocator.free(frame_data);
+    const frame_results = try allocator.alloc(FrameResult, batch_size);
+    defer allocator.free(frame_results);
+
+    while (true) {
+        // Phase 1: Read batch of frames (sequential, with filtering)
+        const read_result = try readBatch(
+            reader,
+            allocator,
+            coord_pool,
+            frame_data,
+            batch_size,
+            natoms,
+            frame_idx,
+            args,
+        );
+
+        if (read_result.count == 0) break;
+
+        // Phase 2: Compute batch (parallel, frame-level distribution)
+        const thread_count = @min(n_threads, read_result.count);
+        var error_flag = std.atomic.Value(bool).init(false);
+        var error_msg: [128]u8 = @splat(0);
+
+        const threads = try allocator.alloc(std.Thread, thread_count);
+        defer allocator.free(threads);
+
+        for (0..thread_count) |i| {
+            threads[i] = std.Thread.spawn(.{}, batchWorkerFn, .{BatchWorkerArgs{
+                .coord_pool = coord_pool,
+                .frame_data = frame_data,
+                .results = frame_results,
+                .batch_count = read_result.count,
+                .natoms = natoms,
+                .radii = topology.r,
+                .error_flag = &error_flag,
+                .error_msg = &error_msg,
+                .thread_id = i,
+                .n_threads = thread_count,
+                .algorithm = args.algorithm,
+                .precision = args.precision,
+                .probe_radius = args.probe_radius,
+                .n_points = args.n_points,
+                .n_slices = args.n_slices,
+            }}) catch {
+                error_flag.store(true, .release);
+                for (threads[0..i]) |thread| {
+                    thread.join();
+                }
+                return error.ThreadSpawnFailed;
+            };
+        }
+
+        // Wait for all threads to complete
+        for (threads[0..thread_count]) |thread| {
+            thread.join();
+        }
+
+        if (error_flag.load(.acquire)) {
+            const msg = std.mem.sliceTo(&error_msg, 0);
+            if (msg.len > 0) {
+                std.debug.print("Error: {s}\n", .{msg});
+            }
+            return error.BatchCalculationFailed;
+        }
+
+        // Phase 3: Write results (sequential, in frame order)
+        for (0..read_result.count) |i| {
+            try writer.print("{d},{d},{d:.3},{d:.2}\n", .{
+                frame_results[i].frame_idx,
+                frame_results[i].step,
+                frame_results[i].time,
+                frame_results[i].total_sasa,
+            });
+        }
+
+        processed_count.* += @intCast(read_result.count);
+
+        if (!args.quiet and processed_count.* % 100 < @as(u32, @intCast(read_result.count))) {
+            std.debug.print("\r  Processed {d} frames...", .{processed_count.*});
+        }
+
+        if (read_result.eof) break;
+    }
+}
+
 /// Apply built-in classifier to topology
 fn applyBuiltinClassifier(
     _: Allocator,
-    input: *types.AtomInput,
+    input: *AtomInput,
     ct: ClassifierType,
     quiet: bool,
 ) !void {
