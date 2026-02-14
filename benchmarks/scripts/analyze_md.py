@@ -232,6 +232,22 @@ def _threads_label(threads: int | None) -> str:
     return str(threads)
 
 
+def build_subtitle(config: dict | None) -> str:
+    """Build subtitle string from config metadata (atom_count, total_frames, stride)."""
+    if not config:
+        return ""
+    params = config.get("parameters", {})
+    parts: list[str] = []
+    if "atom_count" in params:
+        parts.append(f"{params['atom_count']:,} atoms")
+    if "total_frames" in params:
+        parts.append(f"{params['total_frames']:,} frames")
+    stride = params.get("stride", 1)
+    if stride and stride > 1:
+        parts.append(f"stride={stride}")
+    return ", ".join(parts)
+
+
 # === CLI Commands ===
 
 
@@ -252,6 +268,13 @@ def summary(
             f"({system.get('cpu_cores', '?')} cores, "
             f"{system.get('memory_gb', '?')} GB RAM)[/dim]"
         )
+        traj_parts: list[str] = []
+        if "atom_count" in params:
+            traj_parts.append(f"{params['atom_count']:,} atoms")
+        if "total_frames" in params:
+            traj_parts.append(f"{params['total_frames']:,} frames")
+        if traj_parts:
+            rprint(f"[dim]Trajectory: {', '.join(traj_parts)}[/dim]")
         rprint(
             f"[dim]Params: stride={params.get('stride', '?')}, "
             f"n_points={params.get('n_points', '?')}, "
@@ -261,7 +284,11 @@ def summary(
 
     mdtraj_baseline = get_mdtraj_baseline(results)
 
-    table = Table(title=f"MD Benchmark Results: {name}")
+    subtitle = build_subtitle(config)
+    table_title = f"MD Benchmark Results: {name}"
+    if subtitle:
+        table_title += f" ({subtitle})"
+    table = Table(title=table_title)
     table.add_column("Tool", style="cyan")
     table.add_column("Threads", justify="right")
     table.add_column("Mean (s)", justify="right")
@@ -308,6 +335,7 @@ def bar(
     """Generate horizontal bar chart comparing best time per tool."""
     setup_style()
     results = load_results(name)
+    config = load_config(name)
     best = get_best_per_tool(results)
 
     # Sort by time (fastest first from top)
@@ -334,7 +362,11 @@ def bar(
     ax.set_yticks(y_pos)
     ax.set_yticklabels(labels)
     ax.set_xlabel("Time (seconds)")
-    ax.set_title(f"MD Trajectory SASA Benchmark: {name}")
+    subtitle = build_subtitle(config)
+    title = f"MD Trajectory SASA Benchmark: {name}"
+    if subtitle:
+        title += f"\n({subtitle})"
+    ax.set_title(title)
     ax.grid(True, alpha=0.3, axis="x")
 
     for bar_item, t in zip(bars, times):
@@ -361,6 +393,7 @@ def threads(
 ) -> None:
     """Generate thread scaling plot."""
     setup_style()
+    config = load_config(name)
     results = load_results(name)
 
     # Tools that don't scale with threads - always show as reference line
@@ -408,7 +441,11 @@ def threads(
 
     ax.set_xlabel("Thread Count")
     ax.set_ylabel("Time (seconds)")
-    ax.set_title(f"Thread Scaling: {name}")
+    subtitle = build_subtitle(config)
+    title = f"Thread Scaling: {name}"
+    if subtitle:
+        title += f"\n({subtitle})"
+    ax.set_title(title)
     ax.legend(loc="upper right")
     ax.grid(True, alpha=0.3)
 
@@ -431,6 +468,7 @@ def memory(
 ) -> None:
     """Generate memory usage comparison bar chart."""
     setup_style()
+    config = load_config(name)
     results = load_results(name)
     best = get_best_per_tool(results)
 
@@ -456,7 +494,11 @@ def memory(
     ax.set_yticks(y_pos)
     ax.set_yticklabels(labels)
     ax.set_xlabel("Peak Memory (MB)")
-    ax.set_title(f"Memory Usage: {name}")
+    subtitle = build_subtitle(config)
+    title = f"Memory Usage: {name}"
+    if subtitle:
+        title += f"\n({subtitle})"
+    ax.set_title(title)
     ax.grid(True, alpha=0.3, axis="x")
 
     for bar_item, mem_mb in zip(bars, mem_mbs):
@@ -483,6 +525,7 @@ def speedup(
 ) -> None:
     """Show speedup ratios and generate comparison chart."""
     setup_style()
+    config = load_config(name)
     results = load_results(name)
     best = get_best_per_tool(results)
 
@@ -491,7 +534,11 @@ def speedup(
     bolt_time = bolt_result.mean if bolt_result is not None else None
 
     # Rich table
-    table = Table(title=f"Speedup Summary: {name}")
+    subtitle = build_subtitle(config)
+    table_title = f"Speedup Summary: {name}"
+    if subtitle:
+        table_title += f" ({subtitle})"
+    table = Table(title=table_title)
     table.add_column("Tool", style="cyan")
     table.add_column("Threads", justify="right")
     table.add_column("Time (s)", justify="right")
@@ -554,7 +601,10 @@ def speedup(
     ax.set_yticks(y_pos)
     ax.set_yticklabels(labels)
     ax.set_xlabel("Speedup vs MDTraj native (higher = faster)")
-    ax.set_title(f"Speedup vs MDTraj native: {name}")
+    speedup_title = f"Speedup vs MDTraj native: {name}"
+    if subtitle:
+        speedup_title += f"\n({subtitle})"
+    ax.set_title(speedup_title)
     ax.axvline(x=1.0, color="gray", linestyle="--", linewidth=1.5)
     ax.grid(True, alpha=0.3, axis="x")
 

@@ -93,6 +93,20 @@ def get_binary_paths() -> dict[str, Path]:
     }
 
 
+def get_trajectory_info(xtc: Path, pdb: Path) -> dict:
+    """Get trajectory metadata (atom_count, total_frames).
+
+    Uses mdtraj if available, otherwise returns empty dict.
+    """
+    try:
+        import mdtraj as md
+
+        traj = md.load(str(xtc), top=str(pdb))
+        return {"total_frames": traj.n_frames, "atom_count": traj.n_atoms}
+    except Exception:
+        return {}
+
+
 def get_system_info() -> dict:
     """Get system information."""
     info = {
@@ -541,6 +555,9 @@ def main(
 
     selected_tools = tools if tools else ALL_TOOLS
 
+    # Get trajectory metadata
+    traj_info = get_trajectory_info(xtc, pdb)
+
     # Save config
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     config = {
@@ -556,6 +573,7 @@ def main(
             "runs": runs,
             "stride": stride,
             "n_points": n_points,
+            **traj_info,
         },
     }
     if not dry_run:
