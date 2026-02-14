@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-02-12_163913",
+  "timestamp": "2026-02-14_130521",
   "system": {
     "os": "Darwin",
     "os_version": "24.6.0",
@@ -9,9 +9,9 @@
     "memory_gb": 32
   },
   "parameters": {
-    "name": "6sup_R1_config",
-    "xtc": "md_data/6sup_A_protein/6sup_A_prod_R1_fit.xtc",
-    "pdb": "md_data/6sup_A_protein/6sup_A.pdb",
+    "name": "6sup_A_analysis",
+    "xtc": "md_data/6sup_A_analysis/6sup_A_R1.xtc",
+    "pdb": "md_data/6sup_A_analysis/6sup_A.pdb",
     "tools": [
       "zig",
       "zsasa_mdtraj",
@@ -20,7 +20,6 @@
       "mdsasa_bolt"
     ],
     "thread_counts": [
-      1,
       8,
       10
     ],
@@ -28,7 +27,7 @@
     "runs": 3,
     "stride": 1,
     "n_points": 100,
-    "total_frames": 10001,
+    "total_frames": 1001,
     "atom_count": 33377
   }
 }

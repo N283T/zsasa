@@ -1,23 +1,23 @@
 {
   "results": [
     {
-      "command": "/Users/nagaet/freesasa-zig/zig-out/bin/zsasa traj md_data/6sup_A_protein/6sup_A_prod_R1_fit.xtc md_data/6sup_A_protein/6sup_A.pdb --include-hydrogens --threads=8 --precision=f64 --stride=1 --n-points=100 -o /var/folders/jd/5292ykl96gs7wwvtwny4rxdr0000gn/T/zsasa_n4juammm.csv -q",
-      "mean": 298.0051924067066,
-      "stddev": 0.09788522811422036,
-      "median": 297.96071874003997,
-      "user": 992.20771796,
-      "system": 17.553910886666667,
-      "min": 297.93743986504,
-      "max": 298.11741861504,
+      "command": "/Users/nagaet/freesasa-zig/zig-out/bin/zsasa traj md_data/6sup_A_protein/6sup_A_prod_R1_fit.xtc md_data/6sup_A_protein/6sup_A.pdb --include-hydrogens --threads=8 --precision=f64 --stride=1 --n-points=100 -o /var/folders/jd/5292ykl96gs7wwvtwny4rxdr0000gn/T/zsasa_wrvnf6r8.csv -q",
+      "mean": 149.23965580104667,
+      "stddev": 0.6215616354431723,
+      "median": 148.95875767538,
+      "user": 1092.5232998133333,
+      "system": 17.47315338,
+      "min": 148.80812492638,
+      "max": 149.95208480138,
       "times": [
-        297.93743986504,
-        297.96071874003997,
-        298.11741861504
+        148.80812492638,
+        148.95875767538,
+        149.95208480138
       ],
       "memory_usage_byte": [
-        34537472,
-        34537472,
-        34537472
+        339296256,
+        339443712,
+        339509248
       ],
       "exit_codes": [
         0,

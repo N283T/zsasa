@@ -1,0 +1,29 @@
+{
+  "results": [
+    {
+      "command": "/Users/nagaet/freesasa-zig/zig-out/bin/zsasa traj md_data/6sup_A_analysis/6sup_A_R1.xtc md_data/6sup_A_analysis/6sup_A.pdb --include-hydrogens --threads=8 --precision=f64 --stride=1 --n-points=100 -o /var/folders/jd/5292ykl96gs7wwvtwny4rxdr0000gn/T/zsasa_1nn5ti0l.csv -q",
+      "mean": 14.871443807293332,
+      "stddev": 0.033095506121885866,
+      "median": 14.87572291796,
+      "user": 106.14053424000001,
+      "system": 1.7015903133333332,
+      "min": 14.83641687696,
+      "max": 14.902191626959999,
+      "times": [
+        14.83641687696,
+        14.902191626959999,
+        14.87572291796
+      ],
+      "memory_usage_byte": [
+        338477056,
+        338477056,
+        338526208
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

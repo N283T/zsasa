@@ -27,6 +27,8 @@
     "warmup": 1,
     "runs": 3,
     "stride": 1,
-    "n_points": 100
+    "n_points": 100,
+    "total_frames": 1001,
+    "atom_count": 531
   }
 }

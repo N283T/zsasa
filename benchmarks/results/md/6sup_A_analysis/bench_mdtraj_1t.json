@@ -1,0 +1,29 @@
+{
+  "results": [
+    {
+      "command": "uv run --script /Users/nagaet/freesasa-zig/benchmarks/scripts/bench_md_runner.py --tool mdtraj --xtc md_data/6sup_A_analysis/6sup_A_R1.xtc --pdb md_data/6sup_A_analysis/6sup_A.pdb --n-points 100 --stride 1",
+      "mean": 916.4889563687067,
+      "stddev": 0.1598988819138945,
+      "median": 916.41640581304,
+      "user": 913.0895927266666,
+      "system": 1.999999833333333,
+      "min": 916.37819435504,
+      "max": 916.67226893804,
+      "times": [
+        916.41640581304,
+        916.37819435504,
+        916.67226893804
+      ],
+      "memory_usage_byte": [
+        913997824,
+        914112512,
+        914669568
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}
