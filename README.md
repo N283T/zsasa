@@ -36,15 +36,15 @@ See [benchmark results](docs/benchmark/single-file.md) for detailed analysis.
 
 ### MD Trajectory Performance
 
-**3.4x faster** than mdsasa-bolt (RustSASA) on real MD trajectory data.
+**4.3x faster** than mdsasa-bolt (RustSASA) on real MD trajectory data.
 
-| Implementation | Time (20k atoms × 1k frames) |
-|----------------|------------------------------|
-| zsasa   | 8.8 s                        |
-| mdsasa-bolt    | 30.3 s                       |
-| **Speedup**    | **3.4x**                     |
+| Implementation | Time (33k atoms × 1k frames) |
+|----------------|-------------------------------|
+| zsasa (f64)    | 13.3 s                        |
+| mdsasa-bolt    | 56.7 s                        |
+| **Speedup**    | **4.3x**                      |
 
-*Benchmark: MD ATLAS 6qfk_A trajectory (20,391 atoms, 1,001 frames, n_points=100)*
+*Benchmark: 6sup_A_analysis trajectory (33,377 atoms, 1,001 frames, n_points=100, threads=10)*
 
 **Key advantages:**
 - Controllable thread count (unlike rayon's global pool)
@@ -160,7 +160,7 @@ print(f"Mean SASA: {sasa.results.mean_total_area:.2f} Å²")
 print(f"Per-frame: {sasa.results.total_area}")
 ```
 
-See [Python API](docs/python.md) for full documentation.
+See [Python API](docs/python-api/) for full documentation.
 
 ## Documentation
 
