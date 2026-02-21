@@ -28,6 +28,12 @@ Usage:
         --pdb benchmarks/md_data/6sup_A_protein/6sup_A.pdb \
         -n 6sup_R1
 
+    # Compare n_points convergence
+    ./benchmarks/scripts/validation_md.py run \
+        --xtc benchmarks/md_data/6sup_A_protein/6sup_A_prod_R1_fit.xtc \
+        --pdb benchmarks/md_data/6sup_A_protein/6sup_A.pdb \
+        -n 6sup_R1_npoints --n-points 100,500,960 --stride 100
+
     # Re-analyze existing CSV
     ./benchmarks/scripts/validation_md.py compare \
         -d benchmarks/results/validation_md/6sup_R1
@@ -77,6 +83,11 @@ class MdTool(str, Enum):
 
 
 ALL_MD_TOOLS = [MdTool.mdtraj, MdTool.zsasa_mdtraj, MdTool.zsasa_cli]
+
+
+def parse_n_points(n_points_str: str) -> list[int]:
+    """Parse n_points specification like '100,500,960'."""
+    return sorted(int(x.strip()) for x in n_points_str.split(","))
 
 
 def get_root_dir() -> Path:
@@ -384,12 +395,12 @@ def run(
         ),
     ] = None,
     n_points: Annotated[
-        int,
+        str,
         typer.Option(
             "--n-points",
-            help="Test points per atom",
+            help="Test points per atom (comma-separated for convergence: 100,500,960)",
         ),
-    ] = 100,
+    ] = "100",
     stride: Annotated[
         int,
         typer.Option(
@@ -425,6 +436,8 @@ def run(
 ) -> None:
     """Compare per-frame SASA values across MD trajectory tools."""
     selected_tools = tools if tools else ALL_MD_TOOLS
+    n_points_list = parse_n_points(n_points)
+    multi_npoints = len(n_points_list) > 1
 
     # Set up output
     root = get_root_dir()
@@ -444,7 +457,7 @@ def run(
             "xtc": str(xtc),
             "pdb": str(pdb),
             "tools": [t.value for t in selected_tools],
-            "n_points": n_points,
+            "n_points": n_points_list,
             "stride": stride,
             "threads": threads,
             "reference": reference,
@@ -458,28 +471,33 @@ def run(
     console.print(f"XTC: {xtc}")
     console.print(f"PDB: {pdb}")
     console.print(f"Tools: {', '.join(t.value for t in selected_tools)}")
-    console.print(f"N-points: {n_points}, Stride: {stride}, Threads: {threads}")
+    console.print(f"N-points: {n_points_list}, Stride: {stride}, Threads: {threads}")
     console.print()
 
-    # Run each tool
+    # Run each tool x n_points combination
     tool_results: dict[str, np.ndarray] = {}
 
-    if MdTool.mdtraj in selected_tools:
-        console.print("[bold cyan]Running mdtraj native...[/]")
-        tool_results["mdtraj"] = run_mdtraj_native(xtc, pdb, n_points, stride)
-        console.print(f"  Got {len(tool_results['mdtraj'])} frames")
+    for np_ in n_points_list:
+        suffix = f"_{np_}" if multi_npoints else ""
+        console.print(f"[bold]=== n_points={np_} ===[/]")
 
-    if MdTool.zsasa_mdtraj in selected_tools:
-        console.print("[bold cyan]Running zsasa_mdtraj...[/]")
-        tool_results["zsasa_mdtraj"] = run_zsasa_mdtraj(
-            xtc, pdb, n_points, stride, threads
-        )
-        console.print(f"  Got {len(tool_results['zsasa_mdtraj'])} frames")
+        if MdTool.mdtraj in selected_tools:
+            col = f"mdtraj{suffix}"
+            console.print(f"[bold cyan]Running mdtraj native (n_points={np_})...[/]")
+            tool_results[col] = run_mdtraj_native(xtc, pdb, np_, stride)
+            console.print(f"  Got {len(tool_results[col])} frames")
 
-    if MdTool.zsasa_cli in selected_tools:
-        console.print("[bold cyan]Running zsasa CLI traj...[/]")
-        tool_results["zsasa_cli"] = run_zsasa_cli(xtc, pdb, n_points, stride, threads)
-        console.print(f"  Got {len(tool_results['zsasa_cli'])} frames")
+        if MdTool.zsasa_mdtraj in selected_tools:
+            col = f"zsasa_mdtraj{suffix}"
+            console.print(f"[bold cyan]Running zsasa_mdtraj (n_points={np_})...[/]")
+            tool_results[col] = run_zsasa_mdtraj(xtc, pdb, np_, stride, threads)
+            console.print(f"  Got {len(tool_results[col])} frames")
+
+        if MdTool.zsasa_cli in selected_tools:
+            col = f"zsasa_cli{suffix}"
+            console.print(f"[bold cyan]Running zsasa CLI traj (n_points={np_})...[/]")
+            tool_results[col] = run_zsasa_cli(xtc, pdb, np_, stride, threads)
+            console.print(f"  Got {len(tool_results[col])} frames")
 
     if not tool_results:
         console.print("[red]No results collected.[/]")
@@ -506,9 +524,17 @@ def run(
     df.write_csv(csv_path)
     console.print(f"\n[green]Saved:[/] {csv_path} ({n_frames} frames)")
 
+    # Determine reference column name
+    ref_col = reference
+    if multi_npoints and reference in df.columns:
+        ref_col = reference
+    elif multi_npoints:
+        # Default: use the highest n_points for reference tool
+        ref_col = f"{reference}_{n_points_list[-1]}"
+
     # Statistics and plot
-    print_md_stats_table(csv_path, reference=reference)
-    generate_md_scatter_plot(results_dir, csv_path, reference=reference)
+    print_md_stats_table(csv_path, reference=ref_col)
+    generate_md_scatter_plot(results_dir, csv_path, reference=ref_col)
 
     console.print(f"\n[bold green]=== Done! Results: {results_dir} ===[/]")
 
