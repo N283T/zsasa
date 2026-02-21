@@ -40,9 +40,10 @@ Usage:
 
 Output:
     benchmarks/results/validation_md/<name>/
-    ├── config.json          # System info, parameters
-    ├── results.csv          # Per-frame SASA values
-    └── validation_md.png    # Scatter plot
+    ├── config.json              # System info, parameters
+    ├── results.csv              # Per-frame SASA values
+    ├── validation_md.png        # Scatter plot (single n_points)
+    └── validation_md_<N>.png    # Per-n_points scatter plots (multi n_points)
 """
 
 from __future__ import annotations
@@ -91,30 +92,14 @@ def parse_n_points(n_points_str: str) -> list[int]:
 
 
 def _detect_reference(results_dir: Path) -> str:
-    """Detect reference column from config.json or CSV columns."""
+    """Detect reference tool base name from config.json."""
     config_path = results_dir.joinpath("config.json")
     if config_path.exists():
         try:
             config = json.loads(config_path.read_text())
-            params = config.get("parameters", {})
-            ref_base = params.get("reference", "mdtraj")
-            n_points = params.get("n_points", [100])
-            if isinstance(n_points, list) and len(n_points) > 1:
-                return f"{ref_base}_{n_points[-1]}"
-            return ref_base
+            return config.get("parameters", {}).get("reference", "mdtraj")
         except (json.JSONDecodeError, KeyError):
             pass
-
-    # Fallback: look for mdtraj column in CSV
-    csv_path = results_dir.joinpath("results.csv")
-    if csv_path.exists():
-        import polars as pl
-
-        df = pl.read_csv(csv_path, n_rows=0)
-        for col in df.columns:
-            if col.startswith("mdtraj"):
-                return col
-
     return "mdtraj"
 
 
@@ -297,35 +282,75 @@ def _plot_scatter_panel(
     ax.set_aspect("equal")
 
 
-def _build_comparison_pairs(
-    df: object,
-    reference: str,
-) -> list[tuple[str, str]]:
-    """Build list of (reference_col, compare_col) pairs.
+def _extract_ref_base(reference: str) -> str:
+    """Extract base tool name from reference column.
 
-    Includes: reference vs each other tool, plus zsasa_mdtraj vs zsasa_cli
-    for XTC reader comparison.
+    Examples: 'mdtraj_960' -> 'mdtraj', 'mdtraj' -> 'mdtraj'
     """
-    skip_cols = {"frame", reference}
-    compare_cols = [c for c in df.columns if c not in skip_cols]
+    import re
 
-    pairs: list[tuple[str, str]] = []
+    m = re.match(r"^(.+?)_(\d+)$", reference)
+    return m.group(1) if m else reference
 
-    # Reference vs each tool
-    for col in compare_cols:
-        pairs.append((reference, col))
 
-    # XTC comparison: zsasa_mdtraj vs zsasa_cli (same n_points)
-    mdtraj_cols = sorted(c for c in df.columns if c.startswith("zsasa_mdtraj"))
-    cli_cols = sorted(c for c in df.columns if c.startswith("zsasa_cli"))
+def _group_columns_by_npoints(columns: list[str]) -> dict[str, list[str]]:
+    """Group data columns by n_points suffix.
 
-    for mc in mdtraj_cols:
-        suffix = mc.removeprefix("zsasa_mdtraj")
-        cli_col = f"zsasa_cli{suffix}"
-        if cli_col in cli_cols:
-            pairs.append((mc, cli_col))
+    Returns dict mapping n_points label to list of column names.
+    For single n_points (no suffix), key is "".
+    """
+    import re
 
-    return pairs
+    groups: dict[str, list[str]] = {}
+    for col in columns:
+        if col == "frame":
+            continue
+        m = re.search(r"_(\d+)$", col)
+        key = m.group(1) if m else ""
+        groups.setdefault(key, []).append(col)
+    return groups
+
+
+def _build_comparison_pairs_by_npoints(
+    columns: list[str],
+    reference: str,
+) -> dict[str, list[tuple[str, str]]]:
+    """Build comparison pairs grouped by n_points.
+
+    Within each group:
+    - reference tool vs each other tool at same n_points
+    - zsasa_mdtraj vs zsasa_cli (XTC reader comparison)
+    """
+    ref_base = _extract_ref_base(reference)
+    groups = _group_columns_by_npoints(columns)
+    result: dict[str, list[tuple[str, str]]] = {}
+
+    for npoints_key, cols in sorted(
+        groups.items(), key=lambda x: int(x[0]) if x[0] else 0
+    ):
+        suffix = f"_{npoints_key}" if npoints_key else ""
+        pairs: list[tuple[str, str]] = []
+
+        ref_col = f"{ref_base}{suffix}" if npoints_key else ref_base
+
+        # Reference vs each other tool (same n_points)
+        if ref_col in cols:
+            for other in sorted(cols):
+                if other != ref_col:
+                    pairs.append((ref_col, other))
+
+        # XTC comparison: zsasa_mdtraj vs zsasa_cli
+        zsasa_mdtraj_col = f"zsasa_mdtraj{suffix}"
+        zsasa_cli_col = f"zsasa_cli{suffix}"
+        if zsasa_mdtraj_col in cols and zsasa_cli_col in cols:
+            pair = (zsasa_mdtraj_col, zsasa_cli_col)
+            if pair not in pairs:
+                pairs.append(pair)
+
+        if pairs:
+            result[npoints_key] = pairs
+
+    return result
 
 
 def generate_md_scatter_plot(
@@ -333,7 +358,7 @@ def generate_md_scatter_plot(
     csv_path: Path,
     reference: str = "mdtraj",
 ) -> None:
-    """Generate scatter plot comparing MD tools against reference (grid layout)."""
+    """Generate scatter plots comparing MD tools, one image per n_points."""
     import math
 
     import matplotlib.pyplot as plt
@@ -341,67 +366,66 @@ def generate_md_scatter_plot(
 
     df = pl.read_csv(csv_path)
 
-    if reference not in df.columns:
-        console.print(
-            f"[yellow]Reference column '{reference}' not in CSV, skipping plot[/]"
-        )
-        return
-
-    pairs = _build_comparison_pairs(df, reference)
-    if not pairs:
+    groups = _build_comparison_pairs_by_npoints(df.columns, reference)
+    if not groups:
         console.print("[yellow]No comparison pairs found, skipping plot[/]")
         return
 
-    n = len(pairs)
-    ncols = min(n, 4)
-    nrows = math.ceil(n / ncols)
+    for npoints_key, pairs in groups.items():
+        n = len(pairs)
+        ncols = min(n, 3)
+        nrows = math.ceil(n / ncols)
 
-    fig, axes = plt.subplots(
-        nrows, ncols, figsize=(6 * ncols, 6 * nrows), squeeze=False
-    )
+        fig, axes = plt.subplots(
+            nrows, ncols, figsize=(6 * ncols, 6 * nrows), squeeze=False
+        )
 
-    for idx, (ref_col, comp_col) in enumerate(pairs):
-        row, col_idx = divmod(idx, ncols)
-        ax = axes[row][col_idx]
+        for idx, (ref_col, comp_col) in enumerate(pairs):
+            row, col_idx = divmod(idx, ncols)
+            ax = axes[row][col_idx]
 
-        pair_df = df.select([ref_col, comp_col]).drop_nulls()
-        if pair_df.height < 2:
-            ax.set_title(f"{comp_col}: insufficient data")
-            continue
+            pair_df = df.select([ref_col, comp_col]).drop_nulls()
+            if pair_df.height < 2:
+                ax.set_title(f"{comp_col}: insufficient data")
+                continue
 
-        ref_arr = pair_df[ref_col].to_numpy()
-        comp_arr = pair_df[comp_col].to_numpy()
+            ref_arr = pair_df[ref_col].to_numpy()
+            comp_arr = pair_df[comp_col].to_numpy()
 
-        _plot_scatter_panel(ax, ref_arr, comp_arr, ref_col, comp_col, pair_df.height)
+            _plot_scatter_panel(
+                ax, ref_arr, comp_arr, ref_col, comp_col, pair_df.height
+            )
 
-    # Hide unused axes
-    for idx in range(n, nrows * ncols):
-        row, col_idx = divmod(idx, ncols)
-        axes[row][col_idx].set_visible(False)
+        # Hide unused axes
+        for idx in range(n, nrows * ncols):
+            row, col_idx = divmod(idx, ncols)
+            axes[row][col_idx].set_visible(False)
 
-    fig.tight_layout()
-    out_path = results_dir.joinpath("validation_md.png")
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    console.print(f"[green]Saved:[/] {out_path}")
+        fig.tight_layout()
+
+        if npoints_key:
+            out_path = results_dir.joinpath(f"validation_md_{npoints_key}.png")
+        else:
+            out_path = results_dir.joinpath("validation_md.png")
+
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+        console.print(f"[green]Saved:[/] {out_path}")
 
 
 def print_md_stats_table(
     csv_path: Path,
     reference: str = "mdtraj",
 ) -> None:
-    """Print statistics table comparing MD tools against reference."""
+    """Print statistics table comparing MD tools, grouped by n_points."""
     import polars as pl
 
     df = pl.read_csv(csv_path)
 
-    if reference not in df.columns:
-        console.print(f"[yellow]Reference column '{reference}' not in CSV[/]")
-        return
-
-    pairs = _build_comparison_pairs(df, reference)
+    groups = _build_comparison_pairs_by_npoints(df.columns, reference)
 
     table = Table(title="MD Validation Statistics")
+    table.add_column("n_points", style="bold")
     table.add_column("Reference", style="dim")
     table.add_column("Tool", style="cyan")
     table.add_column("Frames", justify="right")
@@ -409,23 +433,25 @@ def print_md_stats_table(
     table.add_column("Mean Error %", justify="right")
     table.add_column("Max Error %", justify="right")
 
-    for ref_col, comp_col in pairs:
-        pair = df.select([ref_col, comp_col]).drop_nulls()
-        if pair.height < 2:
-            continue
+    for npoints_key, pairs in groups.items():
+        for ref_col, comp_col in pairs:
+            pair = df.select([ref_col, comp_col]).drop_nulls()
+            if pair.height < 2:
+                continue
 
-        ref_arr = pair[ref_col].to_numpy()
-        comp_arr = pair[comp_col].to_numpy()
-        stats = compute_stats(comp_arr, ref_arr)
+            ref_arr = pair[ref_col].to_numpy()
+            comp_arr = pair[comp_col].to_numpy()
+            stats = compute_stats(comp_arr, ref_arr)
 
-        table.add_row(
-            ref_col,
-            comp_col,
-            str(pair.height),
-            f"{stats['r_squared']:.6f}",
-            f"{stats['mean_rel_error']:.4f}",
-            f"{stats['max_rel_error']:.4f}",
-        )
+            table.add_row(
+                npoints_key if npoints_key else "-",
+                ref_col,
+                comp_col,
+                str(pair.height),
+                f"{stats['r_squared']:.6f}",
+                f"{stats['mean_rel_error']:.4f}",
+                f"{stats['max_rel_error']:.4f}",
+            )
 
     console.print()
     console.print(table)
@@ -604,17 +630,9 @@ def run(
     df.write_csv(csv_path)
     console.print(f"\n[green]Saved:[/] {csv_path} ({n_frames} frames)")
 
-    # Determine reference column name
-    ref_col = reference
-    if multi_npoints and reference in df.columns:
-        ref_col = reference
-    elif multi_npoints:
-        # Default: use the highest n_points for reference tool
-        ref_col = f"{reference}_{n_points_list[-1]}"
-
-    # Statistics and plot
-    print_md_stats_table(csv_path, reference=ref_col)
-    generate_md_scatter_plot(results_dir, csv_path, reference=ref_col)
+    # Statistics and plot (reference is base tool name, per-group handled internally)
+    print_md_stats_table(csv_path, reference=reference)
+    generate_md_scatter_plot(results_dir, csv_path, reference=reference)
 
     console.print(f"\n[bold green]=== Done! Results: {results_dir} ===[/]")
 

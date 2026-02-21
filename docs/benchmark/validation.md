@@ -93,7 +93,9 @@ Reference: mdtraj at n_points=960.
 - Max error <0.014% comes from floating-point coordinate precision differences between MDTraj's C reader and zsasa's Zig XTC reader
 - Error decreases with higher n_points (more points smooth out coordinate-level noise)
 
-![MD validation scatter](../../benchmarks/results/validation_md/5wvo_C_R1/validation_md.png)
+![MD validation n_points=100](../../benchmarks/results/validation_md/5wvo_C_R1/validation_md_100.png)
+![MD validation n_points=500](../../benchmarks/results/validation_md/5wvo_C_R1/validation_md_500.png)
+![MD validation n_points=960](../../benchmarks/results/validation_md/5wvo_C_R1/validation_md_960.png)
 
 ## Running Validation
 
