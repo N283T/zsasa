@@ -104,6 +104,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Gemmi integration for mmCIF/PDB file loading
   - BioPython integration for structure file support
   - Biotite integration for structure analysis workflows
+  - MDTraj integration (`zsasa.mdtraj`) - drop-in replacement for `mdtraj.shrake_rupley()`
+  - MDAnalysis integration (`zsasa.mdanalysis`) - `SASAAnalysis` class compatible with `AnalysisBase`
+
+- **XTC trajectory reader** (native Zig)
+  - Zig port of GROMACS libxdrfile (BSD-2-Clause)
+  - Python XTC reader (`zsasa.xtc`) - no MDTraj/MDAnalysis dependency required
+
+- **Trajectory subcommand** (`zsasa traj`)
+  - `zsasa traj trajectory.xtc topology.pdb` - CLI trajectory mode
+  - Frame-level batch parallelism with work-stealing
+  - `--stride=N`, `--start=N`, `--end=N` frame filtering
+  - `--batch-size=N` for controlling parallel batch size
+  - Default f32 precision for speed in trajectory mode
+
+- **Hydrogen and HETATM filtering**
+  - `--include-hydrogens` - Include H/D atoms (default: excluded)
+  - `--include-hetatm` - Include HETATM records (default: excluded)
+  - Applied to both PDB and mmCIF parsers
+
+- **SASA validation infrastructure**
+  - `benchmarks/scripts/validation.py` - Accuracy validation vs FreeSASA C
+  - `benchmarks/scripts/validation_md.py` - MD trajectory validation across implementations
+  - Lee-Richards validation with E. coli proteome (R²=1.0)
+
+- **MD trajectory benchmarks**
+  - `benchmarks/scripts/bench_md.py` - Hyperfine-based MD benchmark
+  - `benchmarks/scripts/analyze_md.py` - MD analysis and plots
+  - E. coli proteome batch benchmark
 
 - **Timing breakdown** (`--timing` flag)
   - Reports detailed timing for each phase: parsing, classification, SASA calculation, output
@@ -146,7 +174,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Created `scripts/data/` subdirectory for data preparation scripts
   - Renamed: `benchmark_all.py` → `benchmark.py`, `validate_accuracy.py` → `validate.py`
   - Moved data scripts to `scripts/data/` with shorter names
+- **Project renamed**: `freesasa-zig` → `zsasa` (repository, binary, Python package)
+- **Default ProtOr classifier** for PDB/mmCIF input (no `--classifier` flag needed)
 - **Internal**: Refactored `AtomInput.r` from `[]const f64` to `[]f64` to properly support classifier mutations
+- **Internal**: `FixedString5` for mmCIF 5-character `comp_id` (modified residue support)
 - Added LICENSE (MIT) and CONTRIBUTING.md
 - Enabled GitHub Actions CI/CD (format, build, test, Python)
 
