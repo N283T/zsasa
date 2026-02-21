@@ -33,9 +33,16 @@ Dataset: AlphaFold E. coli K-12 proteome, n_points=100.
 
 Dataset: AlphaFold E. coli K-12 proteome, n_slices=20.
 
-> Results will be added after running: `./benchmarks/scripts/validation.py run -i <pdb_dir> -n ecoli -a lr`
+| Tool | N | R² | Mean Error % | Max Error % |
+|------|--:|---:|--------------:|------------:|
+| zsasa f32 | 4,370 | 1.000000 | 0.2214 | 0.3097 |
+| zsasa f64 | 4,370 | 1.000000 | 0.2214 | 0.3102 |
 
-<!-- ![LR validation scatter](../../benchmarks/results/validation/ecoli/lr/validation_lr.png) -->
+- **f32 and f64 are identical** — LR error comes from slice discretization differences, not floating-point precision
+- Mean error ~0.22% is higher than SR (<0.001%) due to different slicing implementations between zsasa and FreeSASA
+- R² = 1.000000 confirms strong linear agreement
+
+![LR validation scatter](../../benchmarks/results/validation/ecoli/lr/validation_lr.png)
 
 ## MD Trajectory
 
