@@ -1,148 +1,241 @@
-# MD Trajectory SASA Benchmark
+# MD Trajectory SASA Benchmarks
 
-Comparison of SASA calculation performance for molecular dynamics trajectories.
+Performance comparison of SASA calculation on molecular dynamics trajectories.
 
 ## Implementations
 
-| Tool | Language | Threading | Notes |
-|------|----------|-----------|-------|
-| **zsasa** | Zig | Configurable | Native XTC reader, parallel SASA |
-| **MDTraj** | Python/C | Single-threaded | `shrake_rupley`, no parallel option |
-| **mdsasa-bolt** | Rust | All cores (rayon) | RustSASA via MDAnalysis |
+| Tool | Language | Threading | I/O | Notes |
+|------|----------|-----------|-----|-------|
+| **zsasa CLI** | Zig | Configurable | Native XTC reader | f32/f64 precision, streams frames |
+| **zsasa.mdtraj** | Python/Zig | Configurable | MDTraj (C) | MDTraj loads trajectory, zsasa computes SASA |
+| **zsasa.mdanalysis** | Python/Zig | Configurable | MDAnalysis | MDAnalysis loads trajectory, zsasa computes SASA |
+| **MDTraj** | Python/C | Single-threaded | MDTraj (C) | `shrake_rupley`, no parallel option |
+| **mdsasa-bolt** | Rust | All cores (rayon) | MDAnalysis/Python | RustSASA via Python bridge |
 
-## Benchmark Results
+## Test Environment
 
-### 6QFK (Medium: 20k atoms)
+| Item | Value |
+|------|-------|
+| Machine | MacBook Pro |
+| Chip | Apple M4 (10 cores: 4P + 6E) |
+| Memory | 32 GB |
+| OS | macOS |
 
-**System**: 6QFK protein (20,391 atoms, 1,001 frames, 90.5 MB XTC)
+## Results
 
-```
-┏━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┓
-┃ Method      ┃ Threads ┃ Time (s) ┃ fps ┃ vs MDTraj ┃ vs mdsasa-bolt ┃
-┡━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━┩
-│ zsasa       │       1 │    55.29 │  18 │      6.7x │           0.5x │
-│ zsasa       │       2 │    28.66 │  35 │     12.9x │           0.9x │
-│ zsasa       │       4 │    15.04 │  67 │     24.5x │           1.7x │
-│ zsasa       │       8 │    10.43 │  96 │     35.3x │           2.4x │
-│ zsasa       │      10 │     9.25 │ 108 │     39.8x │           2.7x │
-│ MDTraj      │       1 │   368.37 │   3 │         - │           0.1x │
-│ mdsasa-bolt │     all │    24.97 │  40 │     14.8x │              - │
-└─────────────┴─────────┴──────────┴─────┴───────────┴────────────────┘
-```
+### 3tvj_I_R1 (Small: 531 atoms, 1,001 frames)
 
-### 5LTJ (Large: 11k atoms, 10k frames)
+Benchmark parameters: warmup=1, runs=3, n_points=100, threads=1,8,10
 
-**System**: 5LTJ protein (11,487 atoms, 10,001 frames, 535 MB XTC)
+Best result per tool (sorted by time):
 
-```
-┏━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━┳━━━━━━━━━━━━━━━━┓
-┃ Method      ┃ Threads ┃ Time (s) ┃ fps ┃ vs mdsasa-bolt ┃
-┡━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━╇━━━━━━━━━━━━━━━━┩
-│ zsasa       │       8 │    56.91 │ 176 │          11.3x │
-│ zsasa       │      10 │    49.91 │ 200 │          12.8x │
-│ mdsasa-bolt │     all │   640.89 │  16 │              - │
-└─────────────┴─────────┴──────────┴─────┴────────────────┘
-```
+| Tool | Threads | Time (s) | FPS | vs MDTraj | RSS (MB) |
+|------|--------:|--------:|----:|----------:|---------:|
+| **zsasa.mdtraj** | **10** | **0.335** | **2,985** | **5.7x** | **76** |
+| zsasa CLI (f32) | 8 | 0.462 | 2,165 | 4.1x | 3 |
+| zsasa.mdanalysis | 10 | 0.655 | 1,527 | 2.9x | 90 |
+| mdsasa-bolt | all | 0.924 | 1,084 | 2.0x | 258 |
+| MDTraj | 1 | 1.893 | 529 | baseline | 62 |
 
-MDTraj skipped (too slow for 10k frames).
+**Observations:**
+- zsasa.mdtraj is fastest: MDTraj's optimized C-based XTC reader outperforms zsasa's native reader for small structures where I/O dominates
+- All zsasa variants beat MDTraj native by **2-6x**
+- zsasa CLI uses only **3 MB** memory (frame streaming)
+- zsasa CLI 8t is faster than 10t (thread overhead exceeds benefit for small structures)
 
-**Environment**: macOS, Apple M2 Pro (10 cores)
+![3tvj_I_R1 tool comparison](../../benchmarks/results/md/3tvj_I_R1/plots/bar.png)
+
+### 6sup_A_analysis (Large: 33,377 atoms, 1,001 frames)
+
+Benchmark parameters: warmup=1, runs=3, n_points=100, threads=8,10
+
+Best result per tool at 10 threads (sorted by time):
+
+| Tool | Threads | Time (s) | FPS | vs MDTraj | vs mdsasa-bolt | RSS |
+|------|--------:|--------:|----:|----------:|---------------:|----:|
+| **zsasa CLI (f32)** | **10** | **12.62** | **79** | **72.6x** | **4.5x** | **394 MB** |
+| zsasa CLI (f64) | 10 | 13.27 | 75 | 69.0x | 4.3x | 402 MB |
+| zsasa.mdtraj | 10 | 13.83 | 72 | 66.3x | 4.1x | 1.2 GB |
+| zsasa.mdanalysis | 10 | 14.09 | 71 | 65.1x | 4.0x | 807 MB |
+| mdsasa-bolt | all | 56.70 | 18 | 16.2x | baseline | 10.9 GB |
+| MDTraj | 1 | 916.51 | 1.1 | baseline | - | 871 MB |
+
+**Observations:**
+- zsasa CLI (f32) is **73x faster** than MDTraj, **4.5x faster** than mdsasa-bolt
+- SASA computation dominates over I/O: zsasa CLI now beats zsasa.mdtraj
+- All zsasa variants within 12% of each other (SASA engine is the same)
+- mdsasa-bolt uses **10.9 GB** RAM vs zsasa CLI's **394 MB** (28x difference)
+
+![6sup_A_analysis tool comparison](../../benchmarks/results/md/6sup_A_analysis/plots/bar.png)
+
+### 6sup_R1 (Large: 33,377 atoms, 10,001 frames)
+
+Benchmark parameters: warmup=1, runs=3, n_points=100, threads=1,8,10
+
+Best result per tool (sorted by time):
+
+| Tool | Threads | Time (s) | FPS | vs MDTraj | vs mdsasa-bolt | RSS |
+|------|--------:|--------:|----:|----------:|---------------:|----:|
+| **zsasa CLI (f32)** | **10** | **127.9** | **78** | **71.5x** | **146.9x** | **395 MB** |
+| zsasa CLI (f64) | 10 | 133.6 | 75 | 68.5x | 140.6x | 404 MB |
+| zsasa.mdtraj | 10 | 136.1 | 74 | 67.2x | 138.1x | 10.2 GB |
+| zsasa.mdanalysis | 10 | 137.2 | 73 | 66.7x | 136.9x | 5.3 GB |
+| MDTraj | 1 | 9,148.6 | 0.1 | baseline | 2.1x | 7.6 GB |
+| mdsasa-bolt | all | 18,788.8 | 0.05 | 0.49x | baseline | 22.1 GB |
+
+**Observations:**
+- zsasa CLI (f32) processes **10k frames in 2.1 minutes** (78 FPS)
+- **mdsasa-bolt is 2x slower than MDTraj** on 10k frames (see [Performance Degradation](#mdsasa-bolt-performance-degradation))
+- zsasa CLI is **147x faster** than mdsasa-bolt
+- zsasa CLI uses **395 MB** vs mdsasa-bolt's **22.1 GB** (56x difference)
+
+![6sup_R1 tool comparison](../../benchmarks/results/md/6sup_R1/plots/bar.png)
 
 ## Key Findings
 
-### zsasa vs MDTraj
+### zsasa CLI vs MDTraj
 
-- **Single-threaded**: zsasa is **6.7x faster** than MDTraj
-- **10 threads**: zsasa is **40x faster** than MDTraj
+| Dataset | Atoms | Frames | zsasa CLI (10t) | MDTraj (1t) | Speedup |
+|---------|------:|-------:|--------:|--------:|--------:|
+| 3tvj_I_R1 | 531 | 1,001 | 0.50s | 1.89s | 3.8x |
+| 6sup_A_analysis | 33,377 | 1,001 | 12.62s | 916.51s | 72.6x |
+| 6sup_R1 | 33,377 | 10,001 | 127.9s | 9,148.6s | 71.5x |
 
-MDTraj's `shrake_rupley` is single-threaded only (no `n_jobs` parameter).
+- Speedup grows dramatically with structure size (3.8x -> 73x)
+- MDTraj's `shrake_rupley` is single-threaded and lacks SIMD optimization
 
-### zsasa vs mdsasa-bolt
+### zsasa CLI vs mdsasa-bolt
 
-**6QFK (20k atoms, 1k frames)**:
-- **Single-threaded zsasa vs all-core mdsasa-bolt**: mdsasa-bolt is 2x faster
-- **10-thread zsasa vs all-core mdsasa-bolt**: zsasa is **2.7x faster**
+| Dataset | Atoms | Frames | zsasa CLI (10t) | mdsasa-bolt (all) | Speedup |
+|---------|------:|-------:|--------:|--------:|--------:|
+| 3tvj_I_R1 | 531 | 1,001 | 0.46s | 0.92s | 2.0x |
+| 6sup_A_analysis | 33,377 | 1,001 | 12.62s | 56.70s | 4.5x |
+| 6sup_R1 | 33,377 | 10,001 | 127.9s | 18,788.8s | 146.9x |
 
-**5LTJ (11k atoms, 10k frames)**:
-- zsasa (10 threads) is **12.8x faster** than mdsasa-bolt (all cores)
+- mdsasa-bolt degrades severely with frame count (2x -> 147x gap)
+- On 10k frames, mdsasa-bolt is slower than single-threaded MDTraj
 
-mdsasa-bolt performance varies significantly between datasets. See [Parallelization Strategy](#parallelization-strategy) for details.
+### zsasa CLI vs Python Bindings
 
-### Thread Scaling
+| Dataset | zsasa CLI (f32, 10t) | zsasa.mdtraj (10t) | zsasa.mdanalysis (10t) |
+|---------|--------:|--------:|--------:|
+| 3tvj_I_R1 | 0.50s | **0.34s** | 0.66s |
+| 6sup_A_analysis | **12.62s** | 13.83s | 14.09s |
+| 6sup_R1 | **127.9s** | 136.1s | 137.2s |
 
-| Threads | Time (s) | Speedup vs 1 thread |
-|---------|----------|---------------------|
-| 1 | 55.29 | 1.0x |
-| 2 | 28.66 | 1.9x |
-| 4 | 15.04 | 3.7x |
-| 8 | 10.43 | 5.3x |
-| 10 | 9.25 | 6.0x |
+- For small structures: zsasa.mdtraj wins (MDTraj's I/O is faster)
+- For large structures: zsasa CLI wins by 6-8% (native XTC reader + streaming)
+- All use the same SASA computation engine
 
-Near-linear scaling up to 4 threads, with diminishing returns beyond 8 threads.
+## Thread Scaling
 
-## Running the Benchmark
+zsasa CLI (f32) on 6sup_R1 (33,377 atoms, 10,001 frames):
 
-```bash
-./benchmarks/scripts/benchmark_md.py \
-    trajectory.xtc \
-    topology.pdb \
-    --threads "1,2,4,8,10"
-```
+| Threads | Time (s) | FPS | Speedup |
+|--------:|--------:|----:|--------:|
+| 1 | 778.5 | 1.3 | 1.0x |
+| 8 | 143.7 | 69.5 | 5.4x |
+| 10 | 127.9 | 78.2 | 6.1x |
 
-Options:
-- `--threads`, `-t`: Comma-separated thread counts for zsasa (default: "1,4,8")
-- `--runs`, `-n`: Number of runs per configuration (default: 3)
+Near-linear scaling up to 8 threads, with diminishing returns at 10.
 
-## Parallelization Strategy
+![6sup_R1 thread scaling](../../benchmarks/results/md/6sup_R1/plots/threads.png)
 
-Both zsasa and mdsasa-bolt use the same parallelization approach:
+## Memory Usage
+
+| Tool | 3tvj_I (531 atoms, 1k fr) | 6sup_A (33k atoms, 1k fr) | 6sup_R1 (33k atoms, 10k fr) |
+|------|---:|---:|---:|
+| zsasa CLI | 3 MB | 394 MB | 395 MB |
+| zsasa.mdtraj | 76 MB | 1.2 GB | 10.2 GB |
+| zsasa.mdanalysis | 90 MB | 807 MB | 5.3 GB |
+| MDTraj | 62 MB | 871 MB | 7.6 GB |
+| mdsasa-bolt | 258 MB | 10.9 GB | 22.1 GB |
+
+**Key observations:**
+- **zsasa CLI** memory is constant with frame count (~395 MB for 33k atoms regardless of 1k or 10k frames) because it streams frames
+- **Python tools** scale linearly with frame count (entire trajectory loaded into memory)
+- **mdsasa-bolt** has the highest memory usage: 22 GB for 10k frames of a 33k-atom system
+
+![6sup_R1 memory usage](../../benchmarks/results/md/6sup_R1/plots/memory.png)
+
+## mdsasa-bolt Performance Degradation
+
+Both zsasa and mdsasa-bolt parallelize at the frame level:
 
 | Level | zsasa | mdsasa-bolt |
 |-------|-------|-------------|
 | Frame-level | Parallel (configurable threads) | Parallel (rayon, all cores) |
 | Per-frame SASA | Single-threaded | Single-threaded (`n_threads=1` hardcoded) |
 
-The key difference is **per-frame SASA implementation**:
-- **zsasa**: Zig with SIMD optimizations (fast)
-- **mdsasa-bolt**: rust_sasa library (slower)
-
-### mdsasa-bolt Observations
-
-- CPU utilization during mdsasa-bolt runs was lower than expected for "all cores"
-- Performance varies significantly between datasets:
-  - 6QFK (1k frames): 2.7x slower than zsasa
-  - 5LTJ (10k frames): 12.8x slower than zsasa
-
-**Hypothesis**: The performance degradation with more frames may be due to Python/Rust boundary overhead:
+The key difference is **per-frame SASA speed** (zsasa's SIMD-optimized Zig vs RustSASA) and **data marshaling overhead**:
 
 ```python
-# mdsasa-bolt collects all frames into Python lists before Rust call
+# mdsasa-bolt: creates nested Python tuples before crossing to Rust
 input_atoms_per_frame = []
 for _ in trajectory:
-    input_atoms = [(tuple(pos), radius, resnum) for ...]  # Nested tuples
+    input_atoms = [(tuple(pos), radius, resnum) for ...]
     input_atoms_per_frame.append(input_atoms)
 ```
 
-- 10k frames × 11k atoms = 110M Python tuples created
+- 10k frames x 33k atoms = **330M Python tuples** created
 - Inefficient memory layout (nested lists vs contiguous arrays)
 - zsasa passes numpy arrays directly via CFFI (minimal overhead)
 
-## Running the Benchmark
+This explains the dramatic degradation: mdsasa-bolt goes from 2x slower (1k frames) to 147x slower (10k frames).
+
+## Running Benchmarks
 
 ```bash
-./benchmarks/scripts/benchmark_md.py \
-    trajectory.xtc \
-    topology.pdb \
-    --threads "1,2,4,8,10"
+# Run benchmark
+./benchmarks/scripts/bench_md.py \
+    --xtc trajectory.xtc \
+    --pdb topology.pdb \
+    --name my_bench \
+    --threads "1,4,8,10"
+
+# Specific tools only
+./benchmarks/scripts/bench_md.py \
+    --xtc trajectory.xtc \
+    --pdb topology.pdb \
+    --name my_bench \
+    --tool zig --tool zsasa_mdtraj
 ```
 
-Options:
-- `--threads`, `-t`: Comma-separated thread counts for zsasa (default: "1,4,8")
-- `--runs`, `-n`: Number of runs per configuration (default: 3)
-- `--skip-mdtraj`: Skip MDTraj benchmark (for large structures)
+### Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--xtc` | XTC trajectory file | (required) |
+| `--pdb` | Topology PDB file | (required) |
+| `--name`, `-n` | Benchmark name | (required) |
+| `--threads`, `-T` | Thread counts: `1,4,8` or `1-10` | `1,8` |
+| `--runs`, `-r` | Number of benchmark runs | 3 |
+| `--warmup`, `-w` | Number of warmup runs | 1 |
+| `--stride`, `-s` | Frame stride | 1 |
+| `--n-points` | Test points per atom | 100 |
+| `--tool`, `-t` | Tool: zig, zsasa_mdtraj, zsasa_mdanalysis, mdtraj, mdsasa_bolt (repeatable) | all |
+| `--output`, `-o` | Output directory | results/md/\<name\> |
+| `--dry-run` | Show commands without running | false |
+
+### Analysis
+
+```bash
+./benchmarks/scripts/analyze_md.py all --name my_bench       # All plots + summary
+./benchmarks/scripts/analyze_md.py summary --name my_bench   # Summary table
+./benchmarks/scripts/analyze_md.py bar --name my_bench       # Tool comparison
+./benchmarks/scripts/analyze_md.py threads --name my_bench   # Thread scaling
+./benchmarks/scripts/analyze_md.py memory --name my_bench    # Memory usage
+./benchmarks/scripts/analyze_md.py speedup --name my_bench   # Speedup ratios
+```
 
 ## Notes
 
 - All implementations use 100 test points per atom (Shrake-Rupley algorithm)
 - Times include trajectory loading and SASA calculation
 - mdsasa-bolt "all" = 10 threads on this system
+- f32 and f64 precision produce nearly identical timing (~3-5% difference)
+
+## Related Documents
+
+- [single-file.md](single-file.md) - Single-file benchmark results
+- [batch.md](batch.md) - Batch processing benchmarks

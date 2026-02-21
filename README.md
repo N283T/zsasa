@@ -27,7 +27,7 @@ High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 
 > **Note**: Zig/FreeSASA use f64, RustSASA uses f32.
 
-See [benchmark results](docs/benchmark/results.md) for detailed analysis.
+See [benchmark results](docs/benchmark/single-file.md) for detailed analysis.
 
 ### MD Trajectory Performance
 
@@ -170,7 +170,7 @@ See [Python API](docs/python.md) for full documentation.
 
 ## Performance
 
-See [Benchmark Highlights](#benchmark-highlights) above and [detailed results](docs/benchmark/results.md).
+See [Benchmark Highlights](#benchmark-highlights) above and [detailed results](docs/benchmark/single-file.md).
 
 ## Project Structure
 

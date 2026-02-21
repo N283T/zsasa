@@ -10,9 +10,9 @@ Technical documentation for zsasa.
 | [algorithm.md](algorithm.md) | SASA algorithms (SR/LR) |
 | [optimizations.md](optimizations.md) | Optimization techniques |
 | [benchmark/](benchmark/) | Benchmark documentation |
-| ├─ [results.md](benchmark/results.md) | Large-scale benchmark results with plots |
-| ├─ [methodology.md](benchmark/methodology.md) | Benchmark methodology |
-| └─ [batch.md](benchmark/batch.md) | Batch processing benchmarks |
+| ├─ [single-file.md](benchmark/single-file.md) | Single-file benchmark results with plots |
+| ├─ [batch.md](benchmark/batch.md) | Batch processing benchmarks |
+| └─ [md.md](benchmark/md.md) | MD trajectory benchmarks |
 | [cli.md](cli.md) | CLI Reference |
 | [python-api/](python-api/) | Python API Reference |
 | [xtc.md](xtc.md) | XTC trajectory file reader |

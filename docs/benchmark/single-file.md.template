@@ -1,4 +1,4 @@
-# Benchmark Results
+# Single-File SASA Benchmarks
 
 Large-scale benchmark results for zsasa using Shrake-Rupley algorithm.
 
@@ -8,7 +8,7 @@ Large-scale benchmark results for zsasa using Shrake-Rupley algorithm.
 > **Note**:
 > - Absolute execution times are environment-dependent. **Relative speedup ratios** are the meaningful metric for comparison.
 > - All implementations use identical parameters: `n_points=100`, `probe_radius=1.4Å`
-> - Benchmarks measure **SASA calculation time only** (file I/O excluded). See [methodology.md](methodology.md) for details.
+> - Benchmarks measure **SASA calculation time only** (file I/O excluded). See [Methodology](#methodology) for details.
 > - SASA accuracy validated: mean error <0.001% vs FreeSASA reference.
 
 ## Highlights
@@ -297,17 +297,9 @@ LR uses fast trigonometric approximations (see [optimizations.md](../optimizatio
 
 ---
 
-## Appendix B: Batch Processing
-
-For throughput benchmarks processing multiple files in parallel, see [batch.md](batch.md).
-
-**Summary**: Zig f32 achieves **+7%** higher throughput than Rust f32 when processing all 238k PDB structures.
-
----
-
 ## Related Documents
 
-- [methodology.md](methodology.md) - Benchmark methodology and measurement methods
-- [batch.md](batch.md) - Batch processing benchmarks
+- [batch.md](batch.md) - Batch processing benchmarks (proteome datasets)
+- [md.md](md.md) - MD trajectory benchmarks
 - [optimizations.md](../optimizations.md) - Detailed optimization techniques
 - [algorithm.md](../algorithm.md) - Algorithm details
