@@ -15,9 +15,9 @@ Accuracy comparison of zsasa against reference implementations, independent of t
 
 Compares total SASA per structure across an entire proteome dataset.
 
-### zsasa vs FreeSASA (E. coli Proteome, 4,370 structures)
+### Shrake-Rupley (E. coli Proteome, 4,370 structures)
 
-Dataset: AlphaFold E. coli K-12 proteome, Shrake-Rupley algorithm, n_points=100.
+Dataset: AlphaFold E. coli K-12 proteome, n_points=100.
 
 | Tool | N | R² | Mean Error % | Max Error % |
 |------|--:|---:|--------------:|------------:|
@@ -27,7 +27,15 @@ Dataset: AlphaFold E. coli K-12 proteome, Shrake-Rupley algorithm, n_points=100.
 - **f64**: Bit-identical to FreeSASA (both use the same algorithm parameters)
 - **f32**: Max 0.015% error from floating-point rounding — negligible for practical use
 
-![PDB validation scatter](../../benchmarks/results/validation/ecoli/validation_sr.png)
+![SR validation scatter](../../benchmarks/results/validation/ecoli/sr/validation_sr.png)
+
+### Lee-Richards (E. coli Proteome, 4,370 structures)
+
+Dataset: AlphaFold E. coli K-12 proteome, n_slices=20.
+
+> Results will be added after running: `./benchmarks/scripts/validation.py run -i <pdb_dir> -n ecoli -a lr`
+
+<!-- ![LR validation scatter](../../benchmarks/results/validation/ecoli/lr/validation_lr.png) -->
 
 ## MD Trajectory
 
@@ -85,19 +93,21 @@ Reference: mdtraj at n_points=960.
 ### Static Structure (PDB)
 
 ```bash
-# Both f32 and f64 vs FreeSASA
+# Shrake-Rupley (both f32 and f64 vs FreeSASA)
 ./benchmarks/scripts/validation.py run \
     -i benchmarks/UP000000625_83333_ECOLI_v6/pdb \
     -n ecoli --algorithm sr
+# -> benchmarks/results/validation/ecoli/sr/
 
-# Specific precision only
+# Lee-Richards
 ./benchmarks/scripts/validation.py run \
     -i benchmarks/UP000000625_83333_ECOLI_v6/pdb \
-    -n ecoli --algorithm sr --precision f64
+    -n ecoli --algorithm lr
+# -> benchmarks/results/validation/ecoli/lr/
 
 # Re-analyze existing results
 ./benchmarks/scripts/validation.py compare \
-    -d benchmarks/results/validation/ecoli
+    -d benchmarks/results/validation/ecoli/sr
 ```
 
 ### MD Trajectory
