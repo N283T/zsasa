@@ -29,6 +29,8 @@ zig-out/
 
 # Temporary files
 output.json
+echo/
+time/
 
 # External benchmark dependencies (legacy locations)
 freesasa-c/

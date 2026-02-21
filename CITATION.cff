@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "zsasa"
+abstract: "High-performance Solvent Accessible Surface Area (SASA) calculator in Zig with Python bindings."
+authors:
+  - family-names: "Nagae"
+    given-names: "Tsubasa"
+version: "0.1.0"
+date-released: "2026-02-22"
+license: MIT
+repository-code: "https://github.com/N283T/zsasa"
+url: "https://github.com/N283T/zsasa"
+keywords:
+  - sasa
+  - solvent-accessible-surface-area
+  - bioinformatics
+  - structural-biology
+  - zig
+  - python
+  - simd
+  - molecular-dynamics
