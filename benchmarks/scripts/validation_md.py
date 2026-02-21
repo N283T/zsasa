@@ -90,6 +90,34 @@ def parse_n_points(n_points_str: str) -> list[int]:
     return sorted(int(x.strip()) for x in n_points_str.split(","))
 
 
+def _detect_reference(results_dir: Path) -> str:
+    """Detect reference column from config.json or CSV columns."""
+    config_path = results_dir.joinpath("config.json")
+    if config_path.exists():
+        try:
+            config = json.loads(config_path.read_text())
+            params = config.get("parameters", {})
+            ref_base = params.get("reference", "mdtraj")
+            n_points = params.get("n_points", [100])
+            if isinstance(n_points, list) and len(n_points) > 1:
+                return f"{ref_base}_{n_points[-1]}"
+            return ref_base
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # Fallback: look for mdtraj column in CSV
+    csv_path = results_dir.joinpath("results.csv")
+    if csv_path.exists():
+        import polars as pl
+
+        df = pl.read_csv(csv_path, n_rows=0)
+        for col in df.columns:
+            if col.startswith("mdtraj"):
+                return col
+
+    return "mdtraj"
+
+
 def get_root_dir() -> Path:
     """Get project root directory."""
     return Path(__file__).parent.parent.parent
@@ -229,12 +257,85 @@ def compute_stats(x: np.ndarray, y: np.ndarray) -> dict[str, float]:
     }
 
 
+def _plot_scatter_panel(
+    ax: object,
+    ref_arr: np.ndarray,
+    comp_arr: np.ndarray,
+    ref_label: str,
+    comp_label: str,
+    n_frames: int,
+) -> None:
+    """Draw a single scatter panel with y=x line and stats box."""
+    ax.scatter(comp_arr, ref_arr, alpha=0.3, s=10, color="#3498db")
+
+    max_val = max(float(np.max(ref_arr)), float(np.max(comp_arr)))
+    min_val = min(float(np.min(ref_arr)), float(np.min(comp_arr)))
+    ax.plot([min_val, max_val], [min_val, max_val], "r--", linewidth=1.5, label="y = x")
+
+    stats = compute_stats(comp_arr, ref_arr)
+
+    ax.set_xlabel(f"{comp_label} SASA (nm²)")
+    ax.set_ylabel(f"{ref_label} SASA (nm²)")
+    ax.set_title(f"{comp_label} vs {ref_label} (n={n_frames:,})")
+    ax.legend(fontsize=8)
+
+    stats_text = (
+        f"R² = {stats['r_squared']:.6f}\n"
+        f"Mean err = {stats['mean_rel_error']:.4f}%\n"
+        f"Max err = {stats['max_rel_error']:.4f}%"
+    )
+    ax.text(
+        0.05,
+        0.95,
+        stats_text,
+        transform=ax.transAxes,
+        fontsize=9,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+    )
+
+    ax.set_aspect("equal")
+
+
+def _build_comparison_pairs(
+    df: object,
+    reference: str,
+) -> list[tuple[str, str]]:
+    """Build list of (reference_col, compare_col) pairs.
+
+    Includes: reference vs each other tool, plus zsasa_mdtraj vs zsasa_cli
+    for XTC reader comparison.
+    """
+    skip_cols = {"frame", reference}
+    compare_cols = [c for c in df.columns if c not in skip_cols]
+
+    pairs: list[tuple[str, str]] = []
+
+    # Reference vs each tool
+    for col in compare_cols:
+        pairs.append((reference, col))
+
+    # XTC comparison: zsasa_mdtraj vs zsasa_cli (same n_points)
+    mdtraj_cols = sorted(c for c in df.columns if c.startswith("zsasa_mdtraj"))
+    cli_cols = sorted(c for c in df.columns if c.startswith("zsasa_cli"))
+
+    for mc in mdtraj_cols:
+        suffix = mc.removeprefix("zsasa_mdtraj")
+        cli_col = f"zsasa_cli{suffix}"
+        if cli_col in cli_cols:
+            pairs.append((mc, cli_col))
+
+    return pairs
+
+
 def generate_md_scatter_plot(
     results_dir: Path,
     csv_path: Path,
     reference: str = "mdtraj",
 ) -> None:
-    """Generate scatter plot comparing MD tools against reference."""
+    """Generate scatter plot comparing MD tools against reference (grid layout)."""
+    import math
+
     import matplotlib.pyplot as plt
     import polars as pl
 
@@ -246,59 +347,37 @@ def generate_md_scatter_plot(
         )
         return
 
-    skip_cols = {"frame", reference}
-    compare_cols = [c for c in df.columns if c not in skip_cols]
-
-    if not compare_cols:
-        console.print("[yellow]No comparison columns found, skipping plot[/]")
+    pairs = _build_comparison_pairs(df, reference)
+    if not pairs:
+        console.print("[yellow]No comparison pairs found, skipping plot[/]")
         return
 
+    n = len(pairs)
+    ncols = min(n, 4)
+    nrows = math.ceil(n / ncols)
+
     fig, axes = plt.subplots(
-        1, len(compare_cols), figsize=(8 * len(compare_cols), 8), squeeze=False
+        nrows, ncols, figsize=(6 * ncols, 6 * nrows), squeeze=False
     )
 
-    for idx, col in enumerate(compare_cols):
-        ax = axes[0][idx]
+    for idx, (ref_col, comp_col) in enumerate(pairs):
+        row, col_idx = divmod(idx, ncols)
+        ax = axes[row][col_idx]
 
-        pair = df.select([reference, col]).drop_nulls()
-        if pair.height < 2:
-            ax.set_title(f"{col}: insufficient data")
+        pair_df = df.select([ref_col, comp_col]).drop_nulls()
+        if pair_df.height < 2:
+            ax.set_title(f"{comp_col}: insufficient data")
             continue
 
-        ref_arr = pair[reference].to_numpy()
-        comp_arr = pair[col].to_numpy()
+        ref_arr = pair_df[ref_col].to_numpy()
+        comp_arr = pair_df[comp_col].to_numpy()
 
-        ax.scatter(comp_arr, ref_arr, alpha=0.3, s=10, color="#3498db")
+        _plot_scatter_panel(ax, ref_arr, comp_arr, ref_col, comp_col, pair_df.height)
 
-        max_val = max(float(np.max(ref_arr)), float(np.max(comp_arr)))
-        min_val = min(float(np.min(ref_arr)), float(np.min(comp_arr)))
-        ax.plot(
-            [min_val, max_val], [min_val, max_val], "r--", linewidth=1.5, label="y = x"
-        )
-
-        stats = compute_stats(comp_arr, ref_arr)
-
-        ax.set_xlabel(f"{col} SASA (nm²)")
-        ax.set_ylabel(f"{reference} SASA (nm²)")
-        ax.set_title(f"MD: {col} vs {reference} (n={pair.height:,} frames)")
-        ax.legend()
-
-        stats_text = (
-            f"R² = {stats['r_squared']:.6f}\n"
-            f"Mean error = {stats['mean_rel_error']:.4f}%\n"
-            f"Max error = {stats['max_rel_error']:.4f}%"
-        )
-        ax.text(
-            0.05,
-            0.95,
-            stats_text,
-            transform=ax.transAxes,
-            fontsize=10,
-            verticalalignment="top",
-            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
-        )
-
-        ax.set_aspect("equal")
+    # Hide unused axes
+    for idx in range(n, nrows * ncols):
+        row, col_idx = divmod(idx, ncols)
+        axes[row][col_idx].set_visible(False)
 
     fig.tight_layout()
     out_path = results_dir.joinpath("validation_md.png")
@@ -320,27 +399,28 @@ def print_md_stats_table(
         console.print(f"[yellow]Reference column '{reference}' not in CSV[/]")
         return
 
-    skip_cols = {"frame", reference}
-    compare_cols = [c for c in df.columns if c not in skip_cols]
+    pairs = _build_comparison_pairs(df, reference)
 
-    table = Table(title=f"MD Validation Statistics (reference: {reference})")
+    table = Table(title="MD Validation Statistics")
+    table.add_column("Reference", style="dim")
     table.add_column("Tool", style="cyan")
     table.add_column("Frames", justify="right")
     table.add_column("R²", justify="right")
     table.add_column("Mean Error %", justify="right")
     table.add_column("Max Error %", justify="right")
 
-    for col in compare_cols:
-        pair = df.select([reference, col]).drop_nulls()
+    for ref_col, comp_col in pairs:
+        pair = df.select([ref_col, comp_col]).drop_nulls()
         if pair.height < 2:
             continue
 
-        ref_arr = pair[reference].to_numpy()
-        comp_arr = pair[col].to_numpy()
+        ref_arr = pair[ref_col].to_numpy()
+        comp_arr = pair[comp_col].to_numpy()
         stats = compute_stats(comp_arr, ref_arr)
 
         table.add_row(
-            col,
+            ref_col,
+            comp_col,
             str(pair.height),
             f"{stats['r_squared']:.6f}",
             f"{stats['mean_rel_error']:.4f}",
@@ -553,19 +633,23 @@ def compare(
         ),
     ],
     reference: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--reference",
             "-r",
-            help="Reference tool for comparison",
+            help="Reference tool (auto-detected from config.json if omitted)",
         ),
-    ] = "mdtraj",
+    ] = None,
 ) -> None:
     """Re-analyze existing MD validation results."""
     csv_path = results_dir.joinpath("results.csv")
     if not csv_path.exists():
         console.print(f"[red]results.csv not found in {results_dir}[/]")
         raise typer.Exit(1)
+
+    # Auto-detect reference from config.json
+    if reference is None:
+        reference = _detect_reference(results_dir)
 
     console.print(f"[bold]=== Re-analyzing: {results_dir} ===[/]")
     console.print(f"Reference: {reference}")
