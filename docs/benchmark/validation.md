@@ -77,7 +77,7 @@ Reference: mdtraj at n_points=960.
 | zsasa_cli | 960 | 0.999444 | 0.1050 | 0.3229 |
 
 **Observations:**
-- At n_points=100, MDTraj native shows ~0.87% mean error vs n_points=960, while zsasa shows ~0.20% — both use Golden Section Spiral but with slightly different implementations (starting point, longitude accumulation), causing divergence at low n_points
+- At n_points=100, MDTraj native shows ~0.87% mean error vs n_points=960, while zsasa shows ~0.20% — both use Golden Section Spiral ([MDTraj `sasa.cpp:146-176`](https://github.com/mdtraj/mdtraj/blob/2f4b592f/mdtraj/geometry/src/sasa.cpp#L146-L176)) but with slightly different implementations (starting point, longitude accumulation), causing divergence at low n_points
 - At n_points=500+, all tools converge to <0.12% mean error
 - zsasa_mdtraj and zsasa_cli produce nearly identical results at each n_points (same SASA engine)
 
