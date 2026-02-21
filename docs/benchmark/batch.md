@@ -23,35 +23,35 @@ Benchmark parameters: warmup=3, runs=5, threads=1,8,10
 
 | Tool | Threads | Time (s) | Std Dev | vs FreeSASA | vs RustSASA | RSS (MB) |
 |------|--------:|--------:|--------:|------------:|------------:|---------:|
-| zsasa f64 | 1 | 24.13 | ±0.113 | 2.17x | 1.19x | 13 |
-| zsasa f32 | 1 | 24.27 | ±0.053 | 2.15x | 1.19x | 13 |
-| RustSASA | 1 | 28.78 | ±0.059 | 1.82x | baseline | 39 |
-| FreeSASA | 1 | 52.24 | ±18.275 | baseline | - | 152 |
-| **zsasa f32** | **8** | **4.40** | **±0.026** | **11.9x** | **1.20x** | **61** |
-| zsasa f64 | 8 | 4.42 | ±0.043 | 11.8x | 1.19x | 63 |
-| RustSASA | 8 | 5.27 | ±0.100 | 9.9x | baseline | 145 |
-| **zsasa f32** | **10** | **4.14** | **±0.275** | **12.6x** | **1.21x** | **75** |
-| zsasa f64 | 10 | 4.18 | ±0.255 | 12.5x | 1.20x | 76 |
-| RustSASA | 10 | 5.02 | ±0.043 | 10.4x | baseline | 172 |
+| zsasa f64 | 1 | 24.13 | ±0.113 | 1.83x | 1.19x | 13 |
+| zsasa f32 | 1 | 24.27 | ±0.053 | 1.82x | 1.19x | 13 |
+| RustSASA | 1 | 28.78 | ±0.059 | 1.53x | baseline | 39 |
+| FreeSASA | 1 | 44.06 | ±0.336 | baseline | - | 154 |
+| **zsasa f32** | **8** | **4.40** | **±0.026** | **10.0x** | **1.20x** | **62** |
+| zsasa f64 | 8 | 4.42 | ±0.043 | 10.0x | 1.19x | 64 |
+| RustSASA | 8 | 5.27 | ±0.100 | 8.4x | baseline | 145 |
+| **zsasa f32** | **10** | **4.14** | **±0.275** | **10.6x** | **1.21x** | **75** |
+| zsasa f64 | 10 | 4.18 | ±0.255 | 10.5x | 1.20x | 76 |
+| RustSASA | 10 | 5.02 | ±0.043 | 8.8x | baseline | 172 |
 
 **Key findings:**
 
-- **10-thread**: zsasa f32 is **12.6x faster** than FreeSASA, **1.21x faster** than RustSASA
-- **8-thread**: zsasa f32 is **11.9x faster** than FreeSASA, **1.20x faster** than RustSASA
-- **Single-thread**: zsasa is **2.15-2.17x faster** than FreeSASA, **1.19x faster** than RustSASA
+- **10-thread**: zsasa f32 is **10.6x faster** than FreeSASA, **1.21x faster** than RustSASA
+- **8-thread**: zsasa f32 is **10.0x faster** than FreeSASA, **1.20x faster** than RustSASA
+- **Single-thread**: zsasa is **1.82-1.83x faster** than FreeSASA, **1.19x faster** than RustSASA
 - **Parallel scaling (1t->10t)**: zsasa f32 5.86x, zsasa f64 5.77x, RustSASA 5.73x
 - **Memory**: zsasa uses **2-4x less** memory than RustSASA, **10-12x less** than FreeSASA
 - f32 and f64 perform nearly identically
 
-> FreeSASA shows high variance (stddev ±18.3s) likely due to initialization overhead on the first timed run.
+> FreeSASA 1t: 1 outlier removed (84.9s, 1st timed run after warmup). Remaining 4 runs: 43.6-44.3s (stddev ±0.34s).
 
-![E. coli processing time](../../benchmarks/results/plots/batch/ecoli_time.png)
+| 1 thread | 8 threads | 10 threads |
+|:--------:|:---------:|:----------:|
+| ![1t](../../benchmarks/results/plots/batch/ecoli_time_1t.png) | ![8t](../../benchmarks/results/plots/batch/ecoli_time_8t.png) | ![10t](../../benchmarks/results/plots/batch/ecoli_time_10t.png) |
 
-![E. coli speedup vs FreeSASA](../../benchmarks/results/plots/batch/ecoli_speedup_vs_freesasa.png)
-
-![E. coli speedup vs RustSASA](../../benchmarks/results/plots/batch/ecoli_speedup_vs_rustsasa.png)
-
-![E. coli memory usage](../../benchmarks/results/plots/batch/ecoli_memory.png)
+| Memory (1t) | Memory (8t) | Memory (10t) |
+|:-----------:|:-----------:|:------------:|
+| ![1t](../../benchmarks/results/plots/batch/ecoli_memory_1t.png) | ![8t](../../benchmarks/results/plots/batch/ecoli_memory_8t.png) | ![10t](../../benchmarks/results/plots/batch/ecoli_memory_10t.png) |
 
 ### Human Proteome (23,586 structures)
 
@@ -81,13 +81,13 @@ Benchmark parameters: warmup=3, runs=3, threads=1,8,10
 
 > Single-thread runs show high variance across all tools (only 3 runs on a large dataset). Multi-thread results are highly stable.
 
-![Human processing time](../../benchmarks/results/plots/batch/human_time.png)
+| 1 thread | 8 threads | 10 threads |
+|:--------:|:---------:|:----------:|
+| ![1t](../../benchmarks/results/plots/batch/human_time_1t.png) | ![8t](../../benchmarks/results/plots/batch/human_time_8t.png) | ![10t](../../benchmarks/results/plots/batch/human_time_10t.png) |
 
-![Human speedup vs FreeSASA](../../benchmarks/results/plots/batch/human_speedup_vs_freesasa.png)
-
-![Human speedup vs RustSASA](../../benchmarks/results/plots/batch/human_speedup_vs_rustsasa.png)
-
-![Human memory usage](../../benchmarks/results/plots/batch/human_memory.png)
+| Memory (1t) | Memory (8t) | Memory (10t) |
+|:-----------:|:-----------:|:------------:|
+| ![1t](../../benchmarks/results/plots/batch/human_memory_1t.png) | ![8t](../../benchmarks/results/plots/batch/human_memory_8t.png) | ![10t](../../benchmarks/results/plots/batch/human_memory_10t.png) |
 
 ### SwissProt (550,122 structures)
 
@@ -112,11 +112,13 @@ Benchmark parameters: warmup=3, runs=3, threads=8,10
 - **Memory**: zsasa uses **~200 MB** vs RustSASA's **~1.13 GB** (5-6x less)
 - **Scaling (8t->10t)**: zsasa f32 improves 8.3%, RustSASA improves 11.3%
 
-![SwissProt processing time](../../benchmarks/results/plots/batch/swissprot_time.png)
+| 8 threads | 10 threads |
+|:---------:|:----------:|
+| ![8t](../../benchmarks/results/plots/batch/swissprot_time_8t.png) | ![10t](../../benchmarks/results/plots/batch/swissprot_time_10t.png) |
 
-![SwissProt speedup vs RustSASA](../../benchmarks/results/plots/batch/swissprot_speedup_vs_rustsasa.png)
-
-![SwissProt memory usage](../../benchmarks/results/plots/batch/swissprot_memory.png)
+| Memory (8t) | Memory (10t) |
+|:-----------:|:------------:|
+| ![8t](../../benchmarks/results/plots/batch/swissprot_memory_8t.png) | ![10t](../../benchmarks/results/plots/batch/swissprot_memory_10t.png) |
 
 ## Summary
 
@@ -207,9 +209,8 @@ Uses [hyperfine](https://github.com/sharkdp/hyperfine) for timing, following the
 ```bash
 ./benchmarks/scripts/analyze_batch.py summary           # All benchmarks
 ./benchmarks/scripts/analyze_batch.py summary -n ecoli  # Specific benchmark
-./benchmarks/scripts/analyze_batch.py plot -n ecoli     # Time comparison chart
-./benchmarks/scripts/analyze_batch.py speedup -n ecoli  # Speedup chart
-./benchmarks/scripts/analyze_batch.py memory -n ecoli   # Memory comparison chart
+./benchmarks/scripts/analyze_batch.py plot -n ecoli     # Time comparison charts (per thread)
+./benchmarks/scripts/analyze_batch.py memory -n ecoli   # Memory comparison charts (per thread)
 ./benchmarks/scripts/analyze_batch.py all               # Summary + all charts
 ```
 

@@ -13,9 +13,8 @@
 Usage:
     ./benchmarks/scripts/analyze_batch.py summary            # Summary table + files/sec
     ./benchmarks/scripts/analyze_batch.py summary -n ecoli   # Specific benchmark
-    ./benchmarks/scripts/analyze_batch.py plot -n ecoli      # Time comparison chart
-    ./benchmarks/scripts/analyze_batch.py speedup -n ecoli   # Speedup bar chart
-    ./benchmarks/scripts/analyze_batch.py memory -n ecoli    # Memory comparison chart
+    ./benchmarks/scripts/analyze_batch.py plot -n ecoli      # Time comparison charts (per thread)
+    ./benchmarks/scripts/analyze_batch.py memory -n ecoli    # Memory comparison charts (per thread)
     ./benchmarks/scripts/analyze_batch.py all                # Everything
 """
 
@@ -23,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import statistics
 from pathlib import Path
 from typing import Annotated
 
@@ -51,10 +51,10 @@ def _get_color(tool: str, precision: str | None) -> str:
     return COLOR_MAP.get((tool, precision), "#95a5a6")
 
 
-def _make_label(tool: str, precision: str | None, threads: int) -> str:
+def _make_label(tool: str, precision: str | None) -> str:
     if precision:
-        return f"{tool} ({precision}, {threads}t)"
-    return f"{tool} ({threads}t)"
+        return f"{tool} ({precision})"
+    return tool
 
 
 def parse_benchmark_name(filename: str) -> dict:
@@ -91,6 +91,32 @@ def load_config(benchmark_name: str) -> dict | None:
         return json.load(f)
 
 
+def _filter_outliers(times: list[float]) -> list[float]:
+    """Remove outliers using IQR method. Requires 5+ data points.
+
+    Only removes points that deviate >10% from the median to avoid
+    over-filtering low-variance data where IQR is extremely tight.
+    """
+    if len(times) < 5:
+        return times
+    sorted_t = sorted(times)
+    n = len(sorted_t)
+    q1 = sorted_t[n // 4]
+    q3 = sorted_t[3 * n // 4]
+    iqr = q3 - q1
+    lower = q1 - 1.5 * iqr
+    upper = q3 + 1.5 * iqr
+    med = statistics.median(times)
+    threshold = med * 0.1
+    filtered = [t for t in times if lower <= t <= upper or abs(t - med) <= threshold]
+    if filtered and len(filtered) < len(times):
+        removed = len(times) - len(filtered)
+        rprint(
+            f"[dim]  Removed {removed} outlier(s): kept {len(filtered)}/{len(times)} runs[/dim]"
+        )
+    return filtered if filtered else times
+
+
 def load_batch_data(benchmark_name: str | None = None) -> pl.DataFrame:
     """Load batch results from hyperfine JSON files."""
     if benchmark_name:
@@ -114,6 +140,15 @@ def load_batch_data(benchmark_name: str | None = None) -> pl.DataFrame:
                 result = data["results"][0]
                 info = parse_benchmark_name(json_file.name)
 
+                times = result.get("times", [])
+                filtered = _filter_outliers(times)
+                mean_s = statistics.mean(filtered) if filtered else result["mean"]
+                stddev_s = (
+                    statistics.stdev(filtered)
+                    if len(filtered) >= 2
+                    else result["stddev"]
+                )
+
                 memory_bytes = result.get("memory_usage_byte", [])
                 max_rss = max(memory_bytes) if memory_bytes else 0
 
@@ -123,11 +158,11 @@ def load_batch_data(benchmark_name: str | None = None) -> pl.DataFrame:
                         "tool": info["tool"],
                         "precision": info["precision"],
                         "threads": info["threads"],
-                        "mean_s": result["mean"],
-                        "stddev_s": result["stddev"],
-                        "min_s": result["min"],
-                        "max_s": result["max"],
-                        "runs": len(result.get("times", [])),
+                        "mean_s": mean_s,
+                        "stddev_s": stddev_s,
+                        "min_s": min(filtered) if filtered else result["min"],
+                        "max_s": max(filtered) if filtered else result["max"],
+                        "runs": len(filtered),
                         "max_rss_mb": max_rss / (1024 * 1024),
                     }
                 )
@@ -292,174 +327,66 @@ def plot(
 
 
 def _plot_time(df: pl.DataFrame, bench_name: str):
-    """Generate time comparison bar chart for one benchmark."""
-    labels = []
-    times = []
-    errors = []
-    colors = []
+    """Generate time comparison bar charts per thread count."""
+    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+    config = load_config(bench_name)
 
-    for row in df.iter_rows(named=True):
-        labels.append(_make_label(row["tool"], row["precision"], row["threads"]))
-        times.append(row["mean_s"])
-        errors.append(row["stddev_s"])
-        colors.append(_get_color(row["tool"], row["precision"]))
+    thread_counts = sorted(df["threads"].unique().to_list())
 
-    fig, ax = plt.subplots(figsize=(max(8, len(labels) * 1.5), 6))
+    for threads in thread_counts:
+        df_t = _sort_df(df.filter(pl.col("threads") == threads))
 
-    x = range(len(labels))
-    bars = ax.bar(
-        x, times, yerr=errors, color=colors, width=0.6, edgecolor="white", capsize=4
-    )
+        labels = []
+        times = []
+        errors = []
+        colors = []
 
-    for bar, t in zip(bars, times):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + max(times) * 0.02,
-            f"{t:.2f}s",
-            ha="center",
-            va="bottom",
-            fontsize=10,
-            fontweight="bold",
+        for row in df_t.iter_rows(named=True):
+            labels.append(_make_label(row["tool"], row["precision"]))
+            times.append(row["mean_s"])
+            errors.append(row["stddev_s"])
+            colors.append(_get_color(row["tool"], row["precision"]))
+
+        fig, ax = plt.subplots(figsize=(max(6, len(labels) * 1.8), 6))
+
+        x = range(len(labels))
+        bars = ax.bar(
+            x,
+            times,
+            yerr=errors,
+            color=colors,
+            width=0.6,
+            edgecolor="white",
+            capsize=4,
         )
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=30, ha="right")
-    ax.set_ylabel("Time (seconds)")
-    ax.grid(True, alpha=0.3, axis="y")
-    ax.set_title(f"Batch Processing Time: {bench_name}")
-    ax.set_ylim(0, max(times) * 1.15)
-
-    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = PLOTS_DIR.joinpath(f"{bench_name}_time.png")
-    fig.savefig(out_path)
-    plt.close(fig)
-    rprint(f"[green]Saved:[/green] {out_path}")
-
-
-@app.command()
-def speedup(
-    name: Annotated[
-        str | None,
-        typer.Option("--name", "-n", help="Benchmark name (e.g., ecoli)"),
-    ] = None,
-):
-    """Generate speedup bar chart (zsasa vs FreeSASA / RustSASA)."""
-    setup_style()
-
-    for bench_name in _get_benchmarks(name):
-        df = _sort_df(load_batch_data(bench_name))
-        _plot_speedup(df, bench_name)
-
-
-def _plot_speedup(df: pl.DataFrame, bench_name: str):
-    """Generate separate speedup bar charts vs FreeSASA and vs RustSASA."""
-    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
-
-    # vs FreeSASA (1t baseline) — all other tools
-    fs_rows = df.filter(pl.col("tool") == "freesasa")
-    if fs_rows.height > 0:
-        fs_time = fs_rows["mean_s"][0]
-        fs_std = fs_rows["stddev_s"][0]
-
-        entries = []
-        other_rows = _sort_df(df.filter(pl.col("tool") != "freesasa"))
-        for row in other_rows.iter_rows(named=True):
-            tool = row["tool"]
-            prec = row["precision"]
-            threads = row["threads"]
-            mean = row["mean_s"]
-            stddev = row["stddev_s"]
-
-            ratio = fs_time / mean
-            err = ratio * ((fs_std / fs_time) ** 2 + (stddev / mean) ** 2) ** 0.5
-            entries.append(
-                {
-                    "label": _make_label(tool, prec, threads),
-                    "speedup": ratio,
-                    "error": err,
-                    "color": _get_color(tool, prec),
-                }
+        for bar, t in zip(bars, times):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + max(times) * 0.02,
+                f"{t:.2f}s",
+                ha="center",
+                va="bottom",
+                fontsize=10,
+                fontweight="bold",
             )
 
-        _draw_speedup_bar(
-            entries,
-            f"Speedup vs FreeSASA (1t): {bench_name}",
-            PLOTS_DIR.joinpath(f"{bench_name}_speedup_vs_freesasa.png"),
-        )
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=30, ha="right")
+        ax.set_ylabel("Time (seconds)")
+        ax.grid(True, alpha=0.3, axis="y")
 
-    # vs RustSASA (matched threads) — zsasa only
-    rs_rows = df.filter(pl.col("tool") == "rustsasa")
-    zsasa_rows = df.filter(pl.col("tool") == "zsasa")
-    if rs_rows.height > 0 and zsasa_rows.height > 0:
-        rs_by_threads: dict[int, tuple[float, float]] = {}
-        for row in rs_rows.iter_rows(named=True):
-            rs_by_threads[row["threads"]] = (row["mean_s"], row["stddev_s"])
+        title = f"Batch Processing Time: {bench_name} ({threads}t)"
+        if config:
+            p = config["parameters"]
+            title += f"\n{p['n_files']:,} files, warmup={p['warmup']}, runs={p['runs']}"
+        ax.set_title(title)
+        ax.set_ylim(0, max(times) * 1.15)
 
-        entries = []
-        for row in zsasa_rows.iter_rows(named=True):
-            prec = row["precision"]
-            threads = row["threads"]
-            mean = row["mean_s"]
-            stddev = row["stddev_s"]
-
-            if threads not in rs_by_threads:
-                continue
-            rs_time, rs_std = rs_by_threads[threads]
-            ratio = rs_time / mean
-            err = ratio * ((rs_std / rs_time) ** 2 + (stddev / mean) ** 2) ** 0.5
-            entries.append(
-                {
-                    "label": f"zsasa ({prec}, {threads}t)",
-                    "speedup": ratio,
-                    "error": err,
-                    "color": _get_color("zsasa", prec),
-                }
-            )
-
-        if entries:
-            _draw_speedup_bar(
-                entries,
-                f"zsasa Speedup vs RustSASA (matched threads): {bench_name}",
-                PLOTS_DIR.joinpath(f"{bench_name}_speedup_vs_rustsasa.png"),
-            )
-
-
-def _draw_speedup_bar(entries: list[dict], title: str, out_path: Path):
-    """Draw and save a horizontal speedup bar chart."""
-    fig, ax = plt.subplots(figsize=(10, max(3, len(entries) * 0.7)))
-
-    labels = [e["label"] for e in entries]
-    speedups = [e["speedup"] for e in entries]
-    errors = [e["error"] for e in entries]
-    colors = [e["color"] for e in entries]
-
-    y_pos = range(len(labels))
-    ax.barh(
-        y_pos,
-        speedups,
-        xerr=errors,
-        color=colors,
-        capsize=4,
-        height=0.6,
-        edgecolor="white",
-    )
-
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(labels)
-    ax.set_xlabel("Speedup (mean ± propagated std)")
-    ax.axvline(x=1.0, color="gray", linestyle="--", linewidth=1.5)
-
-    for i, s in enumerate(speedups):
-        ax.text(s + max(speedups) * 0.02, i, f"{s:.2f}x", va="center", fontsize=10)
-
-    ax.set_title(title)
-    ax.set_xlim(0, max(speedups) * 1.2)
-    ax.grid(True, alpha=0.3, axis="x")
-
-    fig.tight_layout()
-    fig.savefig(out_path)
-    plt.close(fig)
-    rprint(f"[green]Saved:[/green] {out_path}")
+        out_path = PLOTS_DIR.joinpath(f"{bench_name}_time_{threads}t.png")
+        fig.savefig(out_path)
+        plt.close(fig)
+        rprint(f"[green]Saved:[/green] {out_path}")
 
 
 @app.command()
@@ -483,44 +410,59 @@ def memory(
 
 
 def _plot_memory(df: pl.DataFrame, bench_name: str):
-    """Generate memory usage bar chart for one benchmark."""
-    labels = []
-    rss_values = []
-    colors = []
-
-    for row in df.iter_rows(named=True):
-        labels.append(_make_label(row["tool"], row["precision"], row["threads"]))
-        rss_values.append(row["max_rss_mb"])
-        colors.append(_get_color(row["tool"], row["precision"]))
-
-    fig, ax = plt.subplots(figsize=(max(8, len(labels) * 1.5), 6))
-
-    x = range(len(labels))
-    bars = ax.bar(x, rss_values, color=colors, width=0.6, edgecolor="white")
-
-    for bar, rss in zip(bars, rss_values):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + max(rss_values) * 0.02,
-            f"{rss:.0f} MB",
-            ha="center",
-            va="bottom",
-            fontsize=10,
-            fontweight="bold",
-        )
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=30, ha="right")
-    ax.set_ylabel("Peak RSS (MB)")
-    ax.grid(True, alpha=0.3, axis="y")
-    ax.set_title(f"Memory Usage: {bench_name}")
-    ax.set_ylim(0, max(rss_values) * 1.15)
-
+    """Generate memory usage bar charts per thread count."""
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = PLOTS_DIR.joinpath(f"{bench_name}_memory.png")
-    fig.savefig(out_path)
-    plt.close(fig)
-    rprint(f"[green]Saved:[/green] {out_path}")
+    config = load_config(bench_name)
+
+    thread_counts = sorted(df["threads"].unique().to_list())
+
+    for threads in thread_counts:
+        df_t = _sort_df(df.filter(pl.col("threads") == threads))
+
+        labels = []
+        rss_values = []
+        colors = []
+
+        for row in df_t.iter_rows(named=True):
+            labels.append(_make_label(row["tool"], row["precision"]))
+            rss_values.append(row["max_rss_mb"])
+            colors.append(_get_color(row["tool"], row["precision"]))
+
+        if not rss_values or max(rss_values) == 0:
+            continue
+
+        fig, ax = plt.subplots(figsize=(max(6, len(labels) * 1.8), 6))
+
+        x = range(len(labels))
+        bars = ax.bar(x, rss_values, color=colors, width=0.6, edgecolor="white")
+
+        for bar, rss in zip(bars, rss_values):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + max(rss_values) * 0.02,
+                f"{rss:.0f} MB",
+                ha="center",
+                va="bottom",
+                fontsize=10,
+                fontweight="bold",
+            )
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=30, ha="right")
+        ax.set_ylabel("Peak RSS (MB)")
+        ax.grid(True, alpha=0.3, axis="y")
+
+        title = f"Memory Usage: {bench_name} ({threads}t)"
+        if config:
+            p = config["parameters"]
+            title += f"\n{p['n_files']:,} files"
+        ax.set_title(title)
+        ax.set_ylim(0, max(rss_values) * 1.15)
+
+        out_path = PLOTS_DIR.joinpath(f"{bench_name}_memory_{threads}t.png")
+        fig.savefig(out_path)
+        plt.close(fig)
+        rprint(f"[green]Saved:[/green] {out_path}")
 
 
 @app.command("all")
@@ -530,12 +472,10 @@ def all_commands(
         typer.Option("--name", "-n", help="Benchmark name (e.g., ecoli)"),
     ] = None,
 ):
-    """Generate summary, time chart, speedup chart, and memory chart."""
+    """Generate summary, time charts, and memory charts."""
     summary(name)
     rprint()
     plot(name)
-    rprint()
-    speedup(name)
     rprint()
     memory(name)
 
