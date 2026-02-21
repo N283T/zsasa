@@ -24,7 +24,7 @@ High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 
 | Speedup (threads=10) | Thread Scaling (100k+ atoms) |
 |:--------------------:|:----------------------------:|
-| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/large/speedup_by_threads.png) |
+| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/thread_scaling/individual/sr.png) |
 
 **Key Results (100k+ atoms, threads=10):**
 - **2.3x** median speedup vs FreeSASA and RustSASA

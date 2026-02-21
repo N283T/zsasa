@@ -24,7 +24,7 @@ FreeSASA C より**最大3倍高速**、**f64 精度**を維持（平均誤差: 
 
 | スピードアップ (threads=10) | スレッドスケーリング (100k+ atoms) |
 |:--------------------:|:----------------------------:|
-| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/large/speedup_by_threads.png) |
+| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/thread_scaling/individual/sr.png) |
 
 **主要結果 (100k+ atoms, threads=10):**
 - FreeSASA/RustSASA 比で**2.3倍**の中央値スピードアップ
