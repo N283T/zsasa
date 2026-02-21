@@ -53,6 +53,12 @@ benchmarks/results/plots/scatter/*/individual/
 benchmarks/results/plots/speedup_by_bin/individual/
 benchmarks/results/plots/efficiency/by_size.png
 
+# Validation results (raw data; only .png plots are committed)
+benchmarks/results/validation/**/config.json
+benchmarks/results/validation/**/results.csv
+benchmarks/results/validation_md/**/config.json
+benchmarks/results/validation_md/**/results.csv
+
 # Benchmark dataset (test JSON files)
 benchmarks/dataset/
 
