@@ -27,7 +27,7 @@ FreeSASA C より**最大3倍高速**、**f64 精度**を維持（平均誤差: 
 
 > **注**: Zig/FreeSASA は f64、RustSASA は f32 を使用。
 
-詳細は [ベンチマーク結果](docs/benchmark/results.md) を参照。
+詳細は [ベンチマーク結果](docs/benchmark/single-file.md) を参照。
 
 ### MD トラジェクトリ性能
 
@@ -170,7 +170,7 @@ print(f"Per-frame: {sasa.results.total_area}")
 
 ## 性能
 
-上記の[ベンチマーク](#ベンチマーク)および[詳細結果](docs/benchmark/results.md)を参照。
+上記の[ベンチマーク](#ベンチマーク)および[詳細結果](docs/benchmark/single-file.md)を参照。
 
 ## プロジェクト構成
 

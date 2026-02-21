@@ -1,4 +1,4 @@
-# Benchmark Results
+# Single-File SASA Benchmarks
 
 Large-scale benchmark results for zsasa using Shrake-Rupley algorithm.
 
@@ -8,7 +8,7 @@ Large-scale benchmark results for zsasa using Shrake-Rupley algorithm.
 > **Note**:
 > - Absolute execution times are environment-dependent. **Relative speedup ratios** are the meaningful metric for comparison.
 > - All implementations use identical parameters: `n_points=100`, `probe_radius=1.4Å`
-> - Benchmarks measure **SASA calculation time only** (file I/O excluded). See [methodology.md](methodology.md) for details.
+> - Benchmarks measure **SASA calculation time only** (file I/O excluded). See [Methodology](#methodology) for details.
 > - SASA accuracy validated: mean error <0.001% vs FreeSASA reference.
 
 ## Highlights
@@ -23,6 +23,60 @@ Zig's key advantage: **Large structures + Multi-threading**
 - **Up to 3.05x faster** than FreeSASA (8to0: 673,884 atoms, threads=8)
 - **2.3x** median speedup vs FreeSASA and RustSASA (threads=10)
 - Speedup increases with thread count (parallel efficiency advantage)
+
+---
+
+## Methodology
+
+### SASA-Only Timing
+
+For fair comparison, we measure **SASA calculation time only**. File I/O is excluded.
+
+```
+Total time = File I/O + SASA calculation + Output
+                        ^^^^^^^^^^^^^^^^
+                        Only this is measured
+```
+
+Measurement method for each implementation:
+
+| Implementation | Method |
+|----------------|--------|
+| zsasa | Internal measurement via `--timing` option (stderr output) |
+| FreeSASA C | Patched binary outputs SASA calculation time to stderr |
+| RustSASA | Patched binary outputs `SASA_TIME_US` to stderr |
+
+### Parameters
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| Algorithm | Shrake-Rupley | Supported by all implementations (LR: Zig/FreeSASA only) |
+| n_points | 100 | Number of test points |
+| probe_radius | 1.4 A | Water molecule radius |
+| Runs | 3 | Average value used |
+
+### Stratified Sampling
+
+Stratified sampling from all PDB structures (~238K):
+
+| Bin | Range | Strategy |
+|-----|-------|----------|
+| 0-500 | 0 - 500 | Proportional allocation |
+| 500-2k | 500 - 2,000 | Proportional allocation |
+| 2k-10k | 2,000 - 10,000 | Proportional allocation |
+| 10k-50k | 10,000 - 50,000 | Proportional allocation |
+| 50k-200k | 50,000 - 200,000 | **All included** |
+| 200k+ | 200,000+ | **All included** |
+
+Rare large structures (50k+ atoms) are all included; the rest use proportional allocation.
+
+Same seed produces identical samples (reproducible):
+
+```bash
+./benchmarks/scripts/sample.py index.json --target 75000 --seed 42 -o a.json
+./benchmarks/scripts/sample.py index.json --target 75000 --seed 42 -o b.json
+diff a.json b.json  # No differences
+```
 
 ---
 
@@ -57,13 +111,13 @@ Zig's key advantage: **Large structures + Multi-threading**
 | :---: | --- | ---: | ---: | ---: |
 | 0-500 | 0-500 | 0-500 | 2,506 | 2.5% |
 | 500-2k | 500-1k | 500-1,000 | 5,744 | 5.7% |
-| ↓ | 1k-2k | 1,000-2,000 | 15,922 | 15.9% |
+| | 1k-2k | 1,000-2,000 | 15,922 | 15.9% |
 | 2k-10k | 2k-5k | 2,000-5,000 | 36,123 | 36.1% |
-| ↓ | 5k-10k | 5,000-10,000 | 19,835 | 19.8% |
+| | 5k-10k | 5,000-10,000 | 19,835 | 19.8% |
 | 10k-50k | 10k-20k | 10,000-20,000 | 10,187 | 10.2% |
-| ↓ | 20k-50k | 20,000-50,000 | 5,377 | 5.4% |
+| | 20k-50k | 20,000-50,000 | 5,377 | 5.4% |
 | 50k-200k | 50k-100k | 50,000-100,000 | 3,133 | 3.1% |
-| ↓ | 100k-200k | 100,000-200,000 | 900 | 0.9% |
+| | 100k-200k | 100,000-200,000 | 900 | 0.9% |
 | 200k+ | 200k+ | 200,000+ | 271 | 0.3% |
 |  | **Total** |  | **99,998** |  |
 
@@ -130,7 +184,7 @@ Single-threaded comparison (excluding parallelization effects):
 
 **Key Insight:**
 - At threads=1, Zig vs Rust is nearly equal
-- At threads=10, Zig takes a significant lead → **parallel efficiency difference**
+- At threads=10, Zig takes a significant lead -> **parallel efficiency difference**
 
 ---
 
@@ -149,9 +203,9 @@ Single-threaded comparison (excluding parallelization effects):
 | 10 | **3.24** | 4.69 | 5.60 |
 
 **Speedup from threads=1 to threads=10:**
-- Zig: 8.94 → 3.24 = **2.76x**
-- FreeSASA: 10.11 → 4.69 = **2.16x**
-- Rust: 7.71 → 5.60 = **1.38x**
+- Zig: 8.94 -> 3.24 = **2.76x**
+- FreeSASA: 10.11 -> 4.69 = **2.16x**
+- Rust: 7.71 -> 5.60 = **1.38x**
 
 ---
 
@@ -160,7 +214,7 @@ Single-threaded comparison (excluding parallelization effects):
 ### Definition
 
 ```
-Parallel Efficiency = T1 / (TN × N)
+Parallel Efficiency = T1 / (TN x N)
 ```
 
 - T1 = Single-thread execution time
@@ -215,8 +269,8 @@ Parallel Efficiency = T1 / (TN × N)
 | vs RustSASA | **2.3x** |
 
 **Observations:**
-- Speedup improves with thread count (1.6x→2.3x vs FreeSASA)
-- vs Rust: dramatic improvement (1.1x→2.3x) due to parallel efficiency difference
+- Speedup improves with thread count (1.6x->2.3x vs FreeSASA)
+- vs Rust: dramatic improvement (1.1x->2.3x) due to parallel efficiency difference
 
 ### Maximum Structure: 9fqr (4,506,416 atoms)
 
@@ -270,10 +324,10 @@ Top 5 structures with highest speedup at any thread count:
 ![SR Scatter Plot](../../benchmarks/results/plots/scatter/sr/grid.png)
 
 **Observations:**
-- Nearly linear on log scale → O(N) neighbor list is effective (all tools use cell list)
+- Nearly linear on log scale -> O(N) neighbor list is effective (all tools use cell list)
 - Zig (green) is consistently lower (faster) across all sizes
 - Gap between 3 tools widens with increasing thread count
-- Few outliers → stable performance
+- Few outliers -> stable performance
 
 ---
 
@@ -303,7 +357,7 @@ Thread scaling details on representative structures selected from each size bin.
 Comparing SASA values against FreeSASA C as the reference.
 
 ```
-Relative Error = |SASA_zig - SASA_freesasa| / SASA_freesasa × 100%
+Relative Error = |SASA_zig - SASA_freesasa| / SASA_freesasa x 100%
 ```
 
 ### Results
@@ -322,7 +376,7 @@ Relative Error = |SASA_zig - SASA_freesasa| / SASA_freesasa × 100%
 
 ## Key Takeaways
 
-> **Why is Zig faster?** → See [optimizations.md](../optimizations.md)
+> **Why is Zig faster?** -> See [optimizations.md](../optimizations.md)
 
 1. **Maximum effect on large structures**
    - **2.3x** speedup for 100k+ atoms
@@ -346,7 +400,98 @@ Relative Error = |SASA_zig - SASA_freesasa| / SASA_freesasa × 100%
 
 ---
 
-## Appendix A: Lee-Richards (LR) Algorithm
+## Running Benchmarks
+
+### Setup
+
+```bash
+# Build Zig binary
+zig build -Doptimize=ReleaseFast
+
+# External tools setup (for comparison)
+cd benchmarks/external
+git clone https://github.com/N283T/freesasa-bench.git
+cd freesasa-bench && ./configure --enable-threads && make && cd ..
+git clone --recursive https://github.com/N283T/rustsasa-bench.git
+cd rustsasa-bench && cargo build --release --features cli && cd ..
+```
+
+### Index & Sample Generation
+
+```bash
+# Create index (first time only)
+./benchmarks/scripts/build_index.py benchmarks/inputs
+
+# Check distribution
+./benchmarks/scripts/sample.py benchmarks/inputs/index.json --analyze
+
+# Generate sample
+./benchmarks/scripts/sample.py benchmarks/inputs/index.json \
+    --target 100000 --seed 42 \
+    -o benchmarks/samples/stratified_100k.json
+```
+
+### Running
+
+```bash
+# Basic usage
+./benchmarks/scripts/bench.py --tool zig --algorithm sr --threads 1-10
+./benchmarks/scripts/bench.py --tool freesasa --algorithm lr --threads 1-10
+
+# With sample file
+./benchmarks/scripts/bench.py --tool zig --algorithm sr \
+    --input-dir benchmarks/inputs \
+    --sample-file benchmarks/samples/stratified_100k.json \
+    --threads 1,2,4,8,10
+
+# Single run for quick testing
+./benchmarks/scripts/bench.py --tool zig --algorithm sr --threads 1 --runs 1
+
+# With f32 precision (Zig only)
+./benchmarks/scripts/bench.py --tool zig --algorithm sr --precision f32
+```
+
+### Analysis & Visualization
+
+```bash
+# Summary tables
+./benchmarks/scripts/analyze.py summary
+
+# Generate all plots
+./benchmarks/scripts/analyze.py all
+
+# Individual plot types
+./benchmarks/scripts/analyze.py scatter      # Atoms vs time scatter
+./benchmarks/scripts/analyze.py threads      # Thread scaling
+./benchmarks/scripts/analyze.py grid         # Speedup grid by size/threads
+./benchmarks/scripts/analyze.py validation   # SASA validation
+./benchmarks/scripts/analyze.py samples      # Per-bin sample plots
+./benchmarks/scripts/analyze.py large        # Large structure analysis
+./benchmarks/scripts/analyze.py efficiency   # Parallel efficiency
+
+# Export to CSV
+./benchmarks/scripts/analyze.py export-csv
+```
+
+### Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `build_index.py` | Create atom count index from all input files |
+| `sample.py` | Stratified sampling from index |
+| `bench.py` | Run benchmarks (single-file mode) |
+| `analyze.py` | Analyze results and generate plots |
+| `generate_json.py` | Convert CIF/PDB to JSON format |
+
+### Notes
+
+1. **Initial runs are slow**: Due to file cache and warmup effects
+2. **Thread count depends on CPU**: Optimal when matching physical core count
+3. **External tools require patches**: SASA-only timing requires modified binaries
+
+---
+
+## Appendix: Lee-Richards (LR) Algorithm
 
 Lee-Richards results using ~30k structures. RustSASA does not support LR.
 
@@ -389,8 +534,8 @@ Lee-Richards results using ~30k structures. RustSASA does not support LR.
 | 10 | **9.47** | 15.51 |
 
 **Speedup from threads=1 to threads=10:**
-- Zig: 46.61 → 9.47 = **4.92x**
-- FreeSASA: 72.20 → 15.51 = **4.66x**
+- Zig: 46.61 -> 9.47 = **4.92x**
+- FreeSASA: 72.20 -> 15.51 = **4.66x**
 
 ### Execution Time Distribution
 
@@ -408,17 +553,9 @@ LR uses fast trigonometric approximations (see [optimizations.md](../optimizatio
 
 ---
 
-## Appendix B: Batch Processing
-
-For throughput benchmarks processing multiple files in parallel, see [batch.md](batch.md).
-
-**Summary**: Zig f32 achieves **+7%** higher throughput than Rust f32 when processing all 238k PDB structures.
-
----
-
 ## Related Documents
 
-- [methodology.md](methodology.md) - Benchmark methodology and measurement methods
-- [batch.md](batch.md) - Batch processing benchmarks
+- [batch.md](batch.md) - Batch processing benchmarks (proteome datasets)
+- [md.md](md.md) - MD trajectory benchmarks
 - [optimizations.md](../optimizations.md) - Detailed optimization techniques
 - [algorithm.md](../algorithm.md) - Algorithm details

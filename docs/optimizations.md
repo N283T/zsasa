@@ -298,13 +298,13 @@ pub fn fastAtan2(y: f64, x: f64) f64 {
 }
 ```
 
-The approximation error is within acceptable tolerance (<1% vs FreeSASA C). See [benchmark/results.md](benchmark/results.md) for validation details.
+The approximation error is within acceptable tolerance (<1% vs FreeSASA C). See [benchmark/single-file.md](benchmark/single-file.md) for validation details.
 
 ---
 
 ## Combined Optimization Effects
 
-See [benchmark/results.md](benchmark/results.md) for detailed performance data.
+See [benchmark/single-file.md](benchmark/single-file.md) for detailed performance data.
 
 ### Synergistic Effects (SR)
 
