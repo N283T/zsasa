@@ -18,6 +18,9 @@ class ZigBuildHook(BuildHookInterface):
 
     def initialize(self, version: str, build_data: dict[str, Any]) -> None:
         """Build the Zig library and copy it to the package directory."""
+        # Mark as platform-specific wheel (required for .so/.dylib bundling)
+        build_data["infer_tag"] = True
+
         # Determine paths
         root_dir = Path(self.root).parent  # Go up from python/ to project root
         python_dir = Path(self.root)
@@ -52,21 +55,38 @@ class ZigBuildHook(BuildHookInterface):
         # Include the library in the wheel
         build_data["force_include"][str(lib_dst)] = f"zsasa/{lib_name}"
 
+    def _find_zig(self) -> list[str]:
+        """Find the Zig compiler command."""
+        # Check PATH first (system install or setup-zig action)
+        if shutil.which("zig"):
+            return ["zig"]
+        # Check python -m ziglang (PyPI ziglang package)
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "ziglang", "version"],
+                capture_output=True,
+                check=True,
+                timeout=10,
+            )
+            return [sys.executable, "-m", "ziglang"]
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+            return []
+
     def _build_zig(self, root_dir: Path) -> None:
         """Run zig build command."""
         self.app.display_info("Building Zig library...")
 
-        # Check if zig is available
-        if shutil.which("zig") is None:
+        zig_cmd = self._find_zig()
+        if not zig_cmd:
             msg = (
-                "Zig compiler not found. Please install Zig 0.15.2+ from https://ziglang.org/download/ "
-                "or set ZSASA_LIB to point to a pre-built library."
+                "Zig compiler not found. Install Zig 0.15.2+ from "
+                "https://ziglang.org/download/ or run: pip install ziglang"
             )
             raise RuntimeError(msg)
 
         try:
             subprocess.run(
-                ["zig", "build", "-Doptimize=ReleaseFast"],
+                [*zig_cmd, "build", "-Doptimize=ReleaseFast"],
                 cwd=root_dir,
                 check=True,
                 capture_output=True,

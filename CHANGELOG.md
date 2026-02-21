@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pull request template
 - `speedup_by_threads.png` plot generation in `analyze.py large` (thread scaling for 50k+ atoms)
 - CI status, license, Zig, and Python badges to READMEs
+- Pre-built wheel distribution via cibuildwheel (Linux x86_64/aarch64, macOS x86_64/arm64)
+- PyPI publish workflow (`.github/workflows/publish.yml`) with OIDC trusted publishing
+- `python -m ziglang` fallback in `hatch_build.py` for Zig discovery
 
 ### Changed
 
