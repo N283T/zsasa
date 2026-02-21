@@ -23,10 +23,10 @@ Usage:
 
     # Re-analyze existing CSV
     ./benchmarks/scripts/validation.py compare \
-        -d benchmarks/results/validation/ecoli
+        -d benchmarks/results/validation/ecoli/sr
 
 Output:
-    benchmarks/results/validation/<name>/
+    benchmarks/results/validation/<name>/<algorithm>/
     ├── config.json          # System info, parameters
     ├── results.csv          # Per-file SASA values
     └── validation_sr.png    # Scatter plot
@@ -451,7 +451,9 @@ def run(
     # Set up output
     root = get_root_dir()
     if output_dir is None:
-        results_dir = root.joinpath("benchmarks", "results", "validation", name)
+        results_dir = root.joinpath(
+            "benchmarks", "results", "validation", name, algorithm
+        )
     else:
         results_dir = output_dir
     results_dir.mkdir(parents=True, exist_ok=True)

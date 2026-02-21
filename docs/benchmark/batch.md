@@ -218,3 +218,4 @@ Uses [hyperfine](https://github.com/sharkdp/hyperfine) for timing, following the
 
 - [single-file.md](single-file.md) - Single-file benchmark results
 - [md.md](md.md) - MD trajectory benchmark results
+- [validation.md](validation.md) - SASA accuracy validation

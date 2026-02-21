@@ -175,3 +175,4 @@ mdsasa-bolt's performance degrades dramatically as frame count increases: 4.5x s
 
 - [single-file.md](single-file.md) - Single-file benchmark results
 - [batch.md](batch.md) - Batch processing benchmarks
+- [validation.md](validation.md) - SASA accuracy validation

@@ -9,7 +9,7 @@ Large-scale benchmark results for zsasa using Shrake-Rupley algorithm.
 > - Absolute execution times are environment-dependent. **Relative speedup ratios** are the meaningful metric for comparison.
 > - All implementations use identical parameters: `n_points=100`, `probe_radius=1.4Å`
 > - Benchmarks measure **SASA calculation time only** (file I/O excluded). See [Methodology](#methodology) for details.
-> - SASA accuracy validated: mean error <0.001% vs FreeSASA reference.
+> - SASA accuracy validated: mean error <0.001% vs FreeSASA reference. See [validation.md](validation.md) for details.
 
 ## Highlights
 
