@@ -192,7 +192,7 @@ Single-threaded comparison (excluding parallelization effects):
 
 ### Median Execution Time by Thread Count
 
-![Thread Scaling](../../benchmarks/results/plots/thread_scaling/individual/sr.png)
+![Thread Scaling](../../benchmarks/results/plots/large/speedup_by_threads.png)
 
 | Threads | Zig (ms) | FreeSASA (ms) | Rust (ms) |
 | ---: | ---: | ---: | ---: |

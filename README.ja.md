@@ -1,5 +1,10 @@
 # zsasa
 
+[![CI](https://github.com/N283T/zsasa/actions/workflows/ci.yml/badge.svg)](https://github.com/N283T/zsasa/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Zig](https://img.shields.io/badge/Zig-0.15.2+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
+[![Python](https://img.shields.io/badge/Python-3.11+-3776ab?logo=python&logoColor=white)](https://www.python.org/)
+
 [English](README.md) | 日本語
 
 Zig で実装された高性能 Solvent Accessible Surface Area (SASA) 計算ツール。
@@ -19,7 +24,7 @@ FreeSASA C より**最大3倍高速**、**f64 精度**を維持（平均誤差: 
 
 | スピードアップ (threads=10) | スレッドスケーリング (100k+ atoms) |
 |:--------------------:|:----------------------------:|
-| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/large/speedup_by_threads.png) |
+| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/thread_scaling/individual/sr.png) |
 
 **主要結果 (100k+ atoms, threads=10):**
 - FreeSASA/RustSASA 比で**2.3倍**の中央値スピードアップ
@@ -31,15 +36,15 @@ FreeSASA C より**最大3倍高速**、**f64 精度**を維持（平均誤差: 
 
 ### MD トラジェクトリ性能
 
-実際の MD トラジェクトリデータで mdsasa-bolt (RustSASA) より**3.4倍高速**。
+実際の MD トラジェクトリデータで mdsasa-bolt (RustSASA) より**4.3倍高速**。
 
-| 実装 | 時間 (20k atoms × 1k frames) |
-|----------------|------------------------------|
-| zsasa   | 8.8 秒                        |
-| mdsasa-bolt    | 30.3 秒                       |
-| **スピードアップ**    | **3.4x**                     |
+| 実装 | 時間 (33k atoms × 1k frames) |
+|----------------|-------------------------------|
+| zsasa (f64)    | 13.3 秒                       |
+| mdsasa-bolt    | 56.7 秒                       |
+| **スピードアップ**    | **4.3x**                      |
 
-*ベンチマーク: MD ATLAS 6qfk_A トラジェクトリ (20,391 atoms, 1,001 frames, n_points=100)*
+*ベンチマーク: 6sup_A_analysis トラジェクトリ (33,377 atoms, 1,001 frames, n_points=100, threads=10)*
 
 **主な利点:**
 - スレッド数の制御が可能（rayon のグローバルプールと異なり）

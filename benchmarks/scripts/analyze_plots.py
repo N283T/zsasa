@@ -618,6 +618,31 @@ def plot_large():
     plt.close(fig)
     rprint(f"[green]Saved:[/green] {out_path}")
 
+    # --- Thread scaling for large structures (SR only) ---
+    large_bins_all = {
+        "50k-75k",
+        "75k-100k",
+        "100k-150k",
+        "150k-200k",
+        "200k-500k",
+        "500k+",
+    }
+    df_large_sr = df.filter(
+        pl.col("size_bin").is_in(large_bins_all) & (pl.col("algorithm") == "sr")
+    )
+    if df_large_sr.height > 0:
+        fig2, ax2 = plt.subplots(figsize=(10, 6))
+        _plot_threads(df_large_sr, "sr", ax2)
+        n_structs = df_large_sr.select("structure").unique().height
+        ax2.set_title(
+            f"SR: Thread Scaling on Large Structures (50k+ atoms, n={n_structs})"
+        )
+        fig2.tight_layout()
+        out_path2 = plot_dir.joinpath("speedup_by_threads.png")
+        fig2.savefig(out_path2)
+        plt.close(fig2)
+        rprint(f"[green]Saved:[/green] {out_path2}")
+
 
 def plot_efficiency():
     """Calculate and plot parallel efficiency from existing benchmark data."""

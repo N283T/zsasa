@@ -1,5 +1,10 @@
 # zsasa
 
+[![CI](https://github.com/N283T/zsasa/actions/workflows/ci.yml/badge.svg)](https://github.com/N283T/zsasa/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Zig](https://img.shields.io/badge/Zig-0.15.2+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
+[![Python](https://img.shields.io/badge/Python-3.11+-3776ab?logo=python&logoColor=white)](https://www.python.org/)
+
 [日本語](README.ja.md) | English
 
 High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
@@ -19,7 +24,7 @@ High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 
 | Speedup (threads=10) | Thread Scaling (100k+ atoms) |
 |:--------------------:|:----------------------------:|
-| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/large/speedup_by_threads.png) |
+| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/thread_scaling/individual/sr.png) |
 
 **Key Results (100k+ atoms, threads=10):**
 - **2.3x** median speedup vs FreeSASA and RustSASA
@@ -31,15 +36,15 @@ See [benchmark results](docs/benchmark/single-file.md) for detailed analysis.
 
 ### MD Trajectory Performance
 
-**3.4x faster** than mdsasa-bolt (RustSASA) on real MD trajectory data.
+**4.3x faster** than mdsasa-bolt (RustSASA) on real MD trajectory data.
 
-| Implementation | Time (20k atoms × 1k frames) |
-|----------------|------------------------------|
-| zsasa   | 8.8 s                        |
-| mdsasa-bolt    | 30.3 s                       |
-| **Speedup**    | **3.4x**                     |
+| Implementation | Time (33k atoms × 1k frames) |
+|----------------|-------------------------------|
+| zsasa (f64)    | 13.3 s                        |
+| mdsasa-bolt    | 56.7 s                        |
+| **Speedup**    | **4.3x**                      |
 
-*Benchmark: MD ATLAS 6qfk_A trajectory (20,391 atoms, 1,001 frames, n_points=100)*
+*Benchmark: 6sup_A_analysis trajectory (33,377 atoms, 1,001 frames, n_points=100, threads=10)*
 
 **Key advantages:**
 - Controllable thread count (unlike rayon's global pool)
@@ -155,7 +160,7 @@ print(f"Mean SASA: {sasa.results.mean_total_area:.2f} Å²")
 print(f"Per-frame: {sasa.results.total_area}")
 ```
 
-See [Python API](docs/python.md) for full documentation.
+See [Python API](docs/python-api/) for full documentation.
 
 ## Documentation
 
