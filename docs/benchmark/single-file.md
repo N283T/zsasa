@@ -350,28 +350,6 @@ Thread scaling details on representative structures selected from each size bin.
 
 ---
 
-## SASA Validation
-
-### Validation Method
-
-Comparing SASA values against FreeSASA C as the reference.
-
-```
-Relative Error = |SASA_zig - SASA_freesasa| / SASA_freesasa x 100%
-```
-
-### Results
-
-![SR Validation](../../benchmarks/results/plots/validation/sr.png)
-
-| Comparison | Max Error | Mean Error |
-| --- | ---: | ---: |
-| Zig vs FreeSASA | 17.67% | 0.0004% |
-
-**Note**: The max error comes from 4 special structures with duplicate atoms at identical coordinates (unrelated to altloc or model). After preprocessing to remove duplicates, these errors become 0.0%.
-
-**Conclusion**: Mean error is **<0.001%**. Computational accuracy is fully equivalent.
-
 ---
 
 ## Key Takeaways
@@ -395,8 +373,7 @@ Relative Error = |SASA_zig - SASA_freesasa| / SASA_freesasa x 100%
    - Result of SIMD optimization
 
 5. **Accurate results**
-   - Error within **0.1%** of FreeSASA
-   - Computational accuracy is fully equivalent
+   - See [validation.md](validation.md) for detailed accuracy analysis
 
 ---
 
@@ -545,17 +522,12 @@ Lee-Richards results using ~30k structures. RustSASA does not support LR.
 - Overall 3-4x slower than SR (slice integration cost)
 - Zig's advantage is maintained in LR as well
 
-### SASA Validation
-
-![LR Validation](../../benchmarks/results/plots/validation/lr.png)
-
-LR uses fast trigonometric approximations (see [optimizations.md](../optimizations.md)), resulting in slightly higher error than SR, but still within acceptable tolerance.
-
 ---
 
 ## Related Documents
 
 - [batch.md](batch.md) - Batch processing benchmarks (proteome datasets)
 - [md.md](md.md) - MD trajectory benchmarks
+- [validation.md](validation.md) - SASA accuracy validation
 - [optimizations.md](../optimizations.md) - Detailed optimization techniques
 - [algorithm.md](../algorithm.md) - Algorithm details

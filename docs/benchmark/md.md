@@ -170,6 +170,7 @@ mdsasa-bolt's performance degrades dramatically as frame count increases: 4.5x s
 - Times include trajectory loading and SASA calculation
 - mdsasa-bolt "all" = 10 threads on this system
 - f32 and f64 precision produce nearly identical timing (~3-5% difference)
+- SASA accuracy and XTC reader consistency validated in [validation.md](validation.md)
 
 ## Related Documents
 
