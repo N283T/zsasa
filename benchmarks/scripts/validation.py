@@ -9,7 +9,13 @@ Runs tools on a PDB directory, collects per-file SASA values,
 and compares across tools -- completely independent of timing benchmarks.
 
 Usage:
-    # Run tools and compare
+    # Run tools and compare (both f32 and f64)
+    ./benchmarks/scripts/validation.py run \
+        -i benchmarks/UP000000625_83333_ECOLI_v6/pdb \
+        -n ecoli \
+        --algorithm sr --threads 1
+
+    # Run with specific precision
     ./benchmarks/scripts/validation.py run \
         -i benchmarks/UP000000625_83333_ECOLI_v6/pdb \
         -n ecoli \
@@ -406,13 +412,13 @@ def run(
         ),
     ] = "sr",
     precision: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--precision",
             "-p",
-            help="zsasa precision: f32 or f64",
+            help="zsasa precision: f32, f64, or omit for both",
         ),
-    ] = "f64",
+    ] = None,
     threads: Annotated[
         int,
         typer.Option(
@@ -440,6 +446,7 @@ def run(
 ) -> None:
     """Run tools on PDB directory and compare SASA values."""
     selected_tools = tools if tools else ALL_TOOLS
+    precisions = [precision] if precision else ["f32", "f64"]
 
     # Set up output
     root = get_root_dir()
@@ -467,7 +474,7 @@ def run(
             "n_files": n_files,
             "tools": [t.value for t in selected_tools],
             "algorithm": algorithm,
-            "precision": precision,
+            "precision": precisions,
             "threads": threads,
             "reference": reference,
         },
@@ -480,18 +487,22 @@ def run(
     console.print(f"Input: {input_dir} ({n_files} PDB files)")
     console.print(f"Output: {results_dir}")
     console.print(f"Tools: {', '.join(t.value for t in selected_tools)}")
-    console.print(f"Algorithm: {algorithm}, Precision: {precision}, Threads: {threads}")
+    console.print(
+        f"Algorithm: {algorithm}, Precision: {', '.join(precisions)}, Threads: {threads}"
+    )
     console.print()
 
-    # Collect results from each tool
-    zsasa_col = f"zsasa_{precision}"
-    zsasa_results: dict[str, tuple[float, int]] = {}
-    freesasa_results: dict[str, float] = {}
+    # Collect results from each tool x precision
+    zsasa_runs: dict[str, dict[str, tuple[float, int]]] = {}
 
     if Tool.zig in selected_tools:
-        console.print("[bold cyan]Running zsasa...[/]")
-        zsasa_results = run_zsasa(input_dir, algorithm, precision, threads, binaries)
-        console.print(f"  Got {len(zsasa_results)} results")
+        for prec in precisions:
+            col = f"zsasa_{prec}"
+            console.print(f"[bold cyan]Running zsasa ({prec})...[/]")
+            zsasa_runs[col] = run_zsasa(input_dir, algorithm, prec, threads, binaries)
+            console.print(f"  Got {len(zsasa_runs[col])} results")
+
+    freesasa_results: dict[str, float] = {}
 
     if Tool.freesasa in selected_tools:
         console.print("[bold cyan]Running FreeSASA...[/]")
@@ -501,9 +512,9 @@ def run(
     # Merge by stem
     import polars as pl
 
-    all_stems = set()
-    if zsasa_results:
-        all_stems.update(zsasa_results.keys())
+    all_stems: set[str] = set()
+    for results in zsasa_runs.values():
+        all_stems.update(results.keys())
     if freesasa_results:
         all_stems.update(freesasa_results.keys())
 
@@ -515,10 +526,17 @@ def run(
     for stem in sorted(all_stems):
         row: dict = {"structure": stem}
 
-        if zsasa_results and stem in zsasa_results:
-            sasa, n_atoms = zsasa_results[stem]
-            row["n_atoms"] = n_atoms
-            row[zsasa_col] = round(sasa, 2)
+        # n_atoms from any zsasa run
+        for results in zsasa_runs.values():
+            if stem in results:
+                _, n_atoms = results[stem]
+                row["n_atoms"] = n_atoms
+                break
+
+        for col, results in zsasa_runs.items():
+            if stem in results:
+                sasa, _ = results[stem]
+                row[col] = round(sasa, 2)
 
         if freesasa_results and stem in freesasa_results:
             row["freesasa"] = round(freesasa_results[stem], 2)
@@ -527,8 +545,7 @@ def run(
 
     # Build DataFrame with consistent column order
     columns = ["structure", "n_atoms"]
-    if zsasa_results:
-        columns.append(zsasa_col)
+    columns.extend(zsasa_runs.keys())
     if freesasa_results:
         columns.append("freesasa")
 
