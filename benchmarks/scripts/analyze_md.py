@@ -14,9 +14,7 @@ Generates summary statistics and plots from bench_md.py results.
 Usage:
     ./benchmarks/scripts/analyze_md.py summary --name 6sup_R1
     ./benchmarks/scripts/analyze_md.py bar --name 6sup_R1
-    ./benchmarks/scripts/analyze_md.py threads --name 6sup_R1
     ./benchmarks/scripts/analyze_md.py memory --name 6sup_R1
-    ./benchmarks/scripts/analyze_md.py speedup --name 6sup_R1
     ./benchmarks/scripts/analyze_md.py all --name 6sup_R1
 """
 
@@ -179,10 +177,20 @@ def display_name(tool: str) -> str:
 
 
 def get_best_per_tool(results: list[BenchResult]) -> dict[str, BenchResult]:
-    """Get the fastest result per tool (best thread count)."""
+    """Get the result at the highest thread count per tool.
+
+    Picks the result with the most threads (typically 10t) to give a
+    consistent comparison point.  For single-threaded tools like MDTraj,
+    the only available result (1t) is returned.
+    """
     best: dict[str, BenchResult] = {}
     for r in results:
-        if r.tool not in best or r.mean < best[r.tool].mean:
+        threads = r.threads if r.threads is not None else 0
+        prev = best.get(r.tool)
+        prev_threads = (
+            prev.threads if prev is not None and prev.threads is not None else 0
+        )
+        if prev is None or threads > prev_threads:
             best[r.tool] = r
     return best
 
@@ -332,18 +340,17 @@ def summary(
 def bar(
     name: Annotated[str, typer.Option("--name", "-n", help="Dataset name")],
 ) -> None:
-    """Generate horizontal bar chart comparing best time per tool."""
+    """Generate vertical bar chart comparing best time per tool."""
     setup_style()
     results = load_results(name)
     config = load_config(name)
     best = get_best_per_tool(results)
 
-    # Sort by time (fastest first from top)
     ordered = [t for t in TOOL_ORDER if t in best]
     if not ordered:
         rprint("[yellow]No matching tools found for bar chart.[/yellow]")
         return
-    ordered.sort(key=lambda t: best[t].mean, reverse=True)
+    ordered.sort(key=lambda t: best[t].mean)
 
     labels = []
     times = []
@@ -355,108 +362,34 @@ def bar(
         times.append(r.mean)
         colors.append(COLORS.get(tool, "#95a5a6"))
 
-    fig, ax = plt.subplots(figsize=(10, max(4, len(labels) * 0.8)))
-    y_pos = range(len(labels))
-    bars = ax.barh(y_pos, times, color=colors, height=0.6, edgecolor="white")
+    fig, ax = plt.subplots(figsize=(max(6, len(labels) * 1.8), 6))
+    x = range(len(labels))
+    bars = ax.bar(x, times, color=colors, width=0.6, edgecolor="white")
 
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(labels)
-    ax.set_xlabel("Time (seconds)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=30, ha="right")
+    ax.set_ylabel("Time (seconds)")
     subtitle = build_subtitle(config)
     title = f"MD Trajectory SASA Benchmark: {name}"
     if subtitle:
         title += f"\n({subtitle})"
     ax.set_title(title)
-    ax.grid(True, alpha=0.3, axis="x")
+    ax.grid(True, alpha=0.3, axis="y")
 
     for bar_item, t in zip(bars, times):
         ax.text(
-            bar_item.get_width() + max(times) * 0.01,
-            bar_item.get_y() + bar_item.get_height() / 2,
+            bar_item.get_x() + bar_item.get_width() / 2,
+            bar_item.get_height() + max(times) * 0.02,
             f"{t:.1f}s",
-            va="center",
+            ha="center",
+            va="bottom",
             fontsize=10,
+            fontweight="bold",
         )
 
-    ax.set_xlim(0, max(times) * 1.15)
-    fig.tight_layout()
+    ax.set_ylim(0, max(times) * 1.15)
 
     out_path = get_plots_dir(name).joinpath("bar.png")
-    fig.savefig(out_path)
-    plt.close(fig)
-    rprint(f"[green]Saved:[/green] {out_path}")
-
-
-@app.command()
-def threads(
-    name: Annotated[str, typer.Option("--name", "-n", help="Dataset name")],
-) -> None:
-    """Generate thread scaling plot."""
-    setup_style()
-    config = load_config(name)
-    results = load_results(name)
-
-    # Tools that don't scale with threads - always show as reference line
-    reference_tools = {"mdtraj", "mdsasa_bolt"}
-
-    # Group by tool
-    tool_threads: dict[str, list[tuple[int, float]]] = {}
-    ref_lines: dict[str, float] = {}
-
-    for r in results:
-        if r.tool in reference_tools:
-            ref_lines[r.tool] = r.mean
-        elif r.threads is not None:
-            tool_threads.setdefault(r.tool, []).append((r.threads, r.mean))
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-
-    # Plot scaling lines
-    for tool in TOOL_ORDER:
-        if tool not in tool_threads:
-            continue
-        data = sorted(tool_threads[tool])
-        t_vals = [d[0] for d in data]
-        time_vals = [d[1] for d in data]
-        ax.plot(
-            t_vals,
-            time_vals,
-            marker="o",
-            label=display_name(tool),
-            color=COLORS.get(tool, "#95a5a6"),
-            linewidth=2,
-            markersize=6,
-        )
-
-    # Plot reference lines
-    for tool, time_val in ref_lines.items():
-        ax.axhline(
-            y=time_val,
-            linestyle="--",
-            color=COLORS.get(tool, "#95a5a6"),
-            linewidth=1.5,
-            label=f"{display_name(tool)} ({time_val:.0f}s)",
-            alpha=0.7,
-        )
-
-    ax.set_xlabel("Thread Count")
-    ax.set_ylabel("Time (seconds)")
-    subtitle = build_subtitle(config)
-    title = f"Thread Scaling: {name}"
-    if subtitle:
-        title += f"\n({subtitle})"
-    ax.set_title(title)
-    ax.legend(loc="upper right")
-    ax.grid(True, alpha=0.3)
-
-    # Set x ticks to actual thread counts
-    all_threads = sorted({t for pts in tool_threads.values() for t, _ in pts})
-    if all_threads:
-        ax.set_xticks(all_threads)
-        ax.set_xticklabels([str(t) for t in all_threads])
-
-    fig.tight_layout()
-    out_path = get_plots_dir(name).joinpath("threads.png")
     fig.savefig(out_path)
     plt.close(fig)
     rprint(f"[green]Saved:[/green] {out_path}")
@@ -476,7 +409,7 @@ def memory(
     if not ordered:
         rprint("[yellow]No matching tools found for memory chart.[/yellow]")
         return
-    ordered.sort(key=lambda t: best[t].memory_bytes, reverse=True)
+    ordered.sort(key=lambda t: best[t].memory_bytes)
 
     labels = []
     mem_mbs = []
@@ -487,140 +420,34 @@ def memory(
         mem_mbs.append(r.memory_bytes / (1024**2))
         colors.append(COLORS.get(tool, "#95a5a6"))
 
-    fig, ax = plt.subplots(figsize=(10, max(4, len(labels) * 0.8)))
-    y_pos = range(len(labels))
-    bars = ax.barh(y_pos, mem_mbs, color=colors, height=0.6, edgecolor="white")
+    fig, ax = plt.subplots(figsize=(max(6, len(labels) * 1.8), 6))
+    x = range(len(labels))
+    bars = ax.bar(x, mem_mbs, color=colors, width=0.6, edgecolor="white")
 
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(labels)
-    ax.set_xlabel("Peak Memory (MB)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=30, ha="right")
+    ax.set_ylabel("Peak Memory (MB)")
     subtitle = build_subtitle(config)
     title = f"Memory Usage: {name}"
     if subtitle:
         title += f"\n({subtitle})"
     ax.set_title(title)
-    ax.grid(True, alpha=0.3, axis="x")
+    ax.grid(True, alpha=0.3, axis="y")
 
     for bar_item, mem_mb in zip(bars, mem_mbs):
         ax.text(
-            bar_item.get_width() + max(mem_mbs) * 0.01,
-            bar_item.get_y() + bar_item.get_height() / 2,
+            bar_item.get_x() + bar_item.get_width() / 2,
+            bar_item.get_height() + max(mem_mbs) * 0.02,
             _format_memory(int(mem_mb * (1024**2))),
-            va="center",
+            ha="center",
+            va="bottom",
             fontsize=10,
+            fontweight="bold",
         )
 
-    ax.set_xlim(0, max(mem_mbs) * 1.15)
-    fig.tight_layout()
+    ax.set_ylim(0, max(mem_mbs) * 1.15)
 
     out_path = get_plots_dir(name).joinpath("memory.png")
-    fig.savefig(out_path)
-    plt.close(fig)
-    rprint(f"[green]Saved:[/green] {out_path}")
-
-
-@app.command()
-def speedup(
-    name: Annotated[str, typer.Option("--name", "-n", help="Dataset name")],
-) -> None:
-    """Show speedup ratios and generate comparison chart."""
-    setup_style()
-    config = load_config(name)
-    results = load_results(name)
-    best = get_best_per_tool(results)
-
-    mdtraj_time = get_mdtraj_baseline(results)
-    bolt_result = best.get("mdsasa_bolt")
-    bolt_time = bolt_result.mean if bolt_result is not None else None
-
-    # Rich table
-    subtitle = build_subtitle(config)
-    table_title = f"Speedup Summary: {name}"
-    if subtitle:
-        table_title += f" ({subtitle})"
-    table = Table(title=table_title)
-    table.add_column("Tool", style="cyan")
-    table.add_column("Threads", justify="right")
-    table.add_column("Time (s)", justify="right")
-    if mdtraj_time is not None:
-        table.add_column("vs MDTraj", justify="right")
-    if bolt_time is not None:
-        table.add_column("vs mdsasa-bolt", justify="right")
-
-    ordered = [t for t in TOOL_ORDER if t in best]
-    if not ordered:
-        rprint("[yellow]No matching tools found for speedup analysis.[/yellow]")
-        return
-    ordered.sort(key=lambda t: best[t].mean)
-
-    for tool in ordered:
-        r = best[tool]
-        row = [
-            display_name(tool),
-            _threads_label(r.threads),
-            f"{r.mean:.1f}",
-        ]
-
-        if mdtraj_time is not None and r.mean > 0:
-            s = mdtraj_time / r.mean
-            s_str = f"{s:.1f}x"
-            if s > 1.0:
-                s_str = f"[green]{s_str}[/green]"
-            elif s < 1.0:
-                s_str = f"[red]{s_str}[/red]"
-            row.append(s_str)
-
-        if bolt_time is not None and r.mean > 0:
-            s = bolt_time / r.mean
-            s_str = f"{s:.1f}x"
-            if s > 1.0:
-                s_str = f"[green]{s_str}[/green]"
-            elif s < 1.0:
-                s_str = f"[red]{s_str}[/red]"
-            row.append(s_str)
-
-        table.add_row(*row)
-
-    rprint(table)
-
-    # Bar chart: speedup vs MDTraj
-    if mdtraj_time is None:
-        return
-
-    chart_tools = [t for t in ordered if t != "mdtraj" and best[t].mean > 0]
-    if not chart_tools:
-        return
-    labels = [display_name(t) for t in chart_tools]
-    speedups = [mdtraj_time / best[t].mean for t in chart_tools]
-    colors = [COLORS.get(t, "#95a5a6") for t in chart_tools]
-
-    fig, ax = plt.subplots(figsize=(10, max(4, len(labels) * 0.8)))
-    y_pos = range(len(labels))
-    bars = ax.barh(y_pos, speedups, color=colors, height=0.6, edgecolor="white")
-
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(labels)
-    ax.set_xlabel("Speedup vs MDTraj native (higher = faster)")
-    speedup_title = f"Speedup vs MDTraj native: {name}"
-    if subtitle:
-        speedup_title += f"\n({subtitle})"
-    ax.set_title(speedup_title)
-    ax.axvline(x=1.0, color="gray", linestyle="--", linewidth=1.5)
-    ax.grid(True, alpha=0.3, axis="x")
-
-    for bar_item, s in zip(bars, speedups):
-        ax.text(
-            bar_item.get_width() + max(speedups) * 0.01,
-            bar_item.get_y() + bar_item.get_height() / 2,
-            f"{s:.1f}x",
-            va="center",
-            fontsize=10,
-        )
-
-    ax.set_xlim(0, max(speedups) * 1.15)
-    fig.tight_layout()
-
-    out_path = get_plots_dir(name).joinpath("speedup.png")
     fig.savefig(out_path)
     plt.close(fig)
     rprint(f"[green]Saved:[/green] {out_path}")
@@ -634,9 +461,7 @@ def all_cmd(
     summary(name=name)
     rprint("\n[bold]Generating plots...[/bold]\n")
     bar(name=name)
-    threads(name=name)
     memory(name=name)
-    speedup(name=name)
     rprint(f"\n[bold green]All plots saved to:[/bold green] {get_plots_dir(name)}")
 
 
