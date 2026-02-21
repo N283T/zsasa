@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `CODE_OF_CONDUCT.md` (Contributor Covenant v2.1)
+- `CITATION.cff` (CFF 1.2.0 format for academic citation)
+- GitHub issue templates (bug report, feature request) in YAML form
+- Pull request template
+- `speedup_by_threads.png` plot generation in `analyze.py large` (thread scaling for 50k+ atoms)
+- CI status, license, Zig, and Python badges to READMEs
+
+### Changed
+
+- `python/pyproject.toml`: Updated author name, added Documentation/Issues/Changelog URLs
+
+### Fixed
+
+- README: Corrected MD trajectory benchmark data (6sup_A_analysis: 4.3x speedup, verified against actual data)
+- README: Fixed broken documentation link (`docs/python.md` → `docs/python-api/`)
+- README: Fixed broken image reference for thread scaling plot
+
 ## [0.1.0] - 2026-01-31
 
 ### Added
