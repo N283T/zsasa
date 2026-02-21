@@ -17,7 +17,7 @@ Zig's key advantage: **Large structures + Multi-threading**
 
 | Speedup at threads=10 | Thread Scaling (100k+ atoms) |
 |:---------------:|:----------------------------:|
-| ![Speedup](../../benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](../../benchmarks/results/plots/thread_scaling/individual/sr.png) |
+| ![Speedup](../../benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](../../benchmarks/results/plots/large/speedup_by_threads.png) |
 
 **Key Results (100k+ atoms, n={{LARGE_STRUCTURE_COUNT}}):**
 - **Up to {{BEST_SPEEDUP_VS_FREESASA}}x faster** than FreeSASA ({{BEST_SPEEDUP_VS_FREESASA_STRUCTURE}}: {{BEST_SPEEDUP_VS_FREESASA_ATOMS}} atoms, threads={{BEST_SPEEDUP_VS_FREESASA_THREADS}})
@@ -93,7 +93,7 @@ Single-threaded comparison (excluding parallelization effects):
 
 ### Median Execution Time by Thread Count
 
-![Thread Scaling](../../benchmarks/results/plots/thread_scaling/individual/sr.png)
+![Thread Scaling](../../benchmarks/results/plots/large/speedup_by_threads.png)
 
 {{TABLE_THREAD_SCALING}}
 
@@ -139,7 +139,7 @@ Parallel Efficiency = T1 / (TN × N)
 
 | Speedup at threads=10 | Thread Scaling |
 |:---------------:|:--------------:|
-| ![Speedup](../../benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](../../benchmarks/results/plots/thread_scaling/individual/sr.png) |
+| ![Speedup](../../benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](../../benchmarks/results/plots/large/speedup_by_threads.png) |
 
 {{TABLE_LARGE_SUMMARY}}
 
