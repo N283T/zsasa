@@ -32,6 +32,7 @@ pub const classifier = @import("classifier.zig");
 pub const analysis = @import("analysis.zig");
 pub const stream_writer = @import("stream_writer.zig");
 pub const toml_parser = @import("toml_parser.zig");
+pub const toml_classifier_parser = @import("toml_classifier_parser.zig");
 
 test {
     _ = shrake_rupley;
@@ -44,4 +45,5 @@ test {
     _ = analysis;
     _ = stream_writer;
     _ = toml_parser;
+    _ = toml_classifier_parser;
 }
