@@ -34,7 +34,11 @@ class ZigBuildHook(BuildHookInterface):
         else:
             lib_name = "libzsasa.so"
 
-        lib_src = root_dir / "zig-out" / "lib" / lib_name
+        # Zig outputs DLLs to zig-out/bin/ on Windows, .so/.dylib to zig-out/lib/
+        if sys.platform == "win32":
+            lib_src = root_dir / "zig-out" / "bin" / lib_name
+        else:
+            lib_src = root_dir / "zig-out" / "lib" / lib_name
         lib_dst = package_dir / lib_name
 
         # Check if library already exists and is newer than source
