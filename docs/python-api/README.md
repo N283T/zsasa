@@ -13,7 +13,7 @@ The Python bindings provide:
 - **RSA calculation**: Relative Solvent Accessibility
 - **Per-residue aggregation**: Aggregate atom SASA to residue level
 - **Library integrations**: gemmi, BioPython, and Biotite support
-- **MD trajectory analysis**: MDTraj and MDAnalysis integration (3.4x faster than mdsasa-bolt)
+- **MD trajectory analysis**: MDTraj and MDAnalysis integration (4x faster than mdsasa-bolt)
 
 ## Contents
 
@@ -162,37 +162,36 @@ print(f"Total SASA: {result.total_areas}")
 
 ## Performance
 
-Comparison with FreeSASA Python bindings (single-threaded):
+The Python bindings call the same high-performance Zig engine as the CLI. See [benchmark results](../benchmark/) for detailed methodology.
 
-| Structure | Atoms | Zig SR | FS SR | Speedup |
-|-----------|------:|-------:|------:|--------:|
-| 1CRN | 327 | 0.5ms | 0.7ms | 1.4x |
-| 1UBQ | 602 | 0.6ms | 1.3ms | 2.2x |
-| 1A0Q | 3,183 | 2.4ms | 7.6ms | 3.2x |
-| 3HHB | 4,384 | 3.4ms | 11ms | 3.2x |
-| 1AON | 58,674 | 44ms | 163ms | 3.7x |
+### Single-File Performance
 
-- **SR algorithm**: 1.4-3.7x faster (speedup increases with size)
-- **LR algorithm**: 2.9-5.5x faster
-- **Accuracy**: Results match FreeSASA (< 0.01% difference)
+| Speedup (threads=10) | Thread Scaling (100k+ atoms) |
+|:--------------------:|:----------------------------:|
+| ![Speedup](../../benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](../../benchmarks/results/plots/thread_scaling/individual/sr.png) |
 
-### MD Trajectory Analysis
+**Key Results (100k+ atoms, threads=10):**
+- **2.3x** median speedup vs FreeSASA and RustSASA
+- Speedup increases with thread count (superior parallel efficiency)
+- Accuracy: Results match FreeSASA (< 0.01% difference)
 
-Comparison with mdsasa-bolt (RustSASA) for MD trajectory SASA:
+> **Note**: Zig/FreeSASA use f64, RustSASA uses f32.
 
-| Implementation | Time (20k atoms × 1k frames) | Notes |
-|----------------|------------------------------|-------|
-| zsasa   | 8.8 s                        | f64, controllable threads |
-| mdsasa-bolt    | 30.3 s                       | f32, rayon global pool |
-| **Speedup**    | **3.4x**                     | |
+See [single-file benchmark results](../benchmark/single-file.md) for detailed analysis.
 
-*Benchmark: MD ATLAS 6qfk_A trajectory (20,391 atoms, 1,001 frames, n_points=100, 8 threads)*
+### MD Trajectory Performance
+
+**4.3x faster** than mdsasa-bolt (RustSASA) on real MD trajectory data.
+
+![MD Trajectory Benchmark](../../benchmarks/results/md/6sup_A_analysis/plots/bar.png)
+
+*33,377 atoms, 1,001 frames, n_points=100*
 
 **Key advantages:**
 
 - **Controllable parallelism**: Set exact thread count with `n_threads`, unlike rayon's global pool
 - **Higher precision**: f64 by default (f32 available for comparison)
-- **Efficient scaling**: 5.2x speedup from 1→8 threads
+- **Thread scaling**: 6.0x speedup from 1→10 threads
 
 ---
 
