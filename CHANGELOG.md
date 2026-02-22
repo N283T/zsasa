@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `simd.zig`: Fixed `std.math.atan2` comptime_float errors with explicit `@as(f64, ...)` casts
-- `simd.zig`: Corrected fast approximation test tolerances to match actual polynomial precision
+- `simd.zig`: Corrected `fastAtan2` test tolerance for negative quadrant inputs (0.005 → 0.07)
+- `root.zig`: Re-enabled `shrake_rupley` and `lee_richards` in test block (previously excluded due to transitive simd test failure)
 
 ## [0.1.1] - 2026-02-22
 
