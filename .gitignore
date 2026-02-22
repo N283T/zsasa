@@ -89,8 +89,8 @@ benchmarks/ecoli_bench/sasa_batch
 # XTC reader cache files
 test_data/.*.xtc_offsets.*
 
-# Archived plans
-plans/archive/
+# Plans (local working files)
+plans/
 
 # Draft documents
 docs/seminar-draft.md
