@@ -64,7 +64,6 @@ const Args = struct {
     stream: bool = false, // Stream results as they complete (batch mode)
     stream_format: stream_writer.StreamFormat = .ndjson, // Streaming output format
     stream_output: ?[]const u8 = null, // Streaming output file path (default: stdout)
-    full: bool = false, // Include per-atom SASA in streaming output
     show_help: bool = false,
     show_version: bool = false,
 };
@@ -470,10 +469,6 @@ fn parseArgs(args: []const []const u8) Args {
             }
             result.stream_output = args[i];
         }
-        // --full
-        else if (std.mem.eql(u8, arg, "--full")) {
-            result.full = true;
-        }
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
@@ -579,7 +574,6 @@ fn printHelp(program_name: []const u8) void {
         \\    --stream           Stream results as JSON (batch mode only)
         \\    --stream-format=FMT  Stream format: ndjson (default), json
         \\    --stream-output=FILE Write stream to file (default: stdout)
-        \\    --full             Include per-atom SASA in stream output
         \\    -q, --quiet        Suppress progress output
         \\    -h, --help         Show this help message
         \\    -V, --version      Show version
@@ -802,15 +796,17 @@ fn runBatchMode(allocator: std.mem.Allocator, parsed: Args) !void {
     defer if (stream_file) |f| f.close();
 
     var stream_generic_writer: std.fs.File.DeprecatedWriter = undefined;
-    var sw: ?stream_writer.StreamWriter = null;
+    var sw_storage: stream_writer.StreamWriter = undefined;
+    var sw_ptr: ?*stream_writer.StreamWriter = null;
     if (parsed.stream) {
         const file = if (parsed.stream_output) |path| blk: {
             stream_file = try std.fs.cwd().createFile(path, .{});
             break :blk stream_file.?;
         } else std.fs.File.stdout();
         stream_generic_writer = file.deprecatedWriter();
-        sw = stream_writer.StreamWriter.init(stream_generic_writer.any(), parsed.stream_format, parsed.full);
-        try sw.?.begin();
+        sw_storage = stream_writer.StreamWriter.init(stream_generic_writer.any(), parsed.stream_format, false);
+        try sw_storage.begin();
+        sw_ptr = &sw_storage;
     }
 
     // Build batch config from parsed args
@@ -833,8 +829,7 @@ fn runBatchMode(allocator: std.mem.Allocator, parsed: Args) !void {
         .include_hydrogens = parsed.include_hydrogens,
         .include_hetatm = parsed.include_hetatm,
     };
-    // Set stream_writer_ptr after config is on the stack (sw is stable local var)
-    config.stream_writer_ptr = if (sw != null) &sw.? else null;
+    config.stream_writer_ptr = sw_ptr;
 
     if (!parsed.quiet) {
         std.debug.print("Batch mode: processing directory '{s}'\n", .{input_dir});
@@ -852,7 +847,7 @@ fn runBatchMode(allocator: std.mem.Allocator, parsed: Args) !void {
     defer result.deinit();
 
     // End streaming
-    if (sw) |*s| {
+    if (sw_ptr) |s| {
         try s.end();
     }
 
@@ -1650,4 +1645,55 @@ test "parseArgs --include-hetatm" {
     const parsed = parseArgs(&args);
 
     try std.testing.expectEqual(true, parsed.include_hetatm);
+}
+
+test "parseArgs default stream is false" {
+    const args = [_][]const u8{ "zsasa", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(false, parsed.stream);
+    try std.testing.expectEqual(stream_writer.StreamFormat.ndjson, parsed.stream_format);
+    try std.testing.expectEqual(@as(?[]const u8, null), parsed.stream_output);
+}
+
+test "parseArgs --stream" {
+    const args = [_][]const u8{ "zsasa", "--stream", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(true, parsed.stream);
+}
+
+test "parseArgs --stream-format=ndjson" {
+    const args = [_][]const u8{ "zsasa", "--stream-format=ndjson", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(stream_writer.StreamFormat.ndjson, parsed.stream_format);
+}
+
+test "parseArgs --stream-format=json" {
+    const args = [_][]const u8{ "zsasa", "--stream-format=json", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(stream_writer.StreamFormat.json_array, parsed.stream_format);
+}
+
+test "parseArgs --stream-format json (space-separated)" {
+    const args = [_][]const u8{ "zsasa", "--stream-format", "json", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqual(stream_writer.StreamFormat.json_array, parsed.stream_format);
+}
+
+test "parseArgs --stream-output=FILE" {
+    const args = [_][]const u8{ "zsasa", "--stream-output=out.jsonl", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqualStrings("out.jsonl", parsed.stream_output.?);
+}
+
+test "parseArgs --stream-output FILE (space-separated)" {
+    const args = [_][]const u8{ "zsasa", "--stream-output", "out.jsonl", "input.json" };
+    const parsed = parseArgs(&args);
+
+    try std.testing.expectEqualStrings("out.jsonl", parsed.stream_output.?);
 }

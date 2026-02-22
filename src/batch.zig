@@ -507,7 +507,9 @@ pub fn runBatchSequential(
                 .status = result.status,
                 .time_ns = result.sasa_time_ns,
                 .error_msg = result.error_msg,
-            }) catch {};
+            }) catch |err| {
+                std.debug.print("Warning: stream write failed for '{s}': {s}\n", .{ filename, @errorName(err) });
+            };
         }
 
         // Reset arena for next file
@@ -612,7 +614,9 @@ pub fn runBatchAtomParallel(
                 .status = result.status,
                 .time_ns = result.sasa_time_ns,
                 .error_msg = result.error_msg,
-            }) catch {};
+            }) catch |err| {
+                std.debug.print("Warning: stream write failed for '{s}': {s}\n", .{ filename, @errorName(err) });
+            };
         }
 
         // Reset arena for next file
@@ -798,7 +802,9 @@ pub fn runBatchPipelined(
                 .total_sasa = total_area,
                 .status = file_status,
                 .time_ns = sasa_time_ns,
-            }) catch {};
+            }) catch |err| {
+                std.debug.print("Warning: stream write failed for '{s}': {s}\n", .{ pf.filename, @errorName(err) });
+            };
         }
 
         file_idx += 1;
@@ -919,7 +925,9 @@ fn parallelWorker(ctx: *ParallelContext) void {
                 .status = result.status,
                 .time_ns = result.sasa_time_ns,
                 .error_msg = result.error_msg,
-            }) catch {};
+            }) catch |err| {
+                std.debug.print("Warning: stream write failed for '{s}': {s}\n", .{ filename, @errorName(err) });
+            };
         }
 
         // Update progress counter

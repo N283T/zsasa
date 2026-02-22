@@ -103,7 +103,6 @@ When `--classifier` is used, atom radii are assigned based on residue and atom n
 | `--stream` | Enable streaming output for batch results | off |
 | `--stream-format=FMT` | Stream format: `ndjson`, `json` | `ndjson` |
 | `--stream-output=FILE` | Stream output file (default: stdout) | stdout |
-| `--full` | Include per-atom SASA in stream output | off |
 
 ---
 
@@ -330,9 +329,6 @@ Stream batch results as each file is processed, reducing memory usage for large 
 
 # Stream to file
 ./zig-out/bin/zsasa input_dir/ --stream --stream-output results.jsonl
-
-# Include per-atom SASA values
-./zig-out/bin/zsasa input_dir/ --stream --full
 
 # Combine with individual file output
 ./zig-out/bin/zsasa input_dir/ output_dir/ --stream
