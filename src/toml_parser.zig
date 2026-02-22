@@ -34,7 +34,6 @@ pub const TomlError = error{
     ExpectedEquals,
     ExpectedValue,
     UnexpectedCharacter,
-    OutOfMemory,
 };
 
 pub const Error = TomlError || Allocator.Error;
@@ -44,7 +43,7 @@ pub const Value = union(enum) {
     string: []const u8,
     float: f64,
     integer: i64,
-    inline_table: []Entry,
+    inline_table: []const Entry,
 
     pub const Entry = struct {
         key: []const u8,
@@ -113,12 +112,10 @@ pub const Document = struct {
         return null;
     }
 
-    /// Return all array-of-tables entries matching `name`.
-    pub fn getArrayTables(self: *const Document, name: []const u8) []const ArrayTable {
-        // Current implementation returns all array tables. This works when
-        // only one array-of-tables name is used (the common case for
-        // classifier configs). A future version could filter by name.
-        _ = name;
+    /// Return all parsed array-of-tables entries.
+    /// Currently returns all entries regardless of name, which works
+    /// correctly when only one [[array_table_name]] appears in the document.
+    pub fn getArrayTables(self: *const Document, _: []const u8) []const ArrayTable {
         return self.array_tables;
     }
 };
@@ -229,8 +226,7 @@ pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
 
         // key = value
         if (std.mem.indexOf(u8, trimmed, "=")) |eq_pos| {
-            // Find the position of '=' in the original line slice to get
-            // correct key/value slices.
+            // Split on the first '=' to separate key and value.
             const key_raw = trimmed[0..eq_pos];
             const key = std.mem.trim(u8, key_raw, " \t");
             if (key.len == 0) return error.UnexpectedCharacter;
@@ -257,9 +253,19 @@ pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
         &current_entries,
     );
 
+    const owned_tables = try tables.toOwnedSlice(allocator);
+    errdefer {
+        for (owned_tables) |table| {
+            for (table.entries) |entry| freeValue(allocator, entry.value);
+            allocator.free(table.entries);
+        }
+        allocator.free(owned_tables);
+    }
+    const owned_array_tables = try array_tables.toOwnedSlice(allocator);
+
     return Document{
-        .tables = try tables.toOwnedSlice(allocator),
-        .array_tables = try array_tables.toOwnedSlice(allocator),
+        .tables = owned_tables,
+        .array_tables = owned_array_tables,
         .allocator = allocator,
     };
 }
@@ -278,12 +284,14 @@ fn flushSection(
     // for root when there are no top-level keys (edge case). However, to
     // avoid empty root tables cluttering the output, only emit a section
     // if there are entries or it is the first time for root.
-    if (entries.items.len == 0 and !(name.len == 0 and tables.items.len == 0)) {
+    const is_empty_root_first_flush = (name.len == 0 and tables.items.len == 0);
+    if (entries.items.len == 0 and !is_empty_root_first_flush) {
         // No entries and not the implicit root -- skip.
         return;
     }
 
     const owned_entries = try entries.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_entries);
     switch (kind) {
         .table => try tables.append(allocator, .{
             .name = name,
@@ -544,4 +552,18 @@ test "parse full classifier config" {
     try std.testing.expectEqualStrings("test-classifier", doc.getString("name").?);
     try std.testing.expect(doc.getTable("types") != null);
     try std.testing.expectEqual(@as(usize, 2), doc.array_tables.len);
+}
+
+test "parse error: invalid inline table" {
+    const input = "x = { key = 1";
+    const result = parse(std.testing.allocator, input);
+    try std.testing.expectError(error.InvalidInlineTable, result);
+}
+
+test "parse empty document" {
+    const input = "# just a comment\n";
+    var doc = try parse(std.testing.allocator, input);
+    defer doc.deinit();
+    // Empty doc should have an empty root table
+    try std.testing.expectEqual(@as(usize, 1), doc.tables.len);
 }
