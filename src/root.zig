@@ -1,43 +1,42 @@
-//! By convention, root.zig is the root source file when making a library.
-const std = @import("std");
+//! zsasa: High-performance SASA (Solvent Accessible Surface Area) calculation library.
+//!
+//! ## Modules
+//!
+//! - `shrake_rupley` - Shrake-Rupley algorithm
+//! - `lee_richards` - Lee-Richards algorithm
+//! - `types` - Common types (AtomInput, Config, SasaResult)
+//! - `pdb_parser` - PDB format parser
+//! - `mmcif_parser` - mmCIF format parser
+//! - `json_parser` - JSON format parser
+//! - `classifier` - Atom classifier (FreeSASA-compatible)
+//! - `analysis` - Result aggregation and RSA calculation
+//!
+//! ## Usage
+//!
+//! ```zig
+//! const zsasa = @import("zsasa");
+//! var parser = zsasa.pdb_parser.PdbParser.init(allocator);
+//! const atoms = try parser.parse(pdb_data);
+//! const result = try zsasa.shrake_rupley.calculateSasa(allocator, atoms, .{});
+//! ```
 
-// Re-export modules for library consumers
-pub const element = @import("element.zig");
-pub const cif_tokenizer = @import("cif_tokenizer.zig");
+// Public API
+pub const shrake_rupley = @import("shrake_rupley.zig");
+pub const lee_richards = @import("lee_richards.zig");
+pub const types = @import("types.zig");
+pub const pdb_parser = @import("pdb_parser.zig");
 pub const mmcif_parser = @import("mmcif_parser.zig");
+pub const json_parser = @import("json_parser.zig");
 pub const classifier = @import("classifier.zig");
-pub const classifier_naccess = @import("classifier_naccess.zig");
-pub const classifier_protor = @import("classifier_protor.zig");
-pub const classifier_oons = @import("classifier_oons.zig");
-
-pub fn bufferedPrint() !void {
-    // Stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
-
-    try stdout.flush(); // Don't forget to flush!
-}
-
-pub fn add(a: i32, b: i32) i32 {
-    return a + b;
-}
-
-test "basic add functionality" {
-    try std.testing.expect(add(3, 7) == 10);
-}
+pub const analysis = @import("analysis.zig");
 
 test {
-    // Reference imported modules to include their tests
-    _ = element;
-    _ = cif_tokenizer;
+    // Algorithm modules transitively pull in all internal modules' tests,
+    // which conflicts with the exe_tests target. Only reference leaf modules.
+    _ = types;
+    _ = pdb_parser;
     _ = mmcif_parser;
+    _ = json_parser;
     _ = classifier;
-    _ = classifier_naccess;
-    _ = classifier_protor;
-    _ = classifier_oons;
+    _ = analysis;
 }
