@@ -130,24 +130,23 @@ pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: [
     return list.toOwnedSlice(allocator);
 }
 
-/// Write SasaResult to file with specified format
+/// Write SasaResult to file with specified format (streaming, no intermediate allocation)
 pub fn writeSasaResultWithFormat(
-    allocator: Allocator,
+    _: Allocator,
     result: SasaResult,
     path: []const u8,
     format: OutputFormat,
 ) !void {
-    const output_str = switch (format) {
-        .json => try sasaResultToJsonPretty(allocator, result),
-        .compact => try sasaResultToJson(allocator, result),
-        .csv => try sasaResultToCsv(allocator, result),
-    };
-    defer allocator.free(output_str);
-
     const file = try std.fs.cwd().createFile(path, .{});
     defer file.close();
 
-    try file.writeAll(output_str);
+    const writer = file.deprecatedWriter().any();
+
+    switch (format) {
+        .json => try streamSasaResultJsonPretty(writer, result),
+        .compact => try streamSasaResultJson(writer, result),
+        .csv => try streamSasaResultCsv(writer, result),
+    }
 }
 
 /// Write SasaResult to file with specified format, using rich CSV when input has structural info
@@ -158,20 +157,25 @@ pub fn writeSasaResultWithFormatAndInput(
     path: []const u8,
     format: OutputFormat,
 ) !void {
-    const output_str = switch (format) {
-        .json => try sasaResultToJsonPretty(allocator, result),
-        .compact => try sasaResultToJson(allocator, result),
-        .csv => if (input.hasResidueInfo())
-            try sasaResultToRichCsv(allocator, input, result.atom_areas)
-        else
-            try sasaResultToCsv(allocator, result),
-    };
-    defer allocator.free(output_str);
-
     const file = try std.fs.cwd().createFile(path, .{});
     defer file.close();
 
-    try file.writeAll(output_str);
+    const writer = file.deprecatedWriter().any();
+
+    switch (format) {
+        .json => try streamSasaResultJsonPretty(writer, result),
+        .compact => try streamSasaResultJson(writer, result),
+        .csv => {
+            if (input.hasResidueInfo()) {
+                // Rich CSV has no streaming equivalent yet; fall back to allocation
+                const output_str = try sasaResultToRichCsv(allocator, input, result.atom_areas);
+                defer allocator.free(output_str);
+                try writer.writeAll(output_str);
+            } else {
+                try streamSasaResultCsv(writer, result);
+            }
+        },
+    }
 }
 
 /// Write SasaResult to JSON file (default: compact for backward compatibility)
