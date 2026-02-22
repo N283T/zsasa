@@ -48,6 +48,8 @@ const classifier = @import("classifier.zig");
 const Classifier = classifier.Classifier;
 const AtomClass = classifier.AtomClass;
 const AtomProperties = classifier.AtomProperties;
+const toml_classifier_parser = @import("toml_classifier_parser.zig");
+const toml_parser = @import("toml_parser.zig");
 
 /// Parse error with line information
 pub const ParseError = error{
@@ -73,8 +75,8 @@ pub const ParseError = error{
     OutOfMemory,
 };
 
-/// All possible errors from parsing
-pub const Error = ParseError || Allocator.Error || std.fs.File.OpenError || std.fs.File.ReadError;
+/// All possible errors from parsing (includes TOML parser errors for .toml files)
+pub const Error = ParseError || Allocator.Error || std.fs.File.OpenError || std.fs.File.ReadError || toml_parser.TomlError;
 
 /// Result of parsing with line number context for error reporting
 pub const ParseResult = struct {
@@ -250,32 +252,68 @@ pub fn parseConfigWithLineInfo(allocator: Allocator, content: []const u8) Error!
     };
 }
 
-/// Parse a FreeSASA configuration file from disk.
+/// Parse a classifier configuration file from disk.
+///
+/// Format is auto-detected by file extension:
+/// - `.toml` files are parsed as TOML format
+/// - All other extensions use the FreeSASA config format
 ///
 /// The file is read entirely into memory before parsing.
 pub fn parseConfigFile(allocator: Allocator, path: []const u8) Error!Classifier {
-    // Open and read file
+    // Auto-detect format by extension
+    if (std.mem.endsWith(u8, path, ".toml")) {
+        return parseTomlConfigFile(allocator, path);
+    }
+
+    // Default: FreeSASA format
+    return parseFreeSasaConfigFile(allocator, path);
+}
+
+/// Parse a TOML classifier configuration file from disk.
+fn parseTomlConfigFile(allocator: Allocator, path: []const u8) Error!Classifier {
+    const content = try readFileContent(allocator, path);
+    defer allocator.free(content);
+    return toml_classifier_parser.parseConfig(allocator, content);
+}
+
+/// Parse a FreeSASA classifier configuration file from disk.
+fn parseFreeSasaConfigFile(allocator: Allocator, path: []const u8) Error!Classifier {
+    const content = try readFileContent(allocator, path);
+    defer allocator.free(content);
+    return parseConfig(allocator, content);
+}
+
+/// Read entire file into a heap-allocated buffer.
+fn readFileContent(allocator: Allocator, path: []const u8) Error![]u8 {
     const file = std.fs.cwd().openFile(path, .{}) catch {
         return error.FileReadError;
     };
     defer file.close();
 
-    // Get file size
     const stat = file.stat() catch {
         return error.FileReadError;
     };
 
-    // Allocate buffer and read
     const content = allocator.alloc(u8, stat.size) catch {
         return error.OutOfMemory;
     };
-    defer allocator.free(content);
 
     const bytes_read = file.readAll(content) catch {
+        allocator.free(content);
         return error.FileReadError;
     };
 
-    return parseConfig(allocator, content[0..bytes_read]);
+    // Shrink to actual bytes read to avoid exposing uninitialized memory
+    if (bytes_read == stat.size) {
+        return content;
+    }
+    const result = allocator.alloc(u8, bytes_read) catch {
+        allocator.free(content);
+        return error.OutOfMemory;
+    };
+    @memcpy(result, content[0..bytes_read]);
+    allocator.free(content);
+    return result;
 }
 
 /// Strip comment from a line (everything after # is removed)
