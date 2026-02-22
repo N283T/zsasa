@@ -162,7 +162,22 @@ print(f"Total SASA: {result.total_areas}")
 
 ## Performance
 
-The Python bindings call the same high-performance Zig engine as the CLI. See [benchmark results](../benchmark/) for detailed methodology.
+The Python bindings call the same high-performance Zig engine as the CLI with virtually no overhead.
+
+### Python Binding Overhead
+
+SASA calculation time is nearly identical between CLI and Python — the ctypes FFI cost is negligible:
+
+| Structure | Atoms | CLI (ms) | Python (ms) | Overhead |
+|-----------|------:|--------:|-----------:|---------:|
+| Hemoglobin β (AF) | 1,131 | 0.90 | 0.80 | -11% |
+| p53 (AF) | 3,060 | 1.87 | 1.76 | -6% |
+| Albumin (AF) | 4,858 | 3.16 | 3.13 | -1% |
+| EGFR (AF) | 9,392 | 5.66 | 5.95 | +5% |
+
+*SASA calculation only. CLI from `--timing`, Python from `calculate_sasa()`. ProtOr classifier, SR algorithm, auto threads.*
+
+> Reproduce: `./benchmarks/scripts/bench_python.py`
 
 ### Single-File Performance
 

@@ -36,8 +36,9 @@ time/
 freesasa-c/
 rust-sasa-bench/
 
-# Downloaded CIF files for benchmark
+# Downloaded structure files for benchmark
 benchmarks/cif/
+benchmarks/alphafold_pdb/
 data/*.cif
 scripts/.venv/
 scripts/uv.lock
@@ -49,6 +50,7 @@ benchmarks/results/freesasa_*/
 benchmarks/results/rust_*/
 benchmarks/results/batch_*/
 benchmarks/results/batch/*/temp_out/
+benchmarks/results/python/
 
 # Per-thread individual plots (generated, not doc-referenced)
 benchmarks/results/plots/scatter/*/individual/
