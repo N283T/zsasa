@@ -1,6 +1,7 @@
 # zsasa
 
 [![CI](https://github.com/N283T/zsasa/actions/workflows/ci.yml/badge.svg)](https://github.com/N283T/zsasa/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/zsasa?color=blue)](https://pypi.org/project/zsasa/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.15.2+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776ab?logo=python&logoColor=white)](https://www.python.org/)
@@ -15,6 +16,7 @@ Zig で実装された高性能 Solvent Accessible Surface Area (SASA) 計算ツ
 - **複数の入力形式**: mmCIF, PDB, JSON
 - **解析機能**: 残基単位集計、RSA、極性/非極性分類
 - **高性能**: SIMD最適化、マルチスレッド、近傍リスト O(N)
+- **クロスプラットフォーム**: Linux, macOS, Windows（`pip install zsasa` でビルド済みホイール利用可）
 - **Python バインディング**: NumPy 連携、BioPython/Biotite/Gemmi 対応
 - **MD トラジェクトリ解析**: MDTraj と MDAnalysis によるトラジェクトリ SASA 計算
 
@@ -76,11 +78,18 @@ zig build -Doptimize=ReleaseFast
 ### Python
 
 ```bash
+pip install zsasa
+```
+
+Linux (x86_64, aarch64), macOS (x86_64, arm64), Windows (x86_64) のビルド済みホイールを提供。
+Python 3.11-3.13 対応。
+
+開発用インストール（Zig 0.15.2+ が必要）:
+
+```bash
 cd python
 pip install -e .
 ```
-
-ネイティブライブラリのビルドに Zig 0.15.2+ が必要。
 
 ## 使い方
 

@@ -172,7 +172,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Removed Windows from CI matrix (WSL recommended for Windows users)
 - **Updated benchmark**: Now compares against FreeSASA C (native binary) instead of Python
   - SR: 1.2x-2.3x faster than FreeSASA C
   - LR: 1.1x-1.7x faster than FreeSASA C
