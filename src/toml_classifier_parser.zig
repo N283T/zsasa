@@ -90,6 +90,8 @@ pub fn parseConfig(allocator: Allocator, content: []const u8) Error!Classifier {
     var result = try Classifier.init(allocator, name);
     errdefer result.deinit();
 
+    // Iterate raw array_tables and filter by name. Document.getArrayTables()
+    // currently returns all entries regardless of name, so we filter manually.
     for (doc.array_tables) |at| {
         if (!std.mem.eql(u8, at.name, "atoms")) continue;
 
