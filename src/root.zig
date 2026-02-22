@@ -4,7 +4,7 @@
 //!
 //! - `shrake_rupley` - Shrake-Rupley algorithm
 //! - `lee_richards` - Lee-Richards algorithm
-//! - `types` - Common types (Atom, Config, Result)
+//! - `types` - Common types (AtomInput, Config, SasaResult)
 //! - `pdb_parser` - PDB format parser
 //! - `mmcif_parser` - mmCIF format parser
 //! - `json_parser` - JSON format parser
@@ -15,7 +15,8 @@
 //!
 //! ```zig
 //! const zsasa = @import("zsasa");
-//! const atoms = try zsasa.pdb_parser.parse(allocator, pdb_data);
+//! var parser = zsasa.pdb_parser.PdbParser.init(allocator);
+//! const atoms = try parser.parse(pdb_data);
 //! const result = try zsasa.shrake_rupley.calculateSasa(allocator, atoms, .{});
 //! ```
 
