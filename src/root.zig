@@ -30,8 +30,8 @@ pub const classifier = @import("classifier.zig");
 pub const analysis = @import("analysis.zig");
 
 test {
-    _ = shrake_rupley;
-    _ = lee_richards;
+    // Algorithm modules transitively pull in all internal modules' tests,
+    // which conflicts with the exe_tests target. Only reference leaf modules.
     _ = types;
     _ = pdb_parser;
     _ = mmcif_parser;
