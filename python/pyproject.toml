@@ -68,6 +68,10 @@ test-requires = ["pytest", "numpy"]
 test-command = "pytest {project}/python/tests/test_sasa.py -x -q"
 
 [tool.cibuildwheel.linux]
+# Use manylinux_2_28 (glibc 2.28) containers to match Zig glibc target.
+# Default manylinux2014 (glibc 2.17) is too old for our glibc 2.28 target.
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
 # Install Zig via PyPI and build shared library once per platform.
 # Uses python3/pip3 for manylinux container compatibility.
 # Pin glibc 2.28 via Zig target to ensure manylinux_2_28 compatibility.
