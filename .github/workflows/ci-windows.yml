@@ -46,12 +46,18 @@ jobs:
 
       - name: Check shared library exists
         run: |
-          if (Test-Path "./zig-out/lib/zsasa.dll") {
-            Write-Output "DLL built successfully"
-            Get-Item ./zig-out/lib/zsasa.dll
+          Write-Output "=== zig-out/bin/ ==="
+          Get-ChildItem ./zig-out/bin/ -ErrorAction SilentlyContinue
+          Write-Output "=== zig-out/lib/ ==="
+          Get-ChildItem ./zig-out/lib/ -ErrorAction SilentlyContinue
+          # Zig may output DLL to bin/ (Windows convention) or lib/
+          $dll = Get-ChildItem ./zig-out -Recurse -Filter "zsasa.dll" -ErrorAction SilentlyContinue
+          if ($dll) {
+            Write-Output "DLL found at: $($dll.FullName)"
           } else {
-            Write-Output "zsasa.dll not found, checking other outputs..."
-            Get-ChildItem ./zig-out/lib/ -ErrorAction SilentlyContinue
+            Write-Output "zsasa.dll not found anywhere in zig-out/"
+            Write-Output "Note: zsasa.lib (import library) in lib/ means DLL linkage is configured"
+            Write-Output "but the DLL itself may not be emitted. This needs build.zig investigation."
             exit 1
           }
 
@@ -63,7 +69,6 @@ jobs:
   python:
     name: Python Bindings
     runs-on: windows-latest
-    needs: [build]
     timeout-minutes: 20
 
     steps:
@@ -77,8 +82,17 @@ jobs:
       - name: Build shared library
         run: zig build -Doptimize=ReleaseFast
 
-      - name: Check DLL
-        run: Get-Item ./zig-out/lib/zsasa.dll
+      - name: Find DLL
+        run: |
+          $dll = Get-ChildItem ./zig-out -Recurse -Filter "zsasa.dll" -ErrorAction SilentlyContinue
+          if ($dll) {
+            Write-Output "DLL found at: $($dll.FullName)"
+          } else {
+            Write-Output "zsasa.dll not found - listing all outputs:"
+            Get-ChildItem ./zig-out -Recurse
+            Write-Error "DLL not found, Python bindings cannot work"
+            exit 1
+          }
 
       - name: Setup Python
         uses: actions/setup-python@v5
