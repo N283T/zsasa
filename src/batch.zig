@@ -499,18 +499,7 @@ pub fn runBatchSequential(
         file_results[i] = result;
 
         // Stream result before arena reset (while filename is still valid)
-        if (config.stream_writer_ptr) |sw| {
-            sw.writeResult(.{
-                .filename = filename,
-                .n_atoms = result.n_atoms,
-                .total_sasa = result.total_sasa,
-                .status = result.status,
-                .time_ns = result.sasa_time_ns,
-                .error_msg = result.error_msg,
-            }) catch |err| {
-                std.debug.print("Warning: stream write failed for '{s}': {s}\n", .{ filename, @errorName(err) });
-            };
-        }
+        emitStreamResult(config.stream_writer_ptr, filename, result);
 
         // Reset arena for next file
         _ = arena.reset(.retain_capacity);
@@ -606,18 +595,7 @@ pub fn runBatchAtomParallel(
         file_results[i] = result;
 
         // Stream result before arena reset (while filename is still valid)
-        if (config.stream_writer_ptr) |sw| {
-            sw.writeResult(.{
-                .filename = filename,
-                .n_atoms = result.n_atoms,
-                .total_sasa = result.total_sasa,
-                .status = result.status,
-                .time_ns = result.sasa_time_ns,
-                .error_msg = result.error_msg,
-            }) catch |err| {
-                std.debug.print("Warning: stream write failed for '{s}': {s}\n", .{ filename, @errorName(err) });
-            };
-        }
+        emitStreamResult(config.stream_writer_ptr, filename, result);
 
         // Reset arena for next file
         _ = arena.reset(.retain_capacity);
@@ -795,17 +773,7 @@ pub fn runBatchPipelined(
         }
 
         // Stream result before prefetched data is freed
-        if (config.stream_writer_ptr) |sw| {
-            sw.writeResult(.{
-                .filename = pf.filename,
-                .n_atoms = pf.input.atomCount(),
-                .total_sasa = total_area,
-                .status = file_status,
-                .time_ns = sasa_time_ns,
-            }) catch |err| {
-                std.debug.print("Warning: stream write failed for '{s}': {s}\n", .{ pf.filename, @errorName(err) });
-            };
-        }
+        emitStreamResult(config.stream_writer_ptr, pf.filename, file_results[file_idx]);
 
         file_idx += 1;
 
@@ -917,18 +885,7 @@ fn parallelWorker(ctx: *ParallelContext) void {
         ctx.results[file_idx] = result;
 
         // Stream result (thread-safe: StreamWriter uses mutex)
-        if (ctx.stream_writer_ptr) |sw| {
-            sw.writeResult(.{
-                .filename = filename,
-                .n_atoms = result.n_atoms,
-                .total_sasa = result.total_sasa,
-                .status = result.status,
-                .time_ns = result.sasa_time_ns,
-                .error_msg = result.error_msg,
-            }) catch |err| {
-                std.debug.print("Warning: stream write failed for '{s}': {s}\n", .{ filename, @errorName(err) });
-            };
-        }
+        emitStreamResult(ctx.stream_writer_ptr, filename, result);
 
         // Update progress counter
         _ = ctx.processed_count.fetchAdd(1, .seq_cst);
@@ -1085,6 +1042,26 @@ pub fn runBatch(
             // Pipelined: I/O prefetch + atom-level SASA calculation
             return runBatchPipelined(allocator, input_dir, output_dir, config);
         },
+    };
+}
+
+/// Emit a single result to the stream writer, if present.
+///
+/// Centralizes the conversion from FileResult to StreamResult and
+/// handles write errors by incrementing the writer's failure counter
+/// and printing a warning to stderr. This keeps the batch pipeline
+/// running even when individual stream writes fail.
+fn emitStreamResult(
+    sw_ptr: ?*stream_writer.StreamWriter,
+    filename: []const u8,
+    result: FileResult,
+) void {
+    const sw = sw_ptr orelse return;
+    var sr = stream_writer.StreamResult.fromFileResult(result);
+    sr.filename = filename;
+    sw.writeResult(sr) catch |err| {
+        sw.write_failures += 1;
+        std.debug.print("Warning: stream write failed for '{s}': {s}\n", .{ filename, @errorName(err) });
     };
 }
 

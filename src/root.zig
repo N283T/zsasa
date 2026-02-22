@@ -10,6 +10,7 @@
 //! - `json_parser` - JSON format parser
 //! - `classifier` - Atom classifier (FreeSASA-compatible)
 //! - `analysis` - Result aggregation and RSA calculation
+//! - `stream_writer` - Streaming JSON output for batch results
 //!
 //! ## Usage
 //!

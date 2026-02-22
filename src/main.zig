@@ -571,7 +571,8 @@ fn printHelp(program_name: []const u8) void {
         \\    -o, --output=FILE  Output file (alternative to positional argument)
         \\    --validate         Validate input only, do not calculate SASA
         \\    --timing           Show timing breakdown (for benchmarking)
-        \\    --stream           Stream results as JSON (batch mode only)
+        \\    --stream             Stream results as JSON during batch processing
+        \\                         (use -q to suppress progress on stdout)
         \\    --stream-format=FMT  Stream format: ndjson (default), json
         \\    --stream-output=FILE Write stream to file (default: stdout)
         \\    -q, --quiet        Suppress progress output
@@ -930,6 +931,9 @@ pub fn main() !void {
     }
 
     // Single file mode continues below
+    if (parsed.stream) {
+        std.debug.print("Warning: --stream is ignored in single-file mode (batch only)\n", .{});
+    }
 
     // Timing variables (in nanoseconds)
     var timer = std.time.Timer.start() catch {
