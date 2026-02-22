@@ -56,7 +56,7 @@ See [Trajectory Mode](#trajectory-mode) section below for details.
 | Option | Description |
 |--------|-------------|
 | `--classifier=TYPE` | Built-in classifier: `naccess`, `protor`, or `oons` |
-| `--config=FILE` | Custom classifier config file (FreeSASA format) |
+| `--config=FILE` | Custom classifier config file (TOML or FreeSASA format, auto-detected by extension) |
 
 When `--classifier` is used, atom radii are assigned based on residue and atom names. If both `--classifier` and `--config` are specified, `--config` takes precedence.
 

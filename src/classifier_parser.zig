@@ -297,13 +297,23 @@ fn readFileContent(allocator: Allocator, path: []const u8) Error![]u8 {
     const content = allocator.alloc(u8, stat.size) catch {
         return error.OutOfMemory;
     };
-    errdefer allocator.free(content);
 
-    _ = file.readAll(content) catch {
+    const bytes_read = file.readAll(content) catch {
+        allocator.free(content);
         return error.FileReadError;
     };
 
-    return content;
+    // Shrink to actual bytes read to avoid exposing uninitialized memory
+    if (bytes_read == stat.size) {
+        return content;
+    }
+    const result = allocator.alloc(u8, bytes_read) catch {
+        allocator.free(content);
+        return error.OutOfMemory;
+    };
+    @memcpy(result, content[0..bytes_read]);
+    allocator.free(content);
+    return result;
 }
 
 /// Strip comment from a line (everything after # is removed)

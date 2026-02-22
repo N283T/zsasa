@@ -250,6 +250,24 @@ test "parseConfig TOML error: duplicate type" {
     try std.testing.expectError(error.DuplicateType, result);
 }
 
+test "parseConfig TOML error: invalid radius (missing)" {
+    const config =
+        \\[types]
+        \\C = { class = "apolar" }
+    ;
+    const result = parseConfig(std.testing.allocator, config);
+    try std.testing.expectError(error.InvalidRadius, result);
+}
+
+test "parseConfig TOML error: invalid type definition (not inline table)" {
+    const config =
+        \\[types]
+        \\C = "not a table"
+    ;
+    const result = parseConfig(std.testing.allocator, config);
+    try std.testing.expectError(error.InvalidTypeDefinition, result);
+}
+
 test "parseConfig TOML multiple types and atoms" {
     const config =
         \\name = "NACCESS"

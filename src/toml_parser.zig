@@ -190,20 +190,20 @@ pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
 
         // [[array_of_tables]]
         if (std.mem.startsWith(u8, trimmed, "[[")) {
-            if (std.mem.indexOf(u8, trimmed[2..], "]]")) |end| {
-                // Flush current section
-                try flushSection(
-                    allocator,
-                    &tables,
-                    &array_tables,
-                    current_name,
-                    current_kind,
-                    &current_entries,
-                );
-                current_name = std.mem.trim(u8, trimmed[2 .. 2 + end], " \t");
-                current_kind = .array_of_tables;
-                continue;
-            }
+            const end = std.mem.indexOf(u8, trimmed[2..], "]]") orelse
+                return error.UnexpectedCharacter;
+            // Flush current section
+            try flushSection(
+                allocator,
+                &tables,
+                &array_tables,
+                current_name,
+                current_kind,
+                &current_entries,
+            );
+            current_name = std.mem.trim(u8, trimmed[2 .. 2 + end], " \t");
+            current_kind = .array_of_tables;
+            continue;
         }
 
         // [table]
@@ -329,7 +329,8 @@ fn parseString(raw: []const u8) Error!Value {
     var i: usize = 1;
     while (i < raw.len) {
         if (raw[i] == '\\') {
-            // Skip the escaped character
+            // Skip the escaped character; bounds-check before advancing
+            if (i + 1 >= raw.len) return error.UnterminatedString;
             i += 2;
             continue;
         }
@@ -426,7 +427,8 @@ fn stripComment(line: []const u8) []const u8 {
     var i: usize = 0;
     while (i < line.len) {
         if (line[i] == '\\' and in_string) {
-            // Skip escaped character inside string
+            // Skip escaped character inside string; bounds-check
+            if (i + 1 >= line.len) break;
             i += 2;
             continue;
         }
@@ -566,4 +568,40 @@ test "parse empty document" {
     defer doc.deinit();
     // Empty doc should have an empty root table
     try std.testing.expectEqual(@as(usize, 1), doc.tables.len);
+}
+
+test "parse error: expected value (empty rhs)" {
+    const input = "key = ";
+    const result = parse(std.testing.allocator, input);
+    try std.testing.expectError(error.ExpectedValue, result);
+}
+
+test "parse error: expected equals in inline table" {
+    const input = "[types]\nC = { radius 1.87 }";
+    const result = parse(std.testing.allocator, input);
+    try std.testing.expectError(error.ExpectedEquals, result);
+}
+
+test "parse error: unexpected character (bare word line)" {
+    const input = "not a valid line";
+    const result = parse(std.testing.allocator, input);
+    try std.testing.expectError(error.UnexpectedCharacter, result);
+}
+
+test "parse error: invalid number" {
+    const input = "key = abc_not_number";
+    const result = parse(std.testing.allocator, input);
+    try std.testing.expectError(error.InvalidNumber, result);
+}
+
+test "parse error: malformed [[ without ]]" {
+    const input = "[[atoms\nresidue = \"ALA\"";
+    const result = parse(std.testing.allocator, input);
+    try std.testing.expectError(error.UnexpectedCharacter, result);
+}
+
+test "parse error: trailing backslash in string" {
+    const input = "key = \"trailing\\";
+    const result = parse(std.testing.allocator, input);
+    try std.testing.expectError(error.UnterminatedString, result);
 }
