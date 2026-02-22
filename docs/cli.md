@@ -371,16 +371,51 @@ OONS radii from Ooi et al.
 
 ### Custom Config (`--config=FILE`)
 
-Load a custom classifier in FreeSASA config format:
+Load a custom classifier from a config file. The format is auto-detected by extension:
+
+- `.toml` files use TOML format
+- All other extensions use FreeSASA format
+
+#### TOML Format
+
+```toml
+name = "my-classifier"
+
+[types]
+C_ALI = { radius = 1.87, class = "apolar" }
+C_CAR = { radius = 1.76, class = "apolar" }
+N     = { radius = 1.65, class = "polar" }
+O     = { radius = 1.40, class = "polar" }
+S     = { radius = 1.85, class = "apolar" }
+
+[[atoms]]
+residue = "ANY"
+atom = "CA"
+type = "C_ALI"
+
+[[atoms]]
+residue = "ALA"
+atom = "CB"
+type = "C_ALI"
+```
+
+- `name` - Classifier name (optional, default: "custom")
+- `[types]` - Define atom types with radius (angstrom) and class (`"polar"` or `"apolar"`)
+- `[[atoms]]` - Map (residue, atom) pairs to defined types. Use `"ANY"` for fallback entries.
+
+#### FreeSASA Format
 
 ```
-name custom_classifier
-atom ALA CA 1.87
-atom ALA CB 1.87
-atom ALA C  1.76
-atom ALA N  1.65
-atom ALA O  1.40
-# ... more atom definitions
+name: my-classifier
+
+types:
+C_ALI 1.87 apolar
+C_CAR 1.76 apolar
+O     1.40 polar
+
+atoms:
+ANY CA  C_ALI
+ALA CB  C_ALI
 ```
 
 ---

@@ -11,6 +11,8 @@
 //! - `classifier` - Atom classifier (FreeSASA-compatible)
 //! - `analysis` - Result aggregation and RSA calculation
 //! - `stream_writer` - Streaming JSON output for batch results
+//! - `toml_parser` - Minimal TOML subset parser
+//! - `toml_classifier_parser` - TOML-to-Classifier converter
 //!
 //! ## Usage
 //!

@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Zig package manager (zon) distribution: zsasa can now be used as a library dependency via `zig fetch` (#160)
 - Public library API in `root.zig`: `shrake_rupley`, `lee_richards`, `types`, `pdb_parser`, `mmcif_parser`, `json_parser`, `classifier`, `analysis`
 - Fuzz tests for CIF tokenizer, PDB parser, and mmCIF parser using Zig's built-in `std.testing.fuzz()` (#161)
+- TOML format support for custom classifier configs (`--config=file.toml`): human-friendly alternative to FreeSASA format with auto-detection by file extension (#158)
 
 ### Changed
 
