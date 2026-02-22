@@ -53,8 +53,11 @@ pub const DcdReader = struct {
     const Self = @This();
 
     pub fn open(allocator: Allocator, path: []const u8) !Self {
-        const file = std.fs.cwd().openFile(path, .{}) catch {
-            return DcdError.FileNotFound;
+        const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+            return switch (err) {
+                error.FileNotFound => DcdError.FileNotFound,
+                else => DcdError.ReadError,
+            };
         };
 
         var reader = Self{
@@ -141,9 +144,10 @@ pub const DcdReader = struct {
 
         // 3. Read title block
         const title_block_size = try self.readInt32();
-        if (@mod(title_block_size - 4, 80) != 0) return DcdError.BadFormat;
+        if (title_block_size < 4 or @mod(title_block_size - 4, 80) != 0) return DcdError.BadFormat;
 
         const ntitle = try self.readInt32();
+        if (ntitle < 0) return DcdError.BadFormat;
         const title_bytes: usize = @intCast(ntitle * 80);
         if (title_bytes > 0) {
             // Skip title strings
@@ -158,6 +162,7 @@ pub const DcdReader = struct {
         if (natom_marker != 4) return DcdError.BadFormat;
 
         self.natoms = try self.readInt32();
+        if (self.natoms <= 0) return DcdError.BadFormat;
 
         const natom_trail = try self.readInt32();
         if (natom_trail != 4) return DcdError.BadFormat;
@@ -172,14 +177,21 @@ pub const DcdReader = struct {
     pub fn readFrame(self: *Self) !DcdFrame {
         const natoms: usize = @intCast(self.natoms);
 
-        // Calculate step and time
-        const step: i32 = self.istart + @as(i32, @intCast(self.frame_count)) * self.nsavc;
+        // Calculate step and time (use i64 to avoid overflow for long trajectories)
+        const step: i32 = blk: {
+            const fc: i64 = @intCast(self.frame_count);
+            const result: i64 = @as(i64, self.istart) + fc * @as(i64, self.nsavc);
+            break :blk @intCast(@min(result, std.math.maxInt(i32)));
+        };
         const time: f32 = @as(f32, @floatFromInt(self.frame_count)) * self.delta;
 
         // 1. Read unitcell if CHARMM + HAS_EXTRA_BLOCK
         var unitcell: ?[6]f64 = null;
         if ((self.charmm & DCD_IS_CHARMM) != 0 and (self.charmm & DCD_HAS_EXTRA_BLOCK) != 0) {
-            const uc_marker = self.readInt32() catch return DcdError.EndOfFile;
+            const uc_marker = self.readInt32() catch |err| return switch (err) {
+                DcdError.EndOfFile => DcdError.EndOfFile,
+                else => err,
+            };
             if (uc_marker == 48) {
                 var uc: [6]f64 = undefined;
                 for (0..6) |i| {
@@ -236,7 +248,7 @@ pub const DcdReader = struct {
             // Read and byte-swap each float individually
             var raw: [4]u8 = undefined;
             for (0..natoms) |i| {
-                const n = self.file.read(&raw) catch return DcdError.ReadError;
+                const n = self.file.readAll(&raw) catch return DcdError.ReadError;
                 if (n < 4) return DcdError.EndOfFile;
                 const swapped = @byteSwap(std.mem.readInt(u32, &raw, .little));
                 coords[i * 3 + component] = @bitCast(swapped);
@@ -244,14 +256,11 @@ pub const DcdReader = struct {
         } else {
             // Read all floats at once using a temporary buffer
             const byte_count = natoms * 4;
-            const buf_bytes: [*]u8 = @ptrCast(coords.ptr);
-            // We can't read directly into interleaved positions, use temp buffer
             const tmp = self.allocator.alloc(f32, natoms) catch return DcdError.OutOfMemory;
             defer self.allocator.free(tmp);
 
             const tmp_bytes: [*]u8 = @ptrCast(tmp.ptr);
             const n = self.file.readAll(tmp_bytes[0..byte_count]) catch return DcdError.ReadError;
-            _ = buf_bytes;
             if (n < byte_count) return DcdError.EndOfFile;
 
             for (0..natoms) |i| {
@@ -268,10 +277,10 @@ pub const DcdReader = struct {
     // Low-level I/O helpers
     // ============================================
 
-    /// Read a raw int32 without endian swapping
+    /// Read a raw int32 as little-endian (ignoring reverse_endian flag)
     fn readRawInt32(self: *Self) !i32 {
         var buf: [4]u8 = undefined;
-        const n = self.file.read(&buf) catch return DcdError.ReadError;
+        const n = self.file.readAll(&buf) catch return DcdError.ReadError;
         if (n < 4) return DcdError.EndOfFile;
         return @bitCast(std.mem.readInt(u32, &buf, .little));
     }
@@ -279,7 +288,7 @@ pub const DcdReader = struct {
     /// Read int32 with endian handling
     fn readInt32(self: *Self) !i32 {
         var buf: [4]u8 = undefined;
-        const n = self.file.read(&buf) catch return DcdError.ReadError;
+        const n = self.file.readAll(&buf) catch return DcdError.ReadError;
         if (n < 4) return DcdError.EndOfFile;
         if (self.reverse_endian) {
             return @bitCast(std.mem.readInt(u32, &buf, .big));
@@ -290,7 +299,7 @@ pub const DcdReader = struct {
     /// Read float64 with endian handling
     fn readFloat64(self: *Self) !f64 {
         var buf: [8]u8 = undefined;
-        const n = self.file.read(&buf) catch return DcdError.ReadError;
+        const n = self.file.readAll(&buf) catch return DcdError.ReadError;
         if (n < 8) return DcdError.EndOfFile;
         if (self.reverse_endian) {
             return @bitCast(std.mem.readInt(u64, &buf, .big));

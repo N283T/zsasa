@@ -176,7 +176,12 @@ class DcdReader:
         if result == _ZSASA_DCD_END_OF_FILE:
             return None
         elif result != _ZSASA_OK:
-            msg = f"Error reading DCD frame: {result}"
+            error_messages = {
+                _ZSASA_ERROR_INVALID_INPUT: "invalid or corrupt DCD frame data",
+                _ZSASA_ERROR_OUT_OF_MEMORY: "out of memory",
+            }
+            detail = error_messages.get(result, f"error code {result}")
+            msg = f"Error reading DCD frame: {detail}"
             raise RuntimeError(msg)
 
         # Copy buffers to new arrays
