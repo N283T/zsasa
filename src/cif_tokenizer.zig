@@ -460,3 +460,27 @@ test "quoted string with embedded quote char" {
     // The embedded '' is kept as-is
     try std.testing.expectEqualStrings("it''s ok", token.value);
 }
+
+test "fuzz tokenizer" {
+    try std.testing.fuzz({}, struct {
+        fn testOne(_: void, input: []const u8) !void {
+            var tok = Tokenizer.init(input);
+            // Consume all tokens until EOF
+            while (true) {
+                const token = tok.next();
+                if (token == .eof) break;
+            }
+        }
+    }.testOne, .{
+        .corpus = &.{
+            "data_1ABC",
+            "loop_\n_atom_site.id\n_atom_site.type_symbol\n1 C\n2 N",
+            "'hello world'",
+            "\"test value\"",
+            ";first line\nsecond line\n;",
+            "# comment\ndata_TEST",
+            "DATA_test LOOP_",
+            "'it''s ok'",
+        },
+    });
+}

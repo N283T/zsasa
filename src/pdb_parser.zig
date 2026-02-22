@@ -539,3 +539,20 @@ test "PdbParser deuterium filter" {
 
     try testing.expectEqual(@as(usize, 2), input.atomCount()); // N, CA only
 }
+
+test "fuzz pdb parser" {
+    try std.testing.fuzz({}, struct {
+        fn testOne(_: void, input: []const u8) !void {
+            var parser = PdbParser.init(std.testing.allocator);
+            var result = parser.parse(input) catch return;
+            result.deinit();
+        }
+    }.testOne, .{
+        .corpus = &.{
+            "ATOM      1  N   ALA A   1      11.104   6.134  -6.504  1.00 11.68           N\n",
+            "ATOM      1  N   ALA A   1      11.104   6.134  -6.504  1.00 11.68           N\nATOM      2  CA  ALA A   1      11.639   6.071  -5.147  1.00  9.13           C\n",
+            "HETATM  100  O   HOH A 101       5.000   5.000   5.000  1.00 20.00           O\n",
+            "MODEL        1\nATOM      1  N   ALA A   1      11.104   6.134  -6.504  1.00 11.68           N\nENDMDL\n",
+        },
+    });
+}
