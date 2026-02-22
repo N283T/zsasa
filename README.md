@@ -1,6 +1,7 @@
 # zsasa
 
 [![CI](https://github.com/N283T/zsasa/actions/workflows/ci.yml/badge.svg)](https://github.com/N283T/zsasa/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/zsasa?color=blue)](https://pypi.org/project/zsasa/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.15.2+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776ab?logo=python&logoColor=white)](https://www.python.org/)
@@ -8,6 +9,7 @@
 [日本語](README.ja.md) | English
 
 High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
+**Up to 3x faster** than FreeSASA C with f64 precision ([benchmarks](docs/benchmark/)).
 
 ## Features
 
@@ -15,41 +17,9 @@ High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 - **Multiple input formats**: mmCIF, PDB, JSON
 - **Analysis features**: Per-residue aggregation, RSA, polar/nonpolar classification
 - **High performance**: SIMD optimization, multi-threading, neighbor list O(N)
+- **Cross-platform**: Linux, macOS, and Windows (pre-built wheels via `pip install zsasa`)
 - **Python bindings**: NumPy integration with BioPython/Biotite/Gemmi support
-- **MD trajectory analysis**: MDTraj and MDAnalysis integration for trajectory SASA
-
-## Benchmark Highlights
-
-**Up to 3x faster** than FreeSASA C while maintaining **f64 precision** (mean error: <0.001%).
-
-| Speedup (threads=10) | Thread Scaling (100k+ atoms) |
-|:--------------------:|:----------------------------:|
-| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/thread_scaling/individual/sr.png) |
-
-**Key Results (100k+ atoms, threads=10):**
-- **2.3x** median speedup vs FreeSASA and RustSASA
-- Speedup increases with thread count (superior parallel efficiency)
-
-> **Note**: Zig/FreeSASA use f64, RustSASA uses f32.
-
-See [benchmark results](docs/benchmark/single-file.md) for detailed analysis.
-
-### MD Trajectory Performance
-
-**4.3x faster** than mdsasa-bolt (RustSASA) on real MD trajectory data.
-
-| Implementation | Time (33k atoms × 1k frames) |
-|----------------|-------------------------------|
-| zsasa (f64)    | 13.3 s                        |
-| mdsasa-bolt    | 56.7 s                        |
-| **Speedup**    | **4.3x**                      |
-
-*Benchmark: 6sup_A_analysis trajectory (33,377 atoms, 1,001 frames, n_points=100, threads=10)*
-
-**Key advantages:**
-- Controllable thread count (unlike rayon's global pool)
-- f64 precision by default (higher accuracy than f32)
-- Compatible with MDAnalysis `AnalysisBase` and MDTraj APIs
+- **MD trajectory analysis**: Native XTC reader, MDTraj and MDAnalysis integration
 
 ## Quick Start
 
@@ -76,11 +46,18 @@ zig build -Doptimize=ReleaseFast
 ### Python
 
 ```bash
+pip install zsasa
+```
+
+Pre-built wheels are available for Linux (x86_64, aarch64), macOS (x86_64, arm64), and Windows (x86_64).
+Python 3.11-3.13 supported.
+
+For development installation (requires Zig 0.15.2+):
+
+```bash
 cd python
 pip install -e .
 ```
-
-Requires Zig 0.15.2+ for building the native library.
 
 ## Usage
 
@@ -162,6 +139,11 @@ print(f"Per-frame: {sasa.results.total_area}")
 
 See [Python API](docs/python-api/) for full documentation.
 
+## Important Notes
+
+- **Standard amino acids only (CLI)**: The built-in classifiers (NACCESS, ProtOr, OONS) provide radii for standard amino acids and nucleotides. For non-standard residues, ligands, or other molecules, prepare a JSON input file with custom radii (see [CLI Reference](docs/cli.md)).
+- **Advanced atom selection**: The CLI supports basic filtering (`--chain`, `--model`, `--include-hetatm`), but for complex selections (e.g., binding site residues, distance-based selection), use [Python bindings](docs/python-api/) with BioPython, Biotite, or MDAnalysis.
+
 ## Documentation
 
 | Document | Description |
@@ -173,19 +155,29 @@ See [Python API](docs/python-api/) for full documentation.
 | [Optimizations](docs/optimizations.md) | SIMD, threading, performance techniques |
 | [Benchmarks](docs/benchmark/) | Methodology and results |
 
-## Performance
+## Benchmarks
 
-See [Benchmark Highlights](#benchmark-highlights) above and [detailed results](docs/benchmark/single-file.md).
+### Single-File Performance
 
-## Project Structure
+| Speedup (threads=10) | Thread Scaling (100k+ atoms) |
+|:--------------------:|:----------------------------:|
+| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/thread_scaling/individual/sr.png) |
 
-```
-zsasa/
-├── src/           # Zig source (algorithms, parsers, CLI)
-├── python/        # Python bindings
-├── docs/          # Documentation
-└── benchmarks/    # Benchmark tools and results
-```
+**Key Results (100k+ atoms, threads=10):**
+- **2.3x** median speedup vs FreeSASA and RustSASA
+- Speedup increases with thread count (superior parallel efficiency)
+
+> **Note**: Zig/FreeSASA use f64, RustSASA uses f32.
+
+See [single-file benchmark results](docs/benchmark/single-file.md) for detailed analysis.
+
+### MD Trajectory Performance
+
+**4.3x faster** than mdsasa-bolt (RustSASA) on real MD trajectory data.
+
+![MD Trajectory Benchmark](benchmarks/results/md/6sup_A_analysis/plots/bar.png)
+
+*33,377 atoms, 1,001 frames, n_points=100*
 
 ## Contributing
 
@@ -193,7 +185,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 
 ## License
 
-MIT
+[MIT](LICENSE)
 
 ## References
 

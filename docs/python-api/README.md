@@ -33,21 +33,21 @@ The Python bindings provide:
 
 ## Installation
 
-### Requirements
-
-- Python 3.11+
-- NumPy 1.24+
-- Zig 0.15.2+ (for building the native library)
-
-### From Source
+### From PyPI (Recommended)
 
 ```bash
-# 1. Build the Zig shared library
-cd zsasa
-zig build -Doptimize=ReleaseFast
+pip install zsasa
+```
 
-# 2. Install Python package
-cd python
+Pre-built wheels are available for Linux (x86_64, aarch64), macOS (x86_64, arm64), and Windows (x86_64).
+Python 3.11-3.13 supported.
+
+### From Source (Development)
+
+Requires Zig 0.15.2+.
+
+```bash
+cd zsasa/python
 pip install -e .
 ```
 
@@ -234,9 +234,9 @@ except ValueError as e:
 def get_version() -> str
 ```
 
-Returns the library version string (e.g., "0.1.0").
+Returns the library version string (e.g., "0.1.1").
 
 ```python
 from zsasa import get_version
-print(get_version())  # "0.1.0"
+print(get_version())  # "0.1.1"
 ```

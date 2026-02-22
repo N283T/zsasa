@@ -44,8 +44,8 @@ Actions → CI → Run workflow
 
 ```
 ┌──────────────┐  ┌─────────────────────────────────┐  ┌─────────────────────────────────┐
-│ fmt          │  │ build (parallel x2)             │  │ python (parallel x2)            │
-│ (5min)       │  │ Linux / macOS                   │  │ Linux / macOS                   │
+│ fmt          │  │ build (parallel x3)             │  │ python (parallel x3)            │
+│ (5min)       │  │ Linux / macOS / Windows         │  │ Linux / macOS / Windows         │
 │              │  │ (15min)                         │  │ (15min)                         │
 └──────┬───────┘  └────────────────┬────────────────┘  └────────────────┬────────────────┘
        │                           │                                    │
@@ -79,11 +79,12 @@ zig fmt src/
 
 ### 2. Build (`build`)
 
-**Environment:** Linux, macOS (parallel execution)
+**Environment:** Linux, macOS, Windows (parallel execution)
 **Timeout:** 15 minutes
 **Runtime:**
 - Linux: ~45 seconds
 - macOS: ~1 minute 10 seconds
+- Windows: ~3-4 minutes
 
 | Step | Command | Purpose |
 |------|---------|---------|
@@ -92,8 +93,6 @@ zig fmt src/
 | Release | `zig build -Doptimize=ReleaseFast` | Optimized build |
 | Binary check | - | Verify binary exists |
 | CLI test | `--help`, `--version` | CLI functionality check |
-
-**Note:** Windows is excluded from the CI matrix. Windows users should use WSL.
 
 ### 3. Validate (`validate`)
 
@@ -104,7 +103,7 @@ zig fmt src/
 
 | Step | Description |
 |------|-------------|
-| Example run | Compute with `benchmarks/dataset/1a0q.json.gz` |
+| Example run | Compute with `examples/1ubq.pdb` |
 | JSON validation | Validate output fields (Python) |
 | CSV test | Test CSV output |
 | Validate mode | Test `--validate` flag |
@@ -112,11 +111,11 @@ zig fmt src/
 **JSON Validation:**
 - `total_area` field exists
 - `atom_areas` field exists
-- Atom count == 3183 (atom count for 1A0Q)
+- Atom count > 500 (1UBQ has 602 atoms)
 
 ### 4. Python (`python`)
 
-**Environment:** Linux, macOS (parallel execution)
+**Environment:** Linux, macOS, Windows (parallel execution)
 **Timeout:** 15 minutes
 **Dependencies:** fmt
 **Runtime:** ~1-2 minutes
@@ -133,6 +132,7 @@ zig fmt src/
 **Shared Libraries:**
 - Linux: `libzsasa.so`
 - macOS: `libzsasa.dylib`
+- Windows: `zsasa.dll`
 
 **Python Test Coverage:**
 - NumPy array input/output
@@ -156,9 +156,9 @@ zig build -Doptimize=ReleaseFast
 ./zig-out/bin/zsasa --version
 
 # Validation test
-./zig-out/bin/zsasa benchmarks/dataset/1a0q.json.gz /tmp/output.json
-./zig-out/bin/zsasa --format=csv benchmarks/dataset/1a0q.json.gz /tmp/output.csv
-./zig-out/bin/zsasa --validate benchmarks/dataset/1a0q.json.gz
+./zig-out/bin/zsasa examples/1ubq.pdb /tmp/output.json
+./zig-out/bin/zsasa --format=csv examples/1ubq.pdb /tmp/output.csv
+./zig-out/bin/zsasa --validate examples/1ubq.pdb
 
 # Python test
 cd python
@@ -195,9 +195,9 @@ git push
 
 ### Validate failed
 
-1. Verify execution with `benchmarks/dataset/1a0q.json.gz`
+1. Verify execution with `examples/1ubq.pdb`
 2. Check output JSON format
-3. Confirm atom count is 3183
+3. Confirm atom count > 500
 
 ### Python tests failed
 
@@ -238,10 +238,10 @@ These should not normally be exceeded. If exceeded, investigate for infinite loo
 
 Zig version used in CI: **0.15.2**
 
-Managed by the `goto-bus-stop/setup-zig@v2` action.
+Managed by the `mlugg/setup-zig@v2` action.
 
 ```yaml
-- uses: goto-bus-stop/setup-zig@v2
+- uses: mlugg/setup-zig@v2
   with:
     version: 0.15.2
 ```
@@ -250,7 +250,7 @@ Managed by the `goto-bus-stop/setup-zig@v2` action.
 
 - Third-party actions:
   - `actions/checkout@v4`
-  - `goto-bus-stop/setup-zig@v2`
+  - `mlugg/setup-zig@v2`
   - `actions/setup-python@v5`
   - `astral-sh/setup-uv@v4`
 - Hardcoded secrets: None
