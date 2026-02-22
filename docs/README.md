@@ -6,6 +6,7 @@ Technical documentation for zsasa.
 
 | File | Description |
 |------|-------------|
+| [zig-api/](zig-api/) | Zig Library API Reference |
 | [architecture.md](architecture.md) | Architecture overview |
 | [algorithm.md](algorithm.md) | SASA algorithms (SR/LR) |
 | [optimizations.md](optimizations.md) | Optimization techniques |
