@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Zig package manager (zon) distribution: zsasa can now be used as a library dependency via `zig fetch` (#160)
+- Public library API in `root.zig`: `shrake_rupley`, `lee_richards`, `types`, `pdb_parser`, `mmcif_parser`, `json_parser`, `classifier`, `analysis`
+
+### Changed
+
+- `build.zig`: Removed boilerplate template comments (176 → 63 lines)
+- `build.zig.zon`: Synced version with `build.zig`
+
+### Fixed
+
+- `simd.zig`: Fixed `std.math.atan2` comptime_float errors with explicit `@as(f64, ...)` casts
+- `simd.zig`: Corrected fast approximation test tolerances to match actual polynomial precision
+
 ## [0.1.1] - 2026-02-22
 
 ### Added
