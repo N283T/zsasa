@@ -9,6 +9,7 @@
 [English](README.md) | 日本語
 
 Zig で実装された高性能 Solvent Accessible Surface Area (SASA) 計算ツール。
+FreeSASA C より**最大3倍高速**、f64 精度を維持（[ベンチマーク](docs/benchmark/)）。
 
 ## 特徴
 
@@ -18,40 +19,7 @@ Zig で実装された高性能 Solvent Accessible Surface Area (SASA) 計算ツ
 - **高性能**: SIMD最適化、マルチスレッド、近傍リスト O(N)
 - **クロスプラットフォーム**: Linux, macOS, Windows（`pip install zsasa` でビルド済みホイール利用可）
 - **Python バインディング**: NumPy 連携、BioPython/Biotite/Gemmi 対応
-- **MD トラジェクトリ解析**: MDTraj と MDAnalysis によるトラジェクトリ SASA 計算
-
-## ベンチマーク
-
-FreeSASA C より**最大3倍高速**、**f64 精度**を維持（平均誤差: <0.001%）。
-
-| スピードアップ (threads=10) | スレッドスケーリング (100k+ atoms) |
-|:--------------------:|:----------------------------:|
-| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/thread_scaling/individual/sr.png) |
-
-**主要結果 (100k+ atoms, threads=10):**
-- FreeSASA/RustSASA 比で**2.3倍**の中央値スピードアップ
-- スレッド数増加に伴いスピードアップ向上（優れた並列効率）
-
-> **注**: Zig/FreeSASA は f64、RustSASA は f32 を使用。
-
-詳細は [ベンチマーク結果](docs/benchmark/single-file.md) を参照。
-
-### MD トラジェクトリ性能
-
-実際の MD トラジェクトリデータで mdsasa-bolt (RustSASA) より**4.3倍高速**。
-
-| 実装 | 時間 (33k atoms × 1k frames) |
-|----------------|-------------------------------|
-| zsasa (f64)    | 13.3 秒                       |
-| mdsasa-bolt    | 56.7 秒                       |
-| **スピードアップ**    | **4.3x**                      |
-
-*ベンチマーク: 6sup_A_analysis トラジェクトリ (33,377 atoms, 1,001 frames, n_points=100, threads=10)*
-
-**主な利点:**
-- スレッド数の制御が可能（rayon のグローバルプールと異なり）
-- デフォルトで f64 精度（f32 より高精度）
-- MDAnalysis `AnalysisBase` と MDTraj API に対応
+- **MD トラジェクトリ解析**: ネイティブ XTC リーダー、MDTraj / MDAnalysis 連携
 
 ## クイックスタート
 
@@ -187,19 +155,29 @@ print(f"Per-frame: {sasa.results.total_area}")
 | [最適化](docs/optimizations.md) | SIMD、スレッディング、パフォーマンス技術 |
 | [ベンチマーク](docs/benchmark/) | 方法論と結果 |
 
-## 性能
+## ベンチマーク
 
-上記の[ベンチマーク](#ベンチマーク)および[詳細結果](docs/benchmark/single-file.md)を参照。
+### 単一ファイル性能
 
-## プロジェクト構成
+| スピードアップ (threads=10) | スレッドスケーリング (100k+ atoms) |
+|:--------------------:|:----------------------------:|
+| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/thread_scaling/individual/sr.png) |
 
-```
-zsasa/
-├── src/           # Zig ソース (アルゴリズム、パーサー、CLI)
-├── python/        # Python バインディング
-├── docs/          # ドキュメント
-└── benchmarks/    # ベンチマークツールと結果
-```
+**主要結果 (100k+ atoms, threads=10):**
+- FreeSASA/RustSASA 比で**2.3倍**の中央値スピードアップ
+- スレッド数増加に伴いスピードアップ向上（優れた並列効率）
+
+> **注**: Zig/FreeSASA は f64、RustSASA は f32 を使用。
+
+詳細は [単一ファイルベンチマーク結果](docs/benchmark/single-file.md) を参照。
+
+### MD トラジェクトリ性能
+
+実際の MD トラジェクトリデータで mdsasa-bolt (RustSASA) より**4.3倍高速**。
+
+![MD Trajectory Benchmark](benchmarks/results/md/6sup_A_analysis/plots/bar.png)
+
+*33,377 atoms, 1,001 frames, n_points=100*
 
 ## コントリビュート
 
@@ -207,7 +185,7 @@ zsasa/
 
 ## ライセンス
 
-MIT
+[MIT](LICENSE)
 
 ## 参考文献
 
