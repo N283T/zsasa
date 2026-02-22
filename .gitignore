@@ -94,6 +94,9 @@ test_data/.*.xtc_offsets.*
 # Plans (local working files)
 plans/
 
+# Auto-generated Python API docs
+docs/python-api/auto/
+
 # Draft documents
 docs/seminar-draft.md
 docs/examples/
