@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "zsasa"
-version = "0.1.1"
+version = "0.1.2"
 description = "Fast SASA calculation using Zig"
 readme = "README.md"
 license = "MIT"
@@ -39,9 +39,9 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/N283T/zsasa"
+Homepage = "https://n283t.github.io/zsasa/"
 Repository = "https://github.com/N283T/zsasa"
-Documentation = "https://github.com/N283T/zsasa#readme"
+Documentation = "https://n283t.github.io/zsasa/"
 Issues = "https://github.com/N283T/zsasa/issues"
 Changelog = "https://github.com/N283T/zsasa/blob/main/CHANGELOG.md"
 

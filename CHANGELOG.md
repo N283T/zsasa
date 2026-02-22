@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-02-22
+
 ### Added
 
 - JSON streaming output for batch processing (`--stream`): stream results as NDJSON or JSON array as each file completes (#157)
@@ -24,11 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - CLI: `zsasa traj` now supports `.dcd` files with auto-detection by file extension
 - Zig library API reference documentation (`docs/zig-api/`): types, algorithms, parsers, classifier, analysis (#156)
 - Python pdoc auto-generated API documentation (`scripts/generate-python-docs.sh`) (#156)
+- Documentation site with MkDocs Material and GitHub Pages deployment (#184)
+- `zig build docs` step for interactive Zig autodoc generation (#184)
 
 ### Changed
 
 - `build.zig`: Removed boilerplate template comments (176 → 63 lines)
 - `build.zig.zon`: Synced version with `build.zig`
+- Homepage and Documentation URLs now point to GitHub Pages (#184)
 
 ### Fixed
 
