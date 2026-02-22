@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Public library API in `root.zig`: `shrake_rupley`, `lee_richards`, `types`, `pdb_parser`, `mmcif_parser`, `json_parser`, `classifier`, `analysis`
 - Fuzz tests for CIF tokenizer, PDB parser, and mmCIF parser using Zig's built-in `std.testing.fuzz()` (#161)
 - TOML format support for custom classifier configs (`--config=file.toml`): human-friendly alternative to FreeSASA format with auto-detection by file extension (#158)
+- **DCD trajectory reader** (native Zig): read NAMD/CHARMM DCD binary trajectories without external dependencies (#154)
+  - Zig DCD reader (`src/dcd.zig`) with endianness auto-detection and CHARMM extension support
+  - C API: `zsasa_dcd_open`, `zsasa_dcd_close`, `zsasa_dcd_read_frame`, `zsasa_dcd_get_natoms`
+  - Python DCD reader (`zsasa.dcd`): `DcdReader` class and `compute_sasa_trajectory()` function
+  - CLI: `zsasa traj` now supports `.dcd` files with auto-detection by file extension
 
 ### Changed
 

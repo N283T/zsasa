@@ -107,6 +107,18 @@ _CDEF = """
         float* precision_out
     );
     int zsasa_xtc_get_natoms(void* handle);
+
+    // DCD trajectory reader
+    void* zsasa_dcd_open(const char* path, int* natoms_out, int* error_code);
+    void zsasa_dcd_close(void* handle);
+    int zsasa_dcd_read_frame(
+        void* handle,
+        float* coords_out,
+        int* step_out,
+        float* time_out,
+        double* unitcell_out
+    );
+    int zsasa_dcd_get_natoms(void* handle);
 """
 
 

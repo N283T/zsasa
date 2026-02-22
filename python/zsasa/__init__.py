@@ -70,6 +70,17 @@ Native XTC Reader:
     >>> # High-level SASA calculation (radii from topology)
     >>> result = compute_sasa_trajectory("trajectory.xtc", radii)
     >>> print(result.total_areas)  # Per-frame SASA in Å²
+
+Native DCD Reader:
+    For standalone DCD reading (NAMD/CHARMM format):
+
+    >>> from zsasa.dcd import DcdReader, compute_sasa_trajectory
+    >>> with DcdReader("trajectory.dcd") as reader:
+    ...     for frame in reader:
+    ...         print(f"Step {frame.step}, {frame.natoms} atoms")
+    >>>
+    >>> result = compute_sasa_trajectory("trajectory.dcd", radii)
+    >>> print(result.total_areas)  # Per-frame SASA in Å²
 """
 
 from zsasa.analysis import (
