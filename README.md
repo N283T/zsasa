@@ -171,6 +171,11 @@ print(f"Per-frame: {sasa.results.total_area}")
 
 See [Python API](docs/python-api/) for full documentation.
 
+## Important Notes
+
+- **Standard amino acids only (CLI)**: The built-in classifiers (NACCESS, ProtOr, OONS) provide radii for standard amino acids and nucleotides. For non-standard residues, ligands, or other molecules, prepare a JSON input file with custom radii (see [CLI Reference](docs/cli.md)).
+- **Advanced atom selection**: The CLI supports basic filtering (`--chain`, `--model`, `--include-hetatm`), but for complex selections (e.g., binding site residues, distance-based selection), use [Python bindings](docs/python-api/) with BioPython, Biotite, or MDAnalysis.
+
 ## Documentation
 
 | Document | Description |

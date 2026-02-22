@@ -171,6 +171,11 @@ print(f"Per-frame: {sasa.results.total_area}")
 
 詳細は [Python API](docs/python-api/) を参照。
 
+## 注意事項
+
+- **標準アミノ酸のみ対応（CLI）**: 組み込み分類器（NACCESS, ProtOr, OONS）は標準アミノ酸と核酸の原子半径を提供します。非標準残基、リガンド等を計算する場合は、カスタム半径を指定した JSON 入力ファイルを使用してください（[CLI リファレンス](docs/cli.md) 参照）。
+- **高度な原子選択**: CLI は基本的なフィルタリング（`--chain`, `--model`, `--include-hetatm`）に対応していますが、結合部位の残基選択や距離ベースの選択などの複雑な操作には、BioPython, Biotite, MDAnalysis 等と組み合わせた [Python バインディング](docs/python-api/) の利用を推奨します。
+
 ## ドキュメント
 
 | ドキュメント | 説明 |
