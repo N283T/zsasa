@@ -58,4 +58,21 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(mod_tests).step);
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+
+    // Docs step (zig autodoc)
+    const docs_lib = b.addLibrary(.{
+        .linkage = .static,
+        .name = "zsasa",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+        }),
+    });
+    const install_docs = b.addInstallDirectory(.{
+        .source_dir = docs_lib.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs",
+    });
+    const docs_step = b.step("docs", "Emit autodoc to zig-out/docs");
+    docs_step.dependOn(&install_docs.step);
 }

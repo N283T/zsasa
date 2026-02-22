@@ -97,6 +97,9 @@ plans/
 # Auto-generated Python API docs
 docs/python-api/auto/
 
+# MkDocs build output
+site/
+
 # Draft documents
 docs/seminar-draft.md
 docs/examples/
