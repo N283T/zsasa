@@ -9,7 +9,7 @@ functions, and modules in zsasa.
 
 ## Features
 
-- Full-text search across all source files
+- Search across public declarations and doc comments
 - Interactive type browser with source links
 - Doc comment rendering from `///` comments
 - Built by the Zig compiler from `src/root.zig`

@@ -42,13 +42,14 @@ jobs:
       - name: Build MkDocs site
         run: mkdocs build
 
-      - name: Copy benchmark images into site
+      - name: Copy benchmark assets into site
         run: |
           mkdir -p site/benchmarks/results
-          cp -r benchmarks/results/plots site/benchmarks/results/
-          cp -r benchmarks/results/md site/benchmarks/results/
-          cp -r benchmarks/results/validation site/benchmarks/results/
-          cp -r benchmarks/results/validation_md site/benchmarks/results/
+          for dir in plots md validation validation_md; do
+            if [ -d "benchmarks/results/$dir" ]; then
+              cp -r "benchmarks/results/$dir" site/benchmarks/results/
+            fi
+          done
 
       - name: Copy Zig autodoc into site
         run: cp -r zig-out/docs site/zig-autodoc

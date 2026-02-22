@@ -32,6 +32,7 @@ theme:
 
 markdown_extensions:
   - admonition
+  - attr_list
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.superfences
@@ -47,6 +48,7 @@ nav:
   - Algorithms:
       - SASA Algorithms: algorithm.md
       - Atom Classifiers: classifier.md
+  - File Formats:
       - XTC Reader: xtc.md
   - Zig API:
       - Overview: zig-api/README.md
