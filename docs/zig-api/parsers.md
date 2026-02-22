@@ -2,10 +2,12 @@
 
 Three parsers convert structure files into `AtomInput` for SASA calculation.
 
-All parsers:
+PDB and mmCIF parsers:
 - Return `AtomInput` with coordinates, radii, and metadata
-- Assign default radii (ProtOr classifier) during parsing
+- Assign default van der Waals radii based on element type during parsing
 - Populate optional metadata fields (residue names, chain IDs, etc.)
+
+The JSON parser expects radii to be provided in the input `r` array.
 
 ---
 

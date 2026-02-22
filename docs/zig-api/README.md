@@ -62,14 +62,14 @@ pub fn main() !void {
 ## Typical Workflow
 
 ```
-Parse structure file  →  Classify atoms  →  Calculate SASA  →  Analyze results
-  (pdb_parser)          (classifier)      (shrake_rupley)      (analysis)
-  (mmcif_parser)                          (lee_richards)
+Parse structure file  →  (Optional) Reclassify  →  Calculate SASA  →  Analyze results
+  (pdb_parser)            (classifier)              (shrake_rupley)     (analysis)
+  (mmcif_parser)                                    (lee_richards)
   (json_parser)
 ```
 
-1. **Parse** a structure file into `AtomInput` (PDB, mmCIF, or JSON)
-2. **Classify** atoms to assign radii (parsers do this automatically using ProtOr)
+1. **Parse** a structure file into `AtomInput` (PDB, mmCIF, or JSON). PDB/mmCIF parsers assign element-based vdW radii automatically.
+2. **(Optional) Reclassify** atoms with a specialized classifier (ProtOr, NACCESS, OONS) for more accurate radii
 3. **Calculate** SASA using Shrake-Rupley or Lee-Richards
 4. **Analyze** results: per-residue aggregation, RSA, polar/nonpolar summary
 
@@ -80,10 +80,13 @@ zsasa supports both f64 (default) and f32 precision via comptime generics. All c
 | f64 (default) | f32 variant |
 |----------------|-------------|
 | `Config` | `Configf32` |
+| `LeeRichardsConfig` | `LeeRichardsConfigf32` |
 | `SasaResult` | `SasaResultf32` |
 | `Vec3` | `Vec3f32` |
 | `calculateSasa()` | `calculateSasaf32()` |
 | `calculateSasaParallel()` | `calculateSasaParallelf32()` |
+
+Both Shrake-Rupley and Lee-Richards modules provide these f32 function variants.
 
 f32 uses less memory with slightly lower accuracy. Use f64 unless memory is a constraint.
 

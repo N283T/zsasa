@@ -48,16 +48,24 @@ defer result.deinit();
 var residues = try zsasa.analysis.aggregateByResidue(allocator, atoms, result.atom_areas);
 defer residues.deinit();
 
-for (residues.residues) |*res| {
-    res.calculateRsa();  // Calculate RSA for each residue
-    const rsa_str = if (res.rsa) |rsa| rsa else -1.0;
-    std.debug.print("{s}:{s}{d} SASA={d:.2} RSA={d:.3}\n", .{
-        res.chain_id.slice(),
-        res.residue_name.slice(),
-        res.residue_num,
-        res.sasa,
-        rsa_str,
-    });
+// RSA is automatically calculated by aggregateByResidue()
+for (residues.residues) |res| {
+    if (res.rsa) |rsa| {
+        std.debug.print("{s}:{s}{d} SASA={d:.2} RSA={d:.3}\n", .{
+            res.chain_id.slice(),
+            res.residue_name.slice(),
+            res.residue_num,
+            res.sasa,
+            rsa,
+        });
+    } else {
+        std.debug.print("{s}:{s}{d} SASA={d:.2} RSA=N/A\n", .{
+            res.chain_id.slice(),
+            res.residue_name.slice(),
+            res.residue_num,
+            res.sasa,
+        });
+    }
 }
 ```
 
@@ -233,11 +241,7 @@ defer result.deinit();
 var residues = try zsasa.analysis.aggregateByResidue(allocator, atoms, result.atom_areas);
 defer residues.deinit();
 
-// Calculate RSA for each residue
-for (residues.residues) |*res| {
-    res.calculateRsa();
-}
-
+// RSA is automatically calculated by aggregateByResidue()
 // Polar summary
 const summary = zsasa.analysis.calculatePolarSummary(residues.residues);
 std.debug.print("Total SASA: {d:.2} A^2\n", .{result.total_area});
