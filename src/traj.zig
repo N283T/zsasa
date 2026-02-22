@@ -1,5 +1,5 @@
 // Trajectory analysis mode
-// Calculates SASA for each frame in an XTC trajectory
+// Calculates SASA for each frame in an XTC or DCD trajectory
 //
 // Supports two parallelism strategies:
 //   - Sequential (1 thread): processes frames one at a time
@@ -7,6 +7,7 @@
 //
 const std = @import("std");
 const xtc = @import("xtc.zig");
+const dcd = @import("dcd.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
 const lee_richards = @import("lee_richards.zig");
 const types = @import("types.zig");
@@ -30,9 +31,89 @@ pub const Algorithm = enum {
     lr, // Lee-Richards
 };
 
+/// Trajectory file format
+pub const TrajectoryFormat = enum {
+    xtc, // GROMACS XTC (compressed, coordinates in nm)
+    dcd, // NAMD/CHARMM DCD (uncompressed, coordinates in Angstroms)
+};
+
+/// Detect trajectory format from file extension
+pub fn detectTrajectoryFormat(path: []const u8) ?TrajectoryFormat {
+    if (std.mem.endsWith(u8, path, ".xtc")) {
+        return .xtc;
+    } else if (std.mem.endsWith(u8, path, ".dcd")) {
+        return .dcd;
+    }
+    return null;
+}
+
+/// Common frame type for trajectory readers
+const TrajectoryFrame = struct {
+    step: i32,
+    time: f32,
+    coords: []f32, // flat array of x,y,z coordinates (length = natoms * 3)
+
+    /// The underlying frame owns the coords allocation.
+    /// Track which reader type produced it so we can free correctly.
+    _xtc_frame: ?xtc.XtcFrame = null,
+    _dcd_frame: ?dcd.DcdFrame = null,
+
+    fn deinit(self: *TrajectoryFrame, allocator: Allocator) void {
+        if (self._xtc_frame) |*f| f.deinit(allocator);
+        if (self._dcd_frame) |*f| f.deinit(allocator);
+    }
+};
+
+/// Unified trajectory reader wrapping either XTC or DCD readers
+const TrajectoryReader = struct {
+    xtc_reader: ?*xtc.XtcReader = null,
+    dcd_reader: ?*dcd.DcdReader = null,
+    format: TrajectoryFormat,
+
+    /// Coordinate scale factor: 10.0 for XTC (nm→Å), 1.0 for DCD (already Å)
+    fn coordScale(self: *const TrajectoryReader) f64 {
+        return switch (self.format) {
+            .xtc => 10.0,
+            .dcd => 1.0,
+        };
+    }
+
+    /// Read next frame, returning null-like via EndOfFile error
+    fn readFrame(self: *TrajectoryReader) !TrajectoryFrame {
+        switch (self.format) {
+            .xtc => {
+                const frame = try self.xtc_reader.?.readFrame();
+                return TrajectoryFrame{
+                    .step = frame.step,
+                    .time = frame.time,
+                    .coords = frame.coords,
+                    ._xtc_frame = frame,
+                };
+            },
+            .dcd => {
+                const frame = try self.dcd_reader.?.readFrame();
+                return TrajectoryFrame{
+                    .step = frame.step,
+                    .time = frame.time,
+                    .coords = frame.coords,
+                    ._dcd_frame = frame,
+                };
+            },
+        }
+    }
+
+    /// Check if a read error is an EOF condition
+    fn isEof(self: *const TrajectoryReader, err: anyerror) bool {
+        return switch (self.format) {
+            .xtc => err == xtc.XtcError.EndOfFile,
+            .dcd => err == dcd.DcdError.EndOfFile,
+        };
+    }
+};
+
 /// Trajectory mode arguments
 pub const TrajArgs = struct {
-    xtc_path: ?[]const u8 = null,
+    traj_path: ?[]const u8 = null,
     topology_path: ?[]const u8 = null,
     output_path: []const u8 = "traj_sasa.csv",
     algorithm: Algorithm = .sr,
@@ -157,7 +238,7 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) TrajArgs {
         } else {
             // Positional arguments
             if (positional_count == 0) {
-                result.xtc_path = arg;
+                result.traj_path = arg;
             } else if (positional_count == 1) {
                 result.topology_path = arg;
             } else {
@@ -209,12 +290,14 @@ fn parseClassifierType(value: []const u8) ClassifierType {
 /// Print help for trajectory mode
 pub fn printHelp(program_name: []const u8) void {
     std.debug.print(
-        \\Usage: {s} traj <xtc> <topology> [options]
+        \\Usage: {s} traj <trajectory> <topology> [options]
         \\
-        \\Calculate SASA for each frame in an XTC trajectory.
+        \\Calculate SASA for each frame in a trajectory.
+        \\Supported formats: XTC (GROMACS), DCD (NAMD/CHARMM).
+        \\Format is auto-detected from file extension.
         \\
         \\ARGUMENTS:
-        \\    <xtc>        XTC trajectory file
+        \\    <trajectory> Trajectory file (.xtc or .dcd)
         \\    <topology>   Topology file (PDB or mmCIF) for atom names and radii
         \\
         \\OPTIONS:
@@ -245,13 +328,14 @@ pub fn printHelp(program_name: []const u8) void {
         \\
         \\EXAMPLES:
         \\    {s} traj trajectory.xtc topology.pdb
+        \\    {s} traj trajectory.dcd topology.pdb
         \\    {s} traj trajectory.xtc topology.pdb -o sasa.csv
         \\    {s} traj trajectory.xtc topology.pdb --stride=10
         \\    {s} traj trajectory.xtc topology.pdb --classifier=naccess
         \\    {s} traj trajectory.xtc topology.pdb --algorithm=lr --n-slices=50
         \\    {s} traj trajectory.xtc topology.pdb --threads=8
         \\
-    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name });
+    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 /// Detect topology file format
@@ -298,6 +382,7 @@ const BatchWorkerArgs = struct {
     probe_radius: f64,
     n_points: u32,
     n_slices: u32,
+    coord_scale: f64, // 10.0 for XTC (nm→Å), 1.0 for DCD (already Å)
 };
 
 /// Set error flag and store a descriptive message (first writer wins).
@@ -341,11 +426,12 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
 
         const coord_offset = batch_idx * args.natoms * 3;
 
-        // Convert f32 XTC coordinates (nm) to f64 (Angstrom)
+        // Convert f32 coordinates to f64 with unit scaling (nm→Å for XTC, no-op for DCD)
+        const scale = args.coord_scale;
         for (0..args.natoms) |i| {
-            x[i] = @as(f64, args.coord_pool[coord_offset + i * 3 + 0]) * 10.0;
-            y[i] = @as(f64, args.coord_pool[coord_offset + i * 3 + 1]) * 10.0;
-            z[i] = @as(f64, args.coord_pool[coord_offset + i * 3 + 2]) * 10.0;
+            x[i] = @as(f64, args.coord_pool[coord_offset + i * 3 + 0]) * scale;
+            y[i] = @as(f64, args.coord_pool[coord_offset + i * 3 + 1]) * scale;
+            z[i] = @as(f64, args.coord_pool[coord_offset + i * 3 + 2]) * scale;
         }
 
         const input = AtomInput{
@@ -409,7 +495,7 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
 /// Read frames into batch buffer, applying stride/start/end filtering.
 /// Returns the number of frames read and whether EOF was reached.
 fn readBatch(
-    reader: *xtc.XtcReader,
+    reader: *TrajectoryReader,
     allocator: Allocator,
     coord_pool: []f32,
     frame_data: []FrameData,
@@ -422,7 +508,7 @@ fn readBatch(
 
     while (batch_count < batch_size) {
         var frame = reader.readFrame() catch |err| {
-            if (err == xtc.XtcError.EndOfFile) return .{ .count = batch_count, .eof = true };
+            if (reader.isEof(err)) return .{ .count = batch_count, .eof = true };
             return err;
         };
         defer frame.deinit(allocator);
@@ -465,13 +551,19 @@ fn readBatch(
 /// Run trajectory analysis
 pub fn run(allocator: Allocator, args: TrajArgs) !void {
     // Validate required arguments
-    const xtc_path = args.xtc_path orelse {
-        std.debug.print("Error: Missing XTC file\n", .{});
+    const traj_path = args.traj_path orelse {
+        std.debug.print("Error: Missing trajectory file\n", .{});
         return error.MissingArgument;
     };
     const topology_path = args.topology_path orelse {
         std.debug.print("Error: Missing topology file\n", .{});
         return error.MissingArgument;
+    };
+
+    // Detect trajectory format
+    const traj_format = detectTrajectoryFormat(traj_path) orelse {
+        std.debug.print("Error: Unknown trajectory format. Supported: .xtc, .dcd\n", .{});
+        return error.UnsupportedFormat;
     };
 
     // Read topology to get atom names and radii
@@ -503,18 +595,37 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
         try applyBuiltinClassifier(allocator, &topology, ct, args.quiet);
     }
 
-    // Open XTC file
+    // Open trajectory file
     if (!args.quiet) {
-        std.debug.print("Opening trajectory: {s}\n", .{xtc_path});
+        const format_name: []const u8 = switch (traj_format) {
+            .xtc => "XTC",
+            .dcd => "DCD",
+        };
+        std.debug.print("Opening trajectory ({s}): {s}\n", .{ format_name, traj_path });
     }
 
-    var reader = try xtc.XtcReader.open(allocator, xtc_path);
-    defer reader.close();
+    // Open XTC or DCD reader and verify atom count
+    var xtc_reader: ?xtc.XtcReader = null;
+    var dcd_reader: ?dcd.DcdReader = null;
+    const traj_natoms: i32 = switch (traj_format) {
+        .xtc => blk: {
+            xtc_reader = try xtc.XtcReader.open(allocator, traj_path);
+            break :blk xtc_reader.?.natoms;
+        },
+        .dcd => blk: {
+            dcd_reader = try dcd.DcdReader.open(allocator, traj_path);
+            break :blk dcd_reader.?.natoms;
+        },
+    };
+    defer {
+        if (xtc_reader) |*r| r.close();
+        if (dcd_reader) |*r| r.close();
+    }
 
     // Verify atom count matches
-    if (reader.natoms != @as(i32, @intCast(natoms))) {
-        std.debug.print("Error: Atom count mismatch - XTC has {d} atoms, topology has {d}\n", .{
-            reader.natoms,
+    if (traj_natoms != @as(i32, @intCast(natoms))) {
+        std.debug.print("Error: Atom count mismatch - trajectory has {d} atoms, topology has {d}\n", .{
+            traj_natoms,
             natoms,
         });
         return error.AtomCountMismatch;
@@ -554,12 +665,18 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
     var processed_count: u32 = 0;
     const timer_start = std.time.milliTimestamp();
 
+    var traj_reader = TrajectoryReader{
+        .xtc_reader = if (xtc_reader) |*r| r else null,
+        .dcd_reader = if (dcd_reader) |*r| r else null,
+        .format = traj_format,
+    };
+
     if (n_threads <= 1) {
         // Sequential path: single-threaded SASA per frame
-        try runSequential(allocator, &reader, writer, &topology, args, &frame_idx, &processed_count);
+        try runSequential(allocator, &traj_reader, writer, &topology, args, &frame_idx, &processed_count);
     } else {
         // Batch parallel path: frame-level parallelism across threads
-        try runBatchParallel(allocator, &reader, writer, &topology, args, n_threads, natoms, &frame_idx, &processed_count);
+        try runBatchParallel(allocator, &traj_reader, writer, &topology, args, n_threads, natoms, &frame_idx, &processed_count);
     }
 
     // Flush buffered output
@@ -580,7 +697,7 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
 /// Sequential frame processing (single-threaded SASA per frame)
 fn runSequential(
     allocator: Allocator,
-    reader: *xtc.XtcReader,
+    reader: *TrajectoryReader,
     writer: anytype,
     topology: *AtomInput,
     args: TrajArgs,
@@ -611,9 +728,11 @@ fn runSequential(
         .allocator = allocator,
     };
 
+    const scale = reader.coordScale();
+
     while (true) {
         var frame = reader.readFrame() catch |err| {
-            if (err == xtc.XtcError.EndOfFile) break;
+            if (reader.isEof(err)) break;
             return err;
         };
         defer frame.deinit(allocator);
@@ -633,11 +752,11 @@ fn runSequential(
             continue;
         }
 
-        // Update frame coordinates from XTC (nm -> Angstrom)
+        // Update frame coordinates with unit scaling (nm→Å for XTC, no-op for DCD)
         for (0..natoms) |i| {
-            frame_x[i] = @as(f64, frame.coords[i * 3 + 0]) * 10.0;
-            frame_y[i] = @as(f64, frame.coords[i * 3 + 1]) * 10.0;
-            frame_z[i] = @as(f64, frame.coords[i * 3 + 2]) * 10.0;
+            frame_x[i] = @as(f64, frame.coords[i * 3 + 0]) * scale;
+            frame_y[i] = @as(f64, frame.coords[i * 3 + 1]) * scale;
+            frame_z[i] = @as(f64, frame.coords[i * 3 + 2]) * scale;
         }
 
         // Calculate SASA (single-threaded)
@@ -696,7 +815,7 @@ fn runSequential(
 /// Batch parallel frame processing (frame-level parallelism)
 fn runBatchParallel(
     allocator: Allocator,
-    reader: *xtc.XtcReader,
+    reader: *TrajectoryReader,
     writer: anytype,
     topology: *AtomInput,
     args: TrajArgs,
@@ -759,6 +878,7 @@ fn runBatchParallel(
                 .probe_radius = args.probe_radius,
                 .n_points = args.n_points,
                 .n_slices = args.n_slices,
+                .coord_scale = reader.coordScale(),
             }}) catch {
                 error_flag.store(true, .release);
                 for (threads[0..i]) |thread| {

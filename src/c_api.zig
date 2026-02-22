@@ -13,6 +13,7 @@ const classifier_protor = @import("classifier_protor.zig");
 const classifier_oons = @import("classifier_oons.zig");
 const analysis = @import("analysis.zig");
 const xtc = @import("xtc.zig");
+const dcd = @import("dcd.zig");
 
 const AtomInput = types.AtomInput;
 const Config = types.Config;
@@ -1478,5 +1479,239 @@ test "zsasa_xtc_read_frame null handle" {
     var precision: f32 = 0;
 
     const result = zsasa_xtc_read_frame(null, &coords, &step, &time, &box, &precision);
+    try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, result);
+}
+
+// =============================================================================
+// DCD Trajectory Reader Functions
+// =============================================================================
+
+/// Error code: End of DCD file reached
+pub const ZSASA_DCD_END_OF_FILE: c_int = 2;
+
+/// DCD reader handle (opaque pointer to internal struct)
+const DcdHandle = struct {
+    reader: dcd.DcdReader,
+};
+
+/// Open a DCD trajectory file.
+///
+/// Parameters:
+///   path: Path to DCD file (null-terminated string)
+///   natoms_out: Output pointer for number of atoms (set on success)
+///   error_code: Output pointer for error code (set on failure)
+///
+/// Returns:
+///   Opaque handle on success, null on failure.
+///   Caller must call zsasa_dcd_close() to free resources.
+export fn zsasa_dcd_open(
+    path: [*:0]const u8,
+    natoms_out: *i32,
+    error_code: *c_int,
+) callconv(.c) ?*anyopaque {
+    const path_slice = std.mem.span(path);
+
+    const handle = c_allocator.create(DcdHandle) catch {
+        error_code.* = ZSASA_ERROR_OUT_OF_MEMORY;
+        return null;
+    };
+
+    handle.reader = dcd.DcdReader.open(c_allocator, path_slice) catch |err| {
+        c_allocator.destroy(handle);
+        error_code.* = switch (err) {
+            dcd.DcdError.FileNotFound => ZSASA_ERROR_INVALID_INPUT,
+            dcd.DcdError.InvalidMagic => ZSASA_ERROR_INVALID_INPUT,
+            dcd.DcdError.OutOfMemory => ZSASA_ERROR_OUT_OF_MEMORY,
+            else => ZSASA_ERROR_CALCULATION,
+        };
+        return null;
+    };
+
+    natoms_out.* = handle.reader.getNumAtoms();
+    error_code.* = ZSASA_OK;
+    return handle;
+}
+
+/// Close a DCD trajectory file and free resources.
+///
+/// Parameters:
+///   handle: Handle returned by zsasa_dcd_open()
+export fn zsasa_dcd_close(
+    handle: ?*anyopaque,
+) callconv(.c) void {
+    if (handle) |h| {
+        const dcd_handle: *DcdHandle = @ptrCast(@alignCast(h));
+        dcd_handle.reader.close();
+        c_allocator.destroy(dcd_handle);
+    }
+}
+
+/// Read the next frame from a DCD trajectory.
+///
+/// Parameters:
+///   handle: Handle returned by zsasa_dcd_open()
+///   coords_out: Output buffer for coordinates (natoms * 3 floats, in Angstroms)
+///   step_out: Output pointer for step number
+///   time_out: Output pointer for frame time
+///   unitcell_out: Output buffer for unitcell (6 doubles), or null if not needed
+///
+/// Returns:
+///   ZSASA_OK (0) on success
+///   ZSASA_DCD_END_OF_FILE (2) when no more frames
+///   Negative error code on failure
+export fn zsasa_dcd_read_frame(
+    handle: ?*anyopaque,
+    coords_out: [*]f32,
+    step_out: *i32,
+    time_out: *f32,
+    unitcell_out: ?[*]f64,
+) callconv(.c) c_int {
+    if (handle == null) {
+        return ZSASA_ERROR_INVALID_INPUT;
+    }
+
+    const dcd_handle: *DcdHandle = @ptrCast(@alignCast(handle.?));
+
+    var frame = dcd_handle.reader.readFrame() catch |err| {
+        return switch (err) {
+            dcd.DcdError.EndOfFile => ZSASA_DCD_END_OF_FILE,
+            dcd.DcdError.InvalidMagic => ZSASA_ERROR_INVALID_INPUT,
+            else => ZSASA_ERROR_CALCULATION,
+        };
+    };
+    defer frame.deinit(c_allocator);
+
+    // Copy step, time
+    step_out.* = frame.step;
+    time_out.* = frame.time;
+
+    // Copy unitcell if present and output buffer provided
+    if (unitcell_out) |uc_out| {
+        if (frame.unitcell) |uc| {
+            for (0..6) |i| {
+                uc_out[i] = uc[i];
+            }
+        } else {
+            for (0..6) |i| {
+                uc_out[i] = 0.0;
+            }
+        }
+    }
+
+    // Copy coordinates
+    const natoms: usize = @intCast(dcd_handle.reader.getNumAtoms());
+    @memcpy(coords_out[0 .. natoms * 3], frame.coords);
+
+    return ZSASA_OK;
+}
+
+/// Get the number of atoms in an opened DCD file.
+///
+/// Parameters:
+///   handle: Handle returned by zsasa_dcd_open()
+///
+/// Returns:
+///   Number of atoms, or -1 if handle is invalid
+export fn zsasa_dcd_get_natoms(
+    handle: ?*anyopaque,
+) callconv(.c) i32 {
+    if (handle == null) {
+        return -1;
+    }
+    const dcd_handle: *DcdHandle = @ptrCast(@alignCast(handle.?));
+    return dcd_handle.reader.getNumAtoms();
+}
+
+// =============================================================================
+// DCD Reader Tests
+// =============================================================================
+
+test "zsasa_dcd_open and close" {
+    var natoms: i32 = 0;
+    var error_code: c_int = 0;
+
+    const handle = zsasa_dcd_open("test_data/1l2y.dcd", &natoms, &error_code);
+    if (handle == null and error_code == ZSASA_ERROR_INVALID_INPUT) return; // Skip if not available
+    try std.testing.expect(handle != null);
+    try std.testing.expectEqual(ZSASA_OK, error_code);
+    try std.testing.expectEqual(@as(i32, 304), natoms);
+
+    try std.testing.expectEqual(@as(i32, 304), zsasa_dcd_get_natoms(handle));
+
+    zsasa_dcd_close(handle);
+}
+
+test "zsasa_dcd_open invalid file" {
+    var natoms: i32 = 0;
+    var error_code: c_int = 0;
+
+    const handle = zsasa_dcd_open("nonexistent.dcd", &natoms, &error_code);
+    try std.testing.expect(handle == null);
+    try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, error_code);
+}
+
+test "zsasa_dcd_read_frame" {
+    var natoms: i32 = 0;
+    var error_code: c_int = 0;
+
+    const handle = zsasa_dcd_open("test_data/1l2y.dcd", &natoms, &error_code);
+    if (handle == null and error_code == ZSASA_ERROR_INVALID_INPUT) return;
+    try std.testing.expect(handle != null);
+    defer zsasa_dcd_close(handle);
+
+    const natoms_u: usize = @intCast(natoms);
+    const coords = c_allocator.alloc(f32, natoms_u * 3) catch unreachable;
+    defer c_allocator.free(coords);
+    var unitcell: [6]f64 = undefined;
+    var step: i32 = 0;
+    var time: f32 = 0;
+
+    const result = zsasa_dcd_read_frame(handle, coords.ptr, &step, &time, &unitcell);
+    try std.testing.expectEqual(ZSASA_OK, result);
+
+    // DCD coordinates are in Angstroms
+    const tolerance: f32 = 0.05;
+    try std.testing.expectApproxEqAbs(@as(f32, -8.901), coords[0], tolerance);
+    try std.testing.expectApproxEqAbs(@as(f32, 4.127), coords[1], tolerance);
+    try std.testing.expectApproxEqAbs(@as(f32, -0.555), coords[2], tolerance);
+}
+
+test "zsasa_dcd_read_all_frames" {
+    var natoms: i32 = 0;
+    var error_code: c_int = 0;
+
+    const handle = zsasa_dcd_open("test_data/1l2y.dcd", &natoms, &error_code);
+    if (handle == null and error_code == ZSASA_ERROR_INVALID_INPUT) return;
+    try std.testing.expect(handle != null);
+    defer zsasa_dcd_close(handle);
+
+    const natoms_u: usize = @intCast(natoms);
+    const coords = c_allocator.alloc(f32, natoms_u * 3) catch unreachable;
+    defer c_allocator.free(coords);
+    var unitcell: [6]f64 = undefined;
+    var step: i32 = 0;
+    var time: f32 = 0;
+
+    var frame_count: usize = 0;
+    while (true) {
+        const result = zsasa_dcd_read_frame(handle, coords.ptr, &step, &time, &unitcell);
+        if (result == ZSASA_DCD_END_OF_FILE) break;
+        try std.testing.expectEqual(ZSASA_OK, result);
+        frame_count += 1;
+    }
+
+    try std.testing.expectEqual(@as(usize, 38), frame_count);
+}
+
+test "zsasa_dcd_get_natoms null handle" {
+    try std.testing.expectEqual(@as(i32, -1), zsasa_dcd_get_natoms(null));
+}
+
+test "zsasa_dcd_read_frame null handle" {
+    var coords: [3]f32 = undefined;
+    var step: i32 = 0;
+    var time: f32 = 0;
+
+    const result = zsasa_dcd_read_frame(null, &coords, &step, &time, null);
     try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, result);
 }
