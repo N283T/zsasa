@@ -175,18 +175,9 @@ See [single-file benchmark results](docs/benchmark/single-file.md) for detailed 
 
 **4.3x faster** than mdsasa-bolt (RustSASA) on real MD trajectory data.
 
-| Implementation | Time (33k atoms x 1k frames) |
-|----------------|-------------------------------|
-| zsasa (f64)    | 13.3 s                        |
-| mdsasa-bolt    | 56.7 s                        |
-| **Speedup**    | **4.3x**                      |
+![MD Trajectory Benchmark](benchmarks/results/md/6sup_A_analysis/plots/bar.png)
 
-*Benchmark: 6sup_A_analysis trajectory (33,377 atoms, 1,001 frames, n_points=100, threads=10)*
-
-**Key advantages:**
-- Controllable thread count (unlike rayon's global pool)
-- f64 precision by default (higher accuracy than f32)
-- Compatible with MDAnalysis `AnalysisBase` and MDTraj APIs
+*33,377 atoms, 1,001 frames, n_points=100*
 
 ## Contributing
 
