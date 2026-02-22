@@ -829,3 +829,19 @@ test "startsWithIgnoreCase" {
     try std.testing.expect(!startsWithIgnoreCase("_cell.length_a", "_atom_site."));
     try std.testing.expect(!startsWithIgnoreCase("_atom", "_atom_site."));
 }
+
+test "fuzz mmcif parser" {
+    try std.testing.fuzz({}, struct {
+        fn testOne(_: void, input: []const u8) !void {
+            var parser = MmcifParser.init(std.testing.allocator);
+            var result = parser.parse(input) catch return;
+            result.deinit();
+        }
+    }.testOne, .{
+        .corpus = &.{
+            "data_TEST\nloop_\n_atom_site.id\n_atom_site.type_symbol\n_atom_site.Cartn_x\n_atom_site.Cartn_y\n_atom_site.Cartn_z\n1 C 10.0 20.0 30.0\n#\n",
+            "data_TEST\nloop_\n_atom_site.id\n_atom_site.type_symbol\n_atom_site.label_atom_id\n_atom_site.label_comp_id\n_atom_site.Cartn_x\n_atom_site.Cartn_y\n_atom_site.Cartn_z\n1 C CA ALA 10.0 20.0 30.0\n2 N N ALA 11.0 21.0 31.0\n#\n",
+            "data_TEST\nloop_\n_cell.length_a\n_cell.length_b\n10.0 20.0\n#\n",
+        },
+    });
+}
