@@ -155,16 +155,6 @@ See [Python API](docs/python-api/) for full documentation.
 | [Optimizations](docs/optimizations.md) | SIMD, threading, performance techniques |
 | [Benchmarks](docs/benchmark/) | Methodology and results |
 
-## Project Structure
-
-```
-zsasa/
-├── src/           # Zig source (algorithms, parsers, CLI)
-├── python/        # Python bindings
-├── docs/          # Documentation
-└── benchmarks/    # Benchmark tools and results
-```
-
 ## Benchmarks
 
 ### Single-File Performance
