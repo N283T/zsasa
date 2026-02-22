@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-02-22
+
 ### Added
 
 - `CODE_OF_CONDUCT.md` (Contributor Covenant v2.1)
@@ -15,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pull request template
 - `speedup_by_threads.png` plot generation in `analyze.py large` (thread scaling for 50k+ atoms)
 - CI status, license, Zig, and Python badges to READMEs
-- Pre-built wheel distribution via cibuildwheel (Linux x86_64/aarch64, macOS x86_64/arm64)
+- Pre-built wheel distribution via cibuildwheel (Linux x86_64/aarch64, macOS x86_64/arm64, Windows x86_64)
+- Windows support: Zig build, tests, CLI, Python bindings
 - PyPI publish workflow (`.github/workflows/publish.yml`) with OIDC trusted publishing
 - `python -m ziglang` fallback in `hatch_build.py` for Zig discovery
 
@@ -252,7 +255,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `calc_reference_sasa.py` - Generate reference SASA
   - `benchmark.py` - Performance benchmarking
 
-[Unreleased]: https://github.com/N283T/zsasa/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/N283T/zsasa/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/N283T/zsasa/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/N283T/zsasa/compare/v0.0.5...v0.1.0
 [0.0.5]: https://github.com/N283T/zsasa/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/N283T/zsasa/compare/v0.0.3...v0.0.4

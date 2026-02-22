@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "zsasa"
-version = "0.1.0"
+version = "0.1.1"
 description = "Fast SASA calculation using Zig"
 readme = "README.md"
 license = "MIT"
@@ -88,6 +88,11 @@ repair-wheel-command = ""
 
 [tool.cibuildwheel.macos.environment]
 MACOSX_DEPLOYMENT_TARGET = "11.0"
+
+[tool.cibuildwheel.windows]
+before-all = "pip install ziglang && python -m ziglang build -Doptimize=ReleaseFast"
+# Skip delvewheel: Zig statically links everything, no external DLL dependencies.
+repair-wheel-command = ""
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

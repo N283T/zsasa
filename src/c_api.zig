@@ -50,7 +50,7 @@ pub const ZSASA_ATOM_CLASS_APOLAR: c_int = 1;
 pub const ZSASA_ATOM_CLASS_UNKNOWN: c_int = 2;
 
 // Version string
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 
 /// Thread-safe allocator for C API (uses C allocator for simplicity)
 const c_allocator = std.heap.c_allocator;

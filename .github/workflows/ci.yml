@@ -51,6 +51,9 @@ jobs:
           - os: macos-latest
             name: macOS
             binary: zsasa
+          - os: windows-latest
+            name: Windows
+            binary: zsasa.exe
 
     runs-on: ${{ matrix.os }}
     name: Build (${{ matrix.name }})
@@ -75,6 +78,7 @@ jobs:
         run: zig build -Doptimize=ReleaseFast
 
       - name: Check binary exists
+        shell: bash
         run: |
           if [ -f "./zig-out/bin/${{ matrix.binary }}" ]; then
             echo "Binary built successfully"
@@ -85,6 +89,7 @@ jobs:
           fi
 
       - name: Test CLI
+        shell: bash
         run: |
           ./zig-out/bin/${{ matrix.binary }} --help
           ./zig-out/bin/${{ matrix.binary }} --version
@@ -143,9 +148,15 @@ jobs:
           - os: ubuntu-latest
             name: Linux
             lib: libzsasa.so
+            lib_dir: lib
           - os: macos-latest
             name: macOS
             lib: libzsasa.dylib
+            lib_dir: lib
+          - os: windows-latest
+            name: Windows
+            lib: zsasa.dll
+            lib_dir: bin
 
     runs-on: ${{ matrix.os }}
     name: Python (${{ matrix.name }})
@@ -165,10 +176,11 @@ jobs:
         run: zig build -Doptimize=ReleaseFast
 
       - name: Check shared library exists
+        shell: bash
         run: |
-          if [ -f "./zig-out/lib/${{ matrix.lib }}" ]; then
+          if [ -f "./zig-out/${{ matrix.lib_dir }}/${{ matrix.lib }}" ]; then
             echo "Shared library built successfully"
-            ls -la ./zig-out/lib/${{ matrix.lib }}
+            ls -la ./zig-out/${{ matrix.lib_dir }}/${{ matrix.lib }}
           else
             echo "Shared library not found"
             exit 1
@@ -197,6 +209,7 @@ jobs:
           ruff format --check zsasa/
 
       - name: Test import and basic usage
+        shell: bash
         run: |
           python3 -c "
           import numpy as np
