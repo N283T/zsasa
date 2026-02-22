@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- JSON streaming output for batch processing (`--stream`): stream results as NDJSON or JSON array as each file completes (#157)
+- Stream format selection (`--stream-format`): choose between `ndjson` (default) and `json` array format (#157)
+- Stream output destination (`--stream-output`): write stream to file instead of stdout (#157)
+- Writer-based streaming JSON output for per-file results, reducing memory usage (#157)
 - Zig package manager (zon) distribution: zsasa can now be used as a library dependency via `zig fetch` (#160)
 - Public library API in `root.zig`: `shrake_rupley`, `lee_richards`, `types`, `pdb_parser`, `mmcif_parser`, `json_parser`, `classifier`, `analysis`
 - Fuzz tests for CIF tokenizer, PDB parser, and mmCIF parser using Zig's built-in `std.testing.fuzz()` (#161)

@@ -10,6 +10,7 @@
 //! - `json_parser` - JSON format parser
 //! - `classifier` - Atom classifier (FreeSASA-compatible)
 //! - `analysis` - Result aggregation and RSA calculation
+//! - `stream_writer` - Streaming JSON output for batch results
 //!
 //! ## Usage
 //!
@@ -29,6 +30,7 @@ pub const mmcif_parser = @import("mmcif_parser.zig");
 pub const json_parser = @import("json_parser.zig");
 pub const classifier = @import("classifier.zig");
 pub const analysis = @import("analysis.zig");
+pub const stream_writer = @import("stream_writer.zig");
 
 test {
     _ = shrake_rupley;
@@ -39,4 +41,5 @@ test {
     _ = json_parser;
     _ = classifier;
     _ = analysis;
+    _ = stream_writer;
 }

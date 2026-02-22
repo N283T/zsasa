@@ -130,24 +130,23 @@ pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: [
     return list.toOwnedSlice(allocator);
 }
 
-/// Write SasaResult to file with specified format
+/// Write SasaResult to file with specified format (streaming, no intermediate allocation)
 pub fn writeSasaResultWithFormat(
-    allocator: Allocator,
+    _: Allocator,
     result: SasaResult,
     path: []const u8,
     format: OutputFormat,
 ) !void {
-    const output_str = switch (format) {
-        .json => try sasaResultToJsonPretty(allocator, result),
-        .compact => try sasaResultToJson(allocator, result),
-        .csv => try sasaResultToCsv(allocator, result),
-    };
-    defer allocator.free(output_str);
-
     const file = try std.fs.cwd().createFile(path, .{});
     defer file.close();
 
-    try file.writeAll(output_str);
+    const writer = file.deprecatedWriter().any();
+
+    switch (format) {
+        .json => try streamSasaResultJsonPretty(writer, result),
+        .compact => try streamSasaResultJson(writer, result),
+        .csv => try streamSasaResultCsv(writer, result),
+    }
 }
 
 /// Write SasaResult to file with specified format, using rich CSV when input has structural info
@@ -158,25 +157,80 @@ pub fn writeSasaResultWithFormatAndInput(
     path: []const u8,
     format: OutputFormat,
 ) !void {
-    const output_str = switch (format) {
-        .json => try sasaResultToJsonPretty(allocator, result),
-        .compact => try sasaResultToJson(allocator, result),
-        .csv => if (input.hasResidueInfo())
-            try sasaResultToRichCsv(allocator, input, result.atom_areas)
-        else
-            try sasaResultToCsv(allocator, result),
-    };
-    defer allocator.free(output_str);
-
     const file = try std.fs.cwd().createFile(path, .{});
     defer file.close();
 
-    try file.writeAll(output_str);
+    const writer = file.deprecatedWriter().any();
+
+    switch (format) {
+        .json => try streamSasaResultJsonPretty(writer, result),
+        .compact => try streamSasaResultJson(writer, result),
+        .csv => {
+            if (input.hasResidueInfo()) {
+                // Rich CSV has no streaming equivalent yet; fall back to allocation
+                const output_str = try sasaResultToRichCsv(allocator, input, result.atom_areas);
+                defer allocator.free(output_str);
+                try writer.writeAll(output_str);
+            } else {
+                try streamSasaResultCsv(writer, result);
+            }
+        },
+    }
 }
 
 /// Write SasaResult to JSON file (default: compact for backward compatibility)
 pub fn writeSasaResult(allocator: Allocator, result: SasaResult, path: []const u8) !void {
     return writeSasaResultWithFormat(allocator, result, path, .compact);
+}
+
+/// Stream SasaResult as compact JSON (single line) directly to writer.
+/// Produces byte-for-byte identical output to sasaResultToJson.
+///
+/// Uses the same float formatting as std.json.Stringify (std.fmt default "{}")
+/// and the same JSON structure as the JsonOutput struct serialization.
+pub fn streamSasaResultJson(writer: std.io.AnyWriter, result: SasaResult) !void {
+    try writer.writeAll("{\"total_area\":");
+    try writer.print("{}", .{result.total_area});
+    try writer.writeAll(",\"atom_areas\":[");
+    for (result.atom_areas, 0..) |area, i| {
+        if (i > 0) try writer.writeAll(",");
+        try writer.print("{}", .{area});
+    }
+    try writer.writeAll("]}");
+}
+
+/// Stream SasaResult as pretty-printed JSON directly to writer.
+/// Produces byte-for-byte identical output to sasaResultToJsonPretty.
+///
+/// Uses indent_2 whitespace matching std.json.Stringify with .whitespace = .indent_2.
+pub fn streamSasaResultJsonPretty(writer: std.io.AnyWriter, result: SasaResult) !void {
+    try writer.writeAll("{\n  \"total_area\": ");
+    try writer.print("{}", .{result.total_area});
+    try writer.writeAll(",\n  \"atom_areas\": [");
+    if (result.atom_areas.len > 0) {
+        for (result.atom_areas, 0..) |area, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writer.writeAll("\n    ");
+            try writer.print("{}", .{area});
+        }
+        try writer.writeAll("\n  ");
+    }
+    try writer.writeAll("]\n}");
+}
+
+/// Stream SasaResult as CSV directly to writer.
+/// Produces byte-for-byte identical output to sasaResultToCsv.
+pub fn streamSasaResultCsv(writer: std.io.AnyWriter, result: SasaResult) !void {
+    // Header
+    try writer.writeAll("atom_index,area\n");
+
+    // Atom areas
+    for (result.atom_areas, 0..) |area, i| {
+        try writer.print("{d},{d:.6}\n", .{ i, area });
+    }
+
+    // Total
+    try writer.print("total,{d:.6}\n", .{result.total_area});
 }
 
 // Tests
@@ -584,4 +638,144 @@ test "sasaResultToRichCsv without residue info uses dashes" {
 
     // Check that missing fields produce dashes
     try std.testing.expect(std.mem.indexOf(u8, csv, "-,-,-,-,1.000,2.000,3.000,1.500,15.000000\n") != null);
+}
+
+test "streamSasaResultJson matches sasaResultToJson" {
+    const allocator = std.testing.allocator;
+
+    // Test with typical values
+    const atom_areas = try allocator.alloc(f64, 3);
+    defer allocator.free(atom_areas);
+    atom_areas[0] = 32.47;
+    atom_areas[1] = 0.25;
+    atom_areas[2] = 18890.56;
+
+    const result = SasaResult{
+        .total_area = 18923.28,
+        .atom_areas = atom_areas,
+        .allocator = allocator,
+    };
+
+    // Get buffered output
+    const buffered = try sasaResultToJson(allocator, result);
+    defer allocator.free(buffered);
+
+    // Get streamed output
+    var list = std.ArrayListUnmanaged(u8){};
+    defer list.deinit(allocator);
+    try streamSasaResultJson(list.writer(allocator).any(), result);
+
+    try std.testing.expectEqualStrings(buffered, list.items);
+
+    // Also test with empty atoms
+    const empty_areas = try allocator.alloc(f64, 0);
+    defer allocator.free(empty_areas);
+
+    const empty_result = SasaResult{
+        .total_area = 0.0,
+        .atom_areas = empty_areas,
+        .allocator = allocator,
+    };
+
+    const buffered_empty = try sasaResultToJson(allocator, empty_result);
+    defer allocator.free(buffered_empty);
+
+    var list_empty = std.ArrayListUnmanaged(u8){};
+    defer list_empty.deinit(allocator);
+    try streamSasaResultJson(list_empty.writer(allocator).any(), empty_result);
+
+    try std.testing.expectEqualStrings(buffered_empty, list_empty.items);
+}
+
+test "streamSasaResultJsonPretty matches sasaResultToJsonPretty" {
+    const allocator = std.testing.allocator;
+
+    // Test with typical values
+    const atom_areas = try allocator.alloc(f64, 2);
+    defer allocator.free(atom_areas);
+    atom_areas[0] = 10.5;
+    atom_areas[1] = 20.3;
+
+    const result = SasaResult{
+        .total_area = 30.8,
+        .atom_areas = atom_areas,
+        .allocator = allocator,
+    };
+
+    // Get buffered output
+    const buffered = try sasaResultToJsonPretty(allocator, result);
+    defer allocator.free(buffered);
+
+    // Get streamed output
+    var list = std.ArrayListUnmanaged(u8){};
+    defer list.deinit(allocator);
+    try streamSasaResultJsonPretty(list.writer(allocator).any(), result);
+
+    try std.testing.expectEqualStrings(buffered, list.items);
+
+    // Also test with empty atoms
+    const empty_areas = try allocator.alloc(f64, 0);
+    defer allocator.free(empty_areas);
+
+    const empty_result = SasaResult{
+        .total_area = 0.0,
+        .atom_areas = empty_areas,
+        .allocator = allocator,
+    };
+
+    const buffered_empty = try sasaResultToJsonPretty(allocator, empty_result);
+    defer allocator.free(buffered_empty);
+
+    var list_empty = std.ArrayListUnmanaged(u8){};
+    defer list_empty.deinit(allocator);
+    try streamSasaResultJsonPretty(list_empty.writer(allocator).any(), empty_result);
+
+    try std.testing.expectEqualStrings(buffered_empty, list_empty.items);
+}
+
+test "streamSasaResultCsv matches sasaResultToCsv" {
+    const allocator = std.testing.allocator;
+
+    // Test with typical values
+    const atom_areas = try allocator.alloc(f64, 3);
+    defer allocator.free(atom_areas);
+    atom_areas[0] = 10.5;
+    atom_areas[1] = 20.3;
+    atom_areas[2] = 5.0;
+
+    const result = SasaResult{
+        .total_area = 35.8,
+        .atom_areas = atom_areas,
+        .allocator = allocator,
+    };
+
+    // Get buffered output
+    const buffered = try sasaResultToCsv(allocator, result);
+    defer allocator.free(buffered);
+
+    // Get streamed output
+    var list = std.ArrayListUnmanaged(u8){};
+    defer list.deinit(allocator);
+    try streamSasaResultCsv(list.writer(allocator).any(), result);
+
+    try std.testing.expectEqualStrings(buffered, list.items);
+
+    // Also test with empty atoms
+    const empty_areas = try allocator.alloc(f64, 0);
+    defer allocator.free(empty_areas);
+
+    const empty_result = SasaResult{
+        .total_area = 0.0,
+        .atom_areas = empty_areas,
+        .allocator = allocator,
+    };
+
+    const buffered_empty = try sasaResultToCsv(allocator, empty_result);
+    defer allocator.free(buffered_empty);
+
+    var list_empty = std.ArrayListUnmanaged(u8){};
+    defer list_empty.deinit(allocator);
+    try streamSasaResultCsv(list_empty.writer(allocator).any(), empty_result);
+
+    try std.testing.expectEqualStrings(buffered_empty, list_empty.items);
 }
