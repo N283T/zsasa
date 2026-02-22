@@ -254,3 +254,22 @@ Returns the library version string (e.g., "0.1.1").
 from zsasa import get_version
 print(get_version())  # "0.1.1"
 ```
+
+---
+
+## Auto-Generated API Docs (pdoc)
+
+For complete auto-generated documentation from docstrings:
+
+```bash
+# Install dev dependencies
+cd python && uv pip install -e ".[dev]"
+
+# Generate HTML docs
+./scripts/generate-python-docs.sh
+
+# Or run directly
+cd python && uv run pdoc zsasa/ -o ../docs/python-api/auto/
+```
+
+Output is written to `docs/python-api/auto/` (git-ignored). Open `auto/index.html` in a browser to view.

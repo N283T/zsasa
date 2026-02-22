@@ -29,7 +29,7 @@ biotite = ["biotite>=1.0.0"]
 gemmi = ["gemmi>=0.6.0"]
 mdtraj = ["mdtraj>=1.9.0"]
 mdanalysis = ["MDAnalysis>=2.0.0"]
-dev = ["pytest>=8.0", "pytest-cov>=4.0", "ruff>=0.5", "ty>=0.0.1a0"]
+dev = ["pytest>=8.0", "pytest-cov>=4.0", "ruff>=0.5", "ty>=0.0.1a0", "pdoc>=14.0"]
 all = [
     "zsasa[biopython]",
     "zsasa[biotite]",

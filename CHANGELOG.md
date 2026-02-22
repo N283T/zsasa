@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - C API: `zsasa_dcd_open`, `zsasa_dcd_close`, `zsasa_dcd_read_frame`, `zsasa_dcd_get_natoms`
   - Python DCD reader (`zsasa.dcd`): `DcdReader` class and `compute_sasa_trajectory()` function
   - CLI: `zsasa traj` now supports `.dcd` files with auto-detection by file extension
+- Zig library API reference documentation (`docs/zig-api/`): types, algorithms, parsers, classifier, analysis (#156)
+- Python pdoc auto-generated API documentation (`scripts/generate-python-docs.sh`) (#156)
 
 ### Changed
 
