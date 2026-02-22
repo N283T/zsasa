@@ -1,0 +1,81 @@
+site_name: zsasa
+site_description: High-performance SASA calculation in Zig
+site_url: https://n283t.github.io/zsasa/
+repo_url: https://github.com/N283T/zsasa
+repo_name: N283T/zsasa
+
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: README.md
+  - CLI Reference: cli.md
+  - Algorithms:
+      - SASA Algorithms: algorithm.md
+      - Atom Classifiers: classifier.md
+      - XTC Reader: xtc.md
+  - Zig API:
+      - Overview: zig-api/README.md
+      - Types: zig-api/types.md
+      - Algorithms: zig-api/algorithms.md
+      - Parsers: zig-api/parsers.md
+      - Classifier: zig-api/classifier.md
+      - Analysis: zig-api/analysis.md
+      - Autodoc (Interactive): zig-api/autodoc.md
+  - Python API:
+      - Overview: python-api/README.md
+      - Core API: python-api/core.md
+      - Classifier: python-api/classifier.md
+      - Analysis: python-api/analysis.md
+      - XTC Reader: python-api/xtc.md
+      - Integrations:
+          - Overview: python-api/integrations/README.md
+          - Gemmi: python-api/integrations/gemmi.md
+          - BioPython: python-api/integrations/biopython.md
+          - Biotite: python-api/integrations/biotite.md
+          - MDTraj: python-api/integrations/mdtraj.md
+          - MDAnalysis: python-api/integrations/mdanalysis.md
+  - Architecture:
+      - Overview: architecture.md
+      - Optimizations: optimizations.md
+      - Parser Optimizations: parser-optimizations.md
+  - Benchmarks:
+      - Single-File: benchmark/single-file.md
+      - Batch: benchmark/batch.md
+      - MD Trajectory: benchmark/md.md
+      - Validation: benchmark/validation.md
+  - CI/CD: ci.md
