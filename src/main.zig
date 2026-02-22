@@ -16,6 +16,7 @@ const classifier_parser = @import("classifier_parser.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_protor = @import("classifier_protor.zig");
 const classifier_oons = @import("classifier_oons.zig");
+const stream_writer = @import("stream_writer.zig");
 
 const Config = types.Config;
 const Configf32 = types.Configf32;
@@ -60,6 +61,10 @@ const Args = struct {
     quiet: bool = false,
     validate_only: bool = false,
     show_timing: bool = false, // Show timing breakdown for benchmarking
+    stream: bool = false, // Stream results as they complete (batch mode)
+    stream_format: stream_writer.StreamFormat = .ndjson, // Streaming output format
+    stream_output: ?[]const u8 = null, // Streaming output file path (default: stdout)
+    full: bool = false, // Include per-atom SASA in streaming output
     show_help: bool = false,
     show_version: bool = false,
 };
@@ -164,6 +169,19 @@ fn parseParallelism(value: []const u8) Parallelism {
     } else {
         std.debug.print("Error: Invalid parallelism strategy: {s}\n", .{value});
         std.debug.print("Valid values: file, atom, pipeline\n", .{});
+        std.process.exit(1);
+    }
+}
+
+/// Parse and validate stream format value
+fn parseStreamFormat(value: []const u8) stream_writer.StreamFormat {
+    if (std.mem.eql(u8, value, "ndjson")) {
+        return .ndjson;
+    } else if (std.mem.eql(u8, value, "json")) {
+        return .json_array;
+    } else {
+        std.debug.print("Error: Invalid stream format: {s}\n", .{value});
+        std.debug.print("Valid formats: ndjson, json\n", .{});
         std.process.exit(1);
     }
 }
@@ -425,6 +443,37 @@ fn parseArgs(args: []const []const u8) Args {
             result.polar = true;
             result.per_residue = true; // Polar analysis requires per-residue
         }
+        // --stream
+        else if (std.mem.eql(u8, arg, "--stream")) {
+            result.stream = true;
+        }
+        // --stream-format=FORMAT or --stream-format FORMAT
+        else if (std.mem.startsWith(u8, arg, "--stream-format=")) {
+            const value = arg["--stream-format=".len..];
+            result.stream_format = parseStreamFormat(value);
+        } else if (std.mem.eql(u8, arg, "--stream-format")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --stream-format\n", .{});
+                std.process.exit(1);
+            }
+            result.stream_format = parseStreamFormat(args[i]);
+        }
+        // --stream-output=PATH or --stream-output PATH
+        else if (std.mem.startsWith(u8, arg, "--stream-output=")) {
+            result.stream_output = arg["--stream-output=".len..];
+        } else if (std.mem.eql(u8, arg, "--stream-output")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --stream-output\n", .{});
+                std.process.exit(1);
+            }
+            result.stream_output = args[i];
+        }
+        // --full
+        else if (std.mem.eql(u8, arg, "--full")) {
+            result.full = true;
+        }
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
@@ -527,6 +576,10 @@ fn printHelp(program_name: []const u8) void {
         \\    -o, --output=FILE  Output file (alternative to positional argument)
         \\    --validate         Validate input only, do not calculate SASA
         \\    --timing           Show timing breakdown (for benchmarking)
+        \\    --stream           Stream results as JSON (batch mode only)
+        \\    --stream-format=FMT  Stream format: ndjson (default), json
+        \\    --stream-output=FILE Write stream to file (default: stdout)
+        \\    --full             Include per-atom SASA in stream output
         \\    -q, --quiet        Suppress progress output
         \\    -h, --help         Show this help message
         \\    -V, --version      Show version
@@ -744,9 +797,25 @@ fn runBatchMode(allocator: std.mem.Allocator, parsed: Args) !void {
     else
         null;
 
+    // Setup streaming output
+    var stream_file: ?std.fs.File = null;
+    defer if (stream_file) |f| f.close();
+
+    var stream_generic_writer: std.fs.File.DeprecatedWriter = undefined;
+    var sw: ?stream_writer.StreamWriter = null;
+    if (parsed.stream) {
+        const file = if (parsed.stream_output) |path| blk: {
+            stream_file = try std.fs.cwd().createFile(path, .{});
+            break :blk stream_file.?;
+        } else std.fs.File.stdout();
+        stream_generic_writer = file.deprecatedWriter();
+        sw = stream_writer.StreamWriter.init(stream_generic_writer.any(), parsed.stream_format, parsed.full);
+        try sw.?.begin();
+    }
+
     // Build batch config from parsed args
     // classifier_type: use explicit --classifier if set, otherwise default protor
-    const config = batch.BatchConfig{
+    var config = batch.BatchConfig{
         .n_threads = parsed.n_threads,
         .algorithm = switch (parsed.algorithm) {
             .sr => .sr,
@@ -764,6 +833,8 @@ fn runBatchMode(allocator: std.mem.Allocator, parsed: Args) !void {
         .include_hydrogens = parsed.include_hydrogens,
         .include_hetatm = parsed.include_hetatm,
     };
+    // Set stream_writer_ptr after config is on the stack (sw is stable local var)
+    config.stream_writer_ptr = if (sw != null) &sw.? else null;
 
     if (!parsed.quiet) {
         std.debug.print("Batch mode: processing directory '{s}'\n", .{input_dir});
@@ -779,6 +850,11 @@ fn runBatchMode(allocator: std.mem.Allocator, parsed: Args) !void {
 
     var result = try batch.runBatch(allocator, input_dir, output_dir, config);
     defer result.deinit();
+
+    // End streaming
+    if (sw) |*s| {
+        try s.end();
+    }
 
     // Print results
     if (!parsed.quiet) {
