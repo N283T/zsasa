@@ -12,6 +12,7 @@ const classifier = @import("classifier.zig");
 const classifier_protor = @import("classifier_protor.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_oons = @import("classifier_oons.zig");
+const stream_writer = @import("stream_writer.zig");
 
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
@@ -53,6 +54,7 @@ pub const BatchConfig = struct {
     classifier_type: ?ClassifierType = .protor, // Default: protor (matches FreeSASA/RustSASA)
     include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
     include_hetatm: bool = false, // Include HETATM records (default: exclude)
+    stream_writer_ptr: ?*stream_writer.StreamWriter = null, // Optional streaming output
 };
 
 /// Get output extension based on format
@@ -496,6 +498,18 @@ pub fn runBatchSequential(
 
         file_results[i] = result;
 
+        // Stream result before arena reset (while filename is still valid)
+        if (config.stream_writer_ptr) |sw| {
+            sw.writeResult(.{
+                .filename = filename,
+                .n_atoms = result.n_atoms,
+                .total_sasa = result.total_sasa,
+                .status = result.status,
+                .time_ns = result.sasa_time_ns,
+                .error_msg = result.error_msg,
+            }) catch {};
+        }
+
         // Reset arena for next file
         _ = arena.reset(.retain_capacity);
 
@@ -588,6 +602,18 @@ pub fn runBatchAtomParallel(
         }
 
         file_results[i] = result;
+
+        // Stream result before arena reset (while filename is still valid)
+        if (config.stream_writer_ptr) |sw| {
+            sw.writeResult(.{
+                .filename = filename,
+                .n_atoms = result.n_atoms,
+                .total_sasa = result.total_sasa,
+                .status = result.status,
+                .time_ns = result.sasa_time_ns,
+                .error_msg = result.error_msg,
+            }) catch {};
+        }
 
         // Reset arena for next file
         _ = arena.reset(.retain_capacity);
@@ -748,12 +774,13 @@ pub fn runBatchPipelined(
         const sasa_time_ns = timer.read();
 
         // Store result
+        const file_status: FileResult.Status = if (sasa_ok) .ok else .err;
         file_results[file_idx] = FileResult{
             .filename = filename_copy,
             .n_atoms = pf.input.atomCount(),
             .sasa_time_ns = sasa_time_ns,
             .total_sasa = total_area,
-            .status = if (sasa_ok) .ok else .err,
+            .status = file_status,
         };
 
         if (sasa_ok) {
@@ -761,6 +788,17 @@ pub fn runBatchPipelined(
             total_sasa_time_ns += sasa_time_ns;
         } else {
             failed += 1;
+        }
+
+        // Stream result before prefetched data is freed
+        if (config.stream_writer_ptr) |sw| {
+            sw.writeResult(.{
+                .filename = pf.filename,
+                .n_atoms = pf.input.atomCount(),
+                .total_sasa = total_area,
+                .status = file_status,
+                .time_ns = sasa_time_ns,
+            }) catch {};
         }
 
         file_idx += 1;
@@ -817,6 +855,7 @@ const ParallelContext = struct {
     result_allocator: Allocator,
     next_file: std.atomic.Value(usize),
     processed_count: std.atomic.Value(usize),
+    stream_writer_ptr: ?*stream_writer.StreamWriter,
 };
 
 /// Worker thread function for parallel batch processing
@@ -870,6 +909,18 @@ fn parallelWorker(ctx: *ParallelContext) void {
 
         // Store result (thread-safe: each index is unique)
         ctx.results[file_idx] = result;
+
+        // Stream result (thread-safe: StreamWriter uses mutex)
+        if (ctx.stream_writer_ptr) |sw| {
+            sw.writeResult(.{
+                .filename = filename,
+                .n_atoms = result.n_atoms,
+                .total_sasa = result.total_sasa,
+                .status = result.status,
+                .time_ns = result.sasa_time_ns,
+                .error_msg = result.error_msg,
+            }) catch {};
+        }
 
         // Update progress counter
         _ = ctx.processed_count.fetchAdd(1, .seq_cst);
@@ -940,6 +991,7 @@ pub fn runBatchParallel(
         .result_allocator = allocator,
         .next_file = std.atomic.Value(usize).init(0),
         .processed_count = std.atomic.Value(usize).init(0),
+        .stream_writer_ptr = config.stream_writer_ptr,
     };
 
     // Spawn worker threads
