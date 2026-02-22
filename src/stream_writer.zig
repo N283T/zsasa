@@ -50,7 +50,7 @@ pub const StreamWriter = struct {
     first_written: bool,
     include_atom_areas: bool,
     phase: Phase,
-    write_failures: usize,
+    write_failures: std.atomic.Value(usize),
 
     /// Initialize a StreamWriter.
     ///
@@ -72,7 +72,7 @@ pub const StreamWriter = struct {
             .first_written = false,
             .include_atom_areas = include_atom_areas,
             .phase = .created,
-            .write_failures = 0,
+            .write_failures = std.atomic.Value(usize).init(0),
         };
     }
 
@@ -157,13 +157,15 @@ pub const StreamWriter = struct {
             try bw.writeAll("\n");
         }
 
-        // Write the buffered object atomically to the real writer.
-        // first_written is only updated after a successful write.
-        const w = self.writer;
+        // Prepend comma separator into the buffer for json_array so the
+        // entire payload (separator + object) is written in a single call.
         if (self.format == .json_array and self.first_written) {
-            try w.writeAll(",\n");
+            try buf.insertSlice(std.heap.page_allocator, 0, ",\n");
         }
-        try w.writeAll(buf.items);
+
+        // Write the buffered payload atomically to the real writer.
+        // first_written is only updated after a successful write.
+        try self.writer.writeAll(buf.items);
         self.first_written = true;
     }
 

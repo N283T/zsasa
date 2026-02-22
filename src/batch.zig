@@ -1060,7 +1060,7 @@ fn emitStreamResult(
     var sr = stream_writer.StreamResult.fromFileResult(result);
     sr.filename = filename;
     sw.writeResult(sr) catch |err| {
-        sw.write_failures += 1;
+        _ = sw.write_failures.fetchAdd(1, .monotonic);
         std.debug.print("Warning: stream write failed for '{s}': {s}\n", .{ filename, @errorName(err) });
     };
 }
