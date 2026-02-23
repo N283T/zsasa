@@ -36,6 +36,8 @@ For structure file parsing and MD trajectory integrations, see [Integrations](..
 
 ```bash
 pip install zsasa
+# or
+uv add zsasa
 ```
 
 Pre-built wheels are available for Linux (x86_64, aarch64), macOS (x86_64, arm64), and Windows (x86_64).
@@ -48,6 +50,8 @@ Requires Zig 0.15.2+.
 ```bash
 cd zsasa/python
 pip install -e .
+# or
+uv pip install -e .
 ```
 
 ### Optional Dependencies
@@ -64,6 +68,9 @@ pip install MDAnalysis               # MDAnalysis
 
 # All integrations
 pip install zsasa[all]
+
+# With uv
+uv add zsasa[gemmi]          # or any extra above
 ```
 
 ---

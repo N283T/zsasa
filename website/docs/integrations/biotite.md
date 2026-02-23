@@ -6,6 +6,8 @@ Support for Biotite AtomArray objects.
 
 ```bash
 pip install zsasa[biotite]
+# or
+uv add zsasa[biotite]
 ```
 
 ## Import

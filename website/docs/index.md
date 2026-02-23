@@ -24,6 +24,8 @@ High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 
 ```bash
 pip install zsasa
+# or
+uv add zsasa
 ```
 
 ```python
