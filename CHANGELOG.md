@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Directory batch processing C API**: `zsasa_batch_dir_*` functions for processing entire directories of PDB/CIF/JSON files via FFI (#191)
+  - `zsasa_batch_dir_process`: scan directory and calculate SASA for all structure files with parallel processing
+  - Per-file accessors: `get_filename`, `get_n_atoms`, `get_total_sasa`, `get_status`
+  - Aggregate accessors: `get_total_files`, `get_successful`, `get_failed`
+  - `zsasa_batch_dir_free`: release handle resources
+  - New constants: `ZSASA_ERROR_FILE_IO` (-4), `ZSASA_ALGORITHM_SR` (0), `ZSASA_ALGORITHM_LR` (1)
+
 ## [0.1.2] - 2026-02-22
 
 ### Added
