@@ -1,0 +1,176 @@
+---
+sidebar_position: 2
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Classifiers
+
+Classifiers assign van der Waals radii and polarity classes to atoms based on residue and atom names. The choice of classifier directly affects SASA values, so understanding the differences is important.
+
+## Quick Recommendation
+
+- **NACCESS**: Best default. Widely used, compatible with FreeSASA.
+- **ProtOr**: Hybridization-based radii. Use when comparing with ProtOr-based studies.
+- **OONS**: Larger aliphatic carbon radii. Use when comparing with OONS-based studies.
+
+## How Classifiers Work
+
+1. **Residue-specific match**: Exact match of (residue name, atom name) pair
+2. **ANY fallback**: Generic atom definitions shared across residues (NACCESS and OONS only)
+3. **Element estimation**: Estimate radius from element symbol if no match found
+
+## Classifier Comparison
+
+### Radius Differences
+
+| Atom Type | NACCESS | ProtOr | OONS |
+|-----------|---------|--------|------|
+| Aliphatic C (e.g., CA, CB) | 1.87 Å | 1.88 Å | **2.00 Å** |
+| Aromatic C | 1.76 Å | 1.76 Å | 1.75 Å |
+| Nitrogen | 1.65 Å | 1.64 Å | 1.55 Å |
+| Oxygen | 1.40 Å | 1.42-1.46 Å | 1.40 Å |
+| Sulfur | 1.85 Å (**apolar**) | 1.77 Å (**polar**) | 2.00 Å (**polar**) |
+
+:::warning[Sulfur polarity varies]
+NACCESS treats sulfur as **apolar**, while ProtOr and OONS treat it as **polar**. This affects polar/nonpolar SASA classification for CYS and MET residues.
+:::
+
+### Key Differences
+
+| Property | NACCESS | ProtOr | OONS |
+|----------|---------|--------|------|
+| ANY fallback | Yes | **No** | Yes |
+| Classification basis | Atom type | Hybridization state | Atom type |
+| Reference | Hubbard & Thornton 1993 | Tsai et al. 1999 | Ooi et al. 1987 |
+
+## Usage
+
+<Tabs>
+  <TabItem value="cli" label="CLI" default>
+
+```bash
+# NACCESS (recommended)
+zsasa --classifier=naccess structure.cif output.json
+
+# ProtOr
+zsasa --classifier=protor structure.cif output.json
+
+# OONS
+zsasa --classifier=oons structure.cif output.json
+
+# Custom config file
+zsasa --config=my_radii.toml structure.cif output.json
+```
+
+  </TabItem>
+  <TabItem value="python" label="Python">
+
+```python
+from zsasa import calculate_sasa, Classifier
+
+result = calculate_sasa(
+    coords, radii,
+    classifier=Classifier.NACCESS,
+    residue_names=residues,
+    atom_names=atoms,
+)
+```
+
+  </TabItem>
+  <TabItem value="python-gemmi" label="Python (Gemmi)">
+
+```python
+from zsasa.integrations.gemmi import calculate_sasa_from_structure
+
+# Classifier is applied automatically
+result = calculate_sasa_from_structure(
+    "protein.cif",
+    classifier="naccess",
+)
+```
+
+  </TabItem>
+</Tabs>
+
+## Custom Classifier
+
+You can define custom atom radii using a config file.
+
+### TOML Format
+
+```toml
+name = "my-classifier"
+
+[types]
+C_ALI = { radius = 1.87, class = "apolar" }
+C_CAR = { radius = 1.76, class = "apolar" }
+N     = { radius = 1.65, class = "polar" }
+O     = { radius = 1.40, class = "polar" }
+S     = { radius = 1.85, class = "apolar" }
+
+[[atoms]]
+residue = "ANY"
+atom = "CA"
+type = "C_ALI"
+
+[[atoms]]
+residue = "ALA"
+atom = "CB"
+type = "C_ALI"
+```
+
+### FreeSASA Format
+
+```
+name: my-classifier
+
+types:
+C_ALI 1.87 apolar
+C_CAR 1.76 apolar
+O     1.40 polar
+
+atoms:
+ANY CA  C_ALI
+ALA CB  C_ALI
+```
+
+The format is auto-detected by file extension: `.toml` for TOML, all others for FreeSASA format.
+
+## Supported Residues
+
+### Amino Acids
+
+All 20 standard amino acids plus SEC (selenocysteine) and MSE (selenomethionine).
+
+### Nucleic Acids
+
+RNA: A, C, G, I, T, U
+DNA: DA, DC, DG, DI, DT, DU
+
+## Handling Unknown Atoms
+
+When a classifier cannot find a matching (residue, atom name) pair:
+
+1. NACCESS/OONS check the `ANY` fallback entries
+2. If still unmatched, the element is extracted from the atom name and a generic van der Waals radius is assigned
+
+To avoid ambiguity (e.g., "CA" = Carbon-alpha vs Calcium), include an `element` field (atomic numbers) in JSON input:
+
+```json
+{
+  "atom_name": ["CA", "CA"],
+  "element": [6, 20]
+}
+```
+
+- Atomic number 6 = Carbon (Cα)
+- Atomic number 20 = Calcium (metal ion)
+
+## References
+
+- Hubbard, S. J.; Thornton, J. M. NACCESS, Computer Program. UCL, 1993.
+- Tsai, J.; Taylor, R.; Chothia, C.; Gerstein, M. The Packing Density in Proteins. *J. Mol. Biol.* 1999, 290(1), 253-266.
+- Ooi, T.; Oobatake, M.; Némethy, G.; Scheraga, H. A. Accessible Surface Areas. *Proc. Natl. Acad. Sci.* 1987, 84(10), 3086-3090.
+- Mantina, M. et al. Consistent van der Waals Radii. *J. Phys. Chem. A* 2009, 113(19), 5806-5812.

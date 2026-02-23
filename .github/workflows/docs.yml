@@ -28,36 +28,40 @@ jobs:
         with:
           version: 0.15.2
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: "3.12"
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
 
-      - name: Install MkDocs
-        run: pip install mkdocs-material
+      - name: Install dependencies
+        working-directory: website
+        run: npm ci
 
       - name: Build Zig autodoc
         run: zig build docs
 
-      - name: Build MkDocs site
-        run: mkdocs build
+      - name: Build Docusaurus site
+        working-directory: website
+        run: npm run build
 
       - name: Copy benchmark assets into site
         run: |
-          mkdir -p site/benchmarks/results
+          mkdir -p website/build/benchmarks/results
           for dir in plots md validation validation_md; do
             if [ -d "benchmarks/results/$dir" ]; then
-              cp -r "benchmarks/results/$dir" site/benchmarks/results/
+              cp -r "benchmarks/results/$dir" website/build/benchmarks/results/
             fi
           done
 
       - name: Copy Zig autodoc into site
-        run: cp -r zig-out/docs site/zig-autodoc
+        run: cp -r zig-out/docs website/build/zig-autodoc
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: website/build
 
   deploy:
     environment:
