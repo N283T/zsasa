@@ -181,11 +181,11 @@ SASA calculation time is nearly identical between CLI and Python — the ctypes 
 
 ### Single-File Performance
 
-| Speedup (threads=10) | Thread Scaling (100k+ atoms) |
+| Speedup (threads=10) | Thread Scaling (50k+ atoms) |
 |:--------------------:|:----------------------------:|
-| ![Speedup](../../benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](../../benchmarks/results/plots/thread_scaling/individual/sr.png) |
+| ![Speedup](../../benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](../../benchmarks/results/plots/large/speedup_by_threads.png) |
 
-**Key Results (100k+ atoms, threads=10):**
+**Key Results (50k+ atoms, threads=10):**
 - **2.3x** median speedup vs FreeSASA and RustSASA
 - Speedup increases with thread count (superior parallel efficiency)
 - Accuracy: Results match FreeSASA (< 0.01% difference)
