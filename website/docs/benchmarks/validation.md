@@ -27,7 +27,7 @@ Dataset: AlphaFold E. coli K-12 proteome, n_points=100.
 - **f64**: Bit-identical to FreeSASA (both use the same algorithm parameters)
 - **f32**: Max 0.015% error from floating-point rounding — negligible for practical use
 
-![SR validation scatter](pathname://../../benchmarks/results/validation/ecoli/sr/validation_sr.png)
+![SR validation scatter](pathname:///zsasa/benchmarks/results/validation/ecoli/sr/validation_sr.png)
 
 ### Lee-Richards (E. coli Proteome, 4,370 structures)
 
@@ -42,7 +42,7 @@ Dataset: AlphaFold E. coli K-12 proteome, n_slices=20.
 - Mean error ~0.22% is higher than SR (<0.001%) due to different slicing implementations between zsasa and FreeSASA
 - R² = 1.000000 confirms strong linear agreement
 
-![LR validation scatter](pathname://../../benchmarks/results/validation/ecoli/lr/validation_lr.png)
+![LR validation scatter](pathname:///zsasa/benchmarks/results/validation/ecoli/lr/validation_lr.png)
 
 ## MD Trajectory
 
@@ -93,9 +93,9 @@ Reference: mdtraj at n_points=960.
 - Max error <0.014% comes from floating-point coordinate precision differences between MDTraj's C reader and zsasa's Zig XTC reader
 - Error decreases with higher n_points (more points smooth out coordinate-level noise)
 
-![MD validation n_points=100](pathname://../../benchmarks/results/validation_md/5wvo_C_R1/validation_md_100.png)
-![MD validation n_points=500](pathname://../../benchmarks/results/validation_md/5wvo_C_R1/validation_md_500.png)
-![MD validation n_points=960](pathname://../../benchmarks/results/validation_md/5wvo_C_R1/validation_md_960.png)
+![MD validation n_points=100](pathname:///zsasa/benchmarks/results/validation_md/5wvo_C_R1/validation_md_100.png)
+![MD validation n_points=500](pathname:///zsasa/benchmarks/results/validation_md/5wvo_C_R1/validation_md_500.png)
+![MD validation n_points=960](pathname:///zsasa/benchmarks/results/validation_md/5wvo_C_R1/validation_md_960.png)
 
 ## Running Validation
 

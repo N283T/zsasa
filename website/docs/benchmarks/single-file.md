@@ -17,7 +17,7 @@ Zig's key advantage: **Large structures + Multi-threading**
 
 | Speedup at threads=10 | Thread Scaling (100k+ atoms) |
 |:---------------:|:----------------------------:|
-| ![Speedup](pathname://../../benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](pathname://../../benchmarks/results/plots/large/speedup_by_threads.png) |
+| ![Speedup](pathname:///zsasa/benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](pathname:///zsasa/benchmarks/results/plots/large/speedup_by_threads.png) |
 
 **Key Results (100k+ atoms, n=1,171):**
 - **Up to 3.05x faster** than FreeSASA (8to0: 673,884 atoms, threads=8)
@@ -105,7 +105,7 @@ diff a.json b.json  # No differences
 
 ## Dataset
 
-![Dataset Distribution](pathname://../../benchmarks/results/plots/dataset/stratified_100k.png)
+![Dataset Distribution](pathname:///zsasa/benchmarks/results/plots/dataset/stratified_100k.png)
 
 | Sampling Bin | Size Bin | Atoms | Count | Percentage |
 | :---: | --- | ---: | ---: | ---: |
@@ -162,7 +162,7 @@ Single-threaded comparison (excluding parallelization effects):
 
 ### Speedup by Structure Size
 
-![Speedup by Size and Threads](pathname://../../benchmarks/results/plots/speedup_by_bin/grid.png)
+![Speedup by Size and Threads](pathname:///zsasa/benchmarks/results/plots/speedup_by_bin/grid.png)
 
 | Size Bin | Count | vs FreeSASA | vs RustSASA |
 | --- | ---: | ---: | ---: |
@@ -192,7 +192,7 @@ Single-threaded comparison (excluding parallelization effects):
 
 ### Median Execution Time by Thread Count
 
-![Thread Scaling](pathname://../../benchmarks/results/plots/large/speedup_by_threads.png)
+![Thread Scaling](pathname:///zsasa/benchmarks/results/plots/large/speedup_by_threads.png)
 
 | Threads | Zig (ms) | FreeSASA (ms) | Rust (ms) |
 | ---: | ---: | ---: | ---: |
@@ -223,7 +223,7 @@ Parallel Efficiency = T1 / (TN x N)
 
 ### Efficiency by Thread Count
 
-![Parallel Efficiency](pathname://../../benchmarks/results/plots/efficiency/summary.png)
+![Parallel Efficiency](pathname:///zsasa/benchmarks/results/plots/efficiency/summary.png)
 
 | Threads | Zig | FreeSASA | Rust | Zig vs FS | Zig vs Rust |
 | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -261,7 +261,7 @@ Parallel Efficiency = T1 / (TN x N)
 
 | Speedup at threads=10 | Thread Scaling |
 |:---------------:|:--------------:|
-| ![Speedup](pathname://../../benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](pathname://../../benchmarks/results/plots/large/speedup_by_threads.png) |
+| ![Speedup](pathname:///zsasa/benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](pathname:///zsasa/benchmarks/results/plots/large/speedup_by_threads.png) |
 
 | Comparison | Median Speedup |
 | --- | ---: |
@@ -274,7 +274,7 @@ Parallel Efficiency = T1 / (TN x N)
 
 ### Maximum Structure: 9fqr (4,506,416 atoms)
 
-![Max Structure Scaling](pathname://../../benchmarks/results/plots/samples/max_structure.png)
+![Max Structure Scaling](pathname:///zsasa/benchmarks/results/plots/samples/max_structure.png)
 
 Thread scaling on the largest PDB structure (9fqr, mean of 3 runs):
 
@@ -293,7 +293,7 @@ Thread scaling on the largest PDB structure (9fqr, mean of 3 runs):
 
 ### Best Speedup Structures (50k+ atoms)
 
-![Speedup Comparison](pathname://../../benchmarks/results/plots/speedup/comparison.png)
+![Speedup Comparison](pathname:///zsasa/benchmarks/results/plots/speedup/comparison.png)
 
 Top 5 structures with highest speedup at any thread count:
 
@@ -321,7 +321,7 @@ Top 5 structures with highest speedup at any thread count:
 
 ## Execution Time Distribution
 
-![SR Scatter Plot](pathname://../../benchmarks/results/plots/scatter/sr/grid.png)
+![SR Scatter Plot](pathname:///zsasa/benchmarks/results/plots/scatter/sr/grid.png)
 
 **Observations:**
 - Nearly linear on log scale -> O(N) neighbor list is effective (all tools use cell list)
@@ -337,16 +337,16 @@ Thread scaling details on representative structures selected from each size bin.
 
 | Bin | Atoms Range | Sample Plot |
 |-----|-------------|-------------|
-| 0-500 | 0-500 | [View](pathname://../../benchmarks/results/plots/samples/0-500.png) |
-| 500-1k | 500-1,000 | [View](pathname://../../benchmarks/results/plots/samples/500-1k.png) |
-| 1k-2k | 1,000-2,000 | [View](pathname://../../benchmarks/results/plots/samples/1k-2k.png) |
-| 2k-5k | 2,000-5,000 | [View](pathname://../../benchmarks/results/plots/samples/2k-5k.png) |
-| 5k-10k | 5,000-10,000 | [View](pathname://../../benchmarks/results/plots/samples/5k-10k.png) |
-| 10k-20k | 10,000-20,000 | [View](pathname://../../benchmarks/results/plots/samples/10k-20k.png) |
-| 20k-50k | 20,000-50,000 | [View](pathname://../../benchmarks/results/plots/samples/20k-50k.png) |
-| 50k-100k | 50,000-100,000 | [View](pathname://../../benchmarks/results/plots/samples/50k-100k.png) |
-| 100k-200k | 100,000-200,000 | [View](pathname://../../benchmarks/results/plots/samples/100k-200k.png) |
-| 200k+ | 200,000+ | [View](pathname://../../benchmarks/results/plots/samples/200kplus.png) |
+| 0-500 | 0-500 | [View](pathname:///zsasa/benchmarks/results/plots/samples/0-500.png) |
+| 500-1k | 500-1,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/500-1k.png) |
+| 1k-2k | 1,000-2,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/1k-2k.png) |
+| 2k-5k | 2,000-5,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/2k-5k.png) |
+| 5k-10k | 5,000-10,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/5k-10k.png) |
+| 10k-20k | 10,000-20,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/10k-20k.png) |
+| 20k-50k | 20,000-50,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/20k-50k.png) |
+| 50k-100k | 50,000-100,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/50k-100k.png) |
+| 100k-200k | 100,000-200,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/100k-200k.png) |
+| 200k+ | 200,000+ | [View](pathname:///zsasa/benchmarks/results/plots/samples/200kplus.png) |
 
 ---
 
@@ -474,7 +474,7 @@ Lee-Richards results using ~30k structures. RustSASA does not support LR.
 
 ### Dataset
 
-![LR Dataset](pathname://../../benchmarks/results/plots/dataset/stratified_30k.png)
+![LR Dataset](pathname:///zsasa/benchmarks/results/plots/dataset/stratified_30k.png)
 
 ### Overall Statistics (threads=10)
 
@@ -516,7 +516,7 @@ Lee-Richards results using ~30k structures. RustSASA does not support LR.
 
 ### Execution Time Distribution
 
-![LR Scatter Plot](pathname://../../benchmarks/results/plots/scatter/lr/grid.png)
+![LR Scatter Plot](pathname:///zsasa/benchmarks/results/plots/scatter/lr/grid.png)
 
 **Observations:**
 - Overall 3-4x slower than SR (slice integration cost)

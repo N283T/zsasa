@@ -5,7 +5,7 @@ Auto-generated interactive API documentation from Zig source code.
 The autodoc provides searchable, browsable documentation for all public types,
 functions, and modules in zsasa.
 
-**[Open Zig Autodoc](pathname://../zig-autodoc/)**
+**[Open Zig Autodoc](pathname:///zsasa/zig-autodoc/)**
 
 ## Features
 

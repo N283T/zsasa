@@ -44,7 +44,7 @@ Results at 10 threads (MDTraj: 1t, mdsasa-bolt: all cores):
 - All zsasa variants within 12% of each other (SASA engine is the same)
 - mdsasa-bolt uses **10.9 GB** RAM vs zsasa CLI's **394 MB** (28x difference)
 
-![6sup_A_analysis tool comparison](pathname://../../benchmarks/results/md/6sup_A_analysis/plots/bar.png)
+![6sup_A_analysis tool comparison](pathname:///zsasa/benchmarks/results/md/6sup_A_analysis/plots/bar.png)
 
 ### 6sup_R1 (Large: 33,377 atoms, 10,001 frames)
 
@@ -67,7 +67,7 @@ Results at 10 threads (MDTraj: 1t, mdsasa-bolt: all cores):
 - zsasa CLI is **147x faster** than mdsasa-bolt
 - zsasa CLI uses **395 MB** vs mdsasa-bolt's **22.1 GB** (56x difference)
 
-![6sup_R1 tool comparison](pathname://../../benchmarks/results/md/6sup_R1/plots/bar.png)
+![6sup_R1 tool comparison](pathname:///zsasa/benchmarks/results/md/6sup_R1/plots/bar.png)
 
 ## Key Findings
 
@@ -115,7 +115,7 @@ Results at 10 threads (MDTraj: 1t, mdsasa-bolt: all cores):
 - **Python tools** scale linearly with frame count (entire trajectory loaded into memory)
 - **mdsasa-bolt** has the highest memory usage: 22 GB for 10k frames of a 33k-atom system
 
-![6sup_R1 memory usage](pathname://../../benchmarks/results/md/6sup_R1/plots/memory.png)
+![6sup_R1 memory usage](pathname:///zsasa/benchmarks/results/md/6sup_R1/plots/memory.png)
 
 ## mdsasa-bolt Performance Degradation
 
