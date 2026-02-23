@@ -321,9 +321,9 @@ pub fn printHelp(program_name: []const u8) void {
         \\    -h, --help         Show this help message
         \\
         \\OUTPUT FORMAT (CSV):
-        \\    frame,time,total_sasa
-        \\    0,0.0,12345.67
-        \\    1,1.0,12340.12
+        \\    frame,step,time,total_sasa
+        \\    0,1,0.0,12345.67
+        \\    1,2,1.0,12340.12
         \\    ...
         \\
         \\EXAMPLES:

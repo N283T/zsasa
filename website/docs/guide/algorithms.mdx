@@ -1,0 +1,103 @@
+---
+sidebar_position: 1
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Algorithms
+
+zsasa provides two SASA calculation algorithms.
+
+## Recommendation
+
+**Use Shrake-Rupley (SR)** for most use cases. It is the default algorithm, faster, and produces results within 0.05% of Lee-Richards.
+
+Use Lee-Richards (LR) only when you need to compare results with other LR implementations or require arc-based geometric rigor.
+
+## Comparison
+
+| Property | Shrake-Rupley (SR) | Lee-Richards (LR) |
+|----------|-------------------|-------------------|
+| Method | Test point sampling | Slice/arc integration |
+| Speed | **Fast** | ~4x slower |
+| Default | Yes (`--algorithm=sr`) | No (`--algorithm=lr`) |
+| Precision control | `--n-points` (default: 100) | `--n-slices` (default: 20) |
+| Recommended for | General use | Comparison with LR implementations |
+
+### Performance (1A0Q, 3,183 atoms, 4 threads)
+
+| Algorithm | Time | vs FreeSASA C |
+|-----------|------|---------------|
+| SR (100 points) | 2.6ms | **1.7x faster** |
+| LR (20 slices) | 9.9ms | **1.6x faster** |
+
+### Accuracy
+
+Both algorithms produce nearly identical results on the same structure:
+
+| Algorithm | SASA (Å²) |
+|-----------|-----------|
+| SR (100 points) | 19,211.19 |
+| LR (20 slices) | 19,201.26 |
+| Difference | 0.05% |
+
+## Usage
+
+<Tabs>
+  <TabItem value="cli" label="CLI" default>
+
+```bash
+# Shrake-Rupley (default)
+zsasa structure.cif output.json
+
+# Lee-Richards
+zsasa --algorithm=lr structure.cif output.json
+
+# SR with more test points (higher precision)
+zsasa --n-points=200 structure.cif output.json
+```
+
+  </TabItem>
+  <TabItem value="python" label="Python">
+
+```python
+from zsasa import calculate_sasa
+
+# Shrake-Rupley (default)
+result = calculate_sasa(coords, radii)
+
+# Lee-Richards
+result = calculate_sasa(coords, radii, algorithm="lr")
+
+# SR with more test points
+result = calculate_sasa(coords, radii, n_points=200)
+```
+
+  </TabItem>
+</Tabs>
+
+## Precision vs Speed
+
+### Shrake-Rupley: `--n-points`
+
+| Points | Precision | Relative Time |
+|--------|-----------|---------------|
+| 50 | Low | 0.5x |
+| **100** | **Medium (default)** | **1.0x** |
+| 200 | High | 2.0x |
+| 1000 | Very high | 10.0x |
+
+### Lee-Richards: `--n-slices`
+
+| Slices | Precision | Relative Time |
+|--------|-----------|---------------|
+| 10 | Low | 0.5x |
+| **20** | **Medium (default)** | **1.0x** |
+| 50 | High | 2.5x |
+| 100 | Very high | 5.0x |
+
+## References
+
+- Shrake, A.; Rupley, J. A. Environment and Exposure to Solvent of Protein Atoms. *J. Mol. Biol.* 1973, 79(2), 351-371.
+- Lee, B.; Richards, F. M. The Interpretation of Protein Structures: Estimation of Static Accessibility. *J. Mol. Biol.* 1971, 55(3), 379-400.
