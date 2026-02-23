@@ -68,26 +68,26 @@ zsasa --config=my_radii.toml structure.cif output.json
   <TabItem value="python" label="Python">
 
 ```python
-from zsasa import calculate_sasa, Classifier
+from zsasa import classify_atoms, calculate_sasa, ClassifierType
 
-result = calculate_sasa(
-    coords, radii,
-    classifier=Classifier.NACCESS,
-    residue_names=residues,
-    atom_names=atoms,
-)
+# Step 1: Classify atoms to get radii
+classification = classify_atoms(residue_names, atom_names, ClassifierType.NACCESS)
+
+# Step 2: Calculate SASA using classified radii
+result = calculate_sasa(coords, classification.radii)
 ```
 
   </TabItem>
   <TabItem value="python-gemmi" label="Python (Gemmi)">
 
 ```python
+from zsasa.core import ClassifierType
 from zsasa.integrations.gemmi import calculate_sasa_from_structure
 
 # Classifier is applied automatically
 result = calculate_sasa_from_structure(
     "protein.cif",
-    classifier="naccess",
+    classifier=ClassifierType.NACCESS,
 )
 ```
 

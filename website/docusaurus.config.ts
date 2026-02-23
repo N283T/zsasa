@@ -13,7 +13,6 @@ const config: Config = {
   projectName: "zsasa",
 
   onBrokenLinks: "throw",
-  onBrokenMarkdownLinks: "warn",
   onBrokenAnchors: "warn",
 
   markdown: {

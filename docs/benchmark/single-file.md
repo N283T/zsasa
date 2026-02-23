@@ -529,4 +529,4 @@ Lee-Richards results using ~30k structures. RustSASA does not support LR.
 - [batch.md](batch.md) - Batch processing benchmarks (proteome datasets)
 - [md.md](md.md) - MD trajectory benchmarks
 - [validation.md](validation.md) - SASA accuracy validation
-- [Algorithms](../guide/algorithms.md) - Algorithm comparison and usage
+- [Algorithms](https://n283t.github.io/zsasa/guide/algorithms) - Algorithm comparison and usage

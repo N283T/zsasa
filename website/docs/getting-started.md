@@ -80,7 +80,7 @@ for res in result.residue_areas:
 
 ## What's Next?
 
-- [User Guide: Algorithms](guide/algorithms.md) - Choosing between Shrake-Rupley and Lee-Richards
-- [User Guide: Classifiers](guide/classifiers.md) - Atom radius assignment and its impact on results
+- [User Guide: Algorithms](guide/algorithms.mdx) - Choosing between Shrake-Rupley and Lee-Richards
+- [User Guide: Classifiers](guide/classifiers.mdx) - Atom radius assignment and its impact on results
 - [CLI Reference](cli.md) - Full CLI options
 - [Python API](python-api/) - Complete Python API documentation

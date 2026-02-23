@@ -159,9 +159,9 @@ print(f"Mean SASA: {sasa.results.mean_total_area:.2f} Å²")
 def get_version() -> str
 ```
 
-Returns the library version string (e.g., "0.1.1").
+Returns the library version string.
 
 ```python
 from zsasa import get_version
-print(get_version())  # "0.1.1"
+print(get_version())  # e.g., "0.1.2"
 ```

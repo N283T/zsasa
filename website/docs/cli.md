@@ -112,7 +112,7 @@ The input format is auto-detected from the file extension:
 
 | Extension | Format |
 |-----------|--------|
-| `.json`, `.json.gz`, `.json.zst` | JSON |
+| `.json`, `.json.gz` | JSON |
 | `.cif`, `.mmcif`, `.CIF`, `.mmCIF` | mmCIF |
 | `.pdb`, `.PDB`, `.ent`, `.ENT` | PDB |
 
@@ -589,7 +589,7 @@ zsasa traj trajectory.xtc topology.pdb
 zsasa traj trajectory.xtc topology.pdb --classifier=naccess
 
 # Every 10th frame
-zsasa traj trajectory.xtc topology.xtc --stride=10
+zsasa traj trajectory.xtc topology.pdb --stride=10
 
 # Frames 100-200 only
 zsasa traj trajectory.xtc topology.pdb --start=100 --end=200
