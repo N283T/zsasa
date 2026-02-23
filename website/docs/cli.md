@@ -536,19 +536,19 @@ By default, hydrogen atoms and HETATM records are excluded (matching FreeSASA/Ru
 
 ## Trajectory Mode
 
-Calculate SASA for each frame in an XTC trajectory file.
+Calculate SASA for each frame in a trajectory file.
 
 ### Usage
 
 ```bash
-zsasa traj <xtc> <topology> [OPTIONS]
+zsasa traj <trajectory> <topology> [OPTIONS]
 ```
 
 ### Arguments
 
 | Argument | Description |
 |----------|-------------|
-| `<xtc>` | XTC trajectory file (GROMACS format) |
+| `<trajectory>` | Trajectory file (`.xtc` for GROMACS, `.dcd` for NAMD/CHARMM) |
 | `<topology>` | Topology file (PDB or mmCIF) for atom names and radii |
 
 ### Options
@@ -562,9 +562,11 @@ zsasa traj <xtc> <topology> [OPTIONS]
 | `--n-points=N` | Test points per atom (SR only) | `100` |
 | `--n-slices=N` | Slices per atom diameter (LR only) | `20` |
 | `--precision=P` | Floating-point precision: `f32` or `f64` | `f32` |
+| `--include-hydrogens` | Include hydrogen atoms | excluded |
 | `--stride=N` | Process every Nth frame | `1` |
 | `--start=N` | Start from frame N | `0` |
 | `--end=N` | End at frame N | all |
+| `--batch-size=N` | Frames per batch for parallel processing (0 = auto) | `0` |
 | `-o, --output=FILE` | Output CSV file | `traj_sasa.csv` |
 | `-q, --quiet` | Suppress progress output | off |
 | `-h, --help` | Show help message | |
@@ -600,7 +602,9 @@ zsasa traj trajectory.xtc topology.pdb --algorithm=lr --precision=f64
 
 ### Notes
 
-- XTC coordinates are in nm; they are automatically converted to Å
+- Supported trajectory formats: **XTC** (GROMACS) and **DCD** (NAMD/CHARMM), auto-detected from extension
+- XTC coordinates are in nm; automatically converted to Å. DCD coordinates are already in Å.
+- Hydrogen atoms are excluded by default; use `--include-hydrogens` to include them
 - Topology file provides atom names for radius classification
 - The number of atoms in XTC must match the topology
 - Default precision is `f32` (faster for trajectory processing)

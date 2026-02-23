@@ -2,25 +2,37 @@
 
 zsasa supports SASA calculation over MD trajectory frames using the CLI or Python bindings.
 
+Supported trajectory formats:
+- **XTC** (GROMACS) — compressed, coordinates in nm (auto-converted to Å)
+- **DCD** (NAMD/CHARMM) — uncompressed, coordinates in Å
+
+Format is auto-detected from file extension.
+
 ## CLI: `traj` Subcommand
 
 ```bash
-zsasa traj <xtc_file> <topology_file> [OPTIONS]
+zsasa traj <trajectory> <topology> [OPTIONS]
 ```
 
-The topology file (PDB or mmCIF) provides atom names and radii. XTC coordinates are automatically converted from nm to Å.
+The topology file (PDB or mmCIF) provides atom names and radii.
 
 ### Example
 
 ```bash
-# Basic trajectory SASA
+# XTC trajectory
 zsasa traj trajectory.xtc topology.pdb
+
+# DCD trajectory (NAMD/CHARMM)
+zsasa traj trajectory.dcd topology.pdb
 
 # With classifier and frame selection
 zsasa traj trajectory.xtc topology.pdb \
     --classifier=naccess \
     --stride=10 \
     --start=100 --end=500
+
+# Include hydrogens
+zsasa traj trajectory.xtc topology.pdb --include-hydrogens
 
 # Output to specific file
 zsasa traj trajectory.xtc topology.pdb -o sasa_results.csv
@@ -36,6 +48,8 @@ zsasa traj trajectory.xtc topology.pdb -o sasa_results.csv
 | `--classifier=TYPE` | `naccess`, `protor`, `oons` | none |
 | `--threads=N` | Thread count (0 = auto) | `0` |
 | `--precision=P` | `f32` (fast) or `f64` (precise) | `f32` |
+| `--include-hydrogens` | Include hydrogen atoms | excluded |
+| `--batch-size=N` | Frames per batch (0 = auto) | `0` |
 | `-o, --output=FILE` | Output CSV file | `traj_sasa.csv` |
 
 ### Output Format
@@ -89,16 +103,32 @@ from zsasa.xtc import XtcReader
 reader = XtcReader("trajectory.xtc")
 for frame in reader:
     print(f"Step {frame.step}, Time {frame.time:.1f} ps")
-    coords = frame.coords  # numpy array (n_atoms, 3)
+    coords = frame.coords  # numpy array (n_atoms, 3) in nm
 ```
 
 See [Native XTC Reader](../python-api/xtc.md) for full API details.
 
+## Python: Native DCD Reader
+
+For DCD trajectories without external dependencies:
+
+```python
+from zsasa.dcd import DcdReader
+
+reader = DcdReader("trajectory.dcd")
+for frame in reader:
+    print(f"Step {frame.step}, Time {frame.time:.1f}")
+    coords = frame.coords  # numpy array (n_atoms, 3) in Å
+```
+
+DCD coordinates are already in Angstroms (no unit conversion needed, unlike XTC).
+
 ## Choosing an Approach
 
-| Approach | Best For | Dependencies |
-|----------|----------|-------------|
-| CLI `traj` | Quick analysis, scripting | None (Zig binary) |
-| MDAnalysis | Complex selections, multi-format | `MDAnalysis` |
-| MDTraj | Drop-in replacement for `mdtraj.shrake_rupley` | `mdtraj` |
-| Native XTC | Simple reading, no extra deps | None |
+| Approach | Best For | Formats | Dependencies |
+|----------|----------|---------|-------------|
+| CLI `traj` | Quick analysis, scripting | XTC, DCD | None (Zig binary) |
+| MDAnalysis | Complex selections, multi-format | XTC, DCD, + many more | `MDAnalysis` |
+| MDTraj | Drop-in replacement for `mdtraj.shrake_rupley` | XTC, DCD, + many more | `mdtraj` |
+| Native XTC | Simple XTC reading, no extra deps | XTC | None |
+| Native DCD | Simple DCD reading, no extra deps | DCD | None |
