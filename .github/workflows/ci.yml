@@ -21,6 +21,10 @@ on:
       - 'LICENSE'
   workflow_dispatch:  # Allow manual triggers
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -59,6 +63,7 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     name: Build (${{ matrix.name }})
+    needs: [fmt]
     timeout-minutes: 15
 
     steps:
@@ -69,9 +74,6 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
-
-      - name: Build
-        run: zig build
 
       - name: Run tests
         run: zig build test
