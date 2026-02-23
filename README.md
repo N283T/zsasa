@@ -9,7 +9,9 @@
 [日本語](README.ja.md) | English
 
 High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
-**Up to 3x faster** than FreeSASA C with f64 precision ([benchmarks](docs/benchmark/)).
+**Up to 3x faster** than FreeSASA C with f64 precision.
+
+**[Documentation](https://n283t.github.io/zsasa/)**
 
 ## Features
 
@@ -23,153 +25,47 @@ High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 
 ## Quick Start
 
-**Requirements**: Zig 0.15.2+ ([download](https://ziglang.org/download/))
-
-```bash
-# Build
-zig build -Doptimize=ReleaseFast
-
-# Run
-./zig-out/bin/zsasa structure.cif output.json
-```
-
-## Installation
-
-### CLI
-
-```bash
-git clone https://github.com/N283T/zsasa.git
-cd zsasa
-zig build -Doptimize=ReleaseFast
-```
-
 ### Python
 
 ```bash
 pip install zsasa
+# or
+uv add zsasa
 ```
-
-Pre-built wheels are available for Linux (x86_64, aarch64), macOS (x86_64, arm64), and Windows (x86_64).
-Python 3.11-3.13 supported.
-
-For development installation (requires Zig 0.15.2+):
-
-```bash
-cd python
-pip install -e .
-```
-
-## Usage
-
-### CLI Examples
-
-```bash
-# Basic SASA calculation
-./zig-out/bin/zsasa structure.cif output.json
-
-# Lee-Richards algorithm
-./zig-out/bin/zsasa --algorithm=lr structure.cif output.json
-
-# Multi-threaded
-./zig-out/bin/zsasa --threads=4 structure.cif output.json
-
-# Per-residue analysis with RSA
-./zig-out/bin/zsasa --rsa structure.cif output.json
-
-# CSV output
-./zig-out/bin/zsasa --format=csv structure.cif output.csv
-```
-
-### Options
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--algorithm=ALGO` | `sr` (Shrake-Rupley) or `lr` (Lee-Richards) | sr |
-| `--threads=N` | Number of threads (0 = auto) | auto |
-| `--classifier=TYPE` | Atom classifier: `naccess`, `protor`, `oons` | - |
-| `--chain=ID` | Filter by chain ID (e.g., `A` or `A,B,C`) | all |
-| `--model=N` | Model number for NMR structures | all |
-| `--per-residue` | Output per-residue SASA aggregation | - |
-| `--rsa` | Calculate Relative Solvent Accessibility | - |
-| `--polar` | Show polar/nonpolar summary | - |
-| `--format=FMT` | Output: `json`, `compact`, `csv` | json |
-| `--probe-radius=R` | Probe radius in Å | 1.4 |
-| `--n-points=N` | Test points per atom (SR) | 100 |
-| `--n-slices=N` | Slices per atom (LR) | 20 |
-| `--precision=P` | `f32` (fast) or `f64` (precise) | f64 |
-
-Run `./zig-out/bin/zsasa --help` for all options. See [CLI Reference](docs/cli.md) for detailed documentation.
-
-### Python Examples
 
 ```python
 import numpy as np
 from zsasa import calculate_sasa
 
-# Calculate SASA
 coords = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
 radii = np.array([1.5, 1.5])
 result = calculate_sasa(coords, radii)
-print(f"Total: {result.total_area:.2f} Å²")
-print(f"Per-atom: {result.atom_areas}")
+print(f"Total SASA: {result.total_area:.2f} Å²")
 ```
 
-With structure files (requires `pip install zsasa[gemmi]`):
+### CLI
 
-```python
-from zsasa.integrations.gemmi import calculate_sasa_from_structure
+Requires [Zig 0.15.2+](https://ziglang.org/download/).
 
-result = calculate_sasa_from_structure("protein.cif")
-print(f"Total: {result.total_area:.1f} Å²")
+```bash
+git clone https://github.com/N283T/zsasa.git
+cd zsasa && zig build -Doptimize=ReleaseFast
+./zig-out/bin/zsasa structure.cif output.json
 ```
-
-With MD trajectories (MDAnalysis):
-
-```python
-import MDAnalysis as mda
-from zsasa.mdanalysis import SASAAnalysis
-
-u = mda.Universe("topology.pdb", "trajectory.xtc")
-sasa = SASAAnalysis(u, select="protein")
-sasa.run()
-
-print(f"Mean SASA: {sasa.results.mean_total_area:.2f} Å²")
-print(f"Per-frame: {sasa.results.total_area}")
-```
-
-See [Python API](docs/python-api/) for full documentation.
-
-## Important Notes
-
-- **Standard amino acids only (CLI)**: The built-in classifiers (NACCESS, ProtOr, OONS) provide radii for standard amino acids and nucleotides. For non-standard residues, ligands, or other molecules, prepare a JSON input file with custom radii (see [CLI Reference](docs/cli.md)).
-- **Advanced atom selection**: The CLI supports basic filtering (`--chain`, `--model`, `--include-hetatm`), but for complex selections (e.g., binding site residues, distance-based selection), use [Python bindings](docs/python-api/) with BioPython, Biotite, or MDAnalysis.
-
-## Documentation
-
-| Document | Description |
-|----------|-------------|
-| [CLI Reference](docs/cli.md) | Command-line options, input/output formats |
-| [Python API](docs/python-api/) | Core API, integrations, MD trajectory support |
-| [Algorithms](docs/algorithm.md) | Shrake-Rupley and Lee-Richards details |
-| [Classifiers](docs/classifier.md) | NACCESS, ProtOr, OONS atom classifiers |
-| [Optimizations](docs/optimizations.md) | SIMD, threading, performance techniques |
-| [Benchmarks](docs/benchmark/) | Methodology and results |
 
 ## Benchmarks
 
 ### Single-File Performance
 
-| Speedup (threads=10) | Thread Scaling (100k+ atoms) |
+| Speedup (threads=10) | Thread Scaling (50k+ atoms) |
 |:--------------------:|:----------------------------:|
-| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/thread_scaling/individual/sr.png) |
+| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/large/speedup_by_threads.png) |
 
-**Key Results (100k+ atoms, threads=10):**
-- **2.3x** median speedup vs FreeSASA and RustSASA
+**Key Results (50k+ atoms, threads=10):**
+- **2.3x** median speedup vs FreeSASA and RustSASA (SR)
 - Speedup increases with thread count (superior parallel efficiency)
 
-> **Note**: Zig/FreeSASA use f64, RustSASA uses f32.
-
-See [single-file benchmark results](docs/benchmark/single-file.md) for detailed analysis.
+> **Note**: zsasa/FreeSASA use f64, RustSASA uses f32.
 
 ### MD Trajectory Performance
 
@@ -178,6 +74,19 @@ See [single-file benchmark results](docs/benchmark/single-file.md) for detailed 
 ![MD Trajectory Benchmark](benchmarks/results/md/6sup_A_analysis/plots/bar.png)
 
 *33,377 atoms, 1,001 frames, n_points=100*
+
+See [benchmark details](https://n283t.github.io/zsasa/benchmarks/single-file) for full methodology and results.
+
+## Documentation
+
+Full documentation is available at **[n283t.github.io/zsasa](https://n283t.github.io/zsasa/)**.
+
+| Section | Description |
+|---------|-------------|
+| [Getting Started](https://n283t.github.io/zsasa/getting-started) | Installation and first calculation |
+| [CLI Reference](https://n283t.github.io/zsasa/cli) | Full CLI options and output formats |
+| [Python API](https://n283t.github.io/zsasa/python-api) | Core API, integrations, MD trajectory |
+| [Benchmarks](https://n283t.github.io/zsasa/benchmarks/single-file) | Methodology and results |
 
 ## Contributing
 
@@ -189,7 +98,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 
 ## References
 
-- Shrake, A.; Rupley, J. A. Environment and Exposure to Solvent of Protein Atoms. *J. Mol. Biol.* 1973, 79(2), 351–371. [doi:10.1016/0022-2836(73)90011-9](https://doi.org/10.1016/0022-2836(73)90011-9)
-- Lee, B.; Richards, F. M. The Interpretation of Protein Structures: Estimation of Static Accessibility. *J. Mol. Biol.* 1971, 55(3), 379–400. [doi:10.1016/0022-2836(71)90324-x](https://doi.org/10.1016/0022-2836(71)90324-x)
+- Shrake, A.; Rupley, J. A. Environment and Exposure to Solvent of Protein Atoms. *J. Mol. Biol.* 1973, 79(2), 351-371. [doi:10.1016/0022-2836(73)90011-9](https://doi.org/10.1016/0022-2836(73)90011-9)
+- Lee, B.; Richards, F. M. The Interpretation of Protein Structures: Estimation of Static Accessibility. *J. Mol. Biol.* 1971, 55(3), 379-400. [doi:10.1016/0022-2836(71)90324-x](https://doi.org/10.1016/0022-2836(71)90324-x)
 - Mitternacht, S. FreeSASA: An Open Source C Library for Solvent Accessible Surface Area Calculations. *F1000Res.* 2016, 5, 189. [doi:10.12688/f1000research.7931.1](https://doi.org/10.12688/f1000research.7931.1)
 - Campbell, M. J. RustSASA: A Rust Crate for Accelerated Solvent Accessible Surface Area Calculations. *J. Open Source Softw.* 2026, 11(117), 9537. [doi:10.21105/joss.09537](https://doi.org/10.21105/joss.09537)

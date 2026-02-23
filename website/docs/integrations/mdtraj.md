@@ -6,6 +6,8 @@ High-performance MD trajectory SASA analysis.
 
 ```bash
 pip install mdtraj
+# or
+uv add mdtraj
 ```
 
 ## Import

@@ -6,6 +6,8 @@ Fast mmCIF and PDB parsing with gemmi.
 
 ```bash
 pip install zsasa[gemmi]
+# or
+uv add zsasa[gemmi]
 ```
 
 ## Import

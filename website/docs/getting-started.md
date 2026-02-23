@@ -10,6 +10,8 @@ sidebar_position: 2
 
 ```bash
 pip install zsasa
+# or
+uv add zsasa
 ```
 
 Pre-built wheels are available for Linux (x86_64, aarch64), macOS (x86_64, arm64), and Windows (x86_64).
@@ -21,6 +23,8 @@ For structure file support (mmCIF/PDB), install with an integration:
 pip install zsasa[gemmi]      # Gemmi (fast mmCIF/PDB parsing)
 pip install zsasa[biopython]  # BioPython
 pip install zsasa[biotite]    # Biotite
+# or with uv
+uv add zsasa[gemmi]
 ```
 
 ### CLI

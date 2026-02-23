@@ -6,6 +6,8 @@ High-performance SASA analysis compatible with MDAnalysis' `AnalysisBase` patter
 
 ```bash
 pip install MDAnalysis
+# or
+uv add MDAnalysis
 ```
 
 ## Import

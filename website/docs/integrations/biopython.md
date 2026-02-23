@@ -6,6 +6,8 @@ Support for BioPython Structure objects.
 
 ```bash
 pip install zsasa[biopython]
+# or
+uv add zsasa[biopython]
 ```
 
 ## Import
