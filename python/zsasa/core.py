@@ -1142,12 +1142,21 @@ def process_directory(
 
         for i in range(total_files):
             fname_ptr = lib.zsasa_batch_dir_get_filename(handle, i)
-            fname = ffi.string(fname_ptr).decode("utf-8") if fname_ptr != ffi.NULL else ""
-            filenames.append(fname)
+            if fname_ptr == ffi.NULL:
+                msg = (
+                    f"Internal error: zsasa_batch_dir_get_filename returned NULL "
+                    f"for index {i} (total_files={total_files})"
+                )
+                raise RuntimeError(msg)
+            filenames.append(ffi.string(fname_ptr).decode("utf-8"))
             n_atoms_list.append(lib.zsasa_batch_dir_get_n_atoms(handle, i))
             sasa = lib.zsasa_batch_dir_get_total_sasa(handle, i)
             total_sasa_list.append(float("nan") if math.isnan(sasa) else sasa)
-            status_list.append(lib.zsasa_batch_dir_get_status(handle, i))
+            st = lib.zsasa_batch_dir_get_status(handle, i)
+            if st not in (0, 1):
+                msg = f"Internal error: unexpected status {st} for file index {i} (expected 0 or 1)"
+                raise RuntimeError(msg)
+            status_list.append(st)
 
         return BatchDirResult(
             total_files=total_files,
