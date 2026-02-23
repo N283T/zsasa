@@ -12,6 +12,7 @@ The Python bindings provide:
 - **Atom classification**: NACCESS, PROTOR, and OONS classifiers
 - **RSA calculation**: Relative Solvent Accessibility
 - **Per-residue aggregation**: Aggregate atom SASA to residue level
+- **Directory batch processing**: Process entire directories of structure files
 - **Library integrations**: gemmi, BioPython, and Biotite support
 - **MD trajectory analysis**: MDTraj and MDAnalysis integration (4x faster than mdsasa-bolt)
 
@@ -19,7 +20,7 @@ The Python bindings provide:
 
 | Document | Description |
 |----------|-------------|
-| [Core API](core.md) | `calculate_sasa`, batch API, precision |
+| [Core API](core.md) | `calculate_sasa`, batch API, directory processing |
 | [Classifier](classifier.md) | Atom classification, RSA calculation |
 | [Analysis](analysis.md) | Per-residue aggregation, examples |
 | [Native XTC Reader](xtc.md) | Standalone XTC reading, no dependencies |
@@ -139,6 +140,19 @@ sasa = SASAAnalysis(u, select="protein")
 sasa.run()
 
 print(f"Mean SASA: {sasa.results.mean_total_area:.2f} Å²")
+```
+
+### Directory Batch Processing
+
+```python
+from zsasa import process_directory
+
+result = process_directory("path/to/structures/")
+print(f"Processed {result.successful}/{result.total_files} files")
+
+for i in range(result.total_files):
+    if result.status[i] == 1:
+        print(f"  {result.filenames[i]}: SASA={result.total_sasa[i]:.1f} Å²")
 ```
 
 ### Native XTC Reading (No Dependencies)
