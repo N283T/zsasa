@@ -8,6 +8,7 @@ on:
       - 'docs/**'
       - 'plans/**'
       - 'benchmarks/**'
+      - 'website/**'
       - 'LICENSE'
   pull_request:
     branches: [main]
@@ -16,6 +17,7 @@ on:
       - 'docs/**'
       - 'plans/**'
       - 'benchmarks/**'
+      - 'website/**'
       - 'LICENSE'
   workflow_dispatch:  # Allow manual triggers
 
