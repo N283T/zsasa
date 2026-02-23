@@ -17,8 +17,7 @@ The Python bindings provide:
 - **Atom classification**: NACCESS, PROTOR, and OONS classifiers
 - **RSA calculation**: Relative Solvent Accessibility
 - **Per-residue aggregation**: Aggregate atom SASA to residue level
-- **Library integrations**: gemmi, BioPython, and Biotite support
-- **MD trajectory analysis**: MDTraj and MDAnalysis integration (4x faster than mdsasa-bolt)
+- **Library integrations**: gemmi, BioPython, Biotite, MDTraj, MDAnalysis (see [Integrations](../integrations/))
 
 ## Contents
 
@@ -28,13 +27,8 @@ The Python bindings provide:
 | [Classifier](classifier.md) | Atom classification, RSA calculation |
 | [Analysis](analysis.md) | Per-residue aggregation, examples |
 | [Native XTC Reader](xtc.md) | Standalone XTC reading, no dependencies |
-| **Integrations** | |
-| [Common Interface](integrations/) | Shared API for all integrations |
-| [Gemmi](integrations/gemmi.md) | Fast mmCIF/PDB parsing |
-| [BioPython](integrations/biopython.md) | BioPython Structure support |
-| [Biotite](integrations/biotite.md) | Biotite AtomArray support |
-| [MDTraj](integrations/mdtraj.md) | MD trajectory analysis |
-| [MDAnalysis](integrations/mdanalysis.md) | MD trajectory analysis |
+
+For structure file parsing and MD trajectory integrations, see [Integrations](../integrations/).
 
 ## Installation
 

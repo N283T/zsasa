@@ -8,6 +8,7 @@ const sidebars: SidebarsConfig = {
       type: "category",
       label: "User Guide",
       items: [
+        "guide/choosing-tool",
         "guide/algorithms",
         "guide/classifiers",
         "guide/trajectory",
@@ -23,18 +24,18 @@ const sidebars: SidebarsConfig = {
         "python-api/classifier",
         "python-api/analysis",
         "python-api/xtc",
-        {
-          type: "category",
-          label: "Integrations",
-          items: [
-            "python-api/integrations/index",
-            "python-api/integrations/gemmi",
-            "python-api/integrations/biopython",
-            "python-api/integrations/biotite",
-            "python-api/integrations/mdtraj",
-            "python-api/integrations/mdanalysis",
-          ],
-        },
+      ],
+    },
+    {
+      type: "category",
+      label: "Integrations",
+      items: [
+        "integrations/index",
+        "integrations/gemmi",
+        "integrations/biopython",
+        "integrations/biotite",
+        "integrations/mdtraj",
+        "integrations/mdanalysis",
       ],
     },
     {

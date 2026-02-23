@@ -77,7 +77,7 @@ print(f"Mean SASA: {sasa.results.mean_total_area:.2f} Å²")
 print(f"Per-frame: {sasa.results.total_area}")
 ```
 
-See [MDAnalysis Integration](../python-api/integrations/mdanalysis.md) for full API details.
+See [MDAnalysis Integration](../integrations/mdanalysis.md) for full API details.
 
 ## Python: MDTraj Integration
 
@@ -91,7 +91,7 @@ sasa = compute_sasa(traj)  # returns (n_frames, n_atoms) array
 
 A drop-in replacement for `mdtraj.shrake_rupley()`.
 
-See [MDTraj Integration](../python-api/integrations/mdtraj.md) for full API details.
+See [MDTraj Integration](../integrations/mdtraj.md) for full API details.
 
 ## Python: Native XTC Reader
 
