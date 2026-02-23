@@ -1797,7 +1797,7 @@ export fn zsasa_batch_dir_process(
         setError(error_code, ZSASA_ERROR_INVALID_INPUT);
         return null;
     }
-    if (n_points == 0 or probe_radius <= 0.0) {
+    if (n_points == 0 or !(probe_radius > 0.0)) {
         setError(error_code, ZSASA_ERROR_INVALID_INPUT);
         return null;
     }
@@ -1838,8 +1838,12 @@ export fn zsasa_batch_dir_process(
     const output_dir_slice: ?[]const u8 = if (output_dir) |od| std.mem.span(od) else null;
 
     // Run batch processing
-    var batch_result = batch.runBatch(c_allocator, input_dir_slice, output_dir_slice, config) catch {
-        setError(error_code, ZSASA_ERROR_FILE_IO);
+    var batch_result = batch.runBatch(c_allocator, input_dir_slice, output_dir_slice, config) catch |err| {
+        const code = switch (err) {
+            error.OutOfMemory => ZSASA_ERROR_OUT_OF_MEMORY,
+            else => ZSASA_ERROR_FILE_IO,
+        };
+        setError(error_code, code);
         return null;
     };
 
@@ -1987,7 +1991,9 @@ export fn zsasa_batch_dir_get_total_sasa(
     if (handle == null) return std.math.nan(f64);
     const h: *BatchDirHandle = @ptrCast(@alignCast(handle.?));
     if (index >= h.result.file_results.len) return std.math.nan(f64);
-    return h.result.file_results[index].total_sasa;
+    const fr = h.result.file_results[index];
+    if (fr.status == .err) return std.math.nan(f64);
+    return fr.total_sasa;
 }
 
 /// Get the processing status of a file by index (0-based).
