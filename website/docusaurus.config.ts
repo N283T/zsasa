@@ -4,7 +4,7 @@ import type * as Preset from "@docusaurus/preset-classic";
 const config: Config = {
   title: "zsasa",
   tagline: "High-performance SASA calculation in Zig",
-  favicon: "img/favicon.ico",
+  // favicon: "img/favicon.ico",
 
   url: "https://n283t.github.io",
   baseUrl: "/zsasa/",

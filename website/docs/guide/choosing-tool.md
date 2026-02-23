@@ -39,11 +39,10 @@ for f in structures/*.cif; do
 done
 ```
 
-The CLI does **not** handle:
-- Alternate conformations (altloc) — uses the first encountered
-- HETATM filtering — includes all atoms
-- Model selection for NMR ensembles — uses the first model
-- Ligand removal or chain selection
+The CLI supports basic filtering (`--chain`, `--model`, `--include-hetatm`, `--include-hydrogens`), but has limitations:
+- **Altloc** — uses the first conformer encountered (no manual selection)
+- **HETATM** — all-or-nothing (`--include-hetatm`), no granular control (e.g., keep ligands but remove waters)
+- **No programmatic control** — cannot combine with other analysis libraries
 
 ## Python Integrations: Structure Processing Required
 
@@ -95,7 +94,6 @@ from zsasa.integrations.gemmi import calculate_sasa_from_model
 
 # Load and manipulate structure with Gemmi
 st = gemmi.read_structure("complex.cif")
-st.remove_waters()
 st.remove_ligands_and_waters()
 
 # Then calculate SASA
@@ -108,8 +106,8 @@ result = calculate_sasa_from_model(st[0])
 |----------|------------|-----|
 | AlphaFold structures | CLI | Pre-processed, no cleanup needed |
 | Batch processing (clean files) | CLI | Fast, scriptable |
-| PDB with ligands/waters | Python (Gemmi) | Filter HETATM, select chains |
-| NMR ensemble (specific model) | Python (Gemmi/BioPython) | Model selection |
+| PDB with ligands/waters | Python (Gemmi) | Granular HETATM control (keep ligands, remove waters) |
+| NMR ensemble (specific model) | CLI or Python | CLI: `--model=N`, Python: `model_index` parameter |
 | MD trajectory | CLI `traj` or Python | CLI for quick analysis, Python for selections |
 | Integration with BioPython pipeline | Python (BioPython) | Native object passing |
 | Biotite/AtomWorks workflow | Python (Biotite) | Native AtomArray support |

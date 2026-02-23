@@ -49,7 +49,7 @@ zsasa traj trajectory.xtc topology.pdb -o sasa_results.csv
 | `--threads=N` | Thread count (0 = auto) | `0` |
 | `--precision=P` | `f32` (fast) or `f64` (precise) | `f32` |
 | `--include-hydrogens` | Include hydrogen atoms | excluded |
-| `--batch-size=N` | Frames per batch (0 = auto) | `0` |
+| `--batch-size=N` | Frames per batch (omit for auto) | auto |
 | `-o, --output=FILE` | Output CSV file | `traj_sasa.csv` |
 
 ### Output Format

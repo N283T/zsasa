@@ -7,14 +7,14 @@ This document provides complete documentation for the zsasa command-line interfa
 ```
 zsasa [OPTIONS] <input> [output.json]
 zsasa [OPTIONS] <input_dir/> <output_dir/>
-zsasa traj <xtc> <topology> [OPTIONS]
+zsasa traj <trajectory> <topology> [OPTIONS]
 ```
 
 ## Subcommands
 
 ### `traj` - Trajectory Analysis
 
-Calculate SASA for each frame in an XTC trajectory file.
+Calculate SASA for each frame in a trajectory file (XTC or DCD).
 
 ```bash
 zsasa traj trajectory.xtc topology.pdb [OPTIONS]
@@ -566,7 +566,7 @@ zsasa traj <trajectory> <topology> [OPTIONS]
 | `--stride=N` | Process every Nth frame | `1` |
 | `--start=N` | Start from frame N | `0` |
 | `--end=N` | End at frame N | all |
-| `--batch-size=N` | Frames per batch for parallel processing (0 = auto) | `0` |
+| `--batch-size=N` | Frames per batch for parallel processing (omit for auto) | auto |
 | `-o, --output=FILE` | Output CSV file | `traj_sasa.csv` |
 | `-q, --quiet` | Suppress progress output | off |
 | `-h, --help` | Show help message | |
