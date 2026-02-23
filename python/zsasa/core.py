@@ -974,10 +974,10 @@ class BatchDirResult:
     """Result of directory batch processing.
 
     Attributes:
-        total_files: Total number of files found in the directory.
+        total_files: Number of supported structure files found in the directory.
         successful: Number of successfully processed files.
         failed: Number of files that failed processing.
-        filenames: List of filenames (basename only).
+        filenames: List of filenames (file name only, without directory path).
         n_atoms: Per-file atom counts.
         total_sasa: Per-file total SASA in Angstroms² (NaN for failed files).
         status: Per-file status (1=ok, 0=failed).
@@ -990,6 +990,31 @@ class BatchDirResult:
     n_atoms: list[int]
     total_sasa: list[float]
     status: list[int]
+
+    def __post_init__(self) -> None:
+        n = len(self.filenames)
+        if len(self.n_atoms) != n or len(self.total_sasa) != n or len(self.status) != n:
+            msg = (
+                f"All per-file lists must have the same length as filenames ({n}), "
+                f"got n_atoms={len(self.n_atoms)}, total_sasa={len(self.total_sasa)}, "
+                f"status={len(self.status)}"
+            )
+            raise ValueError(msg)
+        if self.total_files != n:
+            msg = f"total_files ({self.total_files}) != len(filenames) ({n})"
+            raise ValueError(msg)
+        if self.successful + self.failed != self.total_files:
+            msg = (
+                f"successful ({self.successful}) + failed ({self.failed}) "
+                f"!= total_files ({self.total_files})"
+            )
+            raise ValueError(msg)
+
+    def __repr__(self) -> str:
+        return (
+            f"BatchDirResult(total_files={self.total_files}, "
+            f"successful={self.successful}, failed={self.failed})"
+        )
 
 
 def process_directory(
@@ -1005,14 +1030,19 @@ def process_directory(
     include_hydrogens: bool = False,
     include_hetatm: bool = False,
 ) -> BatchDirResult:
-    """Process all PDB/mmCIF files in a directory for SASA calculation.
+    """Process all supported structure files in a directory for SASA calculation.
+
+    Supported formats: PDB (.pdb), mmCIF (.cif, .mmcif), PDB/ENT (.ent),
+    JSON (.json), and their gzip-compressed variants (.gz).
 
     Args:
-        input_dir: Path to directory containing PDB/mmCIF files.
+        input_dir: Path to directory containing structure files.
         output_dir: Optional path for per-file output. None = no file output.
         algorithm: Algorithm to use: "sr" (Shrake-Rupley) or "lr" (Lee-Richards).
-        n_points: Number of test points per atom (for SR algorithm). Default: 100.
-        n_slices: Number of slices per atom (for LR algorithm). Default: 20.
+        n_points: Number of test points per atom (SR only; ignored for LR).
+            Default: 100.
+        n_slices: Number of slices per atom (LR only; ignored for SR).
+            Default: 20.
         probe_radius: Water probe radius in Angstroms. Default: 1.4.
         n_threads: Number of threads to use. 0 = auto-detect. Default: 0.
         classifier: Classifier for radius assignment. None = use input radii.
@@ -1047,8 +1077,17 @@ def process_directory(
         msg = f"Unknown algorithm: {algorithm}. Use 'sr' or 'lr'."
         raise ValueError(msg)
 
+    if n_points <= 0:
+        msg = f"n_points must be positive, got {n_points}"
+        raise ValueError(msg)
+    if n_slices <= 0:
+        msg = f"n_slices must be positive, got {n_slices}"
+        raise ValueError(msg)
     if probe_radius <= 0:
         msg = f"probe_radius must be positive, got {probe_radius}"
+        raise ValueError(msg)
+    if n_threads < 0:
+        msg = f"n_threads must be non-negative, got {n_threads}"
         raise ValueError(msg)
 
     # Map classifier
@@ -1081,6 +1120,9 @@ def process_directory(
         elif ec == ZSASA_ERROR_OUT_OF_MEMORY:
             msg = "Out of memory during directory batch processing"
             raise MemoryError(msg)
+        elif ec == ZSASA_ERROR_CALCULATION:
+            msg = "SASA calculation failed during directory batch processing"
+            raise RuntimeError(msg)
         elif ec == ZSASA_ERROR_FILE_IO:
             msg = f"Directory not found or not readable: {input_dir}"
             raise FileNotFoundError(msg)

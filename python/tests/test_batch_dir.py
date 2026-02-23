@@ -9,7 +9,7 @@ import pytest
 
 from zsasa import BatchDirResult, ClassifierType, process_directory
 
-# test_data/ lives at the project root (contains 1l2y.pdb)
+# test_data/ lives at the project root
 TEST_DATA_DIR = Path(__file__).parent.parent.parent / "test_data"
 
 
@@ -49,8 +49,7 @@ class TestProcessDirectory:
         result = process_directory(TEST_DATA_DIR, classifier=None)
 
         assert result.total_files > 0
-        # Should still produce results (PDB files contain atom types)
-        assert result.successful >= 0
+        assert result.successful > 0
 
     def test_process_directory_result_properties(self) -> None:
         """Verify all BatchDirResult dataclass fields are populated correctly."""
@@ -75,6 +74,8 @@ class TestProcessDirectory:
         result = process_directory(TEST_DATA_DIR, output_dir=tmp_path)
 
         assert result.successful > 0
+        output_files = list(tmp_path.iterdir())
+        assert len(output_files) > 0
 
     def test_process_directory_invalid_algorithm(self) -> None:
         """ValueError for an invalid algorithm string."""
@@ -85,6 +86,11 @@ class TestProcessDirectory:
         """ValueError for non-positive probe_radius."""
         with pytest.raises(ValueError, match="probe_radius must be positive"):
             process_directory(TEST_DATA_DIR, probe_radius=-1.0)
+
+    def test_process_directory_zero_probe_radius(self) -> None:
+        """probe_radius=0 should be rejected (boundary of <= 0 check)."""
+        with pytest.raises(ValueError, match="probe_radius must be positive"):
+            process_directory(TEST_DATA_DIR, probe_radius=0.0)
 
     def test_process_directory_string_path(self) -> None:
         """Accept string paths (not just Path objects)."""
@@ -100,3 +106,39 @@ class TestProcessDirectory:
         )
 
         assert result.successful > 0
+
+    def test_process_directory_empty_dir(self, tmp_path: Path) -> None:
+        """Empty directory returns result with zero files."""
+        result = process_directory(tmp_path)
+
+        assert result.total_files == 0
+        assert result.successful == 0
+        assert result.failed == 0
+        assert result.filenames == []
+
+    def test_process_directory_include_hydrogens(self) -> None:
+        """include_hydrogens=True should be accepted without error."""
+        result = process_directory(TEST_DATA_DIR, include_hydrogens=True)
+
+        assert result.successful > 0
+
+    def test_process_directory_include_hetatm(self) -> None:
+        """include_hetatm=True should be accepted without error."""
+        result = process_directory(TEST_DATA_DIR, include_hetatm=True)
+
+        assert result.successful > 0
+
+    def test_process_directory_explicit_threads(self) -> None:
+        """Explicit thread count should produce valid results."""
+        result = process_directory(TEST_DATA_DIR, n_threads=1)
+
+        assert result.successful > 0
+
+    def test_process_directory_repr(self) -> None:
+        """BatchDirResult repr shows summary counts."""
+        result = process_directory(TEST_DATA_DIR)
+
+        repr_str = repr(result)
+        assert "BatchDirResult" in repr_str
+        assert f"total_files={result.total_files}" in repr_str
+        assert f"successful={result.successful}" in repr_str
