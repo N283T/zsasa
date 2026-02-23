@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from dataclasses import dataclass
@@ -18,6 +19,11 @@ ZSASA_OK = 0
 ZSASA_ERROR_INVALID_INPUT = -1
 ZSASA_ERROR_OUT_OF_MEMORY = -2
 ZSASA_ERROR_CALCULATION = -3
+ZSASA_ERROR_FILE_IO = -4
+
+# Algorithm constants
+ZSASA_ALGORITHM_SR = 0
+ZSASA_ALGORITHM_LR = 1
 
 # Classifier types
 ZSASA_CLASSIFIER_NACCESS = 0
@@ -119,6 +125,23 @@ _CDEF = """
         double* unitcell_out
     );
     int zsasa_dcd_get_natoms(void* handle);
+
+    // Batch directory processing
+    void* zsasa_batch_dir_process(
+        const char* input_dir, const char* output_dir,
+        int algorithm, uint32_t n_points, double probe_radius,
+        size_t n_threads, int classifier_type,
+        int include_hydrogens, int include_hetatm,
+        int* error_code
+    );
+    size_t zsasa_batch_dir_get_total_files(void* handle);
+    size_t zsasa_batch_dir_get_successful(void* handle);
+    size_t zsasa_batch_dir_get_failed(void* handle);
+    const char* zsasa_batch_dir_get_filename(void* handle, size_t index);
+    size_t zsasa_batch_dir_get_n_atoms(void* handle, size_t index);
+    double zsasa_batch_dir_get_total_sasa(void* handle, size_t index);
+    int zsasa_batch_dir_get_status(void* handle, size_t index);
+    void zsasa_batch_dir_free(void* handle);
 """
 
 
@@ -939,3 +962,159 @@ def calculate_sasa_batch(
         raise RuntimeError(msg)
 
     return BatchSasaResult(atom_areas=atom_areas)
+
+
+# =============================================================================
+# Batch Directory Processing
+# =============================================================================
+
+
+@dataclass
+class BatchDirResult:
+    """Result of directory batch processing.
+
+    Attributes:
+        total_files: Total number of files found in the directory.
+        successful: Number of successfully processed files.
+        failed: Number of files that failed processing.
+        filenames: List of filenames (basename only).
+        n_atoms: Per-file atom counts.
+        total_sasa: Per-file total SASA in Angstroms² (NaN for failed files).
+        status: Per-file status (1=ok, 0=failed).
+    """
+
+    total_files: int
+    successful: int
+    failed: int
+    filenames: list[str]
+    n_atoms: list[int]
+    total_sasa: list[float]
+    status: list[int]
+
+
+def process_directory(
+    input_dir: str | Path,
+    *,
+    output_dir: str | Path | None = None,
+    algorithm: Literal["sr", "lr"] = "sr",
+    n_points: int = 100,
+    n_slices: int = 20,
+    probe_radius: float = 1.4,
+    n_threads: int = 0,
+    classifier: ClassifierType | None = ClassifierType.PROTOR,
+    include_hydrogens: bool = False,
+    include_hetatm: bool = False,
+) -> BatchDirResult:
+    """Process all PDB/mmCIF files in a directory for SASA calculation.
+
+    Args:
+        input_dir: Path to directory containing PDB/mmCIF files.
+        output_dir: Optional path for per-file output. None = no file output.
+        algorithm: Algorithm to use: "sr" (Shrake-Rupley) or "lr" (Lee-Richards).
+        n_points: Number of test points per atom (for SR algorithm). Default: 100.
+        n_slices: Number of slices per atom (for LR algorithm). Default: 20.
+        probe_radius: Water probe radius in Angstroms. Default: 1.4.
+        n_threads: Number of threads to use. 0 = auto-detect. Default: 0.
+        classifier: Classifier for radius assignment. None = use input radii.
+            Default: ClassifierType.PROTOR.
+        include_hydrogens: Whether to include hydrogen atoms. Default: False.
+        include_hetatm: Whether to include HETATM records. Default: False.
+
+    Returns:
+        BatchDirResult with per-file details.
+
+    Raises:
+        ValueError: If input parameters are invalid.
+        FileNotFoundError: If the input directory does not exist.
+        MemoryError: If out of memory.
+        RuntimeError: For other processing errors.
+
+    Example:
+        >>> from zsasa import process_directory
+        >>> result = process_directory("path/to/pdbs/")
+        >>> print(f"Processed {result.successful}/{result.total_files} files")
+    """
+    ffi, lib = _get_lib()
+
+    # Validate algorithm
+    if algorithm == "sr":
+        algo_int = ZSASA_ALGORITHM_SR
+        n_points_val = n_points
+    elif algorithm == "lr":
+        algo_int = ZSASA_ALGORITHM_LR
+        n_points_val = n_slices
+    else:
+        msg = f"Unknown algorithm: {algorithm}. Use 'sr' or 'lr'."
+        raise ValueError(msg)
+
+    if probe_radius <= 0:
+        msg = f"probe_radius must be positive, got {probe_radius}"
+        raise ValueError(msg)
+
+    # Map classifier
+    classifier_int = int(classifier) if classifier is not None else -1
+
+    # Convert paths
+    input_dir_bytes = str(input_dir).encode("utf-8")
+    output_dir_bytes = str(output_dir).encode("utf-8") if output_dir is not None else ffi.NULL
+
+    error_code = ffi.new("int*")
+
+    handle = lib.zsasa_batch_dir_process(
+        input_dir_bytes,
+        output_dir_bytes,
+        algo_int,
+        n_points_val,
+        probe_radius,
+        n_threads,
+        classifier_int,
+        int(include_hydrogens),
+        int(include_hetatm),
+        error_code,
+    )
+
+    if handle == ffi.NULL:
+        ec = error_code[0]
+        if ec == ZSASA_ERROR_INVALID_INPUT:
+            msg = "Invalid input parameters for directory batch processing"
+            raise ValueError(msg)
+        elif ec == ZSASA_ERROR_OUT_OF_MEMORY:
+            msg = "Out of memory during directory batch processing"
+            raise MemoryError(msg)
+        elif ec == ZSASA_ERROR_FILE_IO:
+            msg = f"Directory not found or not readable: {input_dir}"
+            raise FileNotFoundError(msg)
+        else:
+            msg = f"Directory batch processing failed with error code: {ec}"
+            raise RuntimeError(msg)
+
+    try:
+        total_files = lib.zsasa_batch_dir_get_total_files(handle)
+        successful = lib.zsasa_batch_dir_get_successful(handle)
+        failed = lib.zsasa_batch_dir_get_failed(handle)
+
+        filenames: list[str] = []
+        n_atoms_list: list[int] = []
+        total_sasa_list: list[float] = []
+        status_list: list[int] = []
+
+        for i in range(total_files):
+            fname_ptr = lib.zsasa_batch_dir_get_filename(handle, i)
+            fname = ffi.string(fname_ptr).decode("utf-8") if fname_ptr != ffi.NULL else ""
+            filenames.append(fname)
+            n_atoms_list.append(lib.zsasa_batch_dir_get_n_atoms(handle, i))
+            sasa = lib.zsasa_batch_dir_get_total_sasa(handle, i)
+            total_sasa_list.append(float("nan") if math.isnan(sasa) else sasa)
+            status_list.append(lib.zsasa_batch_dir_get_status(handle, i))
+
+        return BatchDirResult(
+            total_files=total_files,
+            successful=successful,
+            failed=failed,
+            filenames=filenames,
+            n_atoms=n_atoms_list,
+            total_sasa=total_sasa_list,
+            status=status_list,
+        )
+    finally:
+        lib.zsasa_batch_dir_free(handle)
