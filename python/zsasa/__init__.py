@@ -91,6 +91,7 @@ from zsasa.analysis import (
 from zsasa.core import (
     MAX_SASA,
     AtomClass,
+    BatchDirResult,
     BatchSasaResult,
     ClassificationResult,
     ClassifierType,
@@ -106,6 +107,7 @@ from zsasa.core import (
     get_version,
     guess_radius,
     guess_radius_from_atom_name,
+    process_directory,
 )
 
 __all__ = [
@@ -114,6 +116,9 @@ __all__ = [
     "calculate_sasa_batch",
     "SasaResult",
     "BatchSasaResult",
+    # Batch directory processing
+    "process_directory",
+    "BatchDirResult",
     # Classifier
     "ClassifierType",
     "AtomClass",

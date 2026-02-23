@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Python bindings for directory batch processing**: `process_directory()` function and `BatchDirResult` dataclass wrapping the `zsasa_batch_dir_*` C API
+  - Process all supported structure files in a directory from Python
+  - Support for SR/LR algorithms, all classifiers, threading, output directory
+  - Per-file results: filename, atom count, total SASA, status
+  - Error mapping: `ValueError`, `FileNotFoundError`, `MemoryError`, `RuntimeError`
+
 ## [0.1.2] - 2026-02-22
 
 ### Added

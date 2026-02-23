@@ -17,13 +17,14 @@ The Python bindings provide:
 - **Atom classification**: NACCESS, PROTOR, and OONS classifiers
 - **RSA calculation**: Relative Solvent Accessibility
 - **Per-residue aggregation**: Aggregate atom SASA to residue level
+- **Directory batch processing**: Process entire directories of structure files
 - **Library integrations**: gemmi, BioPython, Biotite, MDTraj, MDAnalysis (see [Integrations](../integrations/))
 
 ## Contents
 
 | Document | Description |
 |----------|-------------|
-| [Core API](core.md) | `calculate_sasa`, batch API, precision |
+| [Core API](core.md) | `calculate_sasa`, batch API, directory processing |
 | [Classifier](classifier.md) | Atom classification, RSA calculation |
 | [Analysis](analysis.md) | Per-residue aggregation, examples |
 | [Native XTC Reader](xtc.md) | Standalone XTC reading, no dependencies |
@@ -120,6 +121,19 @@ residues = aggregate_from_result(result)
 for res in residues:
     rsa_str = f"{res.rsa:.1%}" if res.rsa is not None else "N/A"
     print(f"{res.chain_id}:{res.residue_name}{res.residue_id}: RSA={rsa_str}")
+```
+
+### Directory Batch Processing
+
+```python
+from zsasa import process_directory
+
+result = process_directory("path/to/structures/")
+print(f"Processed {result.successful}/{result.total_files} files")
+
+for i in range(result.total_files):
+    if result.status[i] == 1:
+        print(f"  {result.filenames[i]}: SASA={result.total_sasa[i]:.1f} Å²")
 ```
 
 ### MD Trajectory Analysis

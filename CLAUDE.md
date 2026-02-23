@@ -170,7 +170,7 @@ CI skips for: `*.md`, `docs/**`, `plans/**`, `benchmarks/**`, `LICENSE`
 | Doc | Content |
 |-----|---------|
 | `docs/cli.md` | CLI reference |
-| `docs/python-api/` | Python API |
+| `website/docs/python-api/` | Python API |
 | `docs/algorithm.md` | SR/LR algorithms |
 | `docs/architecture.md` | Code structure |
 | `docs/optimizations.md` | Performance techniques |

@@ -165,6 +165,6 @@ print(sasa.results.total_area)  # Per-frame total SASA in A^2
 
 ## See Also
 
-- [Python API Documentation](../../docs/python-api/)
+- [Python API Documentation](../../website/docs/python-api/)
 - [CLI Documentation](../../docs/cli.md)
 - [Algorithm Details](../../docs/algorithm.md)
