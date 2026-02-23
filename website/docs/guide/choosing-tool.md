@@ -9,16 +9,14 @@ zsasa provides two main interfaces. The right choice depends on your input data 
 
 ## Decision Guide
 
-```
-Is your structure pre-processed?
-(single model, no ligands, no altloc, standard residues only)
-│
-├── Yes → CLI is the simplest option
-│         zsasa structure.cif output.json
-│
-└── No  → Python integrations handle pre-processing
-          calculate_sasa_from_structure("structure.cif")
-```
+| Your situation | Typical input | Recommended |
+|---------------|--------------|-------------|
+| Pre-processed structure | AlphaFold predictions, clean PDB/mmCIF (single model, no ligands, no altloc) | **CLI** |
+| Structure needs processing | Experimental structures with altloc, ligands, waters, multiple models | **Python integrations** |
+| Combining with other tools | BioPython, Gemmi, MDAnalysis pipelines | **Python integrations** |
+| Batch processing of clean files | Directory of AlphaFold/ESMFold structures | **CLI** |
+| MD trajectory (quick analysis) | XTC/DCD files, no atom selection needed | **CLI `traj`** |
+| MD trajectory (atom selections) | Trajectories requiring `select="protein"` etc. | **Python** (MDAnalysis/MDTraj) |
 
 ## CLI: Pre-processed Structures
 
