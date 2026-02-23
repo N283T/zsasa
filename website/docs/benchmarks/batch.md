@@ -47,11 +47,11 @@ Benchmark parameters: warmup=3, runs=5, threads=1,8,10
 
 | 1 thread | 8 threads | 10 threads |
 |:--------:|:---------:|:----------:|
-| ![1t](pathname://../../benchmarks/results/plots/batch/ecoli_time_1t.png) | ![8t](pathname://../../benchmarks/results/plots/batch/ecoli_time_8t.png) | ![10t](pathname://../../benchmarks/results/plots/batch/ecoli_time_10t.png) |
+| ![1t](pathname:///zsasa/benchmarks/results/plots/batch/ecoli_time_1t.png) | ![8t](pathname:///zsasa/benchmarks/results/plots/batch/ecoli_time_8t.png) | ![10t](pathname:///zsasa/benchmarks/results/plots/batch/ecoli_time_10t.png) |
 
 | Memory (1t) | Memory (8t) | Memory (10t) |
 |:-----------:|:-----------:|:------------:|
-| ![1t](pathname://../../benchmarks/results/plots/batch/ecoli_memory_1t.png) | ![8t](pathname://../../benchmarks/results/plots/batch/ecoli_memory_8t.png) | ![10t](pathname://../../benchmarks/results/plots/batch/ecoli_memory_10t.png) |
+| ![1t](pathname:///zsasa/benchmarks/results/plots/batch/ecoli_memory_1t.png) | ![8t](pathname:///zsasa/benchmarks/results/plots/batch/ecoli_memory_8t.png) | ![10t](pathname:///zsasa/benchmarks/results/plots/batch/ecoli_memory_10t.png) |
 
 ### Human Proteome (23,586 structures)
 
@@ -83,11 +83,11 @@ Benchmark parameters: warmup=3, runs=3, threads=1,8,10
 
 | 1 thread | 8 threads | 10 threads |
 |:--------:|:---------:|:----------:|
-| ![1t](pathname://../../benchmarks/results/plots/batch/human_time_1t.png) | ![8t](pathname://../../benchmarks/results/plots/batch/human_time_8t.png) | ![10t](pathname://../../benchmarks/results/plots/batch/human_time_10t.png) |
+| ![1t](pathname:///zsasa/benchmarks/results/plots/batch/human_time_1t.png) | ![8t](pathname:///zsasa/benchmarks/results/plots/batch/human_time_8t.png) | ![10t](pathname:///zsasa/benchmarks/results/plots/batch/human_time_10t.png) |
 
 | Memory (1t) | Memory (8t) | Memory (10t) |
 |:-----------:|:-----------:|:------------:|
-| ![1t](pathname://../../benchmarks/results/plots/batch/human_memory_1t.png) | ![8t](pathname://../../benchmarks/results/plots/batch/human_memory_8t.png) | ![10t](pathname://../../benchmarks/results/plots/batch/human_memory_10t.png) |
+| ![1t](pathname:///zsasa/benchmarks/results/plots/batch/human_memory_1t.png) | ![8t](pathname:///zsasa/benchmarks/results/plots/batch/human_memory_8t.png) | ![10t](pathname:///zsasa/benchmarks/results/plots/batch/human_memory_10t.png) |
 
 ### SwissProt (550,122 structures)
 
@@ -114,11 +114,11 @@ Benchmark parameters: warmup=3, runs=3, threads=8,10
 
 | 8 threads | 10 threads |
 |:---------:|:----------:|
-| ![8t](pathname://../../benchmarks/results/plots/batch/swissprot_time_8t.png) | ![10t](pathname://../../benchmarks/results/plots/batch/swissprot_time_10t.png) |
+| ![8t](pathname:///zsasa/benchmarks/results/plots/batch/swissprot_time_8t.png) | ![10t](pathname:///zsasa/benchmarks/results/plots/batch/swissprot_time_10t.png) |
 
 | Memory (8t) | Memory (10t) |
 |:-----------:|:------------:|
-| ![8t](pathname://../../benchmarks/results/plots/batch/swissprot_memory_8t.png) | ![10t](pathname://../../benchmarks/results/plots/batch/swissprot_memory_10t.png) |
+| ![8t](pathname:///zsasa/benchmarks/results/plots/batch/swissprot_memory_8t.png) | ![10t](pathname:///zsasa/benchmarks/results/plots/batch/swissprot_memory_10t.png) |
 
 ## Summary
 
