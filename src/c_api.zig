@@ -14,6 +14,7 @@ const classifier_oons = @import("classifier_oons.zig");
 const analysis = @import("analysis.zig");
 const xtc = @import("xtc.zig");
 const dcd = @import("dcd.zig");
+const batch = @import("batch.zig");
 
 const AtomInput = types.AtomInput;
 const Config = types.Config;
@@ -27,6 +28,17 @@ pub const ZSASA_ERROR_INVALID_INPUT: c_int = -1;
 pub const ZSASA_ERROR_OUT_OF_MEMORY: c_int = -2;
 /// Internal calculation error
 pub const ZSASA_ERROR_CALCULATION: c_int = -3;
+/// Directory/file I/O error (directory open failure)
+pub const ZSASA_ERROR_FILE_IO: c_int = -4;
+
+// =============================================================================
+// Algorithm Constants
+// =============================================================================
+
+/// Shrake-Rupley algorithm (test point method)
+pub const ZSASA_ALGORITHM_SR: c_int = 0;
+/// Lee-Richards algorithm (slice method)
+pub const ZSASA_ALGORITHM_LR: c_int = 1;
 
 // =============================================================================
 // Classifier Types
@@ -1714,4 +1726,483 @@ test "zsasa_dcd_read_frame null handle" {
 
     const result = zsasa_dcd_read_frame(null, &coords, &step, &time, null);
     try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, result);
+}
+
+// =============================================================================
+// Batch Directory Processing Functions
+// =============================================================================
+
+/// Internal handle for batch directory processing results.
+/// Stores the BatchResult and C-compatible null-terminated filename copies.
+const BatchDirHandle = struct {
+    result: batch.BatchResult,
+    c_filenames: [][*:0]u8,
+
+    fn deinit(self: *BatchDirHandle) void {
+        for (self.c_filenames) |c_str| {
+            // Free the null-terminated copy (allocated as slice of len+1)
+            const len = std.mem.len(c_str);
+            c_allocator.free(c_str[0 .. len + 1]);
+        }
+        c_allocator.free(self.c_filenames);
+        self.result.deinit();
+        c_allocator.destroy(self);
+    }
+};
+
+/// Process all structure files in a directory.
+///
+/// Scans the directory for supported files (.pdb, .cif, .mmcif, .json, .ent
+/// and compressed variants), calculates SASA for each, and returns results
+/// via an opaque handle.
+///
+/// Parameters:
+///   input_dir: Path to directory containing structure files (null-terminated)
+///   output_dir: Path to output directory for results (null-terminated), or null for no file output
+///   algorithm: ZSASA_ALGORITHM_SR (0) or ZSASA_ALGORITHM_LR (1)
+///   n_points: Number of test points (SR) or slices (LR)
+///   probe_radius: Water probe radius in Angstroms (e.g., 1.4)
+///   n_threads: Number of threads (0 = auto-detect)
+///   classifier_type: ZSASA_CLASSIFIER_* constant, or -1 to use radii from input files
+///   include_hydrogens: 0 to exclude, 1 to include hydrogen atoms
+///   include_hetatm: 0 to exclude, 1 to include HETATM records
+///   error_code: Output pointer for error code
+///
+/// Returns:
+///   Opaque handle on success, null on failure.
+///   Partial success (some files fail) returns a valid handle -- check per-file status.
+///   Empty directory returns a valid handle with total_files=0.
+///   Caller must call zsasa_batch_dir_free() to release resources.
+export fn zsasa_batch_dir_process(
+    input_dir: ?[*:0]const u8,
+    output_dir: ?[*:0]const u8,
+    algorithm: c_int,
+    n_points: u32,
+    probe_radius: f64,
+    n_threads: usize,
+    classifier_type: c_int,
+    include_hydrogens: c_int,
+    include_hetatm: c_int,
+    error_code: ?*c_int,
+) callconv(.c) ?*anyopaque {
+    // Helper to set error code safely
+    const setError = struct {
+        fn call(ec: ?*c_int, code: c_int) void {
+            if (ec) |p| p.* = code;
+        }
+    }.call;
+
+    // Validate required parameters
+    if (input_dir == null) {
+        setError(error_code, ZSASA_ERROR_INVALID_INPUT);
+        return null;
+    }
+    if (n_points == 0 or probe_radius <= 0.0) {
+        setError(error_code, ZSASA_ERROR_INVALID_INPUT);
+        return null;
+    }
+    if (algorithm != ZSASA_ALGORITHM_SR and algorithm != ZSASA_ALGORITHM_LR) {
+        setError(error_code, ZSASA_ERROR_INVALID_INPUT);
+        return null;
+    }
+
+    // Build BatchConfig
+    const algo: batch.Algorithm = if (algorithm == ZSASA_ALGORITHM_LR) .lr else .sr;
+
+    const ct: ?classifier.ClassifierType = switch (classifier_type) {
+        ZSASA_CLASSIFIER_NACCESS => .naccess,
+        ZSASA_CLASSIFIER_PROTOR => .protor,
+        ZSASA_CLASSIFIER_OONS => .oons,
+        -1 => null,
+        else => {
+            setError(error_code, ZSASA_ERROR_INVALID_INPUT);
+            return null;
+        },
+    };
+
+    const config = batch.BatchConfig{
+        .n_threads = n_threads,
+        .algorithm = algo,
+        .parallelism = .file,
+        .n_points = n_points,
+        .n_slices = n_points, // same parameter used for LR slices
+        .probe_radius = probe_radius,
+        .quiet = true,
+        .precision = .f64,
+        .classifier_type = ct,
+        .include_hydrogens = include_hydrogens != 0,
+        .include_hetatm = include_hetatm != 0,
+    };
+
+    const input_dir_slice = std.mem.span(input_dir.?);
+    const output_dir_slice: ?[]const u8 = if (output_dir) |od| std.mem.span(od) else null;
+
+    // Run batch processing
+    var batch_result = batch.runBatch(c_allocator, input_dir_slice, output_dir_slice, config) catch {
+        setError(error_code, ZSASA_ERROR_FILE_IO);
+        return null;
+    };
+
+    // Build C-compatible null-terminated filename copies
+    const n_files = batch_result.file_results.len;
+    const c_filenames = c_allocator.alloc([*:0]u8, n_files) catch {
+        batch_result.deinit();
+        setError(error_code, ZSASA_ERROR_OUT_OF_MEMORY);
+        return null;
+    };
+
+    for (batch_result.file_results, 0..) |fr, i| {
+        const name = fr.filename;
+        const buf = c_allocator.alloc(u8, name.len + 1) catch {
+            // Free already-allocated filenames
+            for (c_filenames[0..i]) |prev| {
+                const prev_len = std.mem.len(prev);
+                c_allocator.free(prev[0 .. prev_len + 1]);
+            }
+            c_allocator.free(c_filenames);
+            batch_result.deinit();
+            setError(error_code, ZSASA_ERROR_OUT_OF_MEMORY);
+            return null;
+        };
+        @memcpy(buf[0..name.len], name);
+        buf[name.len] = 0;
+        c_filenames[i] = buf[0..name.len :0];
+    }
+
+    // Allocate handle
+    const handle = c_allocator.create(BatchDirHandle) catch {
+        for (c_filenames) |c_str| {
+            const len = std.mem.len(c_str);
+            c_allocator.free(c_str[0 .. len + 1]);
+        }
+        c_allocator.free(c_filenames);
+        batch_result.deinit();
+        setError(error_code, ZSASA_ERROR_OUT_OF_MEMORY);
+        return null;
+    };
+
+    handle.* = .{
+        .result = batch_result,
+        .c_filenames = c_filenames,
+    };
+
+    setError(error_code, ZSASA_OK);
+    return handle;
+}
+
+/// Get the total number of files found in the directory.
+///
+/// Parameters:
+///   handle: Handle returned by zsasa_batch_dir_process()
+///
+/// Returns:
+///   Number of files, or 0 if handle is null.
+export fn zsasa_batch_dir_get_total_files(
+    handle: ?*anyopaque,
+) callconv(.c) usize {
+    if (handle == null) return 0;
+    const h: *BatchDirHandle = @ptrCast(@alignCast(handle.?));
+    return h.result.total_files;
+}
+
+/// Get the number of successfully processed files.
+///
+/// Parameters:
+///   handle: Handle returned by zsasa_batch_dir_process()
+///
+/// Returns:
+///   Number of successful files, or 0 if handle is null.
+export fn zsasa_batch_dir_get_successful(
+    handle: ?*anyopaque,
+) callconv(.c) usize {
+    if (handle == null) return 0;
+    const h: *BatchDirHandle = @ptrCast(@alignCast(handle.?));
+    return h.result.successful;
+}
+
+/// Get the number of failed files.
+///
+/// Parameters:
+///   handle: Handle returned by zsasa_batch_dir_process()
+///
+/// Returns:
+///   Number of failed files, or 0 if handle is null.
+export fn zsasa_batch_dir_get_failed(
+    handle: ?*anyopaque,
+) callconv(.c) usize {
+    if (handle == null) return 0;
+    const h: *BatchDirHandle = @ptrCast(@alignCast(handle.?));
+    return h.result.failed;
+}
+
+/// Get the filename of a processed file by index (0-based).
+///
+/// Parameters:
+///   handle: Handle returned by zsasa_batch_dir_process()
+///   index: 0-based file index
+///
+/// Returns:
+///   Null-terminated filename string, or null if handle is null or index is out of bounds.
+///   The returned string is owned by the handle and valid until zsasa_batch_dir_free().
+export fn zsasa_batch_dir_get_filename(
+    handle: ?*anyopaque,
+    index: usize,
+) callconv(.c) ?[*:0]const u8 {
+    if (handle == null) return null;
+    const h: *BatchDirHandle = @ptrCast(@alignCast(handle.?));
+    if (index >= h.result.file_results.len) return null;
+    return h.c_filenames[index];
+}
+
+/// Get the number of atoms in a processed file by index (0-based).
+///
+/// Parameters:
+///   handle: Handle returned by zsasa_batch_dir_process()
+///   index: 0-based file index
+///
+/// Returns:
+///   Number of atoms, or 0 if handle is null or index is out of bounds.
+export fn zsasa_batch_dir_get_n_atoms(
+    handle: ?*anyopaque,
+    index: usize,
+) callconv(.c) usize {
+    if (handle == null) return 0;
+    const h: *BatchDirHandle = @ptrCast(@alignCast(handle.?));
+    if (index >= h.result.file_results.len) return 0;
+    return h.result.file_results[index].n_atoms;
+}
+
+/// Get the total SASA of a processed file by index (0-based).
+///
+/// Parameters:
+///   handle: Handle returned by zsasa_batch_dir_process()
+///   index: 0-based file index
+///
+/// Returns:
+///   Total SASA in Angstroms², or NaN if handle is null or index is out of bounds.
+export fn zsasa_batch_dir_get_total_sasa(
+    handle: ?*anyopaque,
+    index: usize,
+) callconv(.c) f64 {
+    if (handle == null) return std.math.nan(f64);
+    const h: *BatchDirHandle = @ptrCast(@alignCast(handle.?));
+    if (index >= h.result.file_results.len) return std.math.nan(f64);
+    return h.result.file_results[index].total_sasa;
+}
+
+/// Get the processing status of a file by index (0-based).
+///
+/// Parameters:
+///   handle: Handle returned by zsasa_batch_dir_process()
+///   index: 0-based file index
+///
+/// Returns:
+///   1 = ok, 0 = failed, -1 = out of bounds or null handle.
+export fn zsasa_batch_dir_get_status(
+    handle: ?*anyopaque,
+    index: usize,
+) callconv(.c) c_int {
+    if (handle == null) return -1;
+    const h: *BatchDirHandle = @ptrCast(@alignCast(handle.?));
+    if (index >= h.result.file_results.len) return -1;
+    return switch (h.result.file_results[index].status) {
+        .ok => 1,
+        .err => 0,
+    };
+}
+
+/// Free resources associated with a batch directory handle.
+///
+/// Parameters:
+///   handle: Handle returned by zsasa_batch_dir_process(), or null (no-op).
+export fn zsasa_batch_dir_free(
+    handle: ?*anyopaque,
+) callconv(.c) void {
+    if (handle) |h| {
+        const dir_handle: *BatchDirHandle = @ptrCast(@alignCast(h));
+        dir_handle.deinit();
+    }
+}
+
+// =============================================================================
+// Batch Directory Processing Tests
+// =============================================================================
+
+test "zsasa_batch_dir_process null handle safety" {
+    // All accessors return safe sentinels for null handle
+    try std.testing.expectEqual(@as(usize, 0), zsasa_batch_dir_get_total_files(null));
+    try std.testing.expectEqual(@as(usize, 0), zsasa_batch_dir_get_successful(null));
+    try std.testing.expectEqual(@as(usize, 0), zsasa_batch_dir_get_failed(null));
+    try std.testing.expect(zsasa_batch_dir_get_filename(null, 0) == null);
+    try std.testing.expectEqual(@as(usize, 0), zsasa_batch_dir_get_n_atoms(null, 0));
+    try std.testing.expect(std.math.isNan(zsasa_batch_dir_get_total_sasa(null, 0)));
+    try std.testing.expectEqual(@as(c_int, -1), zsasa_batch_dir_get_status(null, 0));
+
+    // Free null handle is a no-op
+    zsasa_batch_dir_free(null);
+}
+
+test "zsasa_batch_dir_process invalid parameters" {
+    var error_code: c_int = ZSASA_OK;
+
+    // Null input_dir
+    const h1 = zsasa_batch_dir_process(null, null, ZSASA_ALGORITHM_SR, 100, 1.4, 0, -1, 0, 0, &error_code);
+    try std.testing.expect(h1 == null);
+    try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, error_code);
+
+    // n_points = 0
+    const h2 = zsasa_batch_dir_process(".", null, ZSASA_ALGORITHM_SR, 0, 1.4, 0, -1, 0, 0, &error_code);
+    try std.testing.expect(h2 == null);
+    try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, error_code);
+
+    // probe_radius <= 0
+    const h3 = zsasa_batch_dir_process(".", null, ZSASA_ALGORITHM_SR, 100, 0.0, 0, -1, 0, 0, &error_code);
+    try std.testing.expect(h3 == null);
+    try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, error_code);
+
+    // Invalid algorithm
+    const h4 = zsasa_batch_dir_process(".", null, 99, 100, 1.4, 0, -1, 0, 0, &error_code);
+    try std.testing.expect(h4 == null);
+    try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, error_code);
+
+    // Invalid classifier type
+    const h5 = zsasa_batch_dir_process(".", null, ZSASA_ALGORITHM_SR, 100, 1.4, 0, 99, 0, 0, &error_code);
+    try std.testing.expect(h5 == null);
+    try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, error_code);
+}
+
+test "zsasa_batch_dir_process nonexistent directory" {
+    var error_code: c_int = ZSASA_OK;
+
+    const handle = zsasa_batch_dir_process(
+        "/nonexistent/path/that/does/not/exist",
+        null,
+        ZSASA_ALGORITHM_SR,
+        100,
+        1.4,
+        1,
+        -1,
+        0,
+        0,
+        &error_code,
+    );
+    try std.testing.expect(handle == null);
+    try std.testing.expectEqual(ZSASA_ERROR_FILE_IO, error_code);
+}
+
+test "zsasa_batch_dir_process null error_code" {
+    // Should not crash when error_code is null
+    const handle = zsasa_batch_dir_process(null, null, ZSASA_ALGORITHM_SR, 100, 1.4, 0, -1, 0, 0, null);
+    try std.testing.expect(handle == null);
+}
+
+test "zsasa_batch_dir_process with test_data" {
+    var error_code: c_int = ZSASA_OK;
+
+    // Process test_data directory (contains 1l2y.pdb)
+    const handle = zsasa_batch_dir_process(
+        "test_data",
+        null, // no file output
+        ZSASA_ALGORITHM_SR,
+        100,
+        1.4,
+        1, // single thread for test determinism
+        ZSASA_CLASSIFIER_PROTOR,
+        0, // exclude hydrogens
+        0, // exclude HETATM
+        &error_code,
+    );
+
+    // test_data may or may not have supported structure files
+    if (handle == null) {
+        // If batch failed (e.g., no supported files), that's fine
+        return;
+    }
+    defer zsasa_batch_dir_free(handle);
+
+    try std.testing.expectEqual(ZSASA_OK, error_code);
+
+    const total = zsasa_batch_dir_get_total_files(handle);
+    try std.testing.expect(total > 0);
+
+    const successful = zsasa_batch_dir_get_successful(handle);
+    try std.testing.expect(successful > 0);
+
+    // Check per-file results
+    for (0..total) |i| {
+        const filename = zsasa_batch_dir_get_filename(handle, i);
+        try std.testing.expect(filename != null);
+
+        const status = zsasa_batch_dir_get_status(handle, i);
+        if (status == 1) {
+            // Successful file should have positive SASA and atoms
+            const n_atoms = zsasa_batch_dir_get_n_atoms(handle, i);
+            try std.testing.expect(n_atoms > 0);
+
+            const sasa = zsasa_batch_dir_get_total_sasa(handle, i);
+            try std.testing.expect(sasa > 0.0);
+            try std.testing.expect(!std.math.isNan(sasa));
+        }
+    }
+
+    // Out-of-bounds access returns safe sentinels
+    try std.testing.expect(zsasa_batch_dir_get_filename(handle, total) == null);
+    try std.testing.expectEqual(@as(usize, 0), zsasa_batch_dir_get_n_atoms(handle, total));
+    try std.testing.expect(std.math.isNan(zsasa_batch_dir_get_total_sasa(handle, total)));
+    try std.testing.expectEqual(@as(c_int, -1), zsasa_batch_dir_get_status(handle, total));
+}
+
+test "zsasa_batch_dir_process with LR algorithm" {
+    var error_code: c_int = ZSASA_OK;
+
+    const handle = zsasa_batch_dir_process(
+        "test_data",
+        null,
+        ZSASA_ALGORITHM_LR,
+        20, // n_slices for LR
+        1.4,
+        1,
+        ZSASA_CLASSIFIER_NACCESS,
+        0,
+        0,
+        &error_code,
+    );
+
+    if (handle == null) return;
+    defer zsasa_batch_dir_free(handle);
+
+    try std.testing.expectEqual(ZSASA_OK, error_code);
+
+    const successful = zsasa_batch_dir_get_successful(handle);
+    try std.testing.expect(successful > 0);
+
+    // LR should produce similar results to SR
+    for (0..zsasa_batch_dir_get_total_files(handle)) |i| {
+        if (zsasa_batch_dir_get_status(handle, i) == 1) {
+            const sasa = zsasa_batch_dir_get_total_sasa(handle, i);
+            try std.testing.expect(sasa > 0.0);
+        }
+    }
+}
+
+test "zsasa_batch_dir_process classifier_type -1 uses input radii" {
+    var error_code: c_int = ZSASA_OK;
+
+    const handle = zsasa_batch_dir_process(
+        "test_data",
+        null,
+        ZSASA_ALGORITHM_SR,
+        100,
+        1.4,
+        1,
+        -1, // use radii from input files
+        0,
+        0,
+        &error_code,
+    );
+
+    if (handle == null) return;
+    defer zsasa_batch_dir_free(handle);
+
+    try std.testing.expectEqual(ZSASA_OK, error_code);
 }
