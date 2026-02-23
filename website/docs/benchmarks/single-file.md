@@ -2,7 +2,7 @@
 
 Large-scale benchmark results for zsasa using Shrake-Rupley algorithm.
 
-- **Dataset**: ~100k structures (stratified sampling from PDB)
+- **Dataset**: 2,006 structures (stratified sampling from PDB + AlphaFold)
 - **Precision**: Zig/FreeSASA use f64, RustSASA uses f32
 
 > **Note**:
@@ -19,8 +19,8 @@ Zig's key advantage: **Large structures + Multi-threading**
 |:---------------:|:----------------------------:|
 | ![Speedup](pathname:///zsasa/benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](pathname:///zsasa/benchmarks/results/plots/large/speedup_by_threads.png) |
 
-**Key Results (100k+ atoms, n=1,171):**
-- **Up to 3.05x faster** than FreeSASA (8to0: 673,884 atoms, threads=8)
+**Key Results (100k+ atoms, n=506):**
+- **Up to 2.93x faster** than FreeSASA (8to0: 673,884 atoms, threads=10)
 - **2.3x** median speedup vs FreeSASA and RustSASA (threads=10)
 - Speedup increases with thread count (parallel efficiency advantage)
 
@@ -57,18 +57,25 @@ Measurement method for each implementation:
 
 ### Stratified Sampling
 
-Stratified sampling from all PDB structures (~238K):
+Stratified sampling from PDB and AlphaFold structures, 150 structures per bin (13 bins):
 
-| Bin | Range | Strategy |
-|-----|-------|----------|
-| 0-500 | 0 - 500 | Proportional allocation |
-| 500-2k | 500 - 2,000 | Proportional allocation |
-| 2k-10k | 2,000 - 10,000 | Proportional allocation |
-| 10k-50k | 10,000 - 50,000 | Proportional allocation |
-| 50k-200k | 50,000 - 200,000 | **All included** |
-| 200k+ | 200,000+ | **All included** |
-
-Rare large structures (50k+ atoms) are all included; the rest use proportional allocation.
+| Bin | Atom Range | Count |
+|-----|-----------|------:|
+| 0-500 | 0 - 500 | 150 |
+| 500-1k | 500 - 1,000 | 150 |
+| 1k-2k | 1,000 - 2,000 | 150 |
+| 2k-3k | 2,000 - 3,000 | 150 |
+| 3k-5k | 3,000 - 5,000 | 150 |
+| 5k-10k | 5,000 - 10,000 | 150 |
+| 10k-20k | 10,000 - 20,000 | 150 |
+| 20k-50k | 20,000 - 50,000 | 150 |
+| 50k-75k | 50,000 - 75,000 | 150 |
+| 75k-100k | 75,000 - 100,000 | 150 |
+| 100k-150k | 100,000 - 150,000 | 150 |
+| 150k-200k | 150,000 - 200,000 | 150 |
+| 200k-500k | 200,000 - 500,000 | 150 |
+| 500k+ | 500,000+ | 56 |
+| **Total** | | **2,006** |
 
 Same seed produces identical samples (reproducible):
 
@@ -94,36 +101,37 @@ diff a.json b.json  # No differences
 
 | Metric | Zig vs FreeSASA | Zig vs RustSASA |
 | --- | --- | --- |
-| **Best case (50k+ atoms)** | **3.05x** (8to0) | **2.79x** (5wk6) |
-| **Overall (threads=10)** | **1.45x** median | **2.07x** median |
-| **Large structures (100k+)** | **2.3x** | **2.3x** |
-| **Largest structure (4.5M atoms)** | **2.9x** | **2.2x** |
-| **Parallel efficiency (threads=10)** | **+26%** | **+97%** |
-| **Instruction count** | **2.4x fewer** | Comparable |
+| **Best case (50k+ atoms)** | **2.93x** (8to0) | **2.60x** (8bsj) |
+| **Overall (threads=10)** | **2.08x** median | **2.22x** median |
+| **Large structures (100k+)** | **2.28x** | **2.32x** |
+| **Largest structure (4.5M atoms)** | **2.5x** | **2.3x** |
+| **Parallel efficiency (threads=10)** | **+43%** | **+112%** |
 
 ---
 
 ## Dataset
 
-![Dataset Distribution](pathname:///zsasa/benchmarks/results/plots/dataset/stratified_100k.png)
+| Size Bin | Atom Range | Count |
+| --- | ---: | ---: |
+| 0-500 | 0-500 | 150 |
+| 500-1k | 500-1,000 | 150 |
+| 1k-2k | 1,000-2,000 | 150 |
+| 2k-3k | 2,000-3,000 | 150 |
+| 3k-5k | 3,000-5,000 | 150 |
+| 5k-10k | 5,000-10,000 | 150 |
+| 10k-20k | 10,000-20,000 | 150 |
+| 20k-50k | 20,000-50,000 | 150 |
+| 50k-75k | 50,000-75,000 | 150 |
+| 75k-100k | 75,000-100,000 | 150 |
+| 100k-150k | 100,000-150,000 | 150 |
+| 150k-200k | 150,000-200,000 | 150 |
+| 200k-500k | 200,000-500,000 | 150 |
+| 500k+ | 500,000+ | 56 |
+| **Total** | | **2,006** |
 
-| Sampling Bin | Size Bin | Atoms | Count | Percentage |
-| :---: | --- | ---: | ---: | ---: |
-| 0-500 | 0-500 | 0-500 | 2,506 | 2.5% |
-| 500-2k | 500-1k | 500-1,000 | 5,744 | 5.7% |
-| | 1k-2k | 1,000-2,000 | 15,922 | 15.9% |
-| 2k-10k | 2k-5k | 2,000-5,000 | 36,123 | 36.1% |
-| | 5k-10k | 5,000-10,000 | 19,835 | 19.8% |
-| 10k-50k | 10k-20k | 10,000-20,000 | 10,187 | 10.2% |
-| | 20k-50k | 20,000-50,000 | 5,377 | 5.4% |
-| 50k-200k | 50k-100k | 50,000-100,000 | 3,133 | 3.1% |
-| | 100k-200k | 100,000-200,000 | 900 | 0.9% |
-| 200k+ | 200k+ | 200,000+ | 271 | 0.3% |
-|  | **Total** |  | **99,998** |  |
-
-- **Source**: All structures from the Protein Data Bank (PDB)
-- **Sampling**: Stratified sampling (seed 42)
-- **Large structures**: 50k+ atoms are all included (due to rarity)
+- **Source**: PDB and AlphaFold structures
+- **Sampling**: Stratified sampling, 150 per bin (seed 42)
+- **Large structures**: 500k+ bin has 56 structures (fewer available)
 
 ---
 
@@ -131,22 +139,26 @@ diff a.json b.json  # No differences
 
 Single-threaded comparison (excluding parallelization effects):
 
-| Size Bin | vs FreeSASA | vs RustSASA |
-| --- | ---: | ---: |
-| 0-500 | 0.95x | 0.74x |
-| 500-1k | 0.99x | 0.79x |
-| 1k-2k | 1.04x | 0.82x |
-| 2k-5k | 1.13x | 0.86x |
-| 5k-10k | 1.24x | 0.93x |
-| 10k-20k | 1.35x | 1.01x |
-| 20k-50k | 1.48x | 1.09x |
-| 50k-100k | **1.56x** | 1.10x |
-| 100k-200k | **1.60x** | 1.11x |
-| 200k+ | **1.60x** | 1.13x |
+| Size Bin | Count | vs FreeSASA | vs RustSASA |
+| --- | ---: | ---: | ---: |
+| 0-500 | 150 | 1.23x | 0.84x |
+| 500-1k | 150 | 1.24x | 0.89x |
+| 1k-2k | 150 | 1.28x | 0.93x |
+| 2k-3k | 150 | 1.35x | 1.00x |
+| 3k-5k | 150 | 1.42x | 1.04x |
+| 5k-10k | 150 | 1.49x | 1.05x |
+| 10k-20k | 150 | 1.48x | 1.06x |
+| 20k-50k | 150 | 1.46x | 1.06x |
+| 50k-75k | 150 | 1.51x | 1.06x |
+| 75k-100k | 150 | 1.55x | 1.05x |
+| 100k-150k | 150 | **1.56x** | 1.07x |
+| 150k-200k | 150 | **1.58x** | 1.07x |
+| 200k-500k | 150 | **1.58x** | 1.09x |
+| 500k+ | 56 | **1.59x** | 1.08x |
 
 **Observations:**
 - Zig vs FreeSASA: **1.6x** on large structures (SIMD optimization)
-- Zig vs Rust: Nearly equal (both use SIMD)
+- Zig vs Rust: Nearly equal at 1t (both use SIMD), Zig slightly ahead on large structures
 
 ---
 
@@ -156,9 +168,9 @@ Single-threaded comparison (excluding parallelization effects):
 
 | Tool | Structures | Median (ms) | Mean (ms) | P95 (ms) |
 | --- | ---: | ---: | ---: | ---: |
-| **Zig** | 99,998 | **3.24** | 7.78 | 28.91 |
-| FreeSASA | 99,998 | 4.69 | 14.53 | 57.06 |
-| RustSASA | 99,998 | 5.60 | 15.68 | 60.39 |
+| **Zig** | 2,006 | **7.51** | 62.11 | 174.93 |
+| FreeSASA | 2,006 | 14.24 | 142.68 | 389.82 |
+| RustSASA | 2,006 | 15.77 | 143.39 | 417.80 |
 
 ### Speedup by Structure Size
 
@@ -166,20 +178,24 @@ Single-threaded comparison (excluding parallelization effects):
 
 | Size Bin | Count | vs FreeSASA | vs RustSASA |
 | --- | ---: | ---: | ---: |
-| 0-500 | 2,506 | 0.92x | 0.97x |
-| 500-1k | 5,744 | 1.18x | 1.36x |
-| 1k-2k | 15,922 | 1.26x | 1.54x |
-| 2k-5k | 36,123 | 1.42x | 1.70x |
-| 5k-10k | 19,835 | 1.56x | 1.84x |
-| 10k-20k | 10,187 | 1.68x | 1.95x |
-| 20k-50k | 5,377 | 1.93x | 2.11x |
-| 50k-100k | 3,133 | **2.22x** | **2.25x** |
-| 100k-200k | 900 | **2.31x** | **2.30x** |
-| 200k+ | 271 | **2.28x** | **2.34x** |
+| 0-500 | 150 | 1.14x | 1.10x |
+| 500-1k | 150 | 1.48x | 1.52x |
+| 1k-2k | 150 | 1.57x | 1.66x |
+| 2k-3k | 150 | 1.68x | 1.86x |
+| 3k-5k | 150 | 1.82x | 1.99x |
+| 5k-10k | 150 | 2.02x | 2.06x |
+| 10k-20k | 150 | 2.06x | 2.17x |
+| 20k-50k | 150 | 2.07x | **2.32x** |
+| 50k-75k | 150 | 2.18x | **2.30x** |
+| 75k-100k | 150 | **2.31x** | **2.26x** |
+| 100k-150k | 150 | **2.30x** | **2.30x** |
+| 150k-200k | 150 | **2.29x** | **2.31x** |
+| 200k-500k | 150 | **2.23x** | **2.34x** |
+| 500k+ | 56 | **2.31x** | **2.33x** |
 
 **Observations:**
-- **Small (0-500)**: Overhead dominant, no speedup
-- **Medium (1k-20k)**: Stable **1.3x-1.9x** speedup
+- **Small (0-500)**: Overhead dominant, modest speedup
+- **Medium (1k-20k)**: Stable **1.6x-2.1x** speedup
 - **Large (50k+)**: Up to **2.3x** speedup with consistent results (narrow IQR)
 
 **Key Insight:**
@@ -196,16 +212,16 @@ Single-threaded comparison (excluding parallelization effects):
 
 | Threads | Zig (ms) | FreeSASA (ms) | Rust (ms) |
 | ---: | ---: | ---: | ---: |
-| 1 | 8.94 | 10.11 | 7.71 |
-| 2 | 5.64 | 6.89 | 6.46 |
-| 4 | 4.01 | 5.20 | 5.84 |
-| 8 | 3.37 | 4.79 | 5.63 |
-| 10 | **3.24** | 4.69 | 5.60 |
+| 1 | 20.71 | 30.34 | 22.21 |
+| 2 | 12.76 | 20.87 | 18.55 |
+| 4 | 9.19 | 15.96 | 16.55 |
+| 8 | 7.81 | 14.48 | 15.94 |
+| 10 | **7.31** | 14.19 | 15.77 |
 
 **Speedup from threads=1 to threads=10:**
-- Zig: 8.94 -> 3.24 = **2.76x**
-- FreeSASA: 10.11 -> 4.69 = **2.16x**
-- Rust: 7.71 -> 5.60 = **1.38x**
+- Zig: 20.71 -> 7.31 = **2.83x**
+- FreeSASA: 30.34 -> 14.19 = **2.14x**
+- Rust: 22.21 -> 15.77 = **1.41x**
 
 ---
 
@@ -228,36 +244,40 @@ Parallel Efficiency = T1 / (TN x N)
 | Threads | Zig | FreeSASA | Rust | Zig vs FS | Zig vs Rust |
 | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1 | 1.000 | 1.000 | 1.000 | - | - |
-| 2 | 0.791 | 0.734 | 0.595 | **+8%** | **+33%** |
-| 4 | 0.556 | 0.486 | 0.331 | **+14%** | **+68%** |
-| 8 | 0.326 | 0.263 | 0.171 | **+24%** | **+90%** |
-| 10 | 0.271 | 0.214 | 0.138 | **+26%** | **+97%** |
+| 2 | 0.816 | 0.724 | 0.596 | **+13%** | **+37%** |
+| 4 | 0.597 | 0.466 | 0.333 | **+28%** | **+79%** |
+| 8 | 0.350 | 0.256 | 0.173 | **+37%** | **+102%** |
+| 10 | 0.295 | 0.207 | 0.139 | **+43%** | **+112%** |
 
 ### Efficiency by Size Bin (threads=10)
 
 | Size Bin | Zig | FreeSASA | Rust |
 | --- | ---: | ---: | ---: |
-| 0-500 | 0.160 | 0.165 | 0.123 |
-| 500-1k | 0.241 | 0.201 | 0.139 |
-| 1k-2k | 0.261 | 0.214 | 0.139 |
-| 2k-5k | 0.274 | 0.216 | 0.138 |
-| 5k-10k | 0.274 | 0.216 | 0.137 |
-| 10k-20k | 0.269 | 0.214 | 0.137 |
-| 20k-50k | 0.273 | 0.209 | 0.139 |
-| 50k-100k | 0.288 | 0.202 | 0.141 |
-| 100k-200k | **0.291** | 0.200 | 0.141 |
-| 200k+ | **0.285** | 0.200 | 0.138 |
+| 0-500 | 0.16 | 0.17 | 0.12 |
+| 500-1k | 0.24 | 0.20 | 0.14 |
+| 1k-2k | 0.26 | 0.21 | 0.14 |
+| 2k-3k | 0.27 | 0.21 | 0.14 |
+| 3k-5k | 0.28 | 0.21 | 0.14 |
+| 5k-10k | 0.29 | 0.21 | 0.14 |
+| 10k-20k | 0.30 | 0.22 | 0.14 |
+| 20k-50k | 0.30 | 0.21 | 0.14 |
+| 50k-75k | 0.30 | 0.21 | 0.14 |
+| 75k-100k | 0.30 | 0.20 | 0.14 |
+| 100k-150k | **0.30** | 0.20 | 0.14 |
+| 150k-200k | **0.30** | 0.21 | 0.14 |
+| 200k-500k | 0.29 | 0.21 | 0.14 |
+| 500k+ | **0.30** | 0.20 | 0.14 |
 
 **Observations:**
 - Zig has the highest parallel efficiency across all sizes
-- Efficiency improves for large structures (achieves 0.93)
+- Efficiency peaks at ~0.30 for large structures
 - Rust has low efficiency and benefits less from thread increases
 
 ---
 
 ## Large Structure Analysis
 
-### Summary (100k+ atoms, n=1,171)
+### Summary (100k+ atoms, n=506)
 
 | Speedup at threads=10 | Thread Scaling |
 |:---------------:|:--------------:|
@@ -265,8 +285,8 @@ Parallel Efficiency = T1 / (TN x N)
 
 | Comparison | Median Speedup |
 | --- | ---: |
-| vs FreeSASA | **2.3x** |
-| vs RustSASA | **2.3x** |
+| vs FreeSASA | **2.28x** |
+| vs RustSASA | **2.32x** |
 
 **Observations:**
 - Speedup improves with thread count (1.6x->2.3x vs FreeSASA)
@@ -280,15 +300,15 @@ Thread scaling on the largest PDB structure (9fqr, mean of 3 runs):
 
 | Threads | Zig (s) | FreeSASA (s) | Rust (s) | vs FS | vs Rust |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 8.74 | 16.61 | 9.13 | 1.9x | 1.0x |
-| 2 | 5.46 | 12.23 | 7.90 | 2.2x | 1.4x |
-| 4 | 3.71 | 9.68 | 7.18 | 2.6x | 1.9x |
-| 8 | 3.16 | 8.85 | 6.94 | 2.8x | 2.2x |
-| 10 | 3.10 | 9.01 | 6.88 | **2.9x** | **2.2x** |
+| 1 | 8.89 | 14.50 | 9.52 | 1.6x | 1.1x |
+| 2 | 5.41 | 10.35 | 8.00 | 1.9x | 1.5x |
+| 4 | 3.68 | 8.32 | 7.22 | 2.3x | 2.0x |
+| 8 | 3.08 | 7.73 | 6.94 | 2.5x | 2.3x |
+| 10 | 2.95 | 7.51 | 6.87 | **2.5x** | **2.3x** |
 
 **Key Insight**:
 - Speedup ratio improves with increasing thread count
-- Achieves **2.9x** vs FreeSASA, **2.2x** vs Rust at threads=10
+- Achieves **2.5x** vs FreeSASA, **2.3x** vs Rust at threads=10
 - Rust plateaus with increasing threads (parallel efficiency issue)
 
 ### Best Speedup Structures (50k+ atoms)
@@ -299,23 +319,21 @@ Top 5 structures with highest speedup at any thread count:
 
 | Rank | vs FreeSASA | Atoms | Threads | Speedup |
 | ---: | --- | ---: | ---: | ---: |
-| 1 | 8to0 | 673,884 | 8 | **3.05x** |
-| 2 | 8to0 | 673,884 | 10 | 3.00x |
-| 3 | 7zts | 280,200 | 10 | 2.99x |
-| 4 | 6pwb | 157,148 | 10 | 2.97x |
-| 5 | 7zts | 280,200 | 8 | 2.87x |
+| 1 | 8to0 | 673,884 | 10 | **2.93x** |
+| 2 | 8to0 | 673,884 | 8 | 2.88x |
+| 3 | 8rbs | 164,605 | 10 | 2.84x |
+| 4 | 8vkq | 150,620 | 10 | 2.70x |
+| 5 | 8vkr | 152,898 | 10 | 2.68x |
 
 | Rank | vs Rust | Atoms | Threads | Speedup |
 | ---: | --- | ---: | ---: | ---: |
-| 1 | 5wk6 | 81,139 | 10 | **2.79x** |
-| 2 | 5wlc | 161,064 | 10 | 2.69x |
-| 3 | 8tqe | 100,035 | 10 | 2.58x |
-| 4 | 8sep | 142,736 | 10 | 2.57x |
-| 5 | 8uxk | 72,372 | 10 | 2.53x |
+| 1 | 8bsj | 81,467 | 10 | **2.60x** |
+| 2 | 8f2n | 162,111 | 10 | 2.50x |
+| 3 | 7l5q | 248,040 | 10 | 2.44x |
+| 4 | 9n5l | 239,460 | 10 | 2.42x |
+| 5 | 9j7k | 243,000 | 10 | 2.42x |
 
-**Note**: threads=8 sometimes outperforms threads=10 (e.g., 8to0: 3.05x vs 3.00x).
-
-**Rust outliers**: Small structures (<50k atoms) show anomalous speedup values (e.g., 17x) likely due to measurement noise. Large structure comparisons are more reliable.
+**Note**: threads=8 sometimes outperforms threads=10 (e.g., 8to0: 2.93x at t=10 vs 2.88x at t=8).
 
 ---
 
@@ -340,15 +358,17 @@ Thread scaling details on representative structures selected from each size bin.
 | 0-500 | 0-500 | [View](pathname:///zsasa/benchmarks/results/plots/samples/0-500.png) |
 | 500-1k | 500-1,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/500-1k.png) |
 | 1k-2k | 1,000-2,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/1k-2k.png) |
-| 2k-5k | 2,000-5,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/2k-5k.png) |
+| 2k-3k | 2,000-3,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/2k-3k.png) |
+| 3k-5k | 3,000-5,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/3k-5k.png) |
 | 5k-10k | 5,000-10,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/5k-10k.png) |
 | 10k-20k | 10,000-20,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/10k-20k.png) |
 | 20k-50k | 20,000-50,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/20k-50k.png) |
-| 50k-100k | 50,000-100,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/50k-100k.png) |
-| 100k-200k | 100,000-200,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/100k-200k.png) |
-| 200k+ | 200,000+ | [View](pathname:///zsasa/benchmarks/results/plots/samples/200kplus.png) |
-
----
+| 50k-75k | 50,000-75,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/50k-75k.png) |
+| 75k-100k | 75,000-100,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/75k-100k.png) |
+| 100k-150k | 100,000-150,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/100k-150k.png) |
+| 150k-200k | 150,000-200,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/150k-200k.png) |
+| 200k-500k | 200,000-500,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/200k-500k.png) |
+| 500k+ | 500,000+ | [View](pathname:///zsasa/benchmarks/results/plots/samples/500kplus.png) |
 
 ---
 
@@ -358,21 +378,17 @@ Thread scaling details on representative structures selected from each size bin.
 
 1. **Maximum effect on large structures**
    - **2.3x** speedup for 100k+ atoms
-   - **2.9x** speedup for the largest structure (4.5M atoms)
+   - **2.5x** speedup for the largest structure (4.5M atoms)
 
 2. **Consistent advantage**
-   - Outperforms FreeSASA across all sizes (1k+ atoms)
+   - Outperforms FreeSASA across all sizes (500+ atoms)
    - Fastest at all thread counts
 
 3. **Excellent parallel efficiency**
-   - **26%** higher than FreeSASA
-   - **97%** higher than RustSASA (at threads=10)
+   - **43%** higher than FreeSASA
+   - **112%** higher than RustSASA (at threads=10)
 
-4. **Efficient code**
-   - Same computation with **2.4x fewer instructions** than FreeSASA
-   - Result of SIMD optimization
-
-5. **Accurate results**
+4. **Accurate results**
    - See [validation.md](validation.md) for detailed accuracy analysis
 
 ---
@@ -404,8 +420,8 @@ cd rustsasa-bench && cargo build --release --features cli && cd ..
 
 # Generate sample
 ./benchmarks/scripts/sample.py benchmarks/inputs/index.json \
-    --target 100000 --seed 42 \
-    -o benchmarks/samples/stratified_100k.json
+    --seed 42 \
+    -o benchmarks/dataset/sample.json
 ```
 
 ### Running
@@ -418,7 +434,7 @@ cd rustsasa-bench && cargo build --release --features cli && cd ..
 # With sample file
 ./benchmarks/scripts/bench.py --tool zig --algorithm sr \
     --input-dir benchmarks/inputs \
-    --sample-file benchmarks/samples/stratified_100k.json \
+    --sample-file benchmarks/dataset/sample.json \
     --threads 1,2,4,8,10
 
 # Single run for quick testing
@@ -470,49 +486,49 @@ cd rustsasa-bench && cargo build --release --features cli && cd ..
 
 ## Appendix: Lee-Richards (LR) Algorithm
 
-Lee-Richards results using ~30k structures. RustSASA does not support LR.
-
-### Dataset
-
-![LR Dataset](pathname:///zsasa/benchmarks/results/plots/dataset/stratified_30k.png)
+Lee-Richards results using the same 2,006 structures. RustSASA does not support LR.
 
 ### Overall Statistics (threads=10)
 
 | Tool | Structures | Median (ms) | Mean (ms) | P95 (ms) |
 | --- | ---: | ---: | ---: | ---: |
-| **Zig** | 29,998 | **9.47** | 40.11 | 166.88 |
-| FreeSASA | 29,998 | 15.51 | 71.25 | 302.61 |
+| **Zig** | 2,006 | **20.82** | 178.39 | 510.65 |
+| FreeSASA | 2,006 | 39.58 | 327.41 | 916.19 |
 
-**Key Insight**: Zig is **1.64x** faster than FreeSASA (median)
+**Key Insight**: Zig is **1.79x** faster than FreeSASA (median per-structure speedup)
 
 ### Speedup by Structure Size (threads=10)
 
 | Size Bin | Count | vs FreeSASA |
 | --- | ---: | ---: |
-| 0-500 | 673 | 0.92x |
-| 500-1k | 1,543 | 1.42x |
-| 1k-2k | 4,274 | 1.53x |
-| 2k-5k | 9,629 | 1.66x |
-| 5k-10k | 5,396 | 1.71x |
-| 10k-20k | 2,729 | 1.72x |
-| 20k-50k | 1,450 | 1.74x |
-| 50k-100k | 3,133 | **1.79x** |
-| 100k-200k | 900 | **1.82x** |
-| 200k+ | 271 | **1.82x** |
+| 0-500 | 150 | 1.04x |
+| 500-1k | 150 | 1.41x |
+| 1k-2k | 150 | 1.57x |
+| 2k-3k | 150 | 1.71x |
+| 3k-5k | 150 | 1.76x |
+| 5k-10k | 150 | 1.86x |
+| 10k-20k | 150 | 1.93x |
+| 20k-50k | 150 | 1.77x |
+| 50k-75k | 150 | 1.78x |
+| 75k-100k | 150 | **1.82x** |
+| 100k-150k | 150 | **1.82x** |
+| 150k-200k | 150 | **1.82x** |
+| 200k-500k | 150 | **1.80x** |
+| 500k+ | 56 | **1.85x** |
 
 ### Thread Scaling
 
 | Threads | Zig (ms) | FreeSASA (ms) |
 | ---: | ---: | ---: |
-| 1 | 46.61 | 72.20 |
-| 2 | 25.94 | 39.11 |
-| 4 | 15.02 | 22.31 |
-| 8 | 10.59 | 16.98 |
-| 10 | **9.47** | 15.51 |
+| 1 | 107.08 | 172.88 |
+| 2 | 58.24 | 94.63 |
+| 4 | 33.45 | 55.05 |
+| 8 | 22.90 | 40.13 |
+| 10 | **20.82** | 39.58 |
 
 **Speedup from threads=1 to threads=10:**
-- Zig: 46.61 -> 9.47 = **4.92x**
-- FreeSASA: 72.20 -> 15.51 = **4.66x**
+- Zig: 107.08 -> 20.82 = **5.14x**
+- FreeSASA: 172.88 -> 39.58 = **4.37x**
 
 ### Execution Time Distribution
 
