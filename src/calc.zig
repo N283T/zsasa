@@ -1016,3 +1016,204 @@ test "CalcArgs --validate flag" {
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(true, parsed.validate_only);
 }
+
+test "CalcArgs with output path" {
+    const args = [_][]const u8{ "zsasa", "calc", "input.json", "result.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
+    try std.testing.expectEqualStrings("result.json", parsed.output_path);
+}
+
+test "CalcArgs --threads=N" {
+    const args = [_][]const u8{ "zsasa", "calc", "--threads=4", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(usize, 4), parsed.n_threads);
+    try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
+}
+
+test "CalcArgs --threads N (space-separated)" {
+    const args = [_][]const u8{ "zsasa", "calc", "--threads", "4", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(usize, 4), parsed.n_threads);
+    try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
+}
+
+test "CalcArgs --probe-radius=R" {
+    const args = [_][]const u8{ "zsasa", "calc", "--probe-radius=1.5", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(f64, 1.5), parsed.probe_radius);
+}
+
+test "CalcArgs --probe-radius R (space-separated)" {
+    const args = [_][]const u8{ "zsasa", "calc", "--probe-radius", "1.5", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(f64, 1.5), parsed.probe_radius);
+}
+
+test "CalcArgs --n-points=N" {
+    const args = [_][]const u8{ "zsasa", "calc", "--n-points=200", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(u32, 200), parsed.n_points);
+}
+
+test "CalcArgs --n-points N (space-separated)" {
+    const args = [_][]const u8{ "zsasa", "calc", "--n-points", "200", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(u32, 200), parsed.n_points);
+}
+
+test "CalcArgs --quiet" {
+    const args = [_][]const u8{ "zsasa", "calc", "--quiet", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.quiet);
+}
+
+test "CalcArgs -q" {
+    const args = [_][]const u8{ "zsasa", "calc", "-q", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.quiet);
+}
+
+test "CalcArgs --help" {
+    const args = [_][]const u8{ "zsasa", "calc", "--help" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.show_help);
+}
+
+test "CalcArgs -h" {
+    const args = [_][]const u8{ "zsasa", "calc", "-h" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.show_help);
+}
+
+test "CalcArgs --format=json" {
+    const args = [_][]const u8{ "zsasa", "calc", "--format=json", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(OutputFormat.json, parsed.output_format);
+}
+
+test "CalcArgs --format=compact" {
+    const args = [_][]const u8{ "zsasa", "calc", "--format=compact", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(OutputFormat.compact, parsed.output_format);
+}
+
+test "CalcArgs --format=csv" {
+    const args = [_][]const u8{ "zsasa", "calc", "--format=csv", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(OutputFormat.csv, parsed.output_format);
+}
+
+test "CalcArgs --format csv (space-separated)" {
+    const args = [_][]const u8{ "zsasa", "calc", "--format", "csv", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(OutputFormat.csv, parsed.output_format);
+}
+
+test "CalcArgs --algorithm=sr" {
+    const args = [_][]const u8{ "zsasa", "calc", "--algorithm=sr", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(Algorithm.sr, parsed.algorithm);
+}
+
+test "CalcArgs --algorithm=lr" {
+    const args = [_][]const u8{ "zsasa", "calc", "--algorithm=lr", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(Algorithm.lr, parsed.algorithm);
+}
+
+test "CalcArgs --precision=f32" {
+    const args = [_][]const u8{ "zsasa", "calc", "--precision=f32", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(Precision.f32, parsed.precision);
+}
+
+test "CalcArgs --precision=f64" {
+    const args = [_][]const u8{ "zsasa", "calc", "--precision=f64", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(Precision.f64, parsed.precision);
+}
+
+test "CalcArgs -o FILE" {
+    const args = [_][]const u8{ "zsasa", "calc", "-o", "out.json", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("out.json", parsed.output_path);
+    try std.testing.expectEqual(true, parsed.output_path_explicit);
+}
+
+test "CalcArgs --output=FILE" {
+    const args = [_][]const u8{ "zsasa", "calc", "--output=out.json", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("out.json", parsed.output_path);
+    try std.testing.expectEqual(true, parsed.output_path_explicit);
+}
+
+test "CalcArgs --use-bitmask" {
+    const args = [_][]const u8{ "zsasa", "calc", "--use-bitmask", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.use_bitmask);
+}
+
+test "CalcArgs --timing" {
+    const args = [_][]const u8{ "zsasa", "calc", "--timing", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.show_timing);
+}
+
+test "CalcArgs multiple options" {
+    const args = [_][]const u8{
+        "zsasa",
+        "calc",
+        "--threads=8",
+        "--probe-radius=1.6",
+        "--n-points=150",
+        "--quiet",
+        "input.json",
+        "output.json",
+    };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(usize, 8), parsed.n_threads);
+    try std.testing.expectEqual(@as(f64, 1.6), parsed.probe_radius);
+    try std.testing.expectEqual(@as(u32, 150), parsed.n_points);
+    try std.testing.expectEqual(true, parsed.quiet);
+    try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
+    try std.testing.expectEqualStrings("output.json", parsed.output_path);
+}
+
+test "CalcArgs --classifier=naccess" {
+    const args = [_][]const u8{ "zsasa", "calc", "--classifier=naccess", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(ClassifierType.naccess, parsed.classifier_type.?);
+}
+
+test "CalcArgs --include-hydrogens" {
+    const args = [_][]const u8{ "zsasa", "calc", "--include-hydrogens", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.include_hydrogens);
+}
+
+test "CalcArgs --include-hetatm" {
+    const args = [_][]const u8{ "zsasa", "calc", "--include-hetatm", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.include_hetatm);
+}
+
+test "CalcArgs --per-residue" {
+    const args = [_][]const u8{ "zsasa", "calc", "--per-residue", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.per_residue);
+}
+
+test "CalcArgs --rsa implies --per-residue" {
+    const args = [_][]const u8{ "zsasa", "calc", "--rsa", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.rsa);
+    try std.testing.expectEqual(true, parsed.per_residue);
+}
+
+test "CalcArgs --polar implies --per-residue" {
+    const args = [_][]const u8{ "zsasa", "calc", "--polar", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.polar);
+    try std.testing.expectEqual(true, parsed.per_residue);
+}
