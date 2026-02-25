@@ -9,6 +9,8 @@ const std = @import("std");
 const xtc = @import("xtc.zig");
 const dcd = @import("dcd.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
+const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
+const bitmask_lut = @import("bitmask_lut.zig");
 const lee_richards = @import("lee_richards.zig");
 const types = @import("types.zig");
 const pdb_parser = @import("pdb_parser.zig");
@@ -128,6 +130,7 @@ pub const TrajArgs = struct {
     end_frame: ?u32 = null, // End frame (null = all)
     include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
     batch_size: u32 = 0, // Frames per batch for parallel processing (0 = auto)
+    use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 64/128/256)
     quiet: bool = false,
     show_help: bool = false,
 };
@@ -213,6 +216,8 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) TrajArgs {
                 result.output_path = arg[prefix_len..];
             } else if (std.mem.eql(u8, arg, "--include-hydrogens")) {
                 result.include_hydrogens = true;
+            } else if (std.mem.eql(u8, arg, "--use-bitmask")) {
+                result.use_bitmask = true;
             } else if (std.mem.eql(u8, arg, "-q") or std.mem.eql(u8, arg, "--quiet")) {
                 result.quiet = true;
             } else {
@@ -311,6 +316,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --precision=PREC    Floating-point precision: f32, f64 (default: f32)
         \\    --include-hydrogens
         \\                       Include hydrogen atoms (default: excluded)
+        \\    --use-bitmask      Use SIMD bitmask optimization for SR algorithm
+        \\                       (n-points must be 64, 128, or 256)
         \\    --stride=N         Process every Nth frame (default: 1)
         \\    --start=N          Start from frame N (default: 0)
         \\    --end=N            End at frame N (default: all)
@@ -365,6 +372,36 @@ const FrameResult = struct {
     total_sasa: f64 = 0,
 };
 
+/// Helper to build and hold bitmask LUTs for trajectory processing.
+/// Builds the appropriate LUT once based on args, and provides typed pointers.
+const TrajLuts = struct {
+    lut_f64: ?bitmask_lut.BitmaskLut = null,
+    lut_f32: ?bitmask_lut.BitmaskLutGen(f32) = null,
+
+    fn init(allocator: Allocator, args: TrajArgs) !TrajLuts {
+        if (!args.use_bitmask) return .{};
+        if (args.algorithm != .sr) return error.BitmaskRequiresSR;
+        return switch (args.precision) {
+            .f64 => .{ .lut_f64 = try bitmask_lut.BitmaskLut.init(allocator, args.n_points) },
+            .f32 => .{ .lut_f32 = try bitmask_lut.BitmaskLutGen(f32).init(allocator, args.n_points) },
+        };
+    }
+
+    fn deinit(self: *TrajLuts) void {
+        if (self.lut_f64) |*lut| lut.deinit();
+        if (self.lut_f32) |*lut| lut.deinit();
+        self.* = .{};
+    }
+
+    fn f64Ptr(self: *const TrajLuts) ?*const bitmask_lut.BitmaskLut {
+        return if (self.lut_f64 != null) &self.lut_f64.? else null;
+    }
+
+    fn f32Ptr(self: *const TrajLuts) ?*const bitmask_lut.BitmaskLutGen(f32) {
+        return if (self.lut_f32 != null) &self.lut_f32.? else null;
+    }
+};
+
 /// Worker arguments for batch frame processing
 const BatchWorkerArgs = struct {
     coord_pool: []const f32,
@@ -383,6 +420,8 @@ const BatchWorkerArgs = struct {
     n_points: u32,
     n_slices: u32,
     coord_scale: f64, // 10.0 for XTC (nm→Å), 1.0 for DCD (already Å)
+    bitmask_lut_f64: ?*const bitmask_lut.BitmaskLut = null,
+    bitmask_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32) = null,
 };
 
 /// Set error flag and store a descriptive message (first writer wins).
@@ -451,24 +490,42 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
                 .probe_radius = @floatCast(args.probe_radius),
                 .n_points = args.n_points,
             };
-            var result = shrake_rupley.calculateSasaf32(thread_alloc, input, config) catch |err| {
-                setWorkerError(args, "frame {d}: SR-f32 SASA failed: {s}", .{ frame_id, @errorName(err) });
-                return;
-            };
-            total_sasa = @floatCast(result.total_area);
-            result.deinit();
+            if (args.bitmask_lut_f32) |lut| {
+                var result = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithLut(thread_alloc, input, config, lut) catch |err| {
+                    setWorkerError(args, "frame {d}: bitmask-f32 failed: {s}", .{ frame_id, @errorName(err) });
+                    return;
+                };
+                total_sasa = @floatCast(result.total_area);
+                result.deinit();
+            } else {
+                var result = shrake_rupley.calculateSasaf32(thread_alloc, input, config) catch |err| {
+                    setWorkerError(args, "frame {d}: SR-f32 SASA failed: {s}", .{ frame_id, @errorName(err) });
+                    return;
+                };
+                total_sasa = @floatCast(result.total_area);
+                result.deinit();
+            }
         } else {
             if (args.algorithm == .sr) {
                 const config = Config{
                     .probe_radius = args.probe_radius,
                     .n_points = args.n_points,
                 };
-                var result = shrake_rupley.calculateSasa(thread_alloc, input, config) catch |err| {
-                    setWorkerError(args, "frame {d}: SR-f64 SASA failed: {s}", .{ frame_id, @errorName(err) });
-                    return;
-                };
-                total_sasa = result.total_area;
-                result.deinit();
+                if (args.bitmask_lut_f64) |lut| {
+                    var result = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).calculateSasaWithLut(thread_alloc, input, config, lut) catch |err| {
+                        setWorkerError(args, "frame {d}: bitmask-f64 failed: {s}", .{ frame_id, @errorName(err) });
+                        return;
+                    };
+                    total_sasa = result.total_area;
+                    result.deinit();
+                } else {
+                    var result = shrake_rupley.calculateSasa(thread_alloc, input, config) catch |err| {
+                        setWorkerError(args, "frame {d}: SR-f64 SASA failed: {s}", .{ frame_id, @errorName(err) });
+                        return;
+                    };
+                    total_sasa = result.total_area;
+                    result.deinit();
+                }
             } else {
                 const config = lee_richards.LeeRichardsConfig{
                     .probe_radius = args.probe_radius,
@@ -647,11 +704,28 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
     else
         args.n_threads;
 
+    // Build bitmask LUT once (if enabled) — reused across all frames
+    var luts = TrajLuts.init(allocator, args) catch |err| {
+        switch (err) {
+            error.BitmaskRequiresSR => {
+                std.debug.print("Error: --use-bitmask requires --algorithm=sr\n", .{});
+                return error.BitmaskRequiresSR;
+            },
+            error.UnsupportedNPoints => {
+                std.debug.print("Error: --use-bitmask requires --n-points=64, 128, or 256\n", .{});
+                return error.UnsupportedNPoints;
+            },
+            else => return err,
+        }
+    };
+    defer luts.deinit();
+
     if (!args.quiet) {
-        std.debug.print("Algorithm: {s}, Threads: {d}, Precision: {s}\n", .{
+        std.debug.print("Algorithm: {s}, Threads: {d}, Precision: {s}{s}\n", .{
             if (args.algorithm == .sr) "Shrake-Rupley" else "Lee-Richards",
             n_threads,
             if (args.precision == .f32) "f32" else "f64",
+            if (args.use_bitmask) ", Bitmask: enabled" else "",
         });
         std.debug.print("Processing frames", .{});
         if (args.stride > 1) std.debug.print(" (stride={d})", .{args.stride});
@@ -673,10 +747,10 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
 
     if (n_threads <= 1) {
         // Sequential path: single-threaded SASA per frame
-        try runSequential(allocator, &traj_reader, writer, &topology, args, &frame_idx, &processed_count);
+        try runSequential(allocator, &traj_reader, writer, &topology, args, &luts, &frame_idx, &processed_count);
     } else {
         // Batch parallel path: frame-level parallelism across threads
-        try runBatchParallel(allocator, &traj_reader, writer, &topology, args, n_threads, natoms, &frame_idx, &processed_count);
+        try runBatchParallel(allocator, &traj_reader, writer, &topology, args, &luts, n_threads, natoms, &frame_idx, &processed_count);
     }
 
     // Flush buffered output
@@ -701,6 +775,7 @@ fn runSequential(
     writer: anytype,
     topology: *AtomInput,
     args: TrajArgs,
+    luts: *const TrajLuts,
     frame_idx: *u32,
     processed_count: *u32,
 ) !void {
@@ -766,9 +841,15 @@ fn runSequential(
                     .probe_radius = @floatCast(args.probe_radius),
                     .n_points = args.n_points,
                 };
-                var result = try shrake_rupley.calculateSasaf32(allocator, frame_input, config);
-                defer result.deinit();
-                break :blk @floatCast(result.total_area);
+                if (luts.f32Ptr()) |lut| {
+                    var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithLut(allocator, frame_input, config, lut);
+                    defer result.deinit();
+                    break :blk @floatCast(result.total_area);
+                } else {
+                    var result = try shrake_rupley.calculateSasaf32(allocator, frame_input, config);
+                    defer result.deinit();
+                    break :blk @floatCast(result.total_area);
+                }
             },
             .f64 => blk: {
                 switch (args.algorithm) {
@@ -777,9 +858,15 @@ fn runSequential(
                             .probe_radius = args.probe_radius,
                             .n_points = args.n_points,
                         };
-                        var result = try shrake_rupley.calculateSasa(allocator, frame_input, config);
-                        defer result.deinit();
-                        break :blk result.total_area;
+                        if (luts.f64Ptr()) |lut| {
+                            var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).calculateSasaWithLut(allocator, frame_input, config, lut);
+                            defer result.deinit();
+                            break :blk result.total_area;
+                        } else {
+                            var result = try shrake_rupley.calculateSasa(allocator, frame_input, config);
+                            defer result.deinit();
+                            break :blk result.total_area;
+                        }
                     },
                     .lr => {
                         const config = lee_richards.LeeRichardsConfig{
@@ -819,6 +906,7 @@ fn runBatchParallel(
     writer: anytype,
     topology: *AtomInput,
     args: TrajArgs,
+    luts: *const TrajLuts,
     n_threads: usize,
     natoms: usize,
     frame_idx: *u32,
@@ -879,6 +967,8 @@ fn runBatchParallel(
                 .n_points = args.n_points,
                 .n_slices = args.n_slices,
                 .coord_scale = reader.coordScale(),
+                .bitmask_lut_f64 = luts.f64Ptr(),
+                .bitmask_lut_f32 = luts.f32Ptr(),
             }}) catch {
                 error_flag.store(true, .release);
                 for (threads[0..i]) |thread| {
