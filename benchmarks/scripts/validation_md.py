@@ -173,7 +173,12 @@ def run_zsasa_mdtraj(
 
 
 def run_zsasa_cli(
-    xtc: Path, pdb: Path, n_points: int, stride: int, threads: int
+    xtc: Path,
+    pdb: Path,
+    n_points: int,
+    stride: int,
+    threads: int,
+    use_bitmask: bool = False,
 ) -> np.ndarray:
     """Run zsasa CLI traj mode. Returns per-frame total SASA in nm²."""
     root = get_root_dir()
@@ -193,10 +198,10 @@ def run_zsasa_cli(
             f"--threads={threads}",
             f"--n-points={n_points}",
             f"--stride={stride}",
-            "-o",
-            out_path,
-            "-q",
         ]
+        if use_bitmask:
+            cmd.append("--use-bitmask")
+        cmd.extend(["-o", out_path, "-q"])
         console.print(f"  [dim]$ {' '.join(cmd)}[/]")
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
         if proc.returncode != 0:
@@ -539,6 +544,13 @@ def run(
             help="Reference tool for comparison",
         ),
     ] = "mdtraj",
+    use_bitmask: Annotated[
+        bool,
+        typer.Option(
+            "--use-bitmask",
+            help="Use bitmask neighbor list for zsasa",
+        ),
+    ] = False,
 ) -> None:
     """Compare per-frame SASA values across MD trajectory tools."""
     selected_tools = tools if tools else ALL_MD_TOOLS
@@ -566,6 +578,7 @@ def run(
             "n_points": n_points_list,
             "stride": stride,
             "threads": threads,
+            "use_bitmask": use_bitmask,
             "reference": reference,
         },
     }
@@ -602,7 +615,9 @@ def run(
         if MdTool.zsasa_cli in selected_tools:
             col = f"zsasa_cli{suffix}"
             console.print(f"[bold cyan]Running zsasa CLI traj (n_points={np_})...[/]")
-            tool_results[col] = run_zsasa_cli(xtc, pdb, np_, stride, threads)
+            tool_results[col] = run_zsasa_cli(
+                xtc, pdb, np_, stride, threads, use_bitmask
+            )
             console.print(f"  Got {len(tool_results[col])} frames")
 
     if not tool_results:

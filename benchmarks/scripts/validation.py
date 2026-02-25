@@ -122,6 +122,8 @@ def run_zsasa(
     precision: str,
     threads: int,
     binaries: dict[str, Path],
+    n_points: int = 100,
+    use_bitmask: bool = False,
 ) -> dict[str, tuple[float, int]]:
     """Run zsasa in batch mode. Returns {stem: (total_sasa, n_atoms)}."""
     zsasa = binaries["zsasa"]
@@ -141,7 +143,10 @@ def run_zsasa(
             f"--algorithm={algorithm}",
             f"--precision={precision}",
             f"--threads={threads}",
+            f"--n-points={n_points}",
         ]
+        if use_bitmask:
+            cmd.append("--use-bitmask")
         console.print(f"  [dim]$ {' '.join(cmd)}[/]")
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
         if proc.returncode != 0:
@@ -164,6 +169,7 @@ def run_freesasa(
     input_dir: Path,
     algorithm: str,
     binaries: dict[str, Path],
+    n_points: int = 100,
 ) -> dict[str, float]:
     """Run FreeSASA per-file via CLI. Returns {stem: total_sasa}."""
     binary = binaries["freesasa"]
@@ -187,7 +193,7 @@ def run_freesasa(
         for pdb_file in pdb_files:
             cmd = [str(binary), str(pdb_file)]
             if algorithm == "sr":
-                cmd.extend(["--shrake-rupley", "--resolution=100"])
+                cmd.extend(["--shrake-rupley", f"--resolution={n_points}"])
             else:
                 cmd.extend(["--lee-richards", "--resolution=20"])
 
@@ -444,6 +450,21 @@ def run(
             help="Reference tool for comparison",
         ),
     ] = "freesasa",
+    n_points: Annotated[
+        int,
+        typer.Option(
+            "--n-points",
+            "-N",
+            help="Number of sphere test points per atom (default: 100)",
+        ),
+    ] = 100,
+    use_bitmask: Annotated[
+        bool,
+        typer.Option(
+            "--use-bitmask",
+            help="Use bitmask neighbor list for zsasa",
+        ),
+    ] = False,
 ) -> None:
     """Run tools on PDB directory and compare SASA values."""
     selected_tools = tools if tools else ALL_TOOLS
@@ -479,6 +500,8 @@ def run(
             "algorithm": algorithm,
             "precision": precisions,
             "threads": threads,
+            "n_points": n_points,
+            "use_bitmask": use_bitmask,
             "reference": reference,
         },
     }
@@ -502,14 +525,16 @@ def run(
         for prec in precisions:
             col = f"zsasa_{prec}"
             console.print(f"[bold cyan]Running zsasa ({prec})...[/]")
-            zsasa_runs[col] = run_zsasa(input_dir, algorithm, prec, threads, binaries)
+            zsasa_runs[col] = run_zsasa(
+                input_dir, algorithm, prec, threads, binaries, n_points, use_bitmask
+            )
             console.print(f"  Got {len(zsasa_runs[col])} results")
 
     freesasa_results: dict[str, float] = {}
 
     if Tool.freesasa in selected_tools:
         console.print("[bold cyan]Running FreeSASA...[/]")
-        freesasa_results = run_freesasa(input_dir, algorithm, binaries)
+        freesasa_results = run_freesasa(input_dir, algorithm, binaries, n_points)
         console.print(f"  Got {len(freesasa_results)} results")
 
     # Merge by stem

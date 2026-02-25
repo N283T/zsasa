@@ -186,6 +186,7 @@ def run_zig(
     runs: int,
     dry_run: bool,
     binaries: dict[str, Path],
+    use_bitmask: bool = False,
 ) -> list[dict]:
     """Run zsasa benchmarks."""
     zsasa = binaries["zsasa"]
@@ -200,9 +201,10 @@ def run_zig(
             out_dir = Path(tmp)
 
             for n_threads in thread_counts:
+                bitmask_flag = " --use-bitmask" if use_bitmask else ""
                 result = run_benchmark(
                     f"zsasa_{precision}_{n_threads}t",
-                    f"{zsasa} batch {input_dir} {out_dir} --threads={n_threads} --precision={precision} --n-points={n_points}",
+                    f"{zsasa} batch {input_dir} {out_dir} --threads={n_threads} --precision={precision} --n-points={n_points}{bitmask_flag}",
                     results_dir,
                     warmup,
                     runs,
@@ -437,6 +439,13 @@ def main(
             help="Show commands without running",
         ),
     ] = False,
+    use_bitmask: Annotated[
+        bool,
+        typer.Option(
+            "--use-bitmask",
+            help="Use bitmask neighbor list for zsasa",
+        ),
+    ] = False,
 ) -> None:
     """Run batch SASA benchmarks using hyperfine."""
     # Check hyperfine
@@ -480,6 +489,7 @@ def main(
             "warmup": warmup,
             "runs": runs,
             "n_points": n_points,
+            "use_bitmask": use_bitmask,
         },
     }
     if not dry_run:
@@ -509,6 +519,7 @@ def main(
             runs,
             dry_run,
             binaries,
+            use_bitmask,
         )
         all_results.extend(results)
 
