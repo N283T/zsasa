@@ -593,6 +593,15 @@ class TestBitmask:
         with pytest.raises(ValueError, match="n_points"):
             calculate_sasa(coords, radii, n_points=100, use_bitmask=True)
 
+    def test_bitmask_default_n_points_raises(self):
+        """use_bitmask=True with default n_points=100 should raise ValueError."""
+        coords = np.array([[0.0, 0.0, 0.0]])
+        radii = np.array([1.5])
+
+        # Default n_points is 100, which is not in (64, 128, 256)
+        with pytest.raises(ValueError, match="n_points"):
+            calculate_sasa(coords, radii, use_bitmask=True)
+
     def test_bitmask_batch(self):
         """Bitmask batch mode should produce correct results."""
         from zsasa import calculate_sasa_batch

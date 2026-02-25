@@ -266,6 +266,7 @@ class SASAAnalysis:
                 n_slices=n_slices,
                 probe_radius=probe_radius,
                 n_threads=n_threads,
+                use_bitmask=use_bitmask,
             )
         else:
             msg = f"Unknown algorithm: {algorithm}. Use 'sr' or 'lr'."
