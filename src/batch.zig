@@ -47,6 +47,11 @@ pub const BatchConfig = struct {
     include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
     include_hetatm: bool = false, // Include HETATM records (default: exclude)
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
+    adaptive: bool = false,
+    coarse_points: u32 = 32,
+    fine_points: ?u32 = null, // null = use n_points
+    adaptive_low: f64 = 0.02,
+    adaptive_high: f64 = 0.98,
 };
 
 /// Helper to build and hold bitmask LUTs for batch processing.
@@ -55,19 +60,45 @@ pub const BatchConfig = struct {
 const BatchLuts = struct {
     lut_f64: ?bitmask_lut.BitmaskLut = null,
     lut_f32: ?bitmask_lut.BitmaskLutGen(f32) = null,
+    coarse_lut_f64: ?bitmask_lut.BitmaskLut = null,
+    coarse_lut_f32: ?bitmask_lut.BitmaskLutGen(f32) = null,
 
     fn init(allocator: Allocator, config: BatchConfig) !BatchLuts {
         if (!config.use_bitmask) return .{};
         if (config.algorithm != .sr) return error.BitmaskRequiresSR;
-        return switch (config.precision) {
-            .f64 => .{ .lut_f64 = try bitmask_lut.BitmaskLut.init(allocator, config.n_points) },
-            .f32 => .{ .lut_f32 = try bitmask_lut.BitmaskLutGen(f32).init(allocator, config.n_points) },
-        };
+
+        const fine_points = config.fine_points orelse config.n_points;
+        var result = BatchLuts{};
+        errdefer result.deinit();
+
+        switch (config.precision) {
+            .f64 => {
+                result.lut_f64 = try bitmask_lut.BitmaskLut.init(allocator, fine_points);
+            },
+            .f32 => {
+                result.lut_f32 = try bitmask_lut.BitmaskLutGen(f32).init(allocator, fine_points);
+            },
+        }
+
+        if (config.adaptive) {
+            switch (config.precision) {
+                .f64 => {
+                    result.coarse_lut_f64 = try bitmask_lut.BitmaskLut.init(allocator, config.coarse_points);
+                },
+                .f32 => {
+                    result.coarse_lut_f32 = try bitmask_lut.BitmaskLutGen(f32).init(allocator, config.coarse_points);
+                },
+            }
+        }
+
+        return result;
     }
 
     fn deinit(self: *BatchLuts) void {
         if (self.lut_f64) |*lut| lut.deinit();
         if (self.lut_f32) |*lut| lut.deinit();
+        if (self.coarse_lut_f64) |*lut| lut.deinit();
+        if (self.coarse_lut_f32) |*lut| lut.deinit();
         self.* = .{};
     }
 
@@ -77,6 +108,14 @@ const BatchLuts = struct {
 
     fn f32Ptr(self: *const BatchLuts) ?*const bitmask_lut.BitmaskLutGen(f32) {
         return if (self.lut_f32 != null) &self.lut_f32.? else null;
+    }
+
+    fn coarseF64Ptr(self: *const BatchLuts) ?*const bitmask_lut.BitmaskLut {
+        return if (self.coarse_lut_f64 != null) &self.coarse_lut_f64.? else null;
+    }
+
+    fn coarseF32Ptr(self: *const BatchLuts) ?*const bitmask_lut.BitmaskLutGen(f32) {
+        return if (self.coarse_lut_f32 != null) &self.coarse_lut_f32.? else null;
     }
 };
 
@@ -119,7 +158,31 @@ fn calculateSasaDispatch(
     probe_radius: T,
     n_threads: usize,
     bitmask_lut_ptr: ?*const bitmask_lut.BitmaskLutGen(T),
+    coarse_lut_ptr: ?*const bitmask_lut.BitmaskLutGen(T),
+    adaptive_config_opt: ?shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(T).AdaptiveConfig,
 ) !SasaResultGen(T) {
+    // Adaptive bitmask path
+    if (adaptive_config_opt) |adaptive_config| {
+        if (bitmask_lut_ptr) |fine_lut| {
+            if (coarse_lut_ptr) |coarse_lut| {
+                const SR = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(T);
+                var adaptive_result = if (n_threads > 1)
+                    try SR.calculateSasaAdaptiveParallelWithLuts(
+                        allocator, input, adaptive_config, n_threads, coarse_lut, fine_lut,
+                    )
+                else
+                    try SR.calculateSasaAdaptiveWithLuts(
+                        allocator, input, adaptive_config, coarse_lut, fine_lut,
+                    );
+                // Discard stats at per-file level, return just the Result
+                const result = adaptive_result.result;
+                // Don't call adaptive_result.deinit() since we're returning result
+                _ = &adaptive_result;
+                return result;
+            }
+        }
+    }
+
     const sr_config = ConfigGen(T){ .n_points = n_points, .probe_radius = probe_radius };
 
     if (bitmask_lut_ptr) |lut| {
@@ -396,6 +459,8 @@ fn processOneFile(
     n_threads: usize,
     lut_f64: ?*const bitmask_lut.BitmaskLut,
     lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+    coarse_lut_f64: ?*const bitmask_lut.BitmaskLut,
+    coarse_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
 ) FileResult {
     var result = FileResult{
         .filename = filename,
@@ -441,6 +506,22 @@ fn processOneFile(
         return result;
     };
 
+    // Build adaptive config if needed
+    const adaptive_config_f64: ?shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).AdaptiveConfig = if (config.adaptive) .{
+        .probe_radius = config.probe_radius,
+        .coarse_points = config.coarse_points,
+        .fine_points = config.fine_points orelse config.n_points,
+        .adaptive_low = config.adaptive_low,
+        .adaptive_high = config.adaptive_high,
+    } else null;
+    const adaptive_config_f32: ?shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).AdaptiveConfig = if (config.adaptive) .{
+        .probe_radius = @floatCast(config.probe_radius),
+        .coarse_points = config.coarse_points,
+        .fine_points = config.fine_points orelse config.n_points,
+        .adaptive_low = @floatCast(config.adaptive_low),
+        .adaptive_high = @floatCast(config.adaptive_high),
+    } else null;
+
     // Calculate SASA using generic dispatcher
     var total_area: f64 = 0;
     switch (config.precision) {
@@ -455,6 +536,8 @@ fn processOneFile(
                 config.probe_radius,
                 n_threads,
                 lut_f64,
+                coarse_lut_f64,
+                adaptive_config_f64,
             ) catch |err| {
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "SASA calculation failed: {s}", .{@errorName(err)}) catch null;
@@ -483,6 +566,8 @@ fn processOneFile(
                 @as(f32, @floatCast(config.probe_radius)),
                 n_threads,
                 lut_f32,
+                coarse_lut_f32,
+                adaptive_config_f32,
             ) catch |err| {
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "SASA calculation failed: {s}", .{@errorName(err)}) catch null;
@@ -560,6 +645,8 @@ pub fn runBatchSequential(
             1, // single-threaded
             luts.f64Ptr(),
             luts.f32Ptr(),
+            luts.coarseF64Ptr(),
+            luts.coarseF32Ptr(),
         );
         result.filename = filename_copy;
 
@@ -610,6 +697,8 @@ const ParallelContext = struct {
     processed_count: std.atomic.Value(usize),
     lut_f64: ?*const bitmask_lut.BitmaskLut,
     lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+    coarse_lut_f64: ?*const bitmask_lut.BitmaskLut,
+    coarse_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
 };
 
 /// Worker thread function for parallel batch processing
@@ -661,6 +750,8 @@ fn parallelWorker(ctx: *ParallelContext) void {
             1, // single-threaded SASA per file
             ctx.lut_f64,
             ctx.lut_f32,
+            ctx.coarse_lut_f64,
+            ctx.coarse_lut_f32,
         );
         result.filename = filename_copy;
 
@@ -742,6 +833,8 @@ pub fn runBatchParallel(
         .processed_count = std.atomic.Value(usize).init(0),
         .lut_f64 = luts.f64Ptr(),
         .lut_f32 = luts.f32Ptr(),
+        .coarse_lut_f64 = luts.coarseF64Ptr(),
+        .coarse_lut_f32 = luts.coarseF32Ptr(),
     };
 
     // Spawn worker threads
@@ -1225,6 +1318,15 @@ test "BatchConfig default values" {
     try std.testing.expectEqual(Algorithm.sr, config.algorithm);
     try std.testing.expectEqual(@as(u32, 100), config.n_points);
     try std.testing.expectEqual(@as(f64, 1.4), config.probe_radius);
+}
+
+test "BatchConfig adaptive defaults" {
+    const config = BatchConfig{};
+    try std.testing.expectEqual(false, config.adaptive);
+    try std.testing.expectEqual(@as(u32, 32), config.coarse_points);
+    try std.testing.expectEqual(@as(?u32, null), config.fine_points);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.02), config.adaptive_low, 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.98), config.adaptive_high, 1e-10);
 }
 
 test "BatchResult deinit" {
