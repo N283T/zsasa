@@ -31,8 +31,8 @@ zsasa traj trajectory.xtc topology.pdb \
     --stride=10 \
     --start=100 --end=500
 
-# Include hydrogens
-zsasa traj trajectory.xtc topology.pdb --include-hydrogens
+# Exclude hydrogens (included by default)
+zsasa traj trajectory.xtc topology.pdb --no-hydrogens
 
 # Output to specific file
 zsasa traj trajectory.xtc topology.pdb -o sasa_results.csv
@@ -48,7 +48,7 @@ zsasa traj trajectory.xtc topology.pdb -o sasa_results.csv
 | `--classifier=TYPE` | `naccess`, `protor`, `oons` | none |
 | `--threads=N` | Thread count (0 = auto) | `0` |
 | `--precision=P` | `f32` (fast) or `f64` (precise) | `f32` |
-| `--include-hydrogens` | Include hydrogen atoms | excluded |
+| `--no-hydrogens` | Exclude hydrogen atoms | included |
 | `--batch-size=N` | Frames per batch (omit for auto) | auto |
 | `-o, --output=FILE` | Output CSV file | `traj_sasa.csv` |
 

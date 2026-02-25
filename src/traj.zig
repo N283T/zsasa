@@ -128,7 +128,7 @@ pub const TrajArgs = struct {
     stride: u32 = 1, // Process every Nth frame
     start_frame: u32 = 0, // Start frame
     end_frame: ?u32 = null, // End frame (null = all)
-    include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
+    include_hydrogens: bool = true, // Include hydrogen atoms (default: include for MD trajectories)
     batch_size: u32 = 0, // Frames per batch for parallel processing (0 = auto)
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 64/128/256)
     quiet: bool = false,
@@ -216,6 +216,8 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) TrajArgs {
                 result.output_path = arg[prefix_len..];
             } else if (std.mem.eql(u8, arg, "--include-hydrogens")) {
                 result.include_hydrogens = true;
+            } else if (std.mem.eql(u8, arg, "--no-hydrogens") or std.mem.eql(u8, arg, "--exclude-hydrogens")) {
+                result.include_hydrogens = false;
             } else if (std.mem.eql(u8, arg, "--use-bitmask")) {
                 result.use_bitmask = true;
             } else if (std.mem.eql(u8, arg, "-q") or std.mem.eql(u8, arg, "--quiet")) {
@@ -314,8 +316,9 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --n-points=N       Test points per atom (default: 100, for sr)
         \\    --n-slices=N       Slices per atom diameter (default: 20, for lr)
         \\    --precision=PREC    Floating-point precision: f32, f64 (default: f32)
+        \\    --no-hydrogens     Exclude hydrogen atoms (default: included)
         \\    --include-hydrogens
-        \\                       Include hydrogen atoms (default: excluded)
+        \\                       Include hydrogen atoms (default, for backward compat)
         \\    --use-bitmask      Use bitmask LUT optimization for SR algorithm
         \\                       (n-points must be 64, 128, or 256)
         \\    --stride=N         Process every Nth frame (default: 1)
