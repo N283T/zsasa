@@ -316,7 +316,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --precision=PREC    Floating-point precision: f32, f64 (default: f32)
         \\    --include-hydrogens
         \\                       Include hydrogen atoms (default: excluded)
-        \\    --use-bitmask      Use SIMD bitmask optimization for SR algorithm
+        \\    --use-bitmask      Use bitmask LUT optimization for SR algorithm
         \\                       (n-points must be 64, 128, or 256)
         \\    --stride=N         Process every Nth frame (default: 1)
         \\    --start=N          Start from frame N (default: 0)
@@ -715,7 +715,10 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
                 std.debug.print("Error: --use-bitmask requires --n-points=64, 128, or 256\n", .{});
                 return error.UnsupportedNPoints;
             },
-            else => return err,
+            else => {
+                std.debug.print("Error: failed to build bitmask LUT: {s}\n", .{@errorName(err)});
+                return err;
+            },
         }
     };
     defer luts.deinit();
