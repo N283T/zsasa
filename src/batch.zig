@@ -1700,3 +1700,104 @@ test "BatchArgs --adaptive-high space-separated" {
     const parsed = parseArgs(&args, 2);
     try std.testing.expectApproxEqAbs(@as(f64, 0.90), parsed.adaptive_high, 1e-10);
 }
+
+test "adaptive batch integration - BatchConfig with adaptive" {
+    const allocator = std.testing.allocator;
+    const config = BatchConfig{
+        .use_bitmask = true,
+        .adaptive = true,
+        .coarse_points = 32,
+        .fine_points = 128,
+        .n_points = 128,
+        .algorithm = .sr,
+        .precision = .f64,
+    };
+
+    var luts = try BatchLuts.init(allocator, config);
+    defer luts.deinit();
+
+    // Both LUTs should be initialized
+    try std.testing.expect(luts.f64Ptr() != null);
+    try std.testing.expect(luts.coarseF64Ptr() != null);
+
+    // Verify n_points
+    try std.testing.expectEqual(@as(u32, 128), luts.f64Ptr().?.n_points);
+    try std.testing.expectEqual(@as(u32, 32), luts.coarseF64Ptr().?.n_points);
+}
+
+test "adaptive batch integration - f32 BatchLuts" {
+    const allocator = std.testing.allocator;
+    const config = BatchConfig{
+        .use_bitmask = true,
+        .adaptive = true,
+        .coarse_points = 64,
+        .n_points = 256,
+        .algorithm = .sr,
+        .precision = .f32,
+    };
+
+    var luts = try BatchLuts.init(allocator, config);
+    defer luts.deinit();
+
+    try std.testing.expect(luts.f32Ptr() != null);
+    try std.testing.expect(luts.coarseF32Ptr() != null);
+    try std.testing.expectEqual(@as(u32, 256), luts.f32Ptr().?.n_points);
+    try std.testing.expectEqual(@as(u32, 64), luts.coarseF32Ptr().?.n_points);
+}
+
+test "non-adaptive BatchLuts has no coarse LUT" {
+    const allocator = std.testing.allocator;
+    const config = BatchConfig{
+        .use_bitmask = true,
+        .adaptive = false,
+        .n_points = 128,
+        .algorithm = .sr,
+        .precision = .f64,
+    };
+
+    var luts = try BatchLuts.init(allocator, config);
+    defer luts.deinit();
+
+    try std.testing.expect(luts.f64Ptr() != null);
+    try std.testing.expect(luts.coarseF64Ptr() == null);
+}
+
+test "adaptive BatchLuts uses fine_points for main LUT" {
+    // When fine_points is explicitly set, it should be used for the main LUT
+    const allocator = std.testing.allocator;
+    const config = BatchConfig{
+        .use_bitmask = true,
+        .adaptive = true,
+        .coarse_points = 32,
+        .fine_points = 256,
+        .n_points = 100, // n_points is ignored when fine_points is set
+        .algorithm = .sr,
+        .precision = .f64,
+    };
+
+    var luts = try BatchLuts.init(allocator, config);
+    defer luts.deinit();
+
+    try std.testing.expectEqual(@as(u32, 256), luts.f64Ptr().?.n_points);
+    try std.testing.expectEqual(@as(u32, 32), luts.coarseF64Ptr().?.n_points);
+}
+
+test "adaptive BatchLuts defaults fine to n_points" {
+    // When fine_points is null, n_points is used for the main LUT
+    const allocator = std.testing.allocator;
+    const config = BatchConfig{
+        .use_bitmask = true,
+        .adaptive = true,
+        .coarse_points = 32,
+        .fine_points = null,
+        .n_points = 128,
+        .algorithm = .sr,
+        .precision = .f64,
+    };
+
+    var luts = try BatchLuts.init(allocator, config);
+    defer luts.deinit();
+
+    try std.testing.expectEqual(@as(u32, 128), luts.f64Ptr().?.n_points);
+    try std.testing.expectEqual(@as(u32, 32), luts.coarseF64Ptr().?.n_points);
+}
