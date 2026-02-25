@@ -1139,7 +1139,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --include-hydrogens Include hydrogen atoms (default: exclude)
         \\    --include-hetatm    Include HETATM records (default: exclude)
         \\    --use-bitmask       Use bitmask LUT optimization for SR algorithm
-        \\                        (n-points must be 1..256)
+        \\                        (n-points must be 1..1024)
         \\    --timing            Show timing breakdown for benchmarking
         \\    -o, --output=DIR    Output directory (alternative to positional)
         \\    -q, --quiet         Suppress progress output

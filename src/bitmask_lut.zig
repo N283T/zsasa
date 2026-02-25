@@ -13,7 +13,7 @@ comptime {
     std.debug.assert(max_words <= 16);
 }
 
-/// Check if n_points is valid for bitmask mode (1..256).
+/// Check if n_points is valid for bitmask mode (1..1024).
 pub fn isSupportedNPoints(n: u32) bool {
     return n >= 1 and n <= max_n_points;
 }
@@ -48,7 +48,7 @@ pub fn BitmaskLutGen(comptime T: type) type {
         allocator: Allocator,
 
         /// Build the lookup table for the given n_points.
-        /// Returns error.UnsupportedNPoints if n_points is not in 1..256.
+        /// Returns error.UnsupportedNPoints if n_points is not in 1..1024.
         pub fn init(allocator: Allocator, n_points_val: u32) !Self {
             if (!isSupportedNPoints(n_points_val)) return error.UnsupportedNPoints;
 

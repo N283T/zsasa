@@ -465,7 +465,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\                       f32 is faster but less accurate
         \\    -o, --output=FILE  Output file (alternative to positional argument)
         \\    --use-bitmask      Use bitmask LUT optimization for SR algorithm
-        \\                       Faster but approximate; n-points must be 1..256
+        \\                       Faster but approximate; n-points must be 1..1024
         \\    --validate         Validate input only, do not calculate SASA
         \\    --timing           Show timing breakdown (for benchmarking)
         \\    -q, --quiet        Suppress progress output
