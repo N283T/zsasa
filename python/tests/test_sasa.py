@@ -1,5 +1,7 @@
 """Tests for zsasa Python bindings."""
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -585,22 +587,29 @@ class TestBitmask:
         with pytest.raises(ValueError, match="only supports algorithm='sr'"):
             calculate_sasa(coords, radii, algorithm="lr", use_bitmask=True)
 
-    def test_bitmask_invalid_n_points(self):
-        """use_bitmask=True with unsupported n_points should raise ValueError."""
+    def test_bitmask_unsupported_n_points_warns_and_falls_back(self):
+        """use_bitmask=True with unsupported n_points warns and falls back."""
         coords = np.array([[0.0, 0.0, 0.0]])
         radii = np.array([1.5])
 
-        with pytest.raises(ValueError, match="n_points"):
-            calculate_sasa(coords, radii, n_points=100, use_bitmask=True)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = calculate_sasa(coords, radii, n_points=100, use_bitmask=True)
+            assert len(w) == 1
+            assert "Falling back" in str(w[0].message)
+        assert result.total_area > 0
 
-    def test_bitmask_default_n_points_raises(self):
-        """use_bitmask=True with default n_points=100 should raise ValueError."""
+    def test_bitmask_default_n_points_warns_and_falls_back(self):
+        """use_bitmask=True with default n_points warns and falls back."""
         coords = np.array([[0.0, 0.0, 0.0]])
         radii = np.array([1.5])
 
-        # Default n_points is 100, which is not in (64, 128, 256)
-        with pytest.raises(ValueError, match="n_points"):
-            calculate_sasa(coords, radii, use_bitmask=True)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = calculate_sasa(coords, radii, use_bitmask=True)
+            assert len(w) == 1
+            assert "Falling back" in str(w[0].message)
+        assert result.total_area > 0
 
     def test_bitmask_batch(self):
         """Bitmask batch mode should produce correct results."""
@@ -633,15 +642,19 @@ class TestBitmask:
         with pytest.raises(ValueError, match="only supports algorithm='sr'"):
             calculate_sasa_batch(coords, radii, algorithm="lr", use_bitmask=True)
 
-    def test_bitmask_batch_invalid_n_points(self):
-        """Batch bitmask with unsupported n_points should raise ValueError."""
+    def test_bitmask_batch_unsupported_n_points_warns_and_falls_back(self):
+        """Batch bitmask with unsupported n_points warns and falls back."""
         from zsasa import calculate_sasa_batch
 
         coords = np.array([[[0.0, 0.0, 0.0]]], dtype=np.float32)
         radii = np.array([1.5], dtype=np.float32)
 
-        with pytest.raises(ValueError, match="n_points"):
-            calculate_sasa_batch(coords, radii, n_points=100, use_bitmask=True)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = calculate_sasa_batch(coords, radii, n_points=100, use_bitmask=True)
+            assert len(w) == 1
+            assert "Falling back" in str(w[0].message)
+        assert result.atom_areas.sum() > 0
 
     def test_bitmask_batch_f32_precision(self):
         """Bitmask batch with f32 precision should work."""

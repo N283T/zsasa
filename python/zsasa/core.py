@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+import warnings
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
@@ -26,14 +27,24 @@ ZSASA_ERROR_UNSUPPORTED_N_POINTS = -5
 _BITMASK_SUPPORTED_N_POINTS = (64, 128, 256)
 
 
-def _validate_bitmask_params(algorithm: str, n_points: int) -> None:
-    """Validate parameters for bitmask mode."""
+def _validate_bitmask_params(algorithm: str, n_points: int) -> bool:
+    """Validate parameters for bitmask mode.
+
+    Returns True if bitmask should be used, False if falling back to standard SR.
+    Raises ValueError if algorithm is incompatible (not SR).
+    """
     if algorithm != "sr":
         msg = "use_bitmask=True only supports algorithm='sr' (Shrake-Rupley)"
         raise ValueError(msg)
     if n_points not in _BITMASK_SUPPORTED_N_POINTS:
-        msg = f"use_bitmask=True requires n_points in {_BITMASK_SUPPORTED_N_POINTS}, got {n_points}"
-        raise ValueError(msg)
+        warnings.warn(
+            f"use_bitmask=True requires n_points in "
+            f"{_BITMASK_SUPPORTED_N_POINTS}, got {n_points}. "
+            f"Falling back to standard Shrake-Rupley.",
+            stacklevel=3,
+        )
+        return False
+    return True
 
 
 # Algorithm constants
@@ -320,7 +331,7 @@ def calculate_sasa(
 
     # Validate bitmask constraints
     if use_bitmask:
-        _validate_bitmask_params(algorithm, n_points)
+        use_bitmask = _validate_bitmask_params(algorithm, n_points)
 
     # Validate and convert inputs
     coords = np.ascontiguousarray(coords, dtype=np.float64)
@@ -928,7 +939,7 @@ def calculate_sasa_batch(
 
     # Validate bitmask constraints
     if use_bitmask:
-        _validate_bitmask_params(algorithm, n_points)
+        use_bitmask = _validate_bitmask_params(algorithm, n_points)
 
     # Validate and convert inputs
     coordinates = np.ascontiguousarray(coordinates, dtype=np.float32)
