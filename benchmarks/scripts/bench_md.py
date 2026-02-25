@@ -208,6 +208,7 @@ def run_zig(
     binaries: dict[str, Path],
     stride: int,
     n_points: int,
+    use_bitmask: bool = False,
 ) -> list[dict]:
     """Run zsasa CLI traj benchmarks (f32/f64 x threads)."""
     zsasa = binaries["zsasa"]
@@ -222,6 +223,7 @@ def run_zig(
             out_path = tmp.name
 
             for n_threads in thread_counts:
+                bitmask_flag = " --use-bitmask" if use_bitmask else ""
                 cmd = (
                     f"{zsasa} traj {xtc} {pdb}"
                     f" --include-hydrogens"
@@ -229,6 +231,7 @@ def run_zig(
                     f" --precision={precision}"
                     f" --stride={stride}"
                     f" --n-points={n_points}"
+                    f"{bitmask_flag}"
                     f" -o {out_path} -q"
                 )
                 result = run_benchmark(
@@ -532,6 +535,13 @@ def main(
             help="Show commands without running",
         ),
     ] = False,
+    use_bitmask: Annotated[
+        bool,
+        typer.Option(
+            "--use-bitmask",
+            help="Use bitmask neighbor list for zsasa",
+        ),
+    ] = False,
 ) -> None:
     """Run MD trajectory SASA benchmarks using hyperfine."""
     if not check_hyperfine():
@@ -573,6 +583,7 @@ def main(
             "runs": runs,
             "stride": stride,
             "n_points": n_points,
+            "use_bitmask": use_bitmask,
             **traj_info,
         },
     }
@@ -606,6 +617,7 @@ def main(
             binaries,
             stride,
             n_points,
+            use_bitmask,
         )
         all_results.extend(results)
 

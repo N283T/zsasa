@@ -212,6 +212,8 @@ def run_zig(
     algorithm: str,
     n_threads: int,
     precision: str = "f64",
+    n_points: int = 100,
+    use_bitmask: bool = False,
 ) -> tuple[float, float]:
     """Run Zig benchmark. Returns (sasa_time_ms, total_sasa)."""
     binary = get_binary_path("zig")
@@ -243,9 +245,12 @@ def run_zig(
             f"--algorithm={algorithm}",
             f"--threads={n_threads}",
             f"--precision={precision}",
+            f"--n-points={n_points}",
             str(input_path),
             str(output_path),
         ]
+        if use_bitmask:
+            cmd.insert(-2, "--use-bitmask")
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
@@ -369,16 +374,20 @@ def run_benchmark(
     algorithm: str,
     n_threads: int,
     precision: str = "f64",
+    n_points: int = 100,
+    use_bitmask: bool = False,
 ) -> tuple[float, float]:
     """Run benchmark for a specific tool. Returns (sasa_time_ms, total_sasa)."""
     if tool == "zig":
-        return run_zig(json_path, algorithm, n_threads, precision)
+        return run_zig(
+            json_path, algorithm, n_threads, precision, n_points, use_bitmask
+        )
     elif tool == "freesasa":
-        return run_freesasa(json_path, algorithm, n_threads)
+        return run_freesasa(json_path, algorithm, n_threads, n_points)
     elif tool == "rust":
         if algorithm != "sr":
             raise ValueError("RustSASA only supports SR algorithm")
-        return run_rust(json_path, n_threads)
+        return run_rust(json_path, n_threads, n_points)
     else:
         raise ValueError(f"Unknown tool: {tool}")
 
@@ -471,6 +480,21 @@ def main(
             help="Sample file to filter structures (v1 or v2 format)",
         ),
     ] = None,
+    n_points: Annotated[
+        int,
+        typer.Option(
+            "--n-points",
+            "-N",
+            help="Number of sphere test points per atom (default: 100)",
+        ),
+    ] = 100,
+    use_bitmask: Annotated[
+        bool,
+        typer.Option(
+            "--use-bitmask",
+            help="Use bitmask neighbor list for zsasa",
+        ),
+    ] = False,
 ) -> None:
     """Run SASA benchmark for a single tool and algorithm."""
 
@@ -553,6 +577,8 @@ def main(
             "thread_counts": thread_counts,
             "warmup": warmup,
             "runs": runs,
+            "n_points": n_points,
+            "use_bitmask": use_bitmask,
             "n_structures": len(structures),
             "input_dir": str(json_dir),
             "sample_file": str(sample_file) if sample_file else None,
@@ -625,7 +651,13 @@ def main(
                         progress.update(task, description=desc)
                         try:
                             run_benchmark(
-                                tool_base, json_path, algorithm, n_threads, precision
+                                tool_base,
+                                json_path,
+                                algorithm,
+                                n_threads,
+                                precision,
+                                n_points,
+                                use_bitmask,
                             )
                         except Exception:
                             pass
@@ -643,6 +675,8 @@ def main(
                                 algorithm,
                                 n_threads,
                                 precision,
+                                n_points,
+                                use_bitmask,
                             )
 
                             writer.writerow(

@@ -108,7 +108,13 @@ def count_atoms_pdb(pdb_path: Path) -> int:
     return count
 
 
-def bench_cli_timing(pdb_path: Path, n_runs: int, threads: int) -> dict:
+def bench_cli_timing(
+    pdb_path: Path,
+    n_runs: int,
+    threads: int,
+    n_points: int = 100,
+    use_bitmask: bool = False,
+) -> dict:
     """Benchmark Zig CLI, extracting SASA-only time from --timing."""
     zsasa_bin = get_root_dir().joinpath("zig-out", "bin", "zsasa")
     if not zsasa_bin.exists():
@@ -124,17 +130,21 @@ def bench_cli_timing(pdb_path: Path, n_runs: int, threads: int) -> dict:
 
     for _ in range(n_runs):
         with tempfile.NamedTemporaryFile(suffix=".json") as tmp:
+            cmd = [
+                str(zsasa_bin),
+                "calc",
+                "--timing",
+                "-q",
+                thread_arg,
+                f"--n-points={n_points}",
+                str(pdb_path),
+                tmp.name,
+            ]
+            if use_bitmask:
+                cmd.insert(-2, "--use-bitmask")
             start = time.perf_counter()
             result = subprocess.run(
-                [
-                    str(zsasa_bin),
-                    "calc",
-                    "--timing",
-                    "-q",
-                    thread_arg,
-                    str(pdb_path),
-                    tmp.name,
-                ],
+                cmd,
                 capture_output=True,
                 text=True,
             )
@@ -164,6 +174,7 @@ def bench_python_sasa(
     radii: np.ndarray,
     n_runs: int,
     threads: int,
+    n_points: int = 100,
 ) -> list[float]:
     """Benchmark Python calculate_sasa() with pre-loaded data."""
     # Import here to avoid top-level dependency on installed zsasa
@@ -171,12 +182,12 @@ def bench_python_sasa(
     from zsasa import calculate_sasa
 
     # Warmup
-    calculate_sasa(coords, radii, n_threads=threads)
+    calculate_sasa(coords, radii, n_threads=threads, n_points=n_points)
 
     times = []
     for _ in range(n_runs):
         start = time.perf_counter()
-        calculate_sasa(coords, radii, n_threads=threads)
+        calculate_sasa(coords, radii, n_threads=threads, n_points=n_points)
         elapsed = time.perf_counter() - start
         times.append(elapsed)
     return times
@@ -243,6 +254,21 @@ def main(
     output: Annotated[
         str | None, typer.Option(help="Output directory for results")
     ] = None,
+    n_points: Annotated[
+        int,
+        typer.Option(
+            "--n-points",
+            "-N",
+            help="Number of sphere test points per atom (default: 100)",
+        ),
+    ] = 100,
+    use_bitmask: Annotated[
+        bool,
+        typer.Option(
+            "--use-bitmask",
+            help="Use bitmask neighbor list for zsasa",
+        ),
+    ] = False,
 ) -> None:
     """Compare Python bindings vs Zig CLI performance."""
     console.print("[bold]Python Bindings vs Zig CLI Benchmark[/bold]\n")
@@ -266,15 +292,19 @@ def main(
         for _ in range(warmup):
             for _, _, pdb_path, _ in pdb_files:
                 with tempfile.NamedTemporaryFile(suffix=".json") as tmp:
+                    warmup_cmd = [
+                        str(zsasa_bin),
+                        "calc",
+                        "-q",
+                        thread_arg,
+                        f"--n-points={n_points}",
+                        str(pdb_path),
+                        tmp.name,
+                    ]
+                    if use_bitmask:
+                        warmup_cmd.insert(-2, "--use-bitmask")
                     subprocess.run(
-                        [
-                            str(zsasa_bin),
-                            "calc",
-                            "-q",
-                            thread_arg,
-                            str(pdb_path),
-                            tmp.name,
-                        ],
+                        warmup_cmd,
                         capture_output=True,
                     )
 
@@ -285,11 +315,11 @@ def main(
         console.print(f"[bold]Benchmarking {name} ({n_atoms:,} atoms)...[/bold]")
 
         # CLI benchmark
-        cli = bench_cli_timing(pdb_path, runs, threads)
+        cli = bench_cli_timing(pdb_path, runs, threads, n_points, use_bitmask)
 
         # Python SASA-only
         coords, radii = prepare_python_data(pdb_path, threads)
-        py_sasa_times = bench_python_sasa(coords, radii, runs, threads)
+        py_sasa_times = bench_python_sasa(coords, radii, runs, threads, n_points)
 
         # Python end-to-end
         py_e2e_times = bench_python_e2e(pdb_path, runs, threads)
@@ -388,7 +418,8 @@ def main(
             "runs": runs,
             "warmup": warmup,
             "threads": threads,
-            "n_points": 100,
+            "n_points": n_points,
+            "use_bitmask": use_bitmask,
             "probe_radius": 1.4,
             "algorithm": "sr",
             "structures": [
