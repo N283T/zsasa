@@ -1111,7 +1111,398 @@ pub fn runBatch(
     };
 }
 
+// =============================================================================
+// CLI argument parsing and run entry point
+// =============================================================================
+
+/// Parsed command-line arguments for the batch subcommand
+pub const BatchArgs = struct {
+    input_path: ?[]const u8 = null,
+    output_path: ?[]const u8 = null, // Optional output directory
+    n_threads: usize = 0,
+    probe_radius: f64 = 1.4,
+    n_points: u32 = 100,
+    n_slices: u32 = 20,
+    algorithm: Algorithm = .sr,
+    precision: Precision = .f64,
+    output_format: OutputFormat = .json,
+    classifier_type: ?ClassifierType = null,
+    include_hydrogens: bool = false,
+    include_hetatm: bool = false,
+    use_bitmask: bool = false,
+    quiet: bool = false,
+    show_timing: bool = false,
+    show_help: bool = false,
+};
+
+// Parse helper functions (local to batch.zig)
+
+/// Parse and validate probe radius value
+fn parseProbeRadius(value: []const u8) f64 {
+    const radius = std.fmt.parseFloat(f64, value) catch {
+        std.debug.print("Error: Invalid probe radius: {s}\n", .{value});
+        std.process.exit(1);
+    };
+    if (radius <= 0 or radius > 10.0 or !std.math.isFinite(radius)) {
+        std.debug.print("Error: Probe radius must be between 0 and 10 Angstroms: {d}\n", .{radius});
+        std.process.exit(1);
+    }
+    return radius;
+}
+
+/// Parse and validate n-points value
+fn parseNPoints(value: []const u8) u32 {
+    const n = std.fmt.parseInt(u32, value, 10) catch {
+        std.debug.print("Error: Invalid n-points: {s}\n", .{value});
+        std.process.exit(1);
+    };
+    if (n == 0 or n > 10000) {
+        std.debug.print("Error: n-points must be between 1 and 10000: {d}\n", .{n});
+        std.process.exit(1);
+    }
+    return n;
+}
+
+/// Parse and validate n-slices value (for Lee-Richards)
+fn parseNSlices(value: []const u8) u32 {
+    const n = std.fmt.parseInt(u32, value, 10) catch {
+        std.debug.print("Error: Invalid n-slices: {s}\n", .{value});
+        std.process.exit(1);
+    };
+    if (n == 0 or n > 1000) {
+        std.debug.print("Error: n-slices must be between 1 and 1000: {d}\n", .{n});
+        std.process.exit(1);
+    }
+    return n;
+}
+
+/// Parse and validate algorithm value
+fn parseAlgorithmValue(value: []const u8) Algorithm {
+    if (std.mem.eql(u8, value, "sr") or std.mem.eql(u8, value, "shrake-rupley")) {
+        return .sr;
+    } else if (std.mem.eql(u8, value, "lr") or std.mem.eql(u8, value, "lee-richards")) {
+        return .lr;
+    } else {
+        std.debug.print("Error: Invalid algorithm: {s}\n", .{value});
+        std.debug.print("Valid algorithms: sr (shrake-rupley), lr (lee-richards)\n", .{});
+        std.process.exit(1);
+    }
+}
+
+/// Parse and validate output format value
+fn parseOutputFormatValue(value: []const u8) OutputFormat {
+    if (std.mem.eql(u8, value, "json")) {
+        return .json;
+    } else if (std.mem.eql(u8, value, "compact")) {
+        return .compact;
+    } else if (std.mem.eql(u8, value, "csv")) {
+        return .csv;
+    } else {
+        std.debug.print("Error: Invalid format: {s}\n", .{value});
+        std.debug.print("Valid formats: json, compact, csv\n", .{});
+        std.process.exit(1);
+    }
+}
+
+/// Parse and validate classifier type value
+fn parseClassifierTypeValue(value: []const u8) ClassifierType {
+    if (ClassifierType.fromString(value)) |ct| {
+        return ct;
+    } else {
+        std.debug.print("Error: Invalid classifier: {s}\n", .{value});
+        std.debug.print("Valid classifiers: naccess, protor, oons\n", .{});
+        std.process.exit(1);
+    }
+}
+
+/// Parse and validate precision value
+fn parsePrecisionValue(value: []const u8) Precision {
+    if (Precision.fromString(value)) |p| {
+        return p;
+    } else {
+        std.debug.print("Error: Invalid precision: {s}\n", .{value});
+        std.debug.print("Valid values: f32 (single), f64 (double)\n", .{});
+        std.process.exit(1);
+    }
+}
+
+/// Parse batch subcommand arguments
+pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
+    var result = BatchArgs{};
+    var i: usize = start_idx;
+    var positional_count: usize = 0;
+
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+
+        // --threads=N or --threads N
+        if (std.mem.startsWith(u8, arg, "--threads=")) {
+            const value = arg["--threads=".len..];
+            result.n_threads = std.fmt.parseInt(usize, value, 10) catch {
+                std.debug.print("Error: Invalid thread count: {s}\n", .{value});
+                std.process.exit(1);
+            };
+        } else if (std.mem.eql(u8, arg, "--threads")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --threads\n", .{});
+                std.process.exit(1);
+            }
+            result.n_threads = std.fmt.parseInt(usize, args[i], 10) catch {
+                std.debug.print("Error: Invalid thread count: {s}\n", .{args[i]});
+                std.process.exit(1);
+            };
+        }
+        // --probe-radius=R or --probe-radius R
+        else if (std.mem.startsWith(u8, arg, "--probe-radius=")) {
+            const value = arg["--probe-radius=".len..];
+            result.probe_radius = parseProbeRadius(value);
+        } else if (std.mem.eql(u8, arg, "--probe-radius")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --probe-radius\n", .{});
+                std.process.exit(1);
+            }
+            result.probe_radius = parseProbeRadius(args[i]);
+        }
+        // --n-points=N or --n-points N
+        else if (std.mem.startsWith(u8, arg, "--n-points=")) {
+            const value = arg["--n-points=".len..];
+            result.n_points = parseNPoints(value);
+        } else if (std.mem.eql(u8, arg, "--n-points")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --n-points\n", .{});
+                std.process.exit(1);
+            }
+            result.n_points = parseNPoints(args[i]);
+        }
+        // --n-slices=N or --n-slices N (for Lee-Richards)
+        else if (std.mem.startsWith(u8, arg, "--n-slices=")) {
+            const value = arg["--n-slices=".len..];
+            result.n_slices = parseNSlices(value);
+        } else if (std.mem.eql(u8, arg, "--n-slices")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --n-slices\n", .{});
+                std.process.exit(1);
+            }
+            result.n_slices = parseNSlices(args[i]);
+        }
+        // --format=FORMAT or --format FORMAT
+        else if (std.mem.startsWith(u8, arg, "--format=")) {
+            const value = arg["--format=".len..];
+            result.output_format = parseOutputFormatValue(value);
+        } else if (std.mem.eql(u8, arg, "--format")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --format\n", .{});
+                std.process.exit(1);
+            }
+            result.output_format = parseOutputFormatValue(args[i]);
+        }
+        // --algorithm=ALGO or --algorithm ALGO
+        else if (std.mem.startsWith(u8, arg, "--algorithm=")) {
+            const value = arg["--algorithm=".len..];
+            result.algorithm = parseAlgorithmValue(value);
+        } else if (std.mem.eql(u8, arg, "--algorithm")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --algorithm\n", .{});
+                std.process.exit(1);
+            }
+            result.algorithm = parseAlgorithmValue(args[i]);
+        }
+        // --classifier=TYPE or --classifier TYPE
+        else if (std.mem.startsWith(u8, arg, "--classifier=")) {
+            const value = arg["--classifier=".len..];
+            result.classifier_type = parseClassifierTypeValue(value);
+        } else if (std.mem.eql(u8, arg, "--classifier")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --classifier\n", .{});
+                std.process.exit(1);
+            }
+            result.classifier_type = parseClassifierTypeValue(args[i]);
+        }
+        // --precision=PREC or --precision PREC
+        else if (std.mem.startsWith(u8, arg, "--precision=")) {
+            const value = arg["--precision=".len..];
+            result.precision = parsePrecisionValue(value);
+        } else if (std.mem.eql(u8, arg, "--precision")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --precision\n", .{});
+                std.process.exit(1);
+            }
+            result.precision = parsePrecisionValue(args[i]);
+        }
+        // --include-hydrogens
+        else if (std.mem.eql(u8, arg, "--include-hydrogens")) {
+            result.include_hydrogens = true;
+        }
+        // --include-hetatm
+        else if (std.mem.eql(u8, arg, "--include-hetatm")) {
+            result.include_hetatm = true;
+        }
+        // --use-bitmask
+        else if (std.mem.eql(u8, arg, "--use-bitmask")) {
+            result.use_bitmask = true;
+        }
+        // --quiet or -q
+        else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
+            result.quiet = true;
+        }
+        // --timing
+        else if (std.mem.eql(u8, arg, "--timing")) {
+            result.show_timing = true;
+        }
+        // --help or -h
+        else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            result.show_help = true;
+        }
+        // -o FILE or --output=FILE or --output FILE
+        else if (std.mem.eql(u8, arg, "-o")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for -o\n", .{});
+                std.process.exit(1);
+            }
+            result.output_path = args[i];
+        } else if (std.mem.startsWith(u8, arg, "--output=")) {
+            result.output_path = arg["--output=".len..];
+        } else if (std.mem.eql(u8, arg, "--output")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --output\n", .{});
+                std.process.exit(1);
+            }
+            result.output_path = args[i];
+        }
+        // Unknown option
+        else if (std.mem.startsWith(u8, arg, "-")) {
+            std.debug.print("Error: Unknown option: {s}\n", .{arg});
+            std.debug.print("Try 'zsasa batch --help' for more information.\n", .{});
+            std.process.exit(1);
+        }
+        // Positional arguments: <input_dir> [output_dir]
+        else {
+            if (positional_count == 0) {
+                result.input_path = arg;
+            } else if (positional_count == 1) {
+                result.output_path = arg;
+            } else {
+                std.debug.print("Error: Too many positional arguments\n", .{});
+                std.process.exit(1);
+            }
+            positional_count += 1;
+        }
+    }
+
+    return result;
+}
+
+/// Print help for the batch subcommand
+pub fn printHelp(program_name: []const u8) void {
+    std.debug.print(
+        \\zsasa batch - Calculate SASA for all files in a directory
+        \\
+        \\USAGE:
+        \\    {s} batch [OPTIONS] <input_dir> [output_dir]
+        \\
+        \\ARGUMENTS:
+        \\    <input_dir>     Directory containing structure files (PDB, mmCIF, JSON)
+        \\    [output_dir]    Optional output directory (default: no file output)
+        \\
+        \\OPTIONS:
+        \\    --algorithm=ALGO    Algorithm: sr (shrake-rupley), lr (lee-richards)
+        \\                        Default: sr
+        \\    --classifier=TYPE   Built-in classifier: naccess, protor, oons
+        \\                        Default: protor
+        \\    --threads=N         Number of threads (default: auto-detect)
+        \\    --probe-radius=R    Probe radius in Angstroms (default: 1.4)
+        \\    --n-points=N        Test points per atom (default: 100, for sr)
+        \\    --n-slices=N        Slices per atom diameter (default: 20, for lr)
+        \\    --precision=PREC    Floating-point precision: f32, f64 (default: f64)
+        \\    --format=FORMAT     Output format: json, compact, csv (default: json)
+        \\    --include-hydrogens Include hydrogen atoms (default: exclude)
+        \\    --include-hetatm    Include HETATM records (default: exclude)
+        \\    --use-bitmask       Use bitmask LUT optimization for SR algorithm
+        \\                        (n-points must be 64, 128, or 256)
+        \\    --timing            Show timing breakdown for benchmarking
+        \\    -o, --output=DIR    Output directory (alternative to positional)
+        \\    -q, --quiet         Suppress progress output
+        \\    -h, --help          Show this help message
+        \\
+        \\EXAMPLES:
+        \\    {s} batch structures/
+        \\    {s} batch structures/ results/
+        \\    {s} batch structures/ --algorithm=lr --threads=4
+        \\    {s} batch structures/ --classifier=naccess --format=csv
+        \\    {s} batch structures/ results/ --timing --quiet
+        \\
+    , .{ program_name, program_name, program_name, program_name, program_name, program_name });
+}
+
+/// Run batch processing from parsed CLI arguments
+pub fn run(allocator: Allocator, args: BatchArgs) !void {
+    const input_dir = args.input_path orelse {
+        std.debug.print("Error: Missing input directory\n", .{});
+        std.debug.print("Usage: zsasa batch [OPTIONS] <input_dir> [output_dir]\n", .{});
+        return error.MissingArgument;
+    };
+
+    const output_dir: ?[]const u8 = args.output_path;
+
+    // Build batch config from parsed args
+    // classifier_type: use explicit --classifier if set, otherwise default protor
+    const config = BatchConfig{
+        .n_threads = args.n_threads,
+        .algorithm = args.algorithm,
+        .parallelism = .file, // Default; will be removed in Task 5
+        .n_points = args.n_points,
+        .n_slices = args.n_slices,
+        .probe_radius = args.probe_radius,
+        .precision = args.precision,
+        .output_format = args.output_format,
+        .show_timing = args.show_timing,
+        .quiet = args.quiet,
+        .classifier_type = args.classifier_type orelse .protor,
+        .include_hydrogens = args.include_hydrogens,
+        .include_hetatm = args.include_hetatm,
+        .use_bitmask = args.use_bitmask,
+    };
+
+    if (!args.quiet) {
+        std.debug.print("Batch mode: processing directory '{s}'\n", .{input_dir});
+        std.debug.print("Algorithm: {s}, Threads: {d}\n", .{
+            if (config.algorithm == .sr) "sr" else "lr",
+            if (config.n_threads == 0) @as(usize, @intCast(std.Thread.getCpuCount() catch 1)) else config.n_threads,
+        });
+        if (output_dir) |out| {
+            std.debug.print("Output directory: {s}\n", .{out});
+        }
+        std.debug.print("\n", .{});
+    }
+
+    var result = try runBatch(allocator, input_dir, output_dir, config);
+    defer result.deinit();
+
+    // Print results
+    if (!args.quiet) {
+        result.printSummary(args.show_timing);
+    }
+
+    // Always print benchmark output (for script parsing)
+    if (args.show_timing) {
+        std.debug.print("\n", .{});
+        result.printBenchmarkOutput();
+    }
+}
+
+// =============================================================================
 // Tests
+// =============================================================================
 
 test "scanDirectory finds json files" {
     // This test requires a test directory - skip in automated testing
@@ -1150,4 +1541,54 @@ test "BatchResult deinit" {
     };
 
     batch_result.deinit();
+}
+
+test "BatchArgs defaults" {
+    const args = [_][]const u8{ "zsasa", "batch", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("input_dir/", parsed.input_path.?);
+    try std.testing.expect(parsed.output_path == null);
+    try std.testing.expectEqual(@as(usize, 0), parsed.n_threads);
+    try std.testing.expectEqual(Algorithm.sr, parsed.algorithm);
+    try std.testing.expectEqual(false, parsed.quiet);
+    try std.testing.expectEqual(false, parsed.show_help);
+    try std.testing.expectEqual(false, parsed.include_hydrogens);
+    try std.testing.expectEqual(false, parsed.include_hetatm);
+    try std.testing.expectEqual(false, parsed.use_bitmask);
+    try std.testing.expectEqual(false, parsed.show_timing);
+}
+
+test "BatchArgs with output dir" {
+    const args = [_][]const u8{ "zsasa", "batch", "input_dir/", "output_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("input_dir/", parsed.input_path.?);
+    try std.testing.expectEqualStrings("output_dir/", parsed.output_path.?);
+}
+
+test "BatchArgs with options" {
+    const args = [_][]const u8{
+        "zsasa",          "batch",
+        "--algorithm=lr", "--threads=4",
+        "--quiet",        "--timing",
+        "input_dir/",
+    };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("input_dir/", parsed.input_path.?);
+    try std.testing.expectEqual(Algorithm.lr, parsed.algorithm);
+    try std.testing.expectEqual(@as(usize, 4), parsed.n_threads);
+    try std.testing.expectEqual(true, parsed.quiet);
+    try std.testing.expectEqual(true, parsed.show_timing);
+}
+
+test "BatchArgs help flag" {
+    const args = [_][]const u8{ "zsasa", "batch", "--help" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.show_help);
+}
+
+test "BatchArgs output via -o flag" {
+    const args = [_][]const u8{ "zsasa", "batch", "-o", "results/", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("input_dir/", parsed.input_path.?);
+    try std.testing.expectEqualStrings("results/", parsed.output_path.?);
 }
