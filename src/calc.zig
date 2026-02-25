@@ -2,13 +2,30 @@
 // Calculates SASA for a single input file (JSON, PDB, or mmCIF)
 //
 const std = @import("std");
+const analysis = @import("analysis.zig");
+const format_detect = @import("format_detect.zig");
+const json_parser = @import("json_parser.zig");
 const json_writer = @import("json_writer.zig");
-const classifier = @import("classifier.zig");
+const mmcif_parser = @import("mmcif_parser.zig");
+const pdb_parser = @import("pdb_parser.zig");
+const shrake_rupley = @import("shrake_rupley.zig");
+const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
+const bitmask_lut = @import("bitmask_lut.zig");
+const lee_richards = @import("lee_richards.zig");
 const types = @import("types.zig");
+const classifier = @import("classifier.zig");
+const classifier_parser = @import("classifier_parser.zig");
+const classifier_naccess = @import("classifier_naccess.zig");
+const classifier_protor = @import("classifier_protor.zig");
+const classifier_oons = @import("classifier_oons.zig");
 
+const Config = types.Config;
+const Configf32 = types.Configf32;
 const Precision = types.Precision;
 const OutputFormat = json_writer.OutputFormat;
 const ClassifierType = classifier.ClassifierType;
+const LeeRichardsConfig = lee_richards.LeeRichardsConfig;
+const LeeRichardsConfigf32 = lee_richards.LeeRichardsConfigf32;
 
 /// SASA algorithm selection
 pub const Algorithm = enum {
@@ -483,13 +500,490 @@ pub fn printHelp(program_name: []const u8) void {
 }
 
 // =============================================================================
-// Run (stub)
+// Input reading and classification
 // =============================================================================
 
-/// Run the calc subcommand (stub - implementation in a later task)
+/// Read input file (auto-detect format)
+fn readInputFile(allocator: std.mem.Allocator, path: []const u8, args: CalcArgs) !types.AtomInput {
+    const format = format_detect.detectInputFormat(path);
+    return switch (format) {
+        .json => json_parser.readAtomInputFromFile(allocator, path),
+        .mmcif => blk: {
+            var parser = mmcif_parser.MmcifParser.init(allocator);
+            parser.model_num = args.model_num;
+            parser.use_auth_chain = args.use_auth_chain;
+            parser.skip_hydrogens = !args.include_hydrogens;
+            parser.atom_only = !args.include_hetatm;
+
+            // Parse chain filter if specified
+            var chain_filter_slice: ?[]const []const u8 = null;
+            if (args.chain_filter) |filter_str| {
+                chain_filter_slice = try parseChainFilter(allocator, filter_str);
+                parser.chain_filter = chain_filter_slice;
+            }
+            defer if (chain_filter_slice) |s| allocator.free(s);
+
+            break :blk parser.parseFile(path);
+        },
+        .pdb => blk: {
+            var parser = pdb_parser.PdbParser.init(allocator);
+            parser.model_num = args.model_num;
+            parser.skip_hydrogens = !args.include_hydrogens;
+            parser.atom_only = !args.include_hetatm;
+
+            // Parse chain filter if specified
+            var chain_filter_slice: ?[]const []const u8 = null;
+            if (args.chain_filter) |filter_str| {
+                chain_filter_slice = try parseChainFilter(allocator, filter_str);
+                parser.chain_filter = chain_filter_slice;
+            }
+            defer if (chain_filter_slice) |s| allocator.free(s);
+
+            break :blk parser.parseFile(path);
+        },
+    };
+}
+
+/// Apply a custom classifier to input, replacing radii based on residue/atom names
+fn applyClassifier(
+    _: std.mem.Allocator,
+    input: *types.AtomInput,
+    custom_classifier: *const classifier.Classifier,
+    quiet: bool,
+) !void {
+    const n = input.atomCount();
+    const residues = input.residue orelse return error.MissingClassificationInfo;
+    const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
+
+    // Allocate new radii array (use input.allocator for consistency with deinit)
+    const new_radii = try input.allocator.alloc(f64, n);
+    errdefer input.allocator.free(new_radii);
+
+    var classified_count: usize = 0;
+    var fallback_count: usize = 0;
+
+    for (0..n) |i| {
+        // Try classifier lookup
+        if (custom_classifier.getRadius(residues[i].slice(), atom_names[i].slice())) |r| {
+            new_radii[i] = r;
+            classified_count += 1;
+        } else if (input.element) |elements| {
+            // Fall back to element-based radius
+            if (classifier.guessRadiusFromAtomicNumber(elements[i])) |r| {
+                new_radii[i] = r;
+                fallback_count += 1;
+            } else {
+                // Keep original radius
+                new_radii[i] = input.r[i];
+            }
+        } else if (classifier.guessRadiusFromAtomName(atom_names[i].slice())) |r| {
+            // Fall back to atom name-based radius
+            new_radii[i] = r;
+            fallback_count += 1;
+        } else {
+            // Keep original radius
+            new_radii[i] = input.r[i];
+        }
+    }
+
+    // Free old radii and replace with classified radii
+    input.allocator.free(input.r);
+    input.r = new_radii;
+
+    if (!quiet) {
+        std.debug.print("Classifier '{s}': {d} atoms classified, {d} fallback\n", .{
+            custom_classifier.name,
+            classified_count,
+            fallback_count,
+        });
+    }
+}
+
+/// Apply a built-in classifier to input
+fn applyBuiltinClassifier(
+    _: std.mem.Allocator,
+    input: *types.AtomInput,
+    ct: ClassifierType,
+    quiet: bool,
+) !void {
+    const n = input.atomCount();
+    const residues = input.residue orelse return error.MissingClassificationInfo;
+    const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
+
+    // Allocate new radii array (use input.allocator for consistency with deinit)
+    const new_radii = try input.allocator.alloc(f64, n);
+    errdefer input.allocator.free(new_radii);
+
+    var classified_count: usize = 0;
+    var fallback_count: usize = 0;
+
+    for (0..n) |i| {
+        // Try built-in classifier lookup
+        const maybe_radius: ?f64 = switch (ct) {
+            .naccess => classifier_naccess.getRadius(residues[i].slice(), atom_names[i].slice()),
+            .protor => classifier_protor.getRadius(residues[i].slice(), atom_names[i].slice()),
+            .oons => classifier_oons.getRadius(residues[i].slice(), atom_names[i].slice()),
+        };
+
+        if (maybe_radius) |r| {
+            new_radii[i] = r;
+            classified_count += 1;
+        } else if (input.element) |elements| {
+            // Fall back to element-based radius
+            if (classifier.guessRadiusFromAtomicNumber(elements[i])) |r| {
+                new_radii[i] = r;
+                fallback_count += 1;
+            } else {
+                // Keep original radius
+                new_radii[i] = input.r[i];
+            }
+        } else if (classifier.guessRadiusFromAtomName(atom_names[i].slice())) |r| {
+            // Fall back to atom name-based radius
+            new_radii[i] = r;
+            fallback_count += 1;
+        } else {
+            // Keep original radius
+            new_radii[i] = input.r[i];
+        }
+    }
+
+    // Free old radii and replace with classified radii
+    input.allocator.free(input.r);
+    input.r = new_radii;
+
+    if (!quiet) {
+        std.debug.print("Classifier '{s}': {d} atoms classified, {d} fallback\n", .{
+            ct.name(),
+            classified_count,
+            fallback_count,
+        });
+    }
+}
+
+/// Print per-chain SASA results
+fn printPerChainResults(chain_ids: []const types.FixedString4, atom_areas: []const f64) void {
+    // Use a simple approach: iterate through to find unique chains and sum areas
+    // For efficiency, we'll use a fixed-size buffer for up to 64 unique chains
+    const max_chains = 64;
+    var chain_names: [max_chains]types.FixedString4 = undefined;
+    var chain_areas: [max_chains]f64 = undefined;
+    var chain_counts: [max_chains]usize = undefined;
+    var num_chains: usize = 0;
+    var warned_overflow = false;
+
+    for (chain_ids, 0..) |chain_id, i| {
+        // Find if this chain already exists
+        var found_idx: ?usize = null;
+        for (0..num_chains) |j| {
+            if (std.mem.eql(u8, chain_names[j].slice(), chain_id.slice())) {
+                found_idx = j;
+                break;
+            }
+        }
+
+        if (found_idx) |idx| {
+            // Add to existing chain
+            chain_areas[idx] += atom_areas[i];
+            chain_counts[idx] += 1;
+        } else if (num_chains < max_chains) {
+            // Add new chain
+            chain_names[num_chains] = chain_id;
+            chain_areas[num_chains] = atom_areas[i];
+            chain_counts[num_chains] = 1;
+            num_chains += 1;
+        } else if (!warned_overflow) {
+            // Warn once when limit is exceeded
+            std.debug.print("Warning: More than {d} unique chains; some chains omitted from summary\n", .{max_chains});
+            warned_overflow = true;
+        }
+    }
+
+    if (num_chains > 0) {
+        std.debug.print("\nPer-chain SASA:\n", .{});
+        for (0..num_chains) |i| {
+            std.debug.print("  {s}: {d:.2} Å² ({d} atoms)\n", .{
+                chain_names[i].slice(),
+                chain_areas[i],
+                chain_counts[i],
+            });
+        }
+    }
+}
+
+// =============================================================================
+// Run
+// =============================================================================
+
+/// Run the calc subcommand — single-file SASA processing
 pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
-    _ = allocator;
-    _ = args;
+    // Timing variables (in nanoseconds)
+    var timer = std.time.Timer.start() catch {
+        std.debug.print("Error: Timer not supported\n", .{});
+        std.process.exit(1);
+    };
+    var time_parse: u64 = 0;
+    var time_classify: u64 = 0;
+    var time_sasa: u64 = 0;
+    var time_write: u64 = 0;
+
+    // Read input file (JSON, PDB, or mmCIF)
+    timer.reset();
+    var input = readInputFile(allocator, args.input_path.?, args) catch |err| {
+        std.debug.print("Error reading input file '{s}': {s}\n", .{ args.input_path.?, @errorName(err) });
+        std.process.exit(1);
+    };
+    defer input.deinit();
+
+    // Validate input data
+    var validation = json_parser.validateInput(allocator, input) catch |err| {
+        std.debug.print("Error validating input: {s}\n", .{@errorName(err)});
+        std.process.exit(1);
+    };
+    defer validation.deinit();
+
+    if (!validation.valid) {
+        json_parser.printValidationErrors(validation.errors);
+        std.process.exit(1);
+    }
+
+    // Check for duplicate coordinates (warning only)
+    if (!args.quiet) {
+        _ = json_parser.checkDuplicateCoordinates(allocator, input) catch |err| {
+            std.debug.print("Warning: Could not check for duplicate coordinates: {s}\n", .{@errorName(err)});
+        };
+    }
+    time_parse = timer.read();
+
+    // Handle --validate (dry-run)
+    if (args.validate_only) {
+        if (!args.quiet) {
+            std.debug.print("Input validation passed: {} atoms\n", .{input.atomCount()});
+        }
+        return;
+    }
+
+    // Validate --use-bitmask constraints
+    if (args.use_bitmask) {
+        if (args.algorithm != .sr) {
+            std.debug.print("Error: --use-bitmask is only supported with the sr (shrake-rupley) algorithm\n", .{});
+            std.process.exit(1);
+        }
+        if (!bitmask_lut.isSupportedNPoints(args.n_points)) {
+            std.debug.print("Error: --use-bitmask requires --n-points to be 64, 128, or 256 (got {d})\n", .{args.n_points});
+            std.process.exit(1);
+        }
+    }
+
+    // Apply classifier (--config takes precedence over --classifier)
+    // Default: protor for PDB/mmCIF input (matches FreeSASA/RustSASA defaults)
+    timer.reset();
+    const input_format = format_detect.detectInputFormat(args.input_path.?);
+    const effective_classifier: ?ClassifierType = args.classifier_type orelse
+        if (args.config_path == null and input_format != .json) .protor else null;
+
+    if (args.config_path != null or effective_classifier != null) {
+        // Warn if both are specified
+        if (args.config_path != null and args.classifier_type != null) {
+            if (!args.quiet) {
+                std.debug.print("Warning: Both --classifier and --config specified; using --config\n", .{});
+            }
+        }
+
+        // Check if input has classification info
+        if (!input.hasClassificationInfo()) {
+            std.debug.print("Error: Classifier requires 'residue' and 'atom_name' fields in input\n", .{});
+            std.process.exit(1);
+        }
+
+        // Load classifier and apply radii
+        if (args.config_path) |config_path| {
+            // Load from custom config file
+            var custom_classifier = classifier_parser.parseConfigFile(allocator, config_path) catch |err| {
+                std.debug.print("Error loading config file '{s}': {s}\n", .{ config_path, @errorName(err) });
+                std.process.exit(1);
+            };
+            defer custom_classifier.deinit();
+
+            applyClassifier(allocator, &input, &custom_classifier, args.quiet) catch |err| {
+                std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
+                std.process.exit(1);
+            };
+        } else if (effective_classifier) |ct| {
+            // Use built-in classifier
+            applyBuiltinClassifier(allocator, &input, ct, args.quiet) catch |err| {
+                std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
+                std.process.exit(1);
+            };
+        }
+    }
+    time_classify = timer.read();
+
+    // Calculate SASA with configured parameters
+    timer.reset();
+    var result = switch (args.precision) {
+        .f64 => switch (args.algorithm) {
+            .sr => blk: {
+                const config = Config{
+                    .n_points = args.n_points,
+                    .probe_radius = args.probe_radius,
+                };
+                break :blk if (args.use_bitmask) bitmask_blk: {
+                    break :bitmask_blk if (args.n_threads == 1)
+                        shrake_rupley_bitmask.calculateSasa(allocator, input, config) catch |err| {
+                            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                            std.process.exit(1);
+                        }
+                    else
+                        shrake_rupley_bitmask.calculateSasaParallel(allocator, input, config, args.n_threads) catch |err| {
+                            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                            std.process.exit(1);
+                        };
+                } else standard_blk: {
+                    break :standard_blk if (args.n_threads == 1)
+                        shrake_rupley.calculateSasa(allocator, input, config) catch |err| {
+                            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                            std.process.exit(1);
+                        }
+                    else
+                        shrake_rupley.calculateSasaParallel(allocator, input, config, args.n_threads) catch |err| {
+                            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                            std.process.exit(1);
+                        };
+                };
+            },
+            .lr => blk: {
+                const lr_config = LeeRichardsConfig{
+                    .n_slices = args.n_slices,
+                    .probe_radius = args.probe_radius,
+                };
+                break :blk if (args.n_threads == 1)
+                    lee_richards.calculateSasa(allocator, input, lr_config) catch |err| {
+                        std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                        std.process.exit(1);
+                    }
+                else
+                    lee_richards.calculateSasaParallel(allocator, input, lr_config, args.n_threads) catch |err| {
+                        std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                        std.process.exit(1);
+                    };
+            },
+        },
+        .f32 => blk: {
+            // Calculate in f32, convert to f64 for output
+            var result_f32 = switch (args.algorithm) {
+                .sr => inner: {
+                    const config = Configf32{
+                        .n_points = args.n_points,
+                        .probe_radius = @floatCast(args.probe_radius),
+                    };
+                    break :inner if (args.use_bitmask) bitmask_inner: {
+                        break :bitmask_inner if (args.n_threads == 1)
+                            shrake_rupley_bitmask.calculateSasaf32(allocator, input, config) catch |err| {
+                                std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                                std.process.exit(1);
+                            }
+                        else
+                            shrake_rupley_bitmask.calculateSasaParallelf32(allocator, input, config, args.n_threads) catch |err| {
+                                std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                                std.process.exit(1);
+                            };
+                    } else standard_inner: {
+                        break :standard_inner if (args.n_threads == 1)
+                            shrake_rupley.calculateSasaf32(allocator, input, config) catch |err| {
+                                std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                                std.process.exit(1);
+                            }
+                        else
+                            shrake_rupley.calculateSasaParallelf32(allocator, input, config, args.n_threads) catch |err| {
+                                std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                                std.process.exit(1);
+                            };
+                    };
+                },
+                .lr => inner: {
+                    const lr_config = LeeRichardsConfigf32{
+                        .n_slices = args.n_slices,
+                        .probe_radius = @floatCast(args.probe_radius),
+                    };
+                    break :inner if (args.n_threads == 1)
+                        lee_richards.calculateSasaf32(allocator, input, lr_config) catch |err| {
+                            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                            std.process.exit(1);
+                        }
+                    else
+                        lee_richards.calculateSasaParallelf32(allocator, input, lr_config, args.n_threads) catch |err| {
+                            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                            std.process.exit(1);
+                        };
+                },
+            };
+            defer result_f32.deinit();
+            // Convert to f64 for output
+            break :blk result_f32.toF64(allocator) catch |err| {
+                std.debug.print("Error converting result: {s}\n", .{@errorName(err)});
+                std.process.exit(1);
+            };
+        },
+    };
+    defer result.deinit();
+    time_sasa = timer.read();
+
+    // Write output file
+    timer.reset();
+    json_writer.writeSasaResultWithFormatAndInput(allocator, result, input, args.output_path, args.output_format) catch |err| {
+        std.debug.print("Error writing output file '{s}': {s}\n", .{ args.output_path, @errorName(err) });
+        std.process.exit(1);
+    };
+    time_write = timer.read();
+
+    // Calculate total time
+    const time_total = time_parse + time_classify + time_sasa + time_write;
+
+    // Print summary (unless quiet mode)
+    if (!args.quiet) {
+        std.debug.print("Calculated SASA for {} atoms\n", .{input.atomCount()});
+        std.debug.print("Total area: {d:.2} Å²\n", .{result.total_area});
+
+        // Print per-chain results if chain info is available
+        if (input.chain_id) |chain_ids| {
+            printPerChainResults(chain_ids, result.atom_areas);
+        }
+
+        // Print per-residue results if requested
+        if (args.per_residue and input.hasResidueInfo()) {
+            var residue_result = analysis.aggregateByResidue(allocator, input, result.atom_areas) catch |err| {
+                std.debug.print("Error calculating per-residue SASA: {s}\n", .{@errorName(err)});
+                std.process.exit(1);
+            };
+            defer residue_result.deinit();
+            if (args.rsa) {
+                analysis.printResidueResultsWithRsa(residue_result.residues);
+            } else {
+                analysis.printResidueResults(residue_result.residues);
+            }
+
+            // Print polar/nonpolar summary if requested
+            if (args.polar) {
+                const polar_summary = analysis.calculatePolarSummary(residue_result.residues);
+                analysis.printPolarSummary(polar_summary);
+            }
+        }
+
+        std.debug.print("Output written to {s}\n", .{args.output_path});
+    }
+
+    // Print timing breakdown if requested
+    if (args.show_timing) {
+        const ns_to_ms = 1_000_000.0;
+        std.debug.print("\nTiming breakdown:\n", .{});
+        std.debug.print("  Parse + validate: {d:.2} ms\n", .{@as(f64, @floatFromInt(time_parse)) / ns_to_ms});
+        if (time_classify > 0) {
+            std.debug.print("  Classifier:       {d:.2} ms\n", .{@as(f64, @floatFromInt(time_classify)) / ns_to_ms});
+        }
+        std.debug.print("  SASA calculation: {d:.2} ms\n", .{@as(f64, @floatFromInt(time_sasa)) / ns_to_ms});
+        std.debug.print("  Write output:     {d:.2} ms\n", .{@as(f64, @floatFromInt(time_write)) / ns_to_ms});
+        std.debug.print("  Total:            {d:.2} ms\n", .{@as(f64, @floatFromInt(time_total)) / ns_to_ms});
+    }
 }
 
 // =============================================================================
