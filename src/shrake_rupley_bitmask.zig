@@ -947,6 +947,181 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
                 .allocator = allocator,
             };
         }
+
+        // =====================================================================
+        // Adaptive parallel implementation
+        // =====================================================================
+
+        pub const AdaptiveParallelContext = struct {
+            positions: []const Vec,
+            radii: []const T,
+            radii_with_probe_sq: []const T,
+            neighbor_list_data: *const NList,
+            probe_radius: T,
+            atom_areas: []T,
+            lut: *const Lut,
+        };
+
+        fn adaptiveParallelWorker(ctx: Self.AdaptiveParallelContext, chunk_start: usize, chunk_end: usize) T {
+            var chunk_total: T = 0.0;
+
+            for (chunk_start..chunk_end) |i| {
+                const atom_radius_probe = ctx.radii[i] + ctx.probe_radius;
+                const neighbors = ctx.neighbor_list_data.getNeighbors(i);
+                const area = Self.atomSasaBitmask(
+                    i,
+                    ctx.positions,
+                    ctx.radii_with_probe_sq,
+                    atom_radius_probe,
+                    neighbors,
+                    ctx.lut,
+                );
+                ctx.atom_areas[i] = area;
+                chunk_total += area;
+            }
+
+            return chunk_total;
+        }
+
+        fn adaptiveSumReducer(results: []const T) T {
+            var total: T = 0.0;
+            for (results) |r| {
+                total += r;
+            }
+            return total;
+        }
+
+        /// Calculate SASA using adaptive 2-pass strategy with pre-built LUTs (parallel).
+        /// Pass 1 uses the coarse LUT on all atoms in parallel, then classifies atoms
+        /// as buried/exposed/boundary. Pass 2 refines only boundary atoms with the
+        /// fine LUT sequentially (boundary atoms are typically a small fraction).
+        pub fn calculateSasaAdaptiveParallelWithLuts(
+            allocator: Allocator,
+            input: AtomInput,
+            adaptive_config: AdaptiveConfig,
+            n_threads: usize,
+            coarse_lut: *const Lut,
+            fine_lut: *const Lut,
+        ) !AdaptiveResult {
+            const n_atoms = input.atomCount();
+            if (n_atoms == 0) return error.NoAtoms;
+            std.debug.assert(adaptive_config.coarse_points == coarse_lut.n_points);
+            std.debug.assert(adaptive_config.fine_points == fine_lut.n_points);
+            return calculateSasaAdaptiveParallelCore(allocator, input, adaptive_config, n_threads, coarse_lut, fine_lut);
+        }
+
+        fn calculateSasaAdaptiveParallelCore(
+            allocator: Allocator,
+            input: AtomInput,
+            adaptive_config: AdaptiveConfig,
+            n_threads: usize,
+            coarse_lut: *const Lut,
+            fine_lut: *const Lut,
+        ) !AdaptiveResult {
+            const n_atoms = input.atomCount();
+            const probe_radius = adaptive_config.probe_radius;
+            const actual_threads = if (n_threads == 0)
+                try std.Thread.getCpuCount()
+            else
+                n_threads;
+
+            // Shared setup (same as single-threaded adaptive core)
+            const positions = try allocator.alloc(Vec, n_atoms);
+            defer allocator.free(positions);
+            for (0..n_atoms) |i| {
+                positions[i] = Vec{
+                    .x = @floatCast(input.x[i]),
+                    .y = @floatCast(input.y[i]),
+                    .z = @floatCast(input.z[i]),
+                };
+            }
+
+            const radii = try allocator.alloc(T, n_atoms);
+            defer allocator.free(radii);
+            for (0..n_atoms) |i| {
+                radii[i] = @floatCast(input.r[i]);
+            }
+
+            var neighbor_list_data = try NList.init(allocator, positions, radii, probe_radius);
+            defer neighbor_list_data.deinit();
+
+            const radii_with_probe_sq = try allocator.alloc(T, n_atoms);
+            defer allocator.free(radii_with_probe_sq);
+            for (0..n_atoms) |i| {
+                const r_probe = radii[i] + probe_radius;
+                radii_with_probe_sq[i] = r_probe * r_probe;
+            }
+
+            const atom_areas = try allocator.alloc(T, n_atoms);
+            errdefer allocator.free(atom_areas);
+
+            // Pass 1: parallel coarse pass on all atoms
+            const ctx = Self.AdaptiveParallelContext{
+                .positions = positions,
+                .radii = radii,
+                .radii_with_probe_sq = radii_with_probe_sq,
+                .neighbor_list_data = &neighbor_list_data,
+                .probe_radius = probe_radius,
+                .atom_areas = atom_areas,
+                .lut = coarse_lut,
+            };
+
+            const chunk_size = @max(64, n_atoms / (actual_threads * 4));
+
+            _ = try thread_pool.parallelFor(
+                Self.AdaptiveParallelContext,
+                T,
+                allocator,
+                actual_threads,
+                Self.adaptiveParallelWorker,
+                ctx,
+                n_atoms,
+                chunk_size,
+                Self.adaptiveSumReducer,
+            );
+
+            // Classification (sequential): classify atoms and collect boundary indices
+            var stats = AdaptiveStats{ .n_buried = 0, .n_exposed = 0, .n_boundary = 0 };
+            const four_pi: T = 4.0 * std.math.pi;
+
+            var boundary_indices = std.ArrayListUnmanaged(usize){};
+            defer boundary_indices.deinit(allocator);
+
+            for (0..n_atoms) |i| {
+                const atom_radius_probe = radii[i] + probe_radius;
+                const full_area = four_pi * atom_radius_probe * atom_radius_probe;
+                const exposure_fraction = if (full_area > 0) atom_areas[i] / full_area else 0;
+
+                if (exposure_fraction < adaptive_config.adaptive_low) {
+                    stats.n_buried += 1;
+                } else if (exposure_fraction > adaptive_config.adaptive_high) {
+                    stats.n_exposed += 1;
+                } else {
+                    stats.n_boundary += 1;
+                    try boundary_indices.append(allocator, i);
+                }
+            }
+
+            // Pass 2: sequential refinement of boundary atoms with fine LUT
+            for (boundary_indices.items) |i| {
+                const atom_radius_probe = radii[i] + probe_radius;
+                const neighbors = neighbor_list_data.getNeighbors(i);
+                atom_areas[i] = Self.atomSasaBitmask(i, positions, radii_with_probe_sq, atom_radius_probe, neighbors, fine_lut);
+            }
+
+            // Sum total area
+            var total_area: T = 0.0;
+            for (atom_areas) |a| total_area += a;
+
+            return AdaptiveResult{
+                .result = Result{
+                    .total_area = total_area,
+                    .atom_areas = atom_areas,
+                    .allocator = allocator,
+                },
+                .stats = stats,
+            };
+        }
     };
 }
 
@@ -1690,4 +1865,101 @@ test "adaptive calculateSasa - all-boundary matches fine-only exactly" {
     for (0..2) |i| {
         try std.testing.expectApproxEqAbs(fine_result.atom_areas[i], result.result.atom_areas[i], 1e-10);
     }
+}
+
+test "adaptive bitmask parallel - matches single-threaded" {
+    const allocator = std.testing.allocator;
+
+    // Two overlapping atoms (boundary case to exercise both passes)
+    const x = try allocator.alloc(f64, 2);
+    const y = try allocator.alloc(f64, 2);
+    const z = try allocator.alloc(f64, 2);
+    const r = try allocator.alloc(f64, 2);
+    x[0] = 0.0;
+    y[0] = 0.0;
+    z[0] = 0.0;
+    r[0] = 1.5;
+    x[1] = 2.0;
+    y[1] = 0.0;
+    z[1] = 0.0;
+    r[1] = 1.5;
+
+    var input = AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .allocator = allocator,
+    };
+    defer input.deinit();
+
+    const adaptive_config = ShrakeRupleyBitmask.AdaptiveConfig{
+        .probe_radius = 1.4,
+        .coarse_points = 32,
+        .fine_points = 128,
+        .adaptive_low = 0.10,
+        .adaptive_high = 0.90,
+    };
+
+    var coarse_lut = try BitmaskLut.init(allocator, 32);
+    defer coarse_lut.deinit();
+    var fine_lut = try BitmaskLut.init(allocator, 128);
+    defer fine_lut.deinit();
+
+    // Single-threaded adaptive
+    // Need separate input copies because calculateSasaAdaptiveWithLuts doesn't consume input
+    var single_result = try ShrakeRupleyBitmask.calculateSasaAdaptiveWithLuts(
+        allocator,
+        input,
+        adaptive_config,
+        &coarse_lut,
+        &fine_lut,
+    );
+    defer single_result.deinit();
+
+    // Parallel adaptive (2 threads)
+    const x2 = try allocator.alloc(f64, 2);
+    const y2 = try allocator.alloc(f64, 2);
+    const z2 = try allocator.alloc(f64, 2);
+    const r2 = try allocator.alloc(f64, 2);
+    x2[0] = 0.0;
+    y2[0] = 0.0;
+    z2[0] = 0.0;
+    r2[0] = 1.5;
+    x2[1] = 2.0;
+    y2[1] = 0.0;
+    z2[1] = 0.0;
+    r2[1] = 1.5;
+
+    var input2 = AtomInput{
+        .x = x2,
+        .y = y2,
+        .z = z2,
+        .r = r2,
+        .allocator = allocator,
+    };
+    defer input2.deinit();
+
+    var parallel_result = try ShrakeRupleyBitmask.calculateSasaAdaptiveParallelWithLuts(
+        allocator,
+        input2,
+        adaptive_config,
+        2,
+        &coarse_lut,
+        &fine_lut,
+    );
+    defer parallel_result.deinit();
+
+    // total_area must match exactly (same LUTs, same algorithm)
+    try std.testing.expectApproxEqAbs(single_result.result.total_area, parallel_result.result.total_area, 1e-10);
+
+    // per-atom areas must match exactly
+    for (0..2) |i| {
+        try std.testing.expectApproxEqAbs(single_result.result.atom_areas[i], parallel_result.result.atom_areas[i], 1e-10);
+    }
+
+    // stats must match exactly
+    try std.testing.expectEqual(single_result.stats.n_buried, parallel_result.stats.n_buried);
+    try std.testing.expectEqual(single_result.stats.n_exposed, parallel_result.stats.n_exposed);
+    try std.testing.expectEqual(single_result.stats.n_boundary, parallel_result.stats.n_boundary);
 }
