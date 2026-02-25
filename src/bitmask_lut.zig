@@ -63,8 +63,8 @@ pub fn BitmaskLutGen(comptime T: type) type {
             else
                 (@as(u64, 1) << @intCast(last_bits)) - 1;
 
-            // Generate direction vectors using golden spiral
-            const dir_vectors = try generateDirections(allocator, n_dirs);
+            // Generate direction vectors from octahedral grid cell centers
+            const dir_vectors = try generateOctaDirections(allocator);
             errdefer allocator.free(dir_vectors);
 
             // Generate test points on unit sphere
@@ -119,18 +119,58 @@ pub fn BitmaskLutGen(comptime T: type) type {
             return self.masks[offset..][0..self.words];
         }
 
-        /// Find the closest direction bin for a unit vector.
-        pub fn dirBinFromUnit(self: Self, x: T, y: T, z: T) usize {
-            var best_idx: usize = 0;
-            var best_dot: T = -2.0;
-            for (self.dir_vectors, 0..) |dv, i| {
-                const dot = x * dv.x + y * dv.y + z * dv.z;
-                if (dot > best_dot) {
-                    best_dot = dot;
-                    best_idx = i;
-                }
+        /// Find the direction bin for a unit vector using octahedral encoding (O(1)).
+        pub fn dirBinFromUnit(_: Self, x: T, y: T, z: T) usize {
+            return octaDirBin(x, y, z);
+        }
+
+        /// O(1) octahedral encoding: maps a unit vector to a direction bin index.
+        fn octaDirBin(x: T, y: T, z: T) usize {
+            // Project onto L1 octahedron
+            const inv_l1 = 1.0 / (@abs(x) + @abs(y) + @abs(z));
+            var px = x * inv_l1;
+            var py = y * inv_l1;
+            const pz = z * inv_l1;
+
+            // Fold lower hemisphere onto upper
+            if (pz < 0.0) {
+                const px_sign: T = if (px >= 0.0) 1.0 else -1.0;
+                const py_sign: T = if (py >= 0.0) 1.0 else -1.0;
+                const px_abs = @abs(px);
+                const py_abs = @abs(py);
+                px = (1.0 - py_abs) * px_sign;
+                py = (1.0 - px_abs) * py_sign;
             }
-            return best_idx;
+
+            // Map [-1, 1] → [0, resolution)
+            const res_f: T = @floatFromInt(dir_resolution);
+            const fx = (px + 1.0) * 0.5 * res_f;
+            const fy = (py + 1.0) * 0.5 * res_f;
+            const ix: usize = @intFromFloat(@min(@max(fx, 0.0), res_f - 1.0));
+            const iy: usize = @intFromFloat(@min(@max(fy, 0.0), res_f - 1.0));
+            return iy * dir_resolution + ix;
+        }
+
+        /// Decode octahedral grid cell center to unit vector.
+        fn octaDecode(ix: usize, iy: usize) Vec {
+            const res_f: T = @floatFromInt(dir_resolution);
+            var u = (@as(T, @floatFromInt(ix)) + 0.5) / res_f * 2.0 - 1.0;
+            var v = (@as(T, @floatFromInt(iy)) + 0.5) / res_f * 2.0 - 1.0;
+            const zz: T = 1.0 - @abs(u) - @abs(v);
+
+            if (zz < 0.0) {
+                const u_sign: T = if (u >= 0.0) 1.0 else -1.0;
+                const v_sign: T = if (v >= 0.0) 1.0 else -1.0;
+                const u_abs = @abs(u);
+                const v_abs = @abs(v);
+                u = (1.0 - v_abs) * u_sign;
+                v = (1.0 - u_abs) * v_sign;
+            }
+
+            const norm = @sqrt(u * u + v * v + zz * zz);
+            if (norm <= 0.0) return Vec{ .x = 0.0, .y = 0.0, .z = 1.0 };
+            const inv_norm = 1.0 / norm;
+            return Vec{ .x = u * inv_norm, .y = v * inv_norm, .z = zz * inv_norm };
         }
 
         /// Map a cosine value from [-1, 1] to angle bin [0, 255].
@@ -148,26 +188,17 @@ pub fn BitmaskLutGen(comptime T: type) type {
             return @as(T, @floatFromInt(angle_idx)) / 255.0 * 2.0 - 1.0;
         }
 
-        /// Generate evenly distributed direction vectors using golden spiral.
-        fn generateDirections(allocator: Allocator, n: usize) ![]Vec {
-            const dirs = try allocator.alloc(Vec, n);
+        /// Generate direction vectors from octahedral grid cell centers.
+        /// Each direction corresponds to the center of its octahedral grid cell,
+        /// ensuring consistency between dirBinFromUnit lookup and mask construction.
+        fn generateOctaDirections(allocator: Allocator) ![]Vec {
+            const dirs = try allocator.alloc(Vec, n_dirs);
             errdefer allocator.free(dirs);
 
-            const dlong: f64 = std.math.pi * (3.0 - @sqrt(5.0));
-            const dz: f64 = 2.0 / @as(f64, @floatFromInt(n));
-
-            var longitude: f64 = 0.0;
-            var z: f64 = 1.0 - dz / 2.0;
-
-            for (dirs) |*dir| {
-                const r = @sqrt(1.0 - z * z);
-                dir.* = Vec{
-                    .x = @floatCast(@cos(longitude) * r),
-                    .y = @floatCast(@sin(longitude) * r),
-                    .z = @floatCast(z),
-                };
-                z -= dz;
-                longitude += dlong;
+            for (0..dir_resolution) |iy| {
+                for (0..dir_resolution) |ix| {
+                    dirs[iy * dir_resolution + ix] = octaDecode(ix, iy);
+                }
             }
 
             return dirs;
