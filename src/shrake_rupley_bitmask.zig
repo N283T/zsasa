@@ -59,6 +59,63 @@ fn angleBinFromCosScalar(comptime T: type, cos_value: T) usize {
     return @intFromFloat(@max(@as(T, 0.0), @min(@as(T, 255.0), bin_rounded)));
 }
 
+/// Branchless octahedral direction bin for a batch of 4 direction vectors.
+/// Uses @select instead of if/else for hemisphere fold — maps to blendv (x86) or bsl (NEON).
+fn octaDirBinBranchless(comptime T: type, nx: @Vector(4, T), ny: @Vector(4, T), nz: @Vector(4, T), resolution: usize) [4]usize {
+    const V4 = @Vector(4, T);
+    const ones: V4 = @splat(1.0);
+    const zeros: V4 = @splat(0.0);
+    const neg_ones: V4 = @splat(-1.0);
+    const half: V4 = @splat(0.5);
+
+    const abs_x = @abs(nx);
+    const abs_y = @abs(ny);
+    const abs_z = @abs(nz);
+    const inv_l1 = ones / (abs_x + abs_y + abs_z);
+    const px_orig = nx * inv_l1;
+    const py_orig = ny * inv_l1;
+    const pz = nz * inv_l1;
+
+    // Branchless hemisphere fold for pz < 0
+    const neg_z = pz < zeros;
+    const px_sign: V4 = @select(T, px_orig >= zeros, ones, neg_ones);
+    const py_sign: V4 = @select(T, py_orig >= zeros, ones, neg_ones);
+    const folded_px = (ones - @abs(py_orig)) * px_sign;
+    const folded_py = (ones - @abs(px_orig)) * py_sign;
+    const px = @select(T, neg_z, folded_px, px_orig);
+    const py = @select(T, neg_z, folded_py, py_orig);
+
+    // Grid coordinates to bin indices
+    const res_f: V4 = @splat(@as(T, @floatFromInt(resolution)));
+    const res_m1 = res_f - ones;
+    const clamped_fx = @min(@max((px + ones) * half * res_f, zeros), res_m1);
+    const clamped_fy = @min(@max((py + ones) * half * res_f, zeros), res_m1);
+
+    var result: [4]usize = undefined;
+    inline for (0..4) |i| {
+        result[i] = @as(usize, @intFromFloat(clamped_fx[i])) + @as(usize, @intFromFloat(clamped_fy[i])) * resolution;
+    }
+    return result;
+}
+
+/// Batch angle bin computation for 4 cosine values.
+fn angleBinFromCosBatch(comptime T: type, cos_vals: @Vector(4, T)) [4]usize {
+    const V4 = @Vector(4, T);
+    const ones: V4 = @splat(1.0);
+    const zeros: V4 = @splat(0.0);
+    const max_bin: V4 = @splat(255.0);
+
+    const clamped = @max(zeros, @min(ones, (cos_vals + ones) * @as(V4, @splat(@as(T, 0.5)))));
+    const rounded = @round(clamped * max_bin);
+    const final_bins = @max(zeros, @min(max_bin, rounded));
+
+    var result: [4]usize = undefined;
+    inline for (0..4) |i| {
+        result[i] = @intFromFloat(final_bins[i]);
+    }
+    return result;
+}
+
 fn atomSasaBitmask(
     atom_idx: usize,
     positions: []const Vec3,
@@ -84,7 +141,75 @@ fn atomSasaBitmask(
     var visibility: [4]u64 = .{ std.math.maxInt(u64), std.math.maxInt(u64), std.math.maxInt(u64), std.math.maxInt(u64) };
     visibility[words - 1] &= lut.last_word_mask;
 
-    for (neighbors) |j| {
+    // SIMD 4-neighbor batching
+    const batch_size = 4;
+    const V4 = @Vector(batch_size, f64);
+    const cx_splat: V4 = @splat(atom_pos.x);
+    const cy_splat: V4 = @splat(atom_pos.y);
+    const cz_splat: V4 = @splat(atom_pos.z);
+    const r_i_sq_splat: V4 = @splat(r_i_sq);
+    const inv_two_r_splat: V4 = @splat(@as(f64, 1.0) / two_r_i);
+    const ones_v: V4 = @splat(@as(f64, 1.0));
+    const neg_ones_v: V4 = @splat(@as(f64, -1.0));
+
+    var idx: usize = 0;
+
+    while (idx + batch_size <= neighbors.len) : (idx += batch_size) {
+        var nbr_x: [batch_size]f64 = undefined;
+        var nbr_y: [batch_size]f64 = undefined;
+        var nbr_z: [batch_size]f64 = undefined;
+        var nbr_rsq: [batch_size]f64 = undefined;
+        inline for (0..batch_size) |b| {
+            const j = neighbors[idx + b];
+            nbr_x[b] = positions[j].x;
+            nbr_y[b] = positions[j].y;
+            nbr_z[b] = positions[j].z;
+            nbr_rsq[b] = radii_with_probe_sq[j];
+        }
+
+        const vx: V4 = @as(V4, nbr_x) - cx_splat;
+        const vy: V4 = @as(V4, nbr_y) - cy_splat;
+        const vz: V4 = @as(V4, nbr_z) - cz_splat;
+        const dist_sq = vx * vx + vy * vy + vz * vz;
+        // Clamp dist_sq to avoid division by zero for coincident atoms.
+        // IEEE 754 NaN from 0/0 would cause UB in @intFromFloat later.
+        const epsilon_splat: V4 = @splat(@as(f64, 1e-20));
+        const safe_dist_sq = @max(dist_sq, epsilon_splat);
+        const inv_dist = ones_v / @sqrt(safe_dist_sq);
+        const cos_threshold = (r_i_sq_splat + dist_sq - @as(V4, nbr_rsq)) * inv_two_r_splat * inv_dist;
+
+        if (@reduce(.Or, cos_threshold <= neg_ones_v)) return 0.0;
+
+        const valid = cos_threshold < ones_v;
+        if (@reduce(.Or, valid)) {
+            const nx = vx * inv_dist;
+            const ny = vy * inv_dist;
+            const nz = vz * inv_dist;
+            const dir_indices = octaDirBinBranchless(f64, nx, ny, nz, dir_resolution);
+            const angle_indices = angleBinFromCosBatch(f64, cos_threshold);
+
+            var combined: [4]u64 = .{ 0, 0, 0, 0 };
+            inline for (0..batch_size) |b| {
+                if (valid[b]) {
+                    const offset = (dir_indices[b] * angle_bins_c + angle_indices[b]) * words;
+                    for (0..words) |w| {
+                        combined[w] |= lut.masks[offset + w];
+                    }
+                }
+            }
+
+            var any_visible: u64 = 0;
+            for (0..words) |w| {
+                visibility[w] &= ~combined[w];
+                any_visible |= visibility[w];
+            }
+            if (any_visible == 0) return 0.0;
+        }
+    }
+
+    // Scalar tail for remaining < 4 neighbors
+    while (idx < neighbors.len) : (idx += 1) {
+        const j = neighbors[idx];
         const dx = positions[j].x - atom_pos.x;
         const dy = positions[j].y - atom_pos.y;
         const dz = positions[j].z - atom_pos.z;
@@ -353,7 +478,74 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             var visibility: [4]u64 = .{ std.math.maxInt(u64), std.math.maxInt(u64), std.math.maxInt(u64), std.math.maxInt(u64) };
             visibility[words - 1] &= lut.last_word_mask;
 
-            for (neighbors) |j| {
+            // SIMD 4-neighbor batching
+            const batch_size = 4;
+            const V4 = @Vector(batch_size, T);
+            const cx_splat: V4 = @splat(atom_pos.x);
+            const cy_splat: V4 = @splat(atom_pos.y);
+            const cz_splat: V4 = @splat(atom_pos.z);
+            const r_i_sq_splat: V4 = @splat(r_i_sq);
+            const inv_two_r_splat: V4 = @splat(@as(T, 1.0) / two_r_i);
+            const ones_v: V4 = @splat(@as(T, 1.0));
+            const neg_ones_v: V4 = @splat(@as(T, -1.0));
+
+            var idx: usize = 0;
+
+            while (idx + batch_size <= neighbors.len) : (idx += batch_size) {
+                var nbr_x: [batch_size]T = undefined;
+                var nbr_y: [batch_size]T = undefined;
+                var nbr_z: [batch_size]T = undefined;
+                var nbr_rsq: [batch_size]T = undefined;
+                inline for (0..batch_size) |b| {
+                    const j = neighbors[idx + b];
+                    nbr_x[b] = positions[j].x;
+                    nbr_y[b] = positions[j].y;
+                    nbr_z[b] = positions[j].z;
+                    nbr_rsq[b] = radii_with_probe_sq[j];
+                }
+
+                const vx: V4 = @as(V4, nbr_x) - cx_splat;
+                const vy: V4 = @as(V4, nbr_y) - cy_splat;
+                const vz: V4 = @as(V4, nbr_z) - cz_splat;
+                const dist_sq = vx * vx + vy * vy + vz * vz;
+                // Clamp dist_sq to avoid division by zero for coincident atoms.
+                const epsilon_splat: V4 = @splat(@as(T, 1e-20));
+                const safe_dist_sq = @max(dist_sq, epsilon_splat);
+                const inv_dist = ones_v / @sqrt(safe_dist_sq);
+                const cos_threshold = (r_i_sq_splat + dist_sq - @as(V4, nbr_rsq)) * inv_two_r_splat * inv_dist;
+
+                if (@reduce(.Or, cos_threshold <= neg_ones_v)) return 0.0;
+
+                const valid = cos_threshold < ones_v;
+                if (@reduce(.Or, valid)) {
+                    const nx = vx * inv_dist;
+                    const ny = vy * inv_dist;
+                    const nz = vz * inv_dist;
+                    const dir_indices = octaDirBinBranchless(T, nx, ny, nz, dir_resolution);
+                    const angle_indices = angleBinFromCosBatch(T, cos_threshold);
+
+                    var combined: [4]u64 = .{ 0, 0, 0, 0 };
+                    inline for (0..batch_size) |b| {
+                        if (valid[b]) {
+                            const offset = (dir_indices[b] * angle_bins_val + angle_indices[b]) * words;
+                            for (0..words) |w| {
+                                combined[w] |= lut.masks[offset + w];
+                            }
+                        }
+                    }
+
+                    var any_visible: u64 = 0;
+                    for (0..words) |w| {
+                        visibility[w] &= ~combined[w];
+                        any_visible |= visibility[w];
+                    }
+                    if (any_visible == 0) return 0.0;
+                }
+            }
+
+            // Scalar tail for remaining < 4 neighbors
+            while (idx < neighbors.len) : (idx += 1) {
+                const j = neighbors[idx];
                 const dx = positions[j].x - atom_pos.x;
                 const dy = positions[j].y - atom_pos.y;
                 const dz = positions[j].z - atom_pos.z;
@@ -442,6 +634,31 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
 
             var lut = try Lut.init(allocator, config.n_points);
             defer lut.deinit();
+            return calculateSasaCore(allocator, input, config, &lut);
+        }
+
+        /// Calculate SASA with a pre-built LUT (single-threaded, generic precision).
+        /// Use this in batch mode to avoid rebuilding the LUT per file.
+        /// Caller must ensure lut was built with config.n_points.
+        pub fn calculateSasaWithLut(
+            allocator: Allocator,
+            input: AtomInput,
+            config: Cfg,
+            lut: *const Lut,
+        ) !Result {
+            const n_atoms = input.atomCount();
+            if (n_atoms == 0) return error.NoAtoms;
+            std.debug.assert(config.n_points == lut.n_points);
+            return calculateSasaCore(allocator, input, config, lut);
+        }
+
+        fn calculateSasaCore(
+            allocator: Allocator,
+            input: AtomInput,
+            config: Cfg,
+            lut: *const Lut,
+        ) !Result {
+            const n_atoms = input.atomCount();
 
             const positions = try allocator.alloc(Vec, n_atoms);
             defer allocator.free(positions);
@@ -484,7 +701,7 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
                     radii_with_probe_sq,
                     atom_radius_probe,
                     neighbors,
-                    &lut,
+                    lut,
                 );
                 atom_areas[i] = area;
                 total_area += area;
@@ -508,13 +725,38 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             if (n_atoms == 0) return error.NoAtoms;
             if (!bitmask_lut.isSupportedNPoints(config.n_points)) return error.UnsupportedNPoints;
 
+            var lut = try Lut.init(allocator, config.n_points);
+            defer lut.deinit();
+            return calculateSasaParallelCore(allocator, input, config, n_threads, &lut);
+        }
+
+        /// Calculate SASA with a pre-built LUT (parallel, generic precision).
+        /// Caller must ensure lut was built with config.n_points.
+        pub fn calculateSasaParallelWithLut(
+            allocator: Allocator,
+            input: AtomInput,
+            config: Cfg,
+            n_threads: usize,
+            lut: *const Lut,
+        ) !Result {
+            const n_atoms = input.atomCount();
+            if (n_atoms == 0) return error.NoAtoms;
+            std.debug.assert(config.n_points == lut.n_points);
+            return calculateSasaParallelCore(allocator, input, config, n_threads, lut);
+        }
+
+        fn calculateSasaParallelCore(
+            allocator: Allocator,
+            input: AtomInput,
+            config: Cfg,
+            n_threads: usize,
+            lut: *const Lut,
+        ) !Result {
+            const n_atoms = input.atomCount();
             const actual_threads = if (n_threads == 0)
                 try std.Thread.getCpuCount()
             else
                 n_threads;
-
-            var lut = try Lut.init(allocator, config.n_points);
-            defer lut.deinit();
 
             const positions = try allocator.alloc(Vec, n_atoms);
             defer allocator.free(positions);
@@ -554,7 +796,7 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
                 .neighbor_list_data = &neighbor_list_data,
                 .probe_radius = config.probe_radius,
                 .atom_areas = atom_areas,
-                .lut = &lut,
+                .lut = lut,
             };
 
             const chunk_size = @max(64, n_atoms / (actual_threads * 4));
