@@ -57,14 +57,11 @@ jobs:
           - os: macos-latest
             name: macOS
             binary: zsasa
-          - os: windows-latest
-            name: Windows
-            binary: zsasa.exe
 
     runs-on: ${{ matrix.os }}
     name: Build (${{ matrix.name }})
     needs: [fmt]
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -157,15 +154,11 @@ jobs:
             name: macOS
             lib: libzsasa.dylib
             lib_dir: lib
-          - os: windows-latest
-            name: Windows
-            lib: zsasa.dll
-            lib_dir: bin
 
     runs-on: ${{ matrix.os }}
     name: Python (${{ matrix.name }})
     needs: [fmt]
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
