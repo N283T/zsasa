@@ -627,6 +627,29 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
 
             var lut = try Lut.init(allocator, config.n_points);
             defer lut.deinit();
+            return calculateSasaCore(allocator, input, config, &lut);
+        }
+
+        /// Calculate SASA with a pre-built LUT (single-threaded, generic precision).
+        /// Use this in batch mode to avoid rebuilding the LUT per file.
+        pub fn calculateSasaWithLut(
+            allocator: Allocator,
+            input: AtomInput,
+            config: Cfg,
+            lut: *const Lut,
+        ) !Result {
+            const n_atoms = input.atomCount();
+            if (n_atoms == 0) return error.NoAtoms;
+            return calculateSasaCore(allocator, input, config, lut);
+        }
+
+        fn calculateSasaCore(
+            allocator: Allocator,
+            input: AtomInput,
+            config: Cfg,
+            lut: *const Lut,
+        ) !Result {
+            const n_atoms = input.atomCount();
 
             const positions = try allocator.alloc(Vec, n_atoms);
             defer allocator.free(positions);
@@ -669,7 +692,7 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
                     radii_with_probe_sq,
                     atom_radius_probe,
                     neighbors,
-                    &lut,
+                    lut,
                 );
                 atom_areas[i] = area;
                 total_area += area;
@@ -693,13 +716,36 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             if (n_atoms == 0) return error.NoAtoms;
             if (!bitmask_lut.isSupportedNPoints(config.n_points)) return error.UnsupportedNPoints;
 
+            var lut = try Lut.init(allocator, config.n_points);
+            defer lut.deinit();
+            return calculateSasaParallelCore(allocator, input, config, n_threads, &lut);
+        }
+
+        /// Calculate SASA with a pre-built LUT (parallel, generic precision).
+        pub fn calculateSasaParallelWithLut(
+            allocator: Allocator,
+            input: AtomInput,
+            config: Cfg,
+            n_threads: usize,
+            lut: *const Lut,
+        ) !Result {
+            const n_atoms = input.atomCount();
+            if (n_atoms == 0) return error.NoAtoms;
+            return calculateSasaParallelCore(allocator, input, config, n_threads, lut);
+        }
+
+        fn calculateSasaParallelCore(
+            allocator: Allocator,
+            input: AtomInput,
+            config: Cfg,
+            n_threads: usize,
+            lut: *const Lut,
+        ) !Result {
+            const n_atoms = input.atomCount();
             const actual_threads = if (n_threads == 0)
                 try std.Thread.getCpuCount()
             else
                 n_threads;
-
-            var lut = try Lut.init(allocator, config.n_points);
-            defer lut.deinit();
 
             const positions = try allocator.alloc(Vec, n_atoms);
             defer allocator.free(positions);
@@ -739,7 +785,7 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
                 .neighbor_list_data = &neighbor_list_data,
                 .probe_radius = config.probe_radius,
                 .atom_areas = atom_areas,
-                .lut = &lut,
+                .lut = lut,
             };
 
             const chunk_size = @max(64, n_atoms / (actual_threads * 4));

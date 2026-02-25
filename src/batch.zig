@@ -6,6 +6,8 @@ const json_writer = @import("json_writer.zig");
 const mmcif_parser = @import("mmcif_parser.zig");
 const pdb_parser = @import("pdb_parser.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
+const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
+const bitmask_lut = @import("bitmask_lut.zig");
 const lee_richards = @import("lee_richards.zig");
 const pipeline = @import("pipeline.zig");
 const classifier = @import("classifier.zig");
@@ -53,6 +55,46 @@ pub const BatchConfig = struct {
     classifier_type: ?ClassifierType = .protor, // Default: protor (matches FreeSASA/RustSASA)
     include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
     include_hetatm: bool = false, // Include HETATM records (default: exclude)
+    use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 64/128/256)
+};
+
+/// Helper to build and hold bitmask LUTs for batch processing.
+/// Builds the appropriate LUT once based on config, and provides typed pointers.
+const BatchLuts = struct {
+    lut_f64: bitmask_lut.BitmaskLut = undefined,
+    lut_f32: bitmask_lut.BitmaskLutGen(f32) = undefined,
+    has_f64: bool = false,
+    has_f32: bool = false,
+
+    fn init(allocator: Allocator, config: BatchConfig) !BatchLuts {
+        var self = BatchLuts{};
+        if (config.use_bitmask) {
+            switch (config.precision) {
+                .f64 => {
+                    self.lut_f64 = try bitmask_lut.BitmaskLut.init(allocator, config.n_points);
+                    self.has_f64 = true;
+                },
+                .f32 => {
+                    self.lut_f32 = try bitmask_lut.BitmaskLutGen(f32).init(allocator, config.n_points);
+                    self.has_f32 = true;
+                },
+            }
+        }
+        return self;
+    }
+
+    fn deinit(self: *BatchLuts) void {
+        if (self.has_f64) self.lut_f64.deinit();
+        if (self.has_f32) self.lut_f32.deinit();
+    }
+
+    fn f64Ptr(self: *const BatchLuts) ?*const bitmask_lut.BitmaskLut {
+        return if (self.has_f64) &self.lut_f64 else null;
+    }
+
+    fn f32Ptr(self: *const BatchLuts) ?*const bitmask_lut.BitmaskLutGen(f32) {
+        return if (self.has_f32) &self.lut_f32 else null;
+    }
 };
 
 /// Get output extension based on format
@@ -92,18 +134,33 @@ fn calculateSasaDispatch(
     n_slices: u32,
     probe_radius: T,
     n_threads: usize,
+    bitmask_lut_ptr: ?*const bitmask_lut.BitmaskLutGen(T),
 ) !SasaResultGen(T) {
+    const sr_config = ConfigGen(T){ .n_points = n_points, .probe_radius = probe_radius };
+
+    if (bitmask_lut_ptr) |lut| {
+        return if (n_threads > 1)
+            shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(T).calculateSasaParallelWithLut(
+                allocator,
+                input,
+                sr_config,
+                n_threads,
+                lut,
+            )
+        else
+            shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(T).calculateSasaWithLut(
+                allocator,
+                input,
+                sr_config,
+                lut,
+            );
+    }
+
     return switch (algorithm) {
         .sr => if (n_threads > 1)
-            shrake_rupley.ShrakeRupleyGen(T).calculateSasaParallel(allocator, input, .{
-                .n_points = n_points,
-                .probe_radius = probe_radius,
-            }, n_threads)
+            shrake_rupley.ShrakeRupleyGen(T).calculateSasaParallel(allocator, input, sr_config, n_threads)
         else
-            shrake_rupley.ShrakeRupleyGen(T).calculateSasa(allocator, input, .{
-                .n_points = n_points,
-                .probe_radius = probe_radius,
-            }),
+            shrake_rupley.ShrakeRupleyGen(T).calculateSasa(allocator, input, sr_config),
         .lr => if (n_threads > 1)
             lee_richards.LeeRichardsGen(T).calculateSasaParallel(allocator, input, .{
                 .n_slices = n_slices,
@@ -337,6 +394,8 @@ fn processOneFile(
     filename: []const u8,
     config: BatchConfig,
     n_threads: usize,
+    lut_f64: ?*const bitmask_lut.BitmaskLut,
+    lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
 ) FileResult {
     var result = FileResult{
         .filename = filename,
@@ -391,6 +450,7 @@ fn processOneFile(
                 config.n_slices,
                 config.probe_radius,
                 n_threads,
+                lut_f64,
             ) catch {
                 result.status = .err;
                 return result;
@@ -416,6 +476,7 @@ fn processOneFile(
                 config.n_slices,
                 @as(f32, @floatCast(config.probe_radius)),
                 n_threads,
+                lut_f32,
             ) catch {
                 result.status = .err;
                 return result;
@@ -468,6 +529,10 @@ pub fn runBatchSequential(
     var successful: usize = 0;
     var failed: usize = 0;
 
+    // Build bitmask LUT once (if enabled)
+    var luts = try BatchLuts.init(allocator, config);
+    defer luts.deinit();
+
     // Use arena allocator for each file (reset between files)
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -484,6 +549,8 @@ pub fn runBatchSequential(
             filename,
             config,
             1, // single-threaded
+            luts.f64Ptr(),
+            luts.f32Ptr(),
         );
         result.filename = filename_copy;
 
@@ -561,6 +628,10 @@ pub fn runBatchAtomParallel(
     var successful: usize = 0;
     var failed: usize = 0;
 
+    // Build bitmask LUT once (if enabled)
+    var luts = try BatchLuts.init(allocator, config);
+    defer luts.deinit();
+
     // Use arena allocator for each file (reset between files)
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -577,6 +648,8 @@ pub fn runBatchAtomParallel(
             filename,
             config,
             n_threads, // multi-threaded SASA
+            luts.f64Ptr(),
+            luts.f32Ptr(),
         );
         result.filename = filename_copy;
 
@@ -671,6 +744,10 @@ pub fn runBatchPipelined(
     io_ctx.atom_only = !config.include_hetatm;
     defer io_ctx.deinit();
 
+    // Build bitmask LUT once (if enabled)
+    var luts = try BatchLuts.init(allocator, config);
+    defer luts.deinit();
+
     // Spawn I/O thread
     const io_thread = try std.Thread.spawn(.{}, pipeline.IoContext.run, .{&io_ctx});
 
@@ -705,6 +782,7 @@ pub fn runBatchPipelined(
                     config.n_slices,
                     config.probe_radius,
                     n_threads,
+                    luts.f64Ptr(),
                 )) |calc_result| {
                     var sasa_result = calc_result;
                     defer sasa_result.deinit();
@@ -729,6 +807,7 @@ pub fn runBatchPipelined(
                     config.n_slices,
                     @as(f32, @floatCast(config.probe_radius)),
                     n_threads,
+                    luts.f32Ptr(),
                 )) |calc_result| {
                     var sasa_result = calc_result;
                     defer sasa_result.deinit();
@@ -818,6 +897,8 @@ const ParallelContext = struct {
     result_allocator: Allocator,
     next_file: std.atomic.Value(usize),
     processed_count: std.atomic.Value(usize),
+    lut_f64: ?*const bitmask_lut.BitmaskLut,
+    lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
 };
 
 /// Worker thread function for parallel batch processing
@@ -866,6 +947,8 @@ fn parallelWorker(ctx: *ParallelContext) void {
             filename,
             ctx.config,
             1, // single-threaded SASA per file
+            ctx.lut_f64,
+            ctx.lut_f32,
         );
         result.filename = filename_copy;
 
@@ -931,6 +1014,10 @@ pub fn runBatchParallel(
         return runBatchSequential(allocator, input_dir, output_dir, config);
     }
 
+    // Build bitmask LUT once (if enabled)
+    var luts = try BatchLuts.init(allocator, config);
+    defer luts.deinit();
+
     // Create shared context
     var ctx = ParallelContext{
         .files = files,
@@ -941,6 +1028,8 @@ pub fn runBatchParallel(
         .result_allocator = allocator,
         .next_file = std.atomic.Value(usize).init(0),
         .processed_count = std.atomic.Value(usize).init(0),
+        .lut_f64 = luts.f64Ptr(),
+        .lut_f32 = luts.f32Ptr(),
     };
 
     // Spawn worker threads

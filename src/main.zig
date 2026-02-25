@@ -772,6 +772,7 @@ fn runBatchMode(allocator: std.mem.Allocator, parsed: Args) !void {
         .classifier_type = parsed.classifier_type orelse .protor,
         .include_hydrogens = parsed.include_hydrogens,
         .include_hetatm = parsed.include_hetatm,
+        .use_bitmask = parsed.use_bitmask,
     };
 
     if (!parsed.quiet) {
