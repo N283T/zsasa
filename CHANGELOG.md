@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Adaptive 2-pass Shrake-Rupley** (`--adaptive`): coarse pass on all atoms, fine pass only for boundary atoms. Configurable via `--coarse-points`, `--fine-points`, `--adaptive-low`, `--adaptive-high`. Requires `--use-bitmask`.
+
 ## [0.2.1] - 2026-02-25
 
 ### Changed
