@@ -129,6 +129,7 @@ def compute_sasa_trajectory(
     start: int = 0,
     stop: int | None = None,
     step: int = 1,
+    use_bitmask: bool = False,
 ) -> TrajectorySasaResult
 ```
 
@@ -146,6 +147,7 @@ def compute_sasa_trajectory(
 | `start` | `int` | `0` | First frame to process |
 | `stop` | `int \| None` | `None` | Stop before this frame (None = all) |
 | `step` | `int` | `1` | Process every Nth frame |
+| `use_bitmask` | `bool` | `False` | Use bitmask LUT optimization (SR only, n_points must be 64, 128, or 256) |
 
 **Returns:** `TrajectorySasaResult`
 
