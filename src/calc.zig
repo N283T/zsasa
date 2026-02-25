@@ -546,7 +546,6 @@ fn readInputFile(allocator: std.mem.Allocator, path: []const u8, args: CalcArgs)
 
 /// Apply a custom classifier to input, replacing radii based on residue/atom names
 fn applyClassifier(
-    _: std.mem.Allocator,
     input: *types.AtomInput,
     custom_classifier: *const classifier.Classifier,
     quiet: bool,
@@ -601,7 +600,6 @@ fn applyClassifier(
 
 /// Apply a built-in classifier to input
 fn applyBuiltinClassifier(
-    _: std.mem.Allocator,
     input: *types.AtomInput,
     ct: ClassifierType,
     quiet: bool,
@@ -726,10 +724,17 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
     var time_sasa: u64 = 0;
     var time_write: u64 = 0;
 
+    // Validate required arguments
+    const input_path = args.input_path orelse {
+        std.debug.print("Error: Missing input file\n", .{});
+        std.debug.print("Usage: zsasa calc [OPTIONS] <input> [output.json]\n", .{});
+        return error.MissingArgument;
+    };
+
     // Read input file (JSON, PDB, or mmCIF)
     timer.reset();
-    var input = readInputFile(allocator, args.input_path.?, args) catch |err| {
-        std.debug.print("Error reading input file '{s}': {s}\n", .{ args.input_path.?, @errorName(err) });
+    var input = readInputFile(allocator, input_path, args) catch |err| {
+        std.debug.print("Error reading input file '{s}': {s}\n", .{ input_path, @errorName(err) });
         std.process.exit(1);
     };
     defer input.deinit();
@@ -804,13 +809,13 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
             };
             defer custom_classifier.deinit();
 
-            applyClassifier(allocator, &input, &custom_classifier, args.quiet) catch |err| {
+            applyClassifier(&input, &custom_classifier, args.quiet) catch |err| {
                 std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
                 std.process.exit(1);
             };
         } else if (effective_classifier) |ct| {
             // Use built-in classifier
-            applyBuiltinClassifier(allocator, &input, ct, args.quiet) catch |err| {
+            applyBuiltinClassifier(&input, ct, args.quiet) catch |err| {
                 std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
                 std.process.exit(1);
             };
