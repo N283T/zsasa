@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Bitmask-optimized Shrake-Rupley algorithm** (`--use-bitmask`): precomputed occlusion bitmask LUT with O(1) octahedral encoding for direction lookup, replacing per-point neighbor testing (#197)
+- **SIMD 4-neighbor batching** for bitmask SR: processes 4 neighbors simultaneously with `@Vector(4, T)`, branchless octahedral encoding via `@select`, and combined mask accumulation (#198)
+- **Batch-mode `--use-bitmask` support**: shared LUT across all files in batch processing, avoiding redundant ~20ms LUT construction per file (#198)
+
+### Changed
+
+- CI: removed Windows from PR checks (linux + macOS only); Windows builds remain in release workflow (#199)
+
+### Performance
+
+- E.coli proteome batch (f32, 10 threads, 128 points): **4.92s → 2.57s** with bitmask SR (1.9x speedup, within 12% of lahuta reference)
+
 ## [0.1.3] - 2026-02-25
 
 ### Added
