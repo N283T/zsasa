@@ -7,21 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-02-25
+
 ### Added
 
-- **Python bindings for directory batch processing**: `process_directory()` function and `BatchDirResult` dataclass wrapping the `zsasa_batch_dir_*` C API
+- **Directory batch processing C API**: `zsasa_batch_dir_*` functions for processing all structure files in a directory (#191)
+- **Python bindings for directory batch processing**: `process_directory()` function and `BatchDirResult` dataclass wrapping the C API (#193)
   - Process all supported structure files in a directory from Python
   - Support for SR/LR algorithms, all classifiers, threading, output directory
   - Per-file results: filename, atom count, total SASA, status
   - Error mapping: `ValueError`, `FileNotFoundError`, `MemoryError`, `RuntimeError`
+- Docusaurus documentation site with GitHub Pages deployment (#186)
+
+### Changed
+
+- Slimmed down README, added uv install instructions (#190)
+- CI: skip workflow for website-only changes (#189)
 
 ### Fixed
 
-- **json_writer performance regression**: Reverted from unbuffered streaming writes to in-memory string building + single writeAll, fixing ~8x slowdown in batch processing caused by millions of write syscalls (#157 regression)
+- **json_writer performance regression**: Reverted from unbuffered streaming writes to in-memory string building + single writeAll, fixing ~8x slowdown in batch processing caused by millions of write syscalls (#157 regression, #194)
+- Updated benchmark docs for new dataset (#188)
+- Fixed absolute paths for benchmark images (#187)
 
 ### Removed
 
-- **Streaming output** (`--stream`, `--stream-format`, `--stream-output`): Removed StreamWriter module and CLI options to reduce code complexity
+- **Streaming output** (`--stream`, `--stream-format`, `--stream-output`): Removed StreamWriter module and CLI options to reduce code complexity (#194)
 
 ## [0.1.2] - 2026-02-22
 
@@ -304,7 +315,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `calc_reference_sasa.py` - Generate reference SASA
   - `benchmark.py` - Performance benchmarking
 
-[Unreleased]: https://github.com/N283T/zsasa/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/N283T/zsasa/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/N283T/zsasa/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/N283T/zsasa/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/N283T/zsasa/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/N283T/zsasa/compare/v0.0.5...v0.1.0
 [0.0.5]: https://github.com/N283T/zsasa/compare/v0.0.4...v0.0.5
