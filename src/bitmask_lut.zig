@@ -6,6 +6,13 @@ const Allocator = std.mem.Allocator;
 
 /// Supported n_points values for bitmask mode.
 pub const supported_n_points = [_]u32{ 64, 128, 256 };
+/// Maximum number of u64 words needed for the largest supported n_points.
+pub const max_words: usize = (supported_n_points[supported_n_points.len - 1] + 63) / 64;
+
+comptime {
+    // Ensure max_words fits in the fixed-size visibility array used by shrake_rupley_bitmask.
+    std.debug.assert(max_words <= 4);
+}
 
 /// Check if n_points is supported for bitmask mode.
 pub fn isSupportedNPoints(n: u32) bool {

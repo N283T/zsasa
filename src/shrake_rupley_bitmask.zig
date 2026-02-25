@@ -35,6 +35,7 @@ fn atomSasaBitmask(
     lut: *const BitmaskLut,
 ) f64 {
     const words = lut.words;
+    comptime std.debug.assert(bitmask_lut.max_words <= 4);
 
     // Early exit: no neighbors means full surface is exposed
     if (neighbors.len == 0) {
@@ -43,6 +44,7 @@ fn atomSasaBitmask(
 
     const atom_pos = positions[atom_idx];
     const r_i = atom_radius_probe;
+    const r_i_sq = r_i * r_i;
 
     // Initialize visibility: all points exposed
     var visibility: [4]u64 = .{ std.math.maxInt(u64), std.math.maxInt(u64), std.math.maxInt(u64), std.math.maxInt(u64) };
@@ -63,7 +65,6 @@ fn atomSasaBitmask(
         // cos_threshold = (r_i² + dist² - r_j²) / (2 * r_i * dist)
         // A test point at angle θ from i→j direction is buried if cos(θ) > cos_threshold
         const r_j_sq = radii_with_probe_sq[j];
-        const r_i_sq = r_i * r_i;
         const cos_threshold = (r_i_sq + dist_sq - r_j_sq) / (2.0 * r_i * dist);
 
         // cos_threshold >= 1.0: neighbor too far to occlude anything
@@ -326,6 +327,7 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             lut: *const Lut,
         ) T {
             const words = lut.words;
+            comptime std.debug.assert(bitmask_lut.max_words <= 4);
 
             if (neighbors.len == 0) {
                 return 4.0 * std.math.pi * atom_radius_probe * atom_radius_probe;
@@ -333,6 +335,7 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
 
             const atom_pos = positions[atom_idx];
             const r_i = atom_radius_probe;
+            const r_i_sq = r_i * r_i;
 
             var visibility: [4]u64 = .{ std.math.maxInt(u64), std.math.maxInt(u64), std.math.maxInt(u64), std.math.maxInt(u64) };
             visibility[words - 1] &= lut.last_word_mask;
@@ -347,7 +350,6 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
                 if (dist < 1e-10) continue;
 
                 const r_j_sq = radii_with_probe_sq[j];
-                const r_i_sq = r_i * r_i;
                 const cos_threshold = (r_i_sq + dist_sq - r_j_sq) / (2.0 * r_i * dist);
 
                 if (cos_threshold >= 1.0) continue;
@@ -827,6 +829,121 @@ test "bitmask vs standard SR - equivalence within tolerance" {
             );
         }
     }
+}
+
+test "bitmask calculateSasa - NoAtoms error" {
+    const allocator = std.testing.allocator;
+
+    const x = try allocator.alloc(f64, 0);
+    const y = try allocator.alloc(f64, 0);
+    const z = try allocator.alloc(f64, 0);
+    const r = try allocator.alloc(f64, 0);
+
+    var input = AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .allocator = allocator,
+    };
+    defer input.deinit();
+
+    const config = Config{
+        .n_points = 128,
+        .probe_radius = 1.4,
+    };
+
+    const result = calculateSasa(allocator, input, config);
+    try std.testing.expectError(error.NoAtoms, result);
+}
+
+test "bitmask calculateSasa - completely buried atom" {
+    const allocator = std.testing.allocator;
+
+    // Place a small atom surrounded by large overlapping neighbors
+    const n = 7;
+    const x = try allocator.alloc(f64, n);
+    const y = try allocator.alloc(f64, n);
+    const z = try allocator.alloc(f64, n);
+    const r = try allocator.alloc(f64, n);
+
+    // Central small atom
+    x[0] = 0.0;
+    y[0] = 0.0;
+    z[0] = 0.0;
+    r[0] = 0.5;
+
+    // 6 large surrounding atoms at ±1 along each axis
+    const offsets = [_][3]f64{ .{ 1.0, 0, 0 }, .{ -1.0, 0, 0 }, .{ 0, 1.0, 0 }, .{ 0, -1.0, 0 }, .{ 0, 0, 1.0 }, .{ 0, 0, -1.0 } };
+    for (offsets, 0..) |off, idx| {
+        x[idx + 1] = off[0];
+        y[idx + 1] = off[1];
+        z[idx + 1] = off[2];
+        r[idx + 1] = 2.0;
+    }
+
+    var input = AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .allocator = allocator,
+    };
+    defer input.deinit();
+
+    const config = Config{
+        .n_points = 128,
+        .probe_radius = 1.4,
+    };
+
+    var result = try calculateSasa(allocator, input, config);
+    defer result.deinit();
+
+    // Central atom should be nearly or completely buried
+    try std.testing.expect(result.atom_areas[0] < 1.0);
+}
+
+test "bitmask calculateSasa - n_points 256" {
+    const allocator = std.testing.allocator;
+
+    const x = try allocator.alloc(f64, 2);
+    const y = try allocator.alloc(f64, 2);
+    const z = try allocator.alloc(f64, 2);
+    const r = try allocator.alloc(f64, 2);
+    x[0] = 0.0;
+    y[0] = 0.0;
+    z[0] = 0.0;
+    r[0] = 1.0;
+    x[1] = 2.0;
+    y[1] = 0.0;
+    z[1] = 0.0;
+    r[1] = 1.0;
+
+    var input = AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .allocator = allocator,
+    };
+    defer input.deinit();
+
+    const config = Config{
+        .n_points = 256,
+        .probe_radius = 1.4,
+    };
+
+    var result = try calculateSasa(allocator, input, config);
+    defer result.deinit();
+
+    const expected_radius = r[0] + config.probe_radius;
+    const full_area = 4.0 * std.math.pi * expected_radius * expected_radius;
+
+    // Both should be partially buried
+    try std.testing.expect(result.atom_areas[0] < full_area);
+    try std.testing.expect(result.atom_areas[0] > 0.0);
+    try std.testing.expect(result.total_area > 0.0);
+    try std.testing.expect(result.total_area < full_area * 2.0);
 }
 
 test "bitmask calculateSasaf32 - single atom" {
