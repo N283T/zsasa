@@ -928,6 +928,11 @@ pub const BatchArgs = struct {
     include_hydrogens: bool = false,
     include_hetatm: bool = false,
     use_bitmask: bool = false,
+    adaptive: bool = false,
+    coarse_points: u32 = 32,
+    fine_points: ?u32 = null,
+    adaptive_low: f64 = 0.02,
+    adaptive_high: f64 = 0.98,
     quiet: bool = false,
     show_timing: bool = false,
     show_help: bool = false,
@@ -1022,6 +1027,19 @@ fn parsePrecision(value: []const u8) Precision {
         std.debug.print("Valid values: f32 (single), f64 (double)\n", .{});
         std.process.exit(1);
     }
+}
+
+/// Parse and validate threshold value (0.0-1.0)
+fn parseThreshold(value: []const u8, name: []const u8) f64 {
+    const v = std.fmt.parseFloat(f64, value) catch {
+        std.debug.print("Error: Invalid {s}: {s}\n", .{ name, value });
+        std.process.exit(1);
+    };
+    if (v < 0.0 or v > 1.0 or !std.math.isFinite(v)) {
+        std.debug.print("Error: {s} must be between 0.0 and 1.0: {d}\n", .{ name, v });
+        std.process.exit(1);
+    }
+    return v;
 }
 
 /// Parse batch subcommand arguments
@@ -1147,6 +1165,58 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         else if (std.mem.eql(u8, arg, "--use-bitmask")) {
             result.use_bitmask = true;
         }
+        // --adaptive
+        else if (std.mem.eql(u8, arg, "--adaptive")) {
+            result.adaptive = true;
+        }
+        // --coarse-points=N or --coarse-points N
+        else if (std.mem.startsWith(u8, arg, "--coarse-points=")) {
+            const value = arg["--coarse-points=".len..];
+            result.coarse_points = parseNPoints(value);
+        } else if (std.mem.eql(u8, arg, "--coarse-points")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --coarse-points\n", .{});
+                std.process.exit(1);
+            }
+            result.coarse_points = parseNPoints(args[i]);
+        }
+        // --fine-points=N or --fine-points N
+        else if (std.mem.startsWith(u8, arg, "--fine-points=")) {
+            const value = arg["--fine-points=".len..];
+            result.fine_points = parseNPoints(value);
+        } else if (std.mem.eql(u8, arg, "--fine-points")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --fine-points\n", .{});
+                std.process.exit(1);
+            }
+            result.fine_points = parseNPoints(args[i]);
+        }
+        // --adaptive-low=F or --adaptive-low F
+        else if (std.mem.startsWith(u8, arg, "--adaptive-low=")) {
+            const value = arg["--adaptive-low=".len..];
+            result.adaptive_low = parseThreshold(value, "adaptive-low");
+        } else if (std.mem.eql(u8, arg, "--adaptive-low")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --adaptive-low\n", .{});
+                std.process.exit(1);
+            }
+            result.adaptive_low = parseThreshold(args[i], "adaptive-low");
+        }
+        // --adaptive-high=F or --adaptive-high F
+        else if (std.mem.startsWith(u8, arg, "--adaptive-high=")) {
+            const value = arg["--adaptive-high=".len..];
+            result.adaptive_high = parseThreshold(value, "adaptive-high");
+        } else if (std.mem.eql(u8, arg, "--adaptive-high")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --adaptive-high\n", .{});
+                std.process.exit(1);
+            }
+            result.adaptive_high = parseThreshold(args[i], "adaptive-high");
+        }
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
@@ -1233,6 +1303,11 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --include-hetatm    Include HETATM records (default: exclude)
         \\    --use-bitmask       Use bitmask LUT optimization for SR algorithm
         \\                        (n-points must be 1..1024)
+        \\    --adaptive          Enable adaptive 2-pass SR (requires --use-bitmask)
+        \\    --coarse-points=N   Coarse pass test points (default: 32)
+        \\    --fine-points=N     Fine pass test points (default: n-points value)
+        \\    --adaptive-low=F    Buried threshold 0.0-1.0 (default: 0.02)
+        \\    --adaptive-high=F   Exposed threshold 0.0-1.0 (default: 0.98)
         \\    --timing            Show timing breakdown for benchmarking
         \\    -o, --output=DIR    Output directory (alternative to positional)
         \\    -q, --quiet         Suppress progress output
@@ -1273,7 +1348,37 @@ pub fn run(allocator: Allocator, args: BatchArgs) !void {
         .include_hydrogens = args.include_hydrogens,
         .include_hetatm = args.include_hetatm,
         .use_bitmask = args.use_bitmask,
+        .adaptive = args.adaptive,
+        .coarse_points = args.coarse_points,
+        .fine_points = args.fine_points,
+        .adaptive_low = args.adaptive_low,
+        .adaptive_high = args.adaptive_high,
     };
+
+    // Validate adaptive options
+    if (config.adaptive) {
+        if (!config.use_bitmask) {
+            std.debug.print("Error: --adaptive requires --use-bitmask\n", .{});
+            return error.MissingArgument;
+        }
+        const fp = config.fine_points orelse config.n_points;
+        if (config.coarse_points >= fp) {
+            std.debug.print("Error: --coarse-points ({d}) must be less than fine points ({d})\n", .{ config.coarse_points, fp });
+            return error.MissingArgument;
+        }
+        if (config.adaptive_low >= config.adaptive_high) {
+            std.debug.print("Error: --adaptive-low ({d:.2}) must be less than --adaptive-high ({d:.2})\n", .{ config.adaptive_low, config.adaptive_high });
+            return error.MissingArgument;
+        }
+        if (!bitmask_lut.isSupportedNPoints(config.coarse_points)) {
+            std.debug.print("Error: --coarse-points must be 1..1024 for bitmask mode (got {d})\n", .{config.coarse_points});
+            return error.MissingArgument;
+        }
+        if (!bitmask_lut.isSupportedNPoints(fp)) {
+            std.debug.print("Error: fine points must be 1..1024 for bitmask mode (got {d})\n", .{fp});
+            return error.MissingArgument;
+        }
+    }
 
     if (!args.quiet) {
         std.debug.print("Batch mode: processing directory '{s}'\n", .{input_dir});
@@ -1482,4 +1587,64 @@ test "BatchArgs classifier_type defaults to protor" {
     const args = [_][]const u8{ "zsasa", "batch", "input_dir/" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(ClassifierType.protor, parsed.classifier_type);
+}
+
+test "BatchArgs --adaptive" {
+    const args = [_][]const u8{ "zsasa", "batch", "--adaptive", "--use-bitmask", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.adaptive);
+    try std.testing.expectEqual(true, parsed.use_bitmask);
+}
+
+test "BatchArgs --coarse-points=N" {
+    const args = [_][]const u8{ "zsasa", "batch", "--coarse-points=64", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(u32, 64), parsed.coarse_points);
+}
+
+test "BatchArgs --fine-points=N" {
+    const args = [_][]const u8{ "zsasa", "batch", "--fine-points=256", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(?u32, 256), parsed.fine_points);
+}
+
+test "BatchArgs --adaptive-low and --adaptive-high" {
+    const args = [_][]const u8{ "zsasa", "batch", "--adaptive-low=0.05", "--adaptive-high=0.95", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.05), parsed.adaptive_low, 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.95), parsed.adaptive_high, 1e-10);
+}
+
+test "BatchArgs adaptive defaults" {
+    const args = [_][]const u8{ "zsasa", "batch", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(false, parsed.adaptive);
+    try std.testing.expectEqual(@as(u32, 32), parsed.coarse_points);
+    try std.testing.expectEqual(@as(?u32, null), parsed.fine_points);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.02), parsed.adaptive_low, 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.98), parsed.adaptive_high, 1e-10);
+}
+
+test "BatchArgs --coarse-points space-separated" {
+    const args = [_][]const u8{ "zsasa", "batch", "--coarse-points", "128", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(u32, 128), parsed.coarse_points);
+}
+
+test "BatchArgs --fine-points space-separated" {
+    const args = [_][]const u8{ "zsasa", "batch", "--fine-points", "512", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(?u32, 512), parsed.fine_points);
+}
+
+test "BatchArgs --adaptive-low space-separated" {
+    const args = [_][]const u8{ "zsasa", "batch", "--adaptive-low", "0.10", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.10), parsed.adaptive_low, 1e-10);
+}
+
+test "BatchArgs --adaptive-high space-separated" {
+    const args = [_][]const u8{ "zsasa", "batch", "--adaptive-high", "0.90", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.90), parsed.adaptive_high, 1e-10);
 }
