@@ -9,7 +9,6 @@ const shrake_rupley = @import("shrake_rupley.zig");
 const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
 const bitmask_lut = @import("bitmask_lut.zig");
 const lee_richards = @import("lee_richards.zig");
-const pipeline = @import("pipeline.zig");
 const classifier = @import("classifier.zig");
 const classifier_protor = @import("classifier_protor.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
@@ -33,18 +32,10 @@ pub const Algorithm = enum {
     lr, // Lee-Richards (slice method)
 };
 
-/// Parallelism strategy for batch processing
-pub const Parallelism = enum {
-    file, // File-level: N files in parallel, 1 thread per file (default)
-    atom, // Atom-level: 1 file at a time, N threads for SASA calculation
-    pipeline, // Pipelined: I/O prefetch + atom-level SASA calculation
-};
-
 /// Configuration for batch processing
 pub const BatchConfig = struct {
     n_threads: usize = 0, // 0 = auto-detect
     algorithm: Algorithm = .sr,
-    parallelism: Parallelism = .file, // file, atom, or pipeline
     n_points: u32 = 100,
     n_slices: u32 = 20,
     probe_radius: f64 = 1.4,
@@ -582,304 +573,6 @@ pub fn runBatchSequential(
     };
 }
 
-/// Run batch processing with atom-level parallelism
-/// Files are processed sequentially, but each file uses multi-threaded SASA
-pub fn runBatchAtomParallel(
-    allocator: Allocator,
-    input_dir: []const u8,
-    output_dir: ?[]const u8,
-    config: BatchConfig,
-) !BatchResult {
-    // Start total timer
-    var total_timer = try std.time.Timer.start();
-
-    // Scan directory for files
-    const files = try scanDirectory(allocator, input_dir);
-    defer {
-        for (files) |f| allocator.free(f);
-        allocator.free(files);
-    }
-
-    // Create output directory if specified
-    if (output_dir) |out_dir| {
-        try std.fs.cwd().makePath(out_dir);
-    }
-
-    // Allocate results
-    const file_results = try allocator.alloc(FileResult, files.len);
-    errdefer allocator.free(file_results);
-
-    // Determine thread count for SASA calculation
-    const cpu_count = std.Thread.getCpuCount() catch 1;
-    const n_threads = if (config.n_threads == 0)
-        cpu_count
-    else
-        @min(config.n_threads, cpu_count);
-
-    // Process each file sequentially with multi-threaded SASA
-    var total_sasa_time_ns: u64 = 0;
-    var successful: usize = 0;
-    var failed: usize = 0;
-
-    // Build bitmask LUT once (if enabled)
-    var luts = try BatchLuts.init(allocator, config);
-    defer luts.deinit();
-
-    // Use arena allocator for each file (reset between files)
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-
-    for (files, 0..) |filename, i| {
-        // Copy filename to result allocator
-        const filename_copy = try allocator.dupe(u8, filename);
-
-        // Process file with multi-threaded SASA
-        var result = processOneFile(
-            arena.allocator(),
-            input_dir,
-            output_dir,
-            filename,
-            config,
-            n_threads, // multi-threaded SASA
-            luts.f64Ptr(),
-            luts.f32Ptr(),
-        );
-        result.filename = filename_copy;
-
-        if (result.status == .ok) {
-            successful += 1;
-            total_sasa_time_ns += result.sasa_time_ns;
-        } else {
-            failed += 1;
-        }
-
-        file_results[i] = result;
-
-        // Reset arena for next file
-        _ = arena.reset(.retain_capacity);
-
-        // Progress output
-        if (!config.quiet) {
-            std.debug.print("\rProcessing: {d}/{d}", .{ i + 1, files.len });
-        }
-    }
-
-    if (!config.quiet) {
-        std.debug.print("\n", .{});
-    }
-
-    const total_time_ns = total_timer.read();
-
-    return BatchResult{
-        .total_files = files.len,
-        .successful = successful,
-        .failed = failed,
-        .total_sasa_time_ns = total_sasa_time_ns,
-        .total_time_ns = total_time_ns,
-        .file_results = file_results,
-        .allocator = allocator,
-    };
-}
-
-/// Run batch processing with pipelined I/O
-/// I/O thread prefetches files while processing thread calculates SASA
-pub fn runBatchPipelined(
-    allocator: Allocator,
-    input_dir: []const u8,
-    output_dir: ?[]const u8,
-    config: BatchConfig,
-) !BatchResult {
-    // Start total timer
-    var total_timer = try std.time.Timer.start();
-
-    // Scan directory for files
-    const files = try scanDirectory(allocator, input_dir);
-    defer {
-        for (files) |f| allocator.free(f);
-        allocator.free(files);
-    }
-
-    if (files.len == 0) {
-        return BatchResult{
-            .total_files = 0,
-            .successful = 0,
-            .failed = 0,
-            .total_sasa_time_ns = 0,
-            .total_time_ns = total_timer.read(),
-            .file_results = try allocator.alloc(FileResult, 0),
-            .allocator = allocator,
-        };
-    }
-
-    // Create output directory if specified
-    if (output_dir) |out_dir| {
-        try std.fs.cwd().makePath(out_dir);
-    }
-
-    // Allocate results
-    const file_results = try allocator.alloc(FileResult, files.len);
-    errdefer allocator.free(file_results);
-
-    // Determine thread count for SASA calculation
-    const cpu_count = std.Thread.getCpuCount() catch 1;
-    const n_threads = if (config.n_threads == 0)
-        cpu_count
-    else
-        @min(config.n_threads, cpu_count);
-
-    // Initialize prefetch queue
-    var queue = pipeline.PrefetchQueue.init(allocator);
-    defer queue.deinit();
-
-    // Create I/O context with error tracking
-    var io_ctx = pipeline.IoContext.init(allocator, &queue, files, input_dir);
-    io_ctx.skip_hydrogens = !config.include_hydrogens;
-    io_ctx.atom_only = !config.include_hetatm;
-    defer io_ctx.deinit();
-
-    // Build bitmask LUT once (if enabled)
-    var luts = try BatchLuts.init(allocator, config);
-    defer luts.deinit();
-
-    // Spawn I/O thread
-    const io_thread = try std.Thread.spawn(.{}, pipeline.IoContext.run, .{&io_ctx});
-
-    // Process files from queue
-    var total_sasa_time_ns: u64 = 0;
-    var successful: usize = 0;
-    var failed: usize = 0;
-    var file_idx: usize = 0;
-
-    while (queue.pop()) |prefetched| {
-        var pf = prefetched;
-        defer pf.deinit(allocator);
-
-        // Copy filename to result allocator
-        const filename_copy = try allocator.dupe(u8, pf.filename);
-
-        // Time SASA calculation
-        var timer = try std.time.Timer.start();
-
-        // Calculate SASA using generic dispatcher
-        var total_area: f64 = 0;
-        var sasa_ok = true;
-
-        switch (config.precision) {
-            .f64 => {
-                if (calculateSasaDispatch(
-                    f64,
-                    pf.arena.allocator(),
-                    pf.input,
-                    config.algorithm,
-                    config.n_points,
-                    config.n_slices,
-                    config.probe_radius,
-                    n_threads,
-                    luts.f64Ptr(),
-                )) |calc_result| {
-                    var sasa_result = calc_result;
-                    defer sasa_result.deinit();
-                    total_area = sasa_result.total_area;
-
-                    if (output_dir) |out_dir| {
-                        writeSasaOutput(f64, pf.arena.allocator(), &sasa_result, out_dir, pf.filename, config.output_format) catch {
-                            sasa_ok = false;
-                        };
-                    }
-                } else |_| {
-                    sasa_ok = false;
-                }
-            },
-            .f32 => {
-                if (calculateSasaDispatch(
-                    f32,
-                    pf.arena.allocator(),
-                    pf.input,
-                    config.algorithm,
-                    config.n_points,
-                    config.n_slices,
-                    @as(f32, @floatCast(config.probe_radius)),
-                    n_threads,
-                    luts.f32Ptr(),
-                )) |calc_result| {
-                    var sasa_result = calc_result;
-                    defer sasa_result.deinit();
-                    total_area = @floatCast(sasa_result.total_area);
-
-                    if (output_dir) |out_dir| {
-                        writeSasaOutput(f32, pf.arena.allocator(), &sasa_result, out_dir, pf.filename, config.output_format) catch {
-                            sasa_ok = false;
-                        };
-                    }
-                } else |_| {
-                    sasa_ok = false;
-                }
-            },
-        }
-
-        const sasa_time_ns = timer.read();
-
-        // Store result
-        const file_status: FileResult.Status = if (sasa_ok) .ok else .err;
-        file_results[file_idx] = FileResult{
-            .filename = filename_copy,
-            .n_atoms = pf.input.atomCount(),
-            .sasa_time_ns = sasa_time_ns,
-            .total_sasa = total_area,
-            .status = file_status,
-        };
-
-        if (sasa_ok) {
-            successful += 1;
-            total_sasa_time_ns += sasa_time_ns;
-        } else {
-            failed += 1;
-        }
-
-        file_idx += 1;
-
-        // Progress output
-        if (!config.quiet) {
-            std.debug.print("\rProcessing: {d}/{d}", .{ file_idx, files.len });
-        }
-    }
-
-    // Wait for I/O thread to finish
-    io_thread.join();
-
-    // Include I/O failures in the count
-    const io_failed = io_ctx.failedCount();
-    failed += io_failed;
-
-    // Report I/O failures if not quiet
-    if (!config.quiet) {
-        std.debug.print("\n", .{});
-        if (io_failed > 0) {
-            std.debug.print("I/O errors: {d} file(s) failed to read/parse\n", .{io_failed});
-            for (io_ctx.failed_files.items) |f| {
-                const reason_str = switch (f.reason) {
-                    .allocation_failed => "allocation failed",
-                    .path_join_failed => "path join failed",
-                    .read_parse_failed => "read/parse failed",
-                };
-                std.debug.print("  - {s}: {s}\n", .{ f.filename, reason_str });
-            }
-        }
-    }
-
-    const total_time_ns = total_timer.read();
-
-    return BatchResult{
-        .total_files = files.len,
-        .successful = successful,
-        .failed = failed,
-        .total_sasa_time_ns = total_sasa_time_ns,
-        .total_time_ns = total_time_ns,
-        .file_results = file_results,
-        .allocator = allocator,
-    };
-}
-
 /// Shared context for parallel workers
 const ParallelContext = struct {
     files: []const []const u8,
@@ -1077,9 +770,7 @@ pub fn runBatchParallel(
 }
 
 /// Run batch processing (main entry point)
-/// Selects strategy based on config.parallelism:
-/// - file: N files in parallel, 1 thread per file (default)
-/// - atom: 1 file at a time, N threads for SASA calculation
+/// Uses file-level parallelism: N files in parallel, 1 thread per file
 pub fn runBatch(
     allocator: Allocator,
     input_dir: []const u8,
@@ -1092,23 +783,10 @@ pub fn runBatch(
     else
         config.n_threads;
 
-    return switch (config.parallelism) {
-        .file => {
-            // File-level parallelism: N files in parallel, 1 thread per file
-            if (n_threads <= 1) {
-                return runBatchSequential(allocator, input_dir, output_dir, config);
-            }
-            return runBatchParallel(allocator, input_dir, output_dir, config);
-        },
-        .atom => {
-            // Atom-level parallelism: sequential files, N threads per file
-            return runBatchAtomParallel(allocator, input_dir, output_dir, config);
-        },
-        .pipeline => {
-            // Pipelined: I/O prefetch + atom-level SASA calculation
-            return runBatchPipelined(allocator, input_dir, output_dir, config);
-        },
-    };
+    if (n_threads <= 1) {
+        return runBatchSequential(allocator, input_dir, output_dir, config);
+    }
+    return runBatchParallel(allocator, input_dir, output_dir, config);
 }
 
 // =============================================================================
@@ -1459,7 +1137,6 @@ pub fn run(allocator: Allocator, args: BatchArgs) !void {
     const config = BatchConfig{
         .n_threads = args.n_threads,
         .algorithm = args.algorithm,
-        .parallelism = .file, // Default; will be removed in Task 5
         .n_points = args.n_points,
         .n_slices = args.n_slices,
         .probe_radius = args.probe_radius,
