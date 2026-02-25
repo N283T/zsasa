@@ -135,6 +135,7 @@ def run_zsasa(
         out_dir = Path(tmp)
         cmd = [
             str(zsasa),
+            "batch",
             str(input_dir),
             str(out_dir),
             f"--algorithm={algorithm}",

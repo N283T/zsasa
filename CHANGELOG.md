@@ -18,8 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING**: CLI now requires subcommands: `zsasa calc`, `zsasa batch`, `zsasa traj`
+- **BREAKING**: Removed `--parallelism` option (`calc` uses atom-level, `batch` uses file-level parallelism)
 - **Trajectory mode**: `--include-hydrogens` is now the default (hydrogen atoms included). Use `--no-hydrogens` to exclude. MD trajectories typically include all atoms.
 - CI: removed Windows from PR checks (linux + macOS only); Windows builds remain in release workflow (#199)
+
+### Removed
+
+- Pipeline parallelism mode (`--parallelism=pipeline`)
+- Atom-level batch parallelism (`--parallelism=atom`)
 
 ### Performance
 

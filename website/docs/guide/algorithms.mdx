@@ -49,13 +49,13 @@ Both algorithms produce nearly identical results on the same structure:
 
 ```bash
 # Shrake-Rupley (default)
-zsasa structure.cif output.json
+zsasa calc structure.cif output.json
 
 # Lee-Richards
-zsasa --algorithm=lr structure.cif output.json
+zsasa calc --algorithm=lr structure.cif output.json
 
 # SR with more test points (higher precision)
-zsasa --n-points=200 structure.cif output.json
+zsasa calc --n-points=200 structure.cif output.json
 ```
 
   </TabItem>
@@ -118,7 +118,7 @@ Instead of computing neighbor occlusion for each test point individually, the bi
 
 ```bash
 # Bitmask with 128 test points
-zsasa --use-bitmask --n-points=128 structure.cif output.json
+zsasa calc --use-bitmask --n-points=128 structure.cif output.json
 ```
 
   </TabItem>

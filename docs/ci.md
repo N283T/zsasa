@@ -156,9 +156,9 @@ zig build -Doptimize=ReleaseFast
 ./zig-out/bin/zsasa --version
 
 # Validation test
-./zig-out/bin/zsasa examples/1ubq.pdb /tmp/output.json
-./zig-out/bin/zsasa --format=csv examples/1ubq.pdb /tmp/output.csv
-./zig-out/bin/zsasa --validate examples/1ubq.pdb
+./zig-out/bin/zsasa calc examples/1ubq.pdb /tmp/output.json
+./zig-out/bin/zsasa calc --format=csv examples/1ubq.pdb /tmp/output.csv
+./zig-out/bin/zsasa calc --validate examples/1ubq.pdb
 
 # Python test
 cd python

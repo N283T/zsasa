@@ -200,10 +200,9 @@ def run_zig(
             out_dir = Path(tmp)
 
             for n_threads in thread_counts:
-                parallelism = " --parallelism=file" if n_threads > 1 else ""
                 result = run_benchmark(
                     f"zsasa_{precision}_{n_threads}t",
-                    f"{zsasa} {input_dir} {out_dir} --threads={n_threads}{parallelism} --precision={precision} --n-points={n_points}",
+                    f"{zsasa} batch {input_dir} {out_dir} --threads={n_threads} --precision={precision} --n-points={n_points}",
                     results_dir,
                     warmup,
                     runs,

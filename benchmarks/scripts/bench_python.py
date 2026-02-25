@@ -126,7 +126,15 @@ def bench_cli_timing(pdb_path: Path, n_runs: int, threads: int) -> dict:
         with tempfile.NamedTemporaryFile(suffix=".json") as tmp:
             start = time.perf_counter()
             result = subprocess.run(
-                [str(zsasa_bin), "--timing", "-q", thread_arg, str(pdb_path), tmp.name],
+                [
+                    str(zsasa_bin),
+                    "calc",
+                    "--timing",
+                    "-q",
+                    thread_arg,
+                    str(pdb_path),
+                    tmp.name,
+                ],
                 capture_output=True,
                 text=True,
             )
@@ -259,7 +267,14 @@ def main(
             for _, _, pdb_path, _ in pdb_files:
                 with tempfile.NamedTemporaryFile(suffix=".json") as tmp:
                     subprocess.run(
-                        [str(zsasa_bin), "-q", thread_arg, str(pdb_path), tmp.name],
+                        [
+                            str(zsasa_bin),
+                            "calc",
+                            "-q",
+                            thread_arg,
+                            str(pdb_path),
+                            tmp.name,
+                        ],
                         capture_output=True,
                     )
 

@@ -73,13 +73,13 @@ for res in result.residue_areas:
 
 ```bash
 # Calculate SASA from a structure file
-./zig-out/bin/zsasa structure.cif output.json
+./zig-out/bin/zsasa calc structure.cif output.json
 
 # With atom classifier and per-residue output
-./zig-out/bin/zsasa --classifier=naccess --rsa structure.cif output.json
+./zig-out/bin/zsasa calc --classifier=naccess --rsa structure.cif output.json
 
 # CSV output
-./zig-out/bin/zsasa --format=csv structure.cif output.csv
+./zig-out/bin/zsasa calc --format=csv structure.cif output.csv
 ```
 
 ## What's Next?
