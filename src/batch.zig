@@ -178,8 +178,9 @@ fn calculateSasaDispatch(
                 if (adaptive_stats_out) |stats_ptr| {
                     stats_ptr.* = adaptive_result.stats;
                 }
+                // Extract result, skip deinit: AdaptiveStats is plain data (no allocations),
+                // and result.atom_areas ownership transfers to the caller.
                 const result = adaptive_result.result;
-                // Don't call adaptive_result.deinit() since we're returning result
                 _ = &adaptive_result;
                 return result;
             }
@@ -1411,24 +1412,24 @@ pub fn run(allocator: Allocator, args: BatchArgs) !void {
     if (config.adaptive) {
         if (!config.use_bitmask) {
             std.debug.print("Error: --adaptive requires --use-bitmask\n", .{});
-            return error.MissingArgument;
+            return error.InvalidArgument;
         }
         const fp = config.fine_points orelse config.n_points;
         if (config.coarse_points >= fp) {
             std.debug.print("Error: --coarse-points ({d}) must be less than fine points ({d})\n", .{ config.coarse_points, fp });
-            return error.MissingArgument;
+            return error.InvalidArgument;
         }
         if (config.adaptive_low >= config.adaptive_high) {
             std.debug.print("Error: --adaptive-low ({d:.2}) must be less than --adaptive-high ({d:.2})\n", .{ config.adaptive_low, config.adaptive_high });
-            return error.MissingArgument;
+            return error.InvalidArgument;
         }
         if (!bitmask_lut.isSupportedNPoints(config.coarse_points)) {
             std.debug.print("Error: --coarse-points must be 1..1024 for bitmask mode (got {d})\n", .{config.coarse_points});
-            return error.MissingArgument;
+            return error.InvalidArgument;
         }
         if (!bitmask_lut.isSupportedNPoints(fp)) {
             std.debug.print("Error: fine points must be 1..1024 for bitmask mode (got {d})\n", .{fp});
-            return error.MissingArgument;
+            return error.InvalidArgument;
         }
     }
 
