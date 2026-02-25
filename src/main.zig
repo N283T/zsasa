@@ -9,6 +9,8 @@ const json_writer = @import("json_writer.zig");
 const mmcif_parser = @import("mmcif_parser.zig");
 const pdb_parser = @import("pdb_parser.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
+const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
+const bitmask_lut = @import("bitmask_lut.zig");
 const lee_richards = @import("lee_richards.zig");
 const types = @import("types.zig");
 const classifier = @import("classifier.zig");
@@ -57,6 +59,7 @@ const Args = struct {
     per_residue: bool = false, // Show per-residue SASA
     rsa: bool = false, // Show RSA (Relative Solvent Accessibility)
     polar: bool = false, // Show polar/nonpolar SASA summary
+    use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 64/128/256)
     quiet: bool = false,
     validate_only: bool = false,
     show_timing: bool = false, // Show timing breakdown for benchmarking
@@ -437,6 +440,10 @@ fn parseArgs(args: []const []const u8) Args {
         else if (std.mem.eql(u8, arg, "--timing")) {
             result.show_timing = true;
         }
+        // --use-bitmask (bitmask LUT optimization for SR, n-points must be 64/128/256)
+        else if (std.mem.eql(u8, arg, "--use-bitmask")) {
+            result.use_bitmask = true;
+        }
         // --help or -h
         else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             result.show_help = true;
@@ -525,6 +532,8 @@ fn printHelp(program_name: []const u8) void {
         \\                       atom: 1 file at a time, N threads for SASA
         \\                       pipeline: I/O prefetch + atom-level SASA
         \\    -o, --output=FILE  Output file (alternative to positional argument)
+        \\    --use-bitmask      Use bitmask LUT optimization for SR algorithm
+        \\                       Faster but approximate; n-points must be 64, 128, or 256
         \\    --validate         Validate input only, do not calculate SASA
         \\    --timing           Show timing breakdown (for benchmarking)
         \\    -q, --quiet        Suppress progress output
@@ -906,6 +915,18 @@ pub fn main() !void {
         return;
     }
 
+    // Validate --use-bitmask constraints
+    if (parsed.use_bitmask) {
+        if (parsed.algorithm != .sr) {
+            std.debug.print("Error: --use-bitmask is only supported with the sr (shrake-rupley) algorithm\n", .{});
+            std.process.exit(1);
+        }
+        if (!bitmask_lut.isSupportedNPoints(parsed.n_points)) {
+            std.debug.print("Error: --use-bitmask requires --n-points to be 64, 128, or 256 (got {d})\n", .{parsed.n_points});
+            std.process.exit(1);
+        }
+    }
+
     // Apply classifier (--config takes precedence over --classifier)
     // Default: protor for PDB/mmCIF input (matches FreeSASA/RustSASA defaults)
     timer.reset();
@@ -959,16 +980,29 @@ pub fn main() !void {
                     .n_points = parsed.n_points,
                     .probe_radius = parsed.probe_radius,
                 };
-                break :blk if (parsed.n_threads == 1)
-                    shrake_rupley.calculateSasa(allocator, input, config) catch |err| {
-                        std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
-                        std.process.exit(1);
-                    }
-                else
-                    shrake_rupley.calculateSasaParallel(allocator, input, config, parsed.n_threads) catch |err| {
-                        std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
-                        std.process.exit(1);
-                    };
+                break :blk if (parsed.use_bitmask) bitmask_blk: {
+                    break :bitmask_blk if (parsed.n_threads == 1)
+                        shrake_rupley_bitmask.calculateSasa(allocator, input, config) catch |err| {
+                            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                            std.process.exit(1);
+                        }
+                    else
+                        shrake_rupley_bitmask.calculateSasaParallel(allocator, input, config, parsed.n_threads) catch |err| {
+                            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                            std.process.exit(1);
+                        };
+                } else standard_blk: {
+                    break :standard_blk if (parsed.n_threads == 1)
+                        shrake_rupley.calculateSasa(allocator, input, config) catch |err| {
+                            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                            std.process.exit(1);
+                        }
+                    else
+                        shrake_rupley.calculateSasaParallel(allocator, input, config, parsed.n_threads) catch |err| {
+                            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                            std.process.exit(1);
+                        };
+                };
             },
             .lr => blk: {
                 const lr_config = LeeRichardsConfig{
@@ -995,16 +1029,29 @@ pub fn main() !void {
                         .n_points = parsed.n_points,
                         .probe_radius = @floatCast(parsed.probe_radius),
                     };
-                    break :inner if (parsed.n_threads == 1)
-                        shrake_rupley.calculateSasaf32(allocator, input, config) catch |err| {
-                            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
-                            std.process.exit(1);
-                        }
-                    else
-                        shrake_rupley.calculateSasaParallelf32(allocator, input, config, parsed.n_threads) catch |err| {
-                            std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
-                            std.process.exit(1);
-                        };
+                    break :inner if (parsed.use_bitmask) bitmask_inner: {
+                        break :bitmask_inner if (parsed.n_threads == 1)
+                            shrake_rupley_bitmask.calculateSasaf32(allocator, input, config) catch |err| {
+                                std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                                std.process.exit(1);
+                            }
+                        else
+                            shrake_rupley_bitmask.calculateSasaParallelf32(allocator, input, config, parsed.n_threads) catch |err| {
+                                std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                                std.process.exit(1);
+                            };
+                    } else standard_inner: {
+                        break :standard_inner if (parsed.n_threads == 1)
+                            shrake_rupley.calculateSasaf32(allocator, input, config) catch |err| {
+                                std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                                std.process.exit(1);
+                            }
+                        else
+                            shrake_rupley.calculateSasaParallelf32(allocator, input, config, parsed.n_threads) catch |err| {
+                                std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
+                                std.process.exit(1);
+                            };
+                    };
                 },
                 .lr => inner: {
                     const lr_config = LeeRichardsConfigf32{
