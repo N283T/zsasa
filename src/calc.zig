@@ -1222,3 +1222,71 @@ test "CalcArgs --polar implies --per-residue" {
     try std.testing.expectEqual(true, parsed.polar);
     try std.testing.expectEqual(true, parsed.per_residue);
 }
+
+test "CalcArgs --algorithm=shrake-rupley (long form)" {
+    const args = [_][]const u8{ "zsasa", "calc", "--algorithm=shrake-rupley", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(Algorithm.sr, parsed.algorithm);
+}
+
+test "CalcArgs --algorithm=lee-richards (long form)" {
+    const args = [_][]const u8{ "zsasa", "calc", "--algorithm=lee-richards", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(Algorithm.lr, parsed.algorithm);
+}
+
+test "CalcArgs -o takes precedence over positional output" {
+    const args = [_][]const u8{ "zsasa", "calc", "-o", "explicit.json", "input.json", "positional.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("explicit.json", parsed.output_path);
+    try std.testing.expectEqual(true, parsed.output_path_explicit);
+}
+
+test "CalcArgs --n-slices=N" {
+    const args = [_][]const u8{ "zsasa", "calc", "--n-slices=50", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(u32, 50), parsed.n_slices);
+}
+
+test "CalcArgs --n-slices N (space-separated)" {
+    const args = [_][]const u8{ "zsasa", "calc", "--n-slices", "30", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(u32, 30), parsed.n_slices);
+}
+
+test "CalcArgs --config=FILE" {
+    const args = [_][]const u8{ "zsasa", "calc", "--config=my_classifier.conf", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("my_classifier.conf", parsed.config_path.?);
+}
+
+test "CalcArgs --config FILE (space-separated)" {
+    const args = [_][]const u8{ "zsasa", "calc", "--config", "my_classifier.conf", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("my_classifier.conf", parsed.config_path.?);
+}
+
+test "CalcArgs --chain=A" {
+    const args = [_][]const u8{ "zsasa", "calc", "--chain=A", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("A", parsed.chain_filter.?);
+}
+
+test "CalcArgs --model=1" {
+    const args = [_][]const u8{ "zsasa", "calc", "--model=1", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(u32, 1), parsed.model_num.?);
+}
+
+test "CalcArgs --auth-chain" {
+    const args = [_][]const u8{ "zsasa", "calc", "--auth-chain", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.use_auth_chain);
+}
+
+test "CalcArgs --output FILE (space-separated)" {
+    const args = [_][]const u8{ "zsasa", "calc", "--output", "result.json", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("result.json", parsed.output_path);
+    try std.testing.expectEqual(true, parsed.output_path_explicit);
+}

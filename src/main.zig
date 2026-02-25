@@ -101,6 +101,13 @@ pub fn main() !void {
 }
 
 // Tests
+test {
+    // Discover tests from subcommand modules
+    _ = calc;
+    _ = batch;
+    _ = traj;
+}
+
 test "isSubcommand" {
     try std.testing.expect(isSubcommand("calc"));
     try std.testing.expect(isSubcommand("batch"));

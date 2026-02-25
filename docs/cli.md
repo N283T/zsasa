@@ -411,7 +411,7 @@ ALA CB  C_ALI
 # Fast mode: f32 precision
 ./zig-out/bin/zsasa calc --precision=f32 structure.cif output.json
 
-# Multi-threaded (atom-level parallelism)
+# Multi-threaded
 ./zig-out/bin/zsasa calc --threads=4 structure.cif output.json
 
 # Show timing breakdown
