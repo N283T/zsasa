@@ -12,7 +12,6 @@ const classifier = @import("classifier.zig");
 const classifier_protor = @import("classifier_protor.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_oons = @import("classifier_oons.zig");
-const stream_writer = @import("stream_writer.zig");
 
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
@@ -54,7 +53,6 @@ pub const BatchConfig = struct {
     classifier_type: ?ClassifierType = .protor, // Default: protor (matches FreeSASA/RustSASA)
     include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
     include_hetatm: bool = false, // Include HETATM records (default: exclude)
-    stream_writer_ptr: ?*stream_writer.StreamWriter = null, // Optional streaming output
 };
 
 /// Get output extension based on format
@@ -498,9 +496,6 @@ pub fn runBatchSequential(
 
         file_results[i] = result;
 
-        // Stream result before arena reset (while filename is still valid)
-        emitStreamResult(config.stream_writer_ptr, filename, result);
-
         // Reset arena for next file
         _ = arena.reset(.retain_capacity);
 
@@ -593,9 +588,6 @@ pub fn runBatchAtomParallel(
         }
 
         file_results[i] = result;
-
-        // Stream result before arena reset (while filename is still valid)
-        emitStreamResult(config.stream_writer_ptr, filename, result);
 
         // Reset arena for next file
         _ = arena.reset(.retain_capacity);
@@ -772,9 +764,6 @@ pub fn runBatchPipelined(
             failed += 1;
         }
 
-        // Stream result before prefetched data is freed
-        emitStreamResult(config.stream_writer_ptr, pf.filename, file_results[file_idx]);
-
         file_idx += 1;
 
         // Progress output
@@ -829,7 +818,6 @@ const ParallelContext = struct {
     result_allocator: Allocator,
     next_file: std.atomic.Value(usize),
     processed_count: std.atomic.Value(usize),
-    stream_writer_ptr: ?*stream_writer.StreamWriter,
 };
 
 /// Worker thread function for parallel batch processing
@@ -883,9 +871,6 @@ fn parallelWorker(ctx: *ParallelContext) void {
 
         // Store result (thread-safe: each index is unique)
         ctx.results[file_idx] = result;
-
-        // Stream result (thread-safe: StreamWriter uses mutex)
-        emitStreamResult(ctx.stream_writer_ptr, filename, result);
 
         // Update progress counter
         _ = ctx.processed_count.fetchAdd(1, .seq_cst);
@@ -956,7 +941,6 @@ pub fn runBatchParallel(
         .result_allocator = allocator,
         .next_file = std.atomic.Value(usize).init(0),
         .processed_count = std.atomic.Value(usize).init(0),
-        .stream_writer_ptr = config.stream_writer_ptr,
     };
 
     // Spawn worker threads
@@ -1042,26 +1026,6 @@ pub fn runBatch(
             // Pipelined: I/O prefetch + atom-level SASA calculation
             return runBatchPipelined(allocator, input_dir, output_dir, config);
         },
-    };
-}
-
-/// Emit a single result to the stream writer, if present.
-///
-/// Centralizes the conversion from FileResult to StreamResult and
-/// handles write errors by incrementing the writer's failure counter
-/// and printing a warning to stderr. This keeps the batch pipeline
-/// running even when individual stream writes fail.
-fn emitStreamResult(
-    sw_ptr: ?*stream_writer.StreamWriter,
-    filename: []const u8,
-    result: FileResult,
-) void {
-    const sw = sw_ptr orelse return;
-    var sr = stream_writer.StreamResult.fromFileResult(result);
-    sr.filename = filename;
-    sw.writeResult(sr) catch |err| {
-        _ = sw.write_failures.fetchAdd(1, .monotonic);
-        std.debug.print("Warning: stream write failed for '{s}': {s}\n", .{ filename, @errorName(err) });
     };
 }
 

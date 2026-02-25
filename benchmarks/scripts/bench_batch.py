@@ -58,9 +58,10 @@ class Tool(str, Enum):
     zig = "zig"
     freesasa = "freesasa"
     rustsasa = "rustsasa"
+    lahuta = "lahuta"
 
 
-ALL_TOOLS = [Tool.zig, Tool.freesasa, Tool.rustsasa]
+ALL_TOOLS = [Tool.zig, Tool.freesasa, Tool.rustsasa, Tool.lahuta]
 
 
 def get_root_dir() -> Path:
@@ -78,6 +79,9 @@ def get_binary_paths() -> dict[str, Path]:
         ),
         "rustsasa": root.joinpath(
             "benchmarks", "external", "rustsasa-bench", "target", "release", "rust-sasa"
+        ),
+        "lahuta": root.joinpath(
+            "benchmarks", "external", "lahuta", "build", "cli", "lahuta"
         ),
     }
 
@@ -177,6 +181,7 @@ def run_zig(
     input_dir: Path,
     results_dir: Path,
     thread_counts: list[int],
+    n_points: int,
     warmup: int,
     runs: int,
     dry_run: bool,
@@ -198,7 +203,7 @@ def run_zig(
                 parallelism = " --parallelism=file" if n_threads > 1 else ""
                 result = run_benchmark(
                     f"zsasa_{precision}_{n_threads}t",
-                    f"{zsasa} {input_dir} {out_dir} --threads={n_threads}{parallelism} --precision={precision}",
+                    f"{zsasa} {input_dir} {out_dir} --threads={n_threads}{parallelism} --precision={precision} --n-points={n_points}",
                     results_dir,
                     warmup,
                     runs,
@@ -215,6 +220,7 @@ def run_zig(
 def run_freesasa(
     input_dir: Path,
     results_dir: Path,
+    n_points: int,
     warmup: int,
     runs: int,
     dry_run: bool,
@@ -233,7 +239,7 @@ def run_freesasa(
 
         result = run_benchmark(
             "freesasa_1t",
-            f"{sasa_batch} {input_dir} {out_dir}",
+            f"{sasa_batch} {input_dir} {out_dir} {n_points}",
             results_dir,
             warmup,
             runs,
@@ -249,6 +255,7 @@ def run_rustsasa(
     input_dir: Path,
     results_dir: Path,
     thread_counts: list[int],
+    n_points: int,
     warmup: int,
     runs: int,
     dry_run: bool,
@@ -268,7 +275,7 @@ def run_rustsasa(
         for n_threads in thread_counts:
             result = run_benchmark(
                 f"rustsasa_{n_threads}t",
-                f"{rustsasa} {input_dir} {out_dir} --format json -t {n_threads}",
+                f"{rustsasa} {input_dir} {out_dir} --format json -t {n_threads} -n {n_points}",
                 results_dir,
                 warmup,
                 runs,
@@ -276,6 +283,51 @@ def run_rustsasa(
             )
             if result:
                 results.append({"name": f"rustsasa_{n_threads}t", **result})
+
+    return results
+
+
+def run_lahuta(
+    input_dir: Path,
+    results_dir: Path,
+    thread_counts: list[int],
+    n_points: int,
+    warmup: int,
+    runs: int,
+    dry_run: bool,
+    binaries: dict[str, Path],
+) -> list[dict]:
+    """Run Lahuta benchmarks (AF2 PDB only, Shrake-Rupley)."""
+    lahuta = binaries["lahuta"]
+    if not lahuta.exists():
+        console.print("[yellow][SKIP] lahuta not found[/]")
+        return []
+
+    results = []
+
+    with tempfile.TemporaryDirectory(prefix="lahuta_") as tmp:
+        out_file = Path(tmp).joinpath("sasa.jsonl")
+
+        for n_threads in thread_counts:
+            result = run_benchmark(
+                f"lahuta_{n_threads}t",
+                (
+                    f"{lahuta} sasa-sr"
+                    f" -d {input_dir}"
+                    f" --is_af2_model"
+                    f" --points {n_points}"
+                    f" --use-bitmask"
+                    f" -t {n_threads}"
+                    f" --progress 0"
+                    f" -o {out_file}"
+                ),
+                results_dir,
+                warmup,
+                runs,
+                dry_run,
+            )
+            if result:
+                results.append({"name": f"lahuta_{n_threads}t", **result})
 
     return results
 
@@ -371,6 +423,14 @@ def main(
             help="Output directory (default: benchmarks/results/batch/<name>)",
         ),
     ] = None,
+    n_points: Annotated[
+        int,
+        typer.Option(
+            "--n-points",
+            "-N",
+            help="Number of sphere test points per atom (default: 100)",
+        ),
+    ] = 100,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -390,7 +450,8 @@ def main(
     # Set up paths
     root = get_root_dir()
     if output_dir is None:
-        results_dir = root.joinpath("benchmarks", "results", "batch", name)
+        batch_dir = "batch" if n_points == 100 else f"batch_{n_points}"
+        results_dir = root.joinpath("benchmarks", "results", batch_dir, name)
     else:
         results_dir = output_dir
 
@@ -419,6 +480,7 @@ def main(
             "thread_counts": thread_counts,
             "warmup": warmup,
             "runs": runs,
+            "n_points": n_points,
         },
     }
     if not dry_run:
@@ -430,7 +492,9 @@ def main(
     console.print(f"Input: {input_dir}")
     console.print(f"Output: {results_dir}")
     console.print(f"Tools: {', '.join(t.value for t in selected_tools)}")
-    console.print(f"Warmup: {warmup}, Runs: {runs}, Threads: {thread_counts}")
+    console.print(
+        f"Warmup: {warmup}, Runs: {runs}, Threads: {thread_counts}, Points: {n_points}"
+    )
     console.print()
 
     all_results = []
@@ -441,6 +505,7 @@ def main(
             input_dir,
             results_dir,
             thread_counts,
+            n_points,
             warmup,
             runs,
             dry_run,
@@ -449,7 +514,9 @@ def main(
         all_results.extend(results)
 
     if Tool.freesasa in selected_tools:
-        results = run_freesasa(input_dir, results_dir, warmup, runs, dry_run, binaries)
+        results = run_freesasa(
+            input_dir, results_dir, n_points, warmup, runs, dry_run, binaries
+        )
         all_results.extend(results)
 
     if Tool.rustsasa in selected_tools:
@@ -457,6 +524,20 @@ def main(
             input_dir,
             results_dir,
             thread_counts,
+            n_points,
+            warmup,
+            runs,
+            dry_run,
+            binaries,
+        )
+        all_results.extend(results)
+
+    if Tool.lahuta in selected_tools:
+        results = run_lahuta(
+            input_dir,
+            results_dir,
+            thread_counts,
+            n_points,
             warmup,
             runs,
             dry_run,

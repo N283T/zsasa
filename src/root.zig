@@ -10,7 +10,6 @@
 //! - `json_parser` - JSON format parser
 //! - `classifier` - Atom classifier (FreeSASA-compatible)
 //! - `analysis` - Result aggregation and RSA calculation
-//! - `stream_writer` - Streaming JSON output for batch results
 //! - `toml_parser` - Minimal TOML subset parser
 //! - `toml_classifier_parser` - TOML-to-Classifier converter
 //!
@@ -32,7 +31,6 @@ pub const mmcif_parser = @import("mmcif_parser.zig");
 pub const json_parser = @import("json_parser.zig");
 pub const classifier = @import("classifier.zig");
 pub const analysis = @import("analysis.zig");
-pub const stream_writer = @import("stream_writer.zig");
 pub const toml_parser = @import("toml_parser.zig");
 pub const toml_classifier_parser = @import("toml_classifier_parser.zig");
 pub const dcd = @import("dcd.zig");
@@ -46,7 +44,6 @@ test {
     _ = json_parser;
     _ = classifier;
     _ = analysis;
-    _ = stream_writer;
     _ = toml_parser;
     _ = toml_classifier_parser;
     _ = dcd;
