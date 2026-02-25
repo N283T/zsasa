@@ -125,7 +125,6 @@ fn atomSasaBitmask(
     lut: *const BitmaskLut,
 ) f64 {
     const words = lut.words;
-    comptime std.debug.assert(bitmask_lut.max_words <= 4);
 
     if (neighbors.len == 0) {
         return 4.0 * std.math.pi * atom_radius_probe * atom_radius_probe;
@@ -138,7 +137,7 @@ fn atomSasaBitmask(
     const dir_resolution = BitmaskLut.dir_resolution;
     const angle_bins_c = BitmaskLut.angle_bins;
 
-    var visibility: [4]u64 = .{ std.math.maxInt(u64), std.math.maxInt(u64), std.math.maxInt(u64), std.math.maxInt(u64) };
+    var visibility: [bitmask_lut.max_words]u64 = @splat(std.math.maxInt(u64));
     visibility[words - 1] &= lut.last_word_mask;
 
     // SIMD 4-neighbor batching
@@ -188,7 +187,7 @@ fn atomSasaBitmask(
             const dir_indices = octaDirBinBranchless(f64, nx, ny, nz, dir_resolution);
             const angle_indices = angleBinFromCosBatch(f64, cos_threshold);
 
-            var combined: [4]u64 = .{ 0, 0, 0, 0 };
+            var combined: [bitmask_lut.max_words]u64 = @splat(0);
             inline for (0..batch_size) |b| {
                 if (valid[b]) {
                     const offset = (dir_indices[b] * angle_bins_c + angle_indices[b]) * words;
@@ -462,7 +461,6 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             lut: *const Lut,
         ) T {
             const words = lut.words;
-            comptime std.debug.assert(bitmask_lut.max_words <= 4);
 
             if (neighbors.len == 0) {
                 return 4.0 * std.math.pi * atom_radius_probe * atom_radius_probe;
@@ -475,7 +473,7 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             const dir_resolution = Lut.dir_resolution;
             const angle_bins_val = Lut.angle_bins;
 
-            var visibility: [4]u64 = .{ std.math.maxInt(u64), std.math.maxInt(u64), std.math.maxInt(u64), std.math.maxInt(u64) };
+            var visibility: [bitmask_lut.max_words]u64 = @splat(std.math.maxInt(u64));
             visibility[words - 1] &= lut.last_word_mask;
 
             // SIMD 4-neighbor batching
@@ -524,7 +522,7 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
                     const dir_indices = octaDirBinBranchless(T, nx, ny, nz, dir_resolution);
                     const angle_indices = angleBinFromCosBatch(T, cos_threshold);
 
-                    var combined: [4]u64 = .{ 0, 0, 0, 0 };
+                    var combined: [bitmask_lut.max_words]u64 = @splat(0);
                     inline for (0..batch_size) |b| {
                         if (valid[b]) {
                             const offset = (dir_indices[b] * angle_bins_val + angle_indices[b]) * words;
@@ -987,12 +985,46 @@ test "bitmask calculateSasa - unsupported n_points" {
     defer input.deinit();
 
     const config = Config{
-        .n_points = 100,
+        .n_points = 2048,
         .probe_radius = 1.4,
     };
 
     const result = calculateSasa(allocator, input, config);
     try std.testing.expectError(error.UnsupportedNPoints, result);
+}
+
+test "bitmask calculateSasa - arbitrary n_points 100" {
+    const allocator = std.testing.allocator;
+
+    const x = try allocator.alloc(f64, 1);
+    const y = try allocator.alloc(f64, 1);
+    const z = try allocator.alloc(f64, 1);
+    const r = try allocator.alloc(f64, 1);
+    x[0] = 0.0;
+    y[0] = 0.0;
+    z[0] = 0.0;
+    r[0] = 1.0;
+
+    var input = AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .allocator = allocator,
+    };
+    defer input.deinit();
+
+    const config = Config{
+        .n_points = 100,
+        .probe_radius = 1.4,
+    };
+
+    var result = try calculateSasa(allocator, input, config);
+    defer result.deinit();
+
+    const expected_radius = r[0] + config.probe_radius;
+    const expected_area = 4.0 * std.math.pi * expected_radius * expected_radius;
+    try std.testing.expectApproxEqRel(expected_area, result.total_area, 0.02);
 }
 
 test "bitmask vs standard SR - equivalence within tolerance" {

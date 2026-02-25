@@ -320,7 +320,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --include-hydrogens
         \\                       Include hydrogen atoms (default, for backward compat)
         \\    --use-bitmask      Use bitmask LUT optimization for SR algorithm
-        \\                       (n-points must be 64, 128, or 256)
+        \\                       (n-points must be 1..256)
         \\    --stride=N         Process every Nth frame (default: 1)
         \\    --start=N          Start from frame N (default: 0)
         \\    --end=N            End at frame N (default: all)

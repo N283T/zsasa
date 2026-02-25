@@ -4,22 +4,18 @@ const test_points = @import("test_points.zig");
 
 const Allocator = std.mem.Allocator;
 
-/// Supported n_points values for bitmask mode.
-pub const supported_n_points = [_]u32{ 64, 128, 256 };
+/// Maximum n_points supported by bitmask mode (limited by fixed-size visibility array).
+pub const max_n_points: u32 = 1024;
 /// Maximum number of u64 words needed for the largest supported n_points.
-pub const max_words: usize = (supported_n_points[supported_n_points.len - 1] + 63) / 64;
+pub const max_words: usize = (max_n_points + 63) / 64;
 
 comptime {
-    // Ensure max_words fits in the fixed-size visibility array used by shrake_rupley_bitmask.
-    std.debug.assert(max_words <= 4);
+    std.debug.assert(max_words <= 16);
 }
 
-/// Check if n_points is supported for bitmask mode.
+/// Check if n_points is valid for bitmask mode (1..256).
 pub fn isSupportedNPoints(n: u32) bool {
-    for (supported_n_points) |s| {
-        if (n == s) return true;
-    }
-    return false;
+    return n >= 1 and n <= max_n_points;
 }
 
 /// Generic bitmask lookup table for occlusion-based SASA calculation.
@@ -52,7 +48,7 @@ pub fn BitmaskLutGen(comptime T: type) type {
         allocator: Allocator,
 
         /// Build the lookup table for the given n_points.
-        /// Returns error.UnsupportedNPoints if n_points is not 64, 128, or 256.
+        /// Returns error.UnsupportedNPoints if n_points is not in 1..256.
         pub fn init(allocator: Allocator, n_points_val: u32) !Self {
             if (!isSupportedNPoints(n_points_val)) return error.UnsupportedNPoints;
 
@@ -247,8 +243,31 @@ test "BitmaskLut init and deinit - 256 points" {
 
 test "BitmaskLut invalid n_points" {
     const allocator = std.testing.allocator;
-    const result = BitmaskLut.init(allocator, 100);
-    try std.testing.expectError(error.UnsupportedNPoints, result);
+    try std.testing.expectError(error.UnsupportedNPoints, BitmaskLut.init(allocator, 0));
+    try std.testing.expectError(error.UnsupportedNPoints, BitmaskLut.init(allocator, 1025));
+    try std.testing.expectError(error.UnsupportedNPoints, BitmaskLut.init(allocator, 2048));
+}
+
+test "BitmaskLut arbitrary n_points - 100 points" {
+    const allocator = std.testing.allocator;
+    var lut = try BitmaskLut.init(allocator, 100);
+    defer lut.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), lut.words);
+    try std.testing.expectEqual(@as(u32, 100), lut.n_points);
+    // 100 % 64 = 36 → lower 36 bits set
+    try std.testing.expectEqual((@as(u64, 1) << 36) - 1, lut.last_word_mask);
+}
+
+test "BitmaskLut arbitrary n_points - 200 points" {
+    const allocator = std.testing.allocator;
+    var lut = try BitmaskLut.init(allocator, 200);
+    defer lut.deinit();
+
+    try std.testing.expectEqual(@as(usize, 4), lut.words);
+    try std.testing.expectEqual(@as(u32, 200), lut.n_points);
+    // 200 % 64 = 8 → lower 8 bits set
+    try std.testing.expectEqual((@as(u64, 1) << 8) - 1, lut.last_word_mask);
 }
 
 test "BitmaskLut angleBinFromCos edges" {
@@ -348,10 +367,15 @@ test "BitmaskLutf32 init and deinit" {
 }
 
 test "isSupportedNPoints" {
-    try std.testing.expect(isSupportedNPoints(64));
-    try std.testing.expect(isSupportedNPoints(128));
-    try std.testing.expect(isSupportedNPoints(256));
-    try std.testing.expect(!isSupportedNPoints(100));
     try std.testing.expect(!isSupportedNPoints(0));
-    try std.testing.expect(!isSupportedNPoints(512));
+    try std.testing.expect(isSupportedNPoints(1));
+    try std.testing.expect(isSupportedNPoints(64));
+    try std.testing.expect(isSupportedNPoints(100));
+    try std.testing.expect(isSupportedNPoints(128));
+    try std.testing.expect(isSupportedNPoints(200));
+    try std.testing.expect(isSupportedNPoints(256));
+    try std.testing.expect(isSupportedNPoints(512));
+    try std.testing.expect(isSupportedNPoints(1024));
+    try std.testing.expect(!isSupportedNPoints(1025));
+    try std.testing.expect(!isSupportedNPoints(2048));
 }
