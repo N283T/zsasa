@@ -171,7 +171,11 @@ fn atomSasaBitmask(
         const vy: V4 = @as(V4, nbr_y) - cy_splat;
         const vz: V4 = @as(V4, nbr_z) - cz_splat;
         const dist_sq = vx * vx + vy * vy + vz * vz;
-        const inv_dist = ones_v / @sqrt(dist_sq);
+        // Clamp dist_sq to avoid division by zero for coincident atoms.
+        // IEEE 754 NaN from 0/0 would cause UB in @intFromFloat later.
+        const epsilon_splat: V4 = @splat(@as(f64, 1e-20));
+        const safe_dist_sq = @max(dist_sq, epsilon_splat);
+        const inv_dist = ones_v / @sqrt(safe_dist_sq);
         const cos_threshold = (r_i_sq_splat + dist_sq - @as(V4, nbr_rsq)) * inv_two_r_splat * inv_dist;
 
         if (@reduce(.Or, cos_threshold <= neg_ones_v)) return 0.0;
@@ -504,7 +508,10 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
                 const vy: V4 = @as(V4, nbr_y) - cy_splat;
                 const vz: V4 = @as(V4, nbr_z) - cz_splat;
                 const dist_sq = vx * vx + vy * vy + vz * vz;
-                const inv_dist = ones_v / @sqrt(dist_sq);
+                // Clamp dist_sq to avoid division by zero for coincident atoms.
+                const epsilon_splat: V4 = @splat(@as(T, 1e-20));
+                const safe_dist_sq = @max(dist_sq, epsilon_splat);
+                const inv_dist = ones_v / @sqrt(safe_dist_sq);
                 const cos_threshold = (r_i_sq_splat + dist_sq - @as(V4, nbr_rsq)) * inv_two_r_splat * inv_dist;
 
                 if (@reduce(.Or, cos_threshold <= neg_ones_v)) return 0.0;
@@ -632,6 +639,7 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
 
         /// Calculate SASA with a pre-built LUT (single-threaded, generic precision).
         /// Use this in batch mode to avoid rebuilding the LUT per file.
+        /// Caller must ensure lut was built with config.n_points.
         pub fn calculateSasaWithLut(
             allocator: Allocator,
             input: AtomInput,
@@ -640,6 +648,7 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
         ) !Result {
             const n_atoms = input.atomCount();
             if (n_atoms == 0) return error.NoAtoms;
+            std.debug.assert(config.n_points == lut.n_points);
             return calculateSasaCore(allocator, input, config, lut);
         }
 
@@ -722,6 +731,7 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
         }
 
         /// Calculate SASA with a pre-built LUT (parallel, generic precision).
+        /// Caller must ensure lut was built with config.n_points.
         pub fn calculateSasaParallelWithLut(
             allocator: Allocator,
             input: AtomInput,
@@ -731,6 +741,7 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
         ) !Result {
             const n_atoms = input.atomCount();
             if (n_atoms == 0) return error.NoAtoms;
+            std.debug.assert(config.n_points == lut.n_points);
             return calculateSasaParallelCore(allocator, input, config, n_threads, lut);
         }
 

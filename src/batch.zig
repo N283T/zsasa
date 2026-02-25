@@ -60,40 +60,32 @@ pub const BatchConfig = struct {
 
 /// Helper to build and hold bitmask LUTs for batch processing.
 /// Builds the appropriate LUT once based on config, and provides typed pointers.
+/// Returns error.BitmaskRequiresSR if use_bitmask is combined with algorithm != .sr.
 const BatchLuts = struct {
-    lut_f64: bitmask_lut.BitmaskLut = undefined,
-    lut_f32: bitmask_lut.BitmaskLutGen(f32) = undefined,
-    has_f64: bool = false,
-    has_f32: bool = false,
+    lut_f64: ?bitmask_lut.BitmaskLut = null,
+    lut_f32: ?bitmask_lut.BitmaskLutGen(f32) = null,
 
     fn init(allocator: Allocator, config: BatchConfig) !BatchLuts {
-        var self = BatchLuts{};
-        if (config.use_bitmask) {
-            switch (config.precision) {
-                .f64 => {
-                    self.lut_f64 = try bitmask_lut.BitmaskLut.init(allocator, config.n_points);
-                    self.has_f64 = true;
-                },
-                .f32 => {
-                    self.lut_f32 = try bitmask_lut.BitmaskLutGen(f32).init(allocator, config.n_points);
-                    self.has_f32 = true;
-                },
-            }
-        }
-        return self;
+        if (!config.use_bitmask) return .{};
+        if (config.algorithm != .sr) return error.BitmaskRequiresSR;
+        return switch (config.precision) {
+            .f64 => .{ .lut_f64 = try bitmask_lut.BitmaskLut.init(allocator, config.n_points) },
+            .f32 => .{ .lut_f32 = try bitmask_lut.BitmaskLutGen(f32).init(allocator, config.n_points) },
+        };
     }
 
     fn deinit(self: *BatchLuts) void {
-        if (self.has_f64) self.lut_f64.deinit();
-        if (self.has_f32) self.lut_f32.deinit();
+        if (self.lut_f64) |*lut| lut.deinit();
+        if (self.lut_f32) |*lut| lut.deinit();
+        self.* = .{};
     }
 
     fn f64Ptr(self: *const BatchLuts) ?*const bitmask_lut.BitmaskLut {
-        return if (self.has_f64) &self.lut_f64 else null;
+        return if (self.lut_f64 != null) &self.lut_f64.? else null;
     }
 
     fn f32Ptr(self: *const BatchLuts) ?*const bitmask_lut.BitmaskLutGen(f32) {
-        return if (self.has_f32) &self.lut_f32 else null;
+        return if (self.lut_f32 != null) &self.lut_f32.? else null;
     }
 };
 
@@ -123,8 +115,9 @@ fn replaceExtension(allocator: Allocator, filename: []const u8, new_ext: []const
     return std.fmt.allocPrint(allocator, "{s}{s}", .{ base, new_ext });
 }
 
-/// Generic SASA calculation dispatcher
-/// Selects appropriate algorithm (SR or LR) and threading mode based on parameters
+/// Generic SASA calculation dispatcher.
+/// When bitmask_lut_ptr is non-null, uses bitmask-optimized Shrake-Rupley
+/// (the algorithm parameter is ignored). Otherwise selects SR or LR.
 fn calculateSasaDispatch(
     comptime T: type,
     allocator: Allocator,
