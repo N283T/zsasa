@@ -31,7 +31,7 @@ std::vector<fs::path> find_structure_files(const fs::path& dir) {
     return files;
 }
 
-bool process_file(const fs::path& input, const fs::path& output) {
+bool process_file(const fs::path& input, const fs::path& output, int n_points) {
     FILE* in = fopen(input.c_str(), "r");
     if (!in) return false;
 
@@ -43,29 +43,30 @@ bool process_file(const fs::path& input, const fs::path& output) {
     freesasa_parameters params = freesasa_default_parameters;
     params.n_threads = 1;
     params.alg = FREESASA_SHRAKE_RUPLEY;
-    params.shrake_rupley_n_points = 100;
+    params.shrake_rupley_n_points = n_points;
 
-    freesasa_node* tree = freesasa_calc_tree(structure, &params, input.stem().c_str());
+    freesasa_result* result = freesasa_calc_structure(structure, &params);
     freesasa_structure_free(structure);
-    if (!tree) return false;
+    if (!result) return false;
 
     FILE* out = fopen(output.c_str(), "w");
-    if (!out) { freesasa_node_free(tree); return false; }
+    if (!out) { freesasa_result_free(result); return false; }
 
-    int result = freesasa_tree_export(out, tree, FREESASA_JSON | FREESASA_OUTPUT_RESIDUE);
+    fprintf(out, "%.2f\n", result->total);
     fclose(out);
-    freesasa_node_free(tree);
+    freesasa_result_free(result);
 
-    return result == FREESASA_SUCCESS;
+    return true;
 }
 
 int main(int argc, char* argv[]) {
-    if (argc != 3) {
-        std::cerr << "Usage: " << argv[0] << " <input_folder> <output_folder>\n";
+    if (argc < 3 || argc > 4) {
+        std::cerr << "Usage: " << argv[0] << " <input_folder> <output_folder> [n_points]\n";
         return 1;
     }
 
     fs::path input_dir(argv[1]), output_dir(argv[2]);
+    int n_points = (argc >= 4) ? std::stoi(argv[3]) : 100;
 
     if (!fs::exists(input_dir) || !fs::is_directory(input_dir)) {
         std::cerr << "Error: Invalid input folder: " << input_dir << "\n";
@@ -85,7 +86,7 @@ int main(int argc, char* argv[]) {
     int success = 0, failed = 0;
     for (const auto& file : files) {
         fs::path out = output_dir / (file.stem().string() + ".json");
-        if (process_file(file, out)) ++success; else ++failed;
+        if (process_file(file, out, n_points)) ++success; else ++failed;
     }
 
     std::cout << "Done: " << success << " succeeded, " << failed << " failed.\n";

@@ -7,15 +7,18 @@ Originally from [RustSASA benchmark](https://github.com/OWissett/rustsasa).
 ## Build
 
 ```bash
-c++ -O3 -o sasa_batch sasa_batch.cpp -lfreesasa
+c++ -O3 -std=c++17 \
+  -I../freesasa-bench/src \
+  -o sasa_batch sasa_batch.cpp \
+  ../freesasa-bench/src/libfreesasa.a
 ```
-
-Requires FreeSASA library to be installed.
 
 ## Usage
 
 ```bash
-./sasa_batch <input_dir> <output_dir>
+./sasa_batch <input_dir> <output_dir> [n_points]
 ```
 
-Processes all `.pdb` files in `input_dir` and writes results to `output_dir`.
+- Processes all `.pdb`/`.cif` files in `input_dir`
+- Writes total SASA per file to `output_dir`
+- `n_points`: Shrake-Rupley sphere points (default: 100)

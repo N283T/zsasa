@@ -1,3 +1,4 @@
 # External benchmark dependencies (cloned on demand)
 freesasa-bench/
 rustsasa-bench/
+lahuta/
