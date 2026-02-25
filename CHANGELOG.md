@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-02-25
+
 ### Added
 
 - **Bitmask-optimized Shrake-Rupley algorithm** (`--use-bitmask`): precomputed occlusion bitmask LUT with O(1) octahedral encoding for direction lookup, replacing per-point neighbor testing (#197)
@@ -340,7 +342,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `calc_reference_sasa.py` - Generate reference SASA
   - `benchmark.py` - Performance benchmarking
 
-[Unreleased]: https://github.com/N283T/zsasa/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/N283T/zsasa/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/N283T/zsasa/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/N283T/zsasa/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/N283T/zsasa/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/N283T/zsasa/compare/v0.1.0...v0.1.1
