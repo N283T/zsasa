@@ -32,7 +32,7 @@ pub const ZSASA_ERROR_OUT_OF_MEMORY: c_int = -2;
 pub const ZSASA_ERROR_CALCULATION: c_int = -3;
 /// Directory/file I/O error (directory open failure)
 pub const ZSASA_ERROR_FILE_IO: c_int = -4;
-/// Unsupported n_points value for bitmask algorithm (must be 64, 128, or 256)
+/// Unsupported n_points value for bitmask algorithm (must be 1..1024)
 pub const ZSASA_ERROR_UNSUPPORTED_N_POINTS: c_int = -5;
 
 // =============================================================================
@@ -152,13 +152,13 @@ export fn zsasa_calc_sr(
 /// Calculate SASA using Shrake-Rupley bitmask algorithm.
 ///
 /// Uses a bitmask lookup-table optimization for faster SASA calculation.
-/// Only supports n_points values of 64, 128, or 256.
+/// Supports n_points values of 1..1024.
 ///
 /// Parameters:
 ///   x, y, z: Atom coordinates (arrays of n_atoms elements)
 ///   radii: Atom radii (array of n_atoms elements)
 ///   n_atoms: Number of atoms
-///   n_points: Number of test points per atom (must be 64, 128, or 256)
+///   n_points: Number of test points per atom (must be 1..1024)
 ///   probe_radius: Water probe radius in Angstroms (e.g., 1.4)
 ///   n_threads: Number of threads (0 = auto-detect)
 ///   atom_areas: Output buffer for per-atom SASA (must be pre-allocated, n_atoms elements)
@@ -1051,7 +1051,7 @@ fn calculateBatchBitmaskF32(
 ///   n_frames: Number of frames
 ///   n_atoms: Number of atoms per frame
 ///   radii: Atom radii (array of n_atoms elements)
-///   n_points: Number of test points per atom (must be 64, 128, or 256)
+///   n_points: Number of test points per atom (must be 1..1024)
 ///   probe_radius: Water probe radius in Angstroms (e.g., 1.4)
 ///   n_threads: Number of threads (0 = auto-detect)
 ///   atom_areas: Output buffer for per-atom SASA (n_frames * n_atoms elements)
@@ -1687,7 +1687,7 @@ test "zsasa_calc_sr_bitmask with unsupported n_points returns error" {
         &z,
         &radii,
         1,
-        100, // Not supported (must be 64, 128, or 256)
+        2000, // Not supported (must be 1..1024)
         1.4,
         1,
         &atom_areas,

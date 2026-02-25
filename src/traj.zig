@@ -130,7 +130,7 @@ pub const TrajArgs = struct {
     end_frame: ?u32 = null, // End frame (null = all)
     include_hydrogens: bool = true, // Include hydrogen atoms (default: include for MD trajectories)
     batch_size: u32 = 0, // Frames per batch for parallel processing (0 = auto)
-    use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 64/128/256)
+    use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
     quiet: bool = false,
     show_help: bool = false,
 };
@@ -715,7 +715,7 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
                 return error.BitmaskRequiresSR;
             },
             error.UnsupportedNPoints => {
-                std.debug.print("Error: --use-bitmask requires --n-points=64, 128, or 256\n", .{});
+                std.debug.print("Error: --use-bitmask requires --n-points=1..1024\n", .{});
                 return error.UnsupportedNPoints;
             },
             else => {

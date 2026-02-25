@@ -23,8 +23,9 @@ ZSASA_ERROR_CALCULATION = -3
 ZSASA_ERROR_FILE_IO = -4
 ZSASA_ERROR_UNSUPPORTED_N_POINTS = -5
 
-# Valid n_points values for bitmask algorithm
-_BITMASK_SUPPORTED_N_POINTS = (64, 128, 256)
+# Valid n_points range for bitmask algorithm
+_BITMASK_MIN_N_POINTS = 1
+_BITMASK_MAX_N_POINTS = 1024
 
 
 def _validate_bitmask_params(algorithm: str, n_points: int) -> bool:
@@ -36,10 +37,10 @@ def _validate_bitmask_params(algorithm: str, n_points: int) -> bool:
     if algorithm != "sr":
         msg = "use_bitmask=True only supports algorithm='sr' (Shrake-Rupley)"
         raise ValueError(msg)
-    if n_points not in _BITMASK_SUPPORTED_N_POINTS:
+    if not (_BITMASK_MIN_N_POINTS <= n_points <= _BITMASK_MAX_N_POINTS):
         warnings.warn(
             f"use_bitmask=True requires n_points in "
-            f"{_BITMASK_SUPPORTED_N_POINTS}, got {n_points}. "
+            f"{_BITMASK_MIN_N_POINTS}..{_BITMASK_MAX_N_POINTS}, got {n_points}. "
             f"Falling back to standard Shrake-Rupley.",
             stacklevel=3,
         )
@@ -295,7 +296,7 @@ def calculate_sasa(
         probe_radius: Water probe radius in Angstroms. Default: 1.4.
         n_threads: Number of threads to use. 0 = auto-detect. Default: 0.
         use_bitmask: Use bitmask LUT optimization for SR algorithm.
-            Only supports n_points of 64, 128, or 256. Default: False.
+            Supports n_points 1..1024. Default: False.
 
     Returns:
         SasaResult containing total_area and per-atom atom_areas.
@@ -423,7 +424,7 @@ def calculate_sasa(
     elif result == ZSASA_ERROR_UNSUPPORTED_N_POINTS:
         msg = (
             f"Unsupported n_points for bitmask: {n_points}. "
-            f"Must be one of {_BITMASK_SUPPORTED_N_POINTS}"
+            f"Must be {_BITMASK_MIN_N_POINTS}..{_BITMASK_MAX_N_POINTS}"
         )
         raise ValueError(msg)
     elif result != ZSASA_OK:
@@ -902,7 +903,7 @@ def calculate_sasa_batch(
         precision: Internal calculation precision: "f64" (default, higher precision)
             or "f32" (matches RustSASA/mdsasa-bolt for comparison). Default: "f64".
         use_bitmask: Use bitmask LUT optimization for SR algorithm.
-            Only supports n_points of 64, 128, or 256. Default: False.
+            Supports n_points 1..1024. Default: False.
 
     Returns:
         BatchSasaResult containing per-atom SASA for all frames.
@@ -1063,7 +1064,7 @@ def calculate_sasa_batch(
     elif result == ZSASA_ERROR_UNSUPPORTED_N_POINTS:
         msg = (
             f"Unsupported n_points for bitmask: {n_points}. "
-            f"Must be one of {_BITMASK_SUPPORTED_N_POINTS}"
+            f"Must be {_BITMASK_MIN_N_POINTS}..{_BITMASK_MAX_N_POINTS}"
         )
         raise ValueError(msg)
     elif result != ZSASA_OK:

@@ -133,7 +133,7 @@ def compute_sasa(
               - "total": Return total SASA per frame, shape (n_frames,).
               Default: "atom".
         use_bitmask: Use bitmask LUT optimization for SR algorithm.
-            Only supports n_points of 64, 128, or 256. Default: False.
+            Supports n_points 1..1024. Default: False.
 
     Returns:
         SASA values in nm² (matching MDTraj's output units).

@@ -55,7 +55,7 @@ pub const CalcArgs = struct {
     per_residue: bool = false, // Show per-residue SASA
     rsa: bool = false, // Show RSA (Relative Solvent Accessibility)
     polar: bool = false, // Show polar/nonpolar SASA summary
-    use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 64/128/256)
+    use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
     quiet: bool = false,
     validate_only: bool = false,
     show_timing: bool = false, // Show timing breakdown for benchmarking
@@ -375,7 +375,7 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
         else if (std.mem.eql(u8, arg, "--timing")) {
             result.show_timing = true;
         }
-        // --use-bitmask (bitmask LUT optimization for SR, n-points must be 64/128/256)
+        // --use-bitmask (bitmask LUT optimization for SR, n-points must be 1..1024)
         else if (std.mem.eql(u8, arg, "--use-bitmask")) {
             result.use_bitmask = true;
         }

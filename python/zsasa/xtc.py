@@ -300,7 +300,7 @@ def compute_sasa_trajectory(
         Process every Nth frame. Default: 1.
     use_bitmask : bool, optional
         Use bitmask LUT optimization for SR algorithm.
-        Only supports n_points of 64, 128, or 256. Default: False.
+        Supports n_points 1..1024. Default: False.
 
     Returns
     -------
