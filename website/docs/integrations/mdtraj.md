@@ -49,7 +49,7 @@ def compute_sasa(
 | `n_slices` | `int` | `20` | Slices per atom (LR) |
 | `n_threads` | `int` | `0` | Threads (0 = auto) |
 | `mode` | `"atom"`, `"residue"`, `"total"` | `"atom"` | Output mode |
-| `use_bitmask` | `bool` | `False` | Use bitmask LUT optimization (SR only, n_points must be 64, 128, or 256) |
+| `use_bitmask` | `bool` | `False` | Use bitmask LUT optimization (SR only, n_points must be 1..1024) |
 
 **Returns:** SASA values in nm² (matching MDTraj's output units).
 

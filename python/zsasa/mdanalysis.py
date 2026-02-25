@@ -214,7 +214,7 @@ class SASAAnalysis:
             Number of threads (0 = auto-detect). Default: 0.
         use_bitmask : bool, optional
             Use bitmask LUT optimization for SR algorithm.
-            Only supports n_points of 64, 128, or 256. Default: False.
+            Supports n_points 1..1024. Default: False.
 
         Returns
         -------
@@ -355,7 +355,7 @@ def compute_sasa(
         Output mode (default: "atom").
     use_bitmask : bool, optional
         Use bitmask LUT optimization for SR algorithm.
-        Only supports n_points of 64, 128, or 256. Default: False.
+        Supports n_points 1..1024. Default: False.
 
     Returns
     -------

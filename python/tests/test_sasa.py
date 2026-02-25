@@ -575,7 +575,7 @@ class TestBitmask:
         coords = np.array([[0.0, 0.0, 0.0]])
         radii = np.array([1.5])
 
-        for n_points in (64, 128, 256):
+        for n_points in (64, 100, 128, 200, 256, 512):
             result = calculate_sasa(coords, radii, n_points=n_points, use_bitmask=True)
             assert result.total_area > 0
 
@@ -594,21 +594,17 @@ class TestBitmask:
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = calculate_sasa(coords, radii, n_points=100, use_bitmask=True)
+            result = calculate_sasa(coords, radii, n_points=2000, use_bitmask=True)
             assert len(w) == 1
             assert "Falling back" in str(w[0].message)
         assert result.total_area > 0
 
-    def test_bitmask_default_n_points_warns_and_falls_back(self):
-        """use_bitmask=True with default n_points warns and falls back."""
+    def test_bitmask_default_n_points_works(self):
+        """use_bitmask=True with default n_points (100) should work."""
         coords = np.array([[0.0, 0.0, 0.0]])
         radii = np.array([1.5])
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            result = calculate_sasa(coords, radii, use_bitmask=True)
-            assert len(w) == 1
-            assert "Falling back" in str(w[0].message)
+        result = calculate_sasa(coords, radii, use_bitmask=True)
         assert result.total_area > 0
 
     def test_bitmask_batch(self):
@@ -651,7 +647,7 @@ class TestBitmask:
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = calculate_sasa_batch(coords, radii, n_points=100, use_bitmask=True)
+            result = calculate_sasa_batch(coords, radii, n_points=2000, use_bitmask=True)
             assert len(w) == 1
             assert "Falling back" in str(w[0].message)
         assert result.atom_areas.sum() > 0

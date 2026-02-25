@@ -55,7 +55,7 @@ pub const CalcArgs = struct {
     per_residue: bool = false, // Show per-residue SASA
     rsa: bool = false, // Show RSA (Relative Solvent Accessibility)
     polar: bool = false, // Show polar/nonpolar SASA summary
-    use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 64/128/256)
+    use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
     quiet: bool = false,
     validate_only: bool = false,
     show_timing: bool = false, // Show timing breakdown for benchmarking
@@ -375,7 +375,7 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
         else if (std.mem.eql(u8, arg, "--timing")) {
             result.show_timing = true;
         }
-        // --use-bitmask (bitmask LUT optimization for SR, n-points must be 64/128/256)
+        // --use-bitmask (bitmask LUT optimization for SR, n-points must be 1..1024)
         else if (std.mem.eql(u8, arg, "--use-bitmask")) {
             result.use_bitmask = true;
         }
@@ -465,7 +465,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\                       f32 is faster but less accurate
         \\    -o, --output=FILE  Output file (alternative to positional argument)
         \\    --use-bitmask      Use bitmask LUT optimization for SR algorithm
-        \\                       Faster but approximate; n-points must be 64, 128, or 256
+        \\                       Faster but approximate; n-points must be 1..1024
         \\    --validate         Validate input only, do not calculate SASA
         \\    --timing           Show timing breakdown (for benchmarking)
         \\    -q, --quiet        Suppress progress output
@@ -774,7 +774,7 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
             std.process.exit(1);
         }
         if (!bitmask_lut.isSupportedNPoints(args.n_points)) {
-            std.debug.print("Error: --use-bitmask requires --n-points to be 64, 128, or 256 (got {d})\n", .{args.n_points});
+            std.debug.print("Error: --use-bitmask requires --n-points to be 1..1024 (got {d})\n", .{args.n_points});
             std.process.exit(1);
         }
     }

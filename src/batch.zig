@@ -46,7 +46,7 @@ pub const BatchConfig = struct {
     classifier_type: ?ClassifierType = .protor, // Default: protor (matches FreeSASA/RustSASA)
     include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
     include_hetatm: bool = false, // Include HETATM records (default: exclude)
-    use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 64/128/256)
+    use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
 };
 
 /// Helper to build and hold bitmask LUTs for batch processing.
@@ -1139,7 +1139,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --include-hydrogens Include hydrogen atoms (default: exclude)
         \\    --include-hetatm    Include HETATM records (default: exclude)
         \\    --use-bitmask       Use bitmask LUT optimization for SR algorithm
-        \\                        (n-points must be 64, 128, or 256)
+        \\                        (n-points must be 1..1024)
         \\    --timing            Show timing breakdown for benchmarking
         \\    -o, --output=DIR    Output directory (alternative to positional)
         \\    -q, --quiet         Suppress progress output
