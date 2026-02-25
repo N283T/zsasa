@@ -160,6 +160,7 @@ fn calculateSasaDispatch(
     bitmask_lut_ptr: ?*const bitmask_lut.BitmaskLutGen(T),
     coarse_lut_ptr: ?*const bitmask_lut.BitmaskLutGen(T),
     adaptive_config_opt: ?shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(T).AdaptiveConfig,
+    adaptive_stats_out: ?*shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(T).AdaptiveStats,
 ) !SasaResultGen(T) {
     // Adaptive bitmask path
     if (adaptive_config_opt) |adaptive_config| {
@@ -174,7 +175,9 @@ fn calculateSasaDispatch(
                     try SR.calculateSasaAdaptiveWithLuts(
                         allocator, input, adaptive_config, coarse_lut, fine_lut,
                     );
-                // Discard stats at per-file level, return just the Result
+                if (adaptive_stats_out) |stats_ptr| {
+                    stats_ptr.* = adaptive_result.stats;
+                }
                 const result = adaptive_result.result;
                 // Don't call adaptive_result.deinit() since we're returning result
                 _ = &adaptive_result;
@@ -252,6 +255,9 @@ pub const FileResult = struct {
     total_sasa: f64,
     status: Status,
     error_msg: ?[]const u8 = null,
+    adaptive_buried: usize = 0,
+    adaptive_exposed: usize = 0,
+    adaptive_boundary: usize = 0,
 
     pub const Status = enum {
         ok,
@@ -336,6 +342,30 @@ pub const BatchResult = struct {
                 std.debug.print("  Min:  {d:.2} ms\n", .{min_ms});
                 std.debug.print("  Max:  {d:.2} ms\n", .{max_ms});
                 std.debug.print("  Mean: {d:.2} ms\n", .{mean_ms});
+            }
+
+            // Adaptive stats
+            var total_buried: usize = 0;
+            var total_exposed: usize = 0;
+            var total_boundary: usize = 0;
+            var has_adaptive = false;
+            for (self.file_results) |fr| {
+                if (fr.status == .ok and (fr.adaptive_buried > 0 or fr.adaptive_exposed > 0 or fr.adaptive_boundary > 0)) {
+                    has_adaptive = true;
+                    total_buried += fr.adaptive_buried;
+                    total_exposed += fr.adaptive_exposed;
+                    total_boundary += fr.adaptive_boundary;
+                }
+            }
+            if (has_adaptive) {
+                const total_atoms = total_buried + total_exposed + total_boundary;
+                const skip_pct = if (total_atoms > 0)
+                    @as(f64, @floatFromInt(total_buried + total_exposed)) / @as(f64, @floatFromInt(total_atoms)) * 100.0
+                else
+                    0.0;
+                std.debug.print("\nAdaptive SR: {d} buried + {d} boundary + {d} exposed / {d} atoms ({d:.1}% coarse-only)\n", .{
+                    total_buried, total_boundary, total_exposed, total_atoms, skip_pct,
+                });
             }
         }
     }
@@ -522,6 +552,10 @@ fn processOneFile(
         .adaptive_high = @floatCast(config.adaptive_high),
     } else null;
 
+    // Adaptive stats collection
+    var adaptive_stats_f64: shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).AdaptiveStats = .{ .n_buried = 0, .n_exposed = 0, .n_boundary = 0 };
+    var adaptive_stats_f32: shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).AdaptiveStats = .{ .n_buried = 0, .n_exposed = 0, .n_boundary = 0 };
+
     // Calculate SASA using generic dispatcher
     var total_area: f64 = 0;
     switch (config.precision) {
@@ -538,6 +572,7 @@ fn processOneFile(
                 lut_f64,
                 coarse_lut_f64,
                 adaptive_config_f64,
+                if (config.adaptive) &adaptive_stats_f64 else null,
             ) catch |err| {
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "SASA calculation failed: {s}", .{@errorName(err)}) catch null;
@@ -568,6 +603,7 @@ fn processOneFile(
                 lut_f32,
                 coarse_lut_f32,
                 adaptive_config_f32,
+                if (config.adaptive) &adaptive_stats_f32 else null,
             ) catch |err| {
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "SASA calculation failed: {s}", .{@errorName(err)}) catch null;
@@ -585,6 +621,22 @@ fn processOneFile(
                 };
             }
         },
+    }
+
+    // Copy adaptive stats to FileResult
+    if (config.adaptive) {
+        switch (config.precision) {
+            .f64 => {
+                result.adaptive_buried = adaptive_stats_f64.n_buried;
+                result.adaptive_exposed = adaptive_stats_f64.n_exposed;
+                result.adaptive_boundary = adaptive_stats_f64.n_boundary;
+            },
+            .f32 => {
+                result.adaptive_buried = adaptive_stats_f32.n_buried;
+                result.adaptive_exposed = adaptive_stats_f32.n_exposed;
+                result.adaptive_boundary = adaptive_stats_f32.n_boundary;
+            },
+        }
     }
 
     result.total_sasa = total_area;
