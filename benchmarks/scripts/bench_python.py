@@ -175,6 +175,7 @@ def bench_python_sasa(
     n_runs: int,
     threads: int,
     n_points: int = 100,
+    use_bitmask: bool = False,
 ) -> list[float]:
     """Benchmark Python calculate_sasa() with pre-loaded data."""
     # Import here to avoid top-level dependency on installed zsasa
@@ -182,12 +183,16 @@ def bench_python_sasa(
     from zsasa import calculate_sasa
 
     # Warmup
-    calculate_sasa(coords, radii, n_threads=threads, n_points=n_points)
+    calculate_sasa(
+        coords, radii, n_threads=threads, n_points=n_points, use_bitmask=use_bitmask
+    )
 
     times = []
     for _ in range(n_runs):
         start = time.perf_counter()
-        calculate_sasa(coords, radii, n_threads=threads, n_points=n_points)
+        calculate_sasa(
+            coords, radii, n_threads=threads, n_points=n_points, use_bitmask=use_bitmask
+        )
         elapsed = time.perf_counter() - start
         times.append(elapsed)
     return times
@@ -197,6 +202,7 @@ def bench_python_e2e(
     pdb_path: Path,
     n_runs: int,
     threads: int,
+    n_points: int = 100,
 ) -> list[float]:
     """Benchmark Python end-to-end: gemmi load + classify + SASA."""
     sys.path.insert(0, str(get_root_dir().joinpath("python")))
@@ -205,14 +211,20 @@ def bench_python_e2e(
 
     # Warmup
     calculate_sasa_from_structure(
-        str(pdb_path), classifier=ClassifierType.PROTOR, n_threads=threads
+        str(pdb_path),
+        classifier=ClassifierType.PROTOR,
+        n_threads=threads,
+        n_points=n_points,
     )
 
     times = []
     for _ in range(n_runs):
         start = time.perf_counter()
         calculate_sasa_from_structure(
-            str(pdb_path), classifier=ClassifierType.PROTOR, n_threads=threads
+            str(pdb_path),
+            classifier=ClassifierType.PROTOR,
+            n_threads=threads,
+            n_points=n_points,
         )
         elapsed = time.perf_counter() - start
         times.append(elapsed)
@@ -319,10 +331,12 @@ def main(
 
         # Python SASA-only
         coords, radii = prepare_python_data(pdb_path, threads)
-        py_sasa_times = bench_python_sasa(coords, radii, runs, threads, n_points)
+        py_sasa_times = bench_python_sasa(
+            coords, radii, runs, threads, n_points, use_bitmask
+        )
 
         # Python end-to-end
-        py_e2e_times = bench_python_e2e(pdb_path, runs, threads)
+        py_e2e_times = bench_python_e2e(pdb_path, runs, threads, n_points)
 
         results.append(
             {

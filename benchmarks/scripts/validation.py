@@ -169,6 +169,7 @@ def run_freesasa(
     input_dir: Path,
     algorithm: str,
     binaries: dict[str, Path],
+    n_points: int = 100,
 ) -> dict[str, float]:
     """Run FreeSASA per-file via CLI. Returns {stem: total_sasa}."""
     binary = binaries["freesasa"]
@@ -192,7 +193,7 @@ def run_freesasa(
         for pdb_file in pdb_files:
             cmd = [str(binary), str(pdb_file)]
             if algorithm == "sr":
-                cmd.extend(["--shrake-rupley", "--resolution=100"])
+                cmd.extend(["--shrake-rupley", f"--resolution={n_points}"])
             else:
                 cmd.extend(["--lee-richards", "--resolution=20"])
 
@@ -533,7 +534,7 @@ def run(
 
     if Tool.freesasa in selected_tools:
         console.print("[bold cyan]Running FreeSASA...[/]")
-        freesasa_results = run_freesasa(input_dir, algorithm, binaries)
+        freesasa_results = run_freesasa(input_dir, algorithm, binaries, n_points)
         console.print(f"  Got {len(freesasa_results)} results")
 
     # Merge by stem

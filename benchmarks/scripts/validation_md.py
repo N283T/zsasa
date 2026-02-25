@@ -198,12 +198,10 @@ def run_zsasa_cli(
             f"--threads={threads}",
             f"--n-points={n_points}",
             f"--stride={stride}",
-            "-o",
-            out_path,
-            "-q",
         ]
         if use_bitmask:
-            cmd.insert(-2, "--use-bitmask")
+            cmd.append("--use-bitmask")
+        cmd.extend(["-o", out_path, "-q"])
         console.print(f"  [dim]$ {' '.join(cmd)}[/]")
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
         if proc.returncode != 0:
