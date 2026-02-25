@@ -5,6 +5,8 @@
 
 const std = @import("std");
 const shrake_rupley = @import("shrake_rupley.zig");
+const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
+const bitmask_lut = @import("bitmask_lut.zig");
 const lee_richards = @import("lee_richards.zig");
 const types = @import("types.zig");
 const classifier = @import("classifier.zig");
@@ -30,6 +32,8 @@ pub const ZSASA_ERROR_OUT_OF_MEMORY: c_int = -2;
 pub const ZSASA_ERROR_CALCULATION: c_int = -3;
 /// Directory/file I/O error (directory open failure)
 pub const ZSASA_ERROR_FILE_IO: c_int = -4;
+/// Unsupported n_points value for bitmask algorithm (must be 64, 128, or 256)
+pub const ZSASA_ERROR_UNSUPPORTED_N_POINTS: c_int = -5;
 
 // =============================================================================
 // Algorithm Constants
@@ -139,6 +143,77 @@ export fn zsasa_calc_sr(
     }
 
     // Copy results to output buffers
+    @memcpy(atom_areas[0..n_atoms], result.atom_areas);
+    total_area.* = result.total_area;
+
+    return ZSASA_OK;
+}
+
+/// Calculate SASA using Shrake-Rupley bitmask algorithm.
+///
+/// Uses a bitmask lookup-table optimization for faster SASA calculation.
+/// Only supports n_points values of 64, 128, or 256.
+///
+/// Parameters:
+///   x, y, z: Atom coordinates (arrays of n_atoms elements)
+///   radii: Atom radii (array of n_atoms elements)
+///   n_atoms: Number of atoms
+///   n_points: Number of test points per atom (must be 64, 128, or 256)
+///   probe_radius: Water probe radius in Angstroms (e.g., 1.4)
+///   n_threads: Number of threads (0 = auto-detect)
+///   atom_areas: Output buffer for per-atom SASA (must be pre-allocated, n_atoms elements)
+///   total_area: Output pointer for total SASA
+///
+/// Returns:
+///   ZSASA_OK (0) on success, negative error code on failure.
+export fn zsasa_calc_sr_bitmask(
+    x: [*]const f64,
+    y: [*]const f64,
+    z: [*]const f64,
+    radii: [*]const f64,
+    n_atoms: usize,
+    n_points: u32,
+    probe_radius: f64,
+    n_threads: usize,
+    atom_areas: [*]f64,
+    total_area: *f64,
+) callconv(.c) c_int {
+    if (n_atoms == 0 or n_points == 0 or probe_radius <= 0.0) {
+        return ZSASA_ERROR_INVALID_INPUT;
+    }
+
+    if (!bitmask_lut.isSupportedNPoints(n_points)) {
+        return ZSASA_ERROR_UNSUPPORTED_N_POINTS;
+    }
+
+    const r_copy = c_allocator.dupe(f64, radii[0..n_atoms]) catch {
+        return ZSASA_ERROR_OUT_OF_MEMORY;
+    };
+    defer c_allocator.free(r_copy);
+
+    const input = AtomInput{
+        .x = x[0..n_atoms],
+        .y = y[0..n_atoms],
+        .z = z[0..n_atoms],
+        .r = r_copy,
+        .allocator = c_allocator,
+    };
+
+    const config = Config{
+        .n_points = n_points,
+        .probe_radius = probe_radius,
+    };
+
+    const result = if (n_threads == 1)
+        shrake_rupley_bitmask.calculateSasa(c_allocator, input, config) catch {
+            return ZSASA_ERROR_CALCULATION;
+        }
+    else
+        shrake_rupley_bitmask.calculateSasaParallel(c_allocator, input, config, n_threads) catch {
+            return ZSASA_ERROR_CALCULATION;
+        };
+    defer c_allocator.free(result.atom_areas);
+
     @memcpy(atom_areas[0..n_atoms], result.atom_areas);
     total_area.* = result.total_area;
 
@@ -637,6 +712,396 @@ export fn zsasa_calc_lr_batch_f32(
         n_threads,
         atom_areas,
         .lee_richards,
+    );
+}
+
+// =============================================================================
+// Batch Processing Infrastructure (Bitmask LUT)
+// =============================================================================
+
+/// Worker arguments for bitmask batch processing (f64 internal precision)
+const BatchWorkerArgsBitmask = struct {
+    coordinates: [*]const f32,
+    n_atoms: usize,
+    n_frames: usize,
+    radii_f64: []f64,
+    n_points: u32,
+    probe_radius: f64,
+    atom_areas: [*]f32,
+    error_flag: *std.atomic.Value(bool),
+    thread_id: usize,
+    n_threads: usize,
+    lut: *const bitmask_lut.BitmaskLut,
+};
+
+/// Worker function for bitmask batch processing (f64 internal precision)
+fn batchWorkerFnBitmask(args: BatchWorkerArgsBitmask) void {
+    const x = c_allocator.alloc(f64, args.n_atoms) catch {
+        args.error_flag.store(true, .release);
+        return;
+    };
+    defer c_allocator.free(x);
+
+    const y = c_allocator.alloc(f64, args.n_atoms) catch {
+        args.error_flag.store(true, .release);
+        return;
+    };
+    defer c_allocator.free(y);
+
+    const z = c_allocator.alloc(f64, args.n_atoms) catch {
+        args.error_flag.store(true, .release);
+        return;
+    };
+    defer c_allocator.free(z);
+
+    const SRBitmask = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64);
+
+    var frame_idx = args.thread_id;
+    while (frame_idx < args.n_frames) : (frame_idx += args.n_threads) {
+        if (args.error_flag.load(.acquire)) return;
+
+        const frame_offset = frame_idx * args.n_atoms * 3;
+        const output_offset = frame_idx * args.n_atoms;
+
+        for (0..args.n_atoms) |i| {
+            x[i] = @floatCast(args.coordinates[frame_offset + i * 3]);
+            y[i] = @floatCast(args.coordinates[frame_offset + i * 3 + 1]);
+            z[i] = @floatCast(args.coordinates[frame_offset + i * 3 + 2]);
+        }
+
+        const input = AtomInput{
+            .x = x,
+            .y = y,
+            .z = z,
+            .r = args.radii_f64,
+            .allocator = c_allocator,
+        };
+
+        const config = Config{
+            .n_points = args.n_points,
+            .probe_radius = args.probe_radius,
+        };
+
+        const result = SRBitmask.calculateSasaWithLut(c_allocator, input, config, args.lut) catch {
+            args.error_flag.store(true, .release);
+            return;
+        };
+        defer c_allocator.free(result.atom_areas);
+
+        for (0..args.n_atoms) |i| {
+            args.atom_areas[output_offset + i] = @floatCast(result.atom_areas[i]);
+        }
+    }
+}
+
+/// Common bitmask batch calculation logic (f64 internal precision)
+fn calculateBatchBitmask(
+    coordinates: [*]const f32,
+    n_frames: usize,
+    n_atoms: usize,
+    radii: [*]const f32,
+    n_points: u32,
+    probe_radius: f32,
+    n_threads: usize,
+    atom_areas: [*]f32,
+) c_int {
+    if (n_frames == 0 or n_atoms == 0 or n_points == 0 or probe_radius <= 0.0) {
+        return ZSASA_ERROR_INVALID_INPUT;
+    }
+
+    if (!bitmask_lut.isSupportedNPoints(n_points)) {
+        return ZSASA_ERROR_UNSUPPORTED_N_POINTS;
+    }
+
+    const actual_threads = if (n_threads == 0)
+        @as(usize, @intCast(std.Thread.getCpuCount() catch 1))
+    else
+        n_threads;
+
+    // Build LUT once (shared across all threads/frames)
+    var lut = bitmask_lut.BitmaskLut.init(c_allocator, n_points) catch {
+        return ZSASA_ERROR_OUT_OF_MEMORY;
+    };
+    defer lut.deinit();
+
+    // Convert radii from f32 to f64
+    const radii_f64 = c_allocator.alloc(f64, n_atoms) catch {
+        return ZSASA_ERROR_OUT_OF_MEMORY;
+    };
+    defer c_allocator.free(radii_f64);
+
+    for (0..n_atoms) |i| {
+        radii_f64[i] = @floatCast(radii[i]);
+    }
+
+    var error_flag = std.atomic.Value(bool).init(false);
+
+    const thread_count = @min(actual_threads, n_frames);
+    const threads = c_allocator.alloc(std.Thread, thread_count) catch {
+        return ZSASA_ERROR_OUT_OF_MEMORY;
+    };
+    defer c_allocator.free(threads);
+
+    for (0..thread_count) |i| {
+        threads[i] = std.Thread.spawn(.{}, batchWorkerFnBitmask, .{BatchWorkerArgsBitmask{
+            .coordinates = coordinates,
+            .n_atoms = n_atoms,
+            .n_frames = n_frames,
+            .radii_f64 = radii_f64,
+            .n_points = n_points,
+            .probe_radius = @floatCast(probe_radius),
+            .atom_areas = atom_areas,
+            .error_flag = &error_flag,
+            .thread_id = i,
+            .n_threads = thread_count,
+            .lut = &lut,
+        }}) catch {
+            error_flag.store(true, .release);
+            for (threads[0..i]) |thread| {
+                thread.join();
+            }
+            return ZSASA_ERROR_CALCULATION;
+        };
+    }
+
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    if (error_flag.load(.acquire)) {
+        return ZSASA_ERROR_CALCULATION;
+    }
+
+    return ZSASA_OK;
+}
+
+/// Worker arguments for bitmask batch processing (f32 internal precision)
+const BatchWorkerArgsBitmaskF32 = struct {
+    coordinates: [*]const f32,
+    n_atoms: usize,
+    n_frames: usize,
+    radii_f32: []f32,
+    n_points: u32,
+    probe_radius: f32,
+    atom_areas: [*]f32,
+    error_flag: *std.atomic.Value(bool),
+    thread_id: usize,
+    n_threads: usize,
+    lut: *const bitmask_lut.BitmaskLutf32,
+};
+
+/// Worker function for bitmask batch processing (f32 internal precision)
+fn batchWorkerFnBitmaskF32(args: BatchWorkerArgsBitmaskF32) void {
+    const x = c_allocator.alloc(f64, args.n_atoms) catch {
+        args.error_flag.store(true, .release);
+        return;
+    };
+    defer c_allocator.free(x);
+
+    const y = c_allocator.alloc(f64, args.n_atoms) catch {
+        args.error_flag.store(true, .release);
+        return;
+    };
+    defer c_allocator.free(y);
+
+    const z = c_allocator.alloc(f64, args.n_atoms) catch {
+        args.error_flag.store(true, .release);
+        return;
+    };
+    defer c_allocator.free(z);
+
+    const radii_f64 = c_allocator.alloc(f64, args.n_atoms) catch {
+        args.error_flag.store(true, .release);
+        return;
+    };
+    defer c_allocator.free(radii_f64);
+
+    for (0..args.n_atoms) |i| {
+        radii_f64[i] = @floatCast(args.radii_f32[i]);
+    }
+
+    const SRBitmask = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32);
+
+    var frame_idx = args.thread_id;
+    while (frame_idx < args.n_frames) : (frame_idx += args.n_threads) {
+        if (args.error_flag.load(.acquire)) return;
+
+        const frame_offset = frame_idx * args.n_atoms * 3;
+        const output_offset = frame_idx * args.n_atoms;
+
+        for (0..args.n_atoms) |i| {
+            x[i] = @floatCast(args.coordinates[frame_offset + i * 3]);
+            y[i] = @floatCast(args.coordinates[frame_offset + i * 3 + 1]);
+            z[i] = @floatCast(args.coordinates[frame_offset + i * 3 + 2]);
+        }
+
+        const input = AtomInput{
+            .x = x,
+            .y = y,
+            .z = z,
+            .r = radii_f64,
+            .allocator = c_allocator,
+        };
+
+        const config = types.ConfigGen(f32){
+            .n_points = args.n_points,
+            .probe_radius = args.probe_radius,
+        };
+
+        const result = SRBitmask.calculateSasaWithLut(c_allocator, input, config, args.lut) catch {
+            args.error_flag.store(true, .release);
+            return;
+        };
+        defer c_allocator.free(result.atom_areas);
+
+        for (0..args.n_atoms) |i| {
+            args.atom_areas[output_offset + i] = result.atom_areas[i];
+        }
+    }
+}
+
+/// Common bitmask batch calculation logic (f32 internal precision)
+fn calculateBatchBitmaskF32(
+    coordinates: [*]const f32,
+    n_frames: usize,
+    n_atoms: usize,
+    radii: [*]const f32,
+    n_points: u32,
+    probe_radius: f32,
+    n_threads: usize,
+    atom_areas: [*]f32,
+) c_int {
+    if (n_frames == 0 or n_atoms == 0 or n_points == 0 or probe_radius <= 0.0) {
+        return ZSASA_ERROR_INVALID_INPUT;
+    }
+
+    if (!bitmask_lut.isSupportedNPoints(n_points)) {
+        return ZSASA_ERROR_UNSUPPORTED_N_POINTS;
+    }
+
+    const actual_threads = if (n_threads == 0)
+        @as(usize, @intCast(std.Thread.getCpuCount() catch 1))
+    else
+        n_threads;
+
+    // Build LUT once (shared across all threads/frames)
+    var lut = bitmask_lut.BitmaskLutf32.init(c_allocator, n_points) catch {
+        return ZSASA_ERROR_OUT_OF_MEMORY;
+    };
+    defer lut.deinit();
+
+    // Copy radii (kept as f32)
+    const radii_f32 = c_allocator.alloc(f32, n_atoms) catch {
+        return ZSASA_ERROR_OUT_OF_MEMORY;
+    };
+    defer c_allocator.free(radii_f32);
+
+    for (0..n_atoms) |i| {
+        radii_f32[i] = radii[i];
+    }
+
+    var error_flag = std.atomic.Value(bool).init(false);
+
+    const thread_count = @min(actual_threads, n_frames);
+    const threads = c_allocator.alloc(std.Thread, thread_count) catch {
+        return ZSASA_ERROR_OUT_OF_MEMORY;
+    };
+    defer c_allocator.free(threads);
+
+    for (0..thread_count) |i| {
+        threads[i] = std.Thread.spawn(.{}, batchWorkerFnBitmaskF32, .{BatchWorkerArgsBitmaskF32{
+            .coordinates = coordinates,
+            .n_atoms = n_atoms,
+            .n_frames = n_frames,
+            .radii_f32 = radii_f32,
+            .n_points = n_points,
+            .probe_radius = probe_radius,
+            .atom_areas = atom_areas,
+            .error_flag = &error_flag,
+            .thread_id = i,
+            .n_threads = thread_count,
+            .lut = &lut,
+        }}) catch {
+            error_flag.store(true, .release);
+            for (threads[0..i]) |thread| {
+                thread.join();
+            }
+            return ZSASA_ERROR_CALCULATION;
+        };
+    }
+
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    if (error_flag.load(.acquire)) {
+        return ZSASA_ERROR_CALCULATION;
+    }
+
+    return ZSASA_OK;
+}
+
+/// Calculate SASA for multiple frames using bitmask Shrake-Rupley algorithm.
+///
+/// Uses a bitmask lookup-table optimization. The LUT is built once and reused
+/// across all frames for better performance.
+///
+/// Parameters:
+///   coordinates: Atom coordinates as contiguous array (n_frames * n_atoms * 3)
+///   n_frames: Number of frames
+///   n_atoms: Number of atoms per frame
+///   radii: Atom radii (array of n_atoms elements)
+///   n_points: Number of test points per atom (must be 64, 128, or 256)
+///   probe_radius: Water probe radius in Angstroms (e.g., 1.4)
+///   n_threads: Number of threads (0 = auto-detect)
+///   atom_areas: Output buffer for per-atom SASA (n_frames * n_atoms elements)
+///
+/// Returns:
+///   ZSASA_OK (0) on success, negative error code on failure.
+export fn zsasa_calc_sr_batch_bitmask(
+    coordinates: [*]const f32,
+    n_frames: usize,
+    n_atoms: usize,
+    radii: [*]const f32,
+    n_points: u32,
+    probe_radius: f32,
+    n_threads: usize,
+    atom_areas: [*]f32,
+) callconv(.c) c_int {
+    return calculateBatchBitmask(
+        coordinates,
+        n_frames,
+        n_atoms,
+        radii,
+        n_points,
+        probe_radius,
+        n_threads,
+        atom_areas,
+    );
+}
+
+/// Calculate SASA for multiple frames using bitmask Shrake-Rupley algorithm (f32 precision).
+///
+/// Same as zsasa_calc_sr_batch_bitmask but uses f32 precision throughout.
+export fn zsasa_calc_sr_batch_bitmask_f32(
+    coordinates: [*]const f32,
+    n_frames: usize,
+    n_atoms: usize,
+    radii: [*]const f32,
+    n_points: u32,
+    probe_radius: f32,
+    n_threads: usize,
+    atom_areas: [*]f32,
+) callconv(.c) c_int {
+    return calculateBatchBitmaskF32(
+        coordinates,
+        n_frames,
+        n_atoms,
+        radii,
+        n_points,
+        probe_radius,
+        n_threads,
+        atom_areas,
     );
 }
 

@@ -540,3 +540,112 @@ class TestCalculateRsaBatch:
 
         with pytest.raises(ValueError, match="same length"):
             calculate_rsa_batch(np.array([64.5]), ["ALA", "GLY"])
+
+
+class TestBitmask:
+    """Tests for bitmask LUT optimization."""
+
+    def test_bitmask_basic(self):
+        """Bitmask result should be close to standard SR for same n_points."""
+        coords = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+        radii = np.array([1.5, 1.5])
+
+        standard = calculate_sasa(coords, radii, n_points=128)
+        bitmask = calculate_sasa(coords, radii, n_points=128, use_bitmask=True)
+
+        # Total area should match closely
+        assert bitmask.total_area == pytest.approx(standard.total_area, rel=0.02)
+        # Per-atom areas may differ slightly due to different point distribution
+        np.testing.assert_allclose(bitmask.atom_areas, standard.atom_areas, rtol=0.02)
+
+    def test_bitmask_single_atom(self):
+        """Bitmask should work for a single atom."""
+        coords = np.array([[0.0, 0.0, 0.0]])
+        radii = np.array([1.5])
+
+        result = calculate_sasa(coords, radii, n_points=128, use_bitmask=True)
+
+        expected = 4 * np.pi * (1.5 + 1.4) ** 2
+        assert abs(result.total_area - expected) < 2.0
+
+    def test_bitmask_all_supported_n_points(self):
+        """Bitmask should work for all supported n_points values."""
+        coords = np.array([[0.0, 0.0, 0.0]])
+        radii = np.array([1.5])
+
+        for n_points in (64, 128, 256):
+            result = calculate_sasa(coords, radii, n_points=n_points, use_bitmask=True)
+            assert result.total_area > 0
+
+    def test_bitmask_invalid_algorithm(self):
+        """use_bitmask=True with algorithm='lr' should raise ValueError."""
+        coords = np.array([[0.0, 0.0, 0.0]])
+        radii = np.array([1.5])
+
+        with pytest.raises(ValueError, match="only supports algorithm='sr'"):
+            calculate_sasa(coords, radii, algorithm="lr", use_bitmask=True)
+
+    def test_bitmask_invalid_n_points(self):
+        """use_bitmask=True with unsupported n_points should raise ValueError."""
+        coords = np.array([[0.0, 0.0, 0.0]])
+        radii = np.array([1.5])
+
+        with pytest.raises(ValueError, match="n_points"):
+            calculate_sasa(coords, radii, n_points=100, use_bitmask=True)
+
+    def test_bitmask_batch(self):
+        """Bitmask batch mode should produce correct results."""
+        from zsasa import calculate_sasa_batch
+
+        n_frames = 3
+        coords = np.array(
+            [
+                [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+                [[0.0, 0.0, 0.0], [3.5, 0.0, 0.0]],
+                [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
+            ],
+            dtype=np.float32,
+        )
+        radii = np.array([1.5, 1.5], dtype=np.float32)
+
+        standard = calculate_sasa_batch(coords, radii, n_points=128)
+        bitmask = calculate_sasa_batch(coords, radii, n_points=128, use_bitmask=True)
+
+        assert bitmask.atom_areas.shape == (n_frames, 2)
+        np.testing.assert_allclose(bitmask.atom_areas, standard.atom_areas, rtol=0.02)
+
+    def test_bitmask_batch_invalid_algorithm(self):
+        """Batch bitmask with algorithm='lr' should raise ValueError."""
+        from zsasa import calculate_sasa_batch
+
+        coords = np.array([[[0.0, 0.0, 0.0]]], dtype=np.float32)
+        radii = np.array([1.5], dtype=np.float32)
+
+        with pytest.raises(ValueError, match="only supports algorithm='sr'"):
+            calculate_sasa_batch(coords, radii, algorithm="lr", use_bitmask=True)
+
+    def test_bitmask_batch_invalid_n_points(self):
+        """Batch bitmask with unsupported n_points should raise ValueError."""
+        from zsasa import calculate_sasa_batch
+
+        coords = np.array([[[0.0, 0.0, 0.0]]], dtype=np.float32)
+        radii = np.array([1.5], dtype=np.float32)
+
+        with pytest.raises(ValueError, match="n_points"):
+            calculate_sasa_batch(coords, radii, n_points=100, use_bitmask=True)
+
+    def test_bitmask_batch_f32_precision(self):
+        """Bitmask batch with f32 precision should work."""
+        from zsasa import calculate_sasa_batch
+
+        coords = np.array(
+            [[[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]]],
+            dtype=np.float32,
+        )
+        radii = np.array([1.5, 1.5], dtype=np.float32)
+
+        result = calculate_sasa_batch(
+            coords, radii, n_points=128, use_bitmask=True, precision="f32"
+        )
+        assert result.atom_areas.shape == (1, 2)
+        assert result.atom_areas.sum() > 0

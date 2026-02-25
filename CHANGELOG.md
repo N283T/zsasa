@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SIMD 4-neighbor batching** for bitmask SR: processes 4 neighbors simultaneously with `@Vector(4, T)`, branchless octahedral encoding via `@select`, and combined mask accumulation (#198)
 - **Batch-mode `--use-bitmask` support**: shared LUT across all files in batch processing, avoiding redundant ~20ms LUT construction per file (#198)
 - **Trajectory-mode `--use-bitmask` support**: build LUT once, reuse across all frames in both sequential and batch-parallel paths
+- **Python bindings `use_bitmask` parameter**: added `use_bitmask=True` option to `calculate_sasa()` and `calculate_sasa_batch()`, with pass-through to MDTraj, MDAnalysis, XTC, and DCD integrations
+- **C API bitmask exports**: `zsasa_calc_sr_bitmask`, `zsasa_calc_sr_batch_bitmask`, `zsasa_calc_sr_batch_bitmask_f32` for FFI access to bitmask LUT optimization
 
 ### Changed
 
