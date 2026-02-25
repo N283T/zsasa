@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Trajectory mode**: `--include-hydrogens` is now the default (hydrogen atoms included). Use `--no-hydrogens` to exclude. MD trajectories typically include all atoms.
 - CI: removed Windows from PR checks (linux + macOS only); Windows builds remain in release workflow (#199)
 
 ### Performance
