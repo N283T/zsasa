@@ -1629,6 +1629,139 @@ test "zsasa_calc_lr single atom" {
     try std.testing.expectEqual(total_area, atom_areas[0]);
 }
 
+test "zsasa_calc_sr_bitmask single atom" {
+    const x = [_]f64{0.0};
+    const y = [_]f64{0.0};
+    const z = [_]f64{0.0};
+    const radii = [_]f64{1.5};
+    var atom_areas = [_]f64{0.0};
+    var total_area: f64 = 0.0;
+
+    const result = zsasa_calc_sr_bitmask(
+        &x,
+        &y,
+        &z,
+        &radii,
+        1,
+        128,
+        1.4,
+        1,
+        &atom_areas,
+        &total_area,
+    );
+
+    try std.testing.expectEqual(ZSASA_OK, result);
+    // Expected: 4π * (1.5 + 1.4)² ≈ 105.68 Å²
+    try std.testing.expect(total_area > 100.0 and total_area < 110.0);
+    try std.testing.expectEqual(total_area, atom_areas[0]);
+}
+
+test "zsasa_calc_sr_bitmask with empty input returns error" {
+    var total_area: f64 = 0.0;
+    const result = zsasa_calc_sr_bitmask(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        0, // n_atoms = 0
+        128,
+        1.4,
+        1,
+        undefined,
+        &total_area,
+    );
+    try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, result);
+}
+
+test "zsasa_calc_sr_bitmask with unsupported n_points returns error" {
+    const x = [_]f64{0.0};
+    const y = [_]f64{0.0};
+    const z = [_]f64{0.0};
+    const radii = [_]f64{1.5};
+    var atom_areas = [_]f64{0.0};
+    var total_area: f64 = 0.0;
+
+    const result = zsasa_calc_sr_bitmask(
+        &x,
+        &y,
+        &z,
+        &radii,
+        1,
+        100, // Not supported (must be 64, 128, or 256)
+        1.4,
+        1,
+        &atom_areas,
+        &total_area,
+    );
+    try std.testing.expectEqual(ZSASA_ERROR_UNSUPPORTED_N_POINTS, result);
+}
+
+test "zsasa_calc_sr_batch_bitmask basic" {
+    // 2 frames, 1 atom each
+    const coordinates = [_]f32{
+        // Frame 0: atom at origin
+        0.0, 0.0, 0.0,
+        // Frame 1: atom at origin
+        0.0, 0.0, 0.0,
+    };
+    const radii = [_]f32{1.5};
+    var atom_areas: [2]f32 = .{ 0.0, 0.0 };
+
+    const result = zsasa_calc_sr_batch_bitmask(
+        &coordinates,
+        2, // n_frames
+        1, // n_atoms
+        &radii,
+        128,
+        1.4,
+        1,
+        &atom_areas,
+    );
+
+    try std.testing.expectEqual(ZSASA_OK, result);
+    // Both frames should have the same area (single isolated atom)
+    try std.testing.expect(atom_areas[0] > 100.0 and atom_areas[0] < 110.0);
+    try std.testing.expectApproxEqAbs(atom_areas[0], atom_areas[1], 0.01);
+}
+
+test "zsasa_calc_sr_batch_bitmask with unsupported n_points returns error" {
+    const coordinates = [_]f32{ 0.0, 0.0, 0.0 };
+    const radii = [_]f32{1.5};
+    var atom_areas = [_]f32{0.0};
+
+    const result = zsasa_calc_sr_batch_bitmask(
+        &coordinates,
+        1,
+        1,
+        &radii,
+        100, // Not supported
+        1.4,
+        1,
+        &atom_areas,
+    );
+    try std.testing.expectEqual(ZSASA_ERROR_UNSUPPORTED_N_POINTS, result);
+}
+
+test "zsasa_calc_sr_batch_bitmask_f32 basic" {
+    const coordinates = [_]f32{ 0.0, 0.0, 0.0 };
+    const radii = [_]f32{1.5};
+    var atom_areas = [_]f32{0.0};
+
+    const result = zsasa_calc_sr_batch_bitmask_f32(
+        &coordinates,
+        1,
+        1,
+        &radii,
+        128,
+        1.4,
+        1,
+        &atom_areas,
+    );
+
+    try std.testing.expectEqual(ZSASA_OK, result);
+    try std.testing.expect(atom_areas[0] > 100.0 and atom_areas[0] < 110.0);
+}
+
 // =============================================================================
 // Classifier Tests
 // =============================================================================
