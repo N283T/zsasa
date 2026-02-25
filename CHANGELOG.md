@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Bitmask-optimized Shrake-Rupley algorithm** (`--use-bitmask`): precomputed occlusion bitmask LUT with O(1) octahedral encoding for direction lookup, replacing per-point neighbor testing (#197)
 - **SIMD 4-neighbor batching** for bitmask SR: processes 4 neighbors simultaneously with `@Vector(4, T)`, branchless octahedral encoding via `@select`, and combined mask accumulation (#198)
 - **Batch-mode `--use-bitmask` support**: shared LUT across all files in batch processing, avoiding redundant ~20ms LUT construction per file (#198)
+- **Trajectory-mode `--use-bitmask` support**: build LUT once, reuse across all frames in both sequential and batch-parallel paths
 
 ### Changed
 
