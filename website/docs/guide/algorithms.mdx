@@ -97,6 +97,47 @@ result = calculate_sasa(coords, radii, n_points=200)
 | 50 | High | 2.5x |
 | 100 | Very high | 5.0x |
 
+## Bitmask LUT Optimization
+
+The Shrake-Rupley algorithm supports an optional **bitmask lookup table (LUT)** optimization that can improve performance for repeated calculations.
+
+### How It Works
+
+Instead of computing neighbor occlusion for each test point individually, the bitmask approach precomputes occlusion patterns as bitmasks. This allows batch neighbor processing using bitwise operations.
+
+### Constraints
+
+- **SR algorithm only** — not available for Lee-Richards
+- **Supported n_points**: 64, 128, or 256 only
+- Results may differ slightly from standard SR (< 2% relative difference per atom)
+
+### Usage
+
+<Tabs>
+  <TabItem value="cli" label="CLI" default>
+
+```bash
+# Bitmask with 128 test points
+zsasa --use-bitmask --n-points=128 structure.cif output.json
+```
+
+  </TabItem>
+  <TabItem value="python" label="Python">
+
+```python
+from zsasa import calculate_sasa
+
+# Single frame
+result = calculate_sasa(coords, radii, n_points=128, use_bitmask=True)
+
+# Batch (trajectory)
+from zsasa import calculate_sasa_batch
+result = calculate_sasa_batch(coords, radii, n_points=128, use_bitmask=True)
+```
+
+  </TabItem>
+</Tabs>
+
 ## References
 
 - Shrake, A.; Rupley, J. A. Environment and Exposure to Solvent of Protein Atoms. *J. Mol. Biol.* 1973, 79(2), 351-371.

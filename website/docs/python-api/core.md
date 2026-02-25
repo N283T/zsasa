@@ -14,6 +14,7 @@ def calculate_sasa(
     n_slices: int = 20,
     probe_radius: float = 1.4,
     n_threads: int = 0,
+    use_bitmask: bool = False,
 ) -> SasaResult
 ```
 
@@ -30,6 +31,7 @@ Calculate Solvent Accessible Surface Area.
 | `n_slices` | `int` | `20` | Slices per atom (LR only) |
 | `probe_radius` | `float` | `1.4` | Water probe radius in Å |
 | `n_threads` | `int` | `0` | Number of threads (0 = auto) |
+| `use_bitmask` | `bool` | `False` | Use bitmask LUT optimization (SR only, n_points must be 64, 128, or 256) |
 
 **Returns:** `SasaResult`
 
@@ -63,6 +65,7 @@ def calculate_sasa_batch(
     probe_radius: float = 1.4,
     n_threads: int = 0,
     precision: Literal["f64", "f32"] = "f64",
+    use_bitmask: bool = False,
 ) -> BatchSasaResult
 ```
 
@@ -80,6 +83,7 @@ Calculate SASA for multiple frames in batch.
 | `probe_radius` | `float` | `1.4` | Water probe radius in Å |
 | `n_threads` | `int` | `0` | Number of threads (0 = auto) |
 | `precision` | `"f64"` or `"f32"` | `"f64"` | Floating-point precision |
+| `use_bitmask` | `bool` | `False` | Use bitmask LUT optimization (SR only, n_points must be 64, 128, or 256) |
 
 **Returns:** `BatchSasaResult`
 

@@ -66,6 +66,7 @@ def run(
     algorithm: Literal["sr", "lr"] = "sr",
     n_slices: int = 20,
     n_threads: int = 0,
+    use_bitmask: bool = False,
 ) -> SASAAnalysis
 ```
 
@@ -81,6 +82,7 @@ def run(
 | `algorithm` | `"sr"` or `"lr"` | `"sr"` | Algorithm to use |
 | `n_slices` | `int` | `20` | Slices per atom (LR) |
 | `n_threads` | `int` | `0` | Threads (0 = auto) |
+| `use_bitmask` | `bool` | `False` | Use bitmask LUT optimization (SR only, n_points must be 64, 128, or 256) |
 
 **Returns:** `self` for method chaining.
 
@@ -135,6 +137,7 @@ def compute_sasa(
     n_slices: int = 20,
     n_threads: int = 0,
     mode: Literal["atom", "residue", "total"] = "atom",
+    use_bitmask: bool = False,
 ) -> NDArray[np.float32]
 ```
 
