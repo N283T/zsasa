@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Per-file results: filename, atom count, total SASA, status
   - Error mapping: `ValueError`, `FileNotFoundError`, `MemoryError`, `RuntimeError`
 
+### Fixed
+
+- **json_writer performance regression**: Reverted from unbuffered streaming writes to in-memory string building + single writeAll, fixing ~8x slowdown in batch processing caused by millions of write syscalls (#157 regression)
+
+### Removed
+
+- **Streaming output** (`--stream`, `--stream-format`, `--stream-output`): Removed StreamWriter module and CLI options to reduce code complexity
+
 ## [0.1.2] - 2026-02-22
 
 ### Added

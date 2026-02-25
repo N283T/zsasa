@@ -100,9 +100,6 @@ When `--classifier` is used, atom radii are assigned based on residue and atom n
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--parallelism=MODE` | Parallelism strategy: `file`, `atom`, `pipeline` | `file` |
-| `--stream` | Enable streaming output for batch results | off |
-| `--stream-format=FMT` | Stream format: `ndjson`, `json` | `ndjson` |
-| `--stream-output=FILE` | Stream output file (default: stdout) | stdout |
 
 ---
 
@@ -315,41 +312,6 @@ Process all structure files in a directory:
 | `file` | N files in parallel, 1 thread per file | Many small files |
 | `atom` | 1 file at a time, N threads for SASA | Few large files |
 | `pipeline` | I/O prefetch + atom-level SASA | Balanced workloads |
-
-### Streaming Output
-
-Stream batch results as each file is processed, reducing memory usage for large directories:
-
-```bash
-# NDJSON to stdout (one JSON object per line)
-./zig-out/bin/zsasa input_dir/ --stream
-
-# JSON array format
-./zig-out/bin/zsasa input_dir/ --stream --stream-format json
-
-# Stream to file
-./zig-out/bin/zsasa input_dir/ --stream --stream-output results.jsonl
-
-# Combine with individual file output
-./zig-out/bin/zsasa input_dir/ output_dir/ --stream
-
-# Pipe to jq for filtering
-./zig-out/bin/zsasa input_dir/ --stream -q | jq 'select(.total_sasa > 10000)'
-```
-
-**NDJSON output** (default):
-```
-{"file":"1abc.pdb","n_atoms":1000,"total_sasa":12345.678900,"status":"ok","time_ms":12.300}
-{"file":"2def.pdb","n_atoms":2000,"total_sasa":23456.789000,"status":"ok","time_ms":25.100}
-```
-
-**JSON array output** (`--stream-format json`):
-```json
-[
-  {"file":"1abc.pdb","n_atoms":1000,"total_sasa":12345.678900,"status":"ok","time_ms":12.300},
-  {"file":"2def.pdb","n_atoms":2000,"total_sasa":23456.789000,"status":"ok","time_ms":25.100}
-]
-```
 
 ---
 

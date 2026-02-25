@@ -1,8 +1,8 @@
 // sasa_batch.cpp
-// Batch process CIF/PDB files with FreeSASA C API
+// Batch process PDB files with FreeSASA C API
 //
-// Usage: sasa_batch <input_folder> <output_folder>
-// Compile: g++ -std=c++17 -O2 -o sasa_batch sasa_batch.cpp -lfreesasa -ljson-c -lxml2
+// Usage: sasa_batch <input_folder> <output_folder> [n_points]
+// Compile: c++ -O3 -std=c++17 -I../freesasa-bench/src -o sasa_batch sasa_batch.cpp ../freesasa-bench/src/libfreesasa.a
 
 #include <filesystem>
 #include <iostream>
@@ -66,7 +66,19 @@ int main(int argc, char* argv[]) {
     }
 
     fs::path input_dir(argv[1]), output_dir(argv[2]);
-    int n_points = (argc >= 4) ? std::stoi(argv[3]) : 100;
+    int n_points = 100;
+    if (argc >= 4) {
+        try {
+            n_points = std::stoi(argv[3]);
+            if (n_points <= 0) {
+                std::cerr << "Error: n_points must be positive, got: " << argv[3] << "\n";
+                return 1;
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error: Invalid n_points value: " << argv[3] << "\n";
+            return 1;
+        }
+    }
 
     if (!fs::exists(input_dir) || !fs::is_directory(input_dir)) {
         std::cerr << "Error: Invalid input folder: " << input_dir << "\n";
@@ -85,7 +97,7 @@ int main(int argc, char* argv[]) {
 
     int success = 0, failed = 0;
     for (const auto& file : files) {
-        fs::path out = output_dir / (file.stem().string() + ".json");
+        fs::path out = output_dir / (file.stem().string() + ".txt");
         if (process_file(file, out, n_points)) ++success; else ++failed;
     }
 
