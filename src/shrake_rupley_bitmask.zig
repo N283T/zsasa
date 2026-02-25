@@ -620,6 +620,37 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             return total;
         }
 
+        /// Configuration for adaptive 2-pass SR.
+        pub const AdaptiveConfig = struct {
+            /// Probe radius.
+            probe_radius: T,
+            /// Coarse pass n_points.
+            coarse_points: u32,
+            /// Fine pass n_points.
+            fine_points: u32,
+            /// Atoms with exposure fraction < adaptive_low are accepted from coarse pass.
+            adaptive_low: T = 0.02,
+            /// Atoms with exposure fraction > adaptive_high are accepted from coarse pass.
+            adaptive_high: T = 0.98,
+        };
+
+        /// Statistics from adaptive SR calculation.
+        pub const AdaptiveStats = struct {
+            n_buried: usize,
+            n_exposed: usize,
+            n_boundary: usize,
+        };
+
+        /// Result from adaptive SR calculation (wraps standard Result).
+        pub const AdaptiveResult = struct {
+            result: Result,
+            stats: AdaptiveStats,
+
+            pub fn deinit(self: *AdaptiveResult) void {
+                self.result.deinit();
+            }
+        };
+
         /// Calculate SASA (single-threaded, generic precision).
         pub fn calculateSasa(
             allocator: Allocator,
