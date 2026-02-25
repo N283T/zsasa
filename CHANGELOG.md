@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-02-25
+
+### Changed
+
+- Relaxed bitmask `n_points` constraint from fixed 64/128/256 to any value 1..1024, with internal storage expanded from `[4]u64` to `[16]u64` (#210)
+- Updated Python bindings, C API, CLI help text, and documentation to reflect new n_points range (#210)
+
+### Added
+
+- `--use-bitmask` and `--n-points` flags to benchmark scripts for bitmask LUT benchmarking (#208)
+
 ## [0.2.0] - 2026-02-25
 
 ### Added
@@ -342,7 +353,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `calc_reference_sasa.py` - Generate reference SASA
   - `benchmark.py` - Performance benchmarking
 
-[Unreleased]: https://github.com/N283T/zsasa/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/N283T/zsasa/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/N283T/zsasa/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/N283T/zsasa/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/N283T/zsasa/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/N283T/zsasa/compare/v0.1.1...v0.1.2
