@@ -410,7 +410,10 @@ def calculate_sasa(
         msg = "Error during SASA calculation"
         raise RuntimeError(msg)
     elif result == ZSASA_ERROR_UNSUPPORTED_N_POINTS:
-        msg = f"Unsupported n_points for bitmask: {n_points}. Must be one of {_BITMASK_SUPPORTED_N_POINTS}"
+        msg = (
+            f"Unsupported n_points for bitmask: {n_points}. "
+            f"Must be one of {_BITMASK_SUPPORTED_N_POINTS}"
+        )
         raise ValueError(msg)
     elif result != ZSASA_OK:
         msg = f"Unknown error code: {result}"
@@ -1047,7 +1050,10 @@ def calculate_sasa_batch(
         msg = "Error during batch SASA calculation"
         raise RuntimeError(msg)
     elif result == ZSASA_ERROR_UNSUPPORTED_N_POINTS:
-        msg = f"Unsupported n_points for bitmask: {n_points}. Must be one of {_BITMASK_SUPPORTED_N_POINTS}"
+        msg = (
+            f"Unsupported n_points for bitmask: {n_points}. "
+            f"Must be one of {_BITMASK_SUPPORTED_N_POINTS}"
+        )
         raise ValueError(msg)
     elif result != ZSASA_OK:
         msg = f"Unknown error code: {result}"
