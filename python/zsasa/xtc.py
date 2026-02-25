@@ -268,6 +268,7 @@ def compute_sasa_trajectory(
     start: int = 0,
     stop: int | None = None,
     step: int = 1,
+    use_bitmask: bool = False,
 ) -> TrajectorySasaResult:
     """Compute SASA for an XTC trajectory using native Zig reader.
 
@@ -297,6 +298,9 @@ def compute_sasa_trajectory(
         Stop before this frame (exclusive). Default: None (all frames).
     step : int, optional
         Process every Nth frame. Default: 1.
+    use_bitmask : bool, optional
+        Use bitmask LUT optimization for SR algorithm.
+        Only supports n_points of 64, 128, or 256. Default: False.
 
     Returns
     -------
@@ -367,6 +371,7 @@ def compute_sasa_trajectory(
         n_slices=n_slices,
         probe_radius=probe_radius,
         n_threads=n_threads,
+        use_bitmask=use_bitmask,
     )
 
     return TrajectorySasaResult(

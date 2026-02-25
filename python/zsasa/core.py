@@ -20,6 +20,21 @@ ZSASA_ERROR_INVALID_INPUT = -1
 ZSASA_ERROR_OUT_OF_MEMORY = -2
 ZSASA_ERROR_CALCULATION = -3
 ZSASA_ERROR_FILE_IO = -4
+ZSASA_ERROR_UNSUPPORTED_N_POINTS = -5
+
+# Valid n_points values for bitmask algorithm
+_BITMASK_SUPPORTED_N_POINTS = (64, 128, 256)
+
+
+def _validate_bitmask_params(algorithm: str, n_points: int) -> None:
+    """Validate parameters for bitmask mode."""
+    if algorithm != "sr":
+        msg = "use_bitmask=True only supports algorithm='sr' (Shrake-Rupley)"
+        raise ValueError(msg)
+    if n_points not in _BITMASK_SUPPORTED_N_POINTS:
+        msg = f"use_bitmask=True requires n_points in {_BITMASK_SUPPORTED_N_POINTS}, got {n_points}"
+        raise ValueError(msg)
+
 
 # Algorithm constants
 ZSASA_ALGORITHM_SR = 0
@@ -76,6 +91,27 @@ _CDEF = """
     int zsasa_calc_lr_batch_f32(
         const float* coordinates, size_t n_frames, size_t n_atoms,
         const float* radii, uint32_t n_slices, float probe_radius,
+        size_t n_threads, float* atom_areas
+    );
+
+    // Bitmask Shrake-Rupley (single frame, f64 internal)
+    int zsasa_calc_sr_bitmask(
+        const double* x, const double* y, const double* z, const double* radii,
+        size_t n_atoms, uint32_t n_points, double probe_radius, size_t n_threads,
+        double* atom_areas, double* total_area
+    );
+
+    // Bitmask batch SASA calculation (f64 internal precision)
+    int zsasa_calc_sr_batch_bitmask(
+        const float* coordinates, size_t n_frames, size_t n_atoms,
+        const float* radii, uint32_t n_points, float probe_radius,
+        size_t n_threads, float* atom_areas
+    );
+
+    // Bitmask batch SASA calculation (f32 internal precision)
+    int zsasa_calc_sr_batch_bitmask_f32(
+        const float* coordinates, size_t n_frames, size_t n_atoms,
+        const float* radii, uint32_t n_points, float probe_radius,
         size_t n_threads, float* atom_areas
     );
 
@@ -235,6 +271,7 @@ def calculate_sasa(
     n_slices: int = 20,
     probe_radius: float = 1.4,
     n_threads: int = 0,
+    use_bitmask: bool = False,
 ) -> SasaResult:
     """Calculate Solvent Accessible Surface Area (SASA).
 
@@ -246,6 +283,8 @@ def calculate_sasa(
         n_slices: Number of slices per atom (for LR algorithm). Default: 20.
         probe_radius: Water probe radius in Angstroms. Default: 1.4.
         n_threads: Number of threads to use. 0 = auto-detect. Default: 0.
+        use_bitmask: Use bitmask LUT optimization for SR algorithm.
+            Only supports n_points of 64, 128, or 256. Default: False.
 
     Returns:
         SasaResult containing total_area and per-atom atom_areas.
@@ -278,6 +317,10 @@ def calculate_sasa(
     if n_threads < 0:
         msg = f"n_threads must be non-negative, got {n_threads}"
         raise ValueError(msg)
+
+    # Validate bitmask constraints
+    if use_bitmask:
+        _validate_bitmask_params(algorithm, n_points)
 
     # Validate and convert inputs
     coords = np.ascontiguousarray(coords, dtype=np.float64)
@@ -313,7 +356,20 @@ def calculate_sasa(
     areas_ptr = ffi.cast("double*", atom_areas.ctypes.data)
 
     # Call the appropriate function
-    if algorithm == "sr":
+    if use_bitmask:
+        result = lib.zsasa_calc_sr_bitmask(
+            x_ptr,
+            y_ptr,
+            z_ptr,
+            radii_ptr,
+            n_atoms,
+            n_points,
+            probe_radius,
+            n_threads,
+            areas_ptr,
+            total_area,
+        )
+    elif algorithm == "sr":
         result = lib.zsasa_calc_sr(
             x_ptr,
             y_ptr,
@@ -353,6 +409,12 @@ def calculate_sasa(
     elif result == ZSASA_ERROR_CALCULATION:
         msg = "Error during SASA calculation"
         raise RuntimeError(msg)
+    elif result == ZSASA_ERROR_UNSUPPORTED_N_POINTS:
+        msg = (
+            f"Unsupported n_points for bitmask: {n_points}. "
+            f"Must be one of {_BITMASK_SUPPORTED_N_POINTS}"
+        )
+        raise ValueError(msg)
     elif result != ZSASA_OK:
         msg = f"Unknown error code: {result}"
         raise RuntimeError(msg)
@@ -811,6 +873,7 @@ def calculate_sasa_batch(
     probe_radius: float = 1.4,
     n_threads: int = 0,
     precision: Literal["f64", "f32"] = "f64",
+    use_bitmask: bool = False,
 ) -> BatchSasaResult:
     """Calculate SASA for multiple frames (batch processing).
 
@@ -827,6 +890,8 @@ def calculate_sasa_batch(
         n_threads: Number of threads to use. 0 = auto-detect. Default: 0.
         precision: Internal calculation precision: "f64" (default, higher precision)
             or "f32" (matches RustSASA/mdsasa-bolt for comparison). Default: "f64".
+        use_bitmask: Use bitmask LUT optimization for SR algorithm.
+            Only supports n_points of 64, 128, or 256. Default: False.
 
     Returns:
         BatchSasaResult containing per-atom SASA for all frames.
@@ -861,6 +926,10 @@ def calculate_sasa_batch(
         msg = f"n_threads must be non-negative, got {n_threads}"
         raise ValueError(msg)
 
+    # Validate bitmask constraints
+    if use_bitmask:
+        _validate_bitmask_params(algorithm, n_points)
+
     # Validate and convert inputs
     coordinates = np.ascontiguousarray(coordinates, dtype=np.float32)
     radii = np.ascontiguousarray(radii, dtype=np.float32)
@@ -888,8 +957,31 @@ def calculate_sasa_batch(
     radii_ptr = ffi.cast("float*", radii.ctypes.data)
     areas_ptr = ffi.cast("float*", atom_areas.ctypes.data)
 
-    # Call the appropriate batch function based on algorithm and precision
-    if precision == "f64":
+    # Call the appropriate batch function based on algorithm, precision, and bitmask
+    if use_bitmask:
+        if precision == "f32":
+            result = lib.zsasa_calc_sr_batch_bitmask_f32(
+                coords_ptr,
+                n_frames,
+                n_atoms,
+                radii_ptr,
+                n_points,
+                probe_radius,
+                n_threads,
+                areas_ptr,
+            )
+        else:
+            result = lib.zsasa_calc_sr_batch_bitmask(
+                coords_ptr,
+                n_frames,
+                n_atoms,
+                radii_ptr,
+                n_points,
+                probe_radius,
+                n_threads,
+                areas_ptr,
+            )
+    elif precision == "f64":
         # Default: f32 I/O with f64 internal precision
         if algorithm == "sr":
             result = lib.zsasa_calc_sr_batch(
@@ -957,6 +1049,12 @@ def calculate_sasa_batch(
     elif result == ZSASA_ERROR_CALCULATION:
         msg = "Error during batch SASA calculation"
         raise RuntimeError(msg)
+    elif result == ZSASA_ERROR_UNSUPPORTED_N_POINTS:
+        msg = (
+            f"Unsupported n_points for bitmask: {n_points}. "
+            f"Must be one of {_BITMASK_SUPPORTED_N_POINTS}"
+        )
+        raise ValueError(msg)
     elif result != ZSASA_OK:
         msg = f"Unknown error code: {result}"
         raise RuntimeError(msg)

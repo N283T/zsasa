@@ -189,6 +189,7 @@ class SASAAnalysis:
         algorithm: Literal["sr", "lr"] = "sr",
         n_slices: int = 20,
         n_threads: int = 0,
+        use_bitmask: bool = False,
     ) -> SASAAnalysis:
         """Run the SASA analysis.
 
@@ -211,6 +212,9 @@ class SASAAnalysis:
             Number of slices per atom for LR algorithm (default: 20).
         n_threads : int, optional
             Number of threads (0 = auto-detect). Default: 0.
+        use_bitmask : bool, optional
+            Use bitmask LUT optimization for SR algorithm.
+            Only supports n_points of 64, 128, or 256. Default: False.
 
         Returns
         -------
@@ -252,6 +256,7 @@ class SASAAnalysis:
                 n_points=n_points,
                 probe_radius=probe_radius,
                 n_threads=n_threads,
+                use_bitmask=use_bitmask,
             )
         elif algorithm == "lr":
             result = calculate_sasa_batch(
@@ -261,6 +266,7 @@ class SASAAnalysis:
                 n_slices=n_slices,
                 probe_radius=probe_radius,
                 n_threads=n_threads,
+                use_bitmask=use_bitmask,
             )
         else:
             msg = f"Unknown algorithm: {algorithm}. Use 'sr' or 'lr'."
@@ -317,6 +323,7 @@ def compute_sasa(
     n_slices: int = 20,
     n_threads: int = 0,
     mode: Literal["atom", "residue", "total"] = "atom",
+    use_bitmask: bool = False,
 ) -> NDArray[np.float32]:
     """Compute SASA for MDAnalysis Universe or AtomGroup.
 
@@ -346,6 +353,9 @@ def compute_sasa(
         Number of threads (0 = auto). Default: 0.
     mode : {"atom", "residue", "total"}, optional
         Output mode (default: "atom").
+    use_bitmask : bool, optional
+        Use bitmask LUT optimization for SR algorithm.
+        Only supports n_points of 64, 128, or 256. Default: False.
 
     Returns
     -------
@@ -366,6 +376,7 @@ def compute_sasa(
         algorithm=algorithm,
         n_slices=n_slices,
         n_threads=n_threads,
+        use_bitmask=use_bitmask,
     )
 
     if mode == "total":

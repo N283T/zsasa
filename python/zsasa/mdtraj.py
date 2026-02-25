@@ -111,6 +111,7 @@ def compute_sasa(
     n_slices: int = 20,
     n_threads: int = 0,
     mode: Literal["atom", "residue", "total"] = "atom",
+    use_bitmask: bool = False,
 ) -> NDArray[np.float32]:
     """Compute SASA for MDTraj trajectory using zsasa.
 
@@ -131,6 +132,8 @@ def compute_sasa(
               - "residue": Return per-residue SASA, shape (n_frames, n_residues).
               - "total": Return total SASA per frame, shape (n_frames,).
               Default: "atom".
+        use_bitmask: Use bitmask LUT optimization for SR algorithm.
+            Only supports n_points of 64, 128, or 256. Default: False.
 
     Returns:
         SASA values in nm² (matching MDTraj's output units).
@@ -176,6 +179,7 @@ def compute_sasa(
             n_points=n_points,
             probe_radius=probe_radius,
             n_threads=n_threads,
+            use_bitmask=use_bitmask,
         )
     elif algorithm == "lr":
         result = calculate_sasa_batch(
@@ -185,6 +189,7 @@ def compute_sasa(
             n_slices=n_slices,
             probe_radius=probe_radius,
             n_threads=n_threads,
+            use_bitmask=use_bitmask,
         )
     else:
         msg = f"Unknown algorithm: {algorithm}. Use 'sr' or 'lr'."
