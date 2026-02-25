@@ -651,6 +651,105 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             }
         };
 
+        /// Calculate SASA using adaptive 2-pass strategy with pre-built LUTs (single-threaded).
+        /// Pass 1 uses the coarse LUT on all atoms, then classifies atoms as buried/exposed/boundary.
+        /// Pass 2 refines only boundary atoms with the fine LUT for higher accuracy.
+        pub fn calculateSasaAdaptiveWithLuts(
+            allocator: Allocator,
+            input: AtomInput,
+            adaptive_config: AdaptiveConfig,
+            coarse_lut: *const Lut,
+            fine_lut: *const Lut,
+        ) !AdaptiveResult {
+            const n_atoms = input.atomCount();
+            if (n_atoms == 0) return error.NoAtoms;
+            std.debug.assert(adaptive_config.coarse_points == coarse_lut.n_points);
+            std.debug.assert(adaptive_config.fine_points == fine_lut.n_points);
+            return calculateSasaAdaptiveCore(allocator, input, adaptive_config, coarse_lut, fine_lut);
+        }
+
+        fn calculateSasaAdaptiveCore(
+            allocator: Allocator,
+            input: AtomInput,
+            adaptive_config: AdaptiveConfig,
+            coarse_lut: *const Lut,
+            fine_lut: *const Lut,
+        ) !AdaptiveResult {
+            const n_atoms = input.atomCount();
+            const probe_radius = adaptive_config.probe_radius;
+
+            // Shared setup (same as calculateSasaCore)
+            const positions = try allocator.alloc(Vec, n_atoms);
+            defer allocator.free(positions);
+            for (0..n_atoms) |i| {
+                positions[i] = Vec{
+                    .x = @floatCast(input.x[i]),
+                    .y = @floatCast(input.y[i]),
+                    .z = @floatCast(input.z[i]),
+                };
+            }
+
+            const radii = try allocator.alloc(T, n_atoms);
+            defer allocator.free(radii);
+            for (0..n_atoms) |i| {
+                radii[i] = @floatCast(input.r[i]);
+            }
+
+            var neighbor_list_data = try NList.init(allocator, positions, radii, probe_radius);
+            defer neighbor_list_data.deinit();
+
+            const radii_with_probe_sq = try allocator.alloc(T, n_atoms);
+            defer allocator.free(radii_with_probe_sq);
+            for (0..n_atoms) |i| {
+                const r_probe = radii[i] + probe_radius;
+                radii_with_probe_sq[i] = r_probe * r_probe;
+            }
+
+            const atom_areas = try allocator.alloc(T, n_atoms);
+            errdefer allocator.free(atom_areas);
+
+            var stats = AdaptiveStats{ .n_buried = 0, .n_exposed = 0, .n_boundary = 0 };
+            const four_pi: T = 4.0 * std.math.pi;
+
+            // Pass 1: coarse pass on all atoms
+            for (0..n_atoms) |i| {
+                const atom_radius_probe = radii[i] + probe_radius;
+                const neighbors = neighbor_list_data.getNeighbors(i);
+                const area = Self.atomSasaBitmask(i, positions, radii_with_probe_sq, atom_radius_probe, neighbors, coarse_lut);
+                atom_areas[i] = area;
+            }
+
+            // Pass 2: classify and refine boundary atoms
+            for (0..n_atoms) |i| {
+                const atom_radius_probe = radii[i] + probe_radius;
+                const full_area = four_pi * atom_radius_probe * atom_radius_probe;
+                const exposure_fraction = if (full_area > 0) atom_areas[i] / full_area else 0;
+
+                if (exposure_fraction < adaptive_config.adaptive_low) {
+                    stats.n_buried += 1;
+                } else if (exposure_fraction > adaptive_config.adaptive_high) {
+                    stats.n_exposed += 1;
+                } else {
+                    // Boundary atom: refine with fine LUT
+                    stats.n_boundary += 1;
+                    const neighbors = neighbor_list_data.getNeighbors(i);
+                    atom_areas[i] = Self.atomSasaBitmask(i, positions, radii_with_probe_sq, atom_radius_probe, neighbors, fine_lut);
+                }
+            }
+
+            var total_area: T = 0.0;
+            for (atom_areas) |a| total_area += a;
+
+            return AdaptiveResult{
+                .result = Result{
+                    .total_area = total_area,
+                    .atom_areas = atom_areas,
+                    .allocator = allocator,
+                },
+                .stats = stats,
+            };
+        }
+
         /// Calculate SASA (single-threaded, generic precision).
         pub fn calculateSasa(
             allocator: Allocator,
@@ -1289,4 +1388,306 @@ test "bitmask calculateSasaf32 - single atom" {
 
     try std.testing.expectEqual(@as(usize, 1), result.atom_areas.len);
     try std.testing.expectApproxEqRel(expected_area, result.total_area, 0.02);
+}
+
+// =============================================================================
+// Adaptive SR Tests
+// =============================================================================
+
+const ShrakeRupleyBitmask = ShrakeRupleyBitmaskGen(f64);
+
+test "adaptive calculateSasa - single isolated atom is exposed" {
+    const allocator = std.testing.allocator;
+
+    const x = try allocator.alloc(f64, 1);
+    const y = try allocator.alloc(f64, 1);
+    const z = try allocator.alloc(f64, 1);
+    const r = try allocator.alloc(f64, 1);
+    x[0] = 0.0;
+    y[0] = 0.0;
+    z[0] = 0.0;
+    r[0] = 1.0;
+
+    var input = AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .allocator = allocator,
+    };
+    defer input.deinit();
+
+    const adaptive_config = ShrakeRupleyBitmask.AdaptiveConfig{
+        .probe_radius = 1.4,
+        .coarse_points = 32,
+        .fine_points = 128,
+        .adaptive_low = 0.02,
+        .adaptive_high = 0.98,
+    };
+
+    var coarse_lut = try BitmaskLut.init(allocator, 32);
+    defer coarse_lut.deinit();
+    var fine_lut = try BitmaskLut.init(allocator, 128);
+    defer fine_lut.deinit();
+
+    var result = try ShrakeRupleyBitmask.calculateSasaAdaptiveWithLuts(
+        allocator,
+        input,
+        adaptive_config,
+        &coarse_lut,
+        &fine_lut,
+    );
+    defer result.deinit();
+
+    // Single isolated atom should be classified as exposed
+    try std.testing.expectEqual(@as(usize, 1), result.stats.n_exposed);
+    try std.testing.expectEqual(@as(usize, 0), result.stats.n_buried);
+    try std.testing.expectEqual(@as(usize, 0), result.stats.n_boundary);
+
+    // Expected: 4*pi*(r+probe)^2 within 5% tolerance
+    const expected_radius = 1.0 + 1.4;
+    const expected_area = 4.0 * std.math.pi * expected_radius * expected_radius;
+    try std.testing.expectApproxEqRel(expected_area, result.result.total_area, 0.05);
+}
+
+test "adaptive calculateSasa - completely buried atom" {
+    const allocator = std.testing.allocator;
+
+    // Center atom surrounded by 6 large atoms
+    const n = 7;
+    const x = try allocator.alloc(f64, n);
+    const y = try allocator.alloc(f64, n);
+    const z = try allocator.alloc(f64, n);
+    const r = try allocator.alloc(f64, n);
+
+    // Central atom
+    x[0] = 0.0;
+    y[0] = 0.0;
+    z[0] = 0.0;
+    r[0] = 1.0;
+
+    // 6 surrounding atoms at distance 1.5 along each axis
+    const offsets = [_][3]f64{ .{ 1.5, 0, 0 }, .{ -1.5, 0, 0 }, .{ 0, 1.5, 0 }, .{ 0, -1.5, 0 }, .{ 0, 0, 1.5 }, .{ 0, 0, -1.5 } };
+    for (offsets, 0..) |off, idx| {
+        x[idx + 1] = off[0];
+        y[idx + 1] = off[1];
+        z[idx + 1] = off[2];
+        r[idx + 1] = 2.0;
+    }
+
+    var input = AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .allocator = allocator,
+    };
+    defer input.deinit();
+
+    const adaptive_config = ShrakeRupleyBitmask.AdaptiveConfig{
+        .probe_radius = 1.4,
+        .coarse_points = 32,
+        .fine_points = 128,
+        .adaptive_low = 0.02,
+        .adaptive_high = 0.98,
+    };
+
+    var coarse_lut = try BitmaskLut.init(allocator, 32);
+    defer coarse_lut.deinit();
+    var fine_lut = try BitmaskLut.init(allocator, 128);
+    defer fine_lut.deinit();
+
+    var result = try ShrakeRupleyBitmask.calculateSasaAdaptiveWithLuts(
+        allocator,
+        input,
+        adaptive_config,
+        &coarse_lut,
+        &fine_lut,
+    );
+    defer result.deinit();
+
+    // Center atom should be nearly or completely buried
+    try std.testing.expect(result.result.atom_areas[0] < 1.0);
+    try std.testing.expect(result.stats.n_buried > 0);
+}
+
+test "adaptive calculateSasa - boundary atoms refined" {
+    const allocator = std.testing.allocator;
+
+    // Two overlapping atoms
+    const x = try allocator.alloc(f64, 2);
+    const y = try allocator.alloc(f64, 2);
+    const z = try allocator.alloc(f64, 2);
+    const r = try allocator.alloc(f64, 2);
+    x[0] = 0.0;
+    y[0] = 0.0;
+    z[0] = 0.0;
+    r[0] = 1.5;
+    x[1] = 2.0;
+    y[1] = 0.0;
+    z[1] = 0.0;
+    r[1] = 1.5;
+
+    var input = AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .allocator = allocator,
+    };
+    defer input.deinit();
+
+    // Use thresholds that capture partial exposure as boundary.
+    // With r=1.5 at distance 2.0, probe=1.4, atoms are moderately overlapping
+    // so exposure fractions should fall within a wide boundary band.
+    const adaptive_config = ShrakeRupleyBitmask.AdaptiveConfig{
+        .probe_radius = 1.4,
+        .coarse_points = 32,
+        .fine_points = 128,
+        .adaptive_low = 0.10,
+        .adaptive_high = 0.90,
+    };
+
+    var coarse_lut = try BitmaskLut.init(allocator, 32);
+    defer coarse_lut.deinit();
+    var fine_lut = try BitmaskLut.init(allocator, 128);
+    defer fine_lut.deinit();
+
+    var result = try ShrakeRupleyBitmask.calculateSasaAdaptiveWithLuts(
+        allocator,
+        input,
+        adaptive_config,
+        &coarse_lut,
+        &fine_lut,
+    );
+    defer result.deinit();
+
+    // With narrow thresholds, overlapping atoms should be classified as boundary
+    try std.testing.expect(result.stats.n_boundary > 0);
+
+    // Also compute a fine-only reference for comparison
+    const x2 = try allocator.alloc(f64, 2);
+    const y2 = try allocator.alloc(f64, 2);
+    const z2 = try allocator.alloc(f64, 2);
+    const r2 = try allocator.alloc(f64, 2);
+    x2[0] = 0.0;
+    y2[0] = 0.0;
+    z2[0] = 0.0;
+    r2[0] = 1.5;
+    x2[1] = 2.0;
+    y2[1] = 0.0;
+    z2[1] = 0.0;
+    r2[1] = 1.5;
+
+    var input2 = AtomInput{
+        .x = x2,
+        .y = y2,
+        .z = z2,
+        .r = r2,
+        .allocator = allocator,
+    };
+    defer input2.deinit();
+
+    const fine_config = Config{
+        .n_points = 128,
+        .probe_radius = 1.4,
+    };
+
+    var fine_result = try calculateSasa(allocator, input2, fine_config);
+    defer fine_result.deinit();
+
+    // Adaptive result should be within 10% of fine-only reference
+    try std.testing.expectApproxEqRel(fine_result.total_area, result.result.total_area, 0.10);
+}
+
+test "adaptive calculateSasa - all-boundary matches fine-only exactly" {
+    const allocator = std.testing.allocator;
+
+    // Two atoms far enough apart to be partially exposed
+    const x = try allocator.alloc(f64, 2);
+    const y = try allocator.alloc(f64, 2);
+    const z = try allocator.alloc(f64, 2);
+    const r = try allocator.alloc(f64, 2);
+    x[0] = 0.0;
+    y[0] = 0.0;
+    z[0] = 0.0;
+    r[0] = 1.0;
+    x[1] = 3.0;
+    y[1] = 0.0;
+    z[1] = 0.0;
+    r[1] = 1.0;
+
+    var input = AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .allocator = allocator,
+    };
+    defer input.deinit();
+
+    // Thresholds 0.0/1.0 -> all atoms classified as boundary -> all refined with fine LUT
+    const adaptive_config = ShrakeRupleyBitmask.AdaptiveConfig{
+        .probe_radius = 1.4,
+        .coarse_points = 32,
+        .fine_points = 128,
+        .adaptive_low = 0.0,
+        .adaptive_high = 1.0,
+    };
+
+    var coarse_lut = try BitmaskLut.init(allocator, 32);
+    defer coarse_lut.deinit();
+    var fine_lut = try BitmaskLut.init(allocator, 128);
+    defer fine_lut.deinit();
+
+    var result = try ShrakeRupleyBitmask.calculateSasaAdaptiveWithLuts(
+        allocator,
+        input,
+        adaptive_config,
+        &coarse_lut,
+        &fine_lut,
+    );
+    defer result.deinit();
+
+    // All atoms should be boundary
+    try std.testing.expectEqual(@as(usize, 2), result.stats.n_boundary);
+    try std.testing.expectEqual(@as(usize, 0), result.stats.n_buried);
+    try std.testing.expectEqual(@as(usize, 0), result.stats.n_exposed);
+
+    // Compute fine-only reference
+    const x2 = try allocator.alloc(f64, 2);
+    const y2 = try allocator.alloc(f64, 2);
+    const z2 = try allocator.alloc(f64, 2);
+    const r2 = try allocator.alloc(f64, 2);
+    x2[0] = 0.0;
+    y2[0] = 0.0;
+    z2[0] = 0.0;
+    r2[0] = 1.0;
+    x2[1] = 3.0;
+    y2[1] = 0.0;
+    z2[1] = 0.0;
+    r2[1] = 1.0;
+
+    var input2 = AtomInput{
+        .x = x2,
+        .y = y2,
+        .z = z2,
+        .r = r2,
+        .allocator = allocator,
+    };
+    defer input2.deinit();
+
+    const fine_config = Config{
+        .n_points = 128,
+        .probe_radius = 1.4,
+    };
+
+    var fine_result = try calculateSasa(allocator, input2, fine_config);
+    defer fine_result.deinit();
+
+    // Should match fine-only EXACTLY (same LUT, same computation)
+    try std.testing.expectApproxEqAbs(fine_result.total_area, result.result.total_area, 1e-10);
+    for (0..2) |i| {
+        try std.testing.expectApproxEqAbs(fine_result.atom_areas[i], result.result.atom_areas[i], 1e-10);
+    }
 }
