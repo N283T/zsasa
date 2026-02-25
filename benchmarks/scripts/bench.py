@@ -238,6 +238,7 @@ def run_zig(
 
         cmd = [
             str(binary),
+            "calc",
             "--timing",
             f"--algorithm={algorithm}",
             f"--threads={n_threads}",

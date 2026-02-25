@@ -115,7 +115,7 @@ jobs:
 
       - name: Run with example input
         run: |
-          ./zig-out/bin/zsasa examples/1ubq.pdb /tmp/output.json
+          ./zig-out/bin/zsasa calc examples/1ubq.pdb /tmp/output.json
           cat /tmp/output.json | head -20
 
       - name: Validate output format
@@ -134,12 +134,12 @@ jobs:
 
       - name: Test CSV output
         run: |
-          ./zig-out/bin/zsasa --format=csv examples/1ubq.pdb /tmp/output.csv
+          ./zig-out/bin/zsasa calc --format=csv examples/1ubq.pdb /tmp/output.csv
           head -5 /tmp/output.csv
           tail -3 /tmp/output.csv
 
       - name: Test validate mode
-        run: ./zig-out/bin/zsasa --validate examples/1ubq.pdb
+        run: ./zig-out/bin/zsasa calc --validate examples/1ubq.pdb
 
   python:
     strategy:

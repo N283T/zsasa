@@ -52,16 +52,16 @@ NACCESS treats sulfur as **apolar**, while ProtOr and OONS treat it as **polar**
 
 ```bash
 # NACCESS (recommended)
-zsasa --classifier=naccess structure.cif output.json
+zsasa calc --classifier=naccess structure.cif output.json
 
 # ProtOr
-zsasa --classifier=protor structure.cif output.json
+zsasa calc --classifier=protor structure.cif output.json
 
 # OONS
-zsasa --classifier=oons structure.cif output.json
+zsasa calc --classifier=oons structure.cif output.json
 
 # Custom config file
-zsasa --config=my_radii.toml structure.cif output.json
+zsasa calc --config=my_radii.toml structure.cif output.json
 ```
 
   </TabItem>

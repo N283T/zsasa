@@ -9,7 +9,6 @@ const shrake_rupley = @import("shrake_rupley.zig");
 const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
 const bitmask_lut = @import("bitmask_lut.zig");
 const lee_richards = @import("lee_richards.zig");
-const pipeline = @import("pipeline.zig");
 const classifier = @import("classifier.zig");
 const classifier_protor = @import("classifier_protor.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
@@ -33,18 +32,10 @@ pub const Algorithm = enum {
     lr, // Lee-Richards (slice method)
 };
 
-/// Parallelism strategy for batch processing
-pub const Parallelism = enum {
-    file, // File-level: N files in parallel, 1 thread per file (default)
-    atom, // Atom-level: 1 file at a time, N threads for SASA calculation
-    pipeline, // Pipelined: I/O prefetch + atom-level SASA calculation
-};
-
 /// Configuration for batch processing
 pub const BatchConfig = struct {
     n_threads: usize = 0, // 0 = auto-detect
     algorithm: Algorithm = .sr,
-    parallelism: Parallelism = .file, // file, atom, or pipeline
     n_points: u32 = 100,
     n_slices: u32 = 20,
     probe_radius: f64 = 1.4,
@@ -243,6 +234,20 @@ pub const BatchResult = struct {
         std.debug.print("  Total time:      {d:.2} ms (includes I/O)\n", .{total_ms});
         std.debug.print("  Throughput:      {d:.1} files/sec\n", .{throughput});
 
+        // Print details for failed files
+        if (self.failed > 0) {
+            std.debug.print("\nFailed files:\n", .{});
+            for (self.file_results) |file_result| {
+                if (file_result.status == .err) {
+                    if (file_result.error_msg) |msg| {
+                        std.debug.print("  {s}: {s}\n", .{ file_result.filename, msg });
+                    } else {
+                        std.debug.print("  {s}: unknown error\n", .{file_result.filename});
+                    }
+                }
+            }
+        }
+
         if (show_timing and self.successful > 0) {
             // Calculate timing statistics
             var min_ns: u64 = std.math.maxInt(u64);
@@ -379,9 +384,11 @@ pub fn scanDirectory(allocator: Allocator, dir_path: []const u8) ![][]const u8 {
 
 /// Process a single file and return result
 /// Uses provided arena allocator for temporary allocations
+/// result_allocator: used for error messages that must outlive the arena
 /// n_threads: number of threads for SASA calculation (1 = single-threaded)
 fn processOneFile(
     arena: Allocator,
+    result_allocator: Allocator,
     input_dir: []const u8,
     output_dir: ?[]const u8,
     filename: []const u8,
@@ -399,14 +406,16 @@ fn processOneFile(
     };
 
     // Build input path
-    const input_path = std.fs.path.join(arena, &.{ input_dir, filename }) catch {
+    const input_path = std.fs.path.join(arena, &.{ input_dir, filename }) catch |err| {
         result.status = .err;
+        result.error_msg = std.fmt.allocPrint(result_allocator, "path join failed: {s}", .{@errorName(err)}) catch null;
         return result;
     };
 
     // Read and parse input (auto-detect format from extension)
-    var input = readInputFile(arena, input_path, config) catch {
+    var input = readInputFile(arena, input_path, config) catch |err| {
         result.status = .err;
+        result.error_msg = std.fmt.allocPrint(result_allocator, "read/parse failed: {s}", .{@errorName(err)}) catch null;
         return result;
     };
     defer input.deinit();
@@ -415,8 +424,9 @@ fn processOneFile(
     if (config.classifier_type) |ct| {
         const format = format_detect.detectInputFormat(input_path);
         if (format != .json and input.hasClassificationInfo()) {
-            applyBuiltinClassifier(&input, ct) catch {
+            applyBuiltinClassifier(&input, ct) catch |err| {
                 result.status = .err;
+                result.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
                 return result;
             };
         }
@@ -425,8 +435,9 @@ fn processOneFile(
     result.n_atoms = input.atomCount();
 
     // Time SASA calculation only
-    var timer = std.time.Timer.start() catch {
+    var timer = std.time.Timer.start() catch |err| {
         result.status = .err;
+        result.error_msg = std.fmt.allocPrint(result_allocator, "timer unavailable: {s}", .{@errorName(err)}) catch null;
         return result;
     };
 
@@ -444,8 +455,9 @@ fn processOneFile(
                 config.probe_radius,
                 n_threads,
                 lut_f64,
-            ) catch {
+            ) catch |err| {
                 result.status = .err;
+                result.error_msg = std.fmt.allocPrint(result_allocator, "SASA calculation failed: {s}", .{@errorName(err)}) catch null;
                 return result;
             };
             defer sasa_result.deinit();
@@ -453,8 +465,9 @@ fn processOneFile(
             total_area = sasa_result.total_area;
 
             if (output_dir) |out_dir| {
-                writeSasaOutput(f64, arena, &sasa_result, out_dir, filename, config.output_format) catch {
+                writeSasaOutput(f64, arena, &sasa_result, out_dir, filename, config.output_format) catch |err| {
                     result.status = .err;
+                    result.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
                     return result;
                 };
             }
@@ -470,8 +483,9 @@ fn processOneFile(
                 @as(f32, @floatCast(config.probe_radius)),
                 n_threads,
                 lut_f32,
-            ) catch {
+            ) catch |err| {
                 result.status = .err;
+                result.error_msg = std.fmt.allocPrint(result_allocator, "SASA calculation failed: {s}", .{@errorName(err)}) catch null;
                 return result;
             };
             defer sasa_result.deinit();
@@ -479,8 +493,9 @@ fn processOneFile(
             total_area = @floatCast(sasa_result.total_area);
 
             if (output_dir) |out_dir| {
-                writeSasaOutput(f32, arena, &sasa_result, out_dir, filename, config.output_format) catch {
+                writeSasaOutput(f32, arena, &sasa_result, out_dir, filename, config.output_format) catch |err| {
                     result.status = .err;
+                    result.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
                     return result;
                 };
             }
@@ -491,7 +506,7 @@ fn processOneFile(
     return result;
 }
 
-/// Run batch processing sequentially (for initial implementation)
+/// Run batch processing sequentially (single-threaded path, used when n_threads <= 1)
 pub fn runBatchSequential(
     allocator: Allocator,
     input_dir: []const u8,
@@ -537,6 +552,7 @@ pub fn runBatchSequential(
         // Process file (single-threaded for sequential mode)
         var result = processOneFile(
             arena.allocator(),
+            allocator,
             input_dir,
             output_dir,
             filename,
@@ -567,304 +583,6 @@ pub fn runBatchSequential(
 
     if (!config.quiet) {
         std.debug.print("\n", .{});
-    }
-
-    const total_time_ns = total_timer.read();
-
-    return BatchResult{
-        .total_files = files.len,
-        .successful = successful,
-        .failed = failed,
-        .total_sasa_time_ns = total_sasa_time_ns,
-        .total_time_ns = total_time_ns,
-        .file_results = file_results,
-        .allocator = allocator,
-    };
-}
-
-/// Run batch processing with atom-level parallelism
-/// Files are processed sequentially, but each file uses multi-threaded SASA
-pub fn runBatchAtomParallel(
-    allocator: Allocator,
-    input_dir: []const u8,
-    output_dir: ?[]const u8,
-    config: BatchConfig,
-) !BatchResult {
-    // Start total timer
-    var total_timer = try std.time.Timer.start();
-
-    // Scan directory for files
-    const files = try scanDirectory(allocator, input_dir);
-    defer {
-        for (files) |f| allocator.free(f);
-        allocator.free(files);
-    }
-
-    // Create output directory if specified
-    if (output_dir) |out_dir| {
-        try std.fs.cwd().makePath(out_dir);
-    }
-
-    // Allocate results
-    const file_results = try allocator.alloc(FileResult, files.len);
-    errdefer allocator.free(file_results);
-
-    // Determine thread count for SASA calculation
-    const cpu_count = std.Thread.getCpuCount() catch 1;
-    const n_threads = if (config.n_threads == 0)
-        cpu_count
-    else
-        @min(config.n_threads, cpu_count);
-
-    // Process each file sequentially with multi-threaded SASA
-    var total_sasa_time_ns: u64 = 0;
-    var successful: usize = 0;
-    var failed: usize = 0;
-
-    // Build bitmask LUT once (if enabled)
-    var luts = try BatchLuts.init(allocator, config);
-    defer luts.deinit();
-
-    // Use arena allocator for each file (reset between files)
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-
-    for (files, 0..) |filename, i| {
-        // Copy filename to result allocator
-        const filename_copy = try allocator.dupe(u8, filename);
-
-        // Process file with multi-threaded SASA
-        var result = processOneFile(
-            arena.allocator(),
-            input_dir,
-            output_dir,
-            filename,
-            config,
-            n_threads, // multi-threaded SASA
-            luts.f64Ptr(),
-            luts.f32Ptr(),
-        );
-        result.filename = filename_copy;
-
-        if (result.status == .ok) {
-            successful += 1;
-            total_sasa_time_ns += result.sasa_time_ns;
-        } else {
-            failed += 1;
-        }
-
-        file_results[i] = result;
-
-        // Reset arena for next file
-        _ = arena.reset(.retain_capacity);
-
-        // Progress output
-        if (!config.quiet) {
-            std.debug.print("\rProcessing: {d}/{d}", .{ i + 1, files.len });
-        }
-    }
-
-    if (!config.quiet) {
-        std.debug.print("\n", .{});
-    }
-
-    const total_time_ns = total_timer.read();
-
-    return BatchResult{
-        .total_files = files.len,
-        .successful = successful,
-        .failed = failed,
-        .total_sasa_time_ns = total_sasa_time_ns,
-        .total_time_ns = total_time_ns,
-        .file_results = file_results,
-        .allocator = allocator,
-    };
-}
-
-/// Run batch processing with pipelined I/O
-/// I/O thread prefetches files while processing thread calculates SASA
-pub fn runBatchPipelined(
-    allocator: Allocator,
-    input_dir: []const u8,
-    output_dir: ?[]const u8,
-    config: BatchConfig,
-) !BatchResult {
-    // Start total timer
-    var total_timer = try std.time.Timer.start();
-
-    // Scan directory for files
-    const files = try scanDirectory(allocator, input_dir);
-    defer {
-        for (files) |f| allocator.free(f);
-        allocator.free(files);
-    }
-
-    if (files.len == 0) {
-        return BatchResult{
-            .total_files = 0,
-            .successful = 0,
-            .failed = 0,
-            .total_sasa_time_ns = 0,
-            .total_time_ns = total_timer.read(),
-            .file_results = try allocator.alloc(FileResult, 0),
-            .allocator = allocator,
-        };
-    }
-
-    // Create output directory if specified
-    if (output_dir) |out_dir| {
-        try std.fs.cwd().makePath(out_dir);
-    }
-
-    // Allocate results
-    const file_results = try allocator.alloc(FileResult, files.len);
-    errdefer allocator.free(file_results);
-
-    // Determine thread count for SASA calculation
-    const cpu_count = std.Thread.getCpuCount() catch 1;
-    const n_threads = if (config.n_threads == 0)
-        cpu_count
-    else
-        @min(config.n_threads, cpu_count);
-
-    // Initialize prefetch queue
-    var queue = pipeline.PrefetchQueue.init(allocator);
-    defer queue.deinit();
-
-    // Create I/O context with error tracking
-    var io_ctx = pipeline.IoContext.init(allocator, &queue, files, input_dir);
-    io_ctx.skip_hydrogens = !config.include_hydrogens;
-    io_ctx.atom_only = !config.include_hetatm;
-    defer io_ctx.deinit();
-
-    // Build bitmask LUT once (if enabled)
-    var luts = try BatchLuts.init(allocator, config);
-    defer luts.deinit();
-
-    // Spawn I/O thread
-    const io_thread = try std.Thread.spawn(.{}, pipeline.IoContext.run, .{&io_ctx});
-
-    // Process files from queue
-    var total_sasa_time_ns: u64 = 0;
-    var successful: usize = 0;
-    var failed: usize = 0;
-    var file_idx: usize = 0;
-
-    while (queue.pop()) |prefetched| {
-        var pf = prefetched;
-        defer pf.deinit(allocator);
-
-        // Copy filename to result allocator
-        const filename_copy = try allocator.dupe(u8, pf.filename);
-
-        // Time SASA calculation
-        var timer = try std.time.Timer.start();
-
-        // Calculate SASA using generic dispatcher
-        var total_area: f64 = 0;
-        var sasa_ok = true;
-
-        switch (config.precision) {
-            .f64 => {
-                if (calculateSasaDispatch(
-                    f64,
-                    pf.arena.allocator(),
-                    pf.input,
-                    config.algorithm,
-                    config.n_points,
-                    config.n_slices,
-                    config.probe_radius,
-                    n_threads,
-                    luts.f64Ptr(),
-                )) |calc_result| {
-                    var sasa_result = calc_result;
-                    defer sasa_result.deinit();
-                    total_area = sasa_result.total_area;
-
-                    if (output_dir) |out_dir| {
-                        writeSasaOutput(f64, pf.arena.allocator(), &sasa_result, out_dir, pf.filename, config.output_format) catch {
-                            sasa_ok = false;
-                        };
-                    }
-                } else |_| {
-                    sasa_ok = false;
-                }
-            },
-            .f32 => {
-                if (calculateSasaDispatch(
-                    f32,
-                    pf.arena.allocator(),
-                    pf.input,
-                    config.algorithm,
-                    config.n_points,
-                    config.n_slices,
-                    @as(f32, @floatCast(config.probe_radius)),
-                    n_threads,
-                    luts.f32Ptr(),
-                )) |calc_result| {
-                    var sasa_result = calc_result;
-                    defer sasa_result.deinit();
-                    total_area = @floatCast(sasa_result.total_area);
-
-                    if (output_dir) |out_dir| {
-                        writeSasaOutput(f32, pf.arena.allocator(), &sasa_result, out_dir, pf.filename, config.output_format) catch {
-                            sasa_ok = false;
-                        };
-                    }
-                } else |_| {
-                    sasa_ok = false;
-                }
-            },
-        }
-
-        const sasa_time_ns = timer.read();
-
-        // Store result
-        const file_status: FileResult.Status = if (sasa_ok) .ok else .err;
-        file_results[file_idx] = FileResult{
-            .filename = filename_copy,
-            .n_atoms = pf.input.atomCount(),
-            .sasa_time_ns = sasa_time_ns,
-            .total_sasa = total_area,
-            .status = file_status,
-        };
-
-        if (sasa_ok) {
-            successful += 1;
-            total_sasa_time_ns += sasa_time_ns;
-        } else {
-            failed += 1;
-        }
-
-        file_idx += 1;
-
-        // Progress output
-        if (!config.quiet) {
-            std.debug.print("\rProcessing: {d}/{d}", .{ file_idx, files.len });
-        }
-    }
-
-    // Wait for I/O thread to finish
-    io_thread.join();
-
-    // Include I/O failures in the count
-    const io_failed = io_ctx.failedCount();
-    failed += io_failed;
-
-    // Report I/O failures if not quiet
-    if (!config.quiet) {
-        std.debug.print("\n", .{});
-        if (io_failed > 0) {
-            std.debug.print("I/O errors: {d} file(s) failed to read/parse\n", .{io_failed});
-            for (io_ctx.failed_files.items) |f| {
-                const reason_str = switch (f.reason) {
-                    .allocation_failed => "allocation failed",
-                    .path_join_failed => "path join failed",
-                    .read_parse_failed => "read/parse failed",
-                };
-                std.debug.print("  - {s}: {s}\n", .{ f.filename, reason_str });
-            }
-        }
     }
 
     const total_time_ns = total_timer.read();
@@ -935,6 +653,7 @@ fn parallelWorker(ctx: *ParallelContext) void {
         // Process file using thread-local arena (single-threaded SASA per file in file-parallel mode)
         var result = processOneFile(
             arena.allocator(),
+            ctx.result_allocator,
             ctx.input_dir,
             ctx.output_dir,
             filename,
@@ -1077,9 +796,7 @@ pub fn runBatchParallel(
 }
 
 /// Run batch processing (main entry point)
-/// Selects strategy based on config.parallelism:
-/// - file: N files in parallel, 1 thread per file (default)
-/// - atom: 1 file at a time, N threads for SASA calculation
+/// Uses file-level parallelism: N files in parallel, 1 thread per file
 pub fn runBatch(
     allocator: Allocator,
     input_dir: []const u8,
@@ -1092,26 +809,409 @@ pub fn runBatch(
     else
         config.n_threads;
 
-    return switch (config.parallelism) {
-        .file => {
-            // File-level parallelism: N files in parallel, 1 thread per file
-            if (n_threads <= 1) {
-                return runBatchSequential(allocator, input_dir, output_dir, config);
-            }
-            return runBatchParallel(allocator, input_dir, output_dir, config);
-        },
-        .atom => {
-            // Atom-level parallelism: sequential files, N threads per file
-            return runBatchAtomParallel(allocator, input_dir, output_dir, config);
-        },
-        .pipeline => {
-            // Pipelined: I/O prefetch + atom-level SASA calculation
-            return runBatchPipelined(allocator, input_dir, output_dir, config);
-        },
-    };
+    if (n_threads <= 1) {
+        return runBatchSequential(allocator, input_dir, output_dir, config);
+    }
+    return runBatchParallel(allocator, input_dir, output_dir, config);
 }
 
+// =============================================================================
+// CLI argument parsing and run entry point
+// =============================================================================
+
+/// Parsed command-line arguments for the batch subcommand
+pub const BatchArgs = struct {
+    input_path: ?[]const u8 = null,
+    output_path: ?[]const u8 = null, // Output directory; null means no file output
+    output_path_explicit: bool = false, // Track if -o/--output was explicitly set
+    n_threads: usize = 0,
+    probe_radius: f64 = 1.4,
+    n_points: u32 = 100,
+    n_slices: u32 = 20,
+    algorithm: Algorithm = .sr,
+    precision: Precision = .f64,
+    output_format: OutputFormat = .json,
+    classifier_type: ClassifierType = .protor, // Default: protor (matches FreeSASA/RustSASA)
+    include_hydrogens: bool = false,
+    include_hetatm: bool = false,
+    use_bitmask: bool = false,
+    quiet: bool = false,
+    show_timing: bool = false,
+    show_help: bool = false,
+};
+
+// Parse helper functions (local to batch.zig)
+
+/// Parse and validate probe radius value
+fn parseProbeRadius(value: []const u8) f64 {
+    const radius = std.fmt.parseFloat(f64, value) catch {
+        std.debug.print("Error: Invalid probe radius: {s}\n", .{value});
+        std.process.exit(1);
+    };
+    if (radius <= 0 or radius > 10.0 or !std.math.isFinite(radius)) {
+        std.debug.print("Error: Probe radius must be between 0 and 10 Angstroms: {d}\n", .{radius});
+        std.process.exit(1);
+    }
+    return radius;
+}
+
+/// Parse and validate n-points value
+fn parseNPoints(value: []const u8) u32 {
+    const n = std.fmt.parseInt(u32, value, 10) catch {
+        std.debug.print("Error: Invalid n-points: {s}\n", .{value});
+        std.process.exit(1);
+    };
+    if (n == 0 or n > 10000) {
+        std.debug.print("Error: n-points must be between 1 and 10000: {d}\n", .{n});
+        std.process.exit(1);
+    }
+    return n;
+}
+
+/// Parse and validate n-slices value (for Lee-Richards)
+fn parseNSlices(value: []const u8) u32 {
+    const n = std.fmt.parseInt(u32, value, 10) catch {
+        std.debug.print("Error: Invalid n-slices: {s}\n", .{value});
+        std.process.exit(1);
+    };
+    if (n == 0 or n > 1000) {
+        std.debug.print("Error: n-slices must be between 1 and 1000: {d}\n", .{n});
+        std.process.exit(1);
+    }
+    return n;
+}
+
+/// Parse and validate algorithm value
+fn parseAlgorithm(value: []const u8) Algorithm {
+    if (std.mem.eql(u8, value, "sr") or std.mem.eql(u8, value, "shrake-rupley")) {
+        return .sr;
+    } else if (std.mem.eql(u8, value, "lr") or std.mem.eql(u8, value, "lee-richards")) {
+        return .lr;
+    } else {
+        std.debug.print("Error: Invalid algorithm: {s}\n", .{value});
+        std.debug.print("Valid algorithms: sr (shrake-rupley), lr (lee-richards)\n", .{});
+        std.process.exit(1);
+    }
+}
+
+/// Parse and validate output format value
+fn parseOutputFormat(value: []const u8) OutputFormat {
+    if (std.mem.eql(u8, value, "json")) {
+        return .json;
+    } else if (std.mem.eql(u8, value, "compact")) {
+        return .compact;
+    } else if (std.mem.eql(u8, value, "csv")) {
+        return .csv;
+    } else {
+        std.debug.print("Error: Invalid format: {s}\n", .{value});
+        std.debug.print("Valid formats: json, compact, csv\n", .{});
+        std.process.exit(1);
+    }
+}
+
+/// Parse and validate classifier type value
+fn parseClassifierType(value: []const u8) ClassifierType {
+    if (ClassifierType.fromString(value)) |ct| {
+        return ct;
+    } else {
+        std.debug.print("Error: Invalid classifier: {s}\n", .{value});
+        std.debug.print("Valid classifiers: naccess, protor, oons\n", .{});
+        std.process.exit(1);
+    }
+}
+
+/// Parse and validate precision value
+fn parsePrecision(value: []const u8) Precision {
+    if (Precision.fromString(value)) |p| {
+        return p;
+    } else {
+        std.debug.print("Error: Invalid precision: {s}\n", .{value});
+        std.debug.print("Valid values: f32 (single), f64 (double)\n", .{});
+        std.process.exit(1);
+    }
+}
+
+/// Parse batch subcommand arguments
+pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
+    var result = BatchArgs{};
+    var i: usize = start_idx;
+    var positional_count: usize = 0;
+
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+
+        // --threads=N or --threads N
+        if (std.mem.startsWith(u8, arg, "--threads=")) {
+            const value = arg["--threads=".len..];
+            result.n_threads = std.fmt.parseInt(usize, value, 10) catch {
+                std.debug.print("Error: Invalid thread count: {s}\n", .{value});
+                std.process.exit(1);
+            };
+        } else if (std.mem.eql(u8, arg, "--threads")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --threads\n", .{});
+                std.process.exit(1);
+            }
+            result.n_threads = std.fmt.parseInt(usize, args[i], 10) catch {
+                std.debug.print("Error: Invalid thread count: {s}\n", .{args[i]});
+                std.process.exit(1);
+            };
+        }
+        // --probe-radius=R or --probe-radius R
+        else if (std.mem.startsWith(u8, arg, "--probe-radius=")) {
+            const value = arg["--probe-radius=".len..];
+            result.probe_radius = parseProbeRadius(value);
+        } else if (std.mem.eql(u8, arg, "--probe-radius")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --probe-radius\n", .{});
+                std.process.exit(1);
+            }
+            result.probe_radius = parseProbeRadius(args[i]);
+        }
+        // --n-points=N or --n-points N
+        else if (std.mem.startsWith(u8, arg, "--n-points=")) {
+            const value = arg["--n-points=".len..];
+            result.n_points = parseNPoints(value);
+        } else if (std.mem.eql(u8, arg, "--n-points")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --n-points\n", .{});
+                std.process.exit(1);
+            }
+            result.n_points = parseNPoints(args[i]);
+        }
+        // --n-slices=N or --n-slices N (for Lee-Richards)
+        else if (std.mem.startsWith(u8, arg, "--n-slices=")) {
+            const value = arg["--n-slices=".len..];
+            result.n_slices = parseNSlices(value);
+        } else if (std.mem.eql(u8, arg, "--n-slices")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --n-slices\n", .{});
+                std.process.exit(1);
+            }
+            result.n_slices = parseNSlices(args[i]);
+        }
+        // --format=FORMAT or --format FORMAT
+        else if (std.mem.startsWith(u8, arg, "--format=")) {
+            const value = arg["--format=".len..];
+            result.output_format = parseOutputFormat(value);
+        } else if (std.mem.eql(u8, arg, "--format")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --format\n", .{});
+                std.process.exit(1);
+            }
+            result.output_format = parseOutputFormat(args[i]);
+        }
+        // --algorithm=ALGO or --algorithm ALGO
+        else if (std.mem.startsWith(u8, arg, "--algorithm=")) {
+            const value = arg["--algorithm=".len..];
+            result.algorithm = parseAlgorithm(value);
+        } else if (std.mem.eql(u8, arg, "--algorithm")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --algorithm\n", .{});
+                std.process.exit(1);
+            }
+            result.algorithm = parseAlgorithm(args[i]);
+        }
+        // --classifier=TYPE or --classifier TYPE
+        else if (std.mem.startsWith(u8, arg, "--classifier=")) {
+            const value = arg["--classifier=".len..];
+            result.classifier_type = parseClassifierType(value);
+        } else if (std.mem.eql(u8, arg, "--classifier")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --classifier\n", .{});
+                std.process.exit(1);
+            }
+            result.classifier_type = parseClassifierType(args[i]);
+        }
+        // --precision=PREC or --precision PREC
+        else if (std.mem.startsWith(u8, arg, "--precision=")) {
+            const value = arg["--precision=".len..];
+            result.precision = parsePrecision(value);
+        } else if (std.mem.eql(u8, arg, "--precision")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --precision\n", .{});
+                std.process.exit(1);
+            }
+            result.precision = parsePrecision(args[i]);
+        }
+        // --include-hydrogens
+        else if (std.mem.eql(u8, arg, "--include-hydrogens")) {
+            result.include_hydrogens = true;
+        }
+        // --include-hetatm
+        else if (std.mem.eql(u8, arg, "--include-hetatm")) {
+            result.include_hetatm = true;
+        }
+        // --use-bitmask
+        else if (std.mem.eql(u8, arg, "--use-bitmask")) {
+            result.use_bitmask = true;
+        }
+        // --quiet or -q
+        else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
+            result.quiet = true;
+        }
+        // --timing
+        else if (std.mem.eql(u8, arg, "--timing")) {
+            result.show_timing = true;
+        }
+        // --help or -h
+        else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            result.show_help = true;
+        }
+        // -o FILE or --output=FILE or --output FILE
+        else if (std.mem.eql(u8, arg, "-o")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for -o\n", .{});
+                std.process.exit(1);
+            }
+            result.output_path = args[i];
+            result.output_path_explicit = true;
+        } else if (std.mem.startsWith(u8, arg, "--output=")) {
+            result.output_path = arg["--output=".len..];
+            result.output_path_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--output")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --output\n", .{});
+                std.process.exit(1);
+            }
+            result.output_path = args[i];
+            result.output_path_explicit = true;
+        }
+        // Unknown option
+        else if (std.mem.startsWith(u8, arg, "-")) {
+            std.debug.print("Error: Unknown option: {s}\n", .{arg});
+            std.debug.print("Try 'zsasa batch --help' for more information.\n", .{});
+            std.process.exit(1);
+        }
+        // Positional arguments: <input_dir> [output_dir]
+        else {
+            if (positional_count == 0) {
+                result.input_path = arg;
+            } else if (positional_count == 1) {
+                // Only use positional output if -o/--output was not explicitly set
+                if (!result.output_path_explicit) {
+                    result.output_path = arg;
+                }
+            } else {
+                std.debug.print("Error: Too many positional arguments\n", .{});
+                std.process.exit(1);
+            }
+            positional_count += 1;
+        }
+    }
+
+    return result;
+}
+
+/// Print help for the batch subcommand
+pub fn printHelp(program_name: []const u8) void {
+    std.debug.print(
+        \\zsasa batch - Calculate SASA for all files in a directory
+        \\
+        \\USAGE:
+        \\    {s} batch [OPTIONS] <input_dir> [output_dir]
+        \\
+        \\ARGUMENTS:
+        \\    <input_dir>     Directory containing structure files (PDB, mmCIF, JSON)
+        \\    [output_dir]    Optional output directory (default: no file output)
+        \\
+        \\OPTIONS:
+        \\    --algorithm=ALGO    Algorithm: sr (shrake-rupley), lr (lee-richards)
+        \\                        Default: sr
+        \\    --classifier=TYPE   Built-in classifier: naccess, protor, oons
+        \\                        Default: protor
+        \\    --threads=N         Number of threads (default: auto-detect)
+        \\    --probe-radius=R    Probe radius in Angstroms (default: 1.4)
+        \\    --n-points=N        Test points per atom (default: 100, for sr)
+        \\    --n-slices=N        Slices per atom diameter (default: 20, for lr)
+        \\    --precision=PREC    Floating-point precision: f32, f64 (default: f64)
+        \\    --format=FORMAT     Output format: json, compact, csv (default: json)
+        \\    --include-hydrogens Include hydrogen atoms (default: exclude)
+        \\    --include-hetatm    Include HETATM records (default: exclude)
+        \\    --use-bitmask       Use bitmask LUT optimization for SR algorithm
+        \\                        (n-points must be 64, 128, or 256)
+        \\    --timing            Show timing breakdown for benchmarking
+        \\    -o, --output=DIR    Output directory (alternative to positional)
+        \\    -q, --quiet         Suppress progress output
+        \\    -h, --help          Show this help message
+        \\
+        \\EXAMPLES:
+        \\    {s} batch structures/
+        \\    {s} batch structures/ results/
+        \\    {s} batch structures/ --algorithm=lr --threads=4
+        \\    {s} batch structures/ --classifier=naccess --format=csv
+        \\    {s} batch structures/ results/ --timing --quiet
+        \\
+    , .{ program_name, program_name, program_name, program_name, program_name, program_name });
+}
+
+/// Run batch processing from parsed CLI arguments
+pub fn run(allocator: Allocator, args: BatchArgs) !void {
+    const input_dir = args.input_path orelse {
+        std.debug.print("Error: Missing input directory\n", .{});
+        std.debug.print("Usage: zsasa batch [OPTIONS] <input_dir> [output_dir]\n", .{});
+        return error.MissingArgument;
+    };
+
+    const output_dir: ?[]const u8 = args.output_path;
+
+    // Build batch config from parsed args
+    const config = BatchConfig{
+        .n_threads = args.n_threads,
+        .algorithm = args.algorithm,
+        .n_points = args.n_points,
+        .n_slices = args.n_slices,
+        .probe_radius = args.probe_radius,
+        .precision = args.precision,
+        .output_format = args.output_format,
+        .show_timing = args.show_timing,
+        .quiet = args.quiet,
+        .classifier_type = args.classifier_type,
+        .include_hydrogens = args.include_hydrogens,
+        .include_hetatm = args.include_hetatm,
+        .use_bitmask = args.use_bitmask,
+    };
+
+    if (!args.quiet) {
+        std.debug.print("Batch mode: processing directory '{s}'\n", .{input_dir});
+        std.debug.print("Algorithm: {s}, Threads: {d}\n", .{
+            if (config.algorithm == .sr) "sr" else "lr",
+            if (config.n_threads == 0) @as(usize, @intCast(std.Thread.getCpuCount() catch 1)) else config.n_threads,
+        });
+        if (output_dir) |out| {
+            std.debug.print("Output directory: {s}\n", .{out});
+        }
+        std.debug.print("\n", .{});
+    }
+
+    var result = try runBatch(allocator, input_dir, output_dir, config);
+    defer result.deinit();
+
+    // Print results
+    if (!args.quiet) {
+        result.printSummary(args.show_timing);
+    }
+
+    // Always print benchmark output (for script parsing)
+    if (args.show_timing) {
+        std.debug.print("\n", .{});
+        result.printBenchmarkOutput();
+    }
+}
+
+// =============================================================================
 // Tests
+// =============================================================================
 
 test "scanDirectory finds json files" {
     // This test requires a test directory - skip in automated testing
@@ -1150,4 +1250,134 @@ test "BatchResult deinit" {
     };
 
     batch_result.deinit();
+}
+
+test "BatchArgs defaults" {
+    const args = [_][]const u8{ "zsasa", "batch", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("input_dir/", parsed.input_path.?);
+    try std.testing.expect(parsed.output_path == null);
+    try std.testing.expectEqual(@as(usize, 0), parsed.n_threads);
+    try std.testing.expectEqual(Algorithm.sr, parsed.algorithm);
+    try std.testing.expectEqual(false, parsed.quiet);
+    try std.testing.expectEqual(false, parsed.show_help);
+    try std.testing.expectEqual(false, parsed.include_hydrogens);
+    try std.testing.expectEqual(false, parsed.include_hetatm);
+    try std.testing.expectEqual(false, parsed.use_bitmask);
+    try std.testing.expectEqual(false, parsed.show_timing);
+}
+
+test "BatchArgs with output dir" {
+    const args = [_][]const u8{ "zsasa", "batch", "input_dir/", "output_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("input_dir/", parsed.input_path.?);
+    try std.testing.expectEqualStrings("output_dir/", parsed.output_path.?);
+}
+
+test "BatchArgs with options" {
+    const args = [_][]const u8{
+        "zsasa",          "batch",
+        "--algorithm=lr", "--threads=4",
+        "--quiet",        "--timing",
+        "input_dir/",
+    };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("input_dir/", parsed.input_path.?);
+    try std.testing.expectEqual(Algorithm.lr, parsed.algorithm);
+    try std.testing.expectEqual(@as(usize, 4), parsed.n_threads);
+    try std.testing.expectEqual(true, parsed.quiet);
+    try std.testing.expectEqual(true, parsed.show_timing);
+}
+
+test "BatchArgs help flag" {
+    const args = [_][]const u8{ "zsasa", "batch", "--help" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.show_help);
+}
+
+test "BatchArgs output via -o flag" {
+    const args = [_][]const u8{ "zsasa", "batch", "-o", "results/", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("input_dir/", parsed.input_path.?);
+    try std.testing.expectEqualStrings("results/", parsed.output_path.?);
+}
+
+test "BatchArgs -o takes precedence over positional output" {
+    const args = [_][]const u8{ "zsasa", "batch", "-o", "explicit/", "input_dir/", "positional/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("explicit/", parsed.output_path.?);
+    try std.testing.expectEqual(true, parsed.output_path_explicit);
+}
+
+test "BatchArgs --probe-radius=R" {
+    const args = [_][]const u8{ "zsasa", "batch", "--probe-radius=2.0", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(f64, 2.0), parsed.probe_radius);
+}
+
+test "BatchArgs --n-points=N" {
+    const args = [_][]const u8{ "zsasa", "batch", "--n-points=200", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(u32, 200), parsed.n_points);
+}
+
+test "BatchArgs --n-slices=N" {
+    const args = [_][]const u8{ "zsasa", "batch", "--n-slices=40", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(u32, 40), parsed.n_slices);
+}
+
+test "BatchArgs --format=csv" {
+    const args = [_][]const u8{ "zsasa", "batch", "--format=csv", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(OutputFormat.csv, parsed.output_format);
+}
+
+test "BatchArgs --classifier=naccess" {
+    const args = [_][]const u8{ "zsasa", "batch", "--classifier=naccess", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(ClassifierType.naccess, parsed.classifier_type);
+}
+
+test "BatchArgs --precision=f32" {
+    const args = [_][]const u8{ "zsasa", "batch", "--precision=f32", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(Precision.f32, parsed.precision);
+}
+
+test "BatchArgs --include-hydrogens" {
+    const args = [_][]const u8{ "zsasa", "batch", "--include-hydrogens", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.include_hydrogens);
+}
+
+test "BatchArgs --include-hetatm" {
+    const args = [_][]const u8{ "zsasa", "batch", "--include-hetatm", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.include_hetatm);
+}
+
+test "BatchArgs --use-bitmask" {
+    const args = [_][]const u8{ "zsasa", "batch", "--use-bitmask", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.use_bitmask);
+}
+
+test "BatchArgs --output=DIR (equals form)" {
+    const args = [_][]const u8{ "zsasa", "batch", "--output=results/", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("results/", parsed.output_path.?);
+    try std.testing.expectEqual(true, parsed.output_path_explicit);
+}
+
+test "BatchArgs --algorithm=shrake-rupley (long form)" {
+    const args = [_][]const u8{ "zsasa", "batch", "--algorithm=shrake-rupley", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(Algorithm.sr, parsed.algorithm);
+}
+
+test "BatchArgs classifier_type defaults to protor" {
+    const args = [_][]const u8{ "zsasa", "batch", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(ClassifierType.protor, parsed.classifier_type);
 }

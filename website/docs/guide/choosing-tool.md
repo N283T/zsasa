@@ -28,15 +28,13 @@ The CLI works best with **clean, simple structures** that need no pre-processing
 
 ```bash
 # Single structure
-zsasa structure.cif output.json
+zsasa calc structure.cif output.json
 
 # With classifier
-zsasa --classifier=naccess structure.cif output.json
+zsasa calc --classifier=naccess structure.cif output.json
 
 # Batch: process all files in a directory
-for f in structures/*.cif; do
-    zsasa "$f" "results/$(basename "$f" .cif).json"
-done
+zsasa batch structures/ results/
 ```
 
 The CLI supports basic filtering (`--chain`, `--model`, `--include-hetatm`, `--include-hydrogens`), but has limitations:

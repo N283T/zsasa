@@ -2421,7 +2421,6 @@ export fn zsasa_batch_dir_process(
     const config = batch.BatchConfig{
         .n_threads = n_threads,
         .algorithm = algo,
-        .parallelism = .file,
         .n_points = n_points,
         .n_slices = n_points, // same parameter used for LR slices
         .probe_radius = probe_radius,

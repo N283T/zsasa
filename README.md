@@ -50,7 +50,7 @@ Requires [Zig 0.15.2+](https://ziglang.org/download/).
 ```bash
 git clone https://github.com/N283T/zsasa.git
 cd zsasa && zig build -Doptimize=ReleaseFast
-./zig-out/bin/zsasa structure.cif output.json
+./zig-out/bin/zsasa calc structure.cif output.json
 ```
 
 ## Benchmarks
