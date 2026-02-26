@@ -2,10 +2,10 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "polars",
-#     "matplotlib",
-#     "typer",
-#     "rich",
+#     "polars>=1.0",
+#     "matplotlib>=3.8",
+#     "typer>=0.9.0",
+#     "rich>=13.0",
 # ]
 # ///
 """Analyze batch benchmark results (hyperfine JSON format).
@@ -37,13 +37,14 @@ app = typer.Typer(help="Analyze batch benchmark results")
 RESULTS_DIR = Path(__file__).parent.parent.joinpath("results", "batch")
 PLOTS_DIR = Path(__file__).parent.parent.joinpath("results", "plots", "batch")
 
-TOOL_ORDER = {"freesasa": 0, "rustsasa": 1, "zsasa": 2}
+TOOL_ORDER = {"freesasa": 0, "rustsasa": 1, "zsasa": 2, "lahuta": 3}
 
 COLOR_MAP = {
     ("freesasa", None): "#3498db",
     ("rustsasa", None): "#e74c3c",
     ("zsasa", "f32"): "#e67e22",
     ("zsasa", "f64"): "#f39c12",
+    ("lahuta", None): "#9b59b6",
 }
 
 

@@ -227,16 +227,16 @@ def run_zsasa_cli(
 def compute_stats(x: np.ndarray, y: np.ndarray) -> dict[str, float]:
     """Compute R², mean/max relative error between two arrays."""
     mask = y > 0
-    x = x[mask]
-    y = y[mask]
+    x_filtered = x[mask]
+    y_filtered = y[mask]
 
-    if len(x) < 2:
+    if len(x_filtered) < 2:
         return {"r_squared": 0.0, "mean_rel_error": 0.0, "max_rel_error": 0.0}
 
-    correlation = np.corrcoef(x, y)[0, 1]
+    correlation = np.corrcoef(x_filtered, y_filtered)[0, 1]
     r_squared = float(correlation**2)
 
-    rel_errors = np.abs(x - y) / y * 100
+    rel_errors = np.abs(x_filtered - y_filtered) / y_filtered * 100
     mean_rel_error = float(np.mean(rel_errors))
     max_rel_error = float(np.max(rel_errors))
 

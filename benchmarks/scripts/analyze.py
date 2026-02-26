@@ -2,10 +2,10 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "polars",
-#     "matplotlib",
-#     "typer",
-#     "rich",
+#     "polars>=1.0",
+#     "matplotlib>=3.8",
+#     "typer>=0.9.0",
+#     "rich>=13.0",
 # ]
 # ///
 """Benchmark analysis CLI.

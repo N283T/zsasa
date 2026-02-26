@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "matplotlib",
+#     "matplotlib>=3.8",
 #     "typer>=0.9.0",
 #     "rich>=13.0",
 # ]

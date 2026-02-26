@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.12"
 # dependencies = ["rich>=13.0", "typer>=0.9.0", "matplotlib>=3.0"]
 # ///
 """Stratified sampling of benchmark structures by atom count.
@@ -338,9 +338,9 @@ def plot(
 
     # Determine output path
     if output is None:
-        plots_dir = Path(__file__).parent.parent / "results" / "plots" / "dataset"
+        plots_dir = Path(__file__).parent.parent.joinpath("results", "plots", "dataset")
         plots_dir.mkdir(parents=True, exist_ok=True)
-        output = plots_dir / f"{sample_path.stem}.png"
+        output = plots_dir.joinpath(f"{sample_path.stem}.png")
 
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=150, bbox_inches="tight")

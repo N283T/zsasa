@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.12"
 # dependencies = ["rich>=13.0", "typer>=0.9.0"]
 # ///
 """Build atom count index for benchmark structures.
@@ -104,7 +104,7 @@ def main(
 
     # Default output path
     if output is None:
-        output = input_dir / "index.json"
+        output = input_dir.joinpath("index.json")
 
     # Scan for files
     console.print(f"Scanning [cyan]{input_dir}[/cyan]...")

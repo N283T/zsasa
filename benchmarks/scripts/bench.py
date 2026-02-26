@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.12"
 # dependencies = ["rich>=13.0", "typer>=0.9.0"]
 # ///
 """SASA benchmark runner.

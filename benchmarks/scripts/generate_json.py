@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.12"
 # dependencies = [
 #     "freesasa>=2.0",
 #     "gemmi>=0.7.4",
@@ -225,7 +225,7 @@ def generate(
 
         if output_path is None:
             stem = input_path.stem.replace(".cif", "")
-            output_path = input_path.parent / f"{stem}.json.gz"
+            output_path = input_path.parent.joinpath(f"{stem}.json.gz")
 
         pdb_id, n_atoms, size = cif_to_benchmark_json(input_path, output_path)
         if n_atoms > 0:
@@ -270,7 +270,7 @@ def process_directory(input_dir: Path, output_dir: Path, workers: int) -> None:
     for cif_path in cif_files:
         # Extract PDB ID from path (handle various naming conventions)
         stem = cif_path.stem.replace(".cif", "").lower()
-        output_file = output_dir / f"{stem}.json.gz"
+        output_file = output_dir.joinpath(f"{stem}.json.gz")
         work_items.append((cif_path, output_file))
 
     # Determine worker count
@@ -343,7 +343,7 @@ def process_directory_archive(
 
     # Create temp directory for processing
     with tempfile.TemporaryDirectory() as temp_dir:
-        temp_output = Path(temp_dir) / "dataset"
+        temp_output = Path(temp_dir).joinpath("dataset")
         temp_output.mkdir()
 
         # Process files to temp directory
@@ -359,7 +359,7 @@ def process_directory_archive(
         work_items: list[tuple[Path, Path]] = []
         for cif_path in cif_files:
             stem = cif_path.stem.replace(".cif", "").lower()
-            output_file = temp_output / f"{stem}.json.gz"
+            output_file = temp_output.joinpath(f"{stem}.json.gz")
             work_items.append((cif_path, output_file))
 
         # Determine worker count
