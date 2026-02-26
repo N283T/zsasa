@@ -6,61 +6,32 @@ Optional dependencies for running comparative benchmarks.
 
 ```
 external/
-├── freesasa/        ← vanilla upstream (single-file & batch build dependency)
-├── freesasa_batch/  ← batch runner (source tracked, builds against vanilla freesasa)
-├── lahuta/          ← as-is
-└── rustsasa/        ← vanilla upstream
+├── bin/              ← symlinks to all tool binaries (created by setup.sh)
+├── freesasa/         ← vanilla upstream (cloned by setup.sh)
+├── freesasa_batch/   ← batch runner source (tracked, builds against vanilla freesasa)
+├── lahuta/           ← cloned by setup.sh
+├── rustsasa/         ← vanilla upstream (cloned by setup.sh)
+└── setup.sh          ← one-command setup: clone, build, symlink
 ```
 
-## Setup
-
-### 1. FreeSASA (vanilla)
-
-Required for both single-file benchmarks and building `freesasa_batch`.
+## Quick Start
 
 ```bash
 cd benchmarks/external
-git clone https://github.com/mittinatten/freesasa.git
-cd freesasa
-./configure --enable-threads
-make
+./setup.sh
 ```
 
-Binary: `freesasa/src/freesasa`
+This will clone, build, and symlink all tool binaries into `bin/`.
 
-### 2. freesasa_batch (batch benchmark)
-
-Builds against the vanilla FreeSASA library from step 1.
+To build a single tool:
 
 ```bash
-cd benchmarks/external/freesasa_batch
-make
+./setup.sh freesasa
+./setup.sh rustsasa
+./setup.sh lahuta
+./setup.sh freesasa_batch
+./setup.sh zsasa          # symlink only (run 'zig build' first)
 ```
-
-Binary: `freesasa_batch/freesasa_batch`
-
-### 3. RustSASA (vanilla)
-
-```bash
-cd benchmarks/external
-git clone --recursive https://github.com/mcisb/rustsasa.git
-cd rustsasa
-cargo build --release --features cli
-```
-
-Binary: `rustsasa/target/release/rust-sasa`
-
-### 4. Lahuta
-
-```bash
-cd benchmarks/external
-git clone https://github.com/DominikSko/lahuta.git
-cd lahuta
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release
-```
-
-Binary: `lahuta/build/cli/lahuta`
 
 ## Usage
 

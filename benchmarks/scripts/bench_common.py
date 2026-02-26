@@ -54,31 +54,32 @@ def parse_threads(threads_str: str) -> list[int]:
     return sorted(set(result))
 
 
+def _bin_dir() -> Path:
+    """Get benchmarks/external/bin/ directory (populated by setup.sh)."""
+    return Path(__file__).parent.parent.joinpath("external", "bin")
+
+
+# tool name -> binary filename in bin/
+_TOOL_BINARIES = {
+    "zig": "zsasa",
+    "freesasa": "freesasa",
+    "rust": "rust-sasa",
+    "lahuta": "lahuta",
+}
+
+
 def get_binary_path(tool: str) -> Path:
-    """Get binary path for a tool.
+    """Get binary path for a tool (all symlinked in external/bin/ by setup.sh).
 
     Tools:
-        zig      -> zig-out/bin/zsasa
-        freesasa -> benchmarks/external/freesasa/src/freesasa
-        rust     -> benchmarks/external/rustsasa/target/release/rust-sasa
-        lahuta   -> benchmarks/external/lahuta/build/cli/lahuta
+        zig      -> bin/zsasa
+        freesasa -> bin/freesasa
+        rust     -> bin/rust-sasa
+        lahuta   -> bin/lahuta
     """
-    root = Path(__file__).parent.parent.parent
-
-    if tool == "zig":
-        return root.joinpath("zig-out", "bin", "zsasa")
-    elif tool == "freesasa":
-        return root.joinpath("benchmarks", "external", "freesasa", "src", "freesasa")
-    elif tool == "rust":
-        return root.joinpath(
-            "benchmarks", "external", "rustsasa", "target", "release", "rust-sasa"
-        )
-    elif tool == "lahuta":
-        return root.joinpath(
-            "benchmarks", "external", "lahuta", "build", "cli", "lahuta"
-        )
-    else:
+    if tool not in _TOOL_BINARIES:
         raise ValueError(f"Unknown tool: {tool}")
+    return _bin_dir().joinpath(_TOOL_BINARIES[tool])
 
 
 def get_system_info() -> dict:
@@ -188,9 +189,7 @@ def quote_path(path: Path) -> str:
     return shlex.quote(str(path))
 
 
-def run_hyperfine(
-    cmd: str, warmup: int, runs: int, json_path: Path
-) -> dict | None:
+def run_hyperfine(cmd: str, warmup: int, runs: int, json_path: Path) -> dict | None:
     """Run hyperfine and return results dict, or None on failure.
 
     Times out after 600 seconds. Logs diagnostic details on failure.

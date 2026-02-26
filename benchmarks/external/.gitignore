@@ -3,5 +3,6 @@ freesasa/
 rustsasa/
 lahuta/
 
-# Built binary (source is tracked)
+# Built binaries
 freesasa_batch/freesasa_batch
+bin/

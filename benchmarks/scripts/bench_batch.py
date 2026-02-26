@@ -51,7 +51,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from bench_common import get_system_info, parse_threads
+from bench_common import get_system_info, parse_threads, get_binary_path
 
 app = typer.Typer(help="Batch SASA benchmark (hyperfine-based)")
 console = Console()
@@ -73,19 +73,13 @@ def get_root_dir() -> Path:
 
 
 def get_binary_paths() -> dict[str, Path]:
-    """Get paths to tool binaries."""
-    root = get_root_dir()
+    """Get paths to tool binaries (all in external/bin/ via setup.sh)."""
+    bin_dir = get_root_dir().joinpath("benchmarks", "external", "bin")
     return {
-        "zsasa": root.joinpath("zig-out", "bin", "zsasa"),
-        "freesasa_batch": root.joinpath(
-            "benchmarks", "external", "freesasa_batch", "freesasa_batch"
-        ),
-        "rustsasa": root.joinpath(
-            "benchmarks", "external", "rustsasa", "target", "release", "rust-sasa"
-        ),
-        "lahuta": root.joinpath(
-            "benchmarks", "external", "lahuta", "build", "cli", "lahuta"
-        ),
+        "zsasa": get_binary_path("zig"),
+        "freesasa_batch": bin_dir.joinpath("freesasa_batch"),
+        "rustsasa": get_binary_path("rust"),
+        "lahuta": get_binary_path("lahuta"),
     }
 
 
