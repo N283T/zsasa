@@ -37,7 +37,6 @@ from __future__ import annotations
 import json
 import os
 import platform
-import re
 import subprocess
 import tempfile
 from datetime import datetime
@@ -76,8 +75,8 @@ def get_binary_paths() -> dict[str, Path]:
     root = get_root_dir()
     return {
         "zsasa": root.joinpath("zig-out", "bin", "zsasa"),
-        "freesasa": root.joinpath(
-            "benchmarks", "external", "freesasa-bench", "src", "freesasa"
+        "freesasa_batch": root.joinpath(
+            "benchmarks", "external", "freesasa-bench", "src", "freesasa_batch"
         ),
     }
 
@@ -171,48 +170,35 @@ def run_freesasa(
     binaries: dict[str, Path],
     n_points: int = 100,
 ) -> dict[str, float]:
-    """Run FreeSASA per-file via CLI. Returns {stem: total_sasa}."""
-    binary = binaries["freesasa"]
+    """Run FreeSASA batch binary. Returns {stem: total_sasa}."""
+    binary = binaries["freesasa_batch"]
     if not binary.exists():
-        console.print(f"[red]freesasa not found: {binary}[/]")
-        return {}
-
-    pdb_files = sorted(input_dir.glob("*.pdb"))
-    if not pdb_files:
-        pdb_files = sorted(input_dir.glob("*.ent"))
-    if not pdb_files:
-        console.print("[red]No PDB files found in input directory[/]")
+        console.print(f"[red]freesasa_batch not found: {binary}[/]")
         return {}
 
     results: dict[str, float] = {}
 
-    from rich.progress import Progress
+    with tempfile.TemporaryDirectory(prefix="validation_freesasa_") as tmp:
+        out_dir = Path(tmp)
+        cmd = [
+            str(binary),
+            str(input_dir),
+            str(out_dir),
+            f"--n-threads=1",
+            f"--n-points={n_points}",
+        ]
+        console.print(f"  [dim]$ {' '.join(cmd)}[/]")
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        if proc.returncode != 0:
+            console.print(f"[red]freesasa_batch failed: {proc.stderr[:500]}[/]")
+            return {}
 
-    with Progress(console=console) as progress:
-        task = progress.add_task("  FreeSASA", total=len(pdb_files))
-        for pdb_file in pdb_files:
-            cmd = [str(binary), str(pdb_file)]
-            if algorithm == "sr":
-                cmd.extend(["--shrake-rupley", f"--resolution={n_points}"])
-            else:
-                cmd.extend(["--lee-richards", "--resolution=20"])
-
+        for txt_file in sorted(out_dir.glob("*.txt")):
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                if proc.returncode != 0:
-                    progress.advance(task)
-                    continue
-
-                for line in proc.stdout.split("\n"):
-                    if line.startswith("Total"):
-                        match = re.search(r"[\d.]+", line)
-                        if match:
-                            results[pdb_file.stem] = float(match.group())
-                            break
-            except (subprocess.TimeoutExpired, ValueError):
-                pass
-
-            progress.advance(task)
+                total = float(txt_file.read_text().strip())
+                results[txt_file.stem] = total
+            except ValueError:
+                continue
 
     return results
 
