@@ -219,9 +219,9 @@ def run_zig(
             cmd.append(f"--n-slices={n_slices}")
         else:
             cmd.append(f"--n-points={n_points}")
-        cmd.extend([str(input_path), str(output_path)])
         if use_bitmask:
-            cmd.insert(-2, "--use-bitmask")
+            cmd.append("--use-bitmask")
+        cmd.extend([str(input_path), str(output_path)])
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
@@ -392,7 +392,7 @@ def print_summary(csv_path: Path, warmup: int, runs: int) -> None:
         times = by_threads[t]
         n = len(times)
         mean = sum(times) / n
-        variance = sum((x - mean) ** 2 for x in times) / n if n > 1 else 0.0
+        variance = sum((x - mean) ** 2 for x in times) / (n - 1) if n > 1 else 0.0
         std = math.sqrt(variance)
         total_s = sum(times) / 1000.0
         table.add_row(

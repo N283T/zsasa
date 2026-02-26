@@ -205,10 +205,6 @@ def main(
 
     tool_canonical, tool_base, precision = parse_tool(tool)
 
-    if tool_base == "rust":
-        console.print("[red]Error:[/red] RustSASA does not support LR algorithm")
-        raise typer.Exit(1)
-
     # Load sample filter
     sample_ids: set[str] | None = None
     if sample_file is not None:
