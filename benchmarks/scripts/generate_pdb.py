@@ -55,10 +55,6 @@ _DEFAULT_AFDB_DIR = Path(
     )
 )
 
-# Default PDB mirror directory
-# Overridden at runtime by --pdb-dir CLI option
-_DEFAULT_PDB_DIR = Path(os.environ.get("PDB_DIR", "/data/pdb"))
-
 
 def _count_pdb_atoms(pdb_path: Path) -> int:
     """Count ATOM records in a PDB file."""
@@ -80,15 +76,15 @@ def afdb_id_to_filename(entry_id: str) -> str:
     return f"{converted}.pdb"
 
 
-def pdb_id_to_cif_path(entry_id: str, pdb_dir: Path) -> Path:
-    """Convert PDB ID to mmCIF path.
+def resolve_cif_path(entry_id: str) -> Path:
+    """Resolve PDB code to mmCIF path using gemmi and $PDB_DIR.
 
-    3lml -> $PDB_DIR/data/structures/divided/mmCIF/lm/3lml.cif.gz
+    Uses gemmi.expand_if_pdb_code which follows the BioJava convention:
+    3lml -> $PDB_DIR/structures/divided/mmCIF/lm/3lml.cif.gz
+
+    Requires $PDB_DIR environment variable to be set.
     """
-    mid2 = entry_id[1:3]
-    return pdb_dir.joinpath(
-        "data", "structures", "divided", "mmCIF", mid2, f"{entry_id}.cif.gz"
-    )
+    return Path(gemmi.expand_if_pdb_code(entry_id))
 
 
 def clean_cif_to_pdb(cif_path: Path, output_path: Path) -> tuple[str, int]:
@@ -130,15 +126,17 @@ def clean_cif_to_pdb(cif_path: Path, output_path: Path) -> tuple[str, int]:
 
 
 def process_entry(
-    args: tuple[str, str, Path, Path, Path],
+    args: tuple[str, str, Path, Path],
 ) -> tuple[str, int, str]:
     """Process a single sample entry. Returns (id, n_atoms, status).
 
     Status is one of: "skipped" (already exists), "copied" (AFDB source),
     "processed" (CIF converted), "empty" (no atoms after cleaning),
     or "error: <detail>".
+
+    PDB source entries use gemmi.expand_if_pdb_code (reads $PDB_DIR env var).
     """
-    entry_id, source, output_path, afdb_dir, pdb_dir = args
+    entry_id, source, output_path, afdb_dir = args
 
     try:
         if output_path.exists():
@@ -157,8 +155,8 @@ def process_entry(
             return (entry_id, n_atoms, "copied")
 
         elif source == "pdb":
-            # PDB: preprocess mmCIF -> PDB
-            cif_path = pdb_id_to_cif_path(entry_id, pdb_dir)
+            # PDB: resolve via gemmi ($PDB_DIR), preprocess mmCIF -> PDB
+            cif_path = resolve_cif_path(entry_id)
             if not cif_path.exists():
                 return (entry_id, 0, f"error: CIF not found: {cif_path}")
             _, n_atoms = clean_cif_to_pdb(cif_path, output_path)
@@ -211,13 +209,20 @@ def generate(
     ] = None,
     pdb_dir: Annotated[
         Path | None,
-        typer.Option("--pdb-dir", help="PDB mirror directory (overrides $PDB_DIR)"),
+        typer.Option(
+            "--pdb-dir",
+            help="PDB mirror root directory (overrides $PDB_DIR). "
+            "Uses gemmi convention: $PDB_DIR/structures/divided/mmCIF/{mid2}/{id}.cif.gz",
+        ),
     ] = None,
 ) -> None:
     """Generate cleaned PDB files from sample.json or mmCIF directory."""
 
     resolved_afdb_dir = afdb_dir if afdb_dir is not None else _DEFAULT_AFDB_DIR
-    resolved_pdb_dir = pdb_dir if pdb_dir is not None else _DEFAULT_PDB_DIR
+
+    # Set $PDB_DIR for gemmi.expand_if_pdb_code (inherited by worker processes)
+    if pdb_dir is not None:
+        os.environ["PDB_DIR"] = str(pdb_dir)
 
     if not input_path.exists():
         console.print(f"[red]Error: Path not found: {input_path}[/red]")
@@ -229,9 +234,7 @@ def generate(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if input_path.is_file() and input_path.suffix == ".json":
-        _process_sample_file(
-            input_path, output_dir, workers, resolved_afdb_dir, resolved_pdb_dir
-        )
+        _process_sample_file(input_path, output_dir, workers, resolved_afdb_dir)
     elif input_path.is_dir():
         _process_directory(input_path, output_dir, workers)
     else:
@@ -244,7 +247,6 @@ def _process_sample_file(
     output_dir: Path,
     workers: int,
     afdb_dir: Path,
-    pdb_dir: Path,
 ) -> None:
     """Process entries from sample.json."""
     import json
@@ -257,14 +259,14 @@ def _process_sample_file(
         raise typer.Exit(1)
 
     # Collect all entries with source info
-    work_items: list[tuple[str, str, Path, Path, Path]] = []
+    work_items: list[tuple[str, str, Path, Path]] = []
     samples = data["samples"]
 
     if isinstance(samples, list):
         # v1 format: flat list of IDs (no source info, defaults to mmCIF->PDB conversion)
         for entry_id in samples:
             output_path = output_dir.joinpath(f"{entry_id}.pdb")
-            work_items.append((entry_id, "pdb", output_path, afdb_dir, pdb_dir))
+            work_items.append((entry_id, "pdb", output_path, afdb_dir))
     else:
         # v2 format: dict of bins with entries
         for bin_name, entries in samples.items():
@@ -277,17 +279,19 @@ def _process_sample_file(
                 entry_id = entry["id"]
                 source = entry.get("source", "pdb")
                 output_path = output_dir.joinpath(f"{entry_id}.pdb")
-                work_items.append((entry_id, source, output_path, afdb_dir, pdb_dir))
+                work_items.append((entry_id, source, output_path, afdb_dir))
 
     if not work_items:
         console.print("[yellow]No entries to process[/yellow]")
         return
 
     source_counts: dict[str, int] = {}
-    for _, source, _, _, _ in work_items:
+    for _, source, _, _ in work_items:
         source_counts[source] = source_counts.get(source, 0) + 1
 
-    console.print(f"[bold]Processing {len(work_items):,} entries from {sample_path}[/bold]")
+    console.print(
+        f"[bold]Processing {len(work_items):,} entries from {sample_path}[/bold]"
+    )
     for source, count in sorted(source_counts.items()):
         console.print(f"  {source}: {count:,}")
     console.print(f"\nWorkers: [cyan]{workers}[/cyan]")
@@ -340,8 +344,7 @@ def _run_parallel_dir(cif_files: list[Path], output_dir: Path, workers: int) -> 
 
         with ProcessPoolExecutor(max_workers=workers) as executor:
             futures = {
-                executor.submit(_process_dir_entry, item): item
-                for item in work_items
+                executor.submit(_process_dir_entry, item): item for item in work_items
             }
 
             for future in as_completed(futures):
@@ -372,7 +375,7 @@ def _run_parallel_dir(cif_files: list[Path], output_dir: Path, workers: int) -> 
 
 
 def _run_parallel(
-    work_items: list[tuple[str, str, Path, Path, Path]],
+    work_items: list[tuple[str, str, Path, Path]],
     workers: int,
     output_dir: Path,
 ) -> None:
