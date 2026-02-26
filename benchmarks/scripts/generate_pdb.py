@@ -120,6 +120,7 @@ def clean_cif_to_pdb(cif_path: Path, output_path: Path) -> tuple[str, int]:
         return (cif_path.stem.replace(".cif", ""), 0)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    gemmi.shorten_chain_names(st)
     st.write_pdb(str(output_path))
 
     return (cif_path.stem.replace(".cif", ""), n_atoms)
