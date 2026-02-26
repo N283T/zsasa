@@ -50,7 +50,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from bench_common import (
     TOOL_ALIASES,
     TOOLS,
-    get_n_atoms_from_json,
+    get_n_atoms_from_pdb,
     get_system_info,
     load_sample_file,
     parse_threads,
@@ -134,7 +134,7 @@ def main(
     ] = None,
     input_dir: Annotated[
         Path | None,
-        typer.Option("--input-dir", "-i", help="Input directory with .json.gz files"),
+        typer.Option("--input-dir", "-i", help="Input directory with .pdb files"),
     ] = None,
     sample_file: Annotated[
         Path | None,
@@ -221,17 +221,17 @@ def main(
         if not input_dir.exists():
             console.print(f"[red]Error:[/red] Input directory not found: {input_dir}")
             raise typer.Exit(1)
-        json_dir = input_dir
+        pdb_dir = input_dir
     else:
-        json_dir = Path(__file__).parent.parent.joinpath("dataset", "json")
-        if not json_dir.exists():
-            console.print(f"[red]Error:[/red] Default dataset not found: {json_dir}")
-            console.print("Run sampling first or specify --input-dir")
+        pdb_dir = Path(__file__).parent.parent.joinpath("dataset", "pdb")
+        if not pdb_dir.exists():
+            console.print(f"[red]Error:[/red] Default dataset not found: {pdb_dir}")
+            console.print("Run generate_pdb.py first or specify --input-dir")
             raise typer.Exit(1)
 
-    structures = scan_input_directory(json_dir)
+    structures = scan_input_directory(pdb_dir)
     if not structures:
-        console.print(f"[red]Error:[/red] No .json.gz files found in {json_dir}")
+        console.print(f"[red]Error:[/red] No .pdb files found in {pdb_dir}")
         raise typer.Exit(1)
 
     # Filter by sample file if provided
@@ -241,7 +241,7 @@ def main(
             console.print("[red]Error:[/red] No matching structures found")
             raise typer.Exit(1)
 
-    console.print(f"Found [cyan]{len(structures):,}[/cyan] structures in {json_dir}")
+    console.print(f"Found [cyan]{len(structures):,}[/cyan] structures in {pdb_dir}")
 
     # Setup output directory
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
@@ -276,7 +276,7 @@ def main(
             "runs": runs,
             "n_slices": n_slices,
             "n_structures": len(structures),
-            "input_dir": str(json_dir),
+            "input_dir": str(pdb_dir),
             "sample_file": str(sample_file) if sample_file else None,
         },
     }
@@ -328,17 +328,15 @@ def main(
 
             for n_threads in thread_counts:
                 for pdb_id, n_atoms in structures:
-                    json_path = json_dir.joinpath(f"{pdb_id}.json.gz")
-                    if not json_path.exists():
-                        json_path = json_dir.joinpath(f"{pdb_id}.json")
-                    if not json_path.exists():
+                    pdb_path = pdb_dir.joinpath(f"{pdb_id}.pdb")
+                    if not pdb_path.exists():
                         console.print(f"[yellow]Skip {pdb_id}: not found[/yellow]")
                         continue
 
                     # Resolve n_atoms lazily
                     if n_atoms == 0:
                         if pdb_id not in n_atoms_cache:
-                            n_atoms_cache[pdb_id] = get_n_atoms_from_json(json_path)
+                            n_atoms_cache[pdb_id] = get_n_atoms_from_pdb(pdb_path)
                         n_atoms = n_atoms_cache[pdb_id]
 
                     # Warmup runs (not recorded)
@@ -348,7 +346,7 @@ def main(
                         try:
                             run_benchmark(
                                 tool_base,
-                                json_path,
+                                pdb_path,
                                 algorithm,
                                 n_threads,
                                 precision,
@@ -366,7 +364,7 @@ def main(
                         try:
                             sasa_time, total_sasa = run_benchmark(
                                 tool_base,
-                                json_path,
+                                pdb_path,
                                 algorithm,
                                 n_threads,
                                 precision,

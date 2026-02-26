@@ -7,13 +7,11 @@ Contains tool definitions, parsing, system info, run functions, and summary disp
 from __future__ import annotations
 
 import csv
-import gzip
 import json
 import math
 import os
 import platform
 import re
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -108,41 +106,35 @@ def get_system_info() -> dict:
     return info
 
 
-def get_n_atoms_from_json(json_path: Path) -> int:
-    """Get number of atoms from a JSON file."""
+def get_n_atoms_from_pdb(pdb_path: Path) -> int:
+    """Count ATOM records in a PDB file."""
+    count = 0
     try:
-        if str(json_path).endswith(".gz"):
-            with gzip.open(json_path, "rt") as f:
-                data = json.load(f)
-        else:
-            with open(json_path) as f:
-                data = json.load(f)
-        return len(data.get("x", []))
+        with open(pdb_path) as f:
+            for line in f:
+                if line.startswith("ATOM  "):
+                    count += 1
     except Exception:
-        return 0
+        pass
+    return count
 
 
 def scan_input_directory(input_dir: Path) -> list[tuple[str, int]]:
-    """Scan directory for .json.gz files and return (id, n_atoms=0) list.
+    """Scan directory for .pdb files and return (id, n_atoms=0) list.
 
     Uses os.scandir for fast scanning. n_atoms is resolved lazily during run.
     """
     entries = []
     with os.scandir(input_dir) as it:
         for entry in it:
-            if entry.is_file() and (
-                entry.name.endswith(".json.gz") or entry.name.endswith(".json")
-            ):
+            if entry.is_file() and entry.name.endswith(".pdb"):
                 entries.append(entry.name)
 
     entries.sort()
 
     structures = []
     for filename in entries:
-        if filename.endswith(".json.gz"):
-            pdb_id = filename[:-8]
-        else:
-            pdb_id = filename[:-5]
+        pdb_id = filename[:-4]  # strip .pdb
         structures.append((pdb_id, 0))
 
     return structures
@@ -176,7 +168,7 @@ def load_sample_file(sample_path: Path) -> list[str]:
 
 
 def run_zig(
-    json_path: Path,
+    pdb_path: Path,
     algorithm: str,
     n_threads: int,
     precision: str = "f64",
@@ -189,21 +181,9 @@ def run_zig(
     if not binary.exists():
         raise FileNotFoundError(f"Zig binary not found: {binary}")
 
-    input_path: Path | None = None
     output_path: Path | None = None
-    cleanup_input = False
 
     try:
-        if str(json_path).endswith(".gz"):
-            with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
-                input_path = Path(f.name)
-            cleanup_input = True
-            with gzip.open(json_path, "rb") as f_in:
-                with open(input_path, "wb") as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-        else:
-            input_path = json_path
-
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             output_path = Path(f.name)
 
@@ -221,7 +201,7 @@ def run_zig(
             cmd.append(f"--n-points={n_points}")
         if use_bitmask:
             cmd.append("--use-bitmask")
-        cmd.extend([str(input_path), str(output_path)])
+        cmd.extend([str(pdb_path), str(output_path)])
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
@@ -243,12 +223,10 @@ def run_zig(
     finally:
         if output_path is not None:
             output_path.unlink(missing_ok=True)
-        if cleanup_input and input_path is not None:
-            input_path.unlink(missing_ok=True)
 
 
 def run_freesasa(
-    json_path: Path,
+    pdb_path: Path,
     algorithm: str,
     n_threads: int,
     n_points: int = 100,
@@ -261,8 +239,7 @@ def run_freesasa(
 
     cmd = [
         str(binary),
-        "--json-input",
-        str(json_path),
+        str(pdb_path),
         f"--n-threads={n_threads}",
     ]
 
@@ -295,7 +272,7 @@ def run_freesasa(
 
 
 def run_rust(
-    json_path: Path,
+    pdb_path: Path,
     n_threads: int,
     n_points: int = 100,
 ) -> tuple[float, float]:
@@ -306,8 +283,7 @@ def run_rust(
 
     cmd = [
         str(binary),
-        "-J",
-        str(json_path),
+        str(pdb_path),
         "-n",
         str(n_points),
         "-t",
@@ -341,7 +317,7 @@ def run_rust(
 
 def run_benchmark(
     tool: str,
-    json_path: Path,
+    pdb_path: Path,
     algorithm: str,
     n_threads: int,
     precision: str = "f64",
@@ -352,14 +328,14 @@ def run_benchmark(
     """Run benchmark for a specific tool. Returns (sasa_time_ms, total_sasa)."""
     if tool == "zig":
         return run_zig(
-            json_path, algorithm, n_threads, precision, n_points, n_slices, use_bitmask
+            pdb_path, algorithm, n_threads, precision, n_points, n_slices, use_bitmask
         )
     elif tool == "freesasa":
-        return run_freesasa(json_path, algorithm, n_threads, n_points, n_slices)
+        return run_freesasa(pdb_path, algorithm, n_threads, n_points, n_slices)
     elif tool == "rust":
         if algorithm != "sr":
             raise ValueError("RustSASA only supports SR algorithm")
-        return run_rust(json_path, n_threads, n_points)
+        return run_rust(pdb_path, n_threads, n_points)
     else:
         raise ValueError(f"Unknown tool: {tool}")
 
