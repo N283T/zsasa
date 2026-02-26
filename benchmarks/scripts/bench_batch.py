@@ -81,7 +81,7 @@ def get_binary_paths() -> dict[str, Path]:
             "benchmarks", "external", "freesasa-bench", "src", "freesasa_batch"
         ),
         "rustsasa": root.joinpath(
-            "benchmarks", "external", "rustsasa-bench", "target", "release", "rust-sasa"
+            "benchmarks", "external", "rustsasa", "target", "release", "rust-sasa"
         ),
         "lahuta": root.joinpath(
             "benchmarks", "external", "lahuta", "build", "cli", "lahuta"

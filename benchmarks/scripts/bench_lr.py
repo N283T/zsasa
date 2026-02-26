@@ -3,42 +3,35 @@
 # requires-python = ">=3.12"
 # dependencies = ["rich>=13.0", "typer>=0.9.0"]
 # ///
-"""LR benchmark runner.
+"""LR single-file benchmark runner (hyperfine).
 
-Runs benchmark for a single tool using the Lee-Richards algorithm
-with configurable thread counts.
-Uses internal timing (SASA-only) with warmup runs for statistical reliability.
-Results are saved to CSV with execution config in JSON.
+Runs wall-clock benchmarks for a single tool using the Lee-Richards algorithm
+with configurable thread counts. Uses hyperfine for timing (includes I/O).
 
-Tools: zig_f64 (default), zig_f32, freesasa (zig = zig_f64 alias)
-Note: RustSASA does not support LR algorithm.
+Tools: zig_f64, zig_f32, freesasa
+Note: RustSASA and Lahuta do not support the LR algorithm.
 
 Usage:
-    ./benchmarks/scripts/bench_lr.py --tool zig_f64
-    ./benchmarks/scripts/bench_lr.py --tool zig_f32
-    ./benchmarks/scripts/bench_lr.py --tool freesasa
+    ./benchmarks/scripts/bench_lr.py --tool zig_f64 --threads 1,4,8
+    ./benchmarks/scripts/bench_lr.py --tool freesasa --threads 1 --warmup 3 --runs 10
 
-    # "zig" is shorthand for "zig_f64"
-    ./benchmarks/scripts/bench_lr.py --tool zig
-
-    # Quick test (no warmup, 1 run)
-    ./benchmarks/scripts/bench_lr.py --tool zig --threads 1 --warmup 0 --runs 1
-
-    # Replay from existing config
-    ./benchmarks/scripts/bench_lr.py --config results/single_lr/20/zig_f64_lr/config.json
+    # Quick test
+    ./benchmarks/scripts/bench_lr.py --tool zig_f64 --threads 1 --warmup 0 --runs 1 \
+        --input benchmarks/dataset/pdb/1gyt.pdb
 
 Output:
     benchmarks/results/single_lr/<n_slices>/<tool>_lr/
     ├── config.json   # System info and parameters
-    └── results.csv   # Benchmark results (warmup runs excluded)
-
-    Examples: single_lr/20/zig_f64_lr/, single_lr/20/freesasa_lr/
+    └── results.csv   # Benchmark results (mean, stddev, min, max in seconds)
 """
 
 from __future__ import annotations
 
 import csv
 import json
+import shutil
+import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -46,88 +39,140 @@ from typing import Annotated
 import typer
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
+from rich.table import Table
 
 from bench_common import (
-    TOOL_ALIASES,
-    TOOLS,
+    get_binary_path,
     get_n_atoms_from_pdb,
     get_system_info,
     load_sample_file,
     parse_threads,
-    parse_tool,
-    print_summary,
-    run_benchmark,
     scan_input_directory,
 )
 
-app = typer.Typer(help="LR benchmark runner")
+app = typer.Typer(help="LR single-file benchmark runner (hyperfine)")
 console = Console()
 
 LR_TOOLS = ["zig_f64", "zig_f32", "freesasa"]
+TOOL_ALIASES = {"zig": "zig_f64"}
 
 
-def _resolve_params(
-    cfg: dict,
-    *,
-    tool: str | None,
-    threads: str | None,
-    runs: int | None,
-    warmup: int | None,
-    n_slices: int | None,
-    input_dir: Path | None,
-    sample_file: Path | None,
-) -> dict:
-    """Resolve parameters: CLI > config > defaults."""
-    return {
-        "tool": tool or cfg.get("tool"),
-        "threads": threads
-        or (
-            ",".join(str(t) for t in cfg["thread_counts"])
-            if "thread_counts" in cfg
-            else "1,4,10"
-        ),
-        "runs": runs if runs is not None else cfg.get("runs", 5),
-        "warmup": warmup if warmup is not None else cfg.get("warmup", 1),
-        "n_slices": n_slices if n_slices is not None else cfg.get("n_slices", 20),
-        "input_dir": input_dir
-        or (Path(cfg["input_dir"]) if cfg.get("input_dir") else None),
-        "sample_file": (
-            sample_file
-            or (Path(cfg["sample_file"]) if cfg.get("sample_file") else None)
-        ),
-    }
+def _parse_tool(tool: str) -> tuple[str, str, str]:
+    """Parse tool name into (canonical, base, precision)."""
+    tool = TOOL_ALIASES.get(tool, tool)
+    if tool.startswith("zig_f"):
+        return tool, "zig", tool.split("_")[1]
+    return tool, tool, "f64"
+
+
+def _build_command(
+    base: str, precision: str, pdb_path: Path, n_threads: int, n_slices: int
+) -> str | None:
+    """Build shell command for a tool. Returns None if unsupported."""
+    binary = get_binary_path(base)
+
+    if base == "zig":
+        return (
+            f"{binary} calc --algorithm=lr --threads={n_threads}"
+            f" --precision={precision} --n-slices={n_slices}"
+            f" {pdb_path} /dev/null"
+        )
+    elif base == "freesasa":
+        return (
+            f"{binary} --lee-richards --resolution={n_slices}"
+            f" --n-threads={n_threads} {pdb_path}"
+        )
+    else:
+        return None
+
+
+def _run_hyperfine(
+    cmd: str, warmup: int, runs: int, json_path: Path
+) -> dict | None:
+    """Run hyperfine and return results dict, or None on failure."""
+    hyperfine_cmd = [
+        "hyperfine",
+        "--warmup",
+        str(warmup),
+        "--runs",
+        str(runs),
+        "--export-json",
+        str(json_path),
+        cmd,
+    ]
+    try:
+        subprocess.run(
+            hyperfine_cmd, check=True, capture_output=True, text=True, timeout=600
+        )
+        if json_path.exists():
+            with open(json_path) as f:
+                data = json.load(f)
+            if data.get("results"):
+                return data["results"][0]
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _print_summary(csv_path: Path) -> None:
+    """Print summary table from results CSV."""
+    from collections import defaultdict
+
+    by_threads: dict[int, list[float]] = defaultdict(list)
+
+    with open(csv_path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            by_threads[int(row["threads"])].append(float(row["mean_s"]))
+
+    if not by_threads:
+        return
+
+    table = Table(title="Summary (wall-clock per structure)")
+    table.add_column("Threads", style="cyan", justify="right")
+    table.add_column("N", justify="right")
+    table.add_column("Mean (s)", justify="right")
+    table.add_column("Min (s)", justify="right")
+    table.add_column("Max (s)", justify="right")
+
+    for t in sorted(by_threads):
+        times = by_threads[t]
+        n = len(times)
+        mean = sum(times) / n
+        table.add_row(
+            str(t),
+            f"{n:,}",
+            f"{mean:.4f}",
+            f"{min(times):.4f}",
+            f"{max(times):.4f}",
+        )
+
+    console.print()
+    console.print(table)
 
 
 @app.command()
 def main(
-    config_file: Annotated[
-        Path | None,
-        typer.Option(
-            "--config",
-            "-c",
-            help="Load parameters from existing config.json (CLI args override)",
-        ),
-    ] = None,
     tool: Annotated[
-        str | None,
+        str,
         typer.Option(
             "--tool",
             "-t",
             help="Tool: zig_f64, zig_f32, freesasa (zig = zig_f64)",
         ),
-    ] = None,
+    ],
     threads: Annotated[
-        str | None,
-        typer.Option("--threads", "-T", help="Thread counts: '1,4,10' or '1-10'"),
-    ] = None,
+        str,
+        typer.Option("--threads", "-T", help="Thread counts: '1,4,8' or '1-10'"),
+    ] = "1,4,10",
     runs: Annotated[
-        int | None,
-        typer.Option("--runs", "-r", help="Number of measured runs per configuration"),
-    ] = None,
+        int,
+        typer.Option("--runs", "-r", help="Number of hyperfine runs per configuration"),
+    ] = 5,
     warmup: Annotated[
-        int | None,
-        typer.Option("--warmup", "-w", help="Warmup runs (not recorded)"),
-    ] = None,
+        int,
+        typer.Option("--warmup", "-w", help="Hyperfine warmup runs"),
+    ] = 1,
     output_dir: Annotated[
         Path | None,
         typer.Option("--output-dir", "-o", help="Output directory"),
@@ -136,110 +181,89 @@ def main(
         Path | None,
         typer.Option("--input-dir", "-i", help="Input directory with .pdb files"),
     ] = None,
+    input_file: Annotated[
+        Path | None,
+        typer.Option("--input", help="Single .pdb file to benchmark"),
+    ] = None,
     sample_file: Annotated[
         Path | None,
-        typer.Option(
-            "--sample-file",
-            "-S",
-            help="Sample file to filter structures (v1 or v2 format)",
-        ),
+        typer.Option("--sample-file", "-S", help="Sample file to filter structures"),
     ] = None,
     n_slices: Annotated[
-        int | None,
-        typer.Option(
-            "--n-slices",
-            help="Number of slices per atom diameter (default: 20)",
-        ),
-    ] = None,
+        int,
+        typer.Option("--n-slices", help="Number of slices per atom diameter"),
+    ] = 20,
     force: Annotated[
         bool,
         typer.Option("--force", "-f", help="Overwrite existing results"),
     ] = False,
 ) -> None:
-    """Run LR benchmark for a single tool.
-
-    Use --config to replay from an existing config.json. CLI args override config values.
-    """
-
-    # Load config if provided
-    cfg: dict = {}
-    if config_file is not None:
-        if not config_file.exists():
-            console.print(f"[red]Error:[/red] Config file not found: {config_file}")
-            raise typer.Exit(1)
-        cfg = json.loads(config_file.read_text()).get("parameters", {})
-        console.print(f"[cyan]Loaded config:[/cyan] {config_file}")
-
-    # Resolve: CLI > config > defaults
-    p = _resolve_params(
-        cfg,
-        tool=tool,
-        threads=threads,
-        runs=runs,
-        warmup=warmup,
-        n_slices=n_slices,
-        input_dir=input_dir,
-        sample_file=sample_file,
-    )
-    tool = p["tool"]
-    algorithm = "lr"
-    runs = p["runs"]
-    warmup = p["warmup"]
-    n_slices = p["n_slices"]
-    input_dir = p["input_dir"]
-    sample_file = p["sample_file"]
-
-    # Validate required params
-    if not tool:
-        console.print("[red]Error:[/red] --tool is required (or use --config)")
+    """Run LR single-file benchmark using hyperfine."""
+    # Check hyperfine
+    if not shutil.which("hyperfine"):
+        console.print("[red]Error: hyperfine not found. Install it first.[/red]")
         raise typer.Exit(1)
 
-    thread_counts = parse_threads(p["threads"])
-
-    # Parse and validate tool
-    all_valid = list(LR_TOOLS) + [k for k, v in TOOL_ALIASES.items() if v in LR_TOOLS]
+    # Parse tool
+    all_valid = LR_TOOLS + [k for k, v in TOOL_ALIASES.items() if v in LR_TOOLS]
     if tool not in all_valid:
         console.print(f"[red]Error:[/red] Unknown or unsupported tool for LR: {tool}")
         console.print(f"Available: {', '.join(LR_TOOLS)} (zig = zig_f64)")
         raise typer.Exit(1)
 
-    tool_canonical, tool_base, precision = parse_tool(tool)
+    tool_canonical, tool_base, precision = _parse_tool(tool)
+    thread_counts = parse_threads(threads)
 
-    # Load sample filter
-    sample_ids: set[str] | None = None
-    if sample_file is not None:
-        if not sample_file.exists():
-            console.print(f"[red]Error:[/red] Sample file not found: {sample_file}")
-            raise typer.Exit(1)
-        sample_ids = set(load_sample_file(sample_file))
-        console.print(
-            f"Loaded [cyan]{len(sample_ids):,}[/cyan] samples from {sample_file}"
-        )
-
-    # Setup input directory
-    if input_dir is not None:
-        if not input_dir.exists():
-            console.print(f"[red]Error:[/red] Input directory not found: {input_dir}")
-            raise typer.Exit(1)
-        pdb_dir = input_dir
-    else:
-        pdb_dir = Path(__file__).parent.parent.joinpath("dataset", "pdb")
-        if not pdb_dir.exists():
-            console.print(f"[red]Error:[/red] Default dataset not found: {pdb_dir}")
-            console.print("Run generate_pdb.py first or specify --input-dir")
-            raise typer.Exit(1)
-
-    structures = scan_input_directory(pdb_dir)
-    if not structures:
-        console.print(f"[red]Error:[/red] No .pdb files found in {pdb_dir}")
+    # Check binary exists
+    binary = get_binary_path(tool_base)
+    if not binary.exists():
+        console.print(f"[red]Error:[/red] Binary not found: {binary}")
         raise typer.Exit(1)
 
-    # Filter by sample file if provided
-    if sample_ids is not None:
-        structures = [(pdb_id, n) for pdb_id, n in structures if pdb_id in sample_ids]
-        if not structures:
-            console.print("[red]Error:[/red] No matching structures found")
+    # Resolve input: single file or directory
+    if input_file is not None:
+        if not input_file.exists():
+            console.print(f"[red]Error:[/red] Input file not found: {input_file}")
             raise typer.Exit(1)
+        pdb_dir = input_file.parent
+        pdb_id = input_file.stem
+        structures = [(pdb_id, 0)]
+    else:
+        if input_dir is not None:
+            if not input_dir.exists():
+                console.print(
+                    f"[red]Error:[/red] Input directory not found: {input_dir}"
+                )
+                raise typer.Exit(1)
+            pdb_dir = input_dir
+        else:
+            pdb_dir = Path(__file__).parent.parent.joinpath("dataset", "pdb")
+            if not pdb_dir.exists():
+                console.print(f"[red]Error:[/red] Default dataset not found: {pdb_dir}")
+                raise typer.Exit(1)
+
+        structures = scan_input_directory(pdb_dir)
+        if not structures:
+            console.print(f"[red]Error:[/red] No .pdb files found in {pdb_dir}")
+            raise typer.Exit(1)
+
+        # Filter by sample file
+        if sample_file is not None:
+            if not sample_file.exists():
+                console.print(
+                    f"[red]Error:[/red] Sample file not found: {sample_file}"
+                )
+                raise typer.Exit(1)
+            sample_ids = set(load_sample_file(sample_file))
+            structures = [
+                (pdb_id, n) for pdb_id, n in structures if pdb_id in sample_ids
+            ]
+            if not structures:
+                console.print("[red]Error:[/red] No matching structures found")
+                raise typer.Exit(1)
+            console.print(
+                f"Loaded [cyan]{len(sample_ids):,}[/cyan] samples from {sample_file}"
+            )
 
     console.print(f"Found [cyan]{len(structures):,}[/cyan] structures in {pdb_dir}")
 
@@ -247,13 +271,9 @@ def main(
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     if output_dir is None:
         output_dir = Path(__file__).parent.parent.joinpath(
-            "results",
-            "single_lr",
-            str(n_slices),
-            f"{tool_canonical}_lr",
+            "results", "single_lr", str(n_slices), f"{tool_canonical}_lr"
         )
 
-    # Overwrite protection
     existing_csv = output_dir.joinpath("results.csv")
     if existing_csv.exists() and not force:
         console.print(f"[yellow]Warning:[/yellow] Results already exist: {output_dir}")
@@ -269,7 +289,7 @@ def main(
         "parameters": {
             "tool": tool_canonical,
             "tool_base": tool_base,
-            "algorithm": algorithm,
+            "algorithm": "lr",
             "precision": precision,
             "thread_counts": thread_counts,
             "warmup": warmup,
@@ -283,20 +303,17 @@ def main(
     config_path = output_dir.joinpath("config.json")
     config_path.write_text(json.dumps(config, indent=2))
 
-    # Calculate totals
-    total_measured = len(structures) * len(thread_counts) * runs
-    total_warmup = len(structures) * len(thread_counts) * warmup
-    total_all = total_measured + total_warmup
+    total = len(structures) * len(thread_counts)
 
-    console.print(f"\n[bold]{tool_canonical.upper()} LR[/bold]")
+    console.print(f"\n[bold]{tool_canonical.upper()} LR (hyperfine)[/bold]")
     console.print(
-        f"Threads: {thread_counts}, "
-        f"Warmup: {warmup}, Runs: {runs}, "
-        f"Total: {total_all:,} ({total_warmup:,} warmup + {total_measured:,} measured)\n"
+        f"Threads: {thread_counts}, Warmup: {warmup}, Runs: {runs}, "
+        f"Structures: {len(structures)}, Total benchmarks: {total}\n"
     )
 
     # Run benchmarks
     csv_path = output_dir.joinpath("results.csv")
+    n_atoms_cache: dict[str, int] = {}
 
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(
@@ -308,9 +325,11 @@ def main(
                 "algorithm",
                 "precision",
                 "threads",
-                "run",
-                "sasa_time_ms",
-                "total_sasa",
+                "mean_s",
+                "stddev_s",
+                "min_s",
+                "max_s",
+                "median_s",
             ],
         )
         writer.writeheader()
@@ -322,73 +341,61 @@ def main(
             TextColumn("{task.completed}/{task.total}"),
             console=console,
         ) as progress:
-            task = progress.add_task("Running", total=total_all)
+            task = progress.add_task("Running", total=total)
 
-            n_atoms_cache: dict[str, int] = {}
-
-            for n_threads in thread_counts:
-                for pdb_id, n_atoms in structures:
-                    pdb_path = pdb_dir.joinpath(f"{pdb_id}.pdb")
-                    if not pdb_path.exists():
-                        console.print(f"[yellow]Skip {pdb_id}: not found[/yellow]")
-                        continue
-
-                    # Resolve n_atoms lazily
-                    if n_atoms == 0:
-                        if pdb_id not in n_atoms_cache:
-                            n_atoms_cache[pdb_id] = get_n_atoms_from_pdb(pdb_path)
-                        n_atoms = n_atoms_cache[pdb_id]
-
-                    # Warmup runs (not recorded)
-                    for w in range(warmup):
-                        desc = f"{pdb_id} t={n_threads} warmup {w + 1}/{warmup}"
-                        progress.update(task, description=desc)
-                        try:
-                            run_benchmark(
-                                tool_base,
-                                pdb_path,
-                                algorithm,
-                                n_threads,
-                                precision,
-                                n_slices=n_slices,
+            with tempfile.TemporaryDirectory(prefix="bench_lr_") as tmpdir:
+                for n_threads in thread_counts:
+                    for pdb_id, n_atoms in structures:
+                        pdb_path = pdb_dir.joinpath(f"{pdb_id}.pdb")
+                        if not pdb_path.exists():
+                            console.print(
+                                f"[yellow]Skip {pdb_id}: not found[/yellow]"
                             )
-                        except Exception:
-                            pass
-                        progress.advance(task)
+                            progress.advance(task)
+                            continue
 
-                    # Measured runs
-                    for run_num in range(1, runs + 1):
-                        desc = f"{pdb_id} t={n_threads} run {run_num}/{runs}"
+                        # Resolve n_atoms lazily
+                        if n_atoms == 0:
+                            if pdb_id not in n_atoms_cache:
+                                n_atoms_cache[pdb_id] = get_n_atoms_from_pdb(pdb_path)
+                            n_atoms = n_atoms_cache[pdb_id]
+
+                        desc = f"{pdb_id} t={n_threads}"
                         progress.update(task, description=desc)
 
-                        try:
-                            sasa_time, total_sasa = run_benchmark(
-                                tool_base,
-                                pdb_path,
-                                algorithm,
-                                n_threads,
-                                precision,
-                                n_slices=n_slices,
-                            )
+                        cmd = _build_command(
+                            tool_base, precision, pdb_path, n_threads, n_slices
+                        )
+                        if cmd is None:
+                            progress.advance(task)
+                            continue
 
+                        json_path = Path(tmpdir).joinpath(
+                            f"{pdb_id}_{n_threads}t.json"
+                        )
+                        result = _run_hyperfine(cmd, warmup, runs, json_path)
+
+                        if result:
                             writer.writerow(
                                 {
-                                    "tool": tool_base,
+                                    "tool": tool_canonical,
                                     "structure": pdb_id,
                                     "n_atoms": n_atoms,
-                                    "algorithm": algorithm,
+                                    "algorithm": "lr",
                                     "precision": precision,
                                     "threads": n_threads,
-                                    "run": run_num,
-                                    "sasa_time_ms": sasa_time,
-                                    "total_sasa": total_sasa,
+                                    "mean_s": result["mean"],
+                                    "stddev_s": result["stddev"],
+                                    "min_s": result["min"],
+                                    "max_s": result["max"],
+                                    "median_s": result["median"],
                                 }
                             )
                             f.flush()
-
-                        except Exception as e:
+                        else:
                             console.print(
-                                f"[red]Error: {pdb_id} t={n_threads}: {e}[/red]"
+                                f"[red]Error: {pdb_id} t={n_threads}: "
+                                f"hyperfine failed[/red]"
                             )
 
                         progress.advance(task)
@@ -397,8 +404,7 @@ def main(
     console.print(f"  - {csv_path.name}")
     console.print(f"  - {config_path.name}")
 
-    # Print summary
-    print_summary(csv_path, warmup, runs)
+    _print_summary(csv_path)
 
 
 if __name__ == "__main__":
