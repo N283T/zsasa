@@ -145,7 +145,12 @@ def main(
         console.print(f"Available: {', '.join(LR_TOOLS)} (zig = zig_f64)")
         raise typer.Exit(1)
 
-    tool_canonical, tool_base, precision, _ = parse_tool(tool)
+    tool_canonical, tool_base, precision, use_bitmask = parse_tool(tool)
+    if use_bitmask:
+        console.print(
+            "[red]Error:[/red] Bitmask mode is not supported for LR benchmarks"
+        )
+        raise typer.Exit(1)
     thread_counts = parse_threads(threads)
 
     # Check binary exists

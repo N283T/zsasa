@@ -81,8 +81,15 @@ def _build_command(
     """Build shell command for a tool.
 
     Raises:
-        ValueError: If tool base is not recognized.
+        ValueError: If tool base is not recognized, or if use_bitmask is True
+            for a tool that does not support bitmask mode.
     """
+    if use_bitmask and base not in ("zig", "lahuta"):
+        raise ValueError(
+            f"Bitmask mode is not supported for tool base '{base}'. "
+            f"Only 'zig' and 'lahuta' support --use-bitmask."
+        )
+
     binary = quote_path(get_binary_path(base))
     quoted = quote_path(pdb_path)
     bitmask_flag = " --use-bitmask" if use_bitmask else ""
@@ -119,7 +126,8 @@ def main(
             "-t",
             help=(
                 "Tool: zig_f64, zig_f32, zig_f64_bitmask, zig_f32_bitmask, "
-                "freesasa, rust, lahuta, lahuta_bitmask (zig = zig_f64)"
+                "freesasa, rust, lahuta, lahuta_bitmask "
+                "(zig = zig_f64, zig_bitmask = zig_f64_bitmask)"
             ),
         ),
     ],

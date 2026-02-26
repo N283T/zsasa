@@ -75,7 +75,7 @@ class Tool(str, Enum):
     lahuta_bitmask = "lahuta_bitmask"
 
 
-ALL_TOOLS = list(Tool)
+ALL_TOOLS = [Tool.zig, Tool.freesasa, Tool.rustsasa, Tool.lahuta]
 
 
 def get_root_dir() -> Path:

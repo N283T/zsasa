@@ -6,7 +6,7 @@
 """Batch MD trajectory SASA benchmark using hyperfine.
 
 Compares SASA calculation performance across implementations:
-- zsasa CLI (Zig, traj mode, f32/f64)
+- zsasa CLI (Zig, traj mode, f32/f64, with optional bitmask neighbor list)
 - zsasa.mdtraj (Python wrapper)
 - zsasa.mdanalysis (Python wrapper)
 - MDTraj shrake_rupley (native, single-threaded)
@@ -26,6 +26,11 @@ Usage:
         --name 5vz0_R1 \\
         --tool zig --tool mdtraj \\
         --threads 1,4,8
+
+    # Bitmask variant
+    ./benchmarks/scripts/bench_md.py \\
+        --xtc traj.xtc --pdb top.pdb \\
+        --name test --tool zig_bitmask
 
     # Quick test with stride
     ./benchmarks/scripts/bench_md.py \\
@@ -75,7 +80,13 @@ class Tool(str, Enum):
     mdsasa_bolt = "mdsasa_bolt"
 
 
-ALL_TOOLS = list(Tool)
+ALL_TOOLS = [
+    Tool.zig,
+    Tool.zsasa_mdtraj,
+    Tool.zsasa_mdanalysis,
+    Tool.mdtraj,
+    Tool.mdsasa_bolt,
+]
 
 
 def get_root_dir() -> Path:
