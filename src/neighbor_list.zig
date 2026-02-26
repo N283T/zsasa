@@ -89,7 +89,8 @@ pub fn CellListGen(comptime T: type) type {
             @memset(counts, 0);
 
             for (positions) |pos| {
-                counts[computeCellIndex(T, pos.x, pos.y, pos.z, x_min, y_min, z_min, cell_size, nx, ny, nz)] += 1;
+                const idx = computeCellIndex(T, pos.x, pos.y, pos.z, x_min, y_min, z_min, cell_size, nx, ny, nz);
+                counts[idx] += 1;
             }
 
             // Build prefix sum into cell_offsets
@@ -136,7 +137,13 @@ pub fn CellListGen(comptime T: type) type {
         }
 
         fn getCellIndex(self: Self, pos: Vec) usize {
-            return computeCellIndex(T, pos.x, pos.y, pos.z, self.x_min, self.y_min, self.z_min, self.cell_size, self.nx, self.ny, self.nz);
+            return computeCellIndex(
+                T,
+                pos.x,     pos.y,     pos.z,
+                self.x_min, self.y_min, self.z_min,
+                self.cell_size,
+                self.nx,    self.ny,    self.nz,
+            );
         }
 
         /// Get cell coordinates from index
@@ -165,6 +172,10 @@ const IterMode = enum { count, fill };
 /// Shared iteration over all neighbor pairs using cell list.
 /// In count mode: increments counts[i] and counts[j] for each pair.
 /// In fill mode: writes indices into neighbor_indices using offsets + counts as cursors.
+///
+/// SAFETY: The count and fill passes MUST iterate in identical order. The `neighbor_indices`
+/// buffer must be sized exactly as computed by a prior count-mode pass (via prefix-sum offsets).
+/// The `counts` array is reused as write cursors in fill mode and must be zeroed beforehand.
 fn processNeighborPairs(
     comptime T: type,
     comptime mode: IterMode,
@@ -187,13 +198,13 @@ fn processNeighborPairs(
         const ciz = @as(i64, @intCast(coords.iz));
 
         // Check all 27 neighboring cells (including self)
-        var dz: i64 = -1;
-        while (dz <= 1) : (dz += 1) {
-            var dy: i64 = -1;
-            while (dy <= 1) : (dy += 1) {
-                var dx: i64 = -1;
-                while (dx <= 1) : (dx += 1) {
-                    const ncell = cell_list.getCellIndexFromCoords(cix + dx, ciy + dy, ciz + dz);
+        var cdz: i64 = -1;
+        while (cdz <= 1) : (cdz += 1) {
+            var cdy: i64 = -1;
+            while (cdy <= 1) : (cdy += 1) {
+                var cdx: i64 = -1;
+                while (cdx <= 1) : (cdx += 1) {
+                    const ncell = cell_list.getCellIndexFromCoords(cix + cdx, ciy + cdy, ciz + cdz);
                     if (ncell) |nidx| {
                         // Only process cell pairs where cell_idx <= nidx to avoid duplicates
                         if (nidx < cell_idx) continue;
@@ -207,10 +218,10 @@ fn processNeighborPairs(
 
                                 const pi = positions[ai];
                                 const pj = positions[aj];
-                                const ddx = pi.x - pj.x;
-                                const ddy = pi.y - pj.y;
-                                const ddz = pi.z - pj.z;
-                                const dist_sq = ddx * ddx + ddy * ddy + ddz * ddz;
+                                const dx = pi.x - pj.x;
+                                const dy = pi.y - pj.y;
+                                const dz = pi.z - pj.z;
+                                const dist_sq = dx * dx + dy * dy + dz * dz;
 
                                 const cutoff = radii[ai] + radii[aj] + 2.0 * probe_radius;
 
@@ -219,8 +230,10 @@ fn processNeighborPairs(
                                         counts[ai] += 1;
                                         counts[aj] += 1;
                                     } else {
+                                        std.debug.assert(offsets[ai] + counts[ai] < offsets[ai + 1]);
                                         neighbor_indices[offsets[ai] + counts[ai]] = aj;
                                         counts[ai] += 1;
+                                        std.debug.assert(offsets[aj] + counts[aj] < offsets[aj + 1]);
                                         neighbor_indices[offsets[aj] + counts[aj]] = ai;
                                         counts[aj] += 1;
                                     }
@@ -255,6 +268,7 @@ pub fn NeighborListGen(comptime T: type) type {
         ) !Self {
             const n_atoms = positions.len;
             if (n_atoms == 0) return error.NoAtoms;
+            std.debug.assert(radii.len == n_atoms);
 
             // Find maximum radius and validate
             var max_radius: T = 0.0;
