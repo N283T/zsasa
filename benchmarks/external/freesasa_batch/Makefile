@@ -5,7 +5,7 @@ FREESASA ?= ../freesasa
 freesasa_batch: freesasa_batch.cc
 	$(CXX) $(CXXFLAGS) -I $(FREESASA)/src \
 		-o $@ $< \
-		$(FREESASA)/src/.libs/libfreesasa.a -lpthread
+		$(FREESASA)/src/libfreesasa.a -lpthread
 
 clean:
 	rm -f freesasa_batch

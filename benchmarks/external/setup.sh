@@ -38,6 +38,7 @@ build_freesasa() {
     fi
     cd freesasa
     if [ ! -f src/freesasa ]; then
+        autoreconf -i
         ./configure --enable-threads --disable-json --disable-xml
         make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
     else
@@ -48,7 +49,7 @@ build_freesasa() {
 
 build_freesasa_batch() {
     info "freesasa_batch"
-    if [ ! -f "$SCRIPT_DIR/freesasa/src/.libs/libfreesasa.a" ]; then
+    if [ ! -f "$SCRIPT_DIR/freesasa/src/libfreesasa.a" ]; then
         err "Build freesasa first (need libfreesasa.a)"
         return 1
     fi
@@ -65,7 +66,7 @@ build_rustsasa() {
     info "RustSASA (vanilla)"
     cd "$SCRIPT_DIR"
     if [ ! -d rustsasa ]; then
-        git clone --recursive https://github.com/mcisb/rustsasa.git
+        git clone --recursive https://github.com/maxall41/RustSASA.git rustsasa
     fi
     cd rustsasa
     if [ ! -f target/release/rust-sasa ]; then
