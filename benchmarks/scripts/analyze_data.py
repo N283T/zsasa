@@ -7,8 +7,9 @@ import polars as pl
 
 # === Path Constants ===
 
-RESULTS_DIR = Path(__file__).parent.parent.joinpath("results")
-PLOTS_DIR = RESULTS_DIR.joinpath("plots")
+_BENCHMARKS_DIR = Path(__file__).parent.parent
+RESULTS_BASE = _BENCHMARKS_DIR.joinpath("results", "single")
+PLOTS_DIR = _BENCHMARKS_DIR.joinpath("results", "plots")
 
 # === Visual Constants ===
 
@@ -65,17 +66,17 @@ BINS = [
 # === Data Loading Functions ===
 
 
-def load_data() -> pl.DataFrame:
-    """Load benchmark results from all result directories.
+def load_data(n_points: int = 100) -> pl.DataFrame:
+    """Load SR benchmark results from RESULTS_BASE/<n_points>/**/results.csv.
 
-    Auto-discovers directories under RESULTS_DIR that contain results.csv.
     Derives tool_label from the CSV data (tool + precision for zig).
     Aggregates multiple runs into mean values per (structure, threads).
     """
-    csv_files = sorted(RESULTS_DIR.glob("*/results.csv"))
+    sr_dir = RESULTS_BASE.joinpath(str(n_points))
+    csv_files = sorted(sr_dir.glob("*/results.csv"))
 
     if not csv_files:
-        raise FileNotFoundError(f"No results.csv files found in {RESULTS_DIR}")
+        raise FileNotFoundError(f"No results.csv files found in {sr_dir}")
 
     dfs = []
     for f in csv_files:

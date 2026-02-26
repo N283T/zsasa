@@ -37,6 +37,8 @@ Output:
     ├── config.json
     ├── bench_zig_f32_4t.json
     ├── bench_zig_f64_4t.json
+    ├── bench_zig_f32_bitmask_4t.json   # with --use-bitmask
+    ├── bench_zig_f64_bitmask_4t.json   # with --use-bitmask
     ├── bench_zsasa_mdtraj_4t.json
     ├── bench_zsasa_mdanalysis_4t.json
     ├── bench_mdtraj_1t.json
@@ -217,6 +219,7 @@ def run_zig(
         return []
 
     results = []
+    bitmask_suffix = "_bitmask" if use_bitmask else ""
 
     for precision in ["f32", "f64"]:
         with tempfile.NamedTemporaryFile(suffix=".csv", prefix="zsasa_") as tmp:
@@ -224,6 +227,7 @@ def run_zig(
 
             for n_threads in thread_counts:
                 bitmask_flag = " --use-bitmask" if use_bitmask else ""
+                bench_name = f"zig_{precision}{bitmask_suffix}_{n_threads}t"
                 cmd = (
                     f"{zsasa} traj {xtc} {pdb}"
                     f" --include-hydrogens"
@@ -235,7 +239,7 @@ def run_zig(
                     f" -o {out_path} -q"
                 )
                 result = run_benchmark(
-                    f"zig_{precision}_{n_threads}t",
+                    bench_name,
                     cmd,
                     results_dir,
                     warmup,
@@ -243,7 +247,7 @@ def run_zig(
                     dry_run,
                 )
                 if result:
-                    results.append({"name": f"zig_{precision}_{n_threads}t", **result})
+                    results.append({"name": bench_name, **result})
 
     return results
 
@@ -553,7 +557,7 @@ def main(
     # Set up paths
     root = get_root_dir()
     if output_dir is None:
-        results_dir = root.joinpath("benchmarks", "results", "md", name)
+        results_dir = root.joinpath("benchmarks", "results", "md", str(n_points), name)
     else:
         results_dir = output_dir
 

@@ -2,10 +2,10 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "polars",
-#     "matplotlib",
-#     "typer",
-#     "rich",
+#     "polars>=1.0",
+#     "matplotlib>=3.8",
+#     "typer>=0.9.0",
+#     "rich>=13.0",
 # ]
 # ///
 """Analyze batch benchmark results (hyperfine JSON format).
@@ -34,16 +34,37 @@ from rich.table import Table
 
 app = typer.Typer(help="Analyze batch benchmark results")
 
-RESULTS_DIR = Path(__file__).parent.parent.joinpath("results", "batch")
-PLOTS_DIR = Path(__file__).parent.parent.joinpath("results", "plots", "batch")
+_BENCHMARKS_DIR = Path(__file__).parent.parent
+RESULTS_BASE = _BENCHMARKS_DIR.joinpath("results", "batch")
+PLOTS_BASE = _BENCHMARKS_DIR.joinpath("results", "plots", "batch")
 
-TOOL_ORDER = {"freesasa": 0, "rustsasa": 1, "zsasa": 2}
+
+def _results_dir(n_points: int) -> Path:
+    return RESULTS_BASE.joinpath(str(n_points))
+
+
+def _plots_dir(n_points: int) -> Path:
+    return PLOTS_BASE.joinpath(str(n_points))
+
+
+TOOL_ORDER = {
+    "freesasa": 0,
+    "rustsasa": 1,
+    "zsasa": 2,
+    "zsasa_bitmask": 3,
+    "lahuta": 4,
+    "lahuta_bitmask": 5,
+}
 
 COLOR_MAP = {
     ("freesasa", None): "#3498db",
     ("rustsasa", None): "#e74c3c",
     ("zsasa", "f32"): "#e67e22",
     ("zsasa", "f64"): "#f39c12",
+    ("zsasa_bitmask", "f32"): "#d35400",
+    ("zsasa_bitmask", "f64"): "#e08e0b",
+    ("lahuta", None): "#9b59b6",
+    ("lahuta_bitmask", None): "#8e44ad",
 }
 
 
@@ -62,15 +83,24 @@ def parse_benchmark_name(filename: str) -> dict:
 
     Examples:
         bench_zsasa_f64_8t.json -> {tool: zsasa, precision: f64, threads: 8}
+        bench_zsasa_f64_bitmask_8t.json -> {tool: zsasa_bitmask, precision: f64, threads: 8}
         bench_freesasa_1t.json -> {tool: freesasa, precision: None, threads: 1}
         bench_rustsasa_8t.json -> {tool: rustsasa, precision: None, threads: 8}
+        bench_lahuta_bitmask_8t.json -> {tool: lahuta_bitmask, precision: None, threads: 8}
     """
     name = filename.replace("bench_", "").replace(".json", "")
 
+    # Extract thread suffix
     threads_match = re.search(r"(\d+)t$", name)
     threads = int(threads_match.group(1)) if threads_match else 1
     name = re.sub(r"_?\d+t$", "", name)
 
+    # Extract _bitmask suffix (before precision parsing)
+    bitmask = "_bitmask" in name
+    if bitmask:
+        name = name.replace("_bitmask", "")
+
+    # Extract precision
     precision = None
     if "_f32" in name:
         precision = "f32"
@@ -79,12 +109,16 @@ def parse_benchmark_name(filename: str) -> dict:
         precision = "f64"
         name = name.replace("_f64", "")
 
+    # Append _bitmask to tool name
+    if bitmask:
+        name = f"{name}_bitmask"
+
     return {"tool": name, "precision": precision, "threads": threads}
 
 
-def load_config(benchmark_name: str) -> dict | None:
+def load_config(benchmark_name: str, n_points: int = 100) -> dict | None:
     """Load config.json for a benchmark."""
-    config_path = RESULTS_DIR.joinpath(benchmark_name, "config.json")
+    config_path = _results_dir(n_points).joinpath(benchmark_name, "config.json")
     if not config_path.exists():
         return None
     with open(config_path) as f:
@@ -117,12 +151,15 @@ def _filter_outliers(times: list[float]) -> list[float]:
     return filtered if filtered else times
 
 
-def load_batch_data(benchmark_name: str | None = None) -> pl.DataFrame:
+def load_batch_data(
+    benchmark_name: str | None = None, n_points: int = 100
+) -> pl.DataFrame:
     """Load batch results from hyperfine JSON files."""
+    results_dir = _results_dir(n_points)
     if benchmark_name:
-        search_dirs = [RESULTS_DIR.joinpath(benchmark_name)]
+        search_dirs = [results_dir.joinpath(benchmark_name)]
     else:
-        search_dirs = sorted(d for d in RESULTS_DIR.iterdir() if d.is_dir())
+        search_dirs = sorted(d for d in results_dir.iterdir() if d.is_dir())
 
     rows = []
     for bench_dir in search_dirs:
@@ -172,7 +209,7 @@ def load_batch_data(benchmark_name: str | None = None) -> pl.DataFrame:
 
     if not rows:
         raise FileNotFoundError(
-            f"No batch results found in {RESULTS_DIR}"
+            f"No batch results found in {results_dir}"
             + (f"/{benchmark_name}" if benchmark_name else "")
         )
 
@@ -213,11 +250,14 @@ def _format_ratio(ratio: float | None, *, is_baseline: bool) -> str:
     return f"[{color}]{ratio:.2f}x[/{color}]"
 
 
-def _get_benchmarks(name: str | None) -> list[str]:
+def _get_benchmarks(name: str | None, n_points: int = 100) -> list[str]:
     """Get list of benchmark names to process."""
     if name:
         return [name]
-    return sorted(d.name for d in RESULTS_DIR.iterdir() if d.is_dir())
+    results_dir = _results_dir(n_points)
+    if not results_dir.exists():
+        return []
+    return sorted(d.name for d in results_dir.iterdir() if d.is_dir())
 
 
 # --- Commands ---
@@ -229,15 +269,19 @@ def summary(
         str | None,
         typer.Option("--name", "-n", help="Benchmark name (e.g., ecoli)"),
     ] = None,
+    n_points: Annotated[
+        int,
+        typer.Option("--n-points", "-N", help="Number of sphere test points"),
+    ] = 100,
 ):
     """Print summary table with speedup ratios and throughput."""
-    df = load_batch_data(name)
+    df = load_batch_data(name, n_points)
 
     for bench_name in df["benchmark"].unique().sort().to_list():
         df_bench = _sort_df(df.filter(pl.col("benchmark") == bench_name))
 
         # Load config for n_files
-        config = load_config(bench_name)
+        config = load_config(bench_name, n_points)
         n_files = config["parameters"]["n_files"] if config else None
 
         # FreeSASA baseline (always 1t)
@@ -317,19 +361,24 @@ def plot(
         str | None,
         typer.Option("--name", "-n", help="Benchmark name (e.g., ecoli)"),
     ] = None,
+    n_points: Annotated[
+        int,
+        typer.Option("--n-points", "-N", help="Number of sphere test points"),
+    ] = 100,
 ):
     """Generate time comparison bar chart."""
     setup_style()
 
-    for bench_name in _get_benchmarks(name):
-        df = _sort_df(load_batch_data(bench_name))
-        _plot_time(df, bench_name)
+    for bench_name in _get_benchmarks(name, n_points):
+        df = _sort_df(load_batch_data(bench_name, n_points))
+        _plot_time(df, bench_name, n_points)
 
 
-def _plot_time(df: pl.DataFrame, bench_name: str):
+def _plot_time(df: pl.DataFrame, bench_name: str, n_points: int = 100):
     """Generate time comparison bar charts per thread count."""
-    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
-    config = load_config(bench_name)
+    plots_dir = _plots_dir(n_points)
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    config = load_config(bench_name, n_points)
 
     thread_counts = sorted(df["threads"].unique().to_list())
 
@@ -383,7 +432,7 @@ def _plot_time(df: pl.DataFrame, bench_name: str):
         ax.set_title(title)
         ax.set_ylim(0, max(times) * 1.15)
 
-        out_path = PLOTS_DIR.joinpath(f"{bench_name}_time_{threads}t.png")
+        out_path = plots_dir.joinpath(f"{bench_name}_time_{threads}t.png")
         fig.savefig(out_path)
         plt.close(fig)
         rprint(f"[green]Saved:[/green] {out_path}")
@@ -395,24 +444,29 @@ def memory(
         str | None,
         typer.Option("--name", "-n", help="Benchmark name (e.g., ecoli)"),
     ] = None,
+    n_points: Annotated[
+        int,
+        typer.Option("--n-points", "-N", help="Number of sphere test points"),
+    ] = 100,
 ):
     """Generate memory usage (RSS) bar chart."""
     setup_style()
 
-    for bench_name in _get_benchmarks(name):
-        df = load_batch_data(bench_name)
+    for bench_name in _get_benchmarks(name, n_points):
+        df = load_batch_data(bench_name, n_points)
         df = df.filter(pl.col("max_rss_mb") > 0)
         if df.height == 0:
             rprint(f"[yellow]No memory data for {bench_name}[/yellow]")
             continue
         df = _sort_df(df)
-        _plot_memory(df, bench_name)
+        _plot_memory(df, bench_name, n_points)
 
 
-def _plot_memory(df: pl.DataFrame, bench_name: str):
+def _plot_memory(df: pl.DataFrame, bench_name: str, n_points: int = 100):
     """Generate memory usage bar charts per thread count."""
-    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
-    config = load_config(bench_name)
+    plots_dir = _plots_dir(n_points)
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    config = load_config(bench_name, n_points)
 
     thread_counts = sorted(df["threads"].unique().to_list())
 
@@ -459,7 +513,7 @@ def _plot_memory(df: pl.DataFrame, bench_name: str):
         ax.set_title(title)
         ax.set_ylim(0, max(rss_values) * 1.15)
 
-        out_path = PLOTS_DIR.joinpath(f"{bench_name}_memory_{threads}t.png")
+        out_path = plots_dir.joinpath(f"{bench_name}_memory_{threads}t.png")
         fig.savefig(out_path)
         plt.close(fig)
         rprint(f"[green]Saved:[/green] {out_path}")
@@ -471,13 +525,17 @@ def all_commands(
         str | None,
         typer.Option("--name", "-n", help="Benchmark name (e.g., ecoli)"),
     ] = None,
+    n_points: Annotated[
+        int,
+        typer.Option("--n-points", "-N", help="Number of sphere test points"),
+    ] = 100,
 ):
     """Generate summary, time charts, and memory charts."""
-    summary(name)
+    summary(name, n_points)
     rprint()
-    plot(name)
+    plot(name, n_points)
     rprint()
-    memory(name)
+    memory(name, n_points)
 
 
 if __name__ == "__main__":
