@@ -499,6 +499,16 @@ def main(
     }
     if not dry_run:
         config_path = results_dir.joinpath("config.json")
+        if config_path.exists():
+            try:
+                existing = json.loads(config_path.read_text())
+                existing_tools = existing.get("parameters", {}).get("tools", [])
+                merged_tools = list(
+                    dict.fromkeys(existing_tools + config["parameters"]["tools"])
+                )
+                config["parameters"]["tools"] = merged_tools
+            except (json.JSONDecodeError, KeyError):
+                pass
         config_path.write_text(json.dumps(config, indent=2))
 
     # Print header
