@@ -286,6 +286,8 @@ def run_lahuta(
     single_tool: bool = False,
 ) -> list[dict]:
     """Run Lahuta benchmarks (AF2 PDB only, Shrake-Rupley)."""
+    # Resolve to absolute path since the command cd's to a temp directory
+    input_dir = input_dir.resolve()
     lahuta = binaries["lahuta"]
     if not lahuta.exists():
         console.print("[yellow][SKIP] lahuta not found[/]")
