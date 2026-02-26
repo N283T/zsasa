@@ -182,14 +182,14 @@ def run_zig(
 
     for precision in ["f64", "f32"]:
         with tempfile.TemporaryDirectory(prefix=f"zsasa_{precision}_") as tmp:
-            out_dir = Path(tmp)
+            out_file = Path(tmp).joinpath("sasa.jsonl")
 
             for n_threads in thread_counts:
                 bitmask_flag = " --use-bitmask" if use_bitmask else ""
                 bench_name = f"zsasa_{precision}{bitmask_suffix}_{n_threads}t"
                 result = run_benchmark(
                     bench_name,
-                    f"{quote_path(zsasa)} batch {quote_path(input_dir)} {quote_path(out_dir)} --threads={n_threads} --precision={precision} --n-points={n_points}{bitmask_flag}",
+                    f"{quote_path(zsasa)} batch {quote_path(input_dir)} --format=jsonl -o {quote_path(out_file)} --threads={n_threads} --precision={precision} --n-points={n_points}{bitmask_flag}",
                     results_dir,
                     warmup,
                     runs,
