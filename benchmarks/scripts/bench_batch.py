@@ -18,6 +18,9 @@ Usage:
     # Single tool test
     ./benchmarks/scripts/bench_batch.py -i /path/to/pdb -n test --tool zig --runs 1
 
+    # Bitmask variant
+    ./benchmarks/scripts/bench_batch.py -i /path/to/pdb -n test --tool zig_bitmask
+
     # Multiple tools (skip freesasa)
     ./benchmarks/scripts/bench_batch.py -i /path/to/pdb -n test --tool zig --tool rustsasa
 
@@ -29,11 +32,11 @@ Output:
     ├── config.json             # System info and parameters
     ├── bench_zsasa_f64_8t.json
     ├── bench_zsasa_f32_8t.json
-    ├── bench_zsasa_f64_bitmask_8t.json  # with --use-bitmask
+    ├── bench_zsasa_f64_bitmask_8t.json  # --tool zig_bitmask
     ├── bench_freesasa_8t.json
     ├── bench_rustsasa_8t.json
     ├── bench_lahuta_8t.json
-    └── bench_lahuta_bitmask_8t.json     # with --use-bitmask
+    └── bench_lahuta_bitmask_8t.json     # --tool lahuta_bitmask
 """
 
 from __future__ import annotations
@@ -51,7 +54,13 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from bench_common import get_system_info, parse_threads, get_binary_path, quote_path
+from bench_common import (
+    LAHUTA_BITMASK_POINTS,
+    get_binary_path,
+    get_system_info,
+    parse_threads,
+    quote_path,
+)
 
 app = typer.Typer(help="Batch SASA benchmark (hyperfine-based)")
 console = Console()
@@ -59,9 +68,11 @@ console = Console()
 
 class Tool(str, Enum):
     zig = "zig"
+    zig_bitmask = "zig_bitmask"
     freesasa = "freesasa"
     rustsasa = "rustsasa"
     lahuta = "lahuta"
+    lahuta_bitmask = "lahuta_bitmask"
 
 
 ALL_TOOLS = [Tool.zig, Tool.freesasa, Tool.rustsasa, Tool.lahuta]
@@ -255,9 +266,6 @@ def run_rustsasa(
     return results
 
 
-LAHUTA_BITMASK_POINTS = {64, 128, 256}
-
-
 def run_lahuta(
     input_dir: Path,
     results_dir: Path,
@@ -433,13 +441,6 @@ def main(
             help="Show commands without running",
         ),
     ] = False,
-    use_bitmask: Annotated[
-        bool,
-        typer.Option(
-            "--use-bitmask",
-            help="Use bitmask neighbor list for zsasa and lahuta",
-        ),
-    ] = False,
 ) -> None:
     """Run batch SASA benchmarks using hyperfine."""
     # Check hyperfine
@@ -484,7 +485,6 @@ def main(
             "warmup": warmup,
             "runs": runs,
             "n_points": n_points,
-            "use_bitmask": use_bitmask,
         },
     }
     if not dry_run:
@@ -514,7 +514,21 @@ def main(
             runs,
             dry_run,
             binaries,
-            use_bitmask,
+            use_bitmask=False,
+        )
+        all_results.extend(results)
+
+    if Tool.zig_bitmask in selected_tools:
+        results = run_zig(
+            input_dir,
+            results_dir,
+            thread_counts,
+            n_points,
+            warmup,
+            runs,
+            dry_run,
+            binaries,
+            use_bitmask=True,
         )
         all_results.extend(results)
 
@@ -554,7 +568,22 @@ def main(
             runs,
             dry_run,
             binaries,
-            use_bitmask,
+            use_bitmask=False,
+            single_tool=(len(selected_tools) == 1),
+        )
+        all_results.extend(results)
+
+    if Tool.lahuta_bitmask in selected_tools:
+        results = run_lahuta(
+            input_dir,
+            results_dir,
+            thread_counts,
+            n_points,
+            warmup,
+            runs,
+            dry_run,
+            binaries,
+            use_bitmask=True,
             single_tool=(len(selected_tools) == 1),
         )
         all_results.extend(results)

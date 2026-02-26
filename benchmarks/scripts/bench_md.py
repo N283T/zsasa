@@ -6,7 +6,7 @@
 """Batch MD trajectory SASA benchmark using hyperfine.
 
 Compares SASA calculation performance across implementations:
-- zsasa CLI (Zig, traj mode, f32/f64)
+- zsasa CLI (Zig, traj mode, f32/f64, with optional bitmask neighbor list)
 - zsasa.mdtraj (Python wrapper)
 - zsasa.mdanalysis (Python wrapper)
 - MDTraj shrake_rupley (native, single-threaded)
@@ -27,6 +27,11 @@ Usage:
         --tool zig --tool mdtraj \\
         --threads 1,4,8
 
+    # Bitmask variant
+    ./benchmarks/scripts/bench_md.py \\
+        --xtc traj.xtc --pdb top.pdb \\
+        --name test --tool zig_bitmask
+
     # Quick test with stride
     ./benchmarks/scripts/bench_md.py \\
         --xtc traj.xtc --pdb top.pdb \\
@@ -37,8 +42,8 @@ Output:
     ├── config.json
     ├── bench_zig_f32_4t.json
     ├── bench_zig_f64_4t.json
-    ├── bench_zig_f32_bitmask_4t.json   # with --use-bitmask
-    ├── bench_zig_f64_bitmask_4t.json   # with --use-bitmask
+    ├── bench_zig_f32_bitmask_4t.json   # --tool zig_bitmask
+    ├── bench_zig_f64_bitmask_4t.json   # --tool zig_bitmask
     ├── bench_zsasa_mdtraj_4t.json
     ├── bench_zsasa_mdanalysis_4t.json
     ├── bench_mdtraj_1t.json
@@ -68,13 +73,20 @@ console = Console()
 
 class Tool(str, Enum):
     zig = "zig"
+    zig_bitmask = "zig_bitmask"
     zsasa_mdtraj = "zsasa_mdtraj"
     zsasa_mdanalysis = "zsasa_mdanalysis"
     mdtraj = "mdtraj"
     mdsasa_bolt = "mdsasa_bolt"
 
 
-ALL_TOOLS = list(Tool)
+ALL_TOOLS = [
+    Tool.zig,
+    Tool.zsasa_mdtraj,
+    Tool.zsasa_mdanalysis,
+    Tool.mdtraj,
+    Tool.mdsasa_bolt,
+]
 
 
 def get_root_dir() -> Path:
@@ -539,13 +551,6 @@ def main(
             help="Show commands without running",
         ),
     ] = False,
-    use_bitmask: Annotated[
-        bool,
-        typer.Option(
-            "--use-bitmask",
-            help="Use bitmask neighbor list for zsasa",
-        ),
-    ] = False,
 ) -> None:
     """Run MD trajectory SASA benchmarks using hyperfine."""
     if not check_hyperfine():
@@ -587,7 +592,6 @@ def main(
             "runs": runs,
             "stride": stride,
             "n_points": n_points,
-            "use_bitmask": use_bitmask,
             **traj_info,
         },
     }
@@ -621,7 +625,23 @@ def main(
             binaries,
             stride,
             n_points,
-            use_bitmask,
+            use_bitmask=False,
+        )
+        all_results.extend(results)
+
+    if Tool.zig_bitmask in selected_tools:
+        results = run_zig(
+            xtc,
+            pdb,
+            results_dir,
+            thread_counts,
+            warmup,
+            runs,
+            dry_run,
+            binaries,
+            stride,
+            n_points,
+            use_bitmask=True,
         )
         all_results.extend(results)
 
