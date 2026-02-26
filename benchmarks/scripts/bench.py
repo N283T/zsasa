@@ -66,7 +66,7 @@ def _build_command(
     Raises:
         ValueError: If tool base is not recognized.
     """
-    binary = get_binary_path(base)
+    binary = quote_path(get_binary_path(base))
     quoted = quote_path(pdb_path)
 
     if base == "zig":
@@ -139,6 +139,13 @@ def main(
     ] = False,
 ) -> None:
     """Run SR single-file benchmark using hyperfine."""
+    # Mutual exclusivity check
+    if input_file is not None and input_dir is not None:
+        console.print(
+            "[red]Error:[/red] --input and --input-dir are mutually exclusive"
+        )
+        raise typer.Exit(1)
+
     # Check hyperfine
     if not shutil.which("hyperfine"):
         console.print("[red]Error: hyperfine not found. Install it first.[/red]")
@@ -190,9 +197,7 @@ def main(
         # Filter by sample file
         if sample_file is not None:
             if not sample_file.exists():
-                console.print(
-                    f"[red]Error:[/red] Sample file not found: {sample_file}"
-                )
+                console.print(f"[red]Error:[/red] Sample file not found: {sample_file}")
                 raise typer.Exit(1)
             sample_ids = set(load_sample_file(sample_file))
             structures = [
@@ -253,7 +258,7 @@ def main(
 
     # Run benchmarks
     csv_path = output_dir.joinpath("results.csv")
-    n_atoms_cache: dict[str, int] = {}
+    n_atoms_cache: dict[str, int | None] = {}
     n_success = 0
     n_failed = 0
 
@@ -290,9 +295,7 @@ def main(
                     for pdb_id, n_atoms in structures:
                         pdb_path = pdb_dir.joinpath(f"{pdb_id}.pdb")
                         if not pdb_path.exists():
-                            console.print(
-                                f"[yellow]Skip {pdb_id}: not found[/yellow]"
-                            )
+                            console.print(f"[yellow]Skip {pdb_id}: not found[/yellow]")
                             n_failed += 1
                             progress.advance(task)
                             continue
@@ -310,9 +313,7 @@ def main(
                             tool_base, precision, pdb_path, n_threads, n_points
                         )
 
-                        json_path = Path(tmpdir).joinpath(
-                            f"{pdb_id}_{n_threads}t.json"
-                        )
+                        json_path = Path(tmpdir).joinpath(f"{pdb_id}_{n_threads}t.json")
                         result = run_hyperfine(cmd, warmup, runs, json_path)
 
                         if result:
@@ -348,9 +349,7 @@ def main(
         console.print("[red]Error: all benchmarks failed, no results recorded[/red]")
         raise typer.Exit(1)
 
-    console.print(
-        f"\n[green]Done![/green] {n_success}/{total} benchmarks completed"
-    )
+    console.print(f"\n[green]Done![/green] {n_success}/{total} benchmarks completed")
     console.print(f"  Results: {output_dir}")
     console.print(f"  - {csv_path.name}")
     console.print(f"  - {config_path.name}")

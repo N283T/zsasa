@@ -13,7 +13,6 @@ import os
 import platform
 import shlex
 import subprocess
-import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -43,14 +42,31 @@ def parse_tool(tool: str) -> tuple[str, str, str]:
 
 
 def parse_threads(threads_str: str) -> list[int]:
-    """Parse thread specification like '1-10' or '1,4,8'."""
+    """Parse thread specification like '1-10' or '1,4,8'.
+
+    Raises:
+        ValueError: If the specification contains invalid or non-positive values.
+    """
     result = []
     for part in threads_str.split(","):
-        if "-" in part:
-            start, end = part.split("-", 1)
-            result.extend(range(int(start), int(end) + 1))
-        else:
-            result.append(int(part))
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            if "-" in part and not part.startswith("-"):
+                start, end = part.split("-", 1)
+                result.extend(range(int(start), int(end) + 1))
+            else:
+                result.append(int(part))
+        except ValueError:
+            raise ValueError(
+                f"Invalid thread specification '{part}' in '{threads_str}'. "
+                f"Expected format: '1,4,8' or '1-10'"
+            ) from None
+    if not result:
+        raise ValueError(f"No valid thread counts in '{threads_str}'")
+    if any(t <= 0 for t in result):
+        raise ValueError(f"Thread counts must be positive, got: {sorted(set(result))}")
     return sorted(set(result))
 
 
@@ -119,10 +135,10 @@ def get_system_info() -> dict:
     return info
 
 
-def get_n_atoms_from_pdb(pdb_path: Path) -> int:
+def get_n_atoms_from_pdb(pdb_path: Path) -> int | None:
     """Count ATOM records in a PDB file (excludes HETATM).
 
-    Returns 0 and logs a warning to stderr on read failure.
+    Returns None and logs a warning on read failure.
     """
     count = 0
     try:
@@ -131,7 +147,8 @@ def get_n_atoms_from_pdb(pdb_path: Path) -> int:
                 if line.startswith("ATOM  "):
                     count += 1
     except OSError as e:
-        print(f"Warning: could not read {pdb_path}: {e}", file=sys.stderr)
+        console.print(f"[yellow]Warning: could not read {pdb_path}: {e}[/yellow]")
+        return None
     return count
 
 
@@ -142,10 +159,13 @@ def scan_input_directory(input_dir: Path) -> list[tuple[str, int]]:
     callers resolve it lazily via get_n_atoms_from_pdb.
     """
     entries = []
-    with os.scandir(input_dir) as it:
-        for entry in it:
-            if entry.is_file() and entry.name.endswith(".pdb"):
-                entries.append(entry.name)
+    try:
+        with os.scandir(input_dir) as it:
+            for entry in it:
+                if entry.is_file() and entry.name.endswith(".pdb"):
+                    entries.append(entry.name)
+    except OSError as e:
+        raise RuntimeError(f"Cannot scan directory {input_dir}: {e}") from e
 
     entries.sort()
 
@@ -178,8 +198,13 @@ def load_sample_file(sample_path: Path) -> list[str]:
 
     # v2: dict of bins
     ids = []
-    for entries in samples.values():
-        for entry in entries:
+    for bin_name, entries in samples.items():
+        for i, entry in enumerate(entries):
+            if "id" not in entry:
+                raise ValueError(
+                    f"Sample entry {i} in bin '{bin_name}' missing 'id' key "
+                    f"in {sample_path}"
+                )
             ids.append(entry["id"])
     return ids
 
@@ -227,20 +252,34 @@ def run_hyperfine(cmd: str, warmup: int, runs: int, json_path: Path) -> dict | N
         if not data.get("results"):
             console.print("[red]  Empty results in hyperfine JSON[/red]")
             return None
-        return data["results"][0]
+        result = data["results"][0]
+        required_keys = {"mean", "stddev", "min", "max", "median"}
+        missing = required_keys - result.keys()
+        if missing:
+            console.print(f"[red]  Hyperfine result missing keys: {missing}[/red]")
+            return None
+        return result
     except (json.JSONDecodeError, KeyError) as e:
         console.print(f"[red]  Failed to parse hyperfine JSON: {e}[/red]")
         return None
 
 
 def print_hyperfine_summary(csv_path: Path) -> None:
-    """Print summary table from hyperfine results CSV (mean_s column)."""
+    """Print summary table from hyperfine results CSV.
+
+    Groups rows by thread count and summarizes the per-structure mean_s
+    values (mean, min, max) for each thread count.
+    """
     by_threads: dict[int, list[float]] = defaultdict(list)
 
-    with open(csv_path) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            by_threads[int(row["threads"])].append(float(row["mean_s"]))
+    try:
+        with open(csv_path) as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                by_threads[int(row["threads"])].append(float(row["mean_s"]))
+    except (OSError, KeyError, ValueError) as e:
+        console.print(f"[yellow]Warning: could not parse summary CSV: {e}[/yellow]")
+        return
 
     if not by_threads:
         return

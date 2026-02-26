@@ -100,6 +100,7 @@ link_zsasa() {
         symlink "$zsasa" zsasa
     else
         err "zsasa not found at $zsasa (run 'zig build' first)"
+        return 1
     fi
 }
 

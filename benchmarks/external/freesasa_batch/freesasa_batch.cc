@@ -6,7 +6,7 @@
 // Build (from benchmarks/external/):
 //   c++ -O3 -std=c++17 -I freesasa/src \
 //     -o freesasa_batch/freesasa_batch freesasa_batch/freesasa_batch.cc \
-//     freesasa/src/.libs/libfreesasa.a -lpthread
+//     freesasa/src/libfreesasa.a -lpthread
 
 #include <atomic>
 #include <cerrno>
@@ -55,13 +55,19 @@ static std::vector<fs::path> find_pdb_files(const fs::path& dir) {
 
 static bool process_pdb_file(const fs::path& input, const fs::path& output, int n_points) {
     FILE* in = fopen(input.c_str(), "r");
-    if (!in) return false;
+    if (!in) {
+        fprintf(stderr, "Warning: cannot open %s: %s\n", input.c_str(), strerror(errno));
+        return false;
+    }
 
     freesasa_structure* structure =
         freesasa_structure_from_pdb(in, &freesasa_default_classifier, 0);
     fclose(in);
 
-    if (!structure) return false;
+    if (!structure) {
+        fprintf(stderr, "Warning: failed to parse structure from %s\n", input.c_str());
+        return false;
+    }
 
     freesasa_parameters params = freesasa_default_parameters;
     params.n_threads = 1;
@@ -70,10 +76,14 @@ static bool process_pdb_file(const fs::path& input, const fs::path& output, int 
 
     freesasa_result* result = freesasa_calc_structure(structure, &params);
     freesasa_structure_free(structure);
-    if (!result) return false;
+    if (!result) {
+        fprintf(stderr, "Warning: SASA calculation failed for %s\n", input.c_str());
+        return false;
+    }
 
     FILE* out = fopen(output.c_str(), "w");
     if (!out) {
+        fprintf(stderr, "Warning: cannot write %s: %s\n", output.c_str(), strerror(errno));
         freesasa_result_free(result);
         return false;
     }
@@ -138,7 +148,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    fs::create_directories(output_dir);
+    try {
+        fs::create_directories(output_dir);
+    } catch (const fs::filesystem_error& e) {
+        std::cerr << "Error: Cannot create output directory: " << e.what() << "\n";
+        return 1;
+    }
 
     auto files = find_pdb_files(input_dir);
     if (files.empty()) {

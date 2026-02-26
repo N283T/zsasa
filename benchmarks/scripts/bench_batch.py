@@ -25,7 +25,7 @@ Usage:
     ./benchmarks/scripts/bench_batch.py -i /path/to/pdb -n test --threads 1,8,10
 
 Output:
-    benchmarks/results/batch/<name>/
+    benchmarks/results/batch/<n_points>/<name>/
     ├── config.json             # System info and parameters
     ├── bench_zsasa_f64_8t.json
     ├── bench_zsasa_f32_8t.json
@@ -51,7 +51,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from bench_common import get_system_info, parse_threads, get_binary_path
+from bench_common import get_system_info, parse_threads, get_binary_path, quote_path
 
 app = typer.Typer(help="Batch SASA benchmark (hyperfine-based)")
 console = Console()
@@ -171,7 +171,7 @@ def run_zig(
                 bench_name = f"zsasa_{precision}{bitmask_suffix}_{n_threads}t"
                 result = run_benchmark(
                     bench_name,
-                    f"{zsasa} batch {input_dir} {out_dir} --threads={n_threads} --precision={precision} --n-points={n_points}{bitmask_flag}",
+                    f"{quote_path(zsasa)} batch {quote_path(input_dir)} {quote_path(out_dir)} --threads={n_threads} --precision={precision} --n-points={n_points}{bitmask_flag}",
                     results_dir,
                     warmup,
                     runs,
@@ -207,7 +207,7 @@ def run_freesasa(
         for n_threads in thread_counts:
             result = run_benchmark(
                 f"freesasa_{n_threads}t",
-                f"{freesasa_batch} {input_dir} {out_dir} --n-threads={n_threads} --n-points={n_points}",
+                f"{quote_path(freesasa_batch)} {quote_path(input_dir)} {quote_path(out_dir)} --n-threads={n_threads} --n-points={n_points}",
                 results_dir,
                 warmup,
                 runs,
@@ -243,7 +243,7 @@ def run_rustsasa(
         for n_threads in thread_counts:
             result = run_benchmark(
                 f"rustsasa_{n_threads}t",
-                f"{rustsasa} {input_dir} {out_dir} --format json -t {n_threads} -n {n_points}",
+                f"{quote_path(rustsasa)} {quote_path(input_dir)} {quote_path(out_dir)} --format json -t {n_threads} -n {n_points}",
                 results_dir,
                 warmup,
                 runs,
@@ -301,14 +301,14 @@ def run_lahuta(
             result = run_benchmark(
                 bench_name,
                 (
-                    f"{lahuta} sasa-sr"
-                    f" -d {input_dir}"
+                    f"{quote_path(lahuta)} sasa-sr"
+                    f" -d {quote_path(input_dir)}"
                     f" --is_af2_model"
                     f" --points {n_points}"
                     f"{bitmask_flag}"
                     f" -t {n_threads}"
                     f" --progress 0"
-                    f" -o {out_file}"
+                    f" -o {quote_path(out_file)}"
                 ),
                 results_dir,
                 warmup,
@@ -437,7 +437,7 @@ def main(
         bool,
         typer.Option(
             "--use-bitmask",
-            help="Use bitmask neighbor list for zsasa",
+            help="Use bitmask neighbor list for zsasa and lahuta",
         ),
     ] = False,
 ) -> None:
@@ -467,8 +467,8 @@ def main(
     # Default to all tools if none specified
     selected_tools = tools if tools else ALL_TOOLS
 
-    # Count input files
-    n_files = sum(1 for f in input_dir.iterdir() if f.is_file())
+    # Count PDB files in input directory
+    n_files = sum(1 for f in input_dir.iterdir() if f.is_file() and f.suffix == ".pdb")
 
     # Save config
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
