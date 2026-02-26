@@ -390,7 +390,7 @@ pub fn scanDirectory(allocator: Allocator, dir_path: []const u8) ![][]const u8 {
 
 /// Process a single file and return result
 /// Uses provided arena allocator for temporary allocations
-/// result_allocator: used for error messages that must outlive the arena
+/// result_allocator: used for data that must outlive the arena (error messages, atom_areas)
 /// n_threads: number of threads for SASA calculation (1 = single-threaded)
 fn processOneFile(
     arena: Allocator,
@@ -547,7 +547,10 @@ fn writeJsonlOutput(allocator: Allocator, file_results: []const FileResult, outp
     for (file_results) |result| {
         if (result.status != .ok) continue;
         if (result.atom_areas) |areas| {
-            const line = json_writer.fileResultToJsonlLine(allocator, result.filename, result.total_sasa, areas) catch continue;
+            const line = json_writer.fileResultToJsonlLine(allocator, result.filename, result.total_sasa, areas) catch |err| {
+                std.debug.print("Warning: failed to serialize {s}: {s}\n", .{ result.filename, @errorName(err) });
+                continue;
+            };
             defer allocator.free(line);
             try file.writeAll(line);
             try file.writeAll("\n");
@@ -663,9 +666,10 @@ const ParallelContext = struct {
 
 /// Worker thread function for parallel batch processing
 fn parallelWorker(ctx: *ParallelContext) void {
-    // Use c_allocator as arena backing to avoid mmap/munmap syscall contention
+    // Use smp_allocator as arena backing to avoid mmap/munmap syscall contention
     // that page_allocator causes under multi-threaded workloads.
-    var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    // smp_allocator is thread-safe and does not require libc.
+    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
     defer arena.deinit();
 
     while (true) {
