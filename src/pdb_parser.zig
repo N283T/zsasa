@@ -34,6 +34,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const elem = @import("element.zig");
+const mmap_reader = @import("mmap_reader.zig");
 const types = @import("types.zig");
 const AtomInput = types.AtomInput;
 
@@ -41,8 +42,6 @@ const AtomInput = types.AtomInput;
 pub const ParseError = error{
     /// Invalid coordinate value
     InvalidCoordinate,
-    /// File read error
-    FileReadError,
     /// No atoms found in file
     NoAtomsFound,
     /// Line too short for required field
@@ -215,17 +214,9 @@ pub const PdbParser = struct {
 
     /// Parse PDB from a file
     pub fn parseFile(self: *PdbParser, path: []const u8) !AtomInput {
-        const file = std.fs.cwd().openFile(path, .{}) catch {
-            return ParseError.FileReadError;
-        };
-        defer file.close();
-
-        const source = file.readToEndAlloc(self.allocator, 100 * 1024 * 1024) catch {
-            return ParseError.FileReadError;
-        };
-        defer self.allocator.free(source);
-
-        return self.parse(source);
+        const mapped = try mmap_reader.mmapFile(path);
+        defer mapped.deinit();
+        return self.parse(mapped.data);
     }
 
     /// Parsed atom data

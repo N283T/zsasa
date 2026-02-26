@@ -31,6 +31,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const cif = @import("cif_tokenizer.zig");
 const elem = @import("element.zig");
+const mmap_reader = @import("mmap_reader.zig");
 const types = @import("types.zig");
 const AtomInput = types.AtomInput;
 
@@ -42,8 +43,6 @@ pub const ParseError = error{
     MissingCoordinateField,
     /// Invalid coordinate value (not a valid number)
     InvalidCoordinate,
-    /// File read error
-    FileReadError,
 };
 
 /// Column indices for atom_site fields
@@ -138,17 +137,9 @@ pub const MmcifParser = struct {
 
     /// Parse mmCIF from a file
     pub fn parseFile(self: *MmcifParser, path: []const u8) !AtomInput {
-        const file = std.fs.cwd().openFile(path, .{}) catch {
-            return ParseError.FileReadError;
-        };
-        defer file.close();
-
-        const source = file.readToEndAlloc(self.allocator, 100 * 1024 * 1024) catch {
-            return ParseError.FileReadError;
-        };
-        defer self.allocator.free(source);
-
-        return self.parse(source);
+        const mapped = try mmap_reader.mmapFile(path);
+        defer mapped.deinit();
+        return self.parse(mapped.data);
     }
 
     /// Result from findAtomSiteLoop containing columns and their count
