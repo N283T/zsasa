@@ -5,23 +5,25 @@
 # ///
 """Stratified sampling of benchmark structures by atom count.
 
-Reads an index file and performs stratified sampling based on atom count bins.
-Uses logarithmic scale bins to ensure representation across all size ranges.
+Reads a v2 index file (with source info) and performs stratified sampling
+using 14 atom count bins. Prefers AFDB (human) entries, fills with PDB.
 
 Usage:
     # Analyze distribution
     ./benchmarks/scripts/sample.py benchmarks/inputs/index.json --analyze
 
-    # Generate sample
+    # Generate sample (150 per bin, seed 42)
     ./benchmarks/scripts/sample.py benchmarks/inputs/index.json \\
-        --target 75000 --seed 42 --output benchmarks/samples/stratified_75k.json
+        --output benchmarks/dataset/sample.json
+
+    # Plot distribution
+    ./benchmarks/scripts/sample.py plot benchmarks/dataset/sample.json
 """
 
 from __future__ import annotations
 
 import json
 import random
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
@@ -32,140 +34,164 @@ from rich.table import Table
 app = typer.Typer(help="Stratified sampling of benchmark structures")
 console = Console()
 
-# Logarithmic scale bins (atom count ranges)
+# 14-bin scheme matching current sample.json
 BINS = [
     ("0-500", 0, 500),
-    ("500-2k", 500, 2_000),
-    ("2k-10k", 2_000, 10_000),
-    ("10k-50k", 10_000, 50_000),
-    ("50k-200k", 50_000, 200_000),
-    ("200k+", 200_000, float("inf")),
+    ("500-1k", 500, 1_000),
+    ("1k-2k", 1_000, 2_000),
+    ("2k-3k", 2_000, 3_000),
+    ("3k-5k", 3_000, 5_000),
+    ("5k-10k", 5_000, 10_000),
+    ("10k-20k", 10_000, 20_000),
+    ("20k-50k", 20_000, 50_000),
+    ("50k-75k", 50_000, 75_000),
+    ("75k-100k", 75_000, 100_000),
+    ("100k-150k", 100_000, 150_000),
+    ("150k-200k", 150_000, 200_000),
+    ("200k-500k", 200_000, 500_000),
+    ("500k+", 500_000, float("inf")),
 ]
 
-# Bins considered "rare" - take all samples from these
-RARE_BINS = {"50k-200k", "200k+"}
 
+def load_index(index_path: Path) -> dict[str, dict]:
+    """Load v2 index file and return entries dict.
 
-def load_index(index_path: Path) -> dict[str, int]:
-    """Load index file and return entries dict."""
+    Supports both v1 (flat int values) and v2 (dict with n_atoms/source).
+    """
     data = json.loads(index_path.read_text())
-    return data.get("entries", {})
+    raw_entries = data.get("entries", {})
+
+    entries: dict[str, dict] = {}
+    for entry_id, value in raw_entries.items():
+        if isinstance(value, int):
+            # v1 format: just atom count
+            entries[entry_id] = {"n_atoms": value, "source": "pdb"}
+        else:
+            entries[entry_id] = value
+
+    return entries
 
 
-def categorize_by_bin(entries: dict[str, int]) -> dict[str, list[str]]:
-    """Categorize entries into bins based on atom count."""
-    bins: dict[str, list[str]] = {name: [] for name, _, _ in BINS}
+def categorize_by_bin(
+    entries: dict[str, dict],
+) -> dict[str, list[dict]]:
+    """Categorize entries into bins. Each bin entry is {id, n_atoms, source}."""
+    bins: dict[str, list[dict]] = {name: [] for name, _, _ in BINS}
 
-    for pdb_id, n_atoms in entries.items():
+    for entry_id, info in entries.items():
+        n_atoms = info["n_atoms"]
         for name, low, high in BINS:
             if low <= n_atoms < high:
-                bins[name].append(pdb_id)
+                bins[name].append(
+                    {
+                        "id": entry_id,
+                        "n_atoms": n_atoms,
+                        "source": info.get("source", "pdb"),
+                    }
+                )
                 break
 
     return bins
 
 
-def analyze_distribution(entries: dict[str, int]) -> None:
-    """Display distribution analysis."""
+def analyze_distribution(entries: dict[str, dict]) -> None:
+    """Display distribution analysis with source breakdown."""
     bins = categorize_by_bin(entries)
 
     table = Table(title="Atom Count Distribution")
     table.add_column("Bin", style="cyan")
     table.add_column("Range", style="dim")
     table.add_column("Count", justify="right")
+    table.add_column("Human", justify="right", style="green")
+    table.add_column("PDB", justify="right", style="blue")
     table.add_column("Percent", justify="right")
-    table.add_column("Status", style="dim")
 
     total = len(entries)
 
     for name, low, high in BINS:
-        count = len(bins[name])
+        bin_entries = bins[name]
+        count = len(bin_entries)
+        human = sum(1 for e in bin_entries if e["source"] == "human")
+        pdb = sum(1 for e in bin_entries if e["source"] == "pdb")
         pct = count / total * 100 if total > 0 else 0
         high_str = f"{high:,}" if high != float("inf") else "+"
         range_str = f"{low:,} - {high_str}"
-        status = "rare" if name in RARE_BINS else ""
-        table.add_row(name, range_str, f"{count:,}", f"{pct:.1f}%", status)
+        table.add_row(
+            name, range_str, f"{count:,}", f"{human:,}", f"{pdb:,}", f"{pct:.1f}%"
+        )
 
     table.add_section()
-    table.add_row("Total", "", f"{total:,}", "100.0%", "")
+    total_human = sum(1 for e in entries.values() if e.get("source") == "human")
+    total_pdb = sum(1 for e in entries.values() if e.get("source") == "pdb")
+    table.add_row(
+        "Total", "", f"{total:,}", f"{total_human:,}", f"{total_pdb:,}", "100.0%"
+    )
 
     console.print(table)
 
 
 def stratified_sample(
-    entries: dict[str, int],
-    target: int,
+    entries: dict[str, dict],
+    n_per_bin: int,
     seed: int,
-) -> tuple[list[str], dict[str, dict[str, int]]]:
-    """Perform stratified sampling.
+) -> dict[str, list[dict]]:
+    """Perform stratified sampling with AFDB-first preference.
 
-    Strategy:
-    - Rare bins (50k+): Take all samples
-    - Other bins: Proportional sampling from remaining target
+    For each bin:
+    1. Prefer source=human entries
+    2. Fill remaining slots with source=pdb
+    3. If bin has fewer than n_per_bin, take all
 
-    Returns:
-        (samples, distribution) where distribution maps bin name to
-        {"total": n, "sampled": m}
+    Returns dict mapping bin name to list of {id, n_atoms, source}.
     """
     rng = random.Random(seed)
     bins = categorize_by_bin(entries)
-
-    # Calculate rare bin contribution
-    rare_samples: list[str] = []
-    for name in RARE_BINS:
-        rare_samples.extend(bins[name])
-
-    remaining_target = max(0, target - len(rare_samples))
-
-    # Calculate proportional sampling for non-rare bins
-    non_rare_bins = {name: ids for name, ids in bins.items() if name not in RARE_BINS}
-    non_rare_total = sum(len(ids) for ids in non_rare_bins.values())
-
-    samples: list[str] = list(rare_samples)
-    distribution: dict[str, dict[str, int]] = {}
+    samples: dict[str, list[dict]] = {}
 
     for name, _, _ in BINS:
-        bin_ids = bins[name]
-        total = len(bin_ids)
+        bin_entries = bins[name]
 
-        if name in RARE_BINS:
-            # Take all from rare bins
-            sampled = total
+        if len(bin_entries) <= n_per_bin:
+            # Take all, sorted by n_atoms for determinism
+            selected = sorted(bin_entries, key=lambda e: (e["n_atoms"], e["id"]))
         else:
-            # Proportional sampling
-            if non_rare_total > 0:
-                proportion = len(bin_ids) / non_rare_total
-                sample_count = int(remaining_target * proportion)
-                # Ensure we don't sample more than available
-                sample_count = min(sample_count, len(bin_ids))
-                sampled_ids = rng.sample(bin_ids, sample_count)
-                samples.extend(sampled_ids)
-                sampled = sample_count
+            # Split by source
+            human = [e for e in bin_entries if e["source"] == "human"]
+            pdb = [e for e in bin_entries if e["source"] == "pdb"]
+
+            rng.shuffle(human)
+            rng.shuffle(pdb)
+
+            if len(human) >= n_per_bin:
+                # Enough human entries
+                selected = human[:n_per_bin]
             else:
-                sampled = 0
+                # Take all human, fill with PDB
+                remaining = n_per_bin - len(human)
+                selected = human + pdb[:remaining]
 
-        distribution[name] = {"total": total, "sampled": sampled}
+            # Sort for deterministic output
+            selected = sorted(selected, key=lambda e: (e["n_atoms"], e["id"]))
 
-    # Shuffle final list for randomized order
-    rng.shuffle(samples)
+        samples[name] = selected
 
-    return samples, distribution
+    return samples
 
 
 @app.command()
-def main(
+def sample(
     index_path: Annotated[
         Path,
-        typer.Argument(help="Path to index.json file"),
+        typer.Argument(help="Path to v2 index.json file"),
     ],
     analyze: Annotated[
         bool,
         typer.Option("--analyze", "-a", help="Show distribution analysis only"),
     ] = False,
-    target: Annotated[
+    n_per_bin: Annotated[
         int,
-        typer.Option("--target", "-n", help="Target sample size"),
-    ] = 75_000,
+        typer.Option("--n-per-bin", "-n", help="Maximum samples per bin"),
+    ] = 150,
     seed: Annotated[
         int,
         typer.Option("--seed", "-s", help="Random seed for reproducibility"),
@@ -190,41 +216,31 @@ def main(
         analyze_distribution(entries)
         return
 
-    # Validate target
-    if target <= 0:
-        console.print("[red]Error:[/red] Target must be positive")
-        raise typer.Exit(1)
-
-    if target > len(entries):
-        console.print(
-            f"[yellow]Warning:[/yellow] Target {target:,} exceeds total {len(entries):,}"
-        )
-        target = len(entries)
-
     # Perform sampling
-    samples, distribution = stratified_sample(entries, target, seed)
+    samples = stratified_sample(entries, n_per_bin, seed)
+    total_sampled = sum(len(v) for v in samples.values())
 
     # Display distribution
-    table = Table(title=f"Stratified Sample (target={target:,}, seed={seed})")
+    table = Table(title=f"Stratified Sample (n_per_bin={n_per_bin}, seed={seed})")
     table.add_column("Bin", style="cyan")
-    table.add_column("Total", justify="right")
+    table.add_column("Available", justify="right")
     table.add_column("Sampled", justify="right")
-    table.add_column("Rate", justify="right")
+    table.add_column("Human", justify="right", style="green")
+    table.add_column("PDB", justify="right", style="blue")
 
+    bins_categorized = categorize_by_bin(entries)
     for name, _, _ in BINS:
-        dist = distribution[name]
-        rate = dist["sampled"] / dist["total"] * 100 if dist["total"] > 0 else 0
+        available = len(bins_categorized[name])
+        sampled = samples[name]
+        human = sum(1 for e in sampled if e["source"] == "human")
+        pdb = sum(1 for e in sampled if e["source"] == "pdb")
         table.add_row(
-            name,
-            f"{dist['total']:,}",
-            f"{dist['sampled']:,}",
-            f"{rate:.1f}%",
+            name, f"{available:,}", f"{len(sampled):,}", f"{human:,}", f"{pdb:,}"
         )
 
     table.add_section()
-    total_entries = sum(d["total"] for d in distribution.values())
-    table.add_row("Total", f"{total_entries:,}", f"{len(samples):,}", "")
-
+    total_available = len(entries)
+    table.add_row("Total", f"{total_available:,}", f"{total_sampled:,}", "", "")
     console.print(table)
 
     # Save output
@@ -232,26 +248,24 @@ def main(
         console.print("\n[dim]Use --output to save samples to file[/dim]")
         return
 
-    # Ensure output directory exists
     output.parent.mkdir(parents=True, exist_ok=True)
 
     sample_data = {
-        "version": 1,
-        "created": datetime.now(timezone.utc).isoformat(),
-        "parameters": {
-            "target": target,
-            "seed": seed,
-            "source": str(index_path),
-        },
-        "distribution": distribution,
-        "total_sampled": len(samples),
+        "seed": seed,
+        "n_per_bin": n_per_bin,
+        "bins": {name: low for name, low, _ in BINS},
+        "total": total_sampled,
         "samples": samples,
     }
 
     output.write_text(json.dumps(sample_data, indent=2))
     console.print(f"\n[green]Saved:[/green] {output}")
-    console.print(f"  Samples: [cyan]{len(samples):,}[/cyan]")
+    console.print(f"  Samples: [cyan]{total_sampled:,}[/cyan]")
 
+
+# ---------------------------------------------------------------------------
+# Plot subcommand
+# ---------------------------------------------------------------------------
 
 # Preset colors for plots
 COLOR_PRESETS = {
@@ -291,11 +305,11 @@ def plot(
 
     # Load sample data
     data = json.loads(sample_path.read_text())
-    dist = data.get("distribution", {})
-    total = data.get("total_sampled", 0)
+    samples = data.get("samples", {})
+    total = data.get("total", 0)
 
-    if not dist:
-        console.print("[red]Error:[/red] No distribution data in sample file")
+    if not samples:
+        console.print("[red]Error:[/red] No samples data in file")
         raise typer.Exit(1)
 
     # Resolve color
@@ -306,19 +320,19 @@ def plot(
         edge_color = color
 
     # Extract data for plotting
-    bins = list(dist.keys())
-    counts = [dist[b]["sampled"] for b in bins]
+    bin_names = list(samples.keys())
+    counts = [len(samples[b]) for b in bin_names]
 
     # Create plot
-    fig, ax = plt.subplots(figsize=(10, 6))
-    x = range(len(bins))
+    fig, ax = plt.subplots(figsize=(12, 6))
+    x = range(len(bin_names))
     bars = ax.bar(x, counts, color=fill_color, alpha=0.8, edgecolor=edge_color)
 
     ax.set_xlabel("Structure Size (atoms)", fontsize=11)
     ax.set_ylabel("Number of Structures", fontsize=11)
     ax.set_title(f"Dataset Distribution (n={total:,})", fontsize=13, fontweight="bold")
     ax.set_xticks(x)
-    ax.set_xticklabels(bins, rotation=45, ha="right")
+    ax.set_xticklabels(bin_names, rotation=45, ha="right")
 
     # Add value labels
     for bar in bars:
