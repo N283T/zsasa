@@ -139,10 +139,16 @@ pub fn CellListGen(comptime T: type) type {
         fn getCellIndex(self: Self, pos: Vec) usize {
             return computeCellIndex(
                 T,
-                pos.x,     pos.y,     pos.z,
-                self.x_min, self.y_min, self.z_min,
+                pos.x,
+                pos.y,
+                pos.z,
+                self.x_min,
+                self.y_min,
+                self.z_min,
                 self.cell_size,
-                self.nx,    self.ny,    self.nz,
+                self.nx,
+                self.ny,
+                self.nz,
             );
         }
 
