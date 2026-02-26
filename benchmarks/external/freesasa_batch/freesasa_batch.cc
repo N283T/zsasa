@@ -1,0 +1,197 @@
+// freesasa_batch.cc
+// Batch process PDB files with FreeSASA C API and file-level parallelism
+//
+// Usage: freesasa_batch <input_dir> <output_dir> --n-threads=N --n-points=N
+//
+// Build (from benchmarks/external/):
+//   c++ -O3 -std=c++17 -I freesasa/src \
+//     -o freesasa_batch/freesasa_batch freesasa_batch/freesasa_batch.cc \
+//     freesasa/src/.libs/libfreesasa.a -lpthread
+
+#include <atomic>
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <iostream>
+#include <pthread.h>
+#include <string>
+#include <vector>
+
+extern "C" {
+#include "freesasa.h"
+}
+
+namespace fs = std::filesystem;
+
+struct WorkItem {
+    fs::path input;
+    fs::path output;
+};
+
+struct WorkerContext {
+    const std::vector<WorkItem>* items;
+    std::atomic<size_t>* next_index;
+    int n_points;
+    std::atomic<int>* success_count;
+    std::atomic<int>* fail_count;
+};
+
+static bool has_pdb_extension(const fs::path& path) {
+    std::string ext = path.extension().string();
+    for (char& c : ext) c = std::tolower(c);
+    return ext == ".pdb";
+}
+
+static std::vector<fs::path> find_pdb_files(const fs::path& dir) {
+    std::vector<fs::path> files;
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (entry.is_regular_file() && has_pdb_extension(entry.path())) {
+            files.push_back(entry.path());
+        }
+    }
+    return files;
+}
+
+static bool process_pdb_file(const fs::path& input, const fs::path& output, int n_points) {
+    FILE* in = fopen(input.c_str(), "r");
+    if (!in) return false;
+
+    freesasa_structure* structure =
+        freesasa_structure_from_pdb(in, &freesasa_default_classifier, 0);
+    fclose(in);
+
+    if (!structure) return false;
+
+    freesasa_parameters params = freesasa_default_parameters;
+    params.n_threads = 1;
+    params.alg = FREESASA_SHRAKE_RUPLEY;
+    params.shrake_rupley_n_points = n_points;
+
+    freesasa_result* result = freesasa_calc_structure(structure, &params);
+    freesasa_structure_free(structure);
+    if (!result) return false;
+
+    FILE* out = fopen(output.c_str(), "w");
+    if (!out) {
+        freesasa_result_free(result);
+        return false;
+    }
+
+    fprintf(out, "%.2f\n", result->total);
+    fclose(out);
+    freesasa_result_free(result);
+    return true;
+}
+
+static void* worker_thread(void* arg) {
+    auto* ctx = static_cast<WorkerContext*>(arg);
+    size_t total = ctx->items->size();
+
+    while (true) {
+        size_t idx = ctx->next_index->fetch_add(1);
+        if (idx >= total) break;
+
+        const auto& item = (*ctx->items)[idx];
+        if (process_pdb_file(item.input, item.output, ctx->n_points)) {
+            ctx->success_count->fetch_add(1);
+        } else {
+            ctx->fail_count->fetch_add(1);
+        }
+    }
+
+    return nullptr;
+}
+
+static bool parse_int_arg(const char* arg, const char* prefix, int* out) {
+    size_t prefix_len = strlen(prefix);
+    if (strncmp(arg, prefix, prefix_len) != 0) return false;
+    char* end;
+    errno = 0;
+    long val = strtol(arg + prefix_len, &end, 10);
+    if (*end != '\0' || errno != 0 || val <= 0 || val > 100000) return false;
+    *out = static_cast<int>(val);
+    return true;
+}
+
+int main(int argc, char* argv[]) {
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0]
+                  << " <input_dir> <output_dir> [--n-threads=N] [--n-points=N]\n";
+        return 1;
+    }
+
+    fs::path input_dir(argv[1]);
+    fs::path output_dir(argv[2]);
+    int n_threads = 1;
+    int n_points = 100;
+
+    for (int i = 3; i < argc; i++) {
+        if (parse_int_arg(argv[i], "--n-threads=", &n_threads)) continue;
+        if (parse_int_arg(argv[i], "--n-points=", &n_points)) continue;
+        std::cerr << "Error: Unknown argument: " << argv[i] << "\n";
+        return 1;
+    }
+
+    if (!fs::exists(input_dir) || !fs::is_directory(input_dir)) {
+        std::cerr << "Error: Invalid input directory: " << input_dir << "\n";
+        return 1;
+    }
+
+    fs::create_directories(output_dir);
+
+    auto files = find_pdb_files(input_dir);
+    if (files.empty()) {
+        std::cerr << "No PDB files found in " << input_dir << "\n";
+        return 1;
+    }
+
+    // Build work items
+    std::vector<WorkItem> items;
+    items.reserve(files.size());
+    for (const auto& file : files) {
+        items.push_back({file, output_dir / (file.stem().string() + ".txt")});
+    }
+
+    freesasa_set_verbosity(FREESASA_V_NOWARNINGS);
+
+    // Clamp thread count to file count
+    int actual_threads = n_threads;
+    if (actual_threads > static_cast<int>(items.size())) {
+        actual_threads = static_cast<int>(items.size());
+    }
+
+    std::atomic<size_t> next_index{0};
+    std::atomic<int> success_count{0};
+    std::atomic<int> fail_count{0};
+
+    WorkerContext ctx{&items, &next_index, n_points, &success_count, &fail_count};
+
+    if (actual_threads <= 1) {
+        worker_thread(&ctx);
+    } else {
+        std::vector<pthread_t> threads(actual_threads);
+        int created = 0;
+        for (int i = 0; i < actual_threads; i++) {
+            int rc = pthread_create(&threads[i], nullptr, worker_thread, &ctx);
+            if (rc != 0) {
+                std::cerr << "Error: Failed to create thread " << i << "\n";
+                next_index.store(items.size());
+                for (int j = 0; j < created; j++) {
+                    pthread_join(threads[j], nullptr);
+                }
+                return 1;
+            }
+            created++;
+        }
+        for (int i = 0; i < actual_threads; i++) {
+            pthread_join(threads[i], nullptr);
+        }
+    }
+
+    std::cout << "Done: " << success_count.load() << " succeeded, "
+              << fail_count.load() << " failed ("
+              << actual_threads << " threads, " << n_points << " points).\n";
+
+    return fail_count.load() > 0 ? 1 : 0;
+}

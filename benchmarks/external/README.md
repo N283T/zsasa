@@ -6,15 +6,17 @@ Optional dependencies for running comparative benchmarks.
 
 ```
 external/
-├── freesasa/        ← vanilla upstream (single-file bench via hyperfine)
-├── freesasa-bench/  ← fork with freesasa_batch (batch bench)
+├── freesasa/        ← vanilla upstream (single-file & batch build dependency)
+├── freesasa_batch/  ← batch runner (source tracked, builds against vanilla freesasa)
 ├── lahuta/          ← as-is
-└── rustsasa/        ← vanilla upstream (replaces rustsasa-bench)
+└── rustsasa/        ← vanilla upstream
 ```
 
 ## Setup
 
-### FreeSASA — vanilla (single-file benchmark)
+### 1. FreeSASA (vanilla)
+
+Required for both single-file benchmarks and building `freesasa_batch`.
 
 ```bash
 cd benchmarks/external
@@ -26,20 +28,18 @@ make
 
 Binary: `freesasa/src/freesasa`
 
-### FreeSASA — fork with freesasa_batch (batch benchmark)
+### 2. freesasa_batch (batch benchmark)
+
+Builds against the vanilla FreeSASA library from step 1.
 
 ```bash
-cd benchmarks/external
-git clone https://github.com/N283T/freesasa-bench.git
-cd freesasa-bench
-./configure --enable-threads
+cd benchmarks/external/freesasa_batch
 make
-cd src && make freesasa_batch
 ```
 
-Binary: `freesasa-bench/src/freesasa_batch`
+Binary: `freesasa_batch/freesasa_batch`
 
-### RustSASA — vanilla (single-file & batch benchmark)
+### 3. RustSASA (vanilla)
 
 ```bash
 cd benchmarks/external
@@ -50,7 +50,7 @@ cargo build --release --features cli
 
 Binary: `rustsasa/target/release/rust-sasa`
 
-### Lahuta
+### 4. Lahuta
 
 ```bash
 cd benchmarks/external

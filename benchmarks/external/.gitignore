@@ -1,5 +1,7 @@
 # External benchmark dependencies (cloned on demand)
 freesasa/
-freesasa-bench/
 rustsasa/
 lahuta/
+
+# Built binary (source is tracked)
+freesasa_batch/freesasa_batch

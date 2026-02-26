@@ -78,7 +78,7 @@ def get_binary_paths() -> dict[str, Path]:
     return {
         "zsasa": root.joinpath("zig-out", "bin", "zsasa"),
         "freesasa_batch": root.joinpath(
-            "benchmarks", "external", "freesasa-bench", "src", "freesasa_batch"
+            "benchmarks", "external", "freesasa_batch", "freesasa_batch"
         ),
         "rustsasa": root.joinpath(
             "benchmarks", "external", "rustsasa", "target", "release", "rust-sasa"
