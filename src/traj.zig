@@ -440,31 +440,31 @@ fn setWorkerError(args: BatchWorkerArgs, comptime fmt: []const u8, fmt_args: any
 /// Each thread processes frames at indices: thread_id, thread_id + n_threads, ...
 /// Allocates per-thread coordinate buffers and reuses them across frames.
 fn batchWorkerFn(args: BatchWorkerArgs) void {
-    // Arena over page_allocator: sub-page allocations don't waste full pages
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    // Use smp_allocator as arena backing to avoid mmap/munmap syscall contention
+    // that page_allocator causes under multi-threaded workloads.
+    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
     defer arena.deinit();
     const thread_alloc = arena.allocator();
-
-    // Pre-allocate coordinate buffers (reused across all frames in this thread)
-    const x = thread_alloc.alloc(f64, args.natoms) catch {
-        setWorkerError(args, "thread {d}: failed to allocate x buffer", .{args.thread_id});
-        return;
-    };
-
-    const y = thread_alloc.alloc(f64, args.natoms) catch {
-        setWorkerError(args, "thread {d}: failed to allocate y buffer", .{args.thread_id});
-        return;
-    };
-
-    const z = thread_alloc.alloc(f64, args.natoms) catch {
-        setWorkerError(args, "thread {d}: failed to allocate z buffer", .{args.thread_id});
-        return;
-    };
 
     // Process assigned frames (stride distribution across threads)
     var batch_idx = args.thread_id;
     while (batch_idx < args.batch_count) : (batch_idx += args.n_threads) {
         if (args.error_flag.load(.acquire)) return;
+
+        // Allocate coordinate buffers per frame (free after arena reset;
+        // re-alloc is ~free with retain_capacity since the backing memory persists)
+        const x = thread_alloc.alloc(f64, args.natoms) catch {
+            setWorkerError(args, "thread {d}: failed to allocate x buffer", .{args.thread_id});
+            return;
+        };
+        const y = thread_alloc.alloc(f64, args.natoms) catch {
+            setWorkerError(args, "thread {d}: failed to allocate y buffer", .{args.thread_id});
+            return;
+        };
+        const z = thread_alloc.alloc(f64, args.natoms) catch {
+            setWorkerError(args, "thread {d}: failed to allocate z buffer", .{args.thread_id});
+            return;
+        };
 
         const coord_offset = batch_idx * args.natoms * 3;
 
@@ -549,6 +549,9 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
             .time = args.frame_data[batch_idx].time,
             .total_sasa = total_sasa,
         };
+
+        // Reset arena for next frame (retain backing memory to avoid syscalls)
+        _ = arena.reset(.retain_capacity);
     }
 }
 
