@@ -438,7 +438,7 @@ fn setWorkerError(args: BatchWorkerArgs, comptime fmt: []const u8, fmt_args: any
 
 /// Worker function for batch frame processing.
 /// Each thread processes frames at indices: thread_id, thread_id + n_threads, ...
-/// Allocates per-thread coordinate buffers and reuses them across frames.
+/// Allocates coordinate buffers per frame; arena reset retains backing memory.
 fn batchWorkerFn(args: BatchWorkerArgs) void {
     // Use smp_allocator as arena backing to avoid mmap/munmap syscall contention
     // that page_allocator causes under multi-threaded workloads.
