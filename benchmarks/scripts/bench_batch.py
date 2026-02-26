@@ -75,7 +75,14 @@ class Tool(str, Enum):
     lahuta_bitmask = "lahuta_bitmask"
 
 
-ALL_TOOLS = [Tool.zig, Tool.freesasa, Tool.rustsasa, Tool.lahuta]
+ALL_TOOLS = [
+    Tool.zig,
+    Tool.zig_bitmask,
+    Tool.freesasa,
+    Tool.rustsasa,
+    Tool.lahuta,
+    Tool.lahuta_bitmask,
+]
 
 
 def get_root_dir() -> Path:
@@ -309,6 +316,7 @@ def run_lahuta(
             result = run_benchmark(
                 bench_name,
                 (
+                    f"cd {quote_path(tmp)} && "
                     f"{quote_path(lahuta)} sasa-sr"
                     f" -d {quote_path(input_dir)}"
                     f" --is_af2_model"
