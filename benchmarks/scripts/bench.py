@@ -8,10 +8,12 @@
 Runs wall-clock benchmarks for a single tool using the Shrake-Rupley algorithm
 with configurable thread counts. Uses hyperfine for timing (includes I/O).
 
-Tools: zig_f64, zig_f32, freesasa, rust, lahuta (zig is an alias for zig_f64)
+Tools: zig_f64, zig_f32, zig_f64_bitmask, zig_f32_bitmask, freesasa, rust,
+       lahuta, lahuta_bitmask (zig = zig_f64, zig_bitmask = zig_f64_bitmask)
 
 Usage:
     ./benchmarks/scripts/bench.py --tool zig_f64 --threads 1,4,8
+    ./benchmarks/scripts/bench.py --tool zig_f64_bitmask --threads 1,4,8
     ./benchmarks/scripts/bench.py --tool freesasa --threads 1 --warmup 3 --runs 10
 
     # Quick test (single file, 1 hyperfine run, no warmup)
@@ -39,6 +41,7 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
 from bench_common import (
+    LAHUTA_BITMASK_POINTS,
     TOOL_ALIASES,
     get_binary_path,
     get_n_atoms_from_pdb,
@@ -55,11 +58,25 @@ from bench_common import (
 app = typer.Typer(help="SR single-file benchmark runner (hyperfine)")
 console = Console()
 
-SR_TOOLS = ["zig_f64", "zig_f32", "freesasa", "rust", "lahuta"]
+SR_TOOLS = [
+    "zig_f64",
+    "zig_f32",
+    "zig_f64_bitmask",
+    "zig_f32_bitmask",
+    "freesasa",
+    "rust",
+    "lahuta",
+    "lahuta_bitmask",
+]
 
 
 def _build_command(
-    base: str, precision: str, pdb_path: Path, n_threads: int, n_points: int
+    base: str,
+    precision: str,
+    pdb_path: Path,
+    n_threads: int,
+    n_points: int,
+    use_bitmask: bool = False,
 ) -> str:
     """Build shell command for a tool.
 
@@ -68,11 +85,13 @@ def _build_command(
     """
     binary = quote_path(get_binary_path(base))
     quoted = quote_path(pdb_path)
+    bitmask_flag = " --use-bitmask" if use_bitmask else ""
 
     if base == "zig":
         return (
             f"{binary} calc --algorithm=sr --threads={n_threads}"
             f" --precision={precision} --n-points={n_points}"
+            f"{bitmask_flag}"
             f" {quoted} /dev/null"
         )
     elif base == "freesasa":
@@ -85,7 +104,7 @@ def _build_command(
     elif base == "lahuta":
         return (
             f"{binary} sasa-sr -f {quoted} --is_af2_model"
-            f" --points {n_points} -t {n_threads} -o /dev/null"
+            f" --points {n_points}{bitmask_flag} -t {n_threads} -o /dev/null"
         )
     else:
         raise ValueError(f"No command builder for tool base: {base}")
@@ -98,7 +117,10 @@ def main(
         typer.Option(
             "--tool",
             "-t",
-            help="Tool: zig_f64, zig_f32, freesasa, rust, lahuta (zig = zig_f64)",
+            help=(
+                "Tool: zig_f64, zig_f32, zig_f64_bitmask, zig_f32_bitmask, "
+                "freesasa, rust, lahuta, lahuta_bitmask (zig = zig_f64)"
+            ),
         ),
     ],
     threads: Annotated[
@@ -155,11 +177,21 @@ def main(
     all_valid = SR_TOOLS + list(TOOL_ALIASES.keys())
     if tool not in all_valid:
         console.print(f"[red]Error:[/red] Unknown tool: {tool}")
-        console.print(f"Available: {', '.join(SR_TOOLS)} (zig = zig_f64)")
+        console.print(
+            f"Available: {', '.join(SR_TOOLS)} (zig = zig_f64, zig_bitmask = zig_f64_bitmask)"
+        )
         raise typer.Exit(1)
 
-    tool_canonical, tool_base, precision = parse_tool(tool)
+    tool_canonical, tool_base, precision, use_bitmask = parse_tool(tool)
     thread_counts = parse_threads(threads)
+
+    # Validate lahuta bitmask n_points
+    if tool_base == "lahuta" and use_bitmask and n_points not in LAHUTA_BITMASK_POINTS:
+        console.print(
+            f"[red]Error:[/red] lahuta_bitmask only supports n_points "
+            f"{sorted(LAHUTA_BITMASK_POINTS)}, got {n_points}."
+        )
+        raise typer.Exit(1)
 
     # Check binary exists
     binary = get_binary_path(tool_base)
@@ -310,7 +342,12 @@ def main(
                         progress.update(task, description=desc)
 
                         cmd = _build_command(
-                            tool_base, precision, pdb_path, n_threads, n_points
+                            tool_base,
+                            precision,
+                            pdb_path,
+                            n_threads,
+                            n_points,
+                            use_bitmask,
                         )
 
                         json_path = Path(tmpdir).joinpath(f"{pdb_id}_{n_threads}t.json")

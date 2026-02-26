@@ -21,24 +21,34 @@ from rich.table import Table
 
 console = Console()
 
-TOOL_ALIASES = {"zig": "zig_f64"}
+TOOL_ALIASES = {"zig": "zig_f64", "zig_bitmask": "zig_f64_bitmask"}
+
+LAHUTA_BITMASK_POINTS = {64, 128, 256}
 
 
-def parse_tool(tool: str) -> tuple[str, str, str]:
-    """Parse tool name into (canonical, base, precision).
+def parse_tool(tool: str) -> tuple[str, str, str, bool]:
+    """Parse tool name into (canonical, base, precision, use_bitmask).
 
     Examples:
-        "zig_f64"  -> ("zig_f64", "zig", "f64")
-        "zig_f32"  -> ("zig_f32", "zig", "f32")
-        "zig"      -> ("zig_f64", "zig", "f64")  # alias
-        "freesasa" -> ("freesasa", "freesasa", "f64")
-        "rust"     -> ("rust", "rust", "f64")
-        "lahuta"   -> ("lahuta", "lahuta", "f64")
+        "zig_f64"          -> ("zig_f64", "zig", "f64", False)
+        "zig_f32"          -> ("zig_f32", "zig", "f32", False)
+        "zig"              -> ("zig_f64", "zig", "f64", False)  # alias
+        "zig_f64_bitmask"  -> ("zig_f64_bitmask", "zig", "f64", True)
+        "zig_bitmask"      -> ("zig_f64_bitmask", "zig", "f64", True)  # alias
+        "freesasa"         -> ("freesasa", "freesasa", "f64", False)
+        "rust"             -> ("rust", "rust", "f64", False)
+        "lahuta"           -> ("lahuta", "lahuta", "f64", False)
+        "lahuta_bitmask"   -> ("lahuta_bitmask", "lahuta", "f64", True)
     """
     tool = TOOL_ALIASES.get(tool, tool)
-    if tool.startswith("zig_f"):
-        return tool, "zig", tool.split("_")[1]
-    return tool, tool, "f64"
+
+    # Strip _bitmask suffix
+    use_bitmask = tool.endswith("_bitmask")
+    base_tool = tool.removesuffix("_bitmask") if use_bitmask else tool
+
+    if base_tool.startswith("zig_f"):
+        return tool, "zig", base_tool.split("_")[1], use_bitmask
+    return tool, base_tool, "f64", use_bitmask
 
 
 def parse_threads(threads_str: str) -> list[int]:

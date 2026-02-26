@@ -145,7 +145,7 @@ def main(
         console.print(f"Available: {', '.join(LR_TOOLS)} (zig = zig_f64)")
         raise typer.Exit(1)
 
-    tool_canonical, tool_base, precision = parse_tool(tool)
+    tool_canonical, tool_base, precision, _ = parse_tool(tool)
     thread_counts = parse_threads(threads)
 
     # Check binary exists
