@@ -39,8 +39,6 @@ Output:
 from __future__ import annotations
 
 import json
-import os
-import platform
 import shutil
 import subprocess
 import tempfile
@@ -52,6 +50,8 @@ from typing import Annotated
 import typer
 from rich.console import Console
 from rich.table import Table
+
+from bench_common import get_system_info, parse_threads
 
 app = typer.Typer(help="Batch SASA benchmark (hyperfine-based)")
 console = Console()
@@ -89,47 +89,6 @@ def get_binary_paths() -> dict[str, Path]:
     }
 
 
-def get_system_info() -> dict:
-    """Get system information."""
-    info = {
-        "os": platform.system(),
-        "os_version": platform.release(),
-        "arch": platform.machine(),
-        "cpu_cores": os.cpu_count() or 1,
-    }
-
-    if platform.system() == "Darwin":
-        try:
-            result = subprocess.run(
-                ["sysctl", "-n", "machdep.cpu.brand_string"],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                info["cpu_model"] = result.stdout.strip()
-            result = subprocess.run(
-                ["sysctl", "-n", "hw.memsize"], capture_output=True, text=True
-            )
-            if result.returncode == 0:
-                info["memory_gb"] = int(result.stdout.strip()) // (1024**3)
-        except Exception:
-            pass
-
-    return info
-
-
-def parse_threads(threads_str: str) -> list[int]:
-    """Parse thread specification like '1,8,10' or '1-10'."""
-    result = []
-    for part in threads_str.split(","):
-        if "-" in part:
-            start, end = part.split("-", 1)
-            result.extend(range(int(start), int(end) + 1))
-        else:
-            result.append(int(part))
-    return sorted(set(result))
-
-
 def check_hyperfine() -> bool:
     """Check if hyperfine is available."""
     return shutil.which("hyperfine") is not None
@@ -164,18 +123,27 @@ def run_benchmark(
     ]
 
     try:
-        subprocess.run(hyperfine_cmd, check=True, capture_output=False)
+        subprocess.run(hyperfine_cmd, check=True, capture_output=False, timeout=600)
         console.print()
+    except subprocess.TimeoutExpired:
+        console.print(f"[red]Timeout: {name} exceeded 600s[/red]")
+        return None
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Error running benchmark: {e}[/]")
+        console.print("[yellow]Check hyperfine output above for details[/]")
+        return None
 
-        # Parse results
+    try:
         if json_out.exists():
             with open(json_out) as f:
                 data = json.load(f)
                 if data.get("results"):
                     return data["results"][0]
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]Error running benchmark: {e}[/]")
-        console.print("[yellow]Check hyperfine output above for details[/]")
+        console.print(f"[yellow]Warning: no results in {json_out.name}[/yellow]")
+    except json.JSONDecodeError as e:
+        console.print(f"[yellow]Warning: corrupt JSON in {json_out.name}: {e}[/yellow]")
+    except KeyError as e:
+        console.print(f"[yellow]Warning: missing key {e} in {json_out.name}[/yellow]")
 
     return None
 
@@ -382,8 +350,14 @@ def print_summary(results_dir: Path) -> None:
                         f"{r['min']:.3f}",
                         f"{r['max']:.3f}",
                     )
-        except (json.JSONDecodeError, KeyError):
-            continue
+        except json.JSONDecodeError as e:
+            console.print(
+                f"[yellow]Warning: corrupt JSON in {json_file.name}: {e}[/yellow]"
+            )
+        except KeyError as e:
+            console.print(
+                f"[yellow]Warning: missing key {e} in {json_file.name}[/yellow]"
+            )
 
     console.print()
     console.print(table)

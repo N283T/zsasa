@@ -8,13 +8,13 @@
 Runs wall-clock benchmarks for a single tool using the Shrake-Rupley algorithm
 with configurable thread counts. Uses hyperfine for timing (includes I/O).
 
-Tools: zig_f64, zig_f32, freesasa, rust, lahuta
+Tools: zig_f64, zig_f32, freesasa, rust, lahuta (zig is an alias for zig_f64)
 
 Usage:
     ./benchmarks/scripts/bench.py --tool zig_f64 --threads 1,4,8
     ./benchmarks/scripts/bench.py --tool freesasa --threads 1 --warmup 3 --runs 10
 
-    # Quick test (1 structure, 1 run, no warmup)
+    # Quick test (single file, 1 hyperfine run, no warmup)
     ./benchmarks/scripts/bench.py --tool zig_f64 --threads 1 --warmup 0 --runs 1 \
         --input benchmarks/dataset/pdb/1gyt.pdb
 
@@ -29,7 +29,6 @@ from __future__ import annotations
 import csv
 import json
 import shutil
-import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -38,14 +37,18 @@ from typing import Annotated
 import typer
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
-from rich.table import Table
 
 from bench_common import (
+    TOOL_ALIASES,
     get_binary_path,
     get_n_atoms_from_pdb,
     get_system_info,
     load_sample_file,
     parse_threads,
+    parse_tool,
+    print_hyperfine_summary,
+    quote_path,
+    run_hyperfine,
     scan_input_directory,
 )
 
@@ -53,112 +56,39 @@ app = typer.Typer(help="SR single-file benchmark runner (hyperfine)")
 console = Console()
 
 SR_TOOLS = ["zig_f64", "zig_f32", "freesasa", "rust", "lahuta"]
-TOOL_ALIASES = {"zig": "zig_f64"}
-
-
-def _parse_tool(tool: str) -> tuple[str, str, str]:
-    """Parse tool name into (canonical, base, precision).
-
-    Returns:
-        (canonical_name, base_tool, precision)
-    """
-    tool = TOOL_ALIASES.get(tool, tool)
-    if tool.startswith("zig_f"):
-        return tool, "zig", tool.split("_")[1]
-    return tool, tool, "f64"
 
 
 def _build_command(
     base: str, precision: str, pdb_path: Path, n_threads: int, n_points: int
-) -> str | None:
-    """Build shell command for a tool. Returns None if tool should be skipped."""
-    binary = get_binary_path(base if base != "lahuta" else "lahuta")
+) -> str:
+    """Build shell command for a tool.
+
+    Raises:
+        ValueError: If tool base is not recognized.
+    """
+    binary = get_binary_path(base)
+    quoted = quote_path(pdb_path)
 
     if base == "zig":
         return (
             f"{binary} calc --algorithm=sr --threads={n_threads}"
             f" --precision={precision} --n-points={n_points}"
-            f" {pdb_path} /dev/null"
+            f" {quoted} /dev/null"
         )
     elif base == "freesasa":
         return (
             f"{binary} --shrake-rupley --resolution={n_points}"
-            f" --n-threads={n_threads} {pdb_path}"
+            f" --n-threads={n_threads} {quoted}"
         )
     elif base == "rust":
-        return f"{binary} {pdb_path} -n {n_points} -t {n_threads} -o protein"
+        return f"{binary} {quoted} -n {n_points} -t {n_threads} -o protein"
     elif base == "lahuta":
         return (
-            f"{binary} sasa-sr -f {pdb_path} --is_af2_model"
+            f"{binary} sasa-sr -f {quoted} --is_af2_model"
             f" --points {n_points} -t {n_threads} -o /dev/null"
         )
     else:
-        return None
-
-
-def _run_hyperfine(
-    cmd: str, warmup: int, runs: int, json_path: Path
-) -> dict | None:
-    """Run hyperfine and return results dict, or None on failure."""
-    hyperfine_cmd = [
-        "hyperfine",
-        "--warmup",
-        str(warmup),
-        "--runs",
-        str(runs),
-        "--export-json",
-        str(json_path),
-        cmd,
-    ]
-    try:
-        subprocess.run(
-            hyperfine_cmd, check=True, capture_output=True, text=True, timeout=600
-        )
-        if json_path.exists():
-            with open(json_path) as f:
-                data = json.load(f)
-            if data.get("results"):
-                return data["results"][0]
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        pass
-    return None
-
-
-def _print_summary(csv_path: Path) -> None:
-    """Print summary table from results CSV."""
-    from collections import defaultdict
-
-    by_threads: dict[int, list[float]] = defaultdict(list)
-
-    with open(csv_path) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            by_threads[int(row["threads"])].append(float(row["mean_s"]))
-
-    if not by_threads:
-        return
-
-    table = Table(title="Summary (wall-clock per structure)")
-    table.add_column("Threads", style="cyan", justify="right")
-    table.add_column("N", justify="right")
-    table.add_column("Mean (s)", justify="right")
-    table.add_column("Min (s)", justify="right")
-    table.add_column("Max (s)", justify="right")
-
-    for t in sorted(by_threads):
-        times = by_threads[t]
-        n = len(times)
-        mean = sum(times) / n
-        table.add_row(
-            str(t),
-            f"{n:,}",
-            f"{mean:.4f}",
-            f"{min(times):.4f}",
-            f"{max(times):.4f}",
-        )
-
-    console.print()
-    console.print(table)
+        raise ValueError(f"No command builder for tool base: {base}")
 
 
 @app.command()
@@ -173,7 +103,7 @@ def main(
     ],
     threads: Annotated[
         str,
-        typer.Option("--threads", "-T", help="Thread counts: '1,4,8' or '1-10'"),
+        typer.Option("--threads", "-T", help="Thread counts: '1,4,10' or '1-10'"),
     ] = "1,4,10",
     runs: Annotated[
         int,
@@ -221,7 +151,7 @@ def main(
         console.print(f"Available: {', '.join(SR_TOOLS)} (zig = zig_f64)")
         raise typer.Exit(1)
 
-    tool_canonical, tool_base, precision = _parse_tool(tool)
+    tool_canonical, tool_base, precision = parse_tool(tool)
     thread_counts = parse_threads(threads)
 
     # Check binary exists
@@ -324,6 +254,8 @@ def main(
     # Run benchmarks
     csv_path = output_dir.joinpath("results.csv")
     n_atoms_cache: dict[str, int] = {}
+    n_success = 0
+    n_failed = 0
 
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(
@@ -361,6 +293,7 @@ def main(
                             console.print(
                                 f"[yellow]Skip {pdb_id}: not found[/yellow]"
                             )
+                            n_failed += 1
                             progress.advance(task)
                             continue
 
@@ -376,14 +309,11 @@ def main(
                         cmd = _build_command(
                             tool_base, precision, pdb_path, n_threads, n_points
                         )
-                        if cmd is None:
-                            progress.advance(task)
-                            continue
 
                         json_path = Path(tmpdir).joinpath(
                             f"{pdb_id}_{n_threads}t.json"
                         )
-                        result = _run_hyperfine(cmd, warmup, runs, json_path)
+                        result = run_hyperfine(cmd, warmup, runs, json_path)
 
                         if result:
                             writer.writerow(
@@ -402,19 +332,30 @@ def main(
                                 }
                             )
                             f.flush()
+                            n_success += 1
                         else:
-                            console.print(
-                                f"[red]Error: {pdb_id} t={n_threads}: "
-                                f"hyperfine failed[/red]"
-                            )
+                            n_failed += 1
 
                         progress.advance(task)
 
-    console.print(f"\n[green]Done![/green] Results saved to: {output_dir}")
+    # Report results
+    if n_failed > 0:
+        console.print(
+            f"\n[yellow]Warning:[/yellow] {n_failed}/{total} benchmarks failed"
+        )
+
+    if n_success == 0:
+        console.print("[red]Error: all benchmarks failed, no results recorded[/red]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"\n[green]Done![/green] {n_success}/{total} benchmarks completed"
+    )
+    console.print(f"  Results: {output_dir}")
     console.print(f"  - {csv_path.name}")
     console.print(f"  - {config_path.name}")
 
-    _print_summary(csv_path)
+    print_hyperfine_summary(csv_path)
 
 
 if __name__ == "__main__":
