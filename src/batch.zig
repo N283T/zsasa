@@ -544,6 +544,10 @@ fn writeJsonlOutput(allocator: Allocator, file_results: []const FileResult, outp
 
     defer if (output_path != null) file.close();
 
+    // 64KB write buffer to reduce syscall count
+    var buf: [64 * 1024]u8 = undefined;
+    var w = file.writer(&buf);
+
     for (file_results) |result| {
         if (result.status != .ok) continue;
         if (result.atom_areas) |areas| {
@@ -552,10 +556,12 @@ fn writeJsonlOutput(allocator: Allocator, file_results: []const FileResult, outp
                 continue;
             };
             defer allocator.free(line);
-            try file.writeAll(line);
-            try file.writeAll("\n");
+            try w.interface.writeAll(line);
+            try w.interface.writeAll("\n");
         }
     }
+
+    try w.interface.flush();
 }
 
 /// Run batch processing sequentially (single-threaded path, used when n_threads <= 1)
