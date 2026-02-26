@@ -43,8 +43,6 @@ pub const ParseError = error{
     MissingCoordinateField,
     /// Invalid coordinate value (not a valid number)
     InvalidCoordinate,
-    /// File read error
-    FileReadError,
 };
 
 /// Column indices for atom_site fields
@@ -139,9 +137,7 @@ pub const MmcifParser = struct {
 
     /// Parse mmCIF from a file
     pub fn parseFile(self: *MmcifParser, path: []const u8) !AtomInput {
-        const mapped = mmap_reader.mmapFile(path) catch {
-            return ParseError.FileReadError;
-        };
+        const mapped = try mmap_reader.mmapFile(path);
         defer mapped.deinit();
         return self.parse(mapped.data);
     }
