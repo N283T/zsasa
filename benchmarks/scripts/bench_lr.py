@@ -3,39 +3,36 @@
 # requires-python = ">=3.12"
 # dependencies = ["rich>=13.0", "typer>=0.9.0"]
 # ///
-"""SR benchmark runner.
+"""LR benchmark runner.
 
-Runs benchmark for a single tool using the Shrake-Rupley algorithm
+Runs benchmark for a single tool using the Lee-Richards algorithm
 with configurable thread counts.
 Uses internal timing (SASA-only) with warmup runs for statistical reliability.
 Results are saved to CSV with execution config in JSON.
 
-Tools: zig_f64 (default), zig_f32, freesasa, rust (zig = zig_f64 alias)
+Tools: zig_f64 (default), zig_f32, freesasa (zig = zig_f64 alias)
+Note: RustSASA does not support LR algorithm.
 
 Usage:
-    # Default dataset (benchmarks/dataset/json/, ~2k structures)
-    ./benchmarks/scripts/bench.py --tool zig_f64
-    ./benchmarks/scripts/bench.py --tool zig_f32
-    ./benchmarks/scripts/bench.py --tool freesasa
+    ./benchmarks/scripts/bench_lr.py --tool zig_f64
+    ./benchmarks/scripts/bench_lr.py --tool zig_f32
+    ./benchmarks/scripts/bench_lr.py --tool freesasa
 
     # "zig" is shorthand for "zig_f64"
-    ./benchmarks/scripts/bench.py --tool zig
+    ./benchmarks/scripts/bench_lr.py --tool zig
 
     # Quick test (no warmup, 1 run)
-    ./benchmarks/scripts/bench.py --tool zig --threads 1 --warmup 0 --runs 1
+    ./benchmarks/scripts/bench_lr.py --tool zig --threads 1 --warmup 0 --runs 1
 
-    # Replay from existing config (re-run identical benchmark)
-    ./benchmarks/scripts/bench.py --config results/single/100/zig_f64_sr/config.json
-
-    # Replay with overrides (change one parameter)
-    ./benchmarks/scripts/bench.py --config results/single/100/zig_f64_sr/config.json --n-points 200
+    # Replay from existing config
+    ./benchmarks/scripts/bench_lr.py --config results/single_lr/20/zig_f64_lr/config.json
 
 Output:
-    benchmarks/results/single/<n_points>/<tool>_sr/
+    benchmarks/results/single_lr/<n_slices>/<tool>_lr/
     ├── config.json   # System info and parameters
     └── results.csv   # Benchmark results (warmup runs excluded)
 
-    Examples: single/100/zig_f64_sr/, single/100/freesasa_sr/
+    Examples: single_lr/20/zig_f64_lr/, single_lr/20/freesasa_lr/
 """
 
 from __future__ import annotations
@@ -63,8 +60,10 @@ from bench_common import (
     scan_input_directory,
 )
 
-app = typer.Typer(help="SR benchmark runner")
+app = typer.Typer(help="LR benchmark runner")
 console = Console()
+
+LR_TOOLS = ["zig_f64", "zig_f32", "freesasa"]
 
 
 def _resolve_params(
@@ -74,8 +73,7 @@ def _resolve_params(
     threads: str | None,
     runs: int | None,
     warmup: int | None,
-    n_points: int | None,
-    use_bitmask: bool | None,
+    n_slices: int | None,
     input_dir: Path | None,
     sample_file: Path | None,
 ) -> dict:
@@ -90,10 +88,7 @@ def _resolve_params(
         ),
         "runs": runs if runs is not None else cfg.get("runs", 5),
         "warmup": warmup if warmup is not None else cfg.get("warmup", 1),
-        "n_points": n_points if n_points is not None else cfg.get("n_points", 100),
-        "use_bitmask": (
-            use_bitmask if use_bitmask is not None else cfg.get("use_bitmask", False)
-        ),
+        "n_slices": n_slices if n_slices is not None else cfg.get("n_slices", 20),
         "input_dir": input_dir
         or (Path(cfg["input_dir"]) if cfg.get("input_dir") else None),
         "sample_file": (
@@ -118,7 +113,7 @@ def main(
         typer.Option(
             "--tool",
             "-t",
-            help="Tool: zig_f64, zig_f32, freesasa, rust (zig = zig_f64)",
+            help="Tool: zig_f64, zig_f32, freesasa (zig = zig_f64)",
         ),
     ] = None,
     threads: Annotated[
@@ -149,19 +144,11 @@ def main(
             help="Sample file to filter structures (v1 or v2 format)",
         ),
     ] = None,
-    n_points: Annotated[
+    n_slices: Annotated[
         int | None,
         typer.Option(
-            "--n-points",
-            "-N",
-            help="Number of sphere test points per atom (default: 100)",
-        ),
-    ] = None,
-    use_bitmask: Annotated[
-        bool | None,
-        typer.Option(
-            "--use-bitmask/--no-bitmask",
-            help="Use bitmask neighbor list for zsasa",
+            "--n-slices",
+            help="Number of slices per atom diameter (default: 20)",
         ),
     ] = None,
     force: Annotated[
@@ -169,7 +156,7 @@ def main(
         typer.Option("--force", "-f", help="Overwrite existing results"),
     ] = False,
 ) -> None:
-    """Run SR benchmark for a single tool.
+    """Run LR benchmark for a single tool.
 
     Use --config to replay from an existing config.json. CLI args override config values.
     """
@@ -190,17 +177,15 @@ def main(
         threads=threads,
         runs=runs,
         warmup=warmup,
-        n_points=n_points,
-        use_bitmask=use_bitmask,
+        n_slices=n_slices,
         input_dir=input_dir,
         sample_file=sample_file,
     )
     tool = p["tool"]
-    algorithm = "sr"
+    algorithm = "lr"
     runs = p["runs"]
     warmup = p["warmup"]
-    n_points = p["n_points"]
-    use_bitmask = p["use_bitmask"]
+    n_slices = p["n_slices"]
     input_dir = p["input_dir"]
     sample_file = p["sample_file"]
 
@@ -212,13 +197,17 @@ def main(
     thread_counts = parse_threads(p["threads"])
 
     # Parse and validate tool
-    all_valid = list(TOOLS) + list(TOOL_ALIASES.keys())
+    all_valid = list(LR_TOOLS) + [k for k, v in TOOL_ALIASES.items() if v in LR_TOOLS]
     if tool not in all_valid:
-        console.print(f"[red]Error:[/red] Unknown tool: {tool}")
-        console.print(f"Available: {', '.join(TOOLS)} (zig = zig_f64)")
+        console.print(f"[red]Error:[/red] Unknown or unsupported tool for LR: {tool}")
+        console.print(f"Available: {', '.join(LR_TOOLS)} (zig = zig_f64)")
         raise typer.Exit(1)
 
     tool_canonical, tool_base, precision = parse_tool(tool)
+
+    if tool_base == "rust":
+        console.print("[red]Error:[/red] RustSASA does not support LR algorithm")
+        raise typer.Exit(1)
 
     # Load sample filter
     sample_ids: set[str] | None = None
@@ -260,13 +249,12 @@ def main(
 
     # Setup output directory
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    bitmask_suffix = "_bitmask" if use_bitmask else ""
     if output_dir is None:
         output_dir = Path(__file__).parent.parent.joinpath(
             "results",
-            "single",
-            str(n_points),
-            f"{tool_canonical}{bitmask_suffix}_sr",
+            "single_lr",
+            str(n_slices),
+            f"{tool_canonical}_lr",
         )
 
     # Overwrite protection
@@ -290,8 +278,7 @@ def main(
             "thread_counts": thread_counts,
             "warmup": warmup,
             "runs": runs,
-            "n_points": n_points,
-            "use_bitmask": use_bitmask,
+            "n_slices": n_slices,
             "n_structures": len(structures),
             "input_dir": str(json_dir),
             "sample_file": str(sample_file) if sample_file else None,
@@ -305,7 +292,7 @@ def main(
     total_warmup = len(structures) * len(thread_counts) * warmup
     total_all = total_measured + total_warmup
 
-    console.print(f"\n[bold]{tool_canonical.upper()} SR[/bold]")
+    console.print(f"\n[bold]{tool_canonical.upper()} LR[/bold]")
     console.print(
         f"Threads: {thread_counts}, "
         f"Warmup: {warmup}, Runs: {runs}, "
@@ -369,8 +356,7 @@ def main(
                                 algorithm,
                                 n_threads,
                                 precision,
-                                n_points,
-                                use_bitmask=use_bitmask,
+                                n_slices=n_slices,
                             )
                         except Exception:
                             pass
@@ -388,8 +374,7 @@ def main(
                                 algorithm,
                                 n_threads,
                                 precision,
-                                n_points,
-                                use_bitmask=use_bitmask,
+                                n_slices=n_slices,
                             )
 
                             writer.writerow(

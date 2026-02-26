@@ -304,6 +304,7 @@ def run_lahuta(
     dry_run: bool,
     binaries: dict[str, Path],
     use_bitmask: bool = False,
+    single_tool: bool = False,
 ) -> list[dict]:
     """Run Lahuta benchmarks (AF2 PDB only, Shrake-Rupley)."""
     lahuta = binaries["lahuta"]
@@ -312,11 +313,17 @@ def run_lahuta(
         return []
 
     if use_bitmask and n_points not in LAHUTA_BITMASK_POINTS:
+        if single_tool:
+            console.print(
+                f"[red]Error: lahuta bitmask only supports n_points "
+                f"{sorted(LAHUTA_BITMASK_POINTS)}, got {n_points}.[/red]"
+            )
+            raise typer.Exit(1)
         console.print(
-            f"[yellow]Warning: lahuta bitmask only supports n_points "
-            f"{sorted(LAHUTA_BITMASK_POINTS)}, got {n_points}. "
-            f"Bitmask will be ignored by lahuta.[/yellow]"
+            f"[yellow][SKIP] lahuta_bitmask: n_points={n_points} not in "
+            f"{sorted(LAHUTA_BITMASK_POINTS)}[/yellow]"
         )
+        return []
 
     results = []
     bitmask_suffix = "_bitmask" if use_bitmask else ""
@@ -571,6 +578,7 @@ def main(
             dry_run,
             binaries,
             use_bitmask,
+            single_tool=(len(selected_tools) == 1),
         )
         all_results.extend(results)
 

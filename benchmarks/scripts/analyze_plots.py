@@ -1,4 +1,4 @@
-"""Plotting functions for benchmark analysis."""
+"""Plotting functions for SR benchmark analysis."""
 
 import matplotlib.pyplot as plt
 import polars as pl
@@ -20,9 +20,9 @@ from analyze_data import (
 # === Internal Plot Helpers ===
 
 
-def _plot_scatter(df_algo: pl.DataFrame, algo: str, ax):
-    """Plot scatter for a single algorithm."""
-    df_sampled = df_algo.sample(n=min(5000, df_algo.height), seed=42)
+def _plot_scatter(df_sr: pl.DataFrame, ax):
+    """Plot scatter for SR algorithm."""
+    df_sampled = df_sr.sample(n=min(5000, df_sr.height), seed=42)
 
     tool_labels = [
         t for t in sorted(df_sampled["tool_label"].unique().to_list()) if "f32" not in t
@@ -45,10 +45,10 @@ def _plot_scatter(df_algo: pl.DataFrame, algo: str, ax):
     ax.legend()
 
 
-def _plot_threads(df_algo: pl.DataFrame, algo: str, ax):
-    """Plot thread scaling for a single algorithm."""
+def _plot_threads(df_sr: pl.DataFrame, ax):
+    """Plot thread scaling for SR algorithm."""
     scaling = (
-        df_algo.group_by(["tool_label", "threads"])
+        df_sr.group_by(["tool_label", "threads"])
         .agg(pl.col("time_ms").median().alias("median_time"))
         .sort(["tool_label", "threads"])
     )
@@ -129,113 +129,82 @@ def _plot_speedup_single(
 # === Plot Command Implementations ===
 
 
-def plot_scatter(n_points: int = 100, n_slices: int = 20):
+def plot_scatter(n_points: int = 100):
     """Generate atoms vs time scatter plot."""
     setup_style()
-    df = load_data(n_points, n_slices)
+    df = load_data(n_points)
 
-    for algo in ["sr", "lr"]:
-        df_algo = df.filter(pl.col("algorithm") == algo)
-        if df_algo.height == 0:
-            continue
-
-        plot_dir = PLOTS_DIR.joinpath("scatter", algo)
-        individual_dir = plot_dir.joinpath("individual")
-        individual_dir.mkdir(parents=True, exist_ok=True)
-
-        thread_counts = sorted(df_algo["threads"].unique().to_list())
-
-        for threads in thread_counts:
-            df_t = df_algo.filter(pl.col("threads") == threads)
-            fig, ax = plt.subplots(figsize=(10, 6))
-            _plot_scatter(df_t, algo, ax)
-            ax.set_title(f"{algo.upper()}: Time vs Size (threads={threads})")
-            fig.tight_layout()
-            out_path = individual_dir.joinpath(f"t{threads}.png")
-            fig.savefig(out_path)
-            plt.close(fig)
-            rprint(f"[green]Saved:[/green] {out_path}")
-
-        # Grid of all threads
-        n_threads = len(thread_counts)
-        n_cols = min(3, n_threads)
-        n_rows = (n_threads + n_cols - 1) // n_cols
-
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 5 * n_rows))
-        if n_threads == 1:
-            axes = [[axes]]
-        elif n_rows == 1:
-            axes = [axes]
-
-        for idx, threads in enumerate(thread_counts):
-            row, col = idx // n_cols, idx % n_cols
-            ax = axes[row][col] if n_rows > 1 else axes[0][col]
-            df_t = df_algo.filter(pl.col("threads") == threads)
-            _plot_scatter(df_t, algo, ax)
-            ax.set_title(f"threads={threads}")
-
-        for idx in range(n_threads, n_rows * n_cols):
-            row, col = idx // n_cols, idx % n_cols
-            axes[row][col].set_visible(False)
-
-        fig.suptitle(f"{algo.upper()}: Execution Time vs Structure Size", fontsize=14)
-        fig.tight_layout()
-        out_path = plot_dir.joinpath("grid.png")
-        fig.savefig(out_path)
-        plt.close(fig)
-        rprint(f"[green]Saved:[/green] {out_path}")
-
-
-def plot_threads(n_points: int = 100, n_slices: int = 20):
-    """Generate thread scaling plot."""
-    setup_style()
-    df = load_data(n_points, n_slices)
-
-    plot_dir = PLOTS_DIR.joinpath("thread_scaling")
+    plot_dir = PLOTS_DIR.joinpath("scatter", "sr")
     individual_dir = plot_dir.joinpath("individual")
     individual_dir.mkdir(parents=True, exist_ok=True)
 
-    algos = [a for a in ["sr", "lr"] if df.filter(pl.col("algorithm") == a).height > 0]
+    thread_counts = sorted(df["threads"].unique().to_list())
 
-    for algo in algos:
-        df_algo = df.filter(pl.col("algorithm") == algo)
+    for threads in thread_counts:
+        df_t = df.filter(pl.col("threads") == threads)
         fig, ax = plt.subplots(figsize=(10, 6))
-        _plot_threads(df_algo, algo, ax)
-        ax.set_title(f"{algo.upper()}: Thread Scaling")
+        _plot_scatter(df_t, ax)
+        ax.set_title(f"SR: Time vs Size (threads={threads})")
         fig.tight_layout()
-        out_path = individual_dir.joinpath(f"{algo}.png")
+        out_path = individual_dir.joinpath(f"t{threads}.png")
         fig.savefig(out_path)
         plt.close(fig)
         rprint(f"[green]Saved:[/green] {out_path}")
 
-    if len(algos) >= 2:
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        for idx, algo in enumerate(algos[:2]):
-            df_algo = df.filter(pl.col("algorithm") == algo)
-            _plot_threads(df_algo, algo, axes[idx])
-            axes[idx].set_title(f"{algo.upper()}")
-        fig.suptitle("Thread Scaling", fontsize=14)
-        fig.tight_layout()
-        out_path = plot_dir.joinpath("grid.png")
-        fig.savefig(out_path)
-        plt.close(fig)
-        rprint(f"[green]Saved:[/green] {out_path}")
-    elif len(algos) == 1:
-        # Single algo → just copy individual as grid
-        import shutil
+    # Grid of all threads
+    n_threads = len(thread_counts)
+    n_cols = min(3, n_threads)
+    n_rows = (n_threads + n_cols - 1) // n_cols
 
-        src = individual_dir.joinpath(f"{algos[0]}.png")
-        dst = plot_dir.joinpath("grid.png")
-        shutil.copy2(src, dst)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 5 * n_rows))
+    if n_threads == 1:
+        axes = [[axes]]
+    elif n_rows == 1:
+        axes = [axes]
+
+    for idx, threads in enumerate(thread_counts):
+        row, col = idx // n_cols, idx % n_cols
+        ax = axes[row][col] if n_rows > 1 else axes[0][col]
+        df_t = df.filter(pl.col("threads") == threads)
+        _plot_scatter(df_t, ax)
+        ax.set_title(f"threads={threads}")
+
+    for idx in range(n_threads, n_rows * n_cols):
+        row, col = idx // n_cols, idx % n_cols
+        axes[row][col].set_visible(False)
+
+    fig.suptitle("SR: Execution Time vs Structure Size", fontsize=14)
+    fig.tight_layout()
+    out_path = plot_dir.joinpath("grid.png")
+    fig.savefig(out_path)
+    plt.close(fig)
+    rprint(f"[green]Saved:[/green] {out_path}")
 
 
-def plot_grid(n_points: int = 100, n_slices: int = 20):
+def plot_threads(n_points: int = 100):
+    """Generate thread scaling plot."""
+    setup_style()
+    df = load_data(n_points)
+
+    plot_dir = PLOTS_DIR.joinpath("thread_scaling")
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    _plot_threads(df, ax)
+    ax.set_title("SR: Thread Scaling")
+    fig.tight_layout()
+    out_path = plot_dir.joinpath("sr.png")
+    fig.savefig(out_path)
+    plt.close(fig)
+    rprint(f"[green]Saved:[/green] {out_path}")
+
+
+def plot_grid(n_points: int = 100):
     """Generate grid of speedup plots for all thread counts."""
     setup_style()
-    df = load_data(n_points, n_slices)
-    df_sr = df.filter(pl.col("algorithm") == "sr")
+    df = load_data(n_points)
 
-    if df_sr.height == 0:
+    if df.height == 0:
         rprint("[yellow]No SR data found[/yellow]")
         return
 
@@ -243,11 +212,11 @@ def plot_grid(n_points: int = 100, n_slices: int = 20):
     individual_dir = plot_dir.joinpath("individual")
     individual_dir.mkdir(parents=True, exist_ok=True)
 
-    thread_counts = sorted(df_sr["threads"].unique().to_list())
+    thread_counts = sorted(df["threads"].unique().to_list())
 
     for threads in thread_counts:
         fig_single, ax_single = plt.subplots(figsize=(12, 6))
-        _plot_speedup_single(df_sr, threads, ax_single, show_legend=True)
+        _plot_speedup_single(df, threads, ax_single, show_legend=True)
         ax_single.set_xlabel("Structure Size (atoms)")
         ax_single.set_ylabel("Speedup Ratio (>1 = zsasa faster)")
         ax_single.set_title(f"SR Algorithm: zsasa Speedup (threads={threads})")
@@ -270,7 +239,7 @@ def plot_grid(n_points: int = 100, n_slices: int = 20):
     for idx, threads in enumerate(thread_counts):
         row, col = idx // n_cols, idx % n_cols
         ax = axes[row][col] if n_rows > 1 else axes[0][col]
-        _plot_speedup_single(df_sr, threads, ax, show_legend=(idx == 0))
+        _plot_speedup_single(df, threads, ax, show_legend=(idx == 0))
         ax.set_title(f"threads={threads}")
 
     for idx in range(n_threads, n_rows * n_cols):
@@ -288,96 +257,96 @@ def plot_grid(n_points: int = 100, n_slices: int = 20):
     rprint(f"[green]Saved:[/green] {out_path}")
 
 
-def plot_validation(n_points: int = 100, n_slices: int = 20):
+def plot_validation(n_points: int = 100):
     """Generate SASA validation scatter plot (zsasa f64 vs FreeSASA)."""
     import numpy as np
 
     setup_style()
-    df = load_data(n_points, n_slices)
+    df = load_data(n_points)
 
     plot_dir = PLOTS_DIR.joinpath("validation")
     plot_dir.mkdir(parents=True, exist_ok=True)
 
-    for algo in ["sr", "lr"]:
-        df_algo = df.filter((pl.col("algorithm") == algo) & (pl.col("threads") == 1))
-        if df_algo.height == 0:
-            continue
+    df_t1 = df.filter(pl.col("threads") == 1)
+    if df_t1.height == 0:
+        rprint("[yellow]No single-threaded SR data found[/yellow]")
+        return
 
-        pivot = (
-            df_algo.select(["structure", "tool_label", "total_sasa"])
-            .pivot(on="tool_label", index="structure", values="total_sasa")
-            .drop_nulls()
-        )
+    pivot = (
+        df_t1.select(["structure", "tool_label", "total_sasa"])
+        .pivot(on="tool_label", index="structure", values="total_sasa")
+        .drop_nulls()
+    )
 
-        # Try zig_f64 first, fall back to zig
-        zsasa_col = "zsasa_f64" if "zsasa_f64" in pivot.columns else "zsasa"
-        if zsasa_col not in pivot.columns or "freesasa" not in pivot.columns:
-            continue
+    # Try zig_f64 first, fall back to zig
+    zsasa_col = "zsasa_f64" if "zsasa_f64" in pivot.columns else "zsasa"
+    if zsasa_col not in pivot.columns or "freesasa" not in pivot.columns:
+        rprint("[yellow]Need both zsasa and freesasa data for validation[/yellow]")
+        return
 
-        zsasa_sasa = pivot[zsasa_col].to_list()
-        fs_sasa = pivot["freesasa"].to_list()
+    zsasa_sasa = pivot[zsasa_col].to_list()
+    fs_sasa = pivot["freesasa"].to_list()
 
-        fig, ax = plt.subplots(figsize=(8, 8))
-        ax.scatter(zsasa_sasa, fs_sasa, alpha=0.3, s=10, color="#3498db")
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.scatter(zsasa_sasa, fs_sasa, alpha=0.3, s=10, color="#3498db")
 
-        max_val = max(max(zsasa_sasa), max(fs_sasa))
-        ax.plot([0, max_val], [0, max_val], "r--", linewidth=1.5, label="y = x")
+    max_val = max(max(zsasa_sasa), max(fs_sasa))
+    ax.plot([0, max_val], [0, max_val], "r--", linewidth=1.5, label="y = x")
 
-        zsasa_arr = np.array(zsasa_sasa)
-        fs_arr = np.array(fs_sasa)
-        correlation = np.corrcoef(zsasa_arr, fs_arr)[0, 1]
-        r_squared = correlation**2
+    zsasa_arr = np.array(zsasa_sasa)
+    fs_arr = np.array(fs_sasa)
+    correlation = np.corrcoef(zsasa_arr, fs_arr)[0, 1]
+    r_squared = correlation**2
 
-        rel_errors = np.abs(zsasa_arr - fs_arr) / fs_arr * 100
-        max_rel_error = np.max(rel_errors)
-        mean_rel_error = np.mean(rel_errors)
+    rel_errors = np.abs(zsasa_arr - fs_arr) / fs_arr * 100
+    max_rel_error = np.max(rel_errors)
+    mean_rel_error = np.mean(rel_errors)
 
-        zsasa_label = "zsasa (f64)" if zsasa_col == "zsasa_f64" else "zsasa"
-        ax.set_xlabel(f"{zsasa_label} SASA")
-        ax.set_ylabel("FreeSASA SASA")
-        ax.set_title(f"{algo.upper()}: SASA Validation (n={len(zsasa_sasa):,})")
-        ax.legend()
+    zsasa_label = "zsasa (f64)" if zsasa_col == "zsasa_f64" else "zsasa"
+    ax.set_xlabel(f"{zsasa_label} SASA")
+    ax.set_ylabel("FreeSASA SASA")
+    ax.set_title(f"SR: SASA Validation (n={len(zsasa_sasa):,})")
+    ax.legend()
 
-        stats_text = f"R² = {r_squared:.6f}\nMean error = {mean_rel_error:.4f}%\nMax error = {max_rel_error:.4f}%"
-        ax.text(
-            0.05,
-            0.95,
-            stats_text,
-            transform=ax.transAxes,
-            fontsize=10,
-            verticalalignment="top",
-            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
-        )
+    stats_text = f"R² = {r_squared:.6f}\nMean error = {mean_rel_error:.4f}%\nMax error = {max_rel_error:.4f}%"
+    ax.text(
+        0.05,
+        0.95,
+        stats_text,
+        transform=ax.transAxes,
+        fontsize=10,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+    )
 
-        ax.set_aspect("equal")
-        fig.tight_layout()
+    ax.set_aspect("equal")
+    fig.tight_layout()
 
-        out_path = plot_dir.joinpath(f"{algo}.png")
-        fig.savefig(out_path)
-        plt.close(fig)
-        rprint(f"[green]Saved:[/green] {out_path}")
+    out_path = plot_dir.joinpath("sr.png")
+    fig.savefig(out_path)
+    plt.close(fig)
+    rprint(f"[green]Saved:[/green] {out_path}")
 
 
-def plot_samples(n_points: int = 100, n_slices: int = 20):
+def plot_samples(n_points: int = 100):
     """Generate thread scaling plots for representative structures per size bin."""
     setup_style()
-    df = load_data(n_points, n_slices)
-    df_sr = df.filter(pl.col("algorithm") == "sr")
+    df = load_data(n_points)
 
-    if df_sr.height == 0:
+    if df.height == 0:
         rprint("[yellow]No SR data found[/yellow]")
         return
 
-    df_sr = add_size_bin(df_sr)
+    df = add_size_bin(df)
 
     plot_dir = PLOTS_DIR.joinpath("samples")
     plot_dir.mkdir(parents=True, exist_ok=True)
 
     bin_order = [b[2] for b in BINS]
-    thread_counts = sorted(df_sr["threads"].unique().to_list())
+    thread_counts = sorted(df["threads"].unique().to_list())
 
     for bin_name in bin_order:
-        df_bin = df_sr.filter(pl.col("size_bin") == bin_name)
+        df_bin = df.filter(pl.col("size_bin") == bin_name)
         if df_bin.height == 0:
             continue
 
@@ -449,14 +418,14 @@ def plot_samples(n_points: int = 100, n_slices: int = 20):
 
     # Max size structure plot
     max_struct_row = (
-        df_sr.filter(pl.col("threads") == thread_counts[0])
+        df.filter(pl.col("threads") == thread_counts[0])
         .sort("n_atoms", descending=True)
         .head(1)
     )
     if max_struct_row.height > 0:
         max_struct = max_struct_row["structure"][0]
         max_atoms = max_struct_row["n_atoms"][0]
-        df_max = df_sr.filter(pl.col("structure") == max_struct)
+        df_max = df.filter(pl.col("structure") == max_struct)
 
         fig, ax = plt.subplots(figsize=(8, 6))
 
@@ -487,10 +456,10 @@ def plot_samples(n_points: int = 100, n_slices: int = 20):
         rprint(f"[green]Saved:[/green] {out_path}")
 
 
-def plot_large(n_points: int = 100, n_slices: int = 20):
+def plot_large(n_points: int = 100):
     """Generate speedup bar chart for large structures (50k+ atoms)."""
     setup_style()
-    df = load_data(n_points, n_slices)
+    df = load_data(n_points)
     df = add_size_bin(df)
 
     plot_dir = PLOTS_DIR.joinpath("large")
@@ -510,71 +479,34 @@ def plot_large(n_points: int = 100, n_slices: int = 20):
         return
 
     results = []
-    colors_algo = {"sr": "#3498db", "lr": "#e74c3c"}
 
-    pivots = {}
-    for algo in ["sr", "lr"]:
-        df_algo = df_large.filter(pl.col("algorithm") == algo)
-        if df_algo.height == 0:
-            continue
-        pivots[algo] = (
-            df_algo.select(["structure", "tool_label", "time_ms"])
-            .pivot(on="tool_label", index="structure", values="time_ms")
-            .drop_nulls()
-        )
-
-    # LR section
-    zsasa_lr_col = (
-        "zsasa_f64"
-        if "zsasa_f64" in pivots.get("lr", pl.DataFrame()).columns
-        else "zsasa"
+    pivot = (
+        df_large.select(["structure", "tool_label", "time_ms"])
+        .pivot(on="tool_label", index="structure", values="time_ms")
+        .drop_nulls()
     )
-    if (
-        "lr" in pivots
-        and zsasa_lr_col in pivots["lr"].columns
-        and "freesasa" in pivots["lr"].columns
-    ):
-        speedup = pivots["lr"]["freesasa"] / pivots["lr"][zsasa_lr_col]
-        results.append(
-            {
-                "label": "vs FreeSASA (LR)",
-                "speedup": speedup.median(),
-                "q25": speedup.quantile(0.25),
-                "q75": speedup.quantile(0.75),
-                "color": colors_algo["lr"],
-            }
-        )
 
-    # SR section
-    if (
-        "sr" in pivots
-        and "zsasa_f64" in pivots["sr"].columns
-        and "rustsasa" in pivots["sr"].columns
-    ):
-        speedup = pivots["sr"]["rustsasa"] / pivots["sr"]["zsasa_f64"]
+    if "zsasa_f64" in pivot.columns and "rustsasa" in pivot.columns:
+        speedup = pivot["rustsasa"] / pivot["zsasa_f64"]
         results.append(
             {
                 "label": "vs RustSASA (SR)",
                 "speedup": speedup.median(),
                 "q25": speedup.quantile(0.25),
                 "q75": speedup.quantile(0.75),
-                "color": colors_algo["sr"],
+                "color": "#3498db",
             }
         )
 
-    if (
-        "sr" in pivots
-        and "zsasa_f64" in pivots["sr"].columns
-        and "freesasa" in pivots["sr"].columns
-    ):
-        speedup = pivots["sr"]["freesasa"] / pivots["sr"]["zsasa_f64"]
+    if "zsasa_f64" in pivot.columns and "freesasa" in pivot.columns:
+        speedup = pivot["freesasa"] / pivot["zsasa_f64"]
         results.append(
             {
                 "label": "vs FreeSASA (SR)",
                 "speedup": speedup.median(),
                 "q25": speedup.quantile(0.25),
                 "q75": speedup.quantile(0.75),
-                "color": colors_algo["sr"],
+                "color": "#3498db",
             }
         )
 
@@ -603,9 +535,7 @@ def plot_large(n_points: int = 100, n_slices: int = 20):
     for i, s in enumerate(speedups):
         ax.text(s + 0.05, i, f"{s:.2f}x", va="center", fontsize=10)
 
-    n_structs = (
-        df_large.filter(pl.col("algorithm") == "sr").select("structure").unique().height
-    )
+    n_structs = df_large.select("structure").unique().height
     ax.set_title(
         f"zsasa Speedup on Large Structures (50k+ atoms, n={n_structs}, threads={max_threads})"
     )
@@ -618,22 +548,12 @@ def plot_large(n_points: int = 100, n_slices: int = 20):
     plt.close(fig)
     rprint(f"[green]Saved:[/green] {out_path}")
 
-    # --- Thread scaling for large structures (SR only) ---
-    large_bins_all = {
-        "50k-75k",
-        "75k-100k",
-        "100k-150k",
-        "150k-200k",
-        "200k-500k",
-        "500k+",
-    }
-    df_large_sr = df.filter(
-        pl.col("size_bin").is_in(large_bins_all) & (pl.col("algorithm") == "sr")
-    )
-    if df_large_sr.height > 0:
+    # --- Thread scaling for large structures ---
+    df_large_all = df.filter(pl.col("size_bin").is_in(large_bins))
+    if df_large_all.height > 0:
         fig2, ax2 = plt.subplots(figsize=(10, 6))
-        _plot_threads(df_large_sr, "sr", ax2)
-        n_structs = df_large_sr.select("structure").unique().height
+        _plot_threads(df_large_all, ax2)
+        n_structs = df_large_all.select("structure").unique().height
         ax2.set_title(
             f"SR: Thread Scaling on Large Structures (50k+ atoms, n={n_structs})"
         )
@@ -644,24 +564,23 @@ def plot_large(n_points: int = 100, n_slices: int = 20):
         rprint(f"[green]Saved:[/green] {out_path2}")
 
 
-def plot_efficiency(n_points: int = 100, n_slices: int = 20):
+def plot_efficiency(n_points: int = 100):
     """Calculate and plot parallel efficiency from existing benchmark data."""
     from rich.table import Table
 
     setup_style()
-    df = load_data(n_points, n_slices)
+    df = load_data(n_points)
     df = add_size_bin(df)
+
+    if df.height == 0:
+        rprint("[yellow]No SR data found[/yellow]")
+        return
 
     plot_dir = PLOTS_DIR.joinpath("efficiency")
     plot_dir.mkdir(parents=True, exist_ok=True)
 
-    df_sr = df.filter(pl.col("algorithm") == "sr")
-    if df_sr.height == 0:
-        rprint("[yellow]No SR data found[/yellow]")
-        return
-
     # Baseline: threads=1
-    df_t1 = df_sr.filter(pl.col("threads") == 1).select(
+    df_t1 = df.filter(pl.col("threads") == 1).select(
         [
             "tool_label",
             "structure",
@@ -671,13 +590,13 @@ def plot_efficiency(n_points: int = 100, n_slices: int = 20):
         ]
     )
 
-    df_eff = df_sr.join(df_t1, on=["tool_label", "structure", "n_atoms", "size_bin"])
+    df_eff = df.join(df_t1, on=["tool_label", "structure", "n_atoms", "size_bin"])
     df_eff = df_eff.with_columns(
         (pl.col("t1_ms") / (pl.col("time_ms") * pl.col("threads"))).alias("efficiency")
     )
 
     tool_labels = ["zsasa_f64", "freesasa", "rustsasa"]
-    max_threads = df_sr["threads"].max()
+    max_threads = df["threads"].max()
 
     df_tmax = df_eff.filter(pl.col("threads") == max_threads)
 
@@ -756,24 +675,22 @@ def plot_efficiency(n_points: int = 100, n_slices: int = 20):
     rprint(f"[green]Saved:[/green] {out_path}")
 
 
-def plot_speedup(
-    min_atoms: int = 50000, top_n: int = 5, n_points: int = 100, n_slices: int = 20
-):
+def plot_speedup(min_atoms: int = 50000, top_n: int = 5, n_points: int = 100):
     """Find structures with best zsasa speedup at any thread count."""
     from rich.table import Table
 
     setup_style()
-    df = load_data(n_points, n_slices)
+    df = load_data(n_points)
     df = add_size_bin(df)
 
-    df_sr = df.filter((pl.col("algorithm") == "sr") & (pl.col("n_atoms") >= min_atoms))
+    df_large = df.filter(pl.col("n_atoms") >= min_atoms)
 
-    if df_sr.height == 0:
+    if df_large.height == 0:
         rprint("[yellow]No SR data with 50k+ atoms found[/yellow]")
         return
 
     pivot = (
-        df_sr.select(["structure", "n_atoms", "threads", "tool_label", "time_ms"])
+        df_large.select(["structure", "n_atoms", "threads", "tool_label", "time_ms"])
         .pivot(
             on="tool_label", index=["structure", "n_atoms", "threads"], values="time_ms"
         )

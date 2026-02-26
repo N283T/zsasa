@@ -9,7 +9,6 @@ import polars as pl
 
 _BENCHMARKS_DIR = Path(__file__).parent.parent
 RESULTS_BASE = _BENCHMARKS_DIR.joinpath("results", "single")
-RESULTS_BASE_LR = _BENCHMARKS_DIR.joinpath("results", "single_lr")
 PLOTS_DIR = _BENCHMARKS_DIR.joinpath("results", "plots")
 
 # === Visual Constants ===
@@ -67,25 +66,17 @@ BINS = [
 # === Data Loading Functions ===
 
 
-def load_data(n_points: int = 100, n_slices: int = 20) -> pl.DataFrame:
-    """Load benchmark results from all result directories.
-
-    SR results: RESULTS_BASE/<n_points>/**/results.csv
-    LR results: RESULTS_BASE_LR/<n_slices>/**/results.csv
+def load_data(n_points: int = 100) -> pl.DataFrame:
+    """Load SR benchmark results from RESULTS_BASE/<n_points>/**/results.csv.
 
     Derives tool_label from the CSV data (tool + precision for zig).
     Aggregates multiple runs into mean values per (structure, threads).
     """
-    csv_files = []
-
     sr_dir = RESULTS_BASE.joinpath(str(n_points))
-    csv_files.extend(sorted(sr_dir.glob("*/results.csv")))
-
-    lr_dir = RESULTS_BASE_LR.joinpath(str(n_slices))
-    csv_files.extend(sorted(lr_dir.glob("*/results.csv")))
+    csv_files = sorted(sr_dir.glob("*/results.csv"))
 
     if not csv_files:
-        raise FileNotFoundError(f"No results.csv files found in {sr_dir} or {lr_dir}")
+        raise FileNotFoundError(f"No results.csv files found in {sr_dir}")
 
     dfs = []
     for f in csv_files:
