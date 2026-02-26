@@ -1,46 +1,49 @@
 # External Benchmark Dependencies
 
-Optional dependencies for running comparative benchmarks against FreeSASA C and RustSASA.
+Optional dependencies for running comparative benchmarks.
 
-## Setup
+## Directory Layout
 
-### FreeSASA (C implementation)
-
-```bash
-git clone https://github.com/N283T/freesasa-bench.git
-cd freesasa-bench
-./configure --enable-threads
-make
+```
+external/
+├── bin/              ← symlinks to all tool binaries (created by setup.sh)
+├── freesasa/         ← vanilla upstream (cloned by setup.sh)
+├── freesasa_batch/   ← batch runner source (tracked, builds against vanilla freesasa)
+├── lahuta/           ← cloned by setup.sh
+├── rustsasa/         ← vanilla upstream (cloned by setup.sh)
+└── setup.sh          ← one-command setup: clone, build, symlink
 ```
 
-Binary: `freesasa-bench/src/freesasa`
-
-### RustSASA (Rust implementation)
+## Quick Start
 
 ```bash
-git clone --recursive https://github.com/N283T/rustsasa-bench.git
-cd rustsasa-bench
-cargo build --release --features cli
+cd benchmarks/external
+./setup.sh
 ```
 
-Binary: `rustsasa-bench/target/release/rust-sasa`
+This will clone, build, and symlink all tool binaries into `bin/`.
 
-## Timing Patches
-
-Both forks include timing patches that output SASA calculation time to stderr:
-
-- **FreeSASA**: `SASA calculation time: X.XX ms`
-- **RustSASA**: `SASA_TIME_US:XXXXX`
-
-This allows fair SASA-only timing comparison (excluding file I/O).
-
-## Running Benchmarks
-
-After building both dependencies:
+To build a single tool:
 
 ```bash
-cd /path/to/zsasa
-./scripts/benchmark.py
+./setup.sh freesasa
+./setup.sh rustsasa
+./setup.sh lahuta
+./setup.sh freesasa_batch
+./setup.sh zsasa          # symlink only (run 'zig build' first)
 ```
 
-The benchmark script automatically detects binaries in this directory.
+## Usage
+
+Single-file benchmarks use **hyperfine** for wall-clock timing:
+
+```bash
+# SR benchmark (Shrake-Rupley)
+./benchmarks/scripts/bench.py --tool zig_f64 --threads 1,4,8
+
+# LR benchmark (Lee-Richards)
+./benchmarks/scripts/bench_lr.py --tool zig_f64 --threads 1,4,8
+
+# Batch benchmark
+./benchmarks/scripts/bench_batch.py -i benchmarks/dataset/pdb -n test
+```

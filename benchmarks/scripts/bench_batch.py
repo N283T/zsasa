@@ -25,7 +25,7 @@ Usage:
     ./benchmarks/scripts/bench_batch.py -i /path/to/pdb -n test --threads 1,8,10
 
 Output:
-    benchmarks/results/batch/<name>/
+    benchmarks/results/batch/<n_points>/<name>/
     ├── config.json             # System info and parameters
     ├── bench_zsasa_f64_8t.json
     ├── bench_zsasa_f32_8t.json
@@ -39,8 +39,6 @@ Output:
 from __future__ import annotations
 
 import json
-import os
-import platform
 import shutil
 import subprocess
 import tempfile
@@ -52,6 +50,8 @@ from typing import Annotated
 import typer
 from rich.console import Console
 from rich.table import Table
+
+from bench_common import get_system_info, parse_threads, get_binary_path, quote_path
 
 app = typer.Typer(help="Batch SASA benchmark (hyperfine-based)")
 console = Console()
@@ -73,61 +73,14 @@ def get_root_dir() -> Path:
 
 
 def get_binary_paths() -> dict[str, Path]:
-    """Get paths to tool binaries."""
-    root = get_root_dir()
+    """Get paths to tool binaries (all in external/bin/ via setup.sh)."""
+    bin_dir = get_root_dir().joinpath("benchmarks", "external", "bin")
     return {
-        "zsasa": root.joinpath("zig-out", "bin", "zsasa"),
-        "freesasa_batch": root.joinpath(
-            "benchmarks", "external", "freesasa-bench", "src", "freesasa_batch"
-        ),
-        "rustsasa": root.joinpath(
-            "benchmarks", "external", "rustsasa-bench", "target", "release", "rust-sasa"
-        ),
-        "lahuta": root.joinpath(
-            "benchmarks", "external", "lahuta", "build", "cli", "lahuta"
-        ),
+        "zsasa": get_binary_path("zig"),
+        "freesasa_batch": bin_dir.joinpath("freesasa_batch"),
+        "rustsasa": get_binary_path("rust"),
+        "lahuta": get_binary_path("lahuta"),
     }
-
-
-def get_system_info() -> dict:
-    """Get system information."""
-    info = {
-        "os": platform.system(),
-        "os_version": platform.release(),
-        "arch": platform.machine(),
-        "cpu_cores": os.cpu_count() or 1,
-    }
-
-    if platform.system() == "Darwin":
-        try:
-            result = subprocess.run(
-                ["sysctl", "-n", "machdep.cpu.brand_string"],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                info["cpu_model"] = result.stdout.strip()
-            result = subprocess.run(
-                ["sysctl", "-n", "hw.memsize"], capture_output=True, text=True
-            )
-            if result.returncode == 0:
-                info["memory_gb"] = int(result.stdout.strip()) // (1024**3)
-        except Exception:
-            pass
-
-    return info
-
-
-def parse_threads(threads_str: str) -> list[int]:
-    """Parse thread specification like '1,8,10' or '1-10'."""
-    result = []
-    for part in threads_str.split(","):
-        if "-" in part:
-            start, end = part.split("-", 1)
-            result.extend(range(int(start), int(end) + 1))
-        else:
-            result.append(int(part))
-    return sorted(set(result))
 
 
 def check_hyperfine() -> bool:
@@ -164,18 +117,27 @@ def run_benchmark(
     ]
 
     try:
-        subprocess.run(hyperfine_cmd, check=True, capture_output=False)
+        subprocess.run(hyperfine_cmd, check=True, capture_output=False, timeout=600)
         console.print()
+    except subprocess.TimeoutExpired:
+        console.print(f"[red]Timeout: {name} exceeded 600s[/red]")
+        return None
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Error running benchmark: {e}[/]")
+        console.print("[yellow]Check hyperfine output above for details[/]")
+        return None
 
-        # Parse results
+    try:
         if json_out.exists():
             with open(json_out) as f:
                 data = json.load(f)
                 if data.get("results"):
                     return data["results"][0]
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]Error running benchmark: {e}[/]")
-        console.print("[yellow]Check hyperfine output above for details[/]")
+        console.print(f"[yellow]Warning: no results in {json_out.name}[/yellow]")
+    except json.JSONDecodeError as e:
+        console.print(f"[yellow]Warning: corrupt JSON in {json_out.name}: {e}[/yellow]")
+    except KeyError as e:
+        console.print(f"[yellow]Warning: missing key {e} in {json_out.name}[/yellow]")
 
     return None
 
@@ -209,7 +171,7 @@ def run_zig(
                 bench_name = f"zsasa_{precision}{bitmask_suffix}_{n_threads}t"
                 result = run_benchmark(
                     bench_name,
-                    f"{zsasa} batch {input_dir} {out_dir} --threads={n_threads} --precision={precision} --n-points={n_points}{bitmask_flag}",
+                    f"{quote_path(zsasa)} batch {quote_path(input_dir)} {quote_path(out_dir)} --threads={n_threads} --precision={precision} --n-points={n_points}{bitmask_flag}",
                     results_dir,
                     warmup,
                     runs,
@@ -245,7 +207,7 @@ def run_freesasa(
         for n_threads in thread_counts:
             result = run_benchmark(
                 f"freesasa_{n_threads}t",
-                f"{freesasa_batch} {input_dir} {out_dir} --n-threads={n_threads} --n-points={n_points}",
+                f"{quote_path(freesasa_batch)} {quote_path(input_dir)} {quote_path(out_dir)} --n-threads={n_threads} --n-points={n_points}",
                 results_dir,
                 warmup,
                 runs,
@@ -281,7 +243,7 @@ def run_rustsasa(
         for n_threads in thread_counts:
             result = run_benchmark(
                 f"rustsasa_{n_threads}t",
-                f"{rustsasa} {input_dir} {out_dir} --format json -t {n_threads} -n {n_points}",
+                f"{quote_path(rustsasa)} {quote_path(input_dir)} {quote_path(out_dir)} --format json -t {n_threads} -n {n_points}",
                 results_dir,
                 warmup,
                 runs,
@@ -339,14 +301,14 @@ def run_lahuta(
             result = run_benchmark(
                 bench_name,
                 (
-                    f"{lahuta} sasa-sr"
-                    f" -d {input_dir}"
+                    f"{quote_path(lahuta)} sasa-sr"
+                    f" -d {quote_path(input_dir)}"
                     f" --is_af2_model"
                     f" --points {n_points}"
                     f"{bitmask_flag}"
                     f" -t {n_threads}"
                     f" --progress 0"
-                    f" -o {out_file}"
+                    f" -o {quote_path(out_file)}"
                 ),
                 results_dir,
                 warmup,
@@ -382,8 +344,14 @@ def print_summary(results_dir: Path) -> None:
                         f"{r['min']:.3f}",
                         f"{r['max']:.3f}",
                     )
-        except (json.JSONDecodeError, KeyError):
-            continue
+        except json.JSONDecodeError as e:
+            console.print(
+                f"[yellow]Warning: corrupt JSON in {json_file.name}: {e}[/yellow]"
+            )
+        except KeyError as e:
+            console.print(
+                f"[yellow]Warning: missing key {e} in {json_file.name}[/yellow]"
+            )
 
     console.print()
     console.print(table)
@@ -469,7 +437,7 @@ def main(
         bool,
         typer.Option(
             "--use-bitmask",
-            help="Use bitmask neighbor list for zsasa",
+            help="Use bitmask neighbor list for zsasa and lahuta",
         ),
     ] = False,
 ) -> None:
@@ -499,8 +467,8 @@ def main(
     # Default to all tools if none specified
     selected_tools = tools if tools else ALL_TOOLS
 
-    # Count input files
-    n_files = sum(1 for f in input_dir.iterdir() if f.is_file())
+    # Count PDB files in input directory
+    n_files = sum(1 for f in input_dir.iterdir() if f.is_file() and f.suffix == ".pdb")
 
     # Save config
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
