@@ -30,7 +30,7 @@ Output:
     ├── bench_zsasa_f64_8t.json
     ├── bench_zsasa_f32_8t.json
     ├── bench_zsasa_f64_bitmask_8t.json  # with --use-bitmask
-    ├── bench_freesasa_1t.json
+    ├── bench_freesasa_8t.json
     ├── bench_rustsasa_8t.json
     ├── bench_lahuta_8t.json
     └── bench_lahuta_bitmask_8t.json     # with --use-bitmask
@@ -78,7 +78,7 @@ def get_binary_paths() -> dict[str, Path]:
     return {
         "zsasa": root.joinpath("zig-out", "bin", "zsasa"),
         "freesasa_batch": root.joinpath(
-            "benchmarks", "external", "freesasa-batch", "sasa_batch"
+            "benchmarks", "external", "freesasa-bench", "src", "freesasa_batch"
         ),
         "rustsasa": root.joinpath(
             "benchmarks", "external", "rustsasa-bench", "target", "release", "rust-sasa"
@@ -224,16 +224,17 @@ def run_zig(
 def run_freesasa(
     input_dir: Path,
     results_dir: Path,
+    thread_counts: list[int],
     n_points: int,
     warmup: int,
     runs: int,
     dry_run: bool,
     binaries: dict[str, Path],
 ) -> list[dict]:
-    """Run FreeSASA benchmark (single-threaded only)."""
-    sasa_batch = binaries["freesasa_batch"]
-    if not sasa_batch.exists():
-        console.print("[yellow][SKIP] sasa_batch not found[/]")
+    """Run FreeSASA benchmarks with file-level parallelism."""
+    freesasa_batch = binaries["freesasa_batch"]
+    if not freesasa_batch.exists():
+        console.print("[yellow][SKIP] freesasa_batch not found[/]")
         return []
 
     results = []
@@ -241,16 +242,17 @@ def run_freesasa(
     with tempfile.TemporaryDirectory(prefix="freesasa_") as tmp:
         out_dir = Path(tmp)
 
-        result = run_benchmark(
-            "freesasa_1t",
-            f"{sasa_batch} {input_dir} {out_dir} {n_points}",
-            results_dir,
-            warmup,
-            runs,
-            dry_run,
-        )
-        if result:
-            results.append({"name": "freesasa_1t", **result})
+        for n_threads in thread_counts:
+            result = run_benchmark(
+                f"freesasa_{n_threads}t",
+                f"{freesasa_batch} {input_dir} {out_dir} --n-threads={n_threads} --n-points={n_points}",
+                results_dir,
+                warmup,
+                runs,
+                dry_run,
+            )
+            if result:
+                results.append({"name": f"freesasa_{n_threads}t", **result})
 
     return results
 
@@ -413,7 +415,7 @@ def main(
         typer.Option(
             "--threads",
             "-T",
-            help="Thread counts: '1,8,10' or '1-10' (freesasa always 1t)",
+            help="Thread counts: '1,8,10' or '1-10'",
         ),
     ] = "1,8",
     runs: Annotated[
@@ -550,7 +552,14 @@ def main(
 
     if Tool.freesasa in selected_tools:
         results = run_freesasa(
-            input_dir, results_dir, n_points, warmup, runs, dry_run, binaries
+            input_dir,
+            results_dir,
+            thread_counts,
+            n_points,
+            warmup,
+            runs,
+            dry_run,
+            binaries,
         )
         all_results.extend(results)
 
