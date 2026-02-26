@@ -47,6 +47,7 @@ pub const BatchConfig = struct {
     include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
     include_hetatm: bool = false, // Include HETATM records (default: exclude)
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
+    store_atom_areas: bool = false, // When true, copy atom_areas to result_allocator for jsonl
 };
 
 /// Helper to build and hold bitmask LUTs for batch processing.
@@ -84,6 +85,7 @@ const BatchLuts = struct {
 fn getOutputExtension(format: OutputFormat) []const u8 {
     return switch (format) {
         .json, .compact => ".json",
+        .jsonl => ".jsonl",
         .csv => ".csv",
     };
 }
@@ -189,6 +191,7 @@ pub const FileResult = struct {
     total_sasa: f64,
     status: Status,
     error_msg: ?[]const u8 = null,
+    atom_areas: ?[]const f64 = null, // Populated for jsonl output
 
     pub const Status = enum {
         ok,
@@ -211,6 +214,9 @@ pub const BatchResult = struct {
             self.allocator.free(result.filename);
             if (result.error_msg) |msg| {
                 self.allocator.free(msg);
+            }
+            if (result.atom_areas) |areas| {
+                self.allocator.free(areas);
             }
         }
         self.allocator.free(self.file_results);
@@ -384,7 +390,7 @@ pub fn scanDirectory(allocator: Allocator, dir_path: []const u8) ![][]const u8 {
 
 /// Process a single file and return result
 /// Uses provided arena allocator for temporary allocations
-/// result_allocator: used for error messages that must outlive the arena
+/// result_allocator: used for data that must outlive the arena (error messages, atom_areas)
 /// n_threads: number of threads for SASA calculation (1 = single-threaded)
 fn processOneFile(
     arena: Allocator,
@@ -464,12 +470,22 @@ fn processOneFile(
             result.sasa_time_ns = timer.read();
             total_area = sasa_result.total_area;
 
-            if (output_dir) |out_dir| {
-                writeSasaOutput(f64, arena, &sasa_result, out_dir, filename, config.output_format) catch |err| {
+            if (config.store_atom_areas) {
+                result.atom_areas = result_allocator.dupe(f64, sasa_result.atom_areas) catch {
                     result.status = .err;
-                    result.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
+                    result.error_msg = std.fmt.allocPrint(result_allocator, "atom_areas allocation failed", .{}) catch null;
                     return result;
                 };
+            }
+
+            if (output_dir) |out_dir| {
+                if (!config.store_atom_areas) {
+                    writeSasaOutput(f64, arena, &sasa_result, out_dir, filename, config.output_format) catch |err| {
+                        result.status = .err;
+                        result.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
+                        return result;
+                    };
+                }
             }
         },
         .f32 => {
@@ -492,18 +508,54 @@ fn processOneFile(
             result.sasa_time_ns = timer.read();
             total_area = @floatCast(sasa_result.total_area);
 
-            if (output_dir) |out_dir| {
-                writeSasaOutput(f32, arena, &sasa_result, out_dir, filename, config.output_format) catch |err| {
+            if (config.store_atom_areas) {
+                const areas_f32 = sasa_result.atom_areas;
+                const areas_f64 = result_allocator.alloc(f64, areas_f32.len) catch {
                     result.status = .err;
-                    result.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
+                    result.error_msg = std.fmt.allocPrint(result_allocator, "atom_areas allocation failed", .{}) catch null;
                     return result;
                 };
+                for (areas_f32, 0..) |v, j| areas_f64[j] = @floatCast(v);
+                result.atom_areas = areas_f64;
+            }
+
+            if (output_dir) |out_dir| {
+                if (!config.store_atom_areas) {
+                    writeSasaOutput(f32, arena, &sasa_result, out_dir, filename, config.output_format) catch |err| {
+                        result.status = .err;
+                        result.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
+                        return result;
+                    };
+                }
             }
         },
     }
 
     result.total_sasa = total_area;
     return result;
+}
+
+/// Write batch results as JSONL to a file or stdout
+fn writeJsonlOutput(allocator: Allocator, file_results: []const FileResult, output_path: ?[]const u8) !void {
+    var file: std.fs.File = if (output_path) |path|
+        try std.fs.cwd().createFile(path, .{})
+    else
+        std.fs.File.stdout();
+
+    defer if (output_path != null) file.close();
+
+    for (file_results) |result| {
+        if (result.status != .ok) continue;
+        if (result.atom_areas) |areas| {
+            const line = json_writer.fileResultToJsonlLine(allocator, result.filename, result.total_sasa, areas) catch |err| {
+                std.debug.print("Warning: failed to serialize {s}: {s}\n", .{ result.filename, @errorName(err) });
+                continue;
+            };
+            defer allocator.free(line);
+            try file.writeAll(line);
+            try file.writeAll("\n");
+        }
+    }
 }
 
 /// Run batch processing sequentially (single-threaded path, used when n_threads <= 1)
@@ -614,13 +666,17 @@ const ParallelContext = struct {
 
 /// Worker thread function for parallel batch processing
 fn parallelWorker(ctx: *ParallelContext) void {
-    // Each thread gets its own arena allocator
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    // Use smp_allocator as arena backing to avoid mmap/munmap syscall contention
+    // that page_allocator causes under multi-threaded workloads.
+    // smp_allocator is thread-safe and does not require libc.
+    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
     defer arena.deinit();
 
     while (true) {
-        // Atomically grab the next file index
-        const file_idx = ctx.next_file.fetchAdd(1, .seq_cst);
+        // Atomically grab the next file index.
+        // .monotonic suffices: we only need atomic increment, no ordering
+        // between unrelated memory accesses across threads.
+        const file_idx = ctx.next_file.fetchAdd(1, .monotonic);
 
         if (file_idx >= ctx.files.len) {
             break; // No more files
@@ -629,12 +685,9 @@ fn parallelWorker(ctx: *ParallelContext) void {
         const filename = ctx.files[file_idx];
 
         // Copy filename to result allocator (thread-safe: each index is unique)
-        // On allocation failure, use empty string to maintain ownership invariant
         const filename_copy = ctx.result_allocator.dupe(u8, filename) catch {
-            // Fallback: allocate empty owned slice for deinit compatibility
             const empty = ctx.result_allocator.alloc(u8, 0) catch {
-                // Critical allocation failure - skip file, don't store result
-                _ = ctx.processed_count.fetchAdd(1, .seq_cst);
+                _ = ctx.processed_count.fetchAdd(1, .release);
                 _ = arena.reset(.retain_capacity);
                 continue;
             };
@@ -645,7 +698,7 @@ fn parallelWorker(ctx: *ParallelContext) void {
                 .total_sasa = 0,
                 .status = .err,
             };
-            _ = ctx.processed_count.fetchAdd(1, .seq_cst);
+            _ = ctx.processed_count.fetchAdd(1, .release);
             _ = arena.reset(.retain_capacity);
             continue;
         };
@@ -667,8 +720,8 @@ fn parallelWorker(ctx: *ParallelContext) void {
         // Store result (thread-safe: each index is unique)
         ctx.results[file_idx] = result;
 
-        // Update progress counter
-        _ = ctx.processed_count.fetchAdd(1, .seq_cst);
+        // Update progress counter (.release pairs with .acquire in progress monitor)
+        _ = ctx.processed_count.fetchAdd(1, .release);
 
         // Reset arena for next file
         _ = arena.reset(.retain_capacity);
@@ -755,8 +808,8 @@ pub fn runBatchParallel(
 
     // Progress monitoring (optional)
     if (!config.quiet) {
-        while (ctx.processed_count.load(.seq_cst) < files.len) {
-            const processed = ctx.processed_count.load(.seq_cst);
+        while (ctx.processed_count.load(.acquire) < files.len) {
+            const processed = ctx.processed_count.load(.acquire);
             std.debug.print("\rProcessing: {d}/{d}", .{ processed, files.len });
             std.Thread.sleep(50 * std.time.ns_per_ms); // 50ms update interval
         }
@@ -902,9 +955,11 @@ fn parseOutputFormat(value: []const u8) OutputFormat {
         return .compact;
     } else if (std.mem.eql(u8, value, "csv")) {
         return .csv;
+    } else if (std.mem.eql(u8, value, "jsonl")) {
+        return .jsonl;
     } else {
         std.debug.print("Error: Invalid format: {s}\n", .{value});
-        std.debug.print("Valid formats: json, compact, csv\n", .{});
+        std.debug.print("Valid formats: json, compact, csv, jsonl\n", .{});
         std.process.exit(1);
     }
 }
@@ -1135,13 +1190,13 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --n-points=N        Test points per atom (default: 100, for sr)
         \\    --n-slices=N        Slices per atom diameter (default: 20, for lr)
         \\    --precision=PREC    Floating-point precision: f32, f64 (default: f64)
-        \\    --format=FORMAT     Output format: json, compact, csv (default: json)
+        \\    --format=FORMAT     Output format: json, compact, csv, jsonl (default: json)
         \\    --include-hydrogens Include hydrogen atoms (default: exclude)
         \\    --include-hetatm    Include HETATM records (default: exclude)
         \\    --use-bitmask       Use bitmask LUT optimization for SR algorithm
         \\                        (n-points must be 1..1024)
         \\    --timing            Show timing breakdown for benchmarking
-        \\    -o, --output=DIR    Output directory (alternative to positional)
+        \\    -o, --output=PATH   Output directory, or file path for --format=jsonl
         \\    -q, --quiet         Suppress progress output
         \\    -h, --help          Show this help message
         \\
@@ -1151,8 +1206,9 @@ pub fn printHelp(program_name: []const u8) void {
         \\    {s} batch structures/ --algorithm=lr --threads=4
         \\    {s} batch structures/ --classifier=naccess --format=csv
         \\    {s} batch structures/ results/ --timing --quiet
+        \\    {s} batch structures/ -o results.jsonl --format=jsonl
         \\
-    , .{ program_name, program_name, program_name, program_name, program_name, program_name });
+    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 /// Run batch processing from parsed CLI arguments
@@ -1163,7 +1219,8 @@ pub fn run(allocator: Allocator, args: BatchArgs) !void {
         return error.MissingArgument;
     };
 
-    const output_dir: ?[]const u8 = args.output_path;
+    // For jsonl, don't pass output_dir to runBatch (no per-file I/O during computation)
+    const output_dir: ?[]const u8 = if (args.output_format == .jsonl) null else args.output_path;
 
     // Build batch config from parsed args
     const config = BatchConfig{
@@ -1180,6 +1237,7 @@ pub fn run(allocator: Allocator, args: BatchArgs) !void {
         .include_hydrogens = args.include_hydrogens,
         .include_hetatm = args.include_hetatm,
         .use_bitmask = args.use_bitmask,
+        .store_atom_areas = (args.output_format == .jsonl),
     };
 
     if (!args.quiet) {
@@ -1196,6 +1254,11 @@ pub fn run(allocator: Allocator, args: BatchArgs) !void {
 
     var result = try runBatch(allocator, input_dir, output_dir, config);
     defer result.deinit();
+
+    // Write JSONL output after all computation completes
+    if (args.output_format == .jsonl) {
+        try writeJsonlOutput(allocator, result.file_results, args.output_path);
+    }
 
     // Print results
     if (!args.quiet) {
@@ -1331,6 +1394,13 @@ test "BatchArgs --format=csv" {
     const args = [_][]const u8{ "zsasa", "batch", "--format=csv", "input_dir/" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(OutputFormat.csv, parsed.output_format);
+}
+
+test "BatchArgs --format=jsonl" {
+    const args = [_][]const u8{ "zsasa", "batch", "--format=jsonl", "-o", "out.jsonl", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(OutputFormat.jsonl, parsed.output_format);
+    try std.testing.expectEqualStrings("out.jsonl", parsed.output_path.?);
 }
 
 test "BatchArgs --classifier=naccess" {

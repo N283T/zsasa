@@ -10,6 +10,7 @@ pub const OutputFormat = enum {
     json, // Pretty-printed JSON (default)
     compact, // Single-line JSON
     csv, // CSV format
+    jsonl, // JSON Lines (one JSON object per line, for batch)
 };
 
 /// JSON structure for output
@@ -143,6 +144,7 @@ pub fn writeSasaResultWithFormat(
         .json => try sasaResultToJsonPretty(allocator, result),
         .compact => try sasaResultToJson(allocator, result),
         .csv => try sasaResultToCsv(allocator, result),
+        .jsonl => unreachable, // JSONL is handled at batch level, not per-file
     };
     defer allocator.free(output_str);
 
@@ -167,6 +169,7 @@ pub fn writeSasaResultWithFormatAndInput(
             try sasaResultToRichCsv(allocator, input, result.atom_areas)
         else
             try sasaResultToCsv(allocator, result),
+        .jsonl => unreachable, // JSONL is handled at batch level, not per-file
     };
     defer allocator.free(output_str);
 
@@ -179,6 +182,23 @@ pub fn writeSasaResultWithFormatAndInput(
 /// Write SasaResult to JSON file (default: compact for backward compatibility)
 pub fn writeSasaResult(allocator: Allocator, result: SasaResult, path: []const u8) !void {
     return writeSasaResultWithFormat(allocator, result, path, .compact);
+}
+
+/// Serialize a single batch result as a JSONL line: {"filename":"...","total_area":...,"atom_areas":[...]}
+pub fn fileResultToJsonlLine(allocator: Allocator, filename: []const u8, total_area: f64, atom_areas: []const f64) ![]u8 {
+    const JsonlEntry = struct {
+        filename: []const u8,
+        total_area: f64,
+        atom_areas: []const f64,
+    };
+
+    const entry = JsonlEntry{
+        .filename = filename,
+        .total_area = total_area,
+        .atom_areas = atom_areas,
+    };
+
+    return std.json.Stringify.valueAlloc(allocator, entry, .{});
 }
 
 // Tests
@@ -586,4 +606,18 @@ test "sasaResultToRichCsv without residue info uses dashes" {
 
     // Check that missing fields produce dashes
     try std.testing.expect(std.mem.indexOf(u8, csv, "-,-,-,-,1.000,2.000,3.000,1.500,15.000000\n") != null);
+}
+
+test "fileResultToJsonlLine basic" {
+    const allocator = std.testing.allocator;
+    const areas = [_]f64{ 1.5, 2.0, 0.0 };
+    const line = try fileResultToJsonlLine(allocator, "test.pdb", 6.789, &areas);
+    defer allocator.free(line);
+
+    // Parse back to verify valid JSON
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+    defer parsed.deinit();
+
+    const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("test.pdb", obj.get("filename").?.string);
 }

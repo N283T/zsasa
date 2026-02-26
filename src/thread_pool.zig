@@ -75,8 +75,8 @@ pub fn ThreadPool(comptime Context: type, comptime Result: type) type {
             _ = thread_id;
 
             while (true) {
-                // Atomically grab the next chunk
-                const chunk_idx = self.next_chunk.fetchAdd(1, .seq_cst);
+                // .monotonic: each chunk_idx is unique; results are read after join()
+                const chunk_idx = self.next_chunk.fetchAdd(1, .monotonic);
 
                 if (chunk_idx >= self.total_chunks) {
                     break; // No more work
