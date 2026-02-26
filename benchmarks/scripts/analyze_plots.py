@@ -129,10 +129,10 @@ def _plot_speedup_single(
 # === Plot Command Implementations ===
 
 
-def plot_scatter():
+def plot_scatter(n_points: int = 100, n_slices: int = 20):
     """Generate atoms vs time scatter plot."""
     setup_style()
-    df = load_data()
+    df = load_data(n_points, n_slices)
 
     for algo in ["sr", "lr"]:
         df_algo = df.filter(pl.col("algorithm") == algo)
@@ -186,10 +186,10 @@ def plot_scatter():
         rprint(f"[green]Saved:[/green] {out_path}")
 
 
-def plot_threads():
+def plot_threads(n_points: int = 100, n_slices: int = 20):
     """Generate thread scaling plot."""
     setup_style()
-    df = load_data()
+    df = load_data(n_points, n_slices)
 
     plot_dir = PLOTS_DIR.joinpath("thread_scaling")
     individual_dir = plot_dir.joinpath("individual")
@@ -229,10 +229,10 @@ def plot_threads():
         shutil.copy2(src, dst)
 
 
-def plot_grid():
+def plot_grid(n_points: int = 100, n_slices: int = 20):
     """Generate grid of speedup plots for all thread counts."""
     setup_style()
-    df = load_data()
+    df = load_data(n_points, n_slices)
     df_sr = df.filter(pl.col("algorithm") == "sr")
 
     if df_sr.height == 0:
@@ -288,12 +288,12 @@ def plot_grid():
     rprint(f"[green]Saved:[/green] {out_path}")
 
 
-def plot_validation():
+def plot_validation(n_points: int = 100, n_slices: int = 20):
     """Generate SASA validation scatter plot (zsasa f64 vs FreeSASA)."""
     import numpy as np
 
     setup_style()
-    df = load_data()
+    df = load_data(n_points, n_slices)
 
     plot_dir = PLOTS_DIR.joinpath("validation")
     plot_dir.mkdir(parents=True, exist_ok=True)
@@ -358,10 +358,10 @@ def plot_validation():
         rprint(f"[green]Saved:[/green] {out_path}")
 
 
-def plot_samples():
+def plot_samples(n_points: int = 100, n_slices: int = 20):
     """Generate thread scaling plots for representative structures per size bin."""
     setup_style()
-    df = load_data()
+    df = load_data(n_points, n_slices)
     df_sr = df.filter(pl.col("algorithm") == "sr")
 
     if df_sr.height == 0:
@@ -487,10 +487,10 @@ def plot_samples():
         rprint(f"[green]Saved:[/green] {out_path}")
 
 
-def plot_large():
+def plot_large(n_points: int = 100, n_slices: int = 20):
     """Generate speedup bar chart for large structures (50k+ atoms)."""
     setup_style()
-    df = load_data()
+    df = load_data(n_points, n_slices)
     df = add_size_bin(df)
 
     plot_dir = PLOTS_DIR.joinpath("large")
@@ -644,12 +644,12 @@ def plot_large():
         rprint(f"[green]Saved:[/green] {out_path2}")
 
 
-def plot_efficiency():
+def plot_efficiency(n_points: int = 100, n_slices: int = 20):
     """Calculate and plot parallel efficiency from existing benchmark data."""
     from rich.table import Table
 
     setup_style()
-    df = load_data()
+    df = load_data(n_points, n_slices)
     df = add_size_bin(df)
 
     plot_dir = PLOTS_DIR.joinpath("efficiency")
@@ -756,12 +756,14 @@ def plot_efficiency():
     rprint(f"[green]Saved:[/green] {out_path}")
 
 
-def plot_speedup(min_atoms: int = 50000, top_n: int = 5):
+def plot_speedup(
+    min_atoms: int = 50000, top_n: int = 5, n_points: int = 100, n_slices: int = 20
+):
     """Find structures with best zsasa speedup at any thread count."""
     from rich.table import Table
 
     setup_style()
-    df = load_data()
+    df = load_data(n_points, n_slices)
     df = add_size_bin(df)
 
     df_sr = df.filter((pl.col("algorithm") == "sr") & (pl.col("n_atoms") >= min_atoms))

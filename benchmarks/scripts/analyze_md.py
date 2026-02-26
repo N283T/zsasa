@@ -34,11 +34,18 @@ app = typer.Typer(help="MD trajectory benchmark analysis CLI")
 
 # === Constants ===
 
-RESULTS_DIR = Path(__file__).parent.parent.joinpath("results", "md")
+RESULTS_BASE = Path(__file__).parent.parent.joinpath("results", "md")
+
+
+def _results_dir(n_points: int) -> Path:
+    return RESULTS_BASE.joinpath(str(n_points))
+
 
 DISPLAY_NAMES: dict[str, str] = {
     "zig_f32": "zsasa CLI (f32)",
     "zig_f64": "zsasa CLI (f64)",
+    "zig_f32_bitmask": "zsasa CLI (f32, bitmask)",
+    "zig_f64_bitmask": "zsasa CLI (f64, bitmask)",
     "zsasa_mdtraj": "zsasa.mdtraj",
     "zsasa_mdanalysis": "zsasa.mdanalysis",
     "mdtraj": "MDTraj native",
@@ -48,6 +55,8 @@ DISPLAY_NAMES: dict[str, str] = {
 COLORS: dict[str, str] = {
     "zig_f32": "#e67e22",
     "zig_f64": "#f39c12",
+    "zig_f32_bitmask": "#d35400",
+    "zig_f64_bitmask": "#e08e0b",
     "zsasa_mdtraj": "#27ae60",
     "zsasa_mdanalysis": "#16a085",
     "mdtraj": "#3498db",
@@ -60,6 +69,8 @@ TOOL_ORDER = [
     "zsasa_mdanalysis",
     "zig_f32",
     "zig_f64",
+    "zig_f32_bitmask",
+    "zig_f64_bitmask",
     "mdtraj",
     "mdsasa_bolt",
 ]
@@ -102,17 +113,20 @@ def _parse_filename(filename: str) -> tuple[str, int | None]:
     return stem, None
 
 
-def load_results(name: str) -> list[BenchResult]:
+def load_results(name: str, n_points: int = 100) -> list[BenchResult]:
     """Load all benchmark results for a given dataset name."""
-    results_dir = RESULTS_DIR.joinpath(name)
+    results_dir = _results_dir(n_points).joinpath(name)
     if not results_dir.exists():
-        available = [d.name for d in RESULTS_DIR.iterdir() if d.is_dir()]
+        base = _results_dir(n_points)
+        available = (
+            [d.name for d in base.iterdir() if d.is_dir()] if base.exists() else []
+        )
         raise typer.BadParameter(
-            f"Dataset '{name}' not found. Available: {', '.join(sorted(available))}"
+            f"Dataset '{name}' not found in {base}. Available: {', '.join(sorted(available))}"
         )
 
     # Resolve "all" threads from config cpu_cores
-    config = load_config(name)
+    config = load_config(name, n_points)
     cpu_cores = (
         config.get("system", {}).get("cpu_cores") if config is not None else None
     )
@@ -152,9 +166,9 @@ def load_results(name: str) -> list[BenchResult]:
     return results
 
 
-def load_config(name: str) -> dict | None:
+def load_config(name: str, n_points: int = 100) -> dict | None:
     """Load config.json for dataset metadata."""
-    config_path = RESULTS_DIR.joinpath(name, "config.json")
+    config_path = _results_dir(n_points).joinpath(name, "config.json")
     if not config_path.exists():
         return None
     try:
@@ -164,9 +178,9 @@ def load_config(name: str) -> dict | None:
         return None
 
 
-def get_plots_dir(name: str) -> Path:
+def get_plots_dir(name: str, n_points: int = 100) -> Path:
     """Get (and create) plots output directory."""
-    plots_dir = RESULTS_DIR.joinpath(name, "plots")
+    plots_dir = _results_dir(n_points).joinpath(name, "plots")
     plots_dir.mkdir(parents=True, exist_ok=True)
     return plots_dir
 
@@ -262,10 +276,14 @@ def build_subtitle(config: dict | None) -> str:
 @app.command()
 def summary(
     name: Annotated[str, typer.Option("--name", "-n", help="Dataset name")],
+    n_points: Annotated[
+        int,
+        typer.Option("--n-points", "-N", help="Number of sphere test points"),
+    ] = 100,
 ) -> None:
     """Print summary table of all benchmark results."""
-    results = load_results(name)
-    config = load_config(name)
+    results = load_results(name, n_points)
+    config = load_config(name, n_points)
 
     if config:
         params = config.get("parameters", {})
@@ -339,11 +357,15 @@ def summary(
 @app.command()
 def bar(
     name: Annotated[str, typer.Option("--name", "-n", help="Dataset name")],
+    n_points: Annotated[
+        int,
+        typer.Option("--n-points", "-N", help="Number of sphere test points"),
+    ] = 100,
 ) -> None:
     """Generate vertical bar chart comparing best time per tool."""
     setup_style()
-    results = load_results(name)
-    config = load_config(name)
+    results = load_results(name, n_points)
+    config = load_config(name, n_points)
     best = get_best_per_tool(results)
 
     ordered = [t for t in TOOL_ORDER if t in best]
@@ -389,7 +411,7 @@ def bar(
 
     ax.set_ylim(0, max(times) * 1.15)
 
-    out_path = get_plots_dir(name).joinpath("bar.png")
+    out_path = get_plots_dir(name, n_points).joinpath("bar.png")
     fig.savefig(out_path)
     plt.close(fig)
     rprint(f"[green]Saved:[/green] {out_path}")
@@ -398,11 +420,15 @@ def bar(
 @app.command()
 def memory(
     name: Annotated[str, typer.Option("--name", "-n", help="Dataset name")],
+    n_points: Annotated[
+        int,
+        typer.Option("--n-points", "-N", help="Number of sphere test points"),
+    ] = 100,
 ) -> None:
     """Generate memory usage comparison bar chart."""
     setup_style()
-    config = load_config(name)
-    results = load_results(name)
+    config = load_config(name, n_points)
+    results = load_results(name, n_points)
     best = get_best_per_tool(results)
 
     ordered = [t for t in TOOL_ORDER if t in best]
@@ -447,7 +473,7 @@ def memory(
 
     ax.set_ylim(0, max(mem_mbs) * 1.15)
 
-    out_path = get_plots_dir(name).joinpath("memory.png")
+    out_path = get_plots_dir(name, n_points).joinpath("memory.png")
     fig.savefig(out_path)
     plt.close(fig)
     rprint(f"[green]Saved:[/green] {out_path}")
@@ -456,13 +482,19 @@ def memory(
 @app.command(name="all")
 def all_cmd(
     name: Annotated[str, typer.Option("--name", "-n", help="Dataset name")],
+    n_points: Annotated[
+        int,
+        typer.Option("--n-points", "-N", help="Number of sphere test points"),
+    ] = 100,
 ) -> None:
     """Run all analysis commands."""
-    summary(name=name)
+    summary(name=name, n_points=n_points)
     rprint("\n[bold]Generating plots...[/bold]\n")
-    bar(name=name)
-    memory(name=name)
-    rprint(f"\n[bold green]All plots saved to:[/bold green] {get_plots_dir(name)}")
+    bar(name=name, n_points=n_points)
+    memory(name=name, n_points=n_points)
+    rprint(
+        f"\n[bold green]All plots saved to:[/bold green] {get_plots_dir(name, n_points)}"
+    )
 
 
 if __name__ == "__main__":

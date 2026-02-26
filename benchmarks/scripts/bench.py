@@ -23,12 +23,19 @@ Usage:
     # Quick test (no warmup, 1 run)
     ./benchmarks/scripts/bench.py --tool zig --algorithm sr --threads 1 --warmup 0 --runs 1
 
+    # Replay from existing config (re-run identical benchmark)
+    ./benchmarks/scripts/bench.py --config results/single/100/zig_f64_sr/config.json
+
+    # Replay with overrides (change one parameter)
+    ./benchmarks/scripts/bench.py --config results/single/100/zig_f64_sr/config.json --n-points 200
+
 Output:
-    benchmarks/results/{tool}_{algorithm}/
+    SR: benchmarks/results/single/<n_points>/<tool>_sr/
+    LR: benchmarks/results/single_lr/<n_slices>/<tool>_lr/
     ├── config.json   # System info and parameters
     └── results.csv   # Benchmark results (warmup runs excluded)
 
-    Examples: zig_f64_sr/, zig_f32_sr/, freesasa_sr/, rust_sr/
+    Examples: single/100/zig_f64_sr/, single_lr/20/freesasa_lr/
 """
 
 from __future__ import annotations
@@ -213,6 +220,7 @@ def run_zig(
     n_threads: int,
     precision: str = "f64",
     n_points: int = 100,
+    n_slices: int = 20,
     use_bitmask: bool = False,
 ) -> tuple[float, float]:
     """Run Zig benchmark. Returns (sasa_time_ms, total_sasa)."""
@@ -245,10 +253,12 @@ def run_zig(
             f"--algorithm={algorithm}",
             f"--threads={n_threads}",
             f"--precision={precision}",
-            f"--n-points={n_points}",
-            str(input_path),
-            str(output_path),
         ]
+        if algorithm == "lr":
+            cmd.append(f"--n-slices={n_slices}")
+        else:
+            cmd.append(f"--n-points={n_points}")
+        cmd.extend([str(input_path), str(output_path)])
         if use_bitmask:
             cmd.insert(-2, "--use-bitmask")
 
@@ -375,15 +385,16 @@ def run_benchmark(
     n_threads: int,
     precision: str = "f64",
     n_points: int = 100,
+    n_slices: int = 20,
     use_bitmask: bool = False,
 ) -> tuple[float, float]:
     """Run benchmark for a specific tool. Returns (sasa_time_ms, total_sasa)."""
     if tool == "zig":
         return run_zig(
-            json_path, algorithm, n_threads, precision, n_points, use_bitmask
+            json_path, algorithm, n_threads, precision, n_points, n_slices, use_bitmask
         )
     elif tool == "freesasa":
-        return run_freesasa(json_path, algorithm, n_threads, n_points)
+        return run_freesasa(json_path, algorithm, n_threads, n_points, n_slices)
     elif tool == "rust":
         if algorithm != "sr":
             raise ValueError("RustSASA only supports SR algorithm")
@@ -438,32 +449,80 @@ def print_summary(csv_path: Path, warmup: int, runs: int) -> None:
     console.print(table)
 
 
+def _resolve_params(
+    cfg: dict,
+    *,
+    tool: str | None,
+    algorithm: str | None,
+    threads: str | None,
+    runs: int | None,
+    warmup: int | None,
+    n_points: int | None,
+    n_slices: int | None,
+    use_bitmask: bool | None,
+    input_dir: Path | None,
+    sample_file: Path | None,
+) -> dict:
+    """Resolve parameters: CLI > config > defaults."""
+    return {
+        "tool": tool or cfg.get("tool"),
+        "algorithm": algorithm or cfg.get("algorithm"),
+        "threads": threads
+        or (
+            ",".join(str(t) for t in cfg["thread_counts"])
+            if "thread_counts" in cfg
+            else "1,4,10"
+        ),
+        "runs": runs if runs is not None else cfg.get("runs", 5),
+        "warmup": warmup if warmup is not None else cfg.get("warmup", 1),
+        "n_points": n_points if n_points is not None else cfg.get("n_points", 100),
+        "n_slices": n_slices if n_slices is not None else cfg.get("n_slices", 20),
+        "use_bitmask": (
+            use_bitmask if use_bitmask is not None else cfg.get("use_bitmask", False)
+        ),
+        "input_dir": input_dir
+        or (Path(cfg["input_dir"]) if cfg.get("input_dir") else None),
+        "sample_file": (
+            sample_file
+            or (Path(cfg["sample_file"]) if cfg.get("sample_file") else None)
+        ),
+    }
+
+
 @app.command()
 def main(
+    config_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            "-c",
+            help="Load parameters from existing config.json (CLI args override)",
+        ),
+    ] = None,
     tool: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--tool",
             "-t",
             help="Tool: zig_f64, zig_f32, freesasa, rust (zig = zig_f64)",
         ),
-    ],
+    ] = None,
     algorithm: Annotated[
-        str,
+        str | None,
         typer.Option("--algorithm", "-a", help="Algorithm: sr, lr"),
-    ],
+    ] = None,
     threads: Annotated[
-        str,
+        str | None,
         typer.Option("--threads", "-T", help="Thread counts: '1,4,10' or '1-10'"),
-    ] = "1,4,10",
+    ] = None,
     runs: Annotated[
-        int,
+        int | None,
         typer.Option("--runs", "-r", help="Number of measured runs per configuration"),
-    ] = 5,
+    ] = None,
     warmup: Annotated[
-        int,
+        int | None,
         typer.Option("--warmup", "-w", help="Warmup runs (not recorded)"),
-    ] = 1,
+    ] = None,
     output_dir: Annotated[
         Path | None,
         typer.Option("--output-dir", "-o", help="Output directory"),
@@ -481,24 +540,79 @@ def main(
         ),
     ] = None,
     n_points: Annotated[
-        int,
+        int | None,
         typer.Option(
             "--n-points",
             "-N",
-            help="Number of sphere test points per atom (default: 100)",
+            help="Number of sphere test points per atom (SR, default: 100)",
         ),
-    ] = 100,
-    use_bitmask: Annotated[
-        bool,
+    ] = None,
+    n_slices: Annotated[
+        int | None,
         typer.Option(
-            "--use-bitmask",
+            "--n-slices",
+            help="Number of slices per atom diameter (LR, default: 20)",
+        ),
+    ] = None,
+    use_bitmask: Annotated[
+        bool | None,
+        typer.Option(
+            "--use-bitmask/--no-bitmask",
             help="Use bitmask neighbor list for zsasa",
         ),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option("--force", "-f", help="Overwrite existing results"),
     ] = False,
 ) -> None:
-    """Run SASA benchmark for a single tool and algorithm."""
+    """Run SASA benchmark for a single tool and algorithm.
 
-    thread_counts = parse_threads(threads)
+    Use --config to replay from an existing config.json. CLI args override config values.
+    """
+
+    # Load config if provided
+    cfg: dict = {}
+    if config_file is not None:
+        if not config_file.exists():
+            console.print(f"[red]Error:[/red] Config file not found: {config_file}")
+            raise typer.Exit(1)
+        cfg = json.loads(config_file.read_text()).get("parameters", {})
+        console.print(f"[cyan]Loaded config:[/cyan] {config_file}")
+
+    # Resolve: CLI > config > defaults
+    p = _resolve_params(
+        cfg,
+        tool=tool,
+        algorithm=algorithm,
+        threads=threads,
+        runs=runs,
+        warmup=warmup,
+        n_points=n_points,
+        n_slices=n_slices,
+        use_bitmask=use_bitmask,
+        input_dir=input_dir,
+        sample_file=sample_file,
+    )
+    tool = p["tool"]
+    algorithm = p["algorithm"]
+    runs = p["runs"]
+    warmup = p["warmup"]
+    n_points = p["n_points"]
+    n_slices = p["n_slices"]
+    use_bitmask = p["use_bitmask"]
+    input_dir = p["input_dir"]
+    sample_file = p["sample_file"]
+
+    # Validate required params
+    if not tool:
+        console.print("[red]Error:[/red] --tool is required (or use --config)")
+        raise typer.Exit(1)
+    if not algorithm:
+        console.print("[red]Error:[/red] --algorithm is required (or use --config)")
+        raise typer.Exit(1)
+
+    thread_counts = parse_threads(p["threads"])
 
     # Parse and validate tool
     all_valid = list(TOOLS) + list(TOOL_ALIASES.keys())
@@ -559,10 +673,30 @@ def main(
 
     # Setup output directory
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    bitmask_suffix = "_bitmask" if use_bitmask else ""
     if output_dir is None:
-        output_dir = Path(__file__).parent.parent.joinpath(
-            "results", f"{tool_canonical}_{algorithm}"
-        )
+        if algorithm == "lr":
+            output_dir = Path(__file__).parent.parent.joinpath(
+                "results",
+                "single_lr",
+                str(n_slices),
+                f"{tool_canonical}{bitmask_suffix}_lr",
+            )
+        else:
+            output_dir = Path(__file__).parent.parent.joinpath(
+                "results",
+                "single",
+                str(n_points),
+                f"{tool_canonical}{bitmask_suffix}_sr",
+            )
+
+    # Overwrite protection
+    existing_csv = output_dir.joinpath("results.csv")
+    if existing_csv.exists() and not force:
+        console.print(f"[yellow]Warning:[/yellow] Results already exist: {output_dir}")
+        console.print("Use [bold]--force[/bold] to overwrite")
+        raise typer.Exit(1)
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Save config
@@ -578,6 +712,7 @@ def main(
             "warmup": warmup,
             "runs": runs,
             "n_points": n_points,
+            "n_slices": n_slices,
             "use_bitmask": use_bitmask,
             "n_structures": len(structures),
             "input_dir": str(json_dir),
@@ -657,6 +792,7 @@ def main(
                                 n_threads,
                                 precision,
                                 n_points,
+                                n_slices,
                                 use_bitmask,
                             )
                         except Exception:
@@ -676,6 +812,7 @@ def main(
                                 n_threads,
                                 precision,
                                 n_points,
+                                n_slices,
                                 use_bitmask,
                             )
 

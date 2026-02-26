@@ -40,7 +40,7 @@ from rich.table import Table
 from analyze_data import (
     BINS,
     PLOTS_DIR,
-    RESULTS_DIR,
+    RESULTS_BASE,
     add_size_bin,
     compute_speedup_by_bin,
     load_data,
@@ -63,9 +63,16 @@ app = typer.Typer(help="Benchmark analysis CLI")
 
 
 @app.command()
-def summary():
+def summary(
+    n_points: int = typer.Option(
+        100, "--n-points", "-N", help="Number of sphere test points (SR)"
+    ),
+    n_slices: int = typer.Option(
+        20, "--n-slices", help="Number of slices per atom diameter (LR)"
+    ),
+):
     """Print summary statistics table."""
-    df = load_data()
+    df = load_data(n_points, n_slices)
 
     # Single-threaded comparison
     df_t1 = df.filter(pl.col("threads") == 1)
@@ -199,12 +206,19 @@ def summary():
 
 
 @app.command(name="export-csv")
-def export_csv():
+def export_csv(
+    n_points: int = typer.Option(
+        100, "--n-points", "-N", help="Number of sphere test points (SR)"
+    ),
+    n_slices: int = typer.Option(
+        20, "--n-slices", help="Number of slices per atom diameter (LR)"
+    ),
+):
     """Export summary tables as CSV files per thread count."""
-    df = load_data()
+    df = load_data(n_points, n_slices)
     df = add_size_bin(df)
 
-    csv_dir = RESULTS_DIR.joinpath("csv")
+    csv_dir = RESULTS_BASE.joinpath(str(n_points), "csv")
     csv_dir.mkdir(parents=True, exist_ok=True)
 
     thread_counts = sorted(df["threads"].unique().to_list())
@@ -271,69 +285,131 @@ def export_csv():
 
 
 @app.command()
-def scatter():
+def scatter(
+    n_points: int = typer.Option(
+        100, "--n-points", "-N", help="Number of sphere test points (SR)"
+    ),
+    n_slices: int = typer.Option(
+        20, "--n-slices", help="Number of slices per atom diameter (LR)"
+    ),
+):
     """Generate atoms vs time scatter plot."""
-    plot_scatter()
+    plot_scatter(n_points, n_slices)
 
 
 @app.command()
-def threads():
+def threads(
+    n_points: int = typer.Option(
+        100, "--n-points", "-N", help="Number of sphere test points (SR)"
+    ),
+    n_slices: int = typer.Option(
+        20, "--n-slices", help="Number of slices per atom diameter (LR)"
+    ),
+):
     """Generate thread scaling plot."""
-    plot_threads()
+    plot_threads(n_points, n_slices)
 
 
 @app.command()
-def grid():
+def grid(
+    n_points: int = typer.Option(
+        100, "--n-points", "-N", help="Number of sphere test points (SR)"
+    ),
+    n_slices: int = typer.Option(
+        20, "--n-slices", help="Number of slices per atom diameter (LR)"
+    ),
+):
     """Generate grid of speedup plots for all thread counts."""
-    plot_grid()
+    plot_grid(n_points, n_slices)
 
 
 @app.command()
-def validation():
+def validation(
+    n_points: int = typer.Option(
+        100, "--n-points", "-N", help="Number of sphere test points (SR)"
+    ),
+    n_slices: int = typer.Option(
+        20, "--n-slices", help="Number of slices per atom diameter (LR)"
+    ),
+):
     """Generate SASA validation scatter plot (zsasa vs FreeSASA)."""
-    plot_validation()
+    plot_validation(n_points, n_slices)
 
 
 @app.command()
-def samples():
+def samples(
+    n_points: int = typer.Option(
+        100, "--n-points", "-N", help="Number of sphere test points (SR)"
+    ),
+    n_slices: int = typer.Option(
+        20, "--n-slices", help="Number of slices per atom diameter (LR)"
+    ),
+):
     """Generate thread scaling plots for representative structures per size bin."""
-    plot_samples()
+    plot_samples(n_points, n_slices)
 
 
 @app.command()
-def large():
+def large(
+    n_points: int = typer.Option(
+        100, "--n-points", "-N", help="Number of sphere test points (SR)"
+    ),
+    n_slices: int = typer.Option(
+        20, "--n-slices", help="Number of slices per atom diameter (LR)"
+    ),
+):
     """Generate speedup bar chart for large structures (50k+ atoms)."""
-    plot_large()
+    plot_large(n_points, n_slices)
 
 
 @app.command()
-def efficiency():
+def efficiency(
+    n_points: int = typer.Option(
+        100, "--n-points", "-N", help="Number of sphere test points (SR)"
+    ),
+    n_slices: int = typer.Option(
+        20, "--n-slices", help="Number of slices per atom diameter (LR)"
+    ),
+):
     """Calculate and plot parallel efficiency."""
-    plot_efficiency()
+    plot_efficiency(n_points, n_slices)
 
 
 @app.command()
 def speedup(
     min_atoms: int = typer.Option(50000, help="Minimum atom count for filtering"),
     top_n: int = typer.Option(5, help="Number of top entries to show"),
+    n_points: int = typer.Option(
+        100, "--n-points", "-N", help="Number of sphere test points (SR)"
+    ),
+    n_slices: int = typer.Option(
+        20, "--n-slices", help="Number of slices per atom diameter (LR)"
+    ),
 ):
     """Find structures with best zsasa speedup at any thread count."""
-    plot_speedup(min_atoms=min_atoms, top_n=top_n)
+    plot_speedup(min_atoms=min_atoms, top_n=top_n, n_points=n_points, n_slices=n_slices)
 
 
 @app.command()
-def all():
+def all(
+    n_points: int = typer.Option(
+        100, "--n-points", "-N", help="Number of sphere test points (SR)"
+    ),
+    n_slices: int = typer.Option(
+        20, "--n-slices", help="Number of slices per atom diameter (LR)"
+    ),
+):
     """Generate all plots and summary."""
-    summary()
+    summary(n_points, n_slices)
     rprint("\n[bold]Generating plots...[/bold]\n")
-    plot_validation()
-    plot_scatter()
-    plot_threads()
-    plot_grid()
-    plot_samples()
-    plot_large()
-    plot_efficiency()
-    plot_speedup(min_atoms=50000, top_n=5)
+    plot_validation(n_points, n_slices)
+    plot_scatter(n_points, n_slices)
+    plot_threads(n_points, n_slices)
+    plot_grid(n_points, n_slices)
+    plot_samples(n_points, n_slices)
+    plot_large(n_points, n_slices)
+    plot_efficiency(n_points, n_slices)
+    plot_speedup(min_atoms=50000, top_n=5, n_points=n_points, n_slices=n_slices)
     rprint(f"\n[bold green]All plots saved to:[/bold green] {PLOTS_DIR}")
 
 

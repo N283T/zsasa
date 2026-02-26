@@ -29,8 +29,11 @@ Output:
     ├── config.json             # System info and parameters
     ├── bench_zsasa_f64_8t.json
     ├── bench_zsasa_f32_8t.json
+    ├── bench_zsasa_f64_bitmask_8t.json  # with --use-bitmask
     ├── bench_freesasa_1t.json
-    └── bench_rustsasa_8t.json
+    ├── bench_rustsasa_8t.json
+    ├── bench_lahuta_8t.json
+    └── bench_lahuta_bitmask_8t.json     # with --use-bitmask
 """
 
 from __future__ import annotations
@@ -195,6 +198,7 @@ def run_zig(
         return []
 
     results = []
+    bitmask_suffix = "_bitmask" if use_bitmask else ""
 
     for precision in ["f64", "f32"]:
         with tempfile.TemporaryDirectory(prefix=f"zsasa_{precision}_") as tmp:
@@ -202,8 +206,9 @@ def run_zig(
 
             for n_threads in thread_counts:
                 bitmask_flag = " --use-bitmask" if use_bitmask else ""
+                bench_name = f"zsasa_{precision}{bitmask_suffix}_{n_threads}t"
                 result = run_benchmark(
-                    f"zsasa_{precision}_{n_threads}t",
+                    bench_name,
                     f"{zsasa} batch {input_dir} {out_dir} --threads={n_threads} --precision={precision} --n-points={n_points}{bitmask_flag}",
                     results_dir,
                     warmup,
@@ -211,9 +216,7 @@ def run_zig(
                     dry_run,
                 )
                 if result:
-                    results.append(
-                        {"name": f"zsasa_{precision}_{n_threads}t", **result}
-                    )
+                    results.append({"name": bench_name, **result})
 
     return results
 
@@ -288,6 +291,9 @@ def run_rustsasa(
     return results
 
 
+LAHUTA_BITMASK_POINTS = {64, 128, 256}
+
+
 def run_lahuta(
     input_dir: Path,
     results_dir: Path,
@@ -297,6 +303,7 @@ def run_lahuta(
     runs: int,
     dry_run: bool,
     binaries: dict[str, Path],
+    use_bitmask: bool = False,
 ) -> list[dict]:
     """Run Lahuta benchmarks (AF2 PDB only, Shrake-Rupley)."""
     lahuta = binaries["lahuta"]
@@ -304,20 +311,30 @@ def run_lahuta(
         console.print("[yellow][SKIP] lahuta not found[/]")
         return []
 
+    if use_bitmask and n_points not in LAHUTA_BITMASK_POINTS:
+        console.print(
+            f"[yellow]Warning: lahuta bitmask only supports n_points "
+            f"{sorted(LAHUTA_BITMASK_POINTS)}, got {n_points}. "
+            f"Bitmask will be ignored by lahuta.[/yellow]"
+        )
+
     results = []
+    bitmask_suffix = "_bitmask" if use_bitmask else ""
+    bitmask_flag = " --use-bitmask" if use_bitmask else ""
 
     with tempfile.TemporaryDirectory(prefix="lahuta_") as tmp:
         out_file = Path(tmp).joinpath("sasa.jsonl")
 
         for n_threads in thread_counts:
+            bench_name = f"lahuta{bitmask_suffix}_{n_threads}t"
             result = run_benchmark(
-                f"lahuta_{n_threads}t",
+                bench_name,
                 (
                     f"{lahuta} sasa-sr"
                     f" -d {input_dir}"
                     f" --is_af2_model"
                     f" --points {n_points}"
-                    f" --use-bitmask"
+                    f"{bitmask_flag}"
                     f" -t {n_threads}"
                     f" --progress 0"
                     f" -o {out_file}"
@@ -328,7 +345,7 @@ def run_lahuta(
                 dry_run,
             )
             if result:
-                results.append({"name": f"lahuta_{n_threads}t", **result})
+                results.append({"name": bench_name, **result})
 
     return results
 
@@ -458,8 +475,9 @@ def main(
     # Set up paths
     root = get_root_dir()
     if output_dir is None:
-        batch_dir = "batch" if n_points == 100 else f"batch_{n_points}"
-        results_dir = root.joinpath("benchmarks", "results", batch_dir, name)
+        results_dir = root.joinpath(
+            "benchmarks", "results", "batch", str(n_points), name
+        )
     else:
         results_dir = output_dir
 
@@ -552,6 +570,7 @@ def main(
             runs,
             dry_run,
             binaries,
+            use_bitmask,
         )
         all_results.extend(results)
 
