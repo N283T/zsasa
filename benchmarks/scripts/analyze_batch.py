@@ -293,6 +293,13 @@ def summary(
         for row in df_bench.filter(pl.col("tool") == "rustsasa").iter_rows(named=True):
             rs_by_threads[row["threads"]] = row["mean_s"]
 
+        # Lahuta Bitmask baseline per thread count
+        lb_by_threads: dict[int, float] = {}
+        for row in df_bench.filter(pl.col("tool") == "lahuta_bitmask").iter_rows(
+            named=True
+        ):
+            lb_by_threads[row["threads"]] = row["mean_s"]
+
         # Build table
         table = Table(title=f"Batch Benchmark: {bench_name}")
         table.add_column("Tool", style="cyan")
@@ -307,6 +314,8 @@ def summary(
             table.add_column("vs FreeSASA", justify="right")
         if rs_by_threads:
             table.add_column("vs RustSASA", justify="right")
+        if lb_by_threads:
+            table.add_column("vs Lahuta BM", justify="right")
 
         for row in df_bench.iter_rows(named=True):
             tool = row["tool"]
@@ -318,6 +327,7 @@ def summary(
 
             is_fs = tool == "freesasa"
             is_rs = tool == "rustsasa"
+            is_lb = tool == "lahuta_bitmask"
 
             vs_fs = _format_ratio(
                 fs_time / mean if fs_time else None, is_baseline=is_fs
@@ -325,6 +335,10 @@ def summary(
             rs_time = rs_by_threads.get(threads)
             vs_rs = _format_ratio(
                 rs_time / mean if rs_time else None, is_baseline=is_rs
+            )
+            lb_time = lb_by_threads.get(threads)
+            vs_lb = _format_ratio(
+                lb_time / mean if lb_time else None, is_baseline=is_lb
             )
 
             rss_str = f"{rss:.0f} MB" if rss > 0 else "-"
@@ -344,6 +358,8 @@ def summary(
                 cols.append(vs_fs)
             if rs_by_threads:
                 cols.append(vs_rs)
+            if lb_by_threads:
+                cols.append(vs_lb)
 
             table.add_row(*cols)
 
