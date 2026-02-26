@@ -9,7 +9,8 @@
 # ///
 """Convert mmCIF files to cleaned PDB files for benchmarking.
 
-Reads a sample.json file and resolves each entry:
+Accepts either a sample.json file or a directory of mmCIF files.
+When using sample.json, resolves each entry by source:
 - source=human (AFDB): Copy PDB from AlphaFold DB directory (already clean)
 - source=pdb: Read mmCIF, clean up (remove H, altconf, ligands/waters, L-peptide only), write PDB
 
@@ -46,7 +47,8 @@ from rich.table import Table
 console = Console()
 
 # Default AFDB directory (AlphaFold Human Proteome v6)
-AFDB_DIR = Path(
+# Overridden at runtime by --afdb-dir CLI option
+_DEFAULT_AFDB_DIR = Path(
     os.environ.get(
         "AFDB_DIR",
         "/data/alphafold/UP000005640_9606_HUMAN_v6/pdb",
@@ -54,7 +56,18 @@ AFDB_DIR = Path(
 )
 
 # Default PDB mirror directory
-PDB_DIR = Path(os.environ.get("PDB_DIR", "/data/pdb"))
+# Overridden at runtime by --pdb-dir CLI option
+_DEFAULT_PDB_DIR = Path(os.environ.get("PDB_DIR", "/data/pdb"))
+
+
+def _count_pdb_atoms(pdb_path: Path) -> int:
+    """Count ATOM records in a PDB file."""
+    count = 0
+    with open(pdb_path) as f:
+        for line in f:
+            if line.startswith("ATOM  "):
+                count += 1
+    return count
 
 
 def afdb_id_to_filename(entry_id: str) -> str:
@@ -67,19 +80,23 @@ def afdb_id_to_filename(entry_id: str) -> str:
     return f"{converted}.pdb"
 
 
-def pdb_id_to_cif_path(entry_id: str) -> Path:
+def pdb_id_to_cif_path(entry_id: str, pdb_dir: Path) -> Path:
     """Convert PDB ID to mmCIF path.
 
     3lml -> $PDB_DIR/data/structures/divided/mmCIF/lm/3lml.cif.gz
     """
     mid2 = entry_id[1:3]
-    return PDB_DIR.joinpath(
+    return pdb_dir.joinpath(
         "data", "structures", "divided", "mmCIF", mid2, f"{entry_id}.cif.gz"
     )
 
 
 def clean_cif_to_pdb(cif_path: Path, output_path: Path) -> tuple[str, int]:
-    """Read mmCIF, clean up, write PDB. Returns (id, n_atoms)."""
+    """Read mmCIF, clean up, write PDB. Returns (id, n_atoms).
+
+    If the structure has no atoms after cleaning (H removal, L-peptide filter),
+    no output file is written and n_atoms is 0.
+    """
     st = gemmi.read_structure(str(cif_path))
     st.setup_entities()
     st.remove_hydrogens()
@@ -101,7 +118,7 @@ def clean_cif_to_pdb(cif_path: Path, output_path: Path) -> tuple[str, int]:
     for name in chains_to_remove:
         model.remove_chain(name)
 
-    # Count atoms
+    # Count atoms in cleaned model (all HETATM/ligands already removed above)
     n_atoms = sum(1 for chain in model for res in chain for _ in res)
     if n_atoms == 0:
         return (cif_path.stem.replace(".cif", ""), 0)
@@ -112,38 +129,36 @@ def clean_cif_to_pdb(cif_path: Path, output_path: Path) -> tuple[str, int]:
     return (cif_path.stem.replace(".cif", ""), n_atoms)
 
 
-def process_entry(args: tuple[str, str, Path]) -> tuple[str, int, str]:
-    """Process a single sample entry. Returns (id, n_atoms, status)."""
-    entry_id, source, output_path = args
+def process_entry(
+    args: tuple[str, str, Path, Path, Path],
+) -> tuple[str, int, str]:
+    """Process a single sample entry. Returns (id, n_atoms, status).
+
+    Status is one of: "skipped" (already exists), "copied" (AFDB source),
+    "processed" (CIF converted), "empty" (no atoms after cleaning),
+    or "error: <detail>".
+    """
+    entry_id, source, output_path, afdb_dir, pdb_dir = args
 
     try:
         if output_path.exists():
-            # Count existing ATOM lines
-            n_atoms = 0
-            with open(output_path) as f:
-                for line in f:
-                    if line.startswith("ATOM  "):
-                        n_atoms += 1
+            n_atoms = _count_pdb_atoms(output_path)
             return (entry_id, n_atoms, "skipped")
 
         if source == "human":
             # AFDB: copy PDB directly
             filename = afdb_id_to_filename(entry_id)
-            src_path = AFDB_DIR.joinpath(filename)
+            src_path = afdb_dir.joinpath(filename)
             if not src_path.exists():
                 return (entry_id, 0, f"error: AFDB file not found: {src_path}")
             output_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src_path, output_path)
-            n_atoms = 0
-            with open(output_path) as f:
-                for line in f:
-                    if line.startswith("ATOM  "):
-                        n_atoms += 1
+            n_atoms = _count_pdb_atoms(output_path)
             return (entry_id, n_atoms, "copied")
 
         elif source == "pdb":
             # PDB: preprocess mmCIF -> PDB
-            cif_path = pdb_id_to_cif_path(entry_id)
+            cif_path = pdb_id_to_cif_path(entry_id, pdb_dir)
             if not cif_path.exists():
                 return (entry_id, 0, f"error: CIF not found: {cif_path}")
             _, n_atoms = clean_cif_to_pdb(cif_path, output_path)
@@ -155,7 +170,22 @@ def process_entry(args: tuple[str, str, Path]) -> tuple[str, int, str]:
             return (entry_id, 0, f"error: unknown source: {source}")
 
     except Exception as e:
-        return (entry_id, 0, f"error: {e}")
+        return (entry_id, 0, f"error: {type(e).__name__}: {e}")
+
+
+def _process_dir_entry(args: tuple[Path, Path]) -> tuple[str, int, str]:
+    """Process a single CIF file for directory mode. Returns (id, n_atoms, status)."""
+    cif_path, output_path = args
+    try:
+        if output_path.exists():
+            n_atoms = _count_pdb_atoms(output_path)
+            return (cif_path.stem, n_atoms, "skipped")
+        entry_id, n_atoms = clean_cif_to_pdb(cif_path, output_path)
+        if n_atoms == 0:
+            return (entry_id, 0, "empty")
+        return (entry_id, n_atoms, "processed")
+    except Exception as e:
+        return (cif_path.stem, 0, f"error: {type(e).__name__}: {e}")
 
 
 app = typer.Typer(help=__doc__)
@@ -186,11 +216,8 @@ def generate(
 ) -> None:
     """Generate cleaned PDB files from sample.json or mmCIF directory."""
 
-    global AFDB_DIR, PDB_DIR
-    if afdb_dir is not None:
-        AFDB_DIR = afdb_dir
-    if pdb_dir is not None:
-        PDB_DIR = pdb_dir
+    resolved_afdb_dir = afdb_dir if afdb_dir is not None else _DEFAULT_AFDB_DIR
+    resolved_pdb_dir = pdb_dir if pdb_dir is not None else _DEFAULT_PDB_DIR
 
     if not input_path.exists():
         console.print(f"[red]Error: Path not found: {input_path}[/red]")
@@ -202,7 +229,9 @@ def generate(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if input_path.is_file() and input_path.suffix == ".json":
-        _process_sample_file(input_path, output_dir, workers)
+        _process_sample_file(
+            input_path, output_dir, workers, resolved_afdb_dir, resolved_pdb_dir
+        )
     elif input_path.is_dir():
         _process_directory(input_path, output_dir, workers)
     else:
@@ -210,7 +239,13 @@ def generate(
         raise typer.Exit(1)
 
 
-def _process_sample_file(sample_path: Path, output_dir: Path, workers: int) -> None:
+def _process_sample_file(
+    sample_path: Path,
+    output_dir: Path,
+    workers: int,
+    afdb_dir: Path,
+    pdb_dir: Path,
+) -> None:
     """Process entries from sample.json."""
     import json
 
@@ -222,25 +257,34 @@ def _process_sample_file(sample_path: Path, output_dir: Path, workers: int) -> N
         raise typer.Exit(1)
 
     # Collect all entries with source info
-    work_items: list[tuple[str, str, Path]] = []
+    work_items: list[tuple[str, str, Path, Path, Path]] = []
     samples = data["samples"]
 
     if isinstance(samples, list):
-        # v1 format: flat list of IDs (no source info, treat as pdb)
+        # v1 format: flat list of IDs (no source info, defaults to mmCIF->PDB conversion)
         for entry_id in samples:
             output_path = output_dir.joinpath(f"{entry_id}.pdb")
-            work_items.append((entry_id, "pdb", output_path))
+            work_items.append((entry_id, "pdb", output_path, afdb_dir, pdb_dir))
     else:
         # v2 format: dict of bins with entries
-        for entries in samples.values():
-            for entry in entries:
+        for bin_name, entries in samples.items():
+            for i, entry in enumerate(entries):
+                if "id" not in entry:
+                    console.print(
+                        f"[red]Error: Entry {i} in bin '{bin_name}' missing 'id' key[/red]"
+                    )
+                    raise typer.Exit(1)
                 entry_id = entry["id"]
                 source = entry.get("source", "pdb")
                 output_path = output_dir.joinpath(f"{entry_id}.pdb")
-                work_items.append((entry_id, source, output_path))
+                work_items.append((entry_id, source, output_path, afdb_dir, pdb_dir))
 
-    source_counts = {}
-    for _, source, _ in work_items:
+    if not work_items:
+        console.print("[yellow]No entries to process[/yellow]")
+        return
+
+    source_counts: dict[str, int] = {}
+    for _, source, _, _, _ in work_items:
         source_counts[source] = source_counts.get(source, 0) + 1
 
     console.print(f"[bold]Processing {len(work_items):,} entries from {sample_path}[/bold]")
@@ -249,7 +293,7 @@ def _process_sample_file(sample_path: Path, output_dir: Path, workers: int) -> N
     console.print(f"\nWorkers: [cyan]{workers}[/cyan]")
     console.print(f"Output: [cyan]{output_dir}[/cyan]\n")
 
-    _run_parallel(work_items, workers)
+    _run_parallel(work_items, workers, output_dir)
 
 
 def _process_directory(input_dir: Path, output_dir: Path, workers: int) -> None:
@@ -267,13 +311,7 @@ def _process_directory(input_dir: Path, output_dir: Path, workers: int) -> None:
     console.print(f"Found [cyan]{len(cif_files):,}[/cyan] CIF files")
     console.print(f"Workers: [cyan]{workers}[/cyan]\n")
 
-    work_items: list[tuple[str, str, Path]] = []
-    for cif_path in cif_files:
-        stem = cif_path.stem.replace(".cif", "").lower()
-        output_path = output_dir.joinpath(f"{stem}.pdb")
-        work_items.append((stem, "pdb_dir", output_path))
-
-    # For directory mode, use a slightly different worker
+    # Directory mode uses clean_cif_to_pdb directly (no source routing via process_entry)
     _run_parallel_dir(cif_files, output_dir, workers)
 
 
@@ -290,19 +328,6 @@ def _run_parallel_dir(cif_files: list[Path], output_dir: Path, workers: int) -> 
         output_path = output_dir.joinpath(f"{stem}.pdb")
         work_items.append((cif_path, output_path))
 
-    def _worker(args: tuple[Path, Path]) -> tuple[str, int, str]:
-        cif_path, output_path = args
-        try:
-            if output_path.exists():
-                n_atoms = sum(1 for line in open(output_path) if line.startswith("ATOM  "))
-                return (cif_path.stem, n_atoms, "skipped")
-            entry_id, n_atoms = clean_cif_to_pdb(cif_path, output_path)
-            if n_atoms == 0:
-                return (entry_id, 0, "empty")
-            return (entry_id, n_atoms, "processed")
-        except Exception as e:
-            return (cif_path.stem, 0, f"error: {e}")
-
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -315,11 +340,20 @@ def _run_parallel_dir(cif_files: list[Path], output_dir: Path, workers: int) -> 
 
         with ProcessPoolExecutor(max_workers=workers) as executor:
             futures = {
-                executor.submit(_worker, item): item for item in work_items
+                executor.submit(_process_dir_entry, item): item
+                for item in work_items
             }
 
             for future in as_completed(futures):
-                entry_id, n_atoms, status = future.result()
+                try:
+                    entry_id, n_atoms, status = future.result()
+                except Exception as exc:
+                    item = futures[future]
+                    console.print(f"  [red]{item[0].stem}: worker crashed: {exc}[/red]")
+                    error_count += 1
+                    progress.advance(task)
+                    continue
+
                 progress.advance(task)
 
                 if status in ("processed", "copied"):
@@ -337,7 +371,11 @@ def _run_parallel_dir(cif_files: list[Path], output_dir: Path, workers: int) -> 
     _print_summary(success_count, skip_count, error_count, total_atoms, output_dir)
 
 
-def _run_parallel(work_items: list[tuple[str, str, Path]], workers: int) -> None:
+def _run_parallel(
+    work_items: list[tuple[str, str, Path, Path, Path]],
+    workers: int,
+    output_dir: Path,
+) -> None:
     """Run parallel processing for sample-based entries."""
     success_count = 0
     skip_count = 0
@@ -360,7 +398,15 @@ def _run_parallel(work_items: list[tuple[str, str, Path]], workers: int) -> None
             }
 
             for future in as_completed(futures):
-                entry_id, n_atoms, status = future.result()
+                try:
+                    entry_id, n_atoms, status = future.result()
+                except Exception as exc:
+                    item = futures[future]
+                    console.print(f"  [red]{item[0]}: worker crashed: {exc}[/red]")
+                    error_count += 1
+                    progress.advance(task)
+                    continue
+
                 progress.advance(task)
 
                 if status in ("processed", "copied"):
@@ -375,7 +421,7 @@ def _run_parallel(work_items: list[tuple[str, str, Path]], workers: int) -> None
                     error_count += 1
                     console.print(f"  [red]{entry_id}: {status}[/red]")
 
-    _print_summary(success_count, skip_count, error_count, total_atoms, work_items[0][2].parent)
+    _print_summary(success_count, skip_count, error_count, total_atoms, output_dir)
 
 
 def _print_summary(
