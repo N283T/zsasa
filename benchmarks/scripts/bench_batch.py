@@ -309,6 +309,7 @@ def run_lahuta(
             result = run_benchmark(
                 bench_name,
                 (
+                    f"cd {quote_path(tmp)} && "
                     f"{quote_path(lahuta)} sasa-sr"
                     f" -d {quote_path(input_dir)}"
                     f" --is_af2_model"

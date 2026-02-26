@@ -358,6 +358,10 @@ def main(
                             use_bitmask,
                         )
 
+                        # lahuta writes report files to cwd; redirect to tmpdir
+                        if tool_base == "lahuta":
+                            cmd = f"cd {quote_path(tmpdir)} && {cmd}"
+
                         json_path = Path(tmpdir).joinpath(f"{pdb_id}_{n_threads}t.json")
                         result = run_hyperfine(cmd, warmup, runs, json_path)
 
