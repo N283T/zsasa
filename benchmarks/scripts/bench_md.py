@@ -82,6 +82,7 @@ class Tool(str, Enum):
 
 ALL_TOOLS = [
     Tool.zig,
+    Tool.zig_bitmask,
     Tool.zsasa_mdtraj,
     Tool.zsasa_mdanalysis,
     Tool.mdtraj,
