@@ -2435,7 +2435,7 @@ export fn zsasa_batch_dir_process(
     const output_dir_slice: ?[]const u8 = if (output_dir) |od| std.mem.span(od) else null;
 
     // Run batch processing
-    var batch_result = batch.runBatch(c_allocator, input_dir_slice, output_dir_slice, config) catch |err| {
+    var batch_result = batch.runBatch(c_allocator, input_dir_slice, output_dir_slice, config, null) catch |err| {
         const code = switch (err) {
             error.OutOfMemory => ZSASA_ERROR_OUT_OF_MEMORY,
             else => ZSASA_ERROR_FILE_IO,
