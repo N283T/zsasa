@@ -23,6 +23,18 @@ console = Console()
 
 TOOL_ALIASES = {"zig": "zig_f64", "zig_bitmask": "zig_f64_bitmask"}
 
+
+def ensure_zsasa_built() -> None:
+    """Build zsasa with ReleaseFast for accurate benchmarking."""
+    root = Path(__file__).parent.parent.parent
+    console.print("[bold]Building zsasa (ReleaseFast)...[/]")
+    subprocess.run(
+        ["zig", "build", "--release=fast"],
+        cwd=root,
+        check=True,
+    )
+
+
 LAHUTA_BITMASK_POINTS = {64, 128, 256}
 
 BITMASK_CAPABLE_BASES = {"zig", "lahuta"}
