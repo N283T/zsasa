@@ -471,7 +471,7 @@ fn processOneFile(
             total_area = sasa_result.total_area;
 
             if (config.store_atom_areas) {
-                result.atom_areas = result_allocator.dupe(f64, sasa_result.atom_areas) catch {
+                result.atom_areas = arena.dupe(f64, sasa_result.atom_areas) catch {
                     result.status = .err;
                     result.error_msg = std.fmt.allocPrint(result_allocator, "atom_areas allocation failed", .{}) catch null;
                     return result;
@@ -510,7 +510,7 @@ fn processOneFile(
 
             if (config.store_atom_areas) {
                 const areas_f32 = sasa_result.atom_areas;
-                const areas_f64 = result_allocator.alloc(f64, areas_f32.len) catch {
+                const areas_f64 = arena.alloc(f64, areas_f32.len) catch {
                     result.status = .err;
                     result.error_msg = std.fmt.allocPrint(result_allocator, "atom_areas allocation failed", .{}) catch null;
                     return result;
@@ -535,34 +535,39 @@ fn processOneFile(
     return result;
 }
 
-/// Write batch results as JSONL to a file or stdout
-fn writeJsonlOutput(allocator: Allocator, file_results: []const FileResult, output_path: ?[]const u8) !void {
-    var file: std.fs.File = if (output_path) |path|
-        try std.fs.cwd().createFile(path, .{})
-    else
-        std.fs.File.stdout();
+/// Thread-safe JSONL streaming writer.
+/// Each call to writeResult acquires the mutex, serializes one line, and flushes.
+const JsonlStreamWriter = struct {
+    mutex: std.Thread.Mutex = .{},
+    file: std.fs.File,
 
-    defer if (output_path != null) file.close();
+    /// Serialize and write one JSONL line for a completed file result.
+    /// alloc is a short-lived allocator (e.g., thread-local arena) used only for
+    /// the serialized string; it is freed by the caller's arena reset.
+    pub fn writeResult(
+        self: *JsonlStreamWriter,
+        alloc: Allocator,
+        filename: []const u8,
+        total_sasa: f64,
+        atom_areas: []const f64,
+    ) void {
+        const line = json_writer.fileResultToJsonlLine(alloc, filename, total_sasa, atom_areas) catch |err| {
+            std.debug.print("Warning: failed to serialize {s}: {s}\n", .{ filename, @errorName(err) });
+            return;
+        };
+        // line is on alloc (arena); no explicit free needed — arena reset handles it.
 
-    // 64KB write buffer to reduce syscall count
-    var buf: [64 * 1024]u8 = undefined;
-    var w = file.writer(&buf);
+        self.mutex.lock();
+        defer self.mutex.unlock();
 
-    for (file_results) |result| {
-        if (result.status != .ok) continue;
-        if (result.atom_areas) |areas| {
-            const line = json_writer.fileResultToJsonlLine(allocator, result.filename, result.total_sasa, areas) catch |err| {
-                std.debug.print("Warning: failed to serialize {s}: {s}\n", .{ result.filename, @errorName(err) });
-                continue;
-            };
-            defer allocator.free(line);
-            try w.interface.writeAll(line);
-            try w.interface.writeAll("\n");
-        }
+        // 64KB stack buffer to reduce syscall count.
+        var buf: [64 * 1024]u8 = undefined;
+        var w = self.file.writer(&buf);
+        w.interface.writeAll(line) catch return;
+        w.interface.writeAll("\n") catch return;
+        w.interface.flush() catch return;
     }
-
-    try w.interface.flush();
-}
+};
 
 /// Run batch processing sequentially (single-threaded path, used when n_threads <= 1)
 pub fn runBatchSequential(
@@ -570,6 +575,7 @@ pub fn runBatchSequential(
     input_dir: []const u8,
     output_dir: ?[]const u8,
     config: BatchConfig,
+    jsonl_output_path: ?[]const u8,
 ) !BatchResult {
     // Start total timer
     var total_timer = try std.time.Timer.start();
@@ -585,6 +591,19 @@ pub fn runBatchSequential(
     if (output_dir) |out_dir| {
         try std.fs.cwd().makePath(out_dir);
     }
+
+    // Open JSONL output file (or stdout) when streaming is requested
+    var jsonl_file: ?std.fs.File = null;
+    var jsonl_file_needs_close = false;
+    if (jsonl_output_path) |path| {
+        jsonl_file = try std.fs.cwd().createFile(path, .{});
+        jsonl_file_needs_close = true;
+    } else if (config.store_atom_areas) {
+        jsonl_file = std.io.getStdOut();
+    }
+    defer if (jsonl_file_needs_close) {
+        if (jsonl_file) |f| f.close();
+    };
 
     // Allocate results
     const file_results = try allocator.alloc(FileResult, files.len);
@@ -628,6 +647,31 @@ pub fn runBatchSequential(
             failed += 1;
         }
 
+        // Stream JSONL output (atom_areas on arena, valid until reset)
+        if (jsonl_file) |jf| {
+            if (result.status == .ok) {
+                if (result.atom_areas) |areas| {
+                    const line = json_writer.fileResultToJsonlLine(arena.allocator(), result.filename, result.total_sasa, areas) catch |err| {
+                        std.debug.print("Warning: failed to serialize {s}: {s}\n", .{ result.filename, @errorName(err) });
+                        result.atom_areas = null;
+                        file_results[i] = result;
+                        _ = arena.reset(.retain_capacity);
+                        if (!config.quiet) {
+                            std.debug.print("\rProcessing: {d}/{d}", .{ i + 1, files.len });
+                        }
+                        continue;
+                    };
+                    var buf: [64 * 1024]u8 = undefined;
+                    var w = jf.writer(&buf);
+                    w.interface.writeAll(line) catch {};
+                    w.interface.writeAll("\n") catch {};
+                    w.interface.flush() catch {};
+                }
+            }
+        }
+        // Clear atom_areas since arena will free them
+        result.atom_areas = null;
+
         file_results[i] = result;
 
         // Reset arena for next file
@@ -668,6 +712,7 @@ const ParallelContext = struct {
     processed_count: std.atomic.Value(usize),
     lut_f64: ?*const bitmask_lut.BitmaskLut,
     lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+    jsonl_stream: ?*JsonlStreamWriter,
 };
 
 /// Worker thread function for parallel batch processing
@@ -726,6 +771,17 @@ fn parallelWorker(ctx: *ParallelContext) void {
         // Store result (thread-safe: each index is unique)
         ctx.results[file_idx] = result;
 
+        // Stream JSONL output (atom_areas on arena, valid until reset)
+        if (ctx.jsonl_stream) |stream| {
+            if (result.status == .ok) {
+                if (result.atom_areas) |areas| {
+                    stream.writeResult(arena.allocator(), result.filename, result.total_sasa, areas);
+                }
+            }
+        }
+        // Clear atom_areas since arena will free them
+        ctx.results[file_idx].atom_areas = null;
+
         // Update progress counter (.release pairs with .acquire in progress monitor)
         _ = ctx.processed_count.fetchAdd(1, .release);
 
@@ -740,6 +796,7 @@ pub fn runBatchParallel(
     input_dir: []const u8,
     output_dir: ?[]const u8,
     config: BatchConfig,
+    jsonl_output_path: ?[]const u8,
 ) !BatchResult {
     // Start total timer
     var total_timer = try std.time.Timer.start();
@@ -782,12 +839,32 @@ pub fn runBatchParallel(
     // For single file or single thread, use sequential
     if (files.len == 1 or n_threads <= 1) {
         allocator.free(file_results);
-        return runBatchSequential(allocator, input_dir, output_dir, config);
+        return runBatchSequential(allocator, input_dir, output_dir, config, jsonl_output_path);
     }
 
     // Build bitmask LUT once (if enabled)
     var luts = try BatchLuts.init(allocator, config);
     defer luts.deinit();
+
+    // Open JSONL output file (or stdout) when streaming is requested
+    var jsonl_file: ?std.fs.File = null;
+    var jsonl_file_needs_close = false;
+    if (jsonl_output_path) |path| {
+        jsonl_file = try std.fs.cwd().createFile(path, .{});
+        jsonl_file_needs_close = true;
+    } else if (config.store_atom_areas) {
+        jsonl_file = std.io.getStdOut();
+    }
+    defer if (jsonl_file_needs_close) {
+        if (jsonl_file) |f| f.close();
+    };
+
+    // Set up the stream writer on the stack (if JSONL streaming is active)
+    var jsonl_stream_storage: JsonlStreamWriter = if (jsonl_file) |jf|
+        JsonlStreamWriter{ .file = jf }
+    else
+        JsonlStreamWriter{ .file = std.io.getStdOut() }; // placeholder, not used when null
+    const jsonl_stream_ptr: ?*JsonlStreamWriter = if (jsonl_file != null) &jsonl_stream_storage else null;
 
     // Create shared context
     var ctx = ParallelContext{
@@ -801,6 +878,7 @@ pub fn runBatchParallel(
         .processed_count = std.atomic.Value(usize).init(0),
         .lut_f64 = luts.f64Ptr(),
         .lut_f32 = luts.f32Ptr(),
+        .jsonl_stream = jsonl_stream_ptr,
     };
 
     // Spawn worker threads
@@ -861,6 +939,7 @@ pub fn runBatch(
     input_dir: []const u8,
     output_dir: ?[]const u8,
     config: BatchConfig,
+    jsonl_output_path: ?[]const u8,
 ) !BatchResult {
     const cpu_count = std.Thread.getCpuCount() catch 1;
     const n_threads = if (config.n_threads == 0)
@@ -869,9 +948,9 @@ pub fn runBatch(
         config.n_threads;
 
     if (n_threads <= 1) {
-        return runBatchSequential(allocator, input_dir, output_dir, config);
+        return runBatchSequential(allocator, input_dir, output_dir, config, jsonl_output_path);
     }
-    return runBatchParallel(allocator, input_dir, output_dir, config);
+    return runBatchParallel(allocator, input_dir, output_dir, config, jsonl_output_path);
 }
 
 // =============================================================================
@@ -1258,13 +1337,11 @@ pub fn run(allocator: Allocator, args: BatchArgs) !void {
         std.debug.print("\n", .{});
     }
 
-    var result = try runBatch(allocator, input_dir, output_dir, config);
-    defer result.deinit();
+    // Determine JSONL output path: stream during computation instead of accumulating in memory
+    const jsonl_output_path: ?[]const u8 = if (args.output_format == .jsonl) args.output_path else null;
 
-    // Write JSONL output after all computation completes
-    if (args.output_format == .jsonl) {
-        try writeJsonlOutput(allocator, result.file_results, args.output_path);
-    }
+    var result = try runBatch(allocator, input_dir, output_dir, config, jsonl_output_path);
+    defer result.deinit();
 
     // Print results
     if (!args.quiet) {
