@@ -26,6 +26,16 @@ const OutputFormat = json_writer.OutputFormat;
 const LeeRichardsConfig = lee_richards.LeeRichardsConfig;
 const LeeRichardsConfigGen = lee_richards.LeeRichardsConfigGen;
 
+/// Write a warning message to stderr. Unlike std.debug.print, this is not
+/// stripped in release builds, so I/O errors are always visible.
+fn logWarning(comptime fmt: []const u8, args: anytype) void {
+    const stderr_file = std.fs.File.stderr();
+    var buf: [4096]u8 = undefined;
+    var w = std.fs.File.Writer.initStreaming(stderr_file, &buf);
+    w.interface.print("Warning: " ++ fmt ++ "\n", args) catch {};
+    w.interface.flush() catch {};
+}
+
 /// SASA algorithm selection
 pub const Algorithm = enum {
     sr, // Shrake-Rupley (test point method)
@@ -554,7 +564,7 @@ const JsonlStreamWriter = struct {
         atom_areas: []const f64,
     ) void {
         const line = json_writer.fileResultToJsonlLine(alloc, filename, total_sasa, atom_areas) catch |err| {
-            std.debug.print("Warning: failed to serialize {s}: {s}\n", .{ filename, @errorName(err) });
+            logWarning("failed to serialize {s}: {s}", .{ filename, @errorName(err) });
             return;
         };
         // line is on alloc (arena); no explicit free needed — arena reset handles it.
@@ -566,9 +576,17 @@ const JsonlStreamWriter = struct {
         // advances (safe under mutex — only one thread writes at a time).
         var buf: [64 * 1024]u8 = undefined;
         var w = std.fs.File.Writer.initStreaming(self.file, &buf);
-        w.interface.writeAll(line) catch return;
-        w.interface.writeAll("\n") catch return;
-        w.interface.flush() catch return;
+        w.interface.writeAll(line) catch |err| {
+            logWarning("JSONL write failed for {s}: {s}", .{ filename, @errorName(err) });
+            return;
+        };
+        w.interface.writeAll("\n") catch |err| {
+            logWarning("JSONL newline write failed for {s}: {s}", .{ filename, @errorName(err) });
+            return;
+        };
+        w.interface.flush() catch |err| {
+            logWarning("JSONL flush failed for {s}: {s}", .{ filename, @errorName(err) });
+        };
     }
 };
 
@@ -663,20 +681,21 @@ pub fn runBatchSequential(
             if (result.status == .ok) {
                 if (result.atom_areas) |areas| {
                     const line = json_writer.fileResultToJsonlLine(arena.allocator(), result.filename, result.total_sasa, areas) catch |err| {
-                        std.debug.print("Warning: failed to serialize {s}: {s}\n", .{ result.filename, @errorName(err) });
+                        logWarning("failed to serialize {s}: {s}", .{ result.filename, @errorName(err) });
                         result.atom_areas = null;
                         file_results[i] = result;
                         _ = arena.reset(.retain_capacity);
-                        if (!config.quiet) {
-                            std.debug.print("\rProcessing: {d}/{d}", .{ i + 1, files.len });
-                        }
                         continue;
                     };
                     w.interface.writeAll(line) catch |err| {
-                        std.debug.print("Warning: JSONL write failed for {s}: {s}\n", .{ result.filename, @errorName(err) });
+                        logWarning("JSONL write failed for {s}: {s}", .{ result.filename, @errorName(err) });
                     };
-                    w.interface.writeAll("\n") catch {};
-                    w.interface.flush() catch {};
+                    w.interface.writeAll("\n") catch |err| {
+                        logWarning("JSONL newline write failed for {s}: {s}", .{ result.filename, @errorName(err) });
+                    };
+                    w.interface.flush() catch |err| {
+                        logWarning("JSONL flush failed for {s}: {s}", .{ result.filename, @errorName(err) });
+                    };
                 }
             }
         }
@@ -870,11 +889,12 @@ pub fn runBatchParallel(
         if (jsonl_file) |f| f.close();
     };
 
-    // Set up the stream writer on the stack (if JSONL streaming is active)
+    // Set up the stream writer on the stack (if JSONL streaming is active).
+    // When jsonl_file is null, jsonl_stream_ptr is null so the storage is never accessed.
     var jsonl_stream_storage: JsonlStreamWriter = if (jsonl_file) |jf|
         JsonlStreamWriter{ .file = jf }
     else
-        undefined; // not used when jsonl_file is null
+        std.mem.zeroes(JsonlStreamWriter);
     const jsonl_stream_ptr: ?*JsonlStreamWriter = if (jsonl_file != null) &jsonl_stream_storage else null;
 
     // Create shared context
