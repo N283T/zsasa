@@ -547,74 +547,46 @@ fn processOneFile(
     return result;
 }
 
-/// Thread-safe JSONL streaming writer with batched I/O.
-///
-/// Lines are appended to a heap buffer under mutex. The buffer is flushed to
-/// disk only when it exceeds `flush_threshold` bytes, amortising syscall
-/// overhead across many writes. Call `flush()` after all workers have joined
-/// to drain any remaining data.
+/// Thread-safe JSONL streaming writer.
+/// Each call to writeResult acquires the mutex, serializes one line, and flushes.
 const JsonlStreamWriter = struct {
-    const flush_threshold: usize = 256 * 1024; // 256 KB
-
     mutex: std.Thread.Mutex = .{},
     file: std.fs.File,
-    buffer: std.ArrayListUnmanaged(u8) = .{},
-    alloc: Allocator,
 
-    pub fn deinit(self: *JsonlStreamWriter) void {
-        self.buffer.deinit(self.alloc);
-    }
-
-    /// Serialize and append one JSONL line. Flushes to disk when the internal
-    /// buffer exceeds the threshold.
-    /// `line_alloc` is a short-lived allocator (e.g., thread-local arena) used
-    /// only for the serialized string; it is freed by the caller's arena reset.
+    /// Serialize and write one JSONL line for a completed file result.
+    /// alloc is a short-lived allocator (e.g., thread-local arena) used only for
+    /// the serialized string; it is freed by the caller's arena reset.
     pub fn writeResult(
         self: *JsonlStreamWriter,
-        line_alloc: Allocator,
+        alloc: Allocator,
         filename: []const u8,
         total_sasa: f64,
         atom_areas: []const f64,
     ) void {
-        const line = json_writer.fileResultToJsonlLine(line_alloc, filename, total_sasa, atom_areas) catch |err| {
+        const line = json_writer.fileResultToJsonlLine(alloc, filename, total_sasa, atom_areas) catch |err| {
             logWarning("failed to serialize {s}: {s}", .{ filename, @errorName(err) });
             return;
         };
+        // line is on alloc (arena); no explicit free needed — arena reset handles it.
 
-        self.mutex.lock();
-
-        self.buffer.appendSlice(self.alloc, line) catch |err| {
-            self.mutex.unlock();
-            logWarning("JSONL buffer append failed for {s}: {s}", .{ filename, @errorName(err) });
-            return;
-        };
-        self.buffer.append(self.alloc, '\n') catch |err| {
-            self.mutex.unlock();
-            logWarning("JSONL buffer append failed for {s}: {s}", .{ filename, @errorName(err) });
-            return;
-        };
-
-        if (self.buffer.items.len >= flush_threshold) {
-            self.flushLocked();
-        }
-
-        self.mutex.unlock();
-    }
-
-    /// Drain all remaining data to disk. Must be called after workers join.
-    pub fn flush(self: *JsonlStreamWriter) void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        self.flushLocked();
-    }
 
-    /// Write buffered data to file and clear the buffer. Caller must hold mutex.
-    fn flushLocked(self: *JsonlStreamWriter) void {
-        if (self.buffer.items.len == 0) return;
-        self.file.writeAll(self.buffer.items) catch |err| {
-            logWarning("JSONL flush failed: {s}", .{@errorName(err)});
+        // 64KB stack buffer; use streaming mode so the OS seek position
+        // advances (safe under mutex — only one thread writes at a time).
+        var buf: [64 * 1024]u8 = undefined;
+        var w = std.fs.File.Writer.initStreaming(self.file, &buf);
+        w.interface.writeAll(line) catch |err| {
+            logWarning("JSONL write failed for {s}: {s}", .{ filename, @errorName(err) });
+            return;
         };
-        self.buffer.clearRetainingCapacity();
+        w.interface.writeAll("\n") catch |err| {
+            logWarning("JSONL newline write failed for {s}: {s}", .{ filename, @errorName(err) });
+            return;
+        };
+        w.interface.flush() catch |err| {
+            logWarning("JSONL flush failed for {s}: {s}", .{ filename, @errorName(err) });
+        };
     }
 };
 
@@ -920,10 +892,9 @@ pub fn runBatchParallel(
     // Set up the stream writer on the stack (if JSONL streaming is active).
     // When jsonl_file is null, jsonl_stream_ptr is null so the storage is never accessed.
     var jsonl_stream_storage: JsonlStreamWriter = if (jsonl_file) |jf|
-        JsonlStreamWriter{ .file = jf, .alloc = allocator }
+        JsonlStreamWriter{ .file = jf }
     else
-        undefined;
-    defer if (jsonl_file != null) jsonl_stream_storage.deinit();
+        std.mem.zeroes(JsonlStreamWriter);
     const jsonl_stream_ptr: ?*JsonlStreamWriter = if (jsonl_file != null) &jsonl_stream_storage else null;
 
     // Create shared context
@@ -963,11 +934,6 @@ pub fn runBatchParallel(
     // Wait for all threads to complete
     for (threads) |thread| {
         thread.join();
-    }
-
-    // Drain any remaining JSONL data to disk
-    if (jsonl_stream_ptr) |stream| {
-        stream.flush();
     }
 
     // Aggregate results
