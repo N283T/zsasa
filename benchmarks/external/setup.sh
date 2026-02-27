@@ -93,13 +93,14 @@ build_lahuta() {
     symlink "$SCRIPT_DIR/lahuta/build/cli/lahuta" lahuta
 }
 
-link_zsasa() {
-    info "zsasa"
+build_zsasa() {
+    info "zsasa (ReleaseFast)"
+    (cd "$PROJECT_ROOT" && zig build --release=fast)
     local zsasa="$PROJECT_ROOT/zig-out/bin/zsasa"
     if [ -f "$zsasa" ]; then
         symlink "$zsasa" zsasa
     else
-        err "zsasa not found at $zsasa (run 'zig build' first)"
+        err "zsasa build failed (binary not found at $zsasa)"
         return 1
     fi
 }
@@ -112,7 +113,7 @@ if [ $# -eq 0 ]; then
     build_freesasa_batch
     build_rustsasa
     build_lahuta
-    link_zsasa
+    build_zsasa
     echo ""
     info "Done! Binaries in $BIN_DIR:"
     ls -la "$BIN_DIR"/
@@ -123,7 +124,7 @@ else
             freesasa_batch) build_freesasa_batch ;;
             rustsasa)       build_rustsasa ;;
             lahuta)         build_lahuta ;;
-            zsasa)          link_zsasa ;;
+            zsasa)          build_zsasa ;;
             *)              err "Unknown tool: $tool"; exit 1 ;;
         esac
     done

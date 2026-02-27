@@ -56,6 +56,7 @@ from rich.table import Table
 
 from bench_common import (
     LAHUTA_BITMASK_POINTS,
+    ensure_zsasa_built,
     get_binary_path,
     get_system_info,
     parse_threads,
@@ -476,6 +477,14 @@ def main(
 
     thread_counts = parse_threads(threads)
 
+    # Default to all tools if none specified
+    selected_tools = tools if tools else ALL_TOOLS
+
+    # Rebuild zsasa in ReleaseFast mode to ensure benchmarks use optimized code
+    zig_tools = {Tool.zig, Tool.zig_bitmask}
+    if not dry_run and zig_tools & set(selected_tools):
+        ensure_zsasa_built()
+
     # Set up paths
     root = get_root_dir()
     if output_dir is None:
@@ -490,9 +499,6 @@ def main(
     # Create directories
     if not dry_run:
         results_dir.mkdir(parents=True, exist_ok=True)
-
-    # Default to all tools if none specified
-    selected_tools = tools if tools else ALL_TOOLS
 
     # Count PDB files in input directory
     n_files = sum(1 for f in input_dir.iterdir() if f.is_file() and f.suffix == ".pdb")
