@@ -1,8 +1,8 @@
 """Shared benchmark utilities.
 
-Pure library module imported by bench.py, bench_lr.py, and bench_batch.py.
-Contains binary path resolution, parsing helpers, system info, hyperfine runner,
-and I/O utilities.
+Library module imported by bench.py, bench_lr.py, and bench_batch.py.
+Contains build helpers, binary path resolution, parsing helpers, system info,
+hyperfine runner, and I/O utilities.
 """
 
 from __future__ import annotations
@@ -25,14 +25,41 @@ TOOL_ALIASES = {"zig": "zig_f64", "zig_bitmask": "zig_f64_bitmask"}
 
 
 def ensure_zsasa_built() -> None:
-    """Build zsasa with ReleaseFast for accurate benchmarking."""
+    """Build zsasa with ReleaseFast and ensure the external/bin symlink exists."""
     root = Path(__file__).parent.parent.parent
     console.print("[bold]Building zsasa (ReleaseFast)...[/]")
-    subprocess.run(
-        ["zig", "build", "--release=fast"],
-        cwd=root,
-        check=True,
-    )
+    try:
+        subprocess.run(
+            ["zig", "build", "--release=fast"],
+            cwd=root,
+            check=True,
+        )
+    except FileNotFoundError:
+        console.print(
+            "[red]Error: 'zig' not found on PATH. "
+            "Install Zig (https://ziglang.org/download/) and ensure it is on your PATH.[/red]"
+        )
+        raise SystemExit(1) from None
+    except subprocess.CalledProcessError as e:
+        console.print(
+            f"[red]Error: 'zig build --release=fast' failed (exit code {e.returncode}). "
+            f"Check compiler output above.[/red]"
+        )
+        raise SystemExit(1) from e
+
+    binary = root.joinpath("zig-out", "bin", "zsasa")
+    if not binary.exists():
+        console.print(
+            f"[red]Error: Build succeeded but binary not found at {binary}[/red]"
+        )
+        raise SystemExit(1)
+
+    # Ensure symlink in external/bin/ points to the freshly built binary
+    bin_dir = root.joinpath("benchmarks", "external", "bin")
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    symlink = bin_dir.joinpath("zsasa")
+    symlink.unlink(missing_ok=True)
+    symlink.symlink_to(binary)
 
 
 LAHUTA_BITMASK_POINTS = {64, 128, 256}

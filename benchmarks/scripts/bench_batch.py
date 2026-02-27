@@ -480,9 +480,9 @@ def main(
     # Default to all tools if none specified
     selected_tools = tools if tools else ALL_TOOLS
 
-    # Build zsasa ReleaseFast when any zig variant is selected
+    # Rebuild zsasa in ReleaseFast mode to ensure benchmarks use optimized code
     zig_tools = {Tool.zig, Tool.zig_bitmask}
-    if zig_tools & set(selected_tools):
+    if not dry_run and zig_tools & set(selected_tools):
         ensure_zsasa_built()
 
     # Set up paths

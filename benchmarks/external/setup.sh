@@ -95,8 +95,7 @@ build_lahuta() {
 
 build_zsasa() {
     info "zsasa (ReleaseFast)"
-    cd "$PROJECT_ROOT"
-    zig build --release=fast
+    (cd "$PROJECT_ROOT" && zig build --release=fast)
     local zsasa="$PROJECT_ROOT/zig-out/bin/zsasa"
     if [ -f "$zsasa" ]; then
         symlink "$zsasa" zsasa
