@@ -390,7 +390,9 @@ pub fn scanDirectory(allocator: Allocator, dir_path: []const u8) ![][]const u8 {
 
 /// Process a single file and return result
 /// Uses provided arena allocator for temporary allocations
-/// result_allocator: used for data that must outlive the arena (error messages, atom_areas)
+/// result_allocator: used for data that must outlive the arena (error messages)
+/// atom_areas (when store_atom_areas is true) are allocated on the arena
+/// and must be consumed before the caller resets the arena.
 /// n_threads: number of threads for SASA calculation (1 = single-threaded)
 fn processOneFile(
     arena: Allocator,
@@ -560,9 +562,10 @@ const JsonlStreamWriter = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        // 64KB stack buffer to reduce syscall count.
+        // 64KB stack buffer; use streaming mode so the OS seek position
+        // advances (safe under mutex — only one thread writes at a time).
         var buf: [64 * 1024]u8 = undefined;
-        var w = self.file.writer(&buf);
+        var w = std.fs.File.Writer.initStreaming(self.file, &buf);
         w.interface.writeAll(line) catch return;
         w.interface.writeAll("\n") catch return;
         w.interface.flush() catch return;
@@ -599,7 +602,7 @@ pub fn runBatchSequential(
         jsonl_file = try std.fs.cwd().createFile(path, .{});
         jsonl_file_needs_close = true;
     } else if (config.store_atom_areas) {
-        jsonl_file = std.io.getStdOut();
+        jsonl_file = std.fs.File.stdout();
     }
     defer if (jsonl_file_needs_close) {
         if (jsonl_file) |f| f.close();
@@ -621,6 +624,14 @@ pub fn runBatchSequential(
     // Use arena allocator for each file (reset between files)
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
+
+    // JSONL buffered writer: created once, reused across all files.
+    // Uses streaming mode so OS seek position advances with each write.
+    var jsonl_write_buf: [64 * 1024]u8 = undefined;
+    var jsonl_writer: ?std.fs.File.Writer = if (jsonl_file) |jf|
+        std.fs.File.Writer.initStreaming(jf, &jsonl_write_buf)
+    else
+        null;
 
     for (files, 0..) |filename, i| {
         // Copy filename to result allocator
@@ -648,7 +659,7 @@ pub fn runBatchSequential(
         }
 
         // Stream JSONL output (atom_areas on arena, valid until reset)
-        if (jsonl_file) |jf| {
+        if (jsonl_writer) |*w| {
             if (result.status == .ok) {
                 if (result.atom_areas) |areas| {
                     const line = json_writer.fileResultToJsonlLine(arena.allocator(), result.filename, result.total_sasa, areas) catch |err| {
@@ -661,9 +672,9 @@ pub fn runBatchSequential(
                         }
                         continue;
                     };
-                    var buf: [64 * 1024]u8 = undefined;
-                    var w = jf.writer(&buf);
-                    w.interface.writeAll(line) catch {};
+                    w.interface.writeAll(line) catch |err| {
+                        std.debug.print("Warning: JSONL write failed for {s}: {s}\n", .{ result.filename, @errorName(err) });
+                    };
                     w.interface.writeAll("\n") catch {};
                     w.interface.flush() catch {};
                 }
@@ -853,7 +864,7 @@ pub fn runBatchParallel(
         jsonl_file = try std.fs.cwd().createFile(path, .{});
         jsonl_file_needs_close = true;
     } else if (config.store_atom_areas) {
-        jsonl_file = std.io.getStdOut();
+        jsonl_file = std.fs.File.stdout();
     }
     defer if (jsonl_file_needs_close) {
         if (jsonl_file) |f| f.close();
@@ -863,7 +874,7 @@ pub fn runBatchParallel(
     var jsonl_stream_storage: JsonlStreamWriter = if (jsonl_file) |jf|
         JsonlStreamWriter{ .file = jf }
     else
-        JsonlStreamWriter{ .file = std.io.getStdOut() }; // placeholder, not used when null
+        undefined; // not used when jsonl_file is null
     const jsonl_stream_ptr: ?*JsonlStreamWriter = if (jsonl_file != null) &jsonl_stream_storage else null;
 
     // Create shared context
