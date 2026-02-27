@@ -113,6 +113,7 @@ def run_benchmark(
     warmup: int,
     runs: int,
     dry_run: bool,
+    timeout: int = 600,
 ) -> dict | None:
     """Run a single benchmark with hyperfine."""
     json_out = results_dir.joinpath(f"bench_{name}.json")
@@ -135,10 +136,10 @@ def run_benchmark(
     ]
 
     try:
-        subprocess.run(hyperfine_cmd, check=True, capture_output=False, timeout=600)
+        subprocess.run(hyperfine_cmd, check=True, capture_output=False, timeout=timeout)
         console.print()
     except subprocess.TimeoutExpired:
-        console.print(f"[red]Timeout: {name} exceeded 600s[/red]")
+        console.print(f"[red]Timeout: {name} exceeded {timeout}s[/red]")
         return None
     except subprocess.CalledProcessError as e:
         console.print(f"[red]Error running benchmark: {e}[/]")
@@ -170,6 +171,7 @@ def run_zig(
     dry_run: bool,
     binaries: dict[str, Path],
     use_bitmask: bool = False,
+    timeout: int = 600,
 ) -> list[dict]:
     """Run zsasa benchmarks."""
     zsasa = binaries["zsasa"]
@@ -194,6 +196,7 @@ def run_zig(
                     warmup,
                     runs,
                     dry_run,
+                    timeout,
                 )
                 if result:
                     results.append({"name": bench_name, **result})
@@ -210,6 +213,7 @@ def run_freesasa(
     runs: int,
     dry_run: bool,
     binaries: dict[str, Path],
+    timeout: int = 600,
 ) -> list[dict]:
     """Run FreeSASA benchmarks with file-level parallelism."""
     freesasa_batch = binaries["freesasa_batch"]
@@ -230,6 +234,7 @@ def run_freesasa(
                 warmup,
                 runs,
                 dry_run,
+                timeout,
             )
             if result:
                 results.append({"name": f"freesasa_{n_threads}t", **result})
@@ -246,6 +251,7 @@ def run_rustsasa(
     runs: int,
     dry_run: bool,
     binaries: dict[str, Path],
+    timeout: int = 600,
 ) -> list[dict]:
     """Run RustSASA benchmarks."""
     rustsasa = binaries["rustsasa"]
@@ -266,6 +272,7 @@ def run_rustsasa(
                 warmup,
                 runs,
                 dry_run,
+                timeout,
             )
             if result:
                 results.append({"name": f"rustsasa_{n_threads}t", **result})
@@ -284,6 +291,7 @@ def run_lahuta(
     binaries: dict[str, Path],
     use_bitmask: bool = False,
     single_tool: bool = False,
+    timeout: int = 600,
 ) -> list[dict]:
     """Run Lahuta benchmarks (AF2 PDB only, Shrake-Rupley)."""
     # Resolve to absolute path since the command cd's to a temp directory
@@ -332,6 +340,7 @@ def run_lahuta(
                 warmup,
                 runs,
                 dry_run,
+                timeout,
             )
             if result:
                 results.append({"name": bench_name, **result})
@@ -444,6 +453,13 @@ def main(
             help="Number of sphere test points per atom (default: 100)",
         ),
     ] = 100,
+    timeout: Annotated[
+        int,
+        typer.Option(
+            "--timeout",
+            help="Timeout per benchmark in seconds (default: 3600)",
+        ),
+    ] = 3600,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -535,6 +551,7 @@ def main(
             dry_run,
             binaries,
             use_bitmask=False,
+            timeout=timeout,
         )
         all_results.extend(results)
 
@@ -549,6 +566,7 @@ def main(
             dry_run,
             binaries,
             use_bitmask=True,
+            timeout=timeout,
         )
         all_results.extend(results)
 
@@ -562,6 +580,7 @@ def main(
             runs,
             dry_run,
             binaries,
+            timeout=timeout,
         )
         all_results.extend(results)
 
@@ -575,6 +594,7 @@ def main(
             runs,
             dry_run,
             binaries,
+            timeout=timeout,
         )
         all_results.extend(results)
 
@@ -590,6 +610,7 @@ def main(
             binaries,
             use_bitmask=False,
             single_tool=(len(selected_tools) == 1),
+            timeout=timeout,
         )
         all_results.extend(results)
 
@@ -605,6 +626,7 @@ def main(
             binaries,
             use_bitmask=True,
             single_tool=(len(selected_tools) == 1),
+            timeout=timeout,
         )
         all_results.extend(results)
 
