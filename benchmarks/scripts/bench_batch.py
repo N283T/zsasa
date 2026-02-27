@@ -27,6 +27,12 @@ Usage:
     # Multiple thread counts
     ./benchmarks/scripts/bench_batch.py -i /path/to/pdb -n test --threads 1,8,10
 
+    # Clear filesystem cache before each run (macOS)
+    ./benchmarks/scripts/bench_batch.py -i /path/to/pdb -n test --prepare 'sudo purge'
+
+    # Sync filesystem buffers before each run
+    ./benchmarks/scripts/bench_batch.py -i /path/to/pdb -n test --prepare sync
+
 Output:
     benchmarks/results/batch/<n_points>/<name>/
     ├── config.json             # System info and parameters
@@ -115,6 +121,7 @@ def run_benchmark(
     runs: int,
     dry_run: bool,
     timeout: int = 600,
+    prepare: str | None = None,
 ) -> dict | None:
     """Run a single benchmark with hyperfine."""
     json_out = results_dir.joinpath(f"bench_{name}.json")
@@ -133,8 +140,10 @@ def run_benchmark(
         str(runs),
         "--export-json",
         str(json_out),
-        cmd,
     ]
+    if prepare:
+        hyperfine_cmd.extend(["--prepare", prepare])
+    hyperfine_cmd.append(cmd)
 
     try:
         subprocess.run(hyperfine_cmd, check=True, capture_output=False, timeout=timeout)
@@ -173,6 +182,7 @@ def run_zig(
     binaries: dict[str, Path],
     use_bitmask: bool = False,
     timeout: int = 600,
+    prepare: str | None = None,
 ) -> list[dict]:
     """Run zsasa benchmarks."""
     zsasa = binaries["zsasa"]
@@ -198,6 +208,7 @@ def run_zig(
                     runs,
                     dry_run,
                     timeout,
+                    prepare,
                 )
                 if result:
                     results.append({"name": bench_name, **result})
@@ -215,6 +226,7 @@ def run_freesasa(
     dry_run: bool,
     binaries: dict[str, Path],
     timeout: int = 600,
+    prepare: str | None = None,
 ) -> list[dict]:
     """Run FreeSASA benchmarks with file-level parallelism."""
     freesasa_batch = binaries["freesasa_batch"]
@@ -236,6 +248,7 @@ def run_freesasa(
                 runs,
                 dry_run,
                 timeout,
+                prepare,
             )
             if result:
                 results.append({"name": f"freesasa_{n_threads}t", **result})
@@ -253,6 +266,7 @@ def run_rustsasa(
     dry_run: bool,
     binaries: dict[str, Path],
     timeout: int = 600,
+    prepare: str | None = None,
 ) -> list[dict]:
     """Run RustSASA benchmarks."""
     rustsasa = binaries["rustsasa"]
@@ -274,6 +288,7 @@ def run_rustsasa(
                 runs,
                 dry_run,
                 timeout,
+                prepare,
             )
             if result:
                 results.append({"name": f"rustsasa_{n_threads}t", **result})
@@ -293,6 +308,7 @@ def run_lahuta(
     use_bitmask: bool = False,
     single_tool: bool = False,
     timeout: int = 600,
+    prepare: str | None = None,
 ) -> list[dict]:
     """Run Lahuta benchmarks (AF2 PDB only, Shrake-Rupley)."""
     # Resolve to absolute path since the command cd's to a temp directory
@@ -342,6 +358,7 @@ def run_lahuta(
                 runs,
                 dry_run,
                 timeout,
+                prepare,
             )
             if result:
                 results.append({"name": bench_name, **result})
@@ -461,6 +478,15 @@ def main(
             help="Timeout per benchmark in seconds (default: 3600)",
         ),
     ] = 3600,
+    prepare: Annotated[
+        str | None,
+        typer.Option(
+            "--prepare",
+            "-p",
+            help="Shell command to run before each timing run (passed to hyperfine --prepare). "
+            "E.g. 'sync' or 'sudo purge' (macOS) to clear filesystem caches.",
+        ),
+    ] = None,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -517,6 +543,7 @@ def main(
             "warmup": warmup,
             "runs": runs,
             "n_points": n_points,
+            "prepare": prepare,
         },
     }
     if not dry_run:
@@ -538,8 +565,9 @@ def main(
     console.print(f"Input: {input_dir}")
     console.print(f"Output: {results_dir}")
     console.print(f"Tools: {', '.join(t.value for t in selected_tools)}")
+    prepare_info = f", Prepare: '{prepare}'" if prepare else ""
     console.print(
-        f"Warmup: {warmup}, Runs: {runs}, Threads: {thread_counts}, Points: {n_points}"
+        f"Warmup: {warmup}, Runs: {runs}, Threads: {thread_counts}, Points: {n_points}{prepare_info}"
     )
     console.print()
 
@@ -558,6 +586,7 @@ def main(
             binaries,
             use_bitmask=False,
             timeout=timeout,
+            prepare=prepare,
         )
         all_results.extend(results)
 
@@ -573,6 +602,7 @@ def main(
             binaries,
             use_bitmask=True,
             timeout=timeout,
+            prepare=prepare,
         )
         all_results.extend(results)
 
@@ -587,6 +617,7 @@ def main(
             dry_run,
             binaries,
             timeout=timeout,
+            prepare=prepare,
         )
         all_results.extend(results)
 
@@ -601,6 +632,7 @@ def main(
             dry_run,
             binaries,
             timeout=timeout,
+            prepare=prepare,
         )
         all_results.extend(results)
 
@@ -617,6 +649,7 @@ def main(
             use_bitmask=False,
             single_tool=(len(selected_tools) == 1),
             timeout=timeout,
+            prepare=prepare,
         )
         all_results.extend(results)
 
@@ -633,6 +666,7 @@ def main(
             use_bitmask=True,
             single_tool=(len(selected_tools) == 1),
             timeout=timeout,
+            prepare=prepare,
         )
         all_results.extend(results)
 
