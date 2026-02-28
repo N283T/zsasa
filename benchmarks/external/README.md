@@ -11,8 +11,16 @@ external/
 ├── freesasa_batch/   ← batch runner source (tracked, builds against vanilla freesasa)
 ├── lahuta/           ← cloned by setup.sh
 ├── rustsasa/         ← vanilla upstream (cloned by setup.sh)
-└── setup.sh          ← one-command setup: clone, build, symlink
+├── shell.nix         ← Nix build dependencies
+├── setup.sh          ← one-command setup: clone, build, symlink, verify
+└── testdata/         ← PDB files for tool verification
 ```
+
+## Prerequisites
+
+- **Nix** — All build dependencies (autoconf, cmake, cargo, zlib, etc.) are provided via `shell.nix`. Running `setup.sh` automatically enters `nix-shell` if not already inside one.
+- **Zig** — Required for building zsasa. Not included in `shell.nix`; must be installed separately.
+- **[hyperfine](https://github.com/sharkdp/hyperfine)** — Required by benchmark scripts. Not included in `shell.nix`.
 
 ## Quick Start
 
@@ -30,7 +38,8 @@ To build a single tool:
 ./setup.sh rustsasa
 ./setup.sh lahuta
 ./setup.sh freesasa_batch
-./setup.sh zsasa          # symlink only (run 'zig build' first)
+./setup.sh zsasa          # builds with zig, then symlinks
+./setup.sh verify         # run verification only
 ```
 
 ## Usage

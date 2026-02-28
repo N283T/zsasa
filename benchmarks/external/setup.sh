@@ -13,6 +13,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN_DIR="$SCRIPT_DIR/bin"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# Auto-enter nix-shell if not already inside one
+if [ -z "${IN_NIX_SHELL:-}" ]; then
+    if command -v nix-shell &>/dev/null; then
+        exec nix-shell "$SCRIPT_DIR/shell.nix" --run "$(printf '%q ' "$0" "$@")"
+    else
+        printf '\033[1;33mWARNING:\033[0m nix-shell not found. Build dependencies may be missing.\n' >&2
+        printf '         Install Nix or ensure autoconf, cmake, cargo, etc. are available.\n' >&2
+    fi
+fi
+
 mkdir -p "$BIN_DIR"
 
 # --- helpers ---
@@ -81,11 +91,11 @@ build_lahuta() {
     info "Lahuta"
     cd "$SCRIPT_DIR"
     if [ ! -d lahuta ]; then
-        git clone https://github.com/DominikSko/lahuta.git
+        git clone --recursive https://github.com/bisejdiu/lahuta.git
     fi
     cd lahuta
     if [ ! -f build/cli/lahuta ]; then
-        cmake -B build -DCMAKE_BUILD_TYPE=Release
+        cmake -B build -DCMAKE_BUILD_TYPE=Release -DLAHUTA_BUILD_PYTHON=OFF -DLAHUTA_BUILD_SHARED_CORE=OFF
         cmake --build build --config Release -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
     else
         skip "lahuta"
@@ -105,6 +115,78 @@ build_zsasa() {
     fi
 }
 
+# --- verify ---
+
+verify_tools() {
+    info "Verifying tools..."
+    local testdata="$SCRIPT_DIR/testdata"
+    if [ ! -d "$testdata" ]; then
+        err "testdata directory not found: $testdata"
+        return 1
+    fi
+    local pdb_files=("$testdata"/*.pdb)
+    if [ ! -f "${pdb_files[0]}" ]; then
+        err "No .pdb files found in $testdata"
+        return 1
+    fi
+    local test_pdb="${pdb_files[0]}"
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' RETURN
+    local failed=0
+
+    # zsasa
+    if "$BIN_DIR/zsasa" calc "$test_pdb" > /dev/null; then
+        ok "zsasa"
+    else
+        err "zsasa"; failed=1
+    fi
+
+    # zsasa batch
+    if "$BIN_DIR/zsasa" batch "$testdata" --format=jsonl -o "$tmpdir/zsasa_batch.jsonl" --threads=2 > /dev/null; then
+        ok "zsasa batch"
+    else
+        err "zsasa batch"; failed=1
+    fi
+
+    # freesasa
+    if "$BIN_DIR/freesasa" "$test_pdb" > /dev/null; then
+        ok "freesasa"
+    else
+        err "freesasa"; failed=1
+    fi
+
+    # freesasa_batch
+    if "$BIN_DIR/freesasa_batch" "$testdata" "$tmpdir/freesasa_batch" > /dev/null; then
+        ok "freesasa_batch"
+    else
+        err "freesasa_batch"; failed=1
+    fi
+
+    # rustsasa
+    if "$BIN_DIR/rust-sasa" "$test_pdb" "$tmpdir/rustsasa_out" > /dev/null; then
+        ok "rust-sasa"
+    else
+        err "rust-sasa"; failed=1
+    fi
+
+    # lahuta
+    if "$BIN_DIR/lahuta" sasa-sr -f "$test_pdb" -o "$tmpdir/lahuta.jsonl" --progress 0 --is_af2_model > /dev/null; then
+        ok "lahuta"
+    else
+        err "lahuta"; failed=1
+    fi
+
+    if [ "$failed" -eq 0 ]; then
+        echo ""
+        ok "All tools verified successfully"
+    else
+        echo ""
+        err "Some tools failed verification"
+        return 1
+    fi
+}
+
 # --- main ---
 
 if [ $# -eq 0 ]; then
@@ -117,6 +199,8 @@ if [ $# -eq 0 ]; then
     echo ""
     info "Done! Binaries in $BIN_DIR:"
     ls -la "$BIN_DIR"/
+    echo ""
+    verify_tools
 else
     for tool in "$@"; do
         case "$tool" in
@@ -125,6 +209,7 @@ else
             rustsasa)       build_rustsasa ;;
             lahuta)         build_lahuta ;;
             zsasa)          build_zsasa ;;
+            verify)         verify_tools ;;
             *)              err "Unknown tool: $tool"; exit 1 ;;
         esac
     done
