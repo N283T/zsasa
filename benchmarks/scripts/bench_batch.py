@@ -385,7 +385,7 @@ def print_summary(results_dir: Path) -> None:
                     table.add_row(
                         name,
                         f"{r['mean']:.3f}",
-                        f"±{r['stddev']:.3f}",
+                        f"±{r['stddev']:.3f}" if r.get("stddev") is not None else "N/A",
                         f"{r['min']:.3f}",
                         f"{r['max']:.3f}",
                     )
