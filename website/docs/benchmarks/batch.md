@@ -140,6 +140,14 @@ Benchmark parameters: warmup=3, runs=3, threads=8,10
 
 Memory advantage increases with dataset size, from 2.3x on small datasets to 5.4x on SwissProt.
 
+## Note: Datasets Larger Than Available RAM
+
+zsasa uses **mmap** for file I/O. When the dataset fits in RAM, all file data stays in the OS page cache and performance depends purely on compute speed. When the dataset exceeds available RAM, mmap page faults must read from storage, and performance becomes **storage I/O-bound** regardless of compute efficiency.
+
+In this regime, multiple worker threads fault pages in random order, so effective read throughput drops well below the SSD's sequential maximum. This is not specific to zsasa — any mmap-based tool (including Lahuta and RustSASA) hits the same bottleneck, and all converge to similar wall-clock times.
+
+zsasa's low memory footprint helps here: less RSS means more RAM is available for the OS page cache, which can reduce page fault frequency.
+
 ## Methodology
 
 Uses [hyperfine](https://github.com/sharkdp/hyperfine) for timing, following the [RustSASA paper](https://github.com/OWissett/rustsasa) methodology:
