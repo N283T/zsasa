@@ -14,6 +14,12 @@ external/
 └── setup.sh          ← one-command setup: clone, build, symlink
 ```
 
+## Prerequisites
+
+- **Nix** — All build dependencies (autoconf, cmake, cargo, zlib, etc.) are provided via `shell.nix`. Running `setup.sh` automatically enters `nix-shell` if not already inside one.
+- **Zig** — Required for building zsasa. Not included in `shell.nix`; must be installed separately.
+- **[hyperfine](https://github.com/sharkdp/hyperfine)** — Required by benchmark scripts. Not included in `shell.nix`.
+
 ## Quick Start
 
 ```bash
@@ -31,6 +37,7 @@ To build a single tool:
 ./setup.sh lahuta
 ./setup.sh freesasa_batch
 ./setup.sh zsasa          # symlink only (run 'zig build' first)
+./setup.sh verify         # run verification only
 ```
 
 ## Usage
