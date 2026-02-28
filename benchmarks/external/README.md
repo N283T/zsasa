@@ -11,7 +11,9 @@ external/
 ├── freesasa_batch/   ← batch runner source (tracked, builds against vanilla freesasa)
 ├── lahuta/           ← cloned by setup.sh
 ├── rustsasa/         ← vanilla upstream (cloned by setup.sh)
-└── setup.sh          ← one-command setup: clone, build, symlink
+├── shell.nix         ← Nix build dependencies
+├── setup.sh          ← one-command setup: clone, build, symlink, verify
+└── testdata/         ← PDB files for tool verification
 ```
 
 ## Prerequisites
@@ -36,7 +38,7 @@ To build a single tool:
 ./setup.sh rustsasa
 ./setup.sh lahuta
 ./setup.sh freesasa_batch
-./setup.sh zsasa          # symlink only (run 'zig build' first)
+./setup.sh zsasa          # builds with zig, then symlinks
 ./setup.sh verify         # run verification only
 ```
 

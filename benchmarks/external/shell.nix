@@ -2,7 +2,7 @@
 pkgs.mkShell {
   packages = with pkgs; [
     git
-    # FreeSASA (C, autotools)
+    # FreeSASA (C/C++, autotools)
     autoconf
     automake
     libtool
