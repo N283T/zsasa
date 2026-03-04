@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import csv
 import json
-import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +42,8 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from bench_common import (
     LAHUTA_BITMASK_POINTS,
     TOOL_ALIASES,
+    check_hyperfine,
+    ensure_zsasa_built,
     get_binary_path,
     get_n_atoms_from_pdb,
     get_system_info,
@@ -163,6 +164,25 @@ def main(
         int,
         typer.Option("--n-points", "-N", help="Number of sphere test points per atom"),
     ] = 100,
+    timeout: Annotated[
+        int,
+        typer.Option(
+            "--timeout", help="Timeout per benchmark in seconds (default: 600)"
+        ),
+    ] = 600,
+    prepare: Annotated[
+        str | None,
+        typer.Option(
+            "--prepare",
+            "-p",
+            help="Shell command to run before each timing run (passed to hyperfine --prepare). "
+            "E.g. 'sync' or 'sudo purge' (macOS) to clear filesystem caches.",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show commands without running"),
+    ] = False,
     force: Annotated[
         bool,
         typer.Option("--force", "-f", help="Overwrite existing results"),
@@ -177,7 +197,7 @@ def main(
         raise typer.Exit(1)
 
     # Check hyperfine
-    if not shutil.which("hyperfine"):
+    if not check_hyperfine():
         console.print("[red]Error: hyperfine not found. Install it first.[/red]")
         raise typer.Exit(1)
 
@@ -192,6 +212,10 @@ def main(
 
     tool_canonical, tool_base, precision, use_bitmask = parse_tool(tool)
     thread_counts = parse_threads(threads)
+
+    # Auto-build zsasa for zig-based tools
+    if not dry_run and tool_base == "zig":
+        ensure_zsasa_built()
 
     # Validate lahuta bitmask n_points
     if tool_base == "lahuta" and use_bitmask and n_points not in LAHUTA_BITMASK_POINTS:
@@ -283,6 +307,7 @@ def main(
             "n_structures": len(structures),
             "input_dir": str(pdb_dir),
             "sample_file": str(sample_file) if sample_file else None,
+            "prepare": prepare,
         },
     }
     config_path = output_dir.joinpath("config.json")
@@ -358,12 +383,24 @@ def main(
                             use_bitmask,
                         )
 
+                        if dry_run:
+                            console.print(f"  [dim]{cmd}[/dim]")
+                            progress.advance(task)
+                            continue
+
                         # lahuta writes report files to cwd; redirect to tmpdir
                         if tool_base == "lahuta":
                             cmd = f"cd {quote_path(tmpdir)} && {cmd}"
 
                         json_path = Path(tmpdir).joinpath(f"{pdb_id}_{n_threads}t.json")
-                        result = run_hyperfine(cmd, warmup, runs, json_path)
+                        result = run_hyperfine(
+                            cmd,
+                            warmup,
+                            runs,
+                            json_path,
+                            timeout=timeout,
+                            prepare=prepare,
+                        )
 
                         if result:
                             writer.writerow(
@@ -389,6 +426,10 @@ def main(
                         progress.advance(task)
 
     # Report results
+    if dry_run:
+        console.print("\n[bold green]Dry run complete.[/bold green]")
+        return
+
     if n_failed > 0:
         console.print(
             f"\n[yellow]Warning:[/yellow] {n_failed}/{total} benchmarks failed"
