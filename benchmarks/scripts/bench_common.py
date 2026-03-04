@@ -1,8 +1,8 @@
 """Shared benchmark utilities.
 
-Library module imported by bench.py, bench_lr.py, and bench_batch.py.
+Library module imported by bench_md.py, bench_lr.py, and bench_batch.py.
 Contains build helpers, binary path resolution, parsing helpers, system info,
-hyperfine runner, and I/O utilities.
+hyperfine runner, config I/O, and summary reporting utilities.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import shlex
 import shutil
 import subprocess
 from collections import defaultdict
+from enum import Enum
 from pathlib import Path
 
 from rich.console import Console
@@ -23,6 +24,13 @@ from rich.table import Table
 console = Console()
 
 TOOL_ALIASES = {"zig": "zig_f64", "zig_bitmask": "zig_f64_bitmask"}
+
+
+class Precision(str, Enum):
+    """Floating-point precision for zig-based benchmarks."""
+
+    f32 = "f32"
+    f64 = "f64"
 
 
 def ensure_zsasa_built() -> None:
@@ -287,18 +295,14 @@ def quote_path(path: Path) -> str:
     return shlex.quote(str(path))
 
 
-def run_hyperfine(
+def _build_hyperfine_cmd(
     cmd: str,
     warmup: int,
     runs: int,
     json_path: Path,
-    timeout: int = 600,
     prepare: str | None = None,
-) -> dict | None:
-    """Run hyperfine and return results dict, or None on failure.
-
-    Logs diagnostic details on failure.
-    """
+) -> list[str]:
+    """Build the hyperfine command list."""
     hyperfine_cmd = [
         "hyperfine",
         "--warmup",
@@ -311,12 +315,61 @@ def run_hyperfine(
     if prepare:
         hyperfine_cmd.extend(["--prepare", prepare])
     hyperfine_cmd.append(cmd)
+    return hyperfine_cmd
+
+
+def _parse_hyperfine_json(json_path: Path, strict: bool = True) -> dict | None:
+    """Parse hyperfine JSON output and return the first result, or None on failure.
+
+    When strict=True, validates that required keys (mean, stddev, min, max, median)
+    are present. When strict=False, accepts any result with a "results" key.
+    """
+    try:
+        if not json_path.exists():
+            console.print(f"[red]  No JSON output at {json_path}[/red]")
+            return None
+        with open(json_path) as f:
+            data = json.load(f)
+        if not data.get("results"):
+            console.print(f"[yellow]Warning: no results in {json_path.name}[/yellow]")
+            return None
+        result = data["results"][0]
+        if strict:
+            required_keys = {"mean", "stddev", "min", "max", "median"}
+            missing = required_keys - result.keys()
+            if missing:
+                console.print(f"[red]  Hyperfine result missing keys: {missing}[/red]")
+                return None
+        return result
+    except json.JSONDecodeError as e:
+        console.print(
+            f"[yellow]Warning: corrupt JSON in {json_path.name}: {e}[/yellow]"
+        )
+        return None
+    except KeyError as e:
+        console.print(f"[yellow]Warning: missing key {e} in {json_path.name}[/yellow]")
+        return None
+
+
+def run_hyperfine(
+    cmd: str,
+    warmup: int,
+    runs: int,
+    json_path: Path,
+    timeout: int = 600,
+    prepare: str | None = None,
+) -> dict | None:
+    """Run hyperfine (quiet) and return results dict, or None on failure.
+
+    Captures output. Used by bench_lr for progress-bar-driven benchmarks.
+    """
+    hyperfine_cmd = _build_hyperfine_cmd(cmd, warmup, runs, json_path, prepare)
     try:
         subprocess.run(
             hyperfine_cmd, check=True, capture_output=True, text=True, timeout=timeout
         )
     except subprocess.TimeoutExpired:
-        console.print(f"[red]  Timeout: command exceeded 600s: {cmd}[/red]")
+        console.print(f"[red]  Timeout: command exceeded {timeout}s: {cmd}[/red]")
         return None
     except subprocess.CalledProcessError as e:
         stderr_snippet = (e.stderr or "").strip()[-500:]
@@ -325,25 +378,7 @@ def run_hyperfine(
             console.print(f"[dim]  stderr: {stderr_snippet}[/dim]")
         return None
 
-    try:
-        if not json_path.exists():
-            console.print(f"[red]  No JSON output at {json_path}[/red]")
-            return None
-        with open(json_path) as f:
-            data = json.load(f)
-        if not data.get("results"):
-            console.print("[red]  Empty results in hyperfine JSON[/red]")
-            return None
-        result = data["results"][0]
-        required_keys = {"mean", "stddev", "min", "max", "median"}
-        missing = required_keys - result.keys()
-        if missing:
-            console.print(f"[red]  Hyperfine result missing keys: {missing}[/red]")
-            return None
-        return result
-    except (json.JSONDecodeError, KeyError) as e:
-        console.print(f"[red]  Failed to parse hyperfine JSON: {e}[/red]")
-        return None
+    return _parse_hyperfine_json(json_path, strict=True)
 
 
 def print_hyperfine_summary(csv_path: Path) -> None:
@@ -389,6 +424,63 @@ def print_hyperfine_summary(csv_path: Path) -> None:
     console.print(table)
 
 
+def save_config(config: dict, results_dir: Path) -> None:
+    """Write config.json, merging tools list with any existing config.
+
+    If config.json already exists, the new tools list is appended
+    (preserving order, deduplicating) so that incremental runs
+    accumulate all tool names.
+    """
+    config_path = results_dir.joinpath("config.json")
+    if config_path.exists():
+        try:
+            existing = json.loads(config_path.read_text())
+            existing_tools = existing.get("parameters", {}).get("tools", [])
+            merged_tools = list(
+                dict.fromkeys(existing_tools + config["parameters"]["tools"])
+            )
+            config["parameters"]["tools"] = merged_tools
+        except (json.JSONDecodeError, KeyError):
+            pass
+    config_path.write_text(json.dumps(config, indent=2))
+
+
+def print_benchmark_summary(results_dir: Path) -> None:
+    """Print summary table from hyperfine bench_*.json files in a directory.
+
+    Reads each bench_*.json, extracts the first result, and renders
+    a Rich table with mean, stddev, min, and max times.
+    """
+    table = Table(title="Benchmark Results")
+    table.add_column("Tool", style="cyan")
+    table.add_column("Mean (s)", justify="right")
+    table.add_column("Std Dev", justify="right")
+    table.add_column("Min (s)", justify="right")
+    table.add_column("Max (s)", justify="right")
+
+    for json_file in sorted(results_dir.glob("bench_*.json")):
+        try:
+            with open(json_file) as f:
+                data = json.load(f)
+                if data.get("results"):
+                    r = data["results"][0]
+                    name = json_file.stem.replace("bench_", "")
+                    stddev = r.get("stddev")
+                    stddev_str = f"±{stddev:.3f}" if stddev is not None else "-"
+                    table.add_row(
+                        name,
+                        f"{r['mean']:.3f}",
+                        stddev_str,
+                        f"{r['min']:.3f}",
+                        f"{r['max']:.3f}",
+                    )
+        except (json.JSONDecodeError, KeyError):
+            continue
+
+    console.print()
+    console.print(table)
+
+
 def run_benchmark(
     name: str,
     cmd: str,
@@ -413,18 +505,7 @@ def run_benchmark(
         console.print(f"    {cmd}")
         return None
 
-    hyperfine_cmd = [
-        "hyperfine",
-        "--warmup",
-        str(warmup),
-        "--runs",
-        str(runs),
-        "--export-json",
-        str(json_out),
-    ]
-    if prepare:
-        hyperfine_cmd.extend(["--prepare", prepare])
-    hyperfine_cmd.append(cmd)
+    hyperfine_cmd = _build_hyperfine_cmd(cmd, warmup, runs, json_out, prepare)
 
     try:
         subprocess.run(hyperfine_cmd, check=True, capture_output=False, timeout=timeout)
@@ -437,16 +518,4 @@ def run_benchmark(
         console.print("[yellow]Check hyperfine output above for details[/]")
         return None
 
-    try:
-        if json_out.exists():
-            with open(json_out) as f:
-                data = json.load(f)
-                if data.get("results"):
-                    return data["results"][0]
-        console.print(f"[yellow]Warning: no results in {json_out.name}[/yellow]")
-    except json.JSONDecodeError as e:
-        console.print(f"[yellow]Warning: corrupt JSON in {json_out.name}: {e}[/yellow]")
-    except KeyError as e:
-        console.print(f"[yellow]Warning: missing key {e} in {json_out.name}[/yellow]")
-
-    return None
+    return _parse_hyperfine_json(json_out, strict=False)

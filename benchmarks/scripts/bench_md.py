@@ -62,7 +62,6 @@ Output:
 
 from __future__ import annotations
 
-import json
 import tempfile
 from datetime import datetime
 from enum import Enum
@@ -71,24 +70,21 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
-from rich.table import Table
 
 from bench_common import (
+    Precision,
     check_hyperfine,
     ensure_zsasa_built,
     get_binary_path,
     get_system_info,
     parse_threads,
+    print_benchmark_summary,
     run_benchmark,
+    save_config,
 )
 
 app = typer.Typer(help="MD trajectory SASA benchmark (hyperfine-based)")
 console = Console()
-
-
-class Precision(str, Enum):
-    f32 = "f32"
-    f64 = "f64"
 
 
 class Tool(str, Enum):
@@ -221,10 +217,13 @@ def run_python_tool(
 
     cmd = " ".join(cmd_parts)
 
-    return run_benchmark(label, cmd, results_dir, warmup, runs, dry_run, timeout, prepare)
+    return run_benchmark(
+        label, cmd, results_dir, warmup, runs, dry_run, timeout, prepare
+    )
 
 
-def run_zsasa_mdtraj(
+def run_threaded_python_tool(
+    tool_name: str,
     xtc: Path,
     pdb: Path,
     results_dir: Path,
@@ -238,51 +237,16 @@ def run_zsasa_mdtraj(
     timeout: int = 600,
     prepare: str | None = None,
 ) -> list[dict]:
-    """Run zsasa.mdtraj benchmarks with different thread counts."""
+    """Run a Python-based benchmark tool across multiple thread counts.
+
+    Used for zsasa_mdtraj and zsasa_mdanalysis which share the same
+    loop-over-threads pattern.
+    """
     results = []
     for n_threads in thread_counts:
-        label = f"zsasa_mdtraj_{n_threads}t"
+        label = f"{tool_name}_{n_threads}t"
         result = run_python_tool(
-            "zsasa_mdtraj",
-            label,
-            xtc,
-            pdb,
-            results_dir,
-            runner,
-            warmup,
-            runs,
-            dry_run,
-            n_threads=n_threads,
-            stride=stride,
-            n_points=n_points,
-            timeout=timeout,
-            prepare=prepare,
-        )
-        if result:
-            results.append({"name": label, **result})
-    return results
-
-
-def run_zsasa_mdanalysis(
-    xtc: Path,
-    pdb: Path,
-    results_dir: Path,
-    runner: Path,
-    thread_counts: list[int],
-    warmup: int,
-    runs: int,
-    dry_run: bool,
-    stride: int,
-    n_points: int,
-    timeout: int = 600,
-    prepare: str | None = None,
-) -> list[dict]:
-    """Run zsasa.mdanalysis benchmarks with different thread counts."""
-    results = []
-    for n_threads in thread_counts:
-        label = f"zsasa_mdanalysis_{n_threads}t"
-        result = run_python_tool(
-            "zsasa_mdanalysis",
+            tool_name,
             label,
             xtc,
             pdb,
@@ -370,38 +334,6 @@ def run_mdsasa_bolt(
     if result:
         return [{"name": label, **result}]
     return []
-
-
-def print_summary(results_dir: Path) -> None:
-    """Print summary table from result JSON files."""
-    table = Table(title="Benchmark Results")
-    table.add_column("Tool", style="cyan")
-    table.add_column("Mean (s)", justify="right")
-    table.add_column("Std Dev", justify="right")
-    table.add_column("Min (s)", justify="right")
-    table.add_column("Max (s)", justify="right")
-
-    for json_file in sorted(results_dir.glob("bench_*.json")):
-        try:
-            with open(json_file) as f:
-                data = json.load(f)
-                if data.get("results"):
-                    r = data["results"][0]
-                    name = json_file.stem.replace("bench_", "")
-                    stddev = r.get("stddev")
-                    stddev_str = f"±{stddev:.3f}" if stddev is not None else "-"
-                    table.add_row(
-                        name,
-                        f"{r['mean']:.3f}",
-                        stddev_str,
-                        f"{r['min']:.3f}",
-                        f"{r['max']:.3f}",
-                    )
-        except (json.JSONDecodeError, KeyError):
-            continue
-
-    console.print()
-    console.print(table)
 
 
 @app.command()
@@ -574,18 +506,7 @@ def main(
         },
     }
     if not dry_run:
-        config_path = results_dir.joinpath("config.json")
-        if config_path.exists():
-            try:
-                existing = json.loads(config_path.read_text())
-                existing_tools = existing.get("parameters", {}).get("tools", [])
-                merged_tools = list(
-                    dict.fromkeys(existing_tools + config["parameters"]["tools"])
-                )
-                config["parameters"]["tools"] = merged_tools
-            except (json.JSONDecodeError, KeyError):
-                pass
-        config_path.write_text(json.dumps(config, indent=2))
+        save_config(config, results_dir)
 
     # Print header
     console.print(f"[bold]=== MD Trajectory SASA Benchmark: {name} ===[/]")
@@ -639,39 +560,24 @@ def main(
         )
         all_results.extend(results)
 
-    if Tool.zsasa_mdtraj in selected_tools:
-        results = run_zsasa_mdtraj(
-            xtc,
-            pdb,
-            results_dir,
-            runner,
-            thread_counts,
-            warmup,
-            runs,
-            dry_run,
-            stride,
-            n_points,
-            timeout,
-            prepare,
-        )
-        all_results.extend(results)
-
-    if Tool.zsasa_mdanalysis in selected_tools:
-        results = run_zsasa_mdanalysis(
-            xtc,
-            pdb,
-            results_dir,
-            runner,
-            thread_counts,
-            warmup,
-            runs,
-            dry_run,
-            stride,
-            n_points,
-            timeout,
-            prepare,
-        )
-        all_results.extend(results)
+    for python_tool in [Tool.zsasa_mdtraj, Tool.zsasa_mdanalysis]:
+        if python_tool in selected_tools:
+            results = run_threaded_python_tool(
+                python_tool.value,
+                xtc,
+                pdb,
+                results_dir,
+                runner,
+                thread_counts,
+                warmup,
+                runs,
+                dry_run,
+                stride,
+                n_points,
+                timeout,
+                prepare,
+            )
+            all_results.extend(results)
 
     if Tool.mdtraj in selected_tools:
         results = run_mdtraj(
@@ -711,7 +617,7 @@ def main(
         console.print("  - config.json")
 
     if not dry_run and results_dir.exists():
-        print_summary(results_dir)
+        print_benchmark_summary(results_dir)
 
 
 if __name__ == "__main__":

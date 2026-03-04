@@ -50,7 +50,6 @@ Output:
 
 from __future__ import annotations
 
-import json
 import tempfile
 from datetime import datetime
 from enum import Enum
@@ -59,26 +58,23 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
-from rich.table import Table
 
 from bench_common import (
     LAHUTA_BITMASK_POINTS,
+    Precision,
     check_hyperfine,
     ensure_zsasa_built,
     get_binary_path,
     get_system_info,
     parse_threads,
+    print_benchmark_summary,
     quote_path,
     run_benchmark,
+    save_config,
 )
 
 app = typer.Typer(help="Batch SASA benchmark (hyperfine-based)")
 console = Console()
-
-
-class Precision(str, Enum):
-    f32 = "f32"
-    f64 = "f64"
 
 
 class Tool(str, Enum):
@@ -312,42 +308,6 @@ def run_lahuta(
     return results
 
 
-def print_summary(results_dir: Path) -> None:
-    """Print summary table from result JSON files."""
-    table = Table(title="Benchmark Results")
-    table.add_column("Tool", style="cyan")
-    table.add_column("Mean (s)", justify="right")
-    table.add_column("Std Dev", justify="right")
-    table.add_column("Min (s)", justify="right")
-    table.add_column("Max (s)", justify="right")
-
-    for json_file in sorted(results_dir.glob("bench_*.json")):
-        try:
-            with open(json_file) as f:
-                data = json.load(f)
-                if data.get("results"):
-                    r = data["results"][0]
-                    name = json_file.stem.replace("bench_", "")
-                    table.add_row(
-                        name,
-                        f"{r['mean']:.3f}",
-                        f"±{r['stddev']:.3f}" if r.get("stddev") is not None else "N/A",
-                        f"{r['min']:.3f}",
-                        f"{r['max']:.3f}",
-                    )
-        except json.JSONDecodeError as e:
-            console.print(
-                f"[yellow]Warning: corrupt JSON in {json_file.name}: {e}[/yellow]"
-            )
-        except KeyError as e:
-            console.print(
-                f"[yellow]Warning: missing key {e} in {json_file.name}[/yellow]"
-            )
-
-    console.print()
-    console.print(table)
-
-
 @app.command()
 def main(
     input_dir: Annotated[
@@ -505,18 +465,7 @@ def main(
         },
     }
     if not dry_run:
-        config_path = results_dir.joinpath("config.json")
-        if config_path.exists():
-            try:
-                existing = json.loads(config_path.read_text())
-                existing_tools = existing.get("parameters", {}).get("tools", [])
-                merged_tools = list(
-                    dict.fromkeys(existing_tools + config["parameters"]["tools"])
-                )
-                config["parameters"]["tools"] = merged_tools
-            except (json.JSONDecodeError, KeyError):
-                pass
-        config_path.write_text(json.dumps(config, indent=2))
+        save_config(config, results_dir)
 
     # Print header
     console.print(f"[bold]=== Batch SASA Benchmark: {name} ===[/]")
@@ -637,7 +586,7 @@ def main(
         console.print(f"  - config.json")
 
     if not dry_run and results_dir.exists():
-        print_summary(results_dir)
+        print_benchmark_summary(results_dir)
 
 
 if __name__ == "__main__":

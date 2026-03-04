@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import csv
 import json
-import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +40,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
 from bench_common import (
     TOOL_ALIASES,
+    check_hyperfine,
     ensure_zsasa_built,
     get_binary_path,
     get_n_atoms_from_pdb,
@@ -154,7 +154,7 @@ def main(
 ) -> None:
     """Run LR single-file benchmark using hyperfine."""
     # Check hyperfine
-    if not shutil.which("hyperfine"):
+    if not check_hyperfine():
         console.print("[red]Error: hyperfine not found. Install it first.[/red]")
         raise typer.Exit(1)
 
