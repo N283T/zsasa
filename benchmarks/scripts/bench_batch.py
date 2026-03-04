@@ -24,6 +24,9 @@ Usage:
     # Multiple tools (skip freesasa)
     ./benchmarks/scripts/bench_batch.py -i /path/to/pdb -n test --tool zig --tool rustsasa
 
+    # f64 only (skip f32)
+    ./benchmarks/scripts/bench_batch.py -i /path/to/pdb -n test --precision f64
+
     # Multiple thread counts
     ./benchmarks/scripts/bench_batch.py -i /path/to/pdb -n test --threads 1,8,10
 
@@ -71,6 +74,11 @@ from bench_common import (
 
 app = typer.Typer(help="Batch SASA benchmark (hyperfine-based)")
 console = Console()
+
+
+class Precision(str, Enum):
+    f32 = "f32"
+    f64 = "f64"
 
 
 class Tool(str, Enum):
@@ -183,6 +191,7 @@ def run_zig(
     use_bitmask: bool = False,
     timeout: int = 600,
     prepare: str | None = None,
+    precisions: list[str] | None = None,
 ) -> list[dict]:
     """Run zsasa benchmarks."""
     zsasa = binaries["zsasa"]
@@ -193,7 +202,7 @@ def run_zig(
     results = []
     bitmask_suffix = "_bitmask" if use_bitmask else ""
 
-    for precision in ["f64", "f32"]:
+    for precision in precisions or ["f64", "f32"]:
         with tempfile.TemporaryDirectory(prefix=f"zsasa_{precision}_") as tmp:
             out_file = Path(tmp).joinpath("sasa.jsonl")
 
@@ -487,6 +496,14 @@ def main(
             "E.g. 'sync' or 'sudo purge' (macOS) to clear filesystem caches.",
         ),
     ] = None,
+    precisions: Annotated[
+        list[Precision] | None,
+        typer.Option(
+            "--precision",
+            "-P",
+            help="Precision to benchmark (can specify multiple: --precision f64 --precision f32). Default: f64,f32",
+        ),
+    ] = None,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -502,6 +519,9 @@ def main(
         raise typer.Exit(1)
 
     thread_counts = parse_threads(threads)
+    selected_precisions = (
+        [p.value for p in precisions] if precisions else ["f64", "f32"]
+    )
 
     # Default to all tools if none specified
     selected_tools = tools if tools else ALL_TOOLS
@@ -543,6 +563,7 @@ def main(
             "warmup": warmup,
             "runs": runs,
             "n_points": n_points,
+            "precisions": selected_precisions,
             "prepare": prepare,
         },
     }
@@ -566,8 +587,9 @@ def main(
     console.print(f"Output: {results_dir}")
     console.print(f"Tools: {', '.join(t.value for t in selected_tools)}")
     prepare_info = f", Prepare: '{prepare}'" if prepare else ""
+    precision_info = f", Precision: {','.join(selected_precisions)}"
     console.print(
-        f"Warmup: {warmup}, Runs: {runs}, Threads: {thread_counts}, Points: {n_points}{prepare_info}"
+        f"Warmup: {warmup}, Runs: {runs}, Threads: {thread_counts}, Points: {n_points}{precision_info}{prepare_info}"
     )
     console.print()
 
@@ -587,6 +609,7 @@ def main(
             use_bitmask=False,
             timeout=timeout,
             prepare=prepare,
+            precisions=selected_precisions,
         )
         all_results.extend(results)
 
@@ -603,6 +626,7 @@ def main(
             use_bitmask=True,
             timeout=timeout,
             prepare=prepare,
+            precisions=selected_precisions,
         )
         all_results.extend(results)
 
