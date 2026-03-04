@@ -1,6 +1,6 @@
 """Shared benchmark utilities.
 
-Library module imported by bench_md.py, bench_lr.py, and bench_batch.py.
+Library module imported by bench.py, bench_md.py, bench_lr.py, and bench_batch.py.
 Contains build helpers, binary path resolution, parsing helpers, system info,
 hyperfine runner, config I/O, and summary reporting utilities.
 """

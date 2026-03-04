@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import csv
 import json
-import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +42,8 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from bench_common import (
     LAHUTA_BITMASK_POINTS,
     TOOL_ALIASES,
+    check_hyperfine,
+    ensure_zsasa_built,
     get_binary_path,
     get_n_atoms_from_pdb,
     get_system_info,
@@ -163,6 +164,25 @@ def main(
         int,
         typer.Option("--n-points", "-N", help="Number of sphere test points per atom"),
     ] = 100,
+    timeout: Annotated[
+        int,
+        typer.Option(
+            "--timeout", help="Timeout per benchmark in seconds (default: 600)"
+        ),
+    ] = 600,
+    prepare: Annotated[
+        str | None,
+        typer.Option(
+            "--prepare",
+            "-p",
+            help="Shell command to run before each timing run (passed to hyperfine --prepare). "
+            "E.g. 'sync' or 'sudo purge' (macOS) to clear filesystem caches.",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show commands without running"),
+    ] = False,
     force: Annotated[
         bool,
         typer.Option("--force", "-f", help="Overwrite existing results"),
@@ -177,7 +197,7 @@ def main(
         raise typer.Exit(1)
 
     # Check hyperfine
-    if not shutil.which("hyperfine"):
+    if not dry_run and not check_hyperfine():
         console.print("[red]Error: hyperfine not found. Install it first.[/red]")
         raise typer.Exit(1)
 
@@ -193,6 +213,10 @@ def main(
     tool_canonical, tool_base, precision, use_bitmask = parse_tool(tool)
     thread_counts = parse_threads(threads)
 
+    # Auto-build zsasa for zig-based tools
+    if not dry_run and tool_base == "zig":
+        ensure_zsasa_built()
+
     # Validate lahuta bitmask n_points
     if tool_base == "lahuta" and use_bitmask and n_points not in LAHUTA_BITMASK_POINTS:
         console.print(
@@ -202,10 +226,11 @@ def main(
         raise typer.Exit(1)
 
     # Check binary exists
-    binary = get_binary_path(tool_base)
-    if not binary.exists():
-        console.print(f"[red]Error:[/red] Binary not found: {binary}")
-        raise typer.Exit(1)
+    if not dry_run:
+        binary = get_binary_path(tool_base)
+        if not binary.exists():
+            console.print(f"[red]Error:[/red] Binary not found: {binary}")
+            raise typer.Exit(1)
 
     # Resolve input: single file or directory
     if input_file is not None:
@@ -259,42 +284,60 @@ def main(
             "results", "single", str(n_points), f"{tool_canonical}_sr"
         )
 
-    existing_csv = output_dir.joinpath("results.csv")
-    if existing_csv.exists() and not force:
-        console.print(f"[yellow]Warning:[/yellow] Results already exist: {output_dir}")
-        console.print("Use [bold]--force[/bold] to overwrite")
-        raise typer.Exit(1)
+    if not dry_run:
+        existing_csv = output_dir.joinpath("results.csv")
+        if existing_csv.exists() and not force:
+            console.print(
+                f"[yellow]Warning:[/yellow] Results already exist: {output_dir}"
+            )
+            console.print("Use [bold]--force[/bold] to overwrite")
+            raise typer.Exit(1)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save config
-    config = {
-        "timestamp": timestamp,
-        "system": get_system_info(),
-        "parameters": {
-            "tool": tool_canonical,
-            "tool_base": tool_base,
-            "algorithm": "sr",
-            "precision": precision,
-            "thread_counts": thread_counts,
-            "warmup": warmup,
-            "runs": runs,
-            "n_points": n_points,
-            "n_structures": len(structures),
-            "input_dir": str(pdb_dir),
-            "sample_file": str(sample_file) if sample_file else None,
-        },
-    }
-    config_path = output_dir.joinpath("config.json")
-    config_path.write_text(json.dumps(config, indent=2))
+        # Save config
+        config = {
+            "timestamp": timestamp,
+            "system": get_system_info(),
+            "parameters": {
+                "tool": tool_canonical,
+                "tool_base": tool_base,
+                "algorithm": "sr",
+                "precision": precision,
+                "thread_counts": thread_counts,
+                "warmup": warmup,
+                "runs": runs,
+                "n_points": n_points,
+                "n_structures": len(structures),
+                "input_dir": str(pdb_dir),
+                "sample_file": str(sample_file) if sample_file else None,
+                "prepare": prepare,
+            },
+        }
+        config_path = output_dir.joinpath("config.json")
+        config_path.write_text(json.dumps(config, indent=2))
 
     total = len(structures) * len(thread_counts)
 
+    prepare_info = f", Prepare: '{prepare}'" if prepare else ""
     console.print(f"\n[bold]{tool_canonical.upper()} SR (hyperfine)[/bold]")
     console.print(
         f"Threads: {thread_counts}, Warmup: {warmup}, Runs: {runs}, "
-        f"Structures: {len(structures)}, Total benchmarks: {total}\n"
+        f"Structures: {len(structures)}, Total benchmarks: {total}"
+        f"{prepare_info}\n"
     )
+
+    # Dry run: show commands and exit without file I/O
+    if dry_run:
+        for n_threads in thread_counts:
+            for pdb_id, _n_atoms in structures:
+                pdb_path = pdb_dir.joinpath(f"{pdb_id}.pdb")
+                cmd = _build_command(
+                    tool_base, precision, pdb_path, n_threads, n_points, use_bitmask
+                )
+                console.print(f"  [dim]{cmd}[/dim]")
+        console.print("\n[bold green]Dry run complete.[/bold green]")
+        return
 
     # Run benchmarks
     csv_path = output_dir.joinpath("results.csv")
@@ -363,7 +406,14 @@ def main(
                             cmd = f"cd {quote_path(tmpdir)} && {cmd}"
 
                         json_path = Path(tmpdir).joinpath(f"{pdb_id}_{n_threads}t.json")
-                        result = run_hyperfine(cmd, warmup, runs, json_path)
+                        result = run_hyperfine(
+                            cmd,
+                            warmup,
+                            runs,
+                            json_path,
+                            timeout=timeout,
+                            prepare=prepare,
+                        )
 
                         if result:
                             writer.writerow(
@@ -388,7 +438,6 @@ def main(
 
                         progress.advance(task)
 
-    # Report results
     if n_failed > 0:
         console.print(
             f"\n[yellow]Warning:[/yellow] {n_failed}/{total} benchmarks failed"
