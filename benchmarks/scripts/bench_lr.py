@@ -154,7 +154,7 @@ def main(
 ) -> None:
     """Run LR single-file benchmark using hyperfine."""
     # Check hyperfine
-    if not check_hyperfine():
+    if not dry_run and not check_hyperfine():
         console.print("[red]Error: hyperfine not found. Install it first.[/red]")
         raise typer.Exit(1)
 
@@ -178,10 +178,11 @@ def main(
         ensure_zsasa_built()
 
     # Check binary exists
-    binary = get_binary_path(tool_base)
-    if not binary.exists():
-        console.print(f"[red]Error:[/red] Binary not found: {binary}")
-        raise typer.Exit(1)
+    if not dry_run:
+        binary = get_binary_path(tool_base)
+        if not binary.exists():
+            console.print(f"[red]Error:[/red] Binary not found: {binary}")
+            raise typer.Exit(1)
 
     # Resolve input: single file or directory
     if input_file is not None:
@@ -235,43 +236,60 @@ def main(
             "results", "single_lr", str(n_slices), f"{tool_canonical}_lr"
         )
 
-    existing_csv = output_dir.joinpath("results.csv")
-    if existing_csv.exists() and not force:
-        console.print(f"[yellow]Warning:[/yellow] Results already exist: {output_dir}")
-        console.print("Use [bold]--force[/bold] to overwrite")
-        raise typer.Exit(1)
+    if not dry_run:
+        existing_csv = output_dir.joinpath("results.csv")
+        if existing_csv.exists() and not force:
+            console.print(
+                f"[yellow]Warning:[/yellow] Results already exist: {output_dir}"
+            )
+            console.print("Use [bold]--force[/bold] to overwrite")
+            raise typer.Exit(1)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save config
-    config = {
-        "timestamp": timestamp,
-        "system": get_system_info(),
-        "parameters": {
-            "tool": tool_canonical,
-            "tool_base": tool_base,
-            "algorithm": "lr",
-            "precision": precision,
-            "thread_counts": thread_counts,
-            "warmup": warmup,
-            "runs": runs,
-            "n_slices": n_slices,
-            "n_structures": len(structures),
-            "input_dir": str(pdb_dir),
-            "sample_file": str(sample_file) if sample_file else None,
-            "prepare": prepare,
-        },
-    }
-    config_path = output_dir.joinpath("config.json")
-    config_path.write_text(json.dumps(config, indent=2))
+        # Save config
+        config = {
+            "timestamp": timestamp,
+            "system": get_system_info(),
+            "parameters": {
+                "tool": tool_canonical,
+                "tool_base": tool_base,
+                "algorithm": "lr",
+                "precision": precision,
+                "thread_counts": thread_counts,
+                "warmup": warmup,
+                "runs": runs,
+                "n_slices": n_slices,
+                "n_structures": len(structures),
+                "input_dir": str(pdb_dir),
+                "sample_file": str(sample_file) if sample_file else None,
+                "prepare": prepare,
+            },
+        }
+        config_path = output_dir.joinpath("config.json")
+        config_path.write_text(json.dumps(config, indent=2))
 
     total = len(structures) * len(thread_counts)
 
+    prepare_info = f", Prepare: '{prepare}'" if prepare else ""
     console.print(f"\n[bold]{tool_canonical.upper()} LR (hyperfine)[/bold]")
     console.print(
         f"Threads: {thread_counts}, Warmup: {warmup}, Runs: {runs}, "
-        f"Structures: {len(structures)}, Total benchmarks: {total}\n"
+        f"Structures: {len(structures)}, Total benchmarks: {total}"
+        f"{prepare_info}\n"
     )
+
+    # Dry run: show commands and exit without file I/O
+    if dry_run:
+        for n_threads in thread_counts:
+            for pdb_id, _n_atoms in structures:
+                pdb_path = pdb_dir.joinpath(f"{pdb_id}.pdb")
+                cmd = _build_command(
+                    tool_base, precision, pdb_path, n_threads, n_slices
+                )
+                console.print(f"  [dim]{cmd}[/dim]")
+        console.print("\n[bold green]Dry run complete.[/bold green]")
+        return
 
     # Run benchmarks
     csv_path = output_dir.joinpath("results.csv")
@@ -330,11 +348,6 @@ def main(
                             tool_base, precision, pdb_path, n_threads, n_slices
                         )
 
-                        if dry_run:
-                            console.print(f"  [dim]{cmd}[/dim]")
-                            progress.advance(task)
-                            continue
-
                         json_path = Path(tmpdir).joinpath(f"{pdb_id}_{n_threads}t.json")
                         result = run_hyperfine(
                             cmd,
@@ -367,11 +380,6 @@ def main(
                             n_failed += 1
 
                         progress.advance(task)
-
-    # Report results
-    if dry_run:
-        console.print("\n[bold green]Dry run complete.[/bold green]")
-        return
 
     if n_failed > 0:
         console.print(
