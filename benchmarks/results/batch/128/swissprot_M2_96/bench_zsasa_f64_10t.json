@@ -1,0 +1,29 @@
+{
+  "results": [
+    {
+      "command": "/Users/nagaet/zsasa/benchmarks/external/bin/zsasa batch /Users/nagaet/pdb/afdb/swissprot_pdb_v6 --format=jsonl -o /var/folders/mp/_dxm52c52pnd57ddbgnw1pdh0000gp/T/zsasa_f64_q1iboqvu/sasa.jsonl --threads=10 --precision=f64 --n-points=128",
+      "mean": 640.8338906723467,
+      "stddev": 1.4343404021595743,
+      "median": 640.22041982568,
+      "user": 5518.987060273333,
+      "system": 193.80471425333334,
+      "min": 639.80830761668,
+      "max": 642.47294457468,
+      "times": [
+        642.47294457468,
+        640.22041982568,
+        639.80830761668
+      ],
+      "memory_usage_byte": [
+        165281792,
+        165281792,
+        166625280
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}
