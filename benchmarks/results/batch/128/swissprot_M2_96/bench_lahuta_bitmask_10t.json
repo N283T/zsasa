@@ -1,0 +1,29 @@
+{
+  "results": [
+    {
+      "command": "cd /var/folders/mp/_dxm52c52pnd57ddbgnw1pdh0000gp/T/lahuta_8k69fu7y && /Users/nagaet/zsasa/benchmarks/external/bin/lahuta sasa-sr -d /Users/nagaet/pdb/afdb/swissprot_pdb_v6 --is_af2_model --points 128 --use-bitmask -t 10 --progress 0 -o /var/folders/mp/_dxm52c52pnd57ddbgnw1pdh0000gp/T/lahuta_8k69fu7y/sasa.jsonl",
+      "mean": 312.45694919805334,
+      "stddev": 3.3230280182305036,
+      "median": 312.06402135072,
+      "user": 2331.43252818,
+      "system": 419.9126376866666,
+      "min": 309.34785401771995,
+      "max": 315.95897222572,
+      "times": [
+        312.06402135072,
+        309.34785401771995,
+        315.95897222572
+      ],
+      "memory_usage_byte": [
+        1944502272,
+        1944502272,
+        2293612544
+      ],
+      "exit_codes": [
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}
