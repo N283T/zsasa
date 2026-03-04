@@ -37,8 +37,18 @@ Usage:
         --xtc traj.xtc --pdb top.pdb \\
         --name test --runs 1 --warmup 0 --stride 100
 
+    # f64 only (skip f32)
+    ./benchmarks/scripts/bench_md.py \\
+        --xtc traj.xtc --pdb top.pdb \\
+        --name test --precision f64
+
+    # Clear filesystem cache before each run (macOS)
+    ./benchmarks/scripts/bench_md.py \\
+        --xtc traj.xtc --pdb top.pdb \\
+        --name test --prepare 'sudo purge'
+
 Output:
-    benchmarks/results/md/<name>/
+    benchmarks/results/md/<n_points>/<name>/
     ├── config.json
     ├── bench_zig_f32_4t.json
     ├── bench_zig_f64_4t.json
@@ -53,10 +63,6 @@ Output:
 from __future__ import annotations
 
 import json
-import os
-import platform
-import shutil
-import subprocess
 import tempfile
 from datetime import datetime
 from enum import Enum
@@ -67,8 +73,22 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from bench_common import (
+    check_hyperfine,
+    ensure_zsasa_built,
+    get_binary_path,
+    get_system_info,
+    parse_threads,
+    run_benchmark,
+)
+
 app = typer.Typer(help="MD trajectory SASA benchmark (hyperfine-based)")
 console = Console()
+
+
+class Precision(str, Enum):
+    f32 = "f32"
+    f64 = "f64"
 
 
 class Tool(str, Enum):
@@ -100,14 +120,6 @@ def get_runner_path() -> Path:
     return Path(__file__).parent.joinpath("bench_md_runner.py")
 
 
-def get_binary_paths() -> dict[str, Path]:
-    """Get paths to tool binaries."""
-    root = get_root_dir()
-    return {
-        "zsasa": root.joinpath("zig-out", "bin", "zsasa"),
-    }
-
-
 def get_trajectory_info(xtc: Path, pdb: Path) -> dict:
     """Get trajectory metadata (atom_count, total_frames).
 
@@ -122,96 +134,6 @@ def get_trajectory_info(xtc: Path, pdb: Path) -> dict:
         return {}
 
 
-def get_system_info() -> dict:
-    """Get system information."""
-    info = {
-        "os": platform.system(),
-        "os_version": platform.release(),
-        "arch": platform.machine(),
-        "cpu_cores": os.cpu_count() or 1,
-    }
-
-    if platform.system() == "Darwin":
-        try:
-            result = subprocess.run(
-                ["sysctl", "-n", "machdep.cpu.brand_string"],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                info["cpu_model"] = result.stdout.strip()
-            result = subprocess.run(
-                ["sysctl", "-n", "hw.memsize"], capture_output=True, text=True
-            )
-            if result.returncode == 0:
-                info["memory_gb"] = int(result.stdout.strip()) // (1024**3)
-        except Exception:
-            pass
-
-    return info
-
-
-def parse_threads(threads_str: str) -> list[int]:
-    """Parse thread specification like '1,8,10' or '1-10'."""
-    result = []
-    for part in threads_str.split(","):
-        if "-" in part:
-            start, end = part.split("-", 1)
-            result.extend(range(int(start), int(end) + 1))
-        else:
-            result.append(int(part))
-    return sorted(set(result))
-
-
-def check_hyperfine() -> bool:
-    """Check if hyperfine is available."""
-    return shutil.which("hyperfine") is not None
-
-
-def run_benchmark(
-    name: str,
-    cmd: str,
-    results_dir: Path,
-    warmup: int,
-    runs: int,
-    dry_run: bool,
-) -> dict | None:
-    """Run a single benchmark with hyperfine."""
-    json_out = results_dir.joinpath(f"bench_{name}.json")
-
-    console.print(f">>> [bold cyan]{name}[/]")
-
-    if dry_run:
-        console.print(f"    {cmd}")
-        return None
-
-    hyperfine_cmd = [
-        "hyperfine",
-        "--warmup",
-        str(warmup),
-        "--runs",
-        str(runs),
-        "--export-json",
-        str(json_out),
-        cmd,
-    ]
-
-    try:
-        subprocess.run(hyperfine_cmd, check=True, capture_output=False)
-        console.print()
-
-        if json_out.exists():
-            with open(json_out) as f:
-                data = json.load(f)
-                if data.get("results"):
-                    return data["results"][0]
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]Error running benchmark: {e}[/]")
-        console.print("[yellow]Check hyperfine output above for details[/]")
-
-    return None
-
-
 def run_zig(
     xtc: Path,
     pdb: Path,
@@ -220,13 +142,15 @@ def run_zig(
     warmup: int,
     runs: int,
     dry_run: bool,
-    binaries: dict[str, Path],
     stride: int,
     n_points: int,
     use_bitmask: bool = False,
+    timeout: int = 600,
+    prepare: str | None = None,
+    precisions: list[str] | None = None,
 ) -> list[dict]:
-    """Run zsasa CLI traj benchmarks (f32/f64 x threads)."""
-    zsasa = binaries["zsasa"]
+    """Run zsasa CLI traj benchmarks (precision x threads)."""
+    zsasa = get_binary_path("zig")
     if not zsasa.exists():
         console.print("[yellow][SKIP] zsasa binary not found[/]")
         return []
@@ -234,7 +158,7 @@ def run_zig(
     results = []
     bitmask_suffix = "_bitmask" if use_bitmask else ""
 
-    for precision in ["f32", "f64"]:
+    for precision in precisions or ["f32", "f64"]:
         with tempfile.NamedTemporaryFile(suffix=".csv", prefix="zsasa_") as tmp:
             out_path = tmp.name
 
@@ -258,6 +182,8 @@ def run_zig(
                     warmup,
                     runs,
                     dry_run,
+                    timeout,
+                    prepare,
                 )
                 if result:
                     results.append({"name": bench_name, **result})
@@ -278,6 +204,8 @@ def run_python_tool(
     n_threads: int | None = None,
     stride: int = 1,
     n_points: int = 100,
+    timeout: int = 600,
+    prepare: str | None = None,
 ) -> dict | None:
     """Run a Python-based benchmark tool via the runner script."""
     cmd_parts = [
@@ -293,7 +221,7 @@ def run_python_tool(
 
     cmd = " ".join(cmd_parts)
 
-    return run_benchmark(label, cmd, results_dir, warmup, runs, dry_run)
+    return run_benchmark(label, cmd, results_dir, warmup, runs, dry_run, timeout, prepare)
 
 
 def run_zsasa_mdtraj(
@@ -307,6 +235,8 @@ def run_zsasa_mdtraj(
     dry_run: bool,
     stride: int,
     n_points: int,
+    timeout: int = 600,
+    prepare: str | None = None,
 ) -> list[dict]:
     """Run zsasa.mdtraj benchmarks with different thread counts."""
     results = []
@@ -325,6 +255,8 @@ def run_zsasa_mdtraj(
             n_threads=n_threads,
             stride=stride,
             n_points=n_points,
+            timeout=timeout,
+            prepare=prepare,
         )
         if result:
             results.append({"name": label, **result})
@@ -342,6 +274,8 @@ def run_zsasa_mdanalysis(
     dry_run: bool,
     stride: int,
     n_points: int,
+    timeout: int = 600,
+    prepare: str | None = None,
 ) -> list[dict]:
     """Run zsasa.mdanalysis benchmarks with different thread counts."""
     results = []
@@ -360,6 +294,8 @@ def run_zsasa_mdanalysis(
             n_threads=n_threads,
             stride=stride,
             n_points=n_points,
+            timeout=timeout,
+            prepare=prepare,
         )
         if result:
             results.append({"name": label, **result})
@@ -376,6 +312,8 @@ def run_mdtraj(
     dry_run: bool,
     stride: int,
     n_points: int,
+    timeout: int = 600,
+    prepare: str | None = None,
 ) -> list[dict]:
     """Run native MDTraj benchmark (single-threaded)."""
     label = "mdtraj_1t"
@@ -391,6 +329,8 @@ def run_mdtraj(
         dry_run,
         stride=stride,
         n_points=n_points,
+        timeout=timeout,
+        prepare=prepare,
     )
     if result:
         return [{"name": label, **result}]
@@ -407,6 +347,8 @@ def run_mdsasa_bolt(
     dry_run: bool,
     stride: int,
     n_points: int,
+    timeout: int = 600,
+    prepare: str | None = None,
 ) -> list[dict]:
     """Run mdsasa-bolt benchmark (all cores)."""
     label = "mdsasa_bolt_all"
@@ -422,6 +364,8 @@ def run_mdsasa_bolt(
         dry_run,
         stride=stride,
         n_points=n_points,
+        timeout=timeout,
+        prepare=prepare,
     )
     if result:
         return [{"name": label, **result}]
@@ -542,7 +486,31 @@ def main(
         typer.Option(
             "--output",
             "-o",
-            help="Output directory (default: benchmarks/results/md/<name>)",
+            help="Output directory (default: benchmarks/results/md/<n_points>/<name>)",
+        ),
+    ] = None,
+    timeout: Annotated[
+        int,
+        typer.Option(
+            "--timeout",
+            help="Timeout per benchmark in seconds (default: 600)",
+        ),
+    ] = 600,
+    prepare: Annotated[
+        str | None,
+        typer.Option(
+            "--prepare",
+            "-p",
+            help="Shell command to run before each timing run (passed to hyperfine --prepare). "
+            "E.g. 'sync' or 'sudo purge' (macOS) to clear filesystem caches.",
+        ),
+    ] = None,
+    precisions: Annotated[
+        list[Precision] | None,
+        typer.Option(
+            "--precision",
+            "-P",
+            help="Precision for zig benchmarks (can specify multiple: --precision f64 --precision f32). Default: f32,f64",
         ),
     ] = None,
     dry_run: Annotated[
@@ -559,6 +527,9 @@ def main(
         raise typer.Exit(1)
 
     thread_counts = parse_threads(threads)
+    selected_precisions = (
+        [p.value for p in precisions] if precisions else ["f32", "f64"]
+    )
 
     # Set up paths
     root = get_root_dir()
@@ -568,17 +539,21 @@ def main(
         results_dir = output_dir
 
     runner = get_runner_path()
-    binaries = get_binary_paths()
 
     if not dry_run:
         results_dir.mkdir(parents=True, exist_ok=True)
 
     selected_tools = tools if tools else ALL_TOOLS
 
+    # Rebuild zsasa in ReleaseFast mode to ensure benchmarks use optimized code
+    zig_tools = {Tool.zig, Tool.zig_bitmask}
+    if not dry_run and zig_tools & set(selected_tools):
+        ensure_zsasa_built()
+
     # Get trajectory metadata
     traj_info = get_trajectory_info(xtc, pdb)
 
-    # Save config
+    # Save config (merge with existing if present)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     config = {
         "timestamp": timestamp,
@@ -593,11 +568,23 @@ def main(
             "runs": runs,
             "stride": stride,
             "n_points": n_points,
+            "precisions": selected_precisions,
+            "prepare": prepare,
             **traj_info,
         },
     }
     if not dry_run:
         config_path = results_dir.joinpath("config.json")
+        if config_path.exists():
+            try:
+                existing = json.loads(config_path.read_text())
+                existing_tools = existing.get("parameters", {}).get("tools", [])
+                merged_tools = list(
+                    dict.fromkeys(existing_tools + config["parameters"]["tools"])
+                )
+                config["parameters"]["tools"] = merged_tools
+            except (json.JSONDecodeError, KeyError):
+                pass
         config_path.write_text(json.dumps(config, indent=2))
 
     # Print header
@@ -605,9 +592,11 @@ def main(
     console.print(f"XTC: {xtc}")
     console.print(f"PDB: {pdb}")
     console.print(f"Tools: {', '.join(t.value for t in selected_tools)}")
+    prepare_info = f", Prepare: '{prepare}'" if prepare else ""
+    precision_info = f", Precision: {','.join(selected_precisions)}"
     console.print(
         f"Warmup: {warmup}, Runs: {runs}, Threads: {thread_counts}, "
-        f"Stride: {stride}, N-points: {n_points}"
+        f"Stride: {stride}, N-points: {n_points}{precision_info}{prepare_info}"
     )
     console.print()
 
@@ -623,10 +612,12 @@ def main(
             warmup,
             runs,
             dry_run,
-            binaries,
             stride,
             n_points,
             use_bitmask=False,
+            timeout=timeout,
+            prepare=prepare,
+            precisions=selected_precisions,
         )
         all_results.extend(results)
 
@@ -639,10 +630,12 @@ def main(
             warmup,
             runs,
             dry_run,
-            binaries,
             stride,
             n_points,
             use_bitmask=True,
+            timeout=timeout,
+            prepare=prepare,
+            precisions=selected_precisions,
         )
         all_results.extend(results)
 
@@ -658,6 +651,8 @@ def main(
             dry_run,
             stride,
             n_points,
+            timeout,
+            prepare,
         )
         all_results.extend(results)
 
@@ -673,6 +668,8 @@ def main(
             dry_run,
             stride,
             n_points,
+            timeout,
+            prepare,
         )
         all_results.extend(results)
 
@@ -687,6 +684,8 @@ def main(
             dry_run,
             stride,
             n_points,
+            timeout,
+            prepare,
         )
         all_results.extend(results)
 
@@ -701,6 +700,8 @@ def main(
             dry_run,
             stride,
             n_points,
+            timeout,
+            prepare,
         )
         all_results.extend(results)
 

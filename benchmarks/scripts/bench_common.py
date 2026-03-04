@@ -12,6 +12,7 @@ import json
 import os
 import platform
 import shlex
+import shutil
 import subprocess
 from collections import defaultdict
 from pathlib import Path
@@ -202,6 +203,11 @@ def get_system_info() -> dict:
     return info
 
 
+def check_hyperfine() -> bool:
+    """Check if hyperfine is available on PATH."""
+    return shutil.which("hyperfine") is not None
+
+
 def get_n_atoms_from_pdb(pdb_path: Path) -> int | None:
     """Count ATOM records in a PDB file (excludes HETATM).
 
@@ -281,10 +287,17 @@ def quote_path(path: Path) -> str:
     return shlex.quote(str(path))
 
 
-def run_hyperfine(cmd: str, warmup: int, runs: int, json_path: Path) -> dict | None:
+def run_hyperfine(
+    cmd: str,
+    warmup: int,
+    runs: int,
+    json_path: Path,
+    timeout: int = 600,
+    prepare: str | None = None,
+) -> dict | None:
     """Run hyperfine and return results dict, or None on failure.
 
-    Times out after 600 seconds. Logs diagnostic details on failure.
+    Logs diagnostic details on failure.
     """
     hyperfine_cmd = [
         "hyperfine",
@@ -294,11 +307,13 @@ def run_hyperfine(cmd: str, warmup: int, runs: int, json_path: Path) -> dict | N
         str(runs),
         "--export-json",
         str(json_path),
-        cmd,
     ]
+    if prepare:
+        hyperfine_cmd.extend(["--prepare", prepare])
+    hyperfine_cmd.append(cmd)
     try:
         subprocess.run(
-            hyperfine_cmd, check=True, capture_output=True, text=True, timeout=600
+            hyperfine_cmd, check=True, capture_output=True, text=True, timeout=timeout
         )
     except subprocess.TimeoutExpired:
         console.print(f"[red]  Timeout: command exceeded 600s: {cmd}[/red]")
@@ -372,3 +387,66 @@ def print_hyperfine_summary(csv_path: Path) -> None:
 
     console.print()
     console.print(table)
+
+
+def run_benchmark(
+    name: str,
+    cmd: str,
+    results_dir: Path,
+    warmup: int,
+    runs: int,
+    dry_run: bool,
+    timeout: int = 600,
+    prepare: str | None = None,
+) -> dict | None:
+    """Run a single benchmark with hyperfine, showing output live.
+
+    Returns the first result dict from hyperfine JSON, or None on failure.
+    Unlike run_hyperfine(), this shows hyperfine output directly (capture_output=False)
+    and is intended for interactive batch benchmarks.
+    """
+    json_out = results_dir.joinpath(f"bench_{name}.json")
+
+    console.print(f">>> [bold cyan]{name}[/]")
+
+    if dry_run:
+        console.print(f"    {cmd}")
+        return None
+
+    hyperfine_cmd = [
+        "hyperfine",
+        "--warmup",
+        str(warmup),
+        "--runs",
+        str(runs),
+        "--export-json",
+        str(json_out),
+    ]
+    if prepare:
+        hyperfine_cmd.extend(["--prepare", prepare])
+    hyperfine_cmd.append(cmd)
+
+    try:
+        subprocess.run(hyperfine_cmd, check=True, capture_output=False, timeout=timeout)
+        console.print()
+    except subprocess.TimeoutExpired:
+        console.print(f"[red]Timeout: {name} exceeded {timeout}s[/red]")
+        return None
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Error running benchmark: {e}[/]")
+        console.print("[yellow]Check hyperfine output above for details[/]")
+        return None
+
+    try:
+        if json_out.exists():
+            with open(json_out) as f:
+                data = json.load(f)
+                if data.get("results"):
+                    return data["results"][0]
+        console.print(f"[yellow]Warning: no results in {json_out.name}[/yellow]")
+    except json.JSONDecodeError as e:
+        console.print(f"[yellow]Warning: corrupt JSON in {json_out.name}: {e}[/yellow]")
+    except KeyError as e:
+        console.print(f"[yellow]Warning: missing key {e} in {json_out.name}[/yellow]")
+
+    return None

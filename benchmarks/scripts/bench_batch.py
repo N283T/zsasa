@@ -51,8 +51,6 @@ Output:
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
 import tempfile
 from datetime import datetime
 from enum import Enum
@@ -65,11 +63,13 @@ from rich.table import Table
 
 from bench_common import (
     LAHUTA_BITMASK_POINTS,
+    check_hyperfine,
     ensure_zsasa_built,
     get_binary_path,
     get_system_info,
     parse_threads,
     quote_path,
+    run_benchmark,
 )
 
 app = typer.Typer(help="Batch SASA benchmark (hyperfine-based)")
@@ -114,69 +114,6 @@ def get_binary_paths() -> dict[str, Path]:
         "rustsasa": get_binary_path("rust"),
         "lahuta": get_binary_path("lahuta"),
     }
-
-
-def check_hyperfine() -> bool:
-    """Check if hyperfine is available."""
-    return shutil.which("hyperfine") is not None
-
-
-def run_benchmark(
-    name: str,
-    cmd: str,
-    results_dir: Path,
-    warmup: int,
-    runs: int,
-    dry_run: bool,
-    timeout: int = 600,
-    prepare: str | None = None,
-) -> dict | None:
-    """Run a single benchmark with hyperfine."""
-    json_out = results_dir.joinpath(f"bench_{name}.json")
-
-    console.print(f">>> [bold cyan]{name}[/]")
-
-    if dry_run:
-        console.print(f"    {cmd}")
-        return None
-
-    hyperfine_cmd = [
-        "hyperfine",
-        "--warmup",
-        str(warmup),
-        "--runs",
-        str(runs),
-        "--export-json",
-        str(json_out),
-    ]
-    if prepare:
-        hyperfine_cmd.extend(["--prepare", prepare])
-    hyperfine_cmd.append(cmd)
-
-    try:
-        subprocess.run(hyperfine_cmd, check=True, capture_output=False, timeout=timeout)
-        console.print()
-    except subprocess.TimeoutExpired:
-        console.print(f"[red]Timeout: {name} exceeded {timeout}s[/red]")
-        return None
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]Error running benchmark: {e}[/]")
-        console.print("[yellow]Check hyperfine output above for details[/]")
-        return None
-
-    try:
-        if json_out.exists():
-            with open(json_out) as f:
-                data = json.load(f)
-                if data.get("results"):
-                    return data["results"][0]
-        console.print(f"[yellow]Warning: no results in {json_out.name}[/yellow]")
-    except json.JSONDecodeError as e:
-        console.print(f"[yellow]Warning: corrupt JSON in {json_out.name}: {e}[/yellow]")
-    except KeyError as e:
-        console.print(f"[yellow]Warning: missing key {e} in {json_out.name}[/yellow]")
-
-    return None
 
 
 def run_zig(
