@@ -113,7 +113,10 @@ def _build_command(
             f" --n-threads={n_threads} {quoted}"
         )
     elif base == "rust":
-        return f"{binary} {quoted} /dev/null -n {n_points} -t {n_threads} -o protein"
+        return (
+            f"{binary} {quoted} /dev/null -n {n_points} -t {n_threads}"
+            f" -o protein --allow-vdw-fallback"
+        )
     elif base == "lahuta":
         return (
             f"{binary} sasa-sr -f {quoted} --is_af2_model"

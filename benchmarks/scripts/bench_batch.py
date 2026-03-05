@@ -224,7 +224,7 @@ def run_rustsasa(
         for n_threads in thread_counts:
             result = run_benchmark(
                 f"rustsasa_{n_threads}t",
-                f"{quote_path(rustsasa)} {quote_path(input_dir)} {quote_path(out_dir)} --format json -t {n_threads} -n {n_points}",
+                f"{quote_path(rustsasa)} {quote_path(input_dir)} {quote_path(out_dir)} --format json -t {n_threads} -n {n_points} --allow-vdw-fallback",
                 results_dir,
                 warmup,
                 runs,
