@@ -113,11 +113,12 @@ def _build_command(
             f" --n-threads={n_threads} {quoted}"
         )
     elif base == "rust":
-        return f"{binary} {quoted} -n {n_points} -t {n_threads} -o protein"
+        return f"{binary} {quoted} /dev/null -n {n_points} -t {n_threads} -o protein"
     elif base == "lahuta":
         return (
             f"{binary} sasa-sr -f {quoted} --is_af2_model"
-            f" --points {n_points}{bitmask_flag} -t {n_threads} -o /dev/null"
+            f" --points {n_points}{bitmask_flag} -t {n_threads}"
+            f" --stdout --progress 0 > /dev/null"
         )
     else:
         raise ValueError(f"No command builder for tool base: {base}")
@@ -178,9 +179,7 @@ def _run_tool(
     # Setup output directory
     existing_csv = output_dir.joinpath("results.csv")
     if existing_csv.exists() and not force:
-        console.print(
-            f"[yellow]Warning:[/yellow] Results already exist: {output_dir}"
-        )
+        console.print(f"[yellow]Warning:[/yellow] Results already exist: {output_dir}")
         console.print("Use [bold]--force[/bold] to overwrite")
         return False
 
@@ -364,7 +363,11 @@ def main(
     ] = 1,
     output_dir: Annotated[
         Path | None,
-        typer.Option("--output-dir", "-o", help="Output directory (per-tool subdirs when multiple tools)"),
+        typer.Option(
+            "--output-dir",
+            "-o",
+            help="Output directory (per-tool subdirs when multiple tools)",
+        ),
     ] = None,
     input_dir: Annotated[
         Path | None,
@@ -493,7 +496,9 @@ def main(
         return
 
     # Run benchmarks for each tool
-    results_base = Path(__file__).parent.parent.joinpath("results", "single", str(n_points))
+    results_base = Path(__file__).parent.parent.joinpath(
+        "results", "single", str(n_points)
+    )
     n_succeeded = 0
     n_tools = len(selected_tools)
 
