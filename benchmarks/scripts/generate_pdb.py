@@ -46,6 +46,15 @@ from rich.table import Table
 
 console = Console()
 
+# Available single-char chain IDs for PDB format (A-Z, a-z, 0-9)
+_CHAIN_IDS = [chr(c) for c in range(ord("A"), ord("Z") + 1)]
+_CHAIN_IDS += [chr(c) for c in range(ord("a"), ord("z") + 1)]
+_CHAIN_IDS += [chr(c) for c in range(ord("0"), ord("9") + 1)]
+
+# PDB field limits
+_MAX_SERIAL = 99999
+_MAX_RESNUM = 9999
+
 # Default AFDB directory (AlphaFold Human Proteome v6)
 # Overridden at runtime by --afdb-dir CLI option
 _DEFAULT_AFDB_DIR = Path(
@@ -87,6 +96,63 @@ def resolve_cif_path(entry_id: str) -> Path:
     return Path(gemmi.expand_if_pdb_code(entry_id))
 
 
+def _reassign_chain_ids(model: gemmi.Model) -> None:
+    """Reassign multi-char chain IDs to single chars with residue binpacking.
+
+    Structures with >62 chains get 2-char IDs from gemmi's shorten_chain_names(),
+    which breaks PDB column layout for parsers like pdbtbx.
+    Bins chains into single-char IDs, keeping ≤9999 residues per ID.
+    Also renumbers residues sequentially within each ID to avoid duplicates.
+    """
+    res_count: dict[str, int] = {}
+
+    for chain in model:
+        chain_res = len(list(chain))
+        for cid in _CHAIN_IDS:
+            current = res_count.get(cid, 0)
+            if current + chain_res <= _MAX_RESNUM:
+                chain.name = cid
+                for i, res in enumerate(chain):
+                    res.seqid = gemmi.SeqId(str(current + i + 1))
+                res_count[cid] = current + chain_res
+                break
+
+
+def _fix_cryst1_z(output_path: Path) -> None:
+    """Ensure CRYST1 record has Z value (required by pdbtbx).
+
+    Some structures (EM/NMR) have CRYST1 with empty Z field (cols 67-70).
+    Adds Z=1 when missing.
+    """
+    with open(output_path) as f:
+        lines = f.readlines()
+
+    for i, line in enumerate(lines):
+        if not line.startswith("CRYST1"):
+            continue
+        z_field = line[66:70] if len(line) > 66 else ""
+        if z_field.strip():
+            return  # Z value already present
+        padded = line.rstrip("\n").ljust(80)
+        lines[i] = padded[:66] + "   1" + padded[70:] + "\n"
+        break
+    else:
+        return  # No CRYST1 found
+
+    with open(output_path, "w") as f:
+        f.writelines(lines)
+
+
+def _wrap_serial_numbers(model: gemmi.Model) -> None:
+    """Wrap atom serial numbers to stay within PDB 5-digit limit (≤99999)."""
+    serial = 0
+    for chain in model:
+        for res in chain:
+            for atom in res:
+                serial = (serial % _MAX_SERIAL) + 1
+                atom.serial = serial
+
+
 def clean_cif_to_pdb(cif_path: Path, output_path: Path) -> tuple[str, int]:
     """Read mmCIF, clean up, write PDB. Returns (id, n_atoms).
 
@@ -122,18 +188,25 @@ def clean_cif_to_pdb(cif_path: Path, output_path: Path) -> tuple[str, int]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     st.shorten_chain_names()
 
+    # Fix multi-char chain IDs (>62 chains) by reassigning to single chars.
+    # Also renumbers residues to avoid duplicates within each chain ID.
+    has_long_chains = any(len(chain.name) > 1 for chain in model)
+    if has_long_chains:
+        _reassign_chain_ids(model)
+
     # Wrap atom serial numbers to stay within PDB 5-digit limit (≤99999).
     # Avoids hybrid36 encoding that some parsers (e.g. pdbtbx) cannot read.
-    if n_atoms > 99999:
-        serial = 0
-        for chain in model:
-            for res in chain:
-                for atom in res:
-                    serial = (serial % 99999) + 1
-                    atom.serial = serial
-        st.write_pdb(str(output_path), preserve_serial=True)
+    needs_preserve = has_long_chains or n_atoms > _MAX_SERIAL
+    if needs_preserve:
+        _wrap_serial_numbers(model)
+        opts = gemmi.PdbWriteOptions()
+        opts.preserve_serial = True
+        st.write_pdb(str(output_path), opts)
     else:
         st.write_pdb(str(output_path))
+
+    # Ensure CRYST1 has Z value (pdbtbx requires it)
+    _fix_cryst1_z(output_path)
 
     return (cif_path.stem.replace(".cif", ""), n_atoms)
 
