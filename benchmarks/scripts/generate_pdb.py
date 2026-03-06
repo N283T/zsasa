@@ -121,7 +121,19 @@ def clean_cif_to_pdb(cif_path: Path, output_path: Path) -> tuple[str, int]:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     st.shorten_chain_names()
-    st.write_pdb(str(output_path))
+
+    # Wrap atom serial numbers to stay within PDB 5-digit limit (≤99999).
+    # Avoids hybrid36 encoding that some parsers (e.g. pdbtbx) cannot read.
+    if n_atoms > 99999:
+        serial = 0
+        for chain in model:
+            for res in chain:
+                for atom in res:
+                    serial = (serial % 99999) + 1
+                    atom.serial = serial
+        st.write_pdb(str(output_path), preserve_serial=True)
+    else:
+        st.write_pdb(str(output_path))
 
     return (cif_path.stem.replace(".cif", ""), n_atoms)
 
