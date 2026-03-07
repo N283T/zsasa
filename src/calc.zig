@@ -980,14 +980,26 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
     // Print timing breakdown if requested
     if (args.show_timing) {
         const ns_to_ms = 1_000_000.0;
+        const parse_ms = @as(f64, @floatFromInt(time_parse)) / ns_to_ms;
+        const classify_ms = @as(f64, @floatFromInt(time_classify)) / ns_to_ms;
+        const sasa_ms = @as(f64, @floatFromInt(time_sasa)) / ns_to_ms;
+        const write_ms = @as(f64, @floatFromInt(time_write)) / ns_to_ms;
+        const total_ms = @as(f64, @floatFromInt(time_total)) / ns_to_ms;
+
+        // Human-readable breakdown
         std.debug.print("\nTiming breakdown:\n", .{});
-        std.debug.print("  Parse + validate: {d:.2} ms\n", .{@as(f64, @floatFromInt(time_parse)) / ns_to_ms});
+        std.debug.print("  Parse + validate: {d:.2} ms\n", .{parse_ms});
         if (time_classify > 0) {
-            std.debug.print("  Classifier:       {d:.2} ms\n", .{@as(f64, @floatFromInt(time_classify)) / ns_to_ms});
+            std.debug.print("  Classifier:       {d:.2} ms\n", .{classify_ms});
         }
-        std.debug.print("  SASA calculation: {d:.2} ms\n", .{@as(f64, @floatFromInt(time_sasa)) / ns_to_ms});
-        std.debug.print("  Write output:     {d:.2} ms\n", .{@as(f64, @floatFromInt(time_write)) / ns_to_ms});
-        std.debug.print("  Total:            {d:.2} ms\n", .{@as(f64, @floatFromInt(time_total)) / ns_to_ms});
+        std.debug.print("  SASA calculation: {d:.2} ms\n", .{sasa_ms});
+        std.debug.print("  Write output:     {d:.2} ms\n", .{write_ms});
+        std.debug.print("  Total:            {d:.2} ms\n", .{total_ms});
+
+        // Machine-readable format (compatible with freesasa/rustsasa forks)
+        std.debug.print("PARSE_TIME_MS:{d:.2}\n", .{parse_ms + classify_ms});
+        std.debug.print("SASA_TIME_MS:{d:.2}\n", .{sasa_ms});
+        std.debug.print("TOTAL_TIME_MS:{d:.2}\n", .{total_ms - write_ms});
     }
 }
 

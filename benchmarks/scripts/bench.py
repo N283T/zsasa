@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import csv
 import json
+import re
+import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -123,6 +125,65 @@ def _build_command(
         )
     else:
         raise ValueError(f"No command builder for tool base: {base}")
+
+
+def _build_timing_command(
+    base: str,
+    precision: str,
+    pdb_path: Path,
+    n_threads: int,
+    n_points: int,
+    use_bitmask: bool = False,
+) -> str | None:
+    """Build a command with --timing flag for internal SASA timing.
+
+    Returns None for tools that don't support --timing.
+    """
+    binary = quote_path(get_binary_path(base))
+    quoted = quote_path(pdb_path)
+    bitmask_flag = " --use-bitmask" if use_bitmask else ""
+
+    if base == "zig":
+        return (
+            f"{binary} calc --algorithm=sr --threads={n_threads}"
+            f" --precision={precision} --n-points={n_points}"
+            f"{bitmask_flag} --timing"
+            f" {quoted} /dev/null"
+        )
+    elif base == "freesasa":
+        return (
+            f"{binary} --shrake-rupley --resolution={n_points}"
+            f" --n-threads={n_threads} --timing {quoted}"
+        )
+    elif base == "rust":
+        return (
+            f"{binary} {quoted} /dev/null -n {n_points} -t {n_threads}"
+            f" -o protein --allow-vdw-fallback --timing"
+        )
+    return None
+
+
+_TIMING_RE = re.compile(r"^(\w+_TIME_MS):([0-9.]+)$", re.MULTILINE)
+
+
+def _run_timing(cmd: str, timeout: int = 60) -> dict[str, float] | None:
+    """Run a command and parse PARSE_TIME_MS/SASA_TIME_MS/TOTAL_TIME_MS from stderr."""
+    try:
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            return None
+        timing = {}
+        for match in _TIMING_RE.finditer(result.stderr):
+            timing[match.group(1).lower()] = float(match.group(2))
+        return timing if timing else None
+    except (subprocess.TimeoutExpired, OSError):
+        return None
 
 
 def _resolve_tools(tools: list[str] | None) -> list[str]:
@@ -241,6 +302,8 @@ def _run_tool(
                 "user_s",
                 "system_s",
                 "memory_bytes",
+                "parse_time_ms",
+                "sasa_time_ms",
             ],
         )
         writer.writeheader()
@@ -302,6 +365,21 @@ def _run_tool(
                         )
 
                         if result:
+                            # Run internal timing (single additional run)
+                            timing_cmd = _build_timing_command(
+                                tool_base,
+                                precision,
+                                pdb_path,
+                                n_threads,
+                                n_points,
+                                use_bitmask,
+                            )
+                            timing = (
+                                _run_timing(timing_cmd, timeout=timeout)
+                                if timing_cmd
+                                else None
+                            )
+
                             writer.writerow(
                                 {
                                     "tool": tool_canonical,
@@ -321,6 +399,12 @@ def _run_tool(
                                         result["memory_usage_byte"][0]
                                         if result.get("memory_usage_byte")
                                         else None
+                                    ),
+                                    "parse_time_ms": (
+                                        timing.get("parse_time_ms") if timing else None
+                                    ),
+                                    "sasa_time_ms": (
+                                        timing.get("sasa_time_ms") if timing else None
                                     ),
                                 }
                             )

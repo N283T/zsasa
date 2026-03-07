@@ -114,6 +114,10 @@ def load_data(n_points: int = 100) -> pl.DataFrame:
         if "total_sasa" not in df.columns:
             df = df.with_columns(pl.lit(None).cast(pl.Float64).alias("total_sasa"))
 
+        # Internal SASA-only timing (from --timing flag)
+        if "sasa_time_ms" not in df.columns:
+            df = df.with_columns(pl.lit(None).cast(pl.Float64).alias("sasa_time_ms"))
+
         return (
             df.select(
                 [
@@ -127,6 +131,7 @@ def load_data(n_points: int = 100) -> pl.DataFrame:
                     "time_ms",
                     "time_std",
                     "total_sasa",
+                    "sasa_time_ms",
                 ]
             )
             .with_columns(pl.lit(1).cast(pl.UInt32).alias("n_runs"))
