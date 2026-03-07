@@ -8,8 +8,8 @@
 Runs wall-clock benchmarks using the Shrake-Rupley algorithm with configurable
 thread counts. Uses hyperfine for timing (includes I/O).
 
-Tools: zig_f64, zig_f32, zig_f64_bitmask, zig_f32_bitmask, freesasa, rust,
-       lahuta, lahuta_bitmask (zig = zig_f64, zig_bitmask = zig_f64_bitmask)
+Tools: zig_f64, zig_f32, zig_f64_bitmask, zig_f32_bitmask, freesasa, rust
+       (zig = zig_f64, zig_bitmask = zig_f64_bitmask)
 
 Usage:
     # All tools (default)
@@ -71,8 +71,6 @@ SR_TOOLS = [
     "zig_f32_bitmask",
     "freesasa",
     "rust",
-    "lahuta",
-    "lahuta_bitmask",
 ]
 
 
@@ -362,7 +360,7 @@ def main(
                 "Tools to benchmark (can specify multiple: --tool X --tool Y). "
                 "Default: all. "
                 "Available: all, zig_f64, zig_f32, zig_f64_bitmask, zig_f32_bitmask, "
-                "freesasa, rust, lahuta, lahuta_bitmask "
+                "freesasa, rust "
                 "(zig = zig_f64, zig_bitmask = zig_f64_bitmask)"
             ),
         ),
