@@ -240,6 +240,9 @@ def _run_tool(
                 "min_s",
                 "max_s",
                 "median_s",
+                "user_s",
+                "system_s",
+                "memory_bytes",
             ],
         )
         writer.writeheader()
@@ -314,6 +317,13 @@ def _run_tool(
                                     "min_s": result["min"],
                                     "max_s": result["max"],
                                     "median_s": result["median"],
+                                    "user_s": result.get("user"),
+                                    "system_s": result.get("system"),
+                                    "memory_bytes": (
+                                        result["memory_usage_byte"][0]
+                                        if result.get("memory_usage_byte")
+                                        else None
+                                    ),
                                 }
                             )
                             f.flush()
