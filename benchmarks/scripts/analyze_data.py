@@ -250,6 +250,11 @@ def metric_label(time_col: str) -> str:
     return METRIC_LABELS.get(time_col, time_col)
 
 
+def metric_suffix(time_col: str) -> str:
+    """File-name suffix for a time column (empty for wall-clock)."""
+    return "_sasa" if time_col == "sasa_time_ms" else ""
+
+
 def setup_style():
     """Set up matplotlib style for clean plots."""
     plt.rcParams.update(

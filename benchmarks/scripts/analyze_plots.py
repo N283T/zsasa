@@ -14,6 +14,7 @@ from analyze_data import (
     display_name,
     load_data,
     metric_label,
+    metric_suffix,
     setup_style,
 )
 
@@ -139,7 +140,7 @@ def plot_scatter(n_points: int = 100, time_col: str = "time_ms"):
     setup_style()
     df = load_data(n_points)
 
-    suffix = "_sasa" if time_col == "sasa_time_ms" else ""
+    suffix = metric_suffix(time_col)
     plot_dir = PLOTS_DIR.joinpath("scatter", f"sr{suffix}")
     individual_dir = plot_dir.joinpath("individual")
     individual_dir.mkdir(parents=True, exist_ok=True)
@@ -193,7 +194,7 @@ def plot_threads(n_points: int = 100, time_col: str = "time_ms"):
     setup_style()
     df = load_data(n_points)
 
-    suffix = "_sasa" if time_col == "sasa_time_ms" else ""
+    suffix = metric_suffix(time_col)
     plot_dir = PLOTS_DIR.joinpath("thread_scaling")
     plot_dir.mkdir(parents=True, exist_ok=True)
 
@@ -216,7 +217,7 @@ def plot_grid(n_points: int = 100, time_col: str = "time_ms"):
         rprint("[yellow]No SR data found[/yellow]")
         return
 
-    suffix = "_sasa" if time_col == "sasa_time_ms" else ""
+    suffix = metric_suffix(time_col)
     mlabel = metric_label(time_col)
     plot_dir = PLOTS_DIR.joinpath(f"speedup_by_bin{suffix}")
     individual_dir = plot_dir.joinpath("individual")
@@ -353,7 +354,7 @@ def plot_samples(n_points: int = 100, time_col: str = "time_ms"):
 
     df = add_size_bin(df)
 
-    suffix = "_sasa" if time_col == "sasa_time_ms" else ""
+    suffix = metric_suffix(time_col)
     plot_dir = PLOTS_DIR.joinpath(f"samples{suffix}")
     plot_dir.mkdir(parents=True, exist_ok=True)
 
@@ -477,7 +478,7 @@ def plot_large(n_points: int = 100, time_col: str = "time_ms"):
     df = load_data(n_points)
     df = add_size_bin(df)
 
-    suffix = "_sasa" if time_col == "sasa_time_ms" else ""
+    suffix = metric_suffix(time_col)
     plot_dir = PLOTS_DIR.joinpath(f"large{suffix}")
     plot_dir.mkdir(parents=True, exist_ok=True)
 
@@ -592,7 +593,7 @@ def plot_efficiency(n_points: int = 100, time_col: str = "time_ms"):
         rprint("[yellow]No SR data found[/yellow]")
         return
 
-    suffix = "_sasa" if time_col == "sasa_time_ms" else ""
+    suffix = metric_suffix(time_col)
     plot_dir = PLOTS_DIR.joinpath(f"efficiency{suffix}")
     plot_dir.mkdir(parents=True, exist_ok=True)
 
@@ -736,7 +737,7 @@ def plot_speedup(
         )
         speedup_cols.append("vs_rustsasa")
 
-    suffix = "_sasa" if time_col == "sasa_time_ms" else ""
+    suffix = metric_suffix(time_col)
     plot_dir = PLOTS_DIR.joinpath(f"speedup{suffix}")
     plot_dir.mkdir(parents=True, exist_ok=True)
 

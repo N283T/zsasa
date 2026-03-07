@@ -30,7 +30,7 @@ Usage:
     ./benchmarks/scripts/analyze.py export-csv   # Export to CSV
 """
 
-from pathlib import Path
+from enum import StrEnum
 
 import polars as pl
 import typer
@@ -45,6 +45,7 @@ from analyze_data import (
     compute_speedup_by_bin,
     load_data,
     metric_label,
+    metric_suffix,
 )
 from analyze_plots import (
     plot_efficiency,
@@ -59,27 +60,37 @@ from analyze_plots import (
 
 app = typer.Typer(help="SR benchmark analysis CLI")
 
-# Map CLI --metric values to DataFrame column names
-_METRIC_MAP = {"wall": "time_ms", "sasa": "sasa_time_ms"}
+
+# === Shared CLI Option Defaults ===
+
+
+class Metric(StrEnum):
+    """Timing metric for analysis."""
+
+    wall = "wall"
+    sasa = "sasa"
+
+
+_METRIC_COL = {"wall": "time_ms", "sasa": "sasa_time_ms"}
+
+NPointsOption = typer.Option(
+    100, "--n-points", "-N", help="Number of sphere test points"
+)
+MetricOption = typer.Option(
+    Metric.wall,
+    "--metric",
+    "-m",
+    help="Timing metric: wall (wall-clock) or sasa (SASA-only)",
+)
 
 
 # === CLI Commands ===
 
 
 @app.command()
-def summary(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-    metric: str = typer.Option(
-        "wall",
-        "--metric",
-        "-m",
-        help="Timing metric: wall (wall-clock) or sasa (SASA-only)",
-    ),
-):
+def summary(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Print summary statistics table."""
-    time_col = _METRIC_MAP[metric]
+    time_col = _METRIC_COL[metric]
     df = load_data(n_points)
 
     # Single-threaded comparison
@@ -201,23 +212,14 @@ def summary(
 
 
 @app.command(name="export-csv")
-def export_csv(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-    metric: str = typer.Option(
-        "wall",
-        "--metric",
-        "-m",
-        help="Timing metric: wall (wall-clock) or sasa (SASA-only)",
-    ),
-):
+def export_csv(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Export summary tables as CSV files per thread count."""
-    time_col = _METRIC_MAP[metric]
+    time_col = _METRIC_COL[metric]
     df = load_data(n_points)
     df = add_size_bin(df)
 
-    csv_dir = RESULTS_BASE.joinpath(str(n_points), "csv")
+    suffix = metric_suffix(time_col)
+    csv_dir = RESULTS_BASE.joinpath(str(n_points), f"csv{suffix}")
     csv_dir.mkdir(parents=True, exist_ok=True)
 
     thread_counts = sorted(df["threads"].unique().to_list())
@@ -269,124 +271,67 @@ def export_csv(
 
 
 @app.command()
-def scatter(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-    metric: str = typer.Option(
-        "wall", "--metric", "-m", help="Timing metric: wall or sasa"
-    ),
-):
+def scatter(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Generate atoms vs time scatter plot."""
-    plot_scatter(n_points, time_col=_METRIC_MAP[metric])
+    plot_scatter(n_points, time_col=_METRIC_COL[metric])
 
 
 @app.command()
-def threads(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-    metric: str = typer.Option(
-        "wall", "--metric", "-m", help="Timing metric: wall or sasa"
-    ),
-):
+def threads(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Generate thread scaling plot."""
-    plot_threads(n_points, time_col=_METRIC_MAP[metric])
+    plot_threads(n_points, time_col=_METRIC_COL[metric])
 
 
 @app.command()
-def grid(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-    metric: str = typer.Option(
-        "wall", "--metric", "-m", help="Timing metric: wall or sasa"
-    ),
-):
+def grid(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Generate grid of speedup plots for all thread counts."""
-    plot_grid(n_points, time_col=_METRIC_MAP[metric])
+    plot_grid(n_points, time_col=_METRIC_COL[metric])
 
 
 @app.command()
-def validation(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-):
+def validation(n_points: int = NPointsOption):
     """Generate SASA validation scatter plot (zsasa vs FreeSASA)."""
     plot_validation(n_points)
 
 
 @app.command()
-def samples(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-    metric: str = typer.Option(
-        "wall", "--metric", "-m", help="Timing metric: wall or sasa"
-    ),
-):
+def samples(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Generate thread scaling plots for representative structures per size bin."""
-    plot_samples(n_points, time_col=_METRIC_MAP[metric])
+    plot_samples(n_points, time_col=_METRIC_COL[metric])
 
 
 @app.command()
-def large(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-    metric: str = typer.Option(
-        "wall", "--metric", "-m", help="Timing metric: wall or sasa"
-    ),
-):
+def large(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Generate speedup bar chart for large structures (50k+ atoms)."""
-    plot_large(n_points, time_col=_METRIC_MAP[metric])
+    plot_large(n_points, time_col=_METRIC_COL[metric])
 
 
 @app.command()
-def efficiency(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-    metric: str = typer.Option(
-        "wall", "--metric", "-m", help="Timing metric: wall or sasa"
-    ),
-):
+def efficiency(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Calculate and plot parallel efficiency."""
-    plot_efficiency(n_points, time_col=_METRIC_MAP[metric])
+    plot_efficiency(n_points, time_col=_METRIC_COL[metric])
 
 
 @app.command()
 def speedup(
     min_atoms: int = typer.Option(50000, help="Minimum atom count for filtering"),
     top_n: int = typer.Option(5, help="Number of top entries to show"),
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-    metric: str = typer.Option(
-        "wall", "--metric", "-m", help="Timing metric: wall or sasa"
-    ),
+    n_points: int = NPointsOption,
+    metric: Metric = MetricOption,
 ):
     """Find structures with best zsasa speedup at any thread count."""
     plot_speedup(
         min_atoms=min_atoms,
         top_n=top_n,
         n_points=n_points,
-        time_col=_METRIC_MAP[metric],
+        time_col=_METRIC_COL[metric],
     )
 
 
 @app.command()
-def all(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-    metric: str = typer.Option(
-        "wall", "--metric", "-m", help="Timing metric: wall or sasa"
-    ),
-):
+def all(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Generate all plots and summary."""
-    time_col = _METRIC_MAP[metric]
+    time_col = _METRIC_COL[metric]
     summary(n_points, metric=metric)
     rprint("\n[bold]Generating plots...[/bold]\n")
     plot_validation(n_points)
