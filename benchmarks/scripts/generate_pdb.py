@@ -143,6 +143,17 @@ def _fix_cryst1_z(output_path: Path) -> None:
         f.writelines(lines)
 
 
+def _wrap_residue_numbers(model: gemmi.Model) -> None:
+    """Wrap residue sequence numbers per chain to stay within PDB 4-digit limit (≤9999).
+
+    Some structures (e.g. large complexes from CIF) have residue numbers >9999,
+    which causes hybrid36 encoding in PDB output that pdbtbx cannot parse.
+    """
+    for chain in model:
+        for i, res in enumerate(chain):
+            res.seqid = gemmi.SeqId(str((i % _MAX_RESNUM) + 1))
+
+
 def _wrap_serial_numbers(model: gemmi.Model) -> None:
     """Wrap atom serial numbers to stay within PDB 5-digit limit (≤99999)."""
     serial = 0
@@ -194,9 +205,19 @@ def clean_cif_to_pdb(cif_path: Path, output_path: Path) -> tuple[str, int]:
     if has_long_chains:
         _reassign_chain_ids(model)
 
+    # Wrap residue numbers that exceed PDB 4-digit limit (>9999).
+    # Some CIF structures have large residue numbers that cause hybrid36 in PDB.
+    max_resnum = max(
+        (r.seqid.num for c in model for r in c),
+        default=0,
+    )
+    has_large_resnum = max_resnum > _MAX_RESNUM
+    if has_large_resnum and not has_long_chains:
+        _wrap_residue_numbers(model)
+
     # Wrap atom serial numbers to stay within PDB 5-digit limit (≤99999).
     # Avoids hybrid36 encoding that some parsers (e.g. pdbtbx) cannot read.
-    needs_preserve = has_long_chains or n_atoms > _MAX_SERIAL
+    needs_preserve = has_long_chains or has_large_resnum or n_atoms > _MAX_SERIAL
     if needs_preserve:
         _wrap_serial_numbers(model)
         opts = gemmi.PdbWriteOptions()
