@@ -119,7 +119,36 @@ def load_lr_data(n_slices: int = 20) -> pl.DataFrame:
         .alias("tool_label")
     )
 
-    # Aggregate by structure (mean across runs)
+    # Convert current CSV format (mean_s etc.) to time_ms used downstream.
+    if "mean_s" in df.columns:
+        df = df.with_columns(
+            (pl.col("mean_s") * 1000).alias("time_ms"),
+            (pl.col("stddev_s") * 1000).alias("time_std"),
+            (pl.col("median_s") * 1000).alias("median_ms"),
+        )
+        if "total_sasa" not in df.columns:
+            df = df.with_columns(pl.lit(None).cast(pl.Float64).alias("total_sasa"))
+
+        return (
+            df.select(
+                [
+                    "tool",
+                    "tool_label",
+                    "structure",
+                    "n_atoms",
+                    "algorithm",
+                    "precision",
+                    "threads",
+                    "time_ms",
+                    "time_std",
+                    "total_sasa",
+                ]
+            )
+            .with_columns(pl.lit(1).cast(pl.UInt32).alias("n_runs"))
+            .sort(["tool_label", "n_atoms"])
+        )
+
+    # Legacy format: per-run rows with sasa_time_ms
     return (
         df.group_by(
             [
@@ -214,9 +243,7 @@ def summary(
             (pl.col("zsasa_f64") / pl.col("zsasa_f32")).alias("speedup")
         )
         med = speedup["speedup"].median()
-        rprint(
-            f"  LR: zsasa(f32) vs zsasa(f64) = [green]{med:.2f}x[/green] (median)"
-        )
+        rprint(f"  LR: zsasa(f32) vs zsasa(f64) = [green]{med:.2f}x[/green] (median)")
 
 
 @app.command()

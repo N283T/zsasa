@@ -89,20 +89,51 @@ def load_data(n_points: int = 100) -> pl.DataFrame:
     if "precision" not in df.columns:
         df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias("precision"))
 
-    # Remap tool names: zig → zsasa, rust → rustsasa
+    # Remap tool names: zig* → zsasa, rust → rustsasa
+    # Tool column may contain compound names like zig_f64, zig_f32_bitmask
     df = df.with_columns(
-        pl.col("tool").replace({"zig": "zsasa", "rust": "rustsasa"}).alias("tool"),
+        pl.col("tool")
+        .str.replace(r"^zig", "zsasa")
+        .str.replace(r"^rust$", "rustsasa")
+        .alias("tool"),
     )
 
-    # Create tool_label: zsasa_f64, zsasa_f32, freesasa, rustsasa
-    df = df.with_columns(
-        pl.when((pl.col("tool") == "zsasa") & pl.col("precision").is_not_null())
-        .then(pl.concat_str([pl.col("tool"), pl.lit("_"), pl.col("precision")]))
-        .otherwise(pl.col("tool"))
-        .alias("tool_label")
-    )
+    # Create tool_label from tool column (already contains precision/variant info)
+    df = df.with_columns(pl.col("tool").alias("tool_label"))
 
-    # Aggregate by structure (mean across runs)
+    # Convert current CSV format (mean_s etc.) to time_ms used downstream.
+    # Old format had sasa_time_ms per-run rows; new format has pre-aggregated
+    # mean_s/stddev_s/median_s in seconds.
+    if "mean_s" in df.columns:
+        df = df.with_columns(
+            (pl.col("mean_s") * 1000).alias("time_ms"),
+            (pl.col("stddev_s") * 1000).alias("time_std"),
+            (pl.col("median_s") * 1000).alias("median_ms"),
+        )
+        # total_sasa not available in new format
+        if "total_sasa" not in df.columns:
+            df = df.with_columns(pl.lit(None).cast(pl.Float64).alias("total_sasa"))
+
+        return (
+            df.select(
+                [
+                    "tool",
+                    "tool_label",
+                    "structure",
+                    "n_atoms",
+                    "algorithm",
+                    "precision",
+                    "threads",
+                    "time_ms",
+                    "time_std",
+                    "total_sasa",
+                ]
+            )
+            .with_columns(pl.lit(1).cast(pl.UInt32).alias("n_runs"))
+            .sort(["algorithm", "tool_label", "n_atoms"])
+        )
+
+    # Legacy format: per-run rows with sasa_time_ms
     return (
         df.group_by(
             [
