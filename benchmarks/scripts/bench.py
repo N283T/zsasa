@@ -263,6 +263,11 @@ def _run_tool(
                             progress.advance(task)
                             continue
 
+                        # lahuta only supports AlphaFold models
+                        if tool_base == "lahuta" and not pdb_id.startswith("af-"):
+                            progress.advance(task)
+                            continue
+
                         # Resolve n_atoms lazily
                         if n_atoms == 0:
                             if pdb_id not in n_atoms_cache:
