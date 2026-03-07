@@ -41,10 +41,10 @@ symlink() {
 # --- tools ---
 
 build_freesasa() {
-    info "FreeSASA (vanilla)"
+    info "FreeSASA (fork with --timing)"
     cd "$SCRIPT_DIR"
     if [ ! -d freesasa ]; then
-        git clone https://github.com/mittinatten/freesasa.git
+        git clone -b feat/add-timing https://github.com/N283T/freesasa.git
     fi
     cd freesasa
     if [ ! -f src/freesasa ]; then
@@ -73,10 +73,10 @@ build_freesasa_batch() {
 }
 
 build_rustsasa() {
-    info "RustSASA (vanilla)"
+    info "RustSASA (fork with --timing)"
     cd "$SCRIPT_DIR"
     if [ ! -d rustsasa ]; then
-        git clone --recursive https://github.com/maxall41/RustSASA.git rustsasa
+        git clone --recursive -b feat/add-timing https://github.com/N283T/RustSASA.git rustsasa
     fi
     cd rustsasa
     if [ ! -f target/release/rust-sasa ]; then
