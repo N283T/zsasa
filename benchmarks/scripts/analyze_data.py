@@ -9,7 +9,7 @@ import polars as pl
 
 _BENCHMARKS_DIR = Path(__file__).parent.parent
 RESULTS_BASE = _BENCHMARKS_DIR.joinpath("results", "single")
-PLOTS_DIR = _BENCHMARKS_DIR.joinpath("results", "plots")
+PLOTS_DIR = _BENCHMARKS_DIR.joinpath("results", "plots", "single")
 
 # === Visual Constants ===
 
