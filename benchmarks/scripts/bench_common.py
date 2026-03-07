@@ -23,7 +23,7 @@ from rich.table import Table
 
 console = Console()
 
-TOOL_ALIASES = {"zig": "zig_f64", "zig_bitmask": "zig_f64_bitmask"}
+TOOL_ALIASES = {"zig": "zig_f64", "zig_bitmask": "zig_f64_bitmask", "rust": "rustsasa"}
 
 
 class Precision(str, Enum):
@@ -91,7 +91,8 @@ def parse_tool(tool: str) -> tuple[str, str, str, bool]:
         "zig_f32_bitmask"  -> ("zig_f32_bitmask", "zig", "f32", True)
         "zig_bitmask"      -> ("zig_f64_bitmask", "zig", "f64", True)  # alias
         "freesasa"         -> ("freesasa", "freesasa", "f64", False)
-        "rust"             -> ("rust", "rust", "f64", False)
+        "rustsasa"         -> ("rustsasa", "rustsasa", "f64", False)
+        "rust"             -> ("rustsasa", "rustsasa", "f64", False)  # alias
         "lahuta"           -> ("lahuta", "lahuta", "f64", False)
         "lahuta_bitmask"   -> ("lahuta_bitmask", "lahuta", "f64", True)
     """
@@ -155,7 +156,7 @@ def _bin_dir() -> Path:
 _TOOL_BINARIES = {
     "zig": "zsasa",
     "freesasa": "freesasa",
-    "rust": "rust-sasa",
+    "rustsasa": "rust-sasa",
     "lahuta": "lahuta",
 }
 
@@ -166,7 +167,7 @@ def get_binary_path(tool: str) -> Path:
     Tools:
         zig      -> bin/zsasa
         freesasa -> bin/freesasa
-        rust     -> bin/rust-sasa
+        rustsasa -> bin/rust-sasa
         lahuta   -> bin/lahuta
     """
     if tool not in _TOOL_BINARIES:
