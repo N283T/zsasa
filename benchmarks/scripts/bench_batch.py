@@ -107,7 +107,7 @@ def get_binary_paths() -> dict[str, Path]:
     return {
         "zsasa": get_binary_path("zig"),
         "freesasa_batch": bin_dir.joinpath("freesasa_batch"),
-        "rustsasa": get_binary_path("rust"),
+        "rustsasa": get_binary_path("rustsasa"),
         "lahuta": get_binary_path("lahuta"),
     }
 

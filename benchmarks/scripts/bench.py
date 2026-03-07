@@ -72,11 +72,11 @@ SR_TOOLS = [
     "zig_f64_bitmask",
     "zig_f32_bitmask",
     "freesasa",
-    "rust",
+    "rustsasa",
 ]
 
 
-_TIMING_TOOLS = {"zig", "freesasa", "rust"}
+_TIMING_TOOLS = {"zig", "freesasa", "rustsasa"}
 
 
 def _build_command(
@@ -91,7 +91,7 @@ def _build_command(
 ) -> str:
     """Build shell command for a tool.
 
-    When timing=True, appends --timing flag (supported by zig, freesasa, rust).
+    When timing=True, appends --timing flag (supported by zig, freesasa, rustsasa).
 
     Raises:
         ValueError: If tool base is not recognized, or if use_bitmask is True
@@ -120,7 +120,7 @@ def _build_command(
             f"{binary} --shrake-rupley --resolution={n_points}"
             f" --n-threads={n_threads}{timing_flag} {quoted}"
         )
-    elif base == "rust":
+    elif base == "rustsasa":
         return (
             f"{binary} {quoted} /dev/null -n {n_points} -t {n_threads}"
             f" -o protein --allow-vdw-fallback{timing_flag}"
