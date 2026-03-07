@@ -76,6 +76,9 @@ SR_TOOLS = [
 ]
 
 
+_TIMING_TOOLS = {"zig", "freesasa", "rust"}
+
+
 def _build_command(
     base: str,
     precision: str,
@@ -83,8 +86,12 @@ def _build_command(
     n_threads: int,
     n_points: int,
     use_bitmask: bool = False,
+    *,
+    timing: bool = False,
 ) -> str:
     """Build shell command for a tool.
+
+    When timing=True, appends --timing flag (supported by zig, freesasa, rust).
 
     Raises:
         ValueError: If tool base is not recognized, or if use_bitmask is True
@@ -99,23 +106,24 @@ def _build_command(
     binary = quote_path(get_binary_path(base))
     quoted = quote_path(pdb_path)
     bitmask_flag = " --use-bitmask" if use_bitmask else ""
+    timing_flag = " --timing" if timing else ""
 
     if base == "zig":
         return (
             f"{binary} calc --algorithm=sr --threads={n_threads}"
             f" --precision={precision} --n-points={n_points}"
-            f"{bitmask_flag}"
+            f"{bitmask_flag}{timing_flag}"
             f" {quoted} /dev/null"
         )
     elif base == "freesasa":
         return (
             f"{binary} --shrake-rupley --resolution={n_points}"
-            f" --n-threads={n_threads} {quoted}"
+            f" --n-threads={n_threads}{timing_flag} {quoted}"
         )
     elif base == "rust":
         return (
             f"{binary} {quoted} /dev/null -n {n_points} -t {n_threads}"
-            f" -o protein --allow-vdw-fallback"
+            f" -o protein --allow-vdw-fallback{timing_flag}"
         )
     elif base == "lahuta":
         return (
@@ -127,47 +135,14 @@ def _build_command(
         raise ValueError(f"No command builder for tool base: {base}")
 
 
-def _build_timing_command(
-    base: str,
-    precision: str,
-    pdb_path: Path,
-    n_threads: int,
-    n_points: int,
-    use_bitmask: bool = False,
-) -> str | None:
-    """Build a command with --timing flag for internal SASA timing.
-
-    Returns None for tools that don't support --timing.
-    """
-    binary = quote_path(get_binary_path(base))
-    quoted = quote_path(pdb_path)
-    bitmask_flag = " --use-bitmask" if use_bitmask else ""
-
-    if base == "zig":
-        return (
-            f"{binary} calc --algorithm=sr --threads={n_threads}"
-            f" --precision={precision} --n-points={n_points}"
-            f"{bitmask_flag} --timing"
-            f" {quoted} /dev/null"
-        )
-    elif base == "freesasa":
-        return (
-            f"{binary} --shrake-rupley --resolution={n_points}"
-            f" --n-threads={n_threads} --timing {quoted}"
-        )
-    elif base == "rust":
-        return (
-            f"{binary} {quoted} /dev/null -n {n_points} -t {n_threads}"
-            f" -o protein --allow-vdw-fallback --timing"
-        )
-    return None
-
-
-_TIMING_RE = re.compile(r"^(\w+_TIME_MS):([0-9.]+)$", re.MULTILINE)
+_TIMING_RE = re.compile(r"^(\w+_TIME_MS):([0-9.]+)\s*$", re.MULTILINE)
 
 
 def _run_timing(cmd: str, timeout: int = 60) -> dict[str, float] | None:
-    """Run a command and parse PARSE_TIME_MS/SASA_TIME_MS/TOTAL_TIME_MS from stderr."""
+    """Run a command and parse PARSE_TIME_MS/SASA_TIME_MS/TOTAL_TIME_MS from stderr.
+
+    Keys are lowercased: e.g. SASA_TIME_MS -> sasa_time_ms.
+    """
     try:
         result = subprocess.run(
             cmd,
@@ -177,12 +152,29 @@ def _run_timing(cmd: str, timeout: int = 60) -> dict[str, float] | None:
             timeout=timeout,
         )
         if result.returncode != 0:
+            snippet = (result.stderr or "").strip()[-200:]
+            console.print(
+                f"[yellow]Warning:[/yellow] timing command failed "
+                f"(exit {result.returncode}): {cmd[:80]}"
+            )
+            if snippet:
+                console.print(f"[dim]  {snippet}[/dim]")
             return None
         timing = {}
         for match in _TIMING_RE.finditer(result.stderr):
             timing[match.group(1).lower()] = float(match.group(2))
+        if not timing:
+            console.print(
+                f"[yellow]Warning:[/yellow] no timing markers in stderr: {cmd[:80]}"
+            )
         return timing if timing else None
-    except (subprocess.TimeoutExpired, OSError):
+    except subprocess.TimeoutExpired:
+        console.print(
+            f"[yellow]Warning:[/yellow] timing command timed out ({timeout}s)"
+        )
+        return None
+    except OSError as e:
+        console.print(f"[yellow]Warning:[/yellow] timing command error: {e}")
         return None
 
 
@@ -366,19 +358,18 @@ def _run_tool(
 
                         if result:
                             # Run internal timing (single additional run)
-                            timing_cmd = _build_timing_command(
-                                tool_base,
-                                precision,
-                                pdb_path,
-                                n_threads,
-                                n_points,
-                                use_bitmask,
-                            )
-                            timing = (
-                                _run_timing(timing_cmd, timeout=timeout)
-                                if timing_cmd
-                                else None
-                            )
+                            timing = None
+                            if tool_base in _TIMING_TOOLS:
+                                timing_cmd = _build_command(
+                                    tool_base,
+                                    precision,
+                                    pdb_path,
+                                    n_threads,
+                                    n_points,
+                                    use_bitmask,
+                                    timing=True,
+                                )
+                                timing = _run_timing(timing_cmd, timeout=timeout)
 
                             writer.writerow(
                                 {

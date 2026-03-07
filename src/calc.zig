@@ -997,6 +997,9 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
         std.debug.print("  Total:            {d:.2} ms\n", .{total_ms});
 
         // Machine-readable format (compatible with freesasa/rustsasa forks)
+        // PARSE = file read + validation + classification
+        // SASA  = algorithm only
+        // TOTAL = PARSE + SASA (excludes output write)
         std.debug.print("PARSE_TIME_MS:{d:.2}\n", .{parse_ms + classify_ms});
         std.debug.print("SASA_TIME_MS:{d:.2}\n", .{sasa_ms});
         std.debug.print("TOTAL_TIME_MS:{d:.2}\n", .{total_ms - write_ms});
