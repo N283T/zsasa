@@ -272,6 +272,10 @@ def plot_validation(n_points: int = 100):
         rprint("[yellow]No single-threaded SR data found[/yellow]")
         return
 
+    if "total_sasa" not in df_t1.columns or df_t1["total_sasa"].is_null().all():
+        rprint("[yellow]No total_sasa data available for validation[/yellow]")
+        return
+
     pivot = (
         df_t1.select(["structure", "tool_label", "total_sasa"])
         .pivot(on="tool_label", index="structure", values="total_sasa")
