@@ -13,6 +13,7 @@ from analyze_data import (
     compute_speedup_by_bin,
     display_name,
     load_data,
+    metric_label,
     setup_style,
 )
 
@@ -20,7 +21,7 @@ from analyze_data import (
 # === Internal Plot Helpers ===
 
 
-def _plot_scatter(df_sr: pl.DataFrame, ax):
+def _plot_scatter(df_sr: pl.DataFrame, ax, time_col: str = "time_ms"):
     """Plot scatter for SR algorithm."""
     df_sampled = df_sr.sample(n=min(5000, df_sr.height), seed=42)
 
@@ -31,7 +32,7 @@ def _plot_scatter(df_sr: pl.DataFrame, ax):
         df_tool = df_sampled.filter(pl.col("tool_label") == tool_label)
         ax.scatter(
             df_tool["n_atoms"].to_list(),
-            df_tool["time_ms"].to_list(),
+            df_tool[time_col].to_list(),
             label=display_name(tool_label),
             alpha=0.4,
             s=10,
@@ -41,15 +42,15 @@ def _plot_scatter(df_sr: pl.DataFrame, ax):
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Number of Atoms")
-    ax.set_ylabel("Execution Time (ms)")
+    ax.set_ylabel(f"{metric_label(time_col)} (ms)")
     ax.legend()
 
 
-def _plot_threads(df_sr: pl.DataFrame, ax):
+def _plot_threads(df_sr: pl.DataFrame, ax, time_col: str = "time_ms"):
     """Plot thread scaling for SR algorithm."""
     scaling = (
         df_sr.group_by(["tool_label", "threads"])
-        .agg(pl.col("time_ms").median().alias("median_time"))
+        .agg(pl.col(time_col).median().alias("median_time"))
         .sort(["tool_label", "threads"])
     )
 
@@ -69,7 +70,7 @@ def _plot_threads(df_sr: pl.DataFrame, ax):
         )
 
     ax.set_xlabel("Thread Count")
-    ax.set_ylabel("Median Execution Time (ms)")
+    ax.set_ylabel(f"Median {metric_label(time_col)} (ms)")
     ax.legend()
     ax.grid(True, alpha=0.3)
     thread_values = sorted(scaling["threads"].unique().to_list())
@@ -78,11 +79,15 @@ def _plot_threads(df_sr: pl.DataFrame, ax):
 
 
 def _plot_speedup_single(
-    df_sr: pl.DataFrame, threads: int, ax, show_legend: bool = True
+    df_sr: pl.DataFrame,
+    threads: int,
+    ax,
+    show_legend: bool = True,
+    time_col: str = "time_ms",
 ):
     """Plot speedup for a single thread count on given axes."""
     bin_labels = [b[2] for b in BINS]
-    speedup_data = compute_speedup_by_bin(df_sr, threads=threads)
+    speedup_data = compute_speedup_by_bin(df_sr, threads=threads, time_col=time_col)
     data_dict = {r["size_bin"]: r for r in speedup_data.iter_rows(named=True)}
 
     x_labels = [b for b in bin_labels if b in data_dict]
@@ -129,22 +134,24 @@ def _plot_speedup_single(
 # === Plot Command Implementations ===
 
 
-def plot_scatter(n_points: int = 100):
+def plot_scatter(n_points: int = 100, time_col: str = "time_ms"):
     """Generate atoms vs time scatter plot."""
     setup_style()
     df = load_data(n_points)
 
-    plot_dir = PLOTS_DIR.joinpath("scatter", "sr")
+    suffix = "_sasa" if time_col == "sasa_time_ms" else ""
+    plot_dir = PLOTS_DIR.joinpath("scatter", f"sr{suffix}")
     individual_dir = plot_dir.joinpath("individual")
     individual_dir.mkdir(parents=True, exist_ok=True)
 
     thread_counts = sorted(df["threads"].unique().to_list())
+    mlabel = metric_label(time_col)
 
     for threads in thread_counts:
         df_t = df.filter(pl.col("threads") == threads)
         fig, ax = plt.subplots(figsize=(10, 6))
-        _plot_scatter(df_t, ax)
-        ax.set_title(f"SR: Time vs Size (threads={threads})")
+        _plot_scatter(df_t, ax, time_col=time_col)
+        ax.set_title(f"SR: {mlabel} vs Size (threads={threads})")
         fig.tight_layout()
         out_path = individual_dir.joinpath(f"t{threads}.png")
         fig.savefig(out_path)
@@ -166,14 +173,14 @@ def plot_scatter(n_points: int = 100):
         row, col = idx // n_cols, idx % n_cols
         ax = axes[row][col] if n_rows > 1 else axes[0][col]
         df_t = df.filter(pl.col("threads") == threads)
-        _plot_scatter(df_t, ax)
+        _plot_scatter(df_t, ax, time_col=time_col)
         ax.set_title(f"threads={threads}")
 
     for idx in range(n_threads, n_rows * n_cols):
         row, col = idx // n_cols, idx % n_cols
         axes[row][col].set_visible(False)
 
-    fig.suptitle("SR: Execution Time vs Structure Size", fontsize=14)
+    fig.suptitle(f"SR: {mlabel} vs Structure Size", fontsize=14)
     fig.tight_layout()
     out_path = plot_dir.joinpath("grid.png")
     fig.savefig(out_path)
@@ -181,25 +188,26 @@ def plot_scatter(n_points: int = 100):
     rprint(f"[green]Saved:[/green] {out_path}")
 
 
-def plot_threads(n_points: int = 100):
+def plot_threads(n_points: int = 100, time_col: str = "time_ms"):
     """Generate thread scaling plot."""
     setup_style()
     df = load_data(n_points)
 
+    suffix = "_sasa" if time_col == "sasa_time_ms" else ""
     plot_dir = PLOTS_DIR.joinpath("thread_scaling")
     plot_dir.mkdir(parents=True, exist_ok=True)
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    _plot_threads(df, ax)
-    ax.set_title("SR: Thread Scaling")
+    _plot_threads(df, ax, time_col=time_col)
+    ax.set_title(f"SR: Thread Scaling ({metric_label(time_col)})")
     fig.tight_layout()
-    out_path = plot_dir.joinpath("sr.png")
+    out_path = plot_dir.joinpath(f"sr{suffix}.png")
     fig.savefig(out_path)
     plt.close(fig)
     rprint(f"[green]Saved:[/green] {out_path}")
 
 
-def plot_grid(n_points: int = 100):
+def plot_grid(n_points: int = 100, time_col: str = "time_ms"):
     """Generate grid of speedup plots for all thread counts."""
     setup_style()
     df = load_data(n_points)
@@ -208,7 +216,9 @@ def plot_grid(n_points: int = 100):
         rprint("[yellow]No SR data found[/yellow]")
         return
 
-    plot_dir = PLOTS_DIR.joinpath("speedup_by_bin")
+    suffix = "_sasa" if time_col == "sasa_time_ms" else ""
+    mlabel = metric_label(time_col)
+    plot_dir = PLOTS_DIR.joinpath(f"speedup_by_bin{suffix}")
     individual_dir = plot_dir.joinpath("individual")
     individual_dir.mkdir(parents=True, exist_ok=True)
 
@@ -216,10 +226,12 @@ def plot_grid(n_points: int = 100):
 
     for threads in thread_counts:
         fig_single, ax_single = plt.subplots(figsize=(12, 6))
-        _plot_speedup_single(df, threads, ax_single, show_legend=True)
+        _plot_speedup_single(
+            df, threads, ax_single, show_legend=True, time_col=time_col
+        )
         ax_single.set_xlabel("Structure Size (atoms)")
         ax_single.set_ylabel("Speedup Ratio (>1 = zsasa faster)")
-        ax_single.set_title(f"SR Algorithm: zsasa Speedup (threads={threads})")
+        ax_single.set_title(f"SR: zsasa Speedup [{mlabel}] (threads={threads})")
         fig_single.tight_layout()
         out_path = individual_dir.joinpath(f"t{threads}.png")
         fig_single.savefig(out_path)
@@ -239,16 +251,14 @@ def plot_grid(n_points: int = 100):
     for idx, threads in enumerate(thread_counts):
         row, col = idx // n_cols, idx % n_cols
         ax = axes[row][col] if n_rows > 1 else axes[0][col]
-        _plot_speedup_single(df, threads, ax, show_legend=(idx == 0))
+        _plot_speedup_single(df, threads, ax, show_legend=(idx == 0), time_col=time_col)
         ax.set_title(f"threads={threads}")
 
     for idx in range(n_threads, n_rows * n_cols):
         row, col = idx // n_cols, idx % n_cols
         axes[row][col].set_visible(False)
 
-    fig.suptitle(
-        "SR Algorithm: zsasa Speedup by Structure Size and Thread Count", fontsize=14
-    )
+    fig.suptitle(f"SR: zsasa Speedup by Size/Threads [{mlabel}]", fontsize=14)
     fig.tight_layout()
 
     out_path = plot_dir.joinpath("grid.png")
@@ -332,7 +342,7 @@ def plot_validation(n_points: int = 100):
     rprint(f"[green]Saved:[/green] {out_path}")
 
 
-def plot_samples(n_points: int = 100):
+def plot_samples(n_points: int = 100, time_col: str = "time_ms"):
     """Generate thread scaling plots for representative structures per size bin."""
     setup_style()
     df = load_data(n_points)
@@ -343,7 +353,8 @@ def plot_samples(n_points: int = 100):
 
     df = add_size_bin(df)
 
-    plot_dir = PLOTS_DIR.joinpath("samples")
+    suffix = "_sasa" if time_col == "sasa_time_ms" else ""
+    plot_dir = PLOTS_DIR.joinpath(f"samples{suffix}")
     plot_dir.mkdir(parents=True, exist_ok=True)
 
     bin_order = [b[2] for b in BINS]
@@ -391,7 +402,7 @@ def plot_samples(n_points: int = 100):
                 )
                 ax.plot(
                     df_tool["threads"].to_list(),
-                    df_tool["time_ms"].to_list(),
+                    df_tool[time_col].to_list(),
                     marker="o",
                     label=display_name(tool_label),
                     color=COLORS.get(tool_label, "#95a5a6"),
@@ -400,7 +411,7 @@ def plot_samples(n_points: int = 100):
                 )
 
             ax.set_xlabel("Threads")
-            ax.set_ylabel("Time (ms)")
+            ax.set_ylabel(f"{metric_label(time_col)} (ms)")
             ax.set_xticks(thread_counts)
             ax.set_title(f"{struct}\n({n_atoms:,} atoms)", fontsize=10)
             ax.grid(True, alpha=0.3)
@@ -437,7 +448,7 @@ def plot_samples(n_points: int = 100):
             df_tool = df_max.filter(pl.col("tool_label") == tool_label).sort("threads")
             ax.plot(
                 df_tool["threads"].to_list(),
-                df_tool["time_ms"].to_list(),
+                df_tool[time_col].to_list(),
                 marker="o",
                 label=display_name(tool_label),
                 color=COLORS.get(tool_label, "#95a5a6"),
@@ -447,7 +458,7 @@ def plot_samples(n_points: int = 100):
             )
 
         ax.set_xlabel("Threads")
-        ax.set_ylabel("Time (ms)")
+        ax.set_ylabel(f"{metric_label(time_col)} (ms)")
         ax.set_xticks(thread_counts)
         ax.set_title(f"SR Thread Scaling: {max_struct} ({max_atoms:,} atoms)")
         ax.grid(True, alpha=0.3)
@@ -460,13 +471,14 @@ def plot_samples(n_points: int = 100):
         rprint(f"[green]Saved:[/green] {out_path}")
 
 
-def plot_large(n_points: int = 100):
+def plot_large(n_points: int = 100, time_col: str = "time_ms"):
     """Generate speedup bar chart for large structures (50k+ atoms)."""
     setup_style()
     df = load_data(n_points)
     df = add_size_bin(df)
 
-    plot_dir = PLOTS_DIR.joinpath("large")
+    suffix = "_sasa" if time_col == "sasa_time_ms" else ""
+    plot_dir = PLOTS_DIR.joinpath(f"large{suffix}")
     plot_dir.mkdir(parents=True, exist_ok=True)
 
     # Large bins (50k+)
@@ -485,8 +497,8 @@ def plot_large(n_points: int = 100):
     results = []
 
     pivot = (
-        df_large.select(["structure", "tool_label", "time_ms"])
-        .pivot(on="tool_label", index="structure", values="time_ms")
+        df_large.select(["structure", "tool_label", time_col])
+        .pivot(on="tool_label", index="structure", values=time_col)
         .drop_nulls()
     )
 
@@ -556,7 +568,7 @@ def plot_large(n_points: int = 100):
     df_large_all = df.filter(pl.col("size_bin").is_in(large_bins))
     if df_large_all.height > 0:
         fig2, ax2 = plt.subplots(figsize=(10, 6))
-        _plot_threads(df_large_all, ax2)
+        _plot_threads(df_large_all, ax2, time_col=time_col)
         n_structs = df_large_all.select("structure").unique().height
         ax2.set_title(
             f"SR: Thread Scaling on Large Structures (50k+ atoms, n={n_structs})"
@@ -568,7 +580,7 @@ def plot_large(n_points: int = 100):
         rprint(f"[green]Saved:[/green] {out_path2}")
 
 
-def plot_efficiency(n_points: int = 100):
+def plot_efficiency(n_points: int = 100, time_col: str = "time_ms"):
     """Calculate and plot parallel efficiency from existing benchmark data."""
     from rich.table import Table
 
@@ -580,7 +592,8 @@ def plot_efficiency(n_points: int = 100):
         rprint("[yellow]No SR data found[/yellow]")
         return
 
-    plot_dir = PLOTS_DIR.joinpath("efficiency")
+    suffix = "_sasa" if time_col == "sasa_time_ms" else ""
+    plot_dir = PLOTS_DIR.joinpath(f"efficiency{suffix}")
     plot_dir.mkdir(parents=True, exist_ok=True)
 
     # Baseline: threads=1
@@ -590,13 +603,13 @@ def plot_efficiency(n_points: int = 100):
             "structure",
             "n_atoms",
             "size_bin",
-            pl.col("time_ms").alias("t1_ms"),
+            pl.col(time_col).alias("t1_ms"),
         ]
     )
 
     df_eff = df.join(df_t1, on=["tool_label", "structure", "n_atoms", "size_bin"])
     df_eff = df_eff.with_columns(
-        (pl.col("t1_ms") / (pl.col("time_ms") * pl.col("threads"))).alias("efficiency")
+        (pl.col("t1_ms") / (pl.col(time_col) * pl.col("threads"))).alias("efficiency")
     )
 
     tool_labels = ["zsasa_f64", "freesasa", "rustsasa"]
@@ -679,7 +692,12 @@ def plot_efficiency(n_points: int = 100):
     rprint(f"[green]Saved:[/green] {out_path}")
 
 
-def plot_speedup(min_atoms: int = 50000, top_n: int = 5, n_points: int = 100):
+def plot_speedup(
+    min_atoms: int = 50000,
+    top_n: int = 5,
+    n_points: int = 100,
+    time_col: str = "time_ms",
+):
     """Find structures with best zsasa speedup at any thread count."""
     from rich.table import Table
 
@@ -694,9 +712,9 @@ def plot_speedup(min_atoms: int = 50000, top_n: int = 5, n_points: int = 100):
         return
 
     pivot = (
-        df_large.select(["structure", "n_atoms", "threads", "tool_label", "time_ms"])
+        df_large.select(["structure", "n_atoms", "threads", "tool_label", time_col])
         .pivot(
-            on="tool_label", index=["structure", "n_atoms", "threads"], values="time_ms"
+            on="tool_label", index=["structure", "n_atoms", "threads"], values=time_col
         )
         .drop_nulls()
     )
@@ -718,7 +736,8 @@ def plot_speedup(min_atoms: int = 50000, top_n: int = 5, n_points: int = 100):
         )
         speedup_cols.append("vs_rustsasa")
 
-    plot_dir = PLOTS_DIR.joinpath("speedup")
+    suffix = "_sasa" if time_col == "sasa_time_ms" else ""
+    plot_dir = PLOTS_DIR.joinpath(f"speedup{suffix}")
     plot_dir.mkdir(parents=True, exist_ok=True)
 
     results = {}
