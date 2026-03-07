@@ -174,13 +174,15 @@ def add_size_bin(df: pl.DataFrame) -> pl.DataFrame:
     return df.with_columns(expr.alias("size_bin"))
 
 
-def compute_speedup_by_bin(df: pl.DataFrame, threads: int = 1) -> pl.DataFrame:
+def compute_speedup_by_bin(
+    df: pl.DataFrame, threads: int = 1, time_col: str = "time_ms"
+) -> pl.DataFrame:
     """Compute speedup ratios by size bin for given thread count."""
     df_t = df.filter(pl.col("threads") == threads)
 
     pivot = (
-        df_t.select(["structure", "tool_label", "n_atoms", "time_ms"])
-        .pivot(on="tool_label", index=["structure", "n_atoms"], values="time_ms")
+        df_t.select(["structure", "tool_label", "n_atoms", time_col])
+        .pivot(on="tool_label", index=["structure", "n_atoms"], values=time_col)
         .drop_nulls()
     )
 
@@ -235,6 +237,22 @@ def compute_speedup_by_bin(df: pl.DataFrame, threads: int = 1) -> pl.DataFrame:
         )
 
     return pivot.group_by("size_bin").agg(agg_exprs).sort("size_bin")
+
+
+METRIC_LABELS = {
+    "time_ms": "Wall-clock Time",
+    "sasa_time_ms": "SASA-only Time",
+}
+
+
+def metric_label(time_col: str) -> str:
+    """Human-readable label for a time column."""
+    return METRIC_LABELS.get(time_col, time_col)
+
+
+def metric_suffix(time_col: str) -> str:
+    """File-name suffix for a time column (empty for wall-clock)."""
+    return "_sasa" if time_col == "sasa_time_ms" else ""
 
 
 def setup_style():

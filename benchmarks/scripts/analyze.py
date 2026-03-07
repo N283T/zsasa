@@ -30,7 +30,7 @@ Usage:
     ./benchmarks/scripts/analyze.py export-csv   # Export to CSV
 """
 
-from pathlib import Path
+from enum import StrEnum
 
 import polars as pl
 import typer
@@ -44,6 +44,8 @@ from analyze_data import (
     add_size_bin,
     compute_speedup_by_bin,
     load_data,
+    metric_label,
+    metric_suffix,
 )
 from analyze_plots import (
     plot_efficiency,
@@ -59,22 +61,43 @@ from analyze_plots import (
 app = typer.Typer(help="SR benchmark analysis CLI")
 
 
+# === Shared CLI Option Defaults ===
+
+
+class Metric(StrEnum):
+    """Timing metric for analysis."""
+
+    wall = "wall"
+    sasa = "sasa"
+
+
+_METRIC_COL = {"wall": "time_ms", "sasa": "sasa_time_ms"}
+
+NPointsOption = typer.Option(
+    100, "--n-points", "-N", help="Number of sphere test points"
+)
+MetricOption = typer.Option(
+    Metric.wall,
+    "--metric",
+    "-m",
+    help="Timing metric: wall (wall-clock) or sasa (SASA-only)",
+)
+
+
 # === CLI Commands ===
 
 
 @app.command()
-def summary(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-):
+def summary(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Print summary statistics table."""
+    time_col = _METRIC_COL[metric]
     df = load_data(n_points)
 
     # Single-threaded comparison
     df_t1 = df.filter(pl.col("threads") == 1)
 
-    table = Table(title="Single-Threaded Performance Summary (SR)")
+    ml = metric_label(time_col)
+    table = Table(title=f"Single-Threaded Performance Summary (SR) — {ml}")
     table.add_column("Tool", style="green")
     table.add_column("Structures", justify="right")
     table.add_column("Median (ms)", justify="right")
@@ -86,10 +109,10 @@ def summary(
         df_t1.group_by("tool_label")
         .agg(
             pl.len().alias("n"),
-            pl.col("time_ms").median().alias("median"),
-            pl.col("time_ms").mean().alias("mean"),
-            pl.col("time_ms").std().alias("std"),
-            pl.col("time_ms").quantile(0.95).alias("p95"),
+            pl.col(time_col).median().alias("median"),
+            pl.col(time_col).mean().alias("mean"),
+            pl.col(time_col).std().alias("std"),
+            pl.col(time_col).quantile(0.95).alias("p95"),
         )
         .sort("tool_label")
     )
@@ -110,8 +133,8 @@ def summary(
     rprint("\n[bold]Speedup Ratios (zsasa vs others):[/bold]")
 
     pivot = (
-        df_t1.select(["structure", "tool_label", "time_ms"])
-        .pivot(on="tool_label", index="structure", values="time_ms")
+        df_t1.select(["structure", "tool_label", time_col])
+        .pivot(on="tool_label", index="structure", values=time_col)
         .drop_nulls()
     )
 
@@ -132,22 +155,18 @@ def summary(
             (pl.col("zsasa_f64") / pl.col("zsasa_f32")).alias("speedup")
         )
         med = speedup["speedup"].median()
-        rprint(
-            f"  SR: zsasa(f32) vs zsasa(f64) = [green]{med:.2f}x[/green] (median)"
-        )
+        rprint(f"  SR: zsasa(f32) vs zsasa(f64) = [green]{med:.2f}x[/green] (median)")
 
     if "rustsasa" in pivot.columns and zsasa_col in pivot.columns:
         speedup_rust = pivot.select(
             (pl.col("rustsasa") / pl.col(zsasa_col)).alias("speedup")
         )
         med = speedup_rust["speedup"].median()
-        rprint(
-            f"  SR: zsasa vs RustSASA = [green]{med:.2f}x[/green] (median)"
-        )
+        rprint(f"  SR: zsasa vs RustSASA = [green]{med:.2f}x[/green] (median)")
 
     # Speedup by size bin table
     rprint("\n")
-    speedup_by_bin = compute_speedup_by_bin(df_t1, threads=1)
+    speedup_by_bin = compute_speedup_by_bin(df_t1, threads=1, time_col=time_col)
 
     bin_table = Table(title="SR Speedup by Structure Size (threads=1)")
     bin_table.add_column("Size Bin", style="cyan")
@@ -193,16 +212,14 @@ def summary(
 
 
 @app.command(name="export-csv")
-def export_csv(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-):
+def export_csv(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Export summary tables as CSV files per thread count."""
+    time_col = _METRIC_COL[metric]
     df = load_data(n_points)
     df = add_size_bin(df)
 
-    csv_dir = RESULTS_BASE.joinpath(str(n_points), "csv")
+    suffix = metric_suffix(time_col)
+    csv_dir = RESULTS_BASE.joinpath(str(n_points), f"csv{suffix}")
     csv_dir.mkdir(parents=True, exist_ok=True)
 
     thread_counts = sorted(df["threads"].unique().to_list())
@@ -218,10 +235,10 @@ def export_csv(
             df_t.group_by(["tool_label", "precision"])
             .agg(
                 pl.len().alias("structures"),
-                pl.col("time_ms").median().alias("median_ms"),
-                pl.col("time_ms").mean().alias("mean_ms"),
-                pl.col("time_ms").std().alias("std_ms"),
-                pl.col("time_ms").quantile(0.95).alias("p95_ms"),
+                pl.col(time_col).median().alias("median_ms"),
+                pl.col(time_col).mean().alias("mean_ms"),
+                pl.col(time_col).std().alias("std_ms"),
+                pl.col(time_col).quantile(0.95).alias("p95_ms"),
             )
             .sort("tool_label")
         )
@@ -229,7 +246,9 @@ def export_csv(
 
         # Speedup by size bin
         if df_t.height > 0:
-            speedup_by_bin = compute_speedup_by_bin(df_t, threads=threads)
+            speedup_by_bin = compute_speedup_by_bin(
+                df_t, threads=threads, time_col=time_col
+            )
             bin_order = [b[2] for b in BINS]
             rows = []
             data_dict = {
@@ -252,104 +271,77 @@ def export_csv(
 
 
 @app.command()
-def scatter(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-):
+def scatter(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Generate atoms vs time scatter plot."""
-    plot_scatter(n_points)
+    plot_scatter(n_points, time_col=_METRIC_COL[metric])
 
 
 @app.command()
-def threads(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-):
+def threads(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Generate thread scaling plot."""
-    plot_threads(n_points)
+    plot_threads(n_points, time_col=_METRIC_COL[metric])
 
 
 @app.command()
-def grid(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-):
+def grid(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Generate grid of speedup plots for all thread counts."""
-    plot_grid(n_points)
+    plot_grid(n_points, time_col=_METRIC_COL[metric])
 
 
 @app.command()
-def validation(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-):
+def validation(n_points: int = NPointsOption):
     """Generate SASA validation scatter plot (zsasa vs FreeSASA)."""
     plot_validation(n_points)
 
 
 @app.command()
-def samples(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-):
+def samples(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Generate thread scaling plots for representative structures per size bin."""
-    plot_samples(n_points)
+    plot_samples(n_points, time_col=_METRIC_COL[metric])
 
 
 @app.command()
-def large(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-):
+def large(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Generate speedup bar chart for large structures (50k+ atoms)."""
-    plot_large(n_points)
+    plot_large(n_points, time_col=_METRIC_COL[metric])
 
 
 @app.command()
-def efficiency(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-):
+def efficiency(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Calculate and plot parallel efficiency."""
-    plot_efficiency(n_points)
+    plot_efficiency(n_points, time_col=_METRIC_COL[metric])
 
 
 @app.command()
 def speedup(
     min_atoms: int = typer.Option(50000, help="Minimum atom count for filtering"),
     top_n: int = typer.Option(5, help="Number of top entries to show"),
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
+    n_points: int = NPointsOption,
+    metric: Metric = MetricOption,
 ):
     """Find structures with best zsasa speedup at any thread count."""
-    plot_speedup(min_atoms=min_atoms, top_n=top_n, n_points=n_points)
+    plot_speedup(
+        min_atoms=min_atoms,
+        top_n=top_n,
+        n_points=n_points,
+        time_col=_METRIC_COL[metric],
+    )
 
 
 @app.command()
-def all(
-    n_points: int = typer.Option(
-        100, "--n-points", "-N", help="Number of sphere test points"
-    ),
-):
+def all(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Generate all plots and summary."""
-    summary(n_points)
+    time_col = _METRIC_COL[metric]
+    summary(n_points, metric=metric)
     rprint("\n[bold]Generating plots...[/bold]\n")
     plot_validation(n_points)
-    plot_scatter(n_points)
-    plot_threads(n_points)
-    plot_grid(n_points)
-    plot_samples(n_points)
-    plot_large(n_points)
-    plot_efficiency(n_points)
-    plot_speedup(min_atoms=50000, top_n=5, n_points=n_points)
+    plot_scatter(n_points, time_col=time_col)
+    plot_threads(n_points, time_col=time_col)
+    plot_grid(n_points, time_col=time_col)
+    plot_samples(n_points, time_col=time_col)
+    plot_large(n_points, time_col=time_col)
+    plot_efficiency(n_points, time_col=time_col)
+    plot_speedup(min_atoms=50000, top_n=5, n_points=n_points, time_col=time_col)
     rprint(f"\n[bold green]All plots saved to:[/bold green] {PLOTS_DIR}")
 
 
