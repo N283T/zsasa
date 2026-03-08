@@ -3,23 +3,30 @@
 # requires-python = ">=3.12"
 # dependencies = ["rich>=13.0", "typer>=0.9.0"]
 # ///
-"""SR single-file benchmark runner (hyperfine).
+"""SR single-file benchmark runner.
 
-Runs wall-clock benchmarks using the Shrake-Rupley algorithm with configurable
-thread counts. Uses hyperfine for timing (includes I/O).
+Supports two independent measurement phases:
+  - hyperfine: wall-clock timing via hyperfine (mean/stddev/min/max/median + memory)
+  - timing:    internal tool timing via --timing flag (parse_time_ms, sasa_time_ms)
+
+Phases can be run together (default) or separately via --phase flag.
+Running --phase timing on an existing CSV updates only the timing columns.
 
 Tools: zig_f64, zig_f32, zig_f64_bitmask, zig_f32_bitmask, freesasa, rust
        (zig = zig_f64, zig_bitmask = zig_f64_bitmask)
 
 Usage:
-    # All tools (default)
+    # Both phases (default, backward-compatible)
     ./benchmarks/scripts/bench.py --threads 1,4,8
+
+    # Wall-clock only (no extra timing run)
+    ./benchmarks/scripts/bench.py --phase hyperfine --threads 1,4,8
+
+    # Add internal timing to existing results
+    ./benchmarks/scripts/bench.py --phase timing
 
     # Specific tools
     ./benchmarks/scripts/bench.py --tool zig_f64 --tool freesasa --threads 1,4,8
-
-    # Single tool
-    ./benchmarks/scripts/bench.py --tool zig_f64 --threads 1,4,8
 
     # Quick test (single file, 1 hyperfine run, no warmup)
     ./benchmarks/scripts/bench.py --tool zig_f64 --threads 1 --warmup 0 --runs 1 \
@@ -35,10 +42,12 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import re
 import subprocess
 import tempfile
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -63,8 +72,36 @@ from bench_common import (
     scan_input_directory,
 )
 
-app = typer.Typer(help="SR single-file benchmark runner (hyperfine)")
+app = typer.Typer(help="SR single-file benchmark runner")
 console = Console()
+
+
+class Phase(StrEnum):
+    """Benchmark phase."""
+
+    all = "all"
+    hyperfine = "hyperfine"
+    timing = "timing"
+
+
+CSV_COLUMNS = [
+    "tool",
+    "structure",
+    "n_atoms",
+    "algorithm",
+    "precision",
+    "threads",
+    "mean_s",
+    "stddev_s",
+    "min_s",
+    "max_s",
+    "median_s",
+    "user_s",
+    "system_s",
+    "memory_bytes",
+    "parse_time_ms",
+    "sasa_time_ms",
+]
 
 SR_TOOLS = [
     "zig_f64",
@@ -197,7 +234,7 @@ def _resolve_tools(tools: list[str] | None) -> list[str]:
     return list(tools)
 
 
-def _run_tool(
+def _run_tool_hyperfine(
     tool_name: str,
     *,
     structures: list[tuple[str, int]],
@@ -213,7 +250,11 @@ def _run_tool(
     timestamp: str,
     sample_file: Path | None,
 ) -> bool:
-    """Run benchmarks for a single tool. Returns True on success."""
+    """Run hyperfine benchmarks for a single tool. Returns True on success.
+
+    Creates results.csv with wall-clock timing and memory data.
+    Timing columns (parse_time_ms, sasa_time_ms) are left empty.
+    """
     tool_canonical, tool_base, precision, use_bitmask = parse_tool(tool_name)
 
     # Validate lahuta bitmask n_points
@@ -256,6 +297,7 @@ def _run_tool(
             "input_dir": str(pdb_dir),
             "sample_file": str(sample_file) if sample_file else None,
             "prepare": prepare,
+            "phase": "hyperfine",
         },
     }
     config_path = output_dir.joinpath("config.json")
@@ -277,27 +319,7 @@ def _run_tool(
     n_failed = 0
 
     with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=[
-                "tool",
-                "structure",
-                "n_atoms",
-                "algorithm",
-                "precision",
-                "threads",
-                "mean_s",
-                "stddev_s",
-                "min_s",
-                "max_s",
-                "median_s",
-                "user_s",
-                "system_s",
-                "memory_bytes",
-                "parse_time_ms",
-                "sasa_time_ms",
-            ],
-        )
+        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
         writer.writeheader()
 
         with Progress(
@@ -357,20 +379,6 @@ def _run_tool(
                         )
 
                         if result:
-                            # Run internal timing (single additional run)
-                            timing = None
-                            if tool_base in _TIMING_TOOLS:
-                                timing_cmd = _build_command(
-                                    tool_base,
-                                    precision,
-                                    pdb_path,
-                                    n_threads,
-                                    n_points,
-                                    use_bitmask,
-                                    timing=True,
-                                )
-                                timing = _run_timing(timing_cmd, timeout=timeout)
-
                             writer.writerow(
                                 {
                                     "tool": tool_canonical,
@@ -391,12 +399,8 @@ def _run_tool(
                                         if result.get("memory_usage_byte")
                                         else None
                                     ),
-                                    "parse_time_ms": (
-                                        timing.get("parse_time_ms") if timing else None
-                                    ),
-                                    "sasa_time_ms": (
-                                        timing.get("sasa_time_ms") if timing else None
-                                    ),
+                                    "parse_time_ms": "",
+                                    "sasa_time_ms": "",
                                 }
                             )
                             f.flush()
@@ -422,6 +426,179 @@ def _run_tool(
 
     print_hyperfine_summary(csv_path)
     return True
+
+
+def _run_tool_timing(
+    tool_name: str,
+    *,
+    pdb_dir: Path,
+    n_points: int,
+    timeout: int,
+    output_dir: Path,
+) -> bool:
+    """Run internal timing for a single tool, updating existing CSV.
+
+    Reads results.csv, runs each (structure, threads) combination with --timing,
+    and writes back only the parse_time_ms/sasa_time_ms columns.
+    """
+    tool_canonical, tool_base, precision, use_bitmask = parse_tool(tool_name)
+
+    if tool_base not in _TIMING_TOOLS:
+        console.print(
+            f"[dim]Skipping timing for {tool_canonical} (not supported)[/dim]"
+        )
+        return True
+
+    csv_path = output_dir.joinpath("results.csv")
+    if not csv_path.exists():
+        console.print(
+            f"[red]Error:[/red] No results.csv found in {output_dir}. "
+            f"Run --phase hyperfine first."
+        )
+        return False
+
+    # Check binary exists
+    binary = get_binary_path(tool_base)
+    if not binary.exists():
+        console.print(f"[red]Error:[/red] Binary not found: {binary}")
+        return False
+
+    # Read all rows
+    with open(csv_path, newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+
+    if not rows:
+        console.print(f"[yellow]Warning:[/yellow] Empty CSV: {csv_path}")
+        return True
+
+    # Filter rows for this tool
+    tool_rows = [i for i, r in enumerate(rows) if r["tool"] == tool_canonical]
+    if not tool_rows:
+        console.print(
+            f"[yellow]Warning:[/yellow] No rows for {tool_canonical} in {csv_path}"
+        )
+        return True
+
+    console.print(f"\n[bold]{tool_canonical.upper()} SR (timing)[/bold]")
+    console.print(f"Structures × threads: {len(tool_rows)}, Timeout: {timeout}s\n")
+
+    n_success = 0
+    n_failed = 0
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Timing", total=len(tool_rows))
+
+        for idx in tool_rows:
+            row = rows[idx]
+            structure = row["structure"]
+            n_threads = int(row["threads"])
+            pdb_path = pdb_dir.joinpath(f"{structure}.pdb")
+
+            desc = f"{structure} t={n_threads}"
+            progress.update(task, description=desc)
+
+            if not pdb_path.exists():
+                console.print(f"[yellow]Skip {structure}: not found[/yellow]")
+                n_failed += 1
+                progress.advance(task)
+                continue
+
+            timing_cmd = _build_command(
+                tool_base,
+                precision,
+                pdb_path,
+                n_threads,
+                n_points,
+                use_bitmask,
+                timing=True,
+            )
+            timing = _run_timing(timing_cmd, timeout=timeout)
+
+            if timing:
+                rows[idx]["parse_time_ms"] = timing.get("parse_time_ms", "")
+                rows[idx]["sasa_time_ms"] = timing.get("sasa_time_ms", "")
+                n_success += 1
+            else:
+                n_failed += 1
+
+            progress.advance(task)
+
+    # Atomic write: temp file + os.replace
+    tmp_path = csv_path.with_suffix(".csv.tmp")
+    with open(tmp_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+    os.replace(tmp_path, csv_path)
+
+    if n_failed > 0:
+        console.print(
+            f"\n[yellow]Warning:[/yellow] {n_failed}/{len(tool_rows)} timing runs failed"
+        )
+
+    console.print(
+        f"\n[green]Done![/green] {n_success}/{len(tool_rows)} timing runs completed"
+    )
+    console.print(f"  Updated: {csv_path}")
+    return True
+
+
+def _run_tool(
+    tool_name: str,
+    *,
+    phase: Phase,
+    structures: list[tuple[str, int]],
+    pdb_dir: Path,
+    thread_counts: list[int],
+    n_points: int,
+    warmup: int,
+    runs: int,
+    timeout: int,
+    prepare: str | None,
+    output_dir: Path,
+    force: bool,
+    timestamp: str,
+    sample_file: Path | None,
+) -> bool:
+    """Run benchmarks for a single tool. Dispatches to phase-specific functions."""
+    success = True
+
+    if phase in (Phase.all, Phase.hyperfine):
+        success = _run_tool_hyperfine(
+            tool_name,
+            structures=structures,
+            pdb_dir=pdb_dir,
+            thread_counts=thread_counts,
+            n_points=n_points,
+            warmup=warmup,
+            runs=runs,
+            timeout=timeout,
+            prepare=prepare,
+            output_dir=output_dir,
+            force=force,
+            timestamp=timestamp,
+            sample_file=sample_file,
+        )
+        if not success:
+            return False
+
+    if phase in (Phase.all, Phase.timing):
+        success = _run_tool_timing(
+            tool_name,
+            pdb_dir=pdb_dir,
+            n_points=n_points,
+            timeout=timeout,
+            output_dir=output_dir,
+        )
+
+    return success
 
 
 @app.command()
@@ -491,6 +668,14 @@ def main(
             "E.g. 'sync' or 'sudo purge' (macOS) to clear filesystem caches.",
         ),
     ] = None,
+    phase: Annotated[
+        Phase,
+        typer.Option(
+            "--phase",
+            help="Phase to run: 'all' (default), 'hyperfine' (wall-clock only), "
+            "'timing' (internal timing only, updates existing CSV)",
+        ),
+    ] = Phase.all,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", help="Show commands without running"),
@@ -500,7 +685,7 @@ def main(
         typer.Option("--force", "-f", help="Overwrite existing results"),
     ] = False,
 ) -> None:
-    """Run SR single-file benchmark using hyperfine."""
+    """Run SR single-file benchmark."""
     # Mutual exclusivity check
     if input_file is not None and input_dir is not None:
         console.print(
@@ -511,8 +696,8 @@ def main(
     # Resolve and validate tools
     selected_tools = _resolve_tools(tools)
 
-    # Check hyperfine
-    if not dry_run and not check_hyperfine():
+    # Check hyperfine (not needed for timing-only phase)
+    if phase != Phase.timing and not dry_run and not check_hyperfine():
         console.print("[red]Error: hyperfine not found. Install it first.[/red]")
         raise typer.Exit(1)
 
@@ -603,6 +788,7 @@ def main(
 
         success = _run_tool(
             tool_name,
+            phase=phase,
             structures=structures,
             pdb_dir=pdb_dir,
             thread_counts=thread_counts,
