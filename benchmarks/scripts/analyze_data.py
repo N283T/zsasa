@@ -216,6 +216,22 @@ def compute_speedup_by_bin(
             (pl.col("zsasa_f64") / pl.col("zsasa_f32")).alias("zsasa_f32_vs_zsasa_f64")
         )
 
+    # zsasa_f32_bitmask vs FreeSASA
+    if "zsasa_f32_bitmask" in cols and "freesasa" in cols:
+        pivot = pivot.with_columns(
+            (pl.col("freesasa") / pl.col("zsasa_f32_bitmask")).alias(
+                "zsasa_f32_bitmask_vs_freesasa"
+            )
+        )
+
+    # zsasa_f32_bitmask vs RustSASA
+    if "zsasa_f32_bitmask" in cols and "rustsasa" in cols:
+        pivot = pivot.with_columns(
+            (pl.col("rustsasa") / pl.col("zsasa_f32_bitmask")).alias(
+                "zsasa_f32_bitmask_vs_rustsasa"
+            )
+        )
+
     # FreeSASA vs RustSASA
     if "freesasa" in cols and "rustsasa" in cols:
         pivot = pivot.with_columns(
@@ -242,6 +258,87 @@ def compute_speedup_by_bin(
         )
 
     return pivot.group_by("size_bin").agg(agg_exprs).sort("size_bin")
+
+
+# === Outlier Detection ===
+
+# Per-bin IQR outlier detection with a minimum ratio floor.
+# k=1.5 is the standard Tukey "outlier" fence (Q3 + k*IQR).
+# The floor prevents flagging structures in tight-IQR bins where the actual
+# ratio is modest (e.g. 1.6x in a bin where IQR is 0.07).
+OUTLIER_IQR_K = 1.5
+OUTLIER_RATIO_FLOOR = 5.0
+
+
+def detect_outliers(
+    df: pl.DataFrame,
+    time_col: str = "sasa_time_ms",
+    iqr_k: float = OUTLIER_IQR_K,
+    ratio_floor: float = OUTLIER_RATIO_FLOOR,
+) -> set[str]:
+    """Return set of structure names where any competitor is a per-bin outlier.
+
+    For each size bin × competitor, computes the Tukey fence Q3 + k*IQR on the
+    ratio (competitor_time / zsasa_time).  A structure is flagged only if it
+    exceeds BOTH the per-bin fence AND the absolute ratio floor, at ANY thread
+    count.
+    """
+    pivot = (
+        df.select(["structure", "threads", "tool_label", "n_atoms", time_col])
+        .pivot(
+            on="tool_label", index=["structure", "n_atoms", "threads"], values=time_col
+        )
+        .drop_nulls()
+    )
+    pivot = add_size_bin(pivot)
+
+    zsasa_col = "zsasa_f64" if "zsasa_f64" in pivot.columns else "zsasa"
+    if zsasa_col not in pivot.columns:
+        return set()
+
+    outlier_structures: set[str] = set()
+
+    for competitor in ("freesasa", "rustsasa"):
+        if competitor not in pivot.columns:
+            continue
+        ratio_col = f"{competitor}_ratio"
+        with_ratio = pivot.with_columns(
+            (pl.col(competitor) / pl.col(zsasa_col)).alias(ratio_col)
+        )
+
+        # Compute per-bin Tukey fence
+        fences = (
+            with_ratio.group_by("size_bin")
+            .agg(
+                pl.col(ratio_col).quantile(0.75).alias("q75"),
+                (
+                    pl.col(ratio_col).quantile(0.75) - pl.col(ratio_col).quantile(0.25)
+                ).alias("iqr"),
+            )
+            .with_columns((pl.col("q75") + iqr_k * pl.col("iqr")).alias("fence"))
+            .select(["size_bin", "fence"])
+        )
+
+        joined = with_ratio.join(fences, on="size_bin")
+        outliers = joined.filter(
+            (pl.col(ratio_col) > pl.col("fence")) & (pl.col(ratio_col) > ratio_floor)
+        )
+        outlier_structures.update(outliers["structure"].to_list())
+
+    return outlier_structures
+
+
+def split_outliers(
+    df: pl.DataFrame,
+    time_col: str = "sasa_time_ms",
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Split DataFrame into (clean, outliers) based on outlier detection."""
+    outlier_names = detect_outliers(df, time_col=time_col)
+    if not outlier_names:
+        return df, df.head(0)
+    clean = df.filter(~pl.col("structure").is_in(outlier_names))
+    outliers = df.filter(pl.col("structure").is_in(outlier_names))
+    return clean, outliers
 
 
 METRIC_LABELS = {

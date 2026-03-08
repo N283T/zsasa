@@ -16,6 +16,7 @@ from analyze_data import (
     metric_label,
     metric_suffix,
     setup_style,
+    split_outliers,
 )
 
 
@@ -79,12 +80,24 @@ def _plot_threads(df_sr: pl.DataFrame, ax, time_col: str = "time_ms"):
     ax.set_xticklabels([str(t) for t in thread_values])
 
 
+_COMPARISONS_F64 = [
+    ("zsasa_f64_vs_freesasa", "f64 vs FreeSASA", "o", "#3498db"),
+    ("zsasa_f64_vs_rustsasa", "f64 vs RustSASA", "s", "#e74c3c"),
+]
+
+_COMPARISONS_BITMASK = [
+    ("zsasa_f32_bitmask_vs_freesasa", "bitmask vs FreeSASA", "^", "#2980b9"),
+    ("zsasa_f32_bitmask_vs_rustsasa", "bitmask vs RustSASA", "v", "#c0392b"),
+]
+
+
 def _plot_speedup_single(
     df_sr: pl.DataFrame,
     threads: int,
     ax,
     show_legend: bool = True,
     time_col: str = "time_ms",
+    comparisons: list | None = None,
 ):
     """Plot speedup for a single thread count on given axes."""
     bin_labels = [b[2] for b in BINS]
@@ -94,11 +107,8 @@ def _plot_speedup_single(
     x_labels = [b for b in bin_labels if b in data_dict]
     x_pos = list(range(len(x_labels)))
 
-    comparisons = [
-        ("zsasa_f64_vs_freesasa", "zsasa(f64) vs FreeSASA", "o", "#3498db"),
-        ("zsasa_f64_vs_rustsasa", "zsasa(f64) vs RustSASA", "s", "#e74c3c"),
-        ("freesasa_vs_rustsasa", "FreeSASA vs RustSASA", "D", "#9b59b6"),
-    ]
+    if comparisons is None:
+        comparisons = _COMPARISONS_F64 + _COMPARISONS_BITMASK
 
     for col_name, label, marker, color in comparisons:
         if col_name not in speedup_data.columns:
@@ -125,7 +135,7 @@ def _plot_speedup_single(
     ax.axhline(y=1.0, color="gray", linestyle="--", linewidth=1)
     ax.set_xticks(x_pos)
     ax.set_xticklabels(x_labels, rotation=45, ha="right", fontsize=7)
-    ax.set_ylim(0.5, 3.0)
+    ax.set_ylim(bottom=0)
     ax.grid(True, alpha=0.3)
 
     if show_legend:
@@ -217,6 +227,11 @@ def plot_grid(n_points: int = 100, time_col: str = "time_ms"):
         rprint("[yellow]No SR data found[/yellow]")
         return
 
+    df, df_outliers = split_outliers(df, time_col=time_col)
+    if df_outliers.height > 0:
+        n_out = df_outliers.select("structure").unique().height
+        rprint(f"[dim]Excluded {n_out} outlier structure(s) from speedup grid[/dim]")
+
     suffix = metric_suffix(time_col)
     mlabel = metric_label(time_col)
     plot_dir = PLOTS_DIR.joinpath(f"speedup_by_bin{suffix}")
@@ -239,21 +254,34 @@ def plot_grid(n_points: int = 100, time_col: str = "time_ms"):
         plt.close(fig_single)
         rprint(f"[green]Saved:[/green] {out_path}")
 
+    # Generate combined grid (all comparisons)
     n_threads = len(thread_counts)
-    n_cols = min(3, n_threads)
+    n_cols = min(2, n_threads)
     n_rows = (n_threads + n_cols - 1) // n_cols
 
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 4.5 * n_rows))
+    fig, axes = plt.subplots(
+        n_rows, n_cols, figsize=(7 * n_cols, 5 * n_rows), sharey=True
+    )
     if n_threads == 1:
         axes = [[axes]]
     elif n_rows == 1:
         axes = [axes]
+    elif n_cols == 1:
+        axes = [[ax] for ax in axes]
 
     for idx, threads in enumerate(thread_counts):
         row, col = idx // n_cols, idx % n_cols
-        ax = axes[row][col] if n_rows > 1 else axes[0][col]
-        _plot_speedup_single(df, threads, ax, show_legend=(idx == 0), time_col=time_col)
+        ax = axes[row][col]
+        _plot_speedup_single(
+            df,
+            threads,
+            ax,
+            show_legend=(idx == 0),
+            time_col=time_col,
+        )
         ax.set_title(f"threads={threads}")
+        if col > 0:
+            ax.set_ylabel("")
 
     for idx in range(n_threads, n_rows * n_cols):
         row, col = idx // n_cols, idx % n_cols
@@ -351,6 +379,11 @@ def plot_samples(n_points: int = 100, time_col: str = "time_ms"):
     if df.height == 0:
         rprint("[yellow]No SR data found[/yellow]")
         return
+
+    df, df_outliers = split_outliers(df, time_col=time_col)
+    if df_outliers.height > 0:
+        n_out = df_outliers.select("structure").unique().height
+        rprint(f"[dim]Excluded {n_out} outlier structure(s) from samples[/dim]")
 
     df = add_size_bin(df)
 
@@ -476,6 +509,12 @@ def plot_large(n_points: int = 100, time_col: str = "time_ms"):
     """Generate speedup bar chart for large structures (50k+ atoms)."""
     setup_style()
     df = load_data(n_points)
+
+    df, df_outliers = split_outliers(df, time_col=time_col)
+    if df_outliers.height > 0:
+        n_out = df_outliers.select("structure").unique().height
+        rprint(f"[dim]Excluded {n_out} outlier structure(s) from large analysis[/dim]")
+
     df = add_size_bin(df)
 
     suffix = metric_suffix(time_col)
@@ -689,6 +728,14 @@ def plot_speedup(
 
     setup_style()
     df = load_data(n_points)
+
+    df, df_outliers = split_outliers(df, time_col=time_col)
+    if df_outliers.height > 0:
+        n_out = df_outliers.select("structure").unique().height
+        rprint(
+            f"[dim]Excluded {n_out} outlier structure(s) from speedup analysis[/dim]"
+        )
+
     df = add_size_bin(df)
 
     df_large = df.filter(pl.col("n_atoms") >= min_atoms)
@@ -846,3 +893,176 @@ def plot_speedup(
     fig.savefig(out_path)
     plt.close(fig)
     rprint(f"[green]Saved:[/green] {out_path}")
+
+
+def plot_outliers(n_points: int = 100, time_col: str = "sasa_time_ms"):
+    """Generate plots highlighting outlier structures where competitors struggle.
+
+    Shows structures where FreeSASA or RustSASA exhibit pathological behavior
+    (>10x slower) while zsasa handles them without issues.
+    """
+    from rich.table import Table
+
+    setup_style()
+    df = load_data(n_points)
+    _, df_outliers = split_outliers(df, time_col=time_col)
+
+    if df_outliers.height == 0:
+        rprint("[yellow]No outlier structures detected[/yellow]")
+        return
+
+    outlier_names = sorted(df_outliers["structure"].unique().to_list())
+    rprint(
+        f"[bold]Outlier structures ({len(outlier_names)}):[/bold] {', '.join(outlier_names)}"
+    )
+
+    suffix = metric_suffix(time_col)
+    plot_dir = PLOTS_DIR.joinpath(f"outliers{suffix}")
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- Table: outlier summary ---
+    df_t1 = df_outliers.filter(pl.col("threads") == 1)
+    pivot = (
+        df_t1.select(["structure", "tool_label", "n_atoms", time_col])
+        .pivot(on="tool_label", index=["structure", "n_atoms"], values=time_col)
+        .sort("n_atoms")
+    )
+
+    zsasa_col = "zsasa_f64" if "zsasa_f64" in pivot.columns else "zsasa"
+    table = Table(title="Outlier Structures: zsasa Advantage")
+    table.add_column("Structure", style="cyan")
+    table.add_column("Atoms", justify="right")
+    table.add_column("zsasa (ms)", justify="right")
+    for competitor in ("freesasa", "rustsasa"):
+        if competitor in pivot.columns:
+            table.add_column(f"{display_name(competitor)} (ms)", justify="right")
+            table.add_column("Ratio", justify="right")
+
+    for row in pivot.iter_rows(named=True):
+        cells = [row["structure"], f"{row['n_atoms']:,}"]
+        zsasa_ms = row.get(zsasa_col)
+        cells.append(f"{zsasa_ms:.1f}" if zsasa_ms else "-")
+        for competitor in ("freesasa", "rustsasa"):
+            if competitor not in pivot.columns:
+                continue
+            comp_ms = row.get(competitor)
+            if comp_ms and zsasa_ms:
+                ratio = comp_ms / zsasa_ms
+                color = "green" if ratio > 1.0 else "red"
+                cells.append(f"{comp_ms:.1f}")
+                cells.append(f"[{color}]{ratio:.1f}x[/{color}]")
+            else:
+                cells.extend(["-", "-"])
+        table.add_row(*cells)
+
+    rprint(table)
+
+    # --- Per-competitor bar charts ---
+    if zsasa_col not in pivot.columns:
+        return
+
+    # Compute ratios for all competitors
+    ratio_data: dict[str, list[tuple[str, int, float]]] = {}
+    for competitor in ("freesasa", "rustsasa"):
+        if competitor not in pivot.columns:
+            continue
+        entries = []
+        for row in pivot.iter_rows(named=True):
+            zsasa_ms = row.get(zsasa_col)
+            comp_ms = row.get(competitor)
+            if zsasa_ms and comp_ms:
+                ratio = comp_ms / zsasa_ms
+                if ratio > 1.5:
+                    entries.append((row["structure"], row["n_atoms"], ratio))
+        if entries:
+            ratio_data[competitor] = sorted(entries, key=lambda x: x[1])
+
+    for competitor, entries in ratio_data.items():
+        if len(entries) < 2:
+            # Single-entry bar charts are not informative; the per-structure
+            # thread scaling plot already covers this case.
+            continue
+
+        comp_name = display_name(competitor)
+        structures = [e[0] for e in entries]
+        n_atoms_list = [e[1] for e in entries]
+        ratios = [e[2] for e in entries]
+        labels = [f"{s}\n({n:,})" for s, n in zip(structures, n_atoms_list)]
+
+        fig, ax = plt.subplots(figsize=(max(8, len(entries) * 0.8), 6))
+
+        x_pos = list(range(len(entries)))
+        bars = ax.bar(
+            x_pos,
+            ratios,
+            0.6,
+            color=COLORS.get(competitor, "#95a5a6"),
+            alpha=0.8,
+        )
+
+        for bar, ratio in zip(bars, ratios):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.5,
+                f"{ratio:.1f}x",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                fontweight="bold",
+            )
+
+        ax.axhline(y=1.0, color="gray", linestyle="--", linewidth=1.5)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(labels, fontsize=8)
+        ax.set_ylabel(f"{comp_name} / zsasa Ratio ({metric_label(time_col)})")
+        ax.set_title(
+            f"Outlier Structures: {comp_name} Pathological Cases (n={len(entries)})"
+        )
+        ax.grid(True, alpha=0.3, axis="y")
+
+        fig.tight_layout()
+        out_path = plot_dir.joinpath(f"{competitor}_bar.png")
+        fig.savefig(out_path)
+        plt.close(fig)
+        rprint(f"[green]Saved:[/green] {out_path}")
+
+    # --- Thread scaling for each outlier structure ---
+    thread_counts = sorted(df_outliers["threads"].unique().to_list())
+    for struct in outlier_names:
+        df_struct = df_outliers.filter(pl.col("structure") == struct)
+        if df_struct.height == 0:
+            continue
+
+        n_atoms = df_struct["n_atoms"][0]
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        for tool_label in sorted(df_struct["tool_label"].unique().to_list()):
+            if "f32" in tool_label:
+                continue
+            df_tool = df_struct.filter(pl.col("tool_label") == tool_label).sort(
+                "threads"
+            )
+            ax.plot(
+                df_tool["threads"].to_list(),
+                df_tool[time_col].to_list(),
+                marker="o",
+                label=display_name(tool_label),
+                color=COLORS.get(tool_label, "#95a5a6"),
+                linestyle=LINESTYLES.get(tool_label, "-"),
+                linewidth=2,
+                markersize=6,
+            )
+
+        ax.set_xlabel("Threads")
+        ax.set_ylabel(f"{metric_label(time_col)} (ms)")
+        ax.set_xticks(thread_counts)
+        ax.set_title(f"{struct} ({n_atoms:,} atoms) — Outlier")
+        ax.set_yscale("log")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        fig.tight_layout()
+        out_path = plot_dir.joinpath(f"{struct}.png")
+        fig.savefig(out_path)
+        plt.close(fig)
+        rprint(f"[green]Saved:[/green] {out_path}")

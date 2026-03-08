@@ -27,6 +27,7 @@ Usage:
     ./benchmarks/scripts/analyze.py large        # Large structure analysis
     ./benchmarks/scripts/analyze.py memory       # Peak memory comparison
     ./benchmarks/scripts/analyze.py speedup      # Best speedup structures
+    ./benchmarks/scripts/analyze.py outliers     # Outlier advantage plots
     ./benchmarks/scripts/analyze.py export-csv   # Export to CSV
 """
 
@@ -51,6 +52,7 @@ from analyze_plots import (
     plot_grid,
     plot_large,
     plot_memory,
+    plot_outliers,
     plot_samples,
     plot_scatter,
     plot_speedup,
@@ -164,11 +166,12 @@ def summary(n_points: int = NPointsOption, metric: Metric = MetricOption):
         med = speedup_rust["speedup"].median()
         rprint(f"  SR: zsasa vs RustSASA = [green]{med:.2f}x[/green] (median)")
 
-    # Speedup by size bin table
+    # Speedup by size bin table (use max thread count for clearest differentiation)
+    max_threads = df["threads"].max()
     rprint("\n")
-    speedup_by_bin = compute_speedup_by_bin(df_t1, threads=1, time_col=time_col)
+    speedup_by_bin = compute_speedup_by_bin(df, threads=max_threads, time_col=time_col)
 
-    bin_table = Table(title="SR Speedup by Structure Size (threads=1)")
+    bin_table = Table(title=f"SR Speedup by Structure Size (threads={max_threads})")
     bin_table.add_column("Size Bin", style="cyan")
     bin_table.add_column("Count", justify="right")
     bin_table.add_column("zsasa vs FreeSASA", justify="right")
@@ -329,6 +332,12 @@ def speedup(
 
 
 @app.command()
+def outliers(n_points: int = NPointsOption, metric: Metric = MetricOption):
+    """Generate outlier advantage plots (structures where competitors struggle)."""
+    plot_outliers(n_points, time_col=_METRIC_COL[metric])
+
+
+@app.command()
 def all(n_points: int = NPointsOption, metric: Metric = MetricOption):
     """Generate all plots and summary."""
     time_col = _METRIC_COL[metric]
@@ -342,6 +351,7 @@ def all(n_points: int = NPointsOption, metric: Metric = MetricOption):
     plot_large(n_points, time_col=time_col)
     plot_memory(n_points)
     plot_speedup(min_atoms=50000, top_n=5, n_points=n_points, time_col=time_col)
+    plot_outliers(n_points, time_col=time_col)
     rprint(f"\n[bold green]All plots saved to:[/bold green] {PLOTS_DIR}")
 
 
