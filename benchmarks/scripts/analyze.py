@@ -25,7 +25,7 @@ Usage:
     ./benchmarks/scripts/analyze.py validation   # SASA validation
     ./benchmarks/scripts/analyze.py samples      # Per-bin sample plots
     ./benchmarks/scripts/analyze.py large        # Large structure analysis
-    ./benchmarks/scripts/analyze.py efficiency   # Parallel efficiency
+    ./benchmarks/scripts/analyze.py memory       # Peak memory comparison
     ./benchmarks/scripts/analyze.py speedup      # Best speedup structures
     ./benchmarks/scripts/analyze.py export-csv   # Export to CSV
 """
@@ -48,9 +48,9 @@ from analyze_data import (
     metric_suffix,
 )
 from analyze_plots import (
-    plot_efficiency,
     plot_grid,
     plot_large,
+    plot_memory,
     plot_samples,
     plot_scatter,
     plot_speedup,
@@ -77,10 +77,10 @@ NPointsOption = typer.Option(
     100, "--n-points", "-N", help="Number of sphere test points"
 )
 MetricOption = typer.Option(
-    Metric.wall,
+    Metric.sasa,
     "--metric",
     "-m",
-    help="Timing metric: wall (wall-clock) or sasa (SASA-only)",
+    help="Timing metric: sasa (SASA-only, default) or wall (wall-clock incl. I/O)",
 )
 
 
@@ -307,9 +307,9 @@ def large(n_points: int = NPointsOption, metric: Metric = MetricOption):
 
 
 @app.command()
-def efficiency(n_points: int = NPointsOption, metric: Metric = MetricOption):
-    """Calculate and plot parallel efficiency."""
-    plot_efficiency(n_points, time_col=_METRIC_COL[metric])
+def memory(n_points: int = NPointsOption):
+    """Generate peak memory (RSS) comparison plots."""
+    plot_memory(n_points)
 
 
 @app.command()
@@ -340,7 +340,7 @@ def all(n_points: int = NPointsOption, metric: Metric = MetricOption):
     plot_grid(n_points, time_col=time_col)
     plot_samples(n_points, time_col=time_col)
     plot_large(n_points, time_col=time_col)
-    plot_efficiency(n_points, time_col=time_col)
+    plot_memory(n_points)
     plot_speedup(min_atoms=50000, top_n=5, n_points=n_points, time_col=time_col)
     rprint(f"\n[bold green]All plots saved to:[/bold green] {PLOTS_DIR}")
 

@@ -119,6 +119,10 @@ def load_data(n_points: int = 100) -> pl.DataFrame:
             if col not in df.columns:
                 df = df.with_columns(pl.lit(None).cast(pl.Float64).alias(col))
 
+        # Memory column (from hyperfine, may be absent in old CSVs)
+        if "memory_bytes" not in df.columns:
+            df = df.with_columns(pl.lit(None).cast(pl.Int64).alias("memory_bytes"))
+
         return (
             df.select(
                 [
@@ -134,6 +138,7 @@ def load_data(n_points: int = 100) -> pl.DataFrame:
                     "total_sasa",
                     "parse_time_ms",
                     "sasa_time_ms",
+                    "memory_bytes",
                 ]
             )
             .with_columns(pl.lit(1).cast(pl.UInt32).alias("n_runs"))

@@ -581,113 +581,98 @@ def plot_large(n_points: int = 100, time_col: str = "time_ms"):
         rprint(f"[green]Saved:[/green] {out_path2}")
 
 
-def plot_efficiency(n_points: int = 100, time_col: str = "time_ms"):
-    """Calculate and plot parallel efficiency from existing benchmark data."""
-    from rich.table import Table
-
+def plot_memory(n_points: int = 100):
+    """Generate peak memory (RSS) comparison plots."""
     setup_style()
     df = load_data(n_points)
     df = add_size_bin(df)
 
-    if df.height == 0:
-        rprint("[yellow]No SR data found[/yellow]")
+    # Filter to single-threaded and drop rows without memory data
+    df_t1 = df.filter((pl.col("threads") == 1) & pl.col("memory_bytes").is_not_null())
+
+    if df_t1.height == 0:
+        rprint("[yellow]No memory data found[/yellow]")
         return
 
-    suffix = metric_suffix(time_col)
-    plot_dir = PLOTS_DIR.joinpath(f"efficiency{suffix}")
+    df_t1 = df_t1.with_columns(
+        (pl.col("memory_bytes") / (1024 * 1024)).alias("memory_mb")
+    )
+
+    plot_dir = PLOTS_DIR.joinpath("memory")
     plot_dir.mkdir(parents=True, exist_ok=True)
 
-    # Baseline: threads=1
-    df_t1 = df.filter(pl.col("threads") == 1).select(
-        [
-            "tool_label",
-            "structure",
-            "n_atoms",
-            "size_bin",
-            pl.col(time_col).alias("t1_ms"),
-        ]
-    )
+    # Exclude f32 variants for cleaner comparison
+    tool_labels = [
+        t for t in sorted(df_t1["tool_label"].unique().to_list()) if "f32" not in t
+    ]
 
-    df_eff = df.join(df_t1, on=["tool_label", "structure", "n_atoms", "size_bin"])
-    df_eff = df_eff.with_columns(
-        (pl.col("t1_ms") / (pl.col(time_col) * pl.col("threads"))).alias("efficiency")
-    )
+    # --- Scatter: atoms vs memory ---
+    fig, ax = plt.subplots(figsize=(10, 6))
 
-    tool_labels = ["zsasa_f64", "freesasa", "rustsasa"]
-    max_threads = df["threads"].max()
+    for tool_label in tool_labels:
+        df_tool = df_t1.filter(pl.col("tool_label") == tool_label)
+        ax.scatter(
+            df_tool["n_atoms"].to_list(),
+            df_tool["memory_mb"].to_list(),
+            label=display_name(tool_label),
+            alpha=0.4,
+            s=10,
+            color=COLORS.get(tool_label, "#95a5a6"),
+        )
 
-    df_tmax = df_eff.filter(pl.col("threads") == max_threads)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("Number of Atoms")
+    ax.set_ylabel("Peak RSS (MB)")
+    ax.set_title("SR: Peak Memory vs Structure Size (threads=1)")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
 
-    summary_table = Table(
-        title=f"Parallel Efficiency by Size (SR, threads={max_threads})"
-    )
-    summary_table.add_column("Size Bin", style="cyan")
-    summary_table.add_column("Count", justify="right")
-    summary_table.add_column("zsasa (f64)", justify="right")
-    summary_table.add_column("FreeSASA", justify="right")
-    summary_table.add_column("RustSASA", justify="right")
+    fig.tight_layout()
+    out_path = plot_dir.joinpath("scatter.png")
+    fig.savefig(out_path)
+    plt.close(fig)
+    rprint(f"[green]Saved:[/green] {out_path}")
 
+    # --- Bar chart: median memory by size bin ---
     bin_order = [b[2] for b in BINS]
+    available_bins = [b for b in bin_order if b in df_t1["size_bin"].unique().to_list()]
 
-    for bin_name in bin_order:
-        df_bin = df_tmax.filter(pl.col("size_bin") == bin_name)
-        if df_bin.height == 0:
-            continue
+    if not available_bins:
+        return
 
-        count = df_bin.select("structure").unique().height
-        row_values = [bin_name, f"{count:,}"]
-
-        for tool in tool_labels:
-            df_tool = df_bin.filter(pl.col("tool_label") == tool)
-            if df_tool.height > 0:
-                eff = df_tool["efficiency"].median()
-                row_values.append(f"{eff:.2f}")
-            else:
-                row_values.append("-")
-
-        summary_table.add_row(*row_values)
-
-    rprint(summary_table)
-    rprint("[dim]Efficiency = T1 / (TN * N). Higher = better thread utilization[/dim]")
-
-    # Plot efficiency by size bin
     fig, ax = plt.subplots(figsize=(14, 6))
 
-    x_labels = [b for b in bin_order if b in df_tmax["size_bin"].unique().to_list()]
-    x_pos = list(range(len(x_labels)))
-    bar_width = 0.25
+    x_pos = list(range(len(available_bins)))
+    bar_width = 0.8 / max(len(tool_labels), 1)
 
     for i, tool in enumerate(tool_labels):
-        tool_eff = []
-        for bin_name in x_labels:
-            df_bin_tool = df_tmax.filter(
+        medians = []
+        for bin_name in available_bins:
+            df_bt = df_t1.filter(
                 (pl.col("size_bin") == bin_name) & (pl.col("tool_label") == tool)
             )
-            if df_bin_tool.height > 0:
-                tool_eff.append(df_bin_tool["efficiency"].median())
-            else:
-                tool_eff.append(0)
+            medians.append(df_bt["memory_mb"].median() if df_bt.height > 0 else 0)
 
-        offset = (i - 1) * bar_width
+        offset = (i - len(tool_labels) / 2 + 0.5) * bar_width
         ax.bar(
             [x + offset for x in x_pos],
-            tool_eff,
+            medians,
             bar_width,
             label=display_name(tool),
             color=COLORS.get(tool, "#95a5a6"),
         )
 
     ax.set_xlabel("Structure Size (atoms)")
-    ax.set_ylabel(f"Parallel Efficiency (threads={max_threads})")
-    ax.set_title("Parallel Efficiency by Structure Size")
+    ax.set_ylabel("Median Peak RSS (MB)")
+    ax.set_title("SR: Peak Memory by Structure Size (threads=1)")
     ax.set_xticks(x_pos)
-    ax.set_xticklabels(x_labels, rotation=45, ha="right")
+    ax.set_xticklabels(available_bins, rotation=45, ha="right")
     ax.legend()
     ax.grid(True, alpha=0.3, axis="y")
-    ax.set_ylim(0, 0.5)
 
     fig.tight_layout()
-    out_path = plot_dir.joinpath("summary.png")
+    out_path = plot_dir.joinpath("by_size.png")
     fig.savefig(out_path)
     plt.close(fig)
     rprint(f"[green]Saved:[/green] {out_path}")
