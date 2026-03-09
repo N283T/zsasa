@@ -426,6 +426,68 @@ def build_csv(
     console.print(f"[green]Saved:[/] {csv_path} ({df.height} structures)")
 
 
+def _build_lahuta_csv(
+    zsasa_runs: dict[str, dict[str, tuple[float, int]]],
+    freesasa_results: dict[str, float],
+    rustsasa_results: dict[str, float],
+    lahuta_results: dict[str, float],
+    csv_path: Path,
+) -> None:
+    """Build CSV with all tools + lahuta_bitmask for comparison."""
+    import polars as pl
+
+    all_stems: set[str] = set()
+    for results in zsasa_runs.values():
+        all_stems.update(results.keys())
+    all_stems.update(freesasa_results.keys())
+    all_stems.update(rustsasa_results.keys())
+    all_stems.update(lahuta_results.keys())
+
+    if not all_stems:
+        console.print("[red]No results collected for lahuta CSV[/]")
+        return
+
+    rows: list[dict] = []
+    for stem in sorted(all_stems):
+        row: dict = {"structure": stem}
+
+        # n_atoms from any zsasa run
+        for results in zsasa_runs.values():
+            if stem in results:
+                _, n_atoms = results[stem]
+                row["n_atoms"] = n_atoms
+                break
+
+        if stem in freesasa_results:
+            row["freesasa"] = round(freesasa_results[stem], 2)
+
+        for col_name, results in zsasa_runs.items():
+            if stem in results:
+                sasa, _ = results[stem]
+                row[col_name] = round(sasa, 2)
+
+        if stem in rustsasa_results:
+            row["rustsasa"] = round(rustsasa_results[stem], 2)
+
+        if stem in lahuta_results:
+            row["lahuta_bitmask"] = round(lahuta_results[stem], 2)
+
+        rows.append(row)
+
+    columns = ["structure", "n_atoms", "freesasa"]
+    columns.extend(zsasa_runs.keys())
+    if rustsasa_results:
+        columns.append("rustsasa")
+    if lahuta_results:
+        columns.append("lahuta_bitmask")
+
+    df_raw = pl.DataFrame(rows)
+    available_cols = [c for c in columns if c in df_raw.columns]
+    df = df_raw.select(available_cols)
+    df.write_csv(csv_path)
+    console.print(f"[green]Saved:[/] {csv_path} ({df.height} structures)")
+
+
 # ---------------------------------------------------------------------------
 # Statistics
 # ---------------------------------------------------------------------------
@@ -744,17 +806,21 @@ def print_stats_table(
                 f"{stats['max_rel_error']:.4f}",
             )
 
-    # Lahuta stats
+    # Lahuta CSV stats (includes all tools at LAHUTA_N_POINTS)
     lahuta_csv = results_dir.joinpath(f"results_lahuta_{LAHUTA_N_POINTS}.csv")
     if lahuta_csv.exists():
         df = pl.read_csv(lahuta_csv)
-        if reference in df.columns and "lahuta_bitmask" in df.columns:
-            stats = _stats_for_pair(df, reference, "lahuta_bitmask")
-            if stats:
-                pair = df.select([reference, "lahuta_bitmask"]).drop_nulls()
+        if reference in df.columns:
+            skip_cols = {"structure", "n_atoms", reference}
+            compare_cols = [c for c in df.columns if c not in skip_cols]
+            for col in compare_cols:
+                stats = _stats_for_pair(df, reference, col)
+                if stats is None:
+                    continue
+                pair = df.select([reference, col]).drop_nulls()
                 table.add_row(
-                    f"{LAHUTA_N_POINTS}",
-                    "lahuta_bitmask",
+                    str(LAHUTA_N_POINTS),
+                    col,
                     str(pair.height),
                     f"{stats['r_squared']:.6f}",
                     f"{stats['mean_rel_error']:.4f}",
@@ -902,40 +968,32 @@ def run(
         csv_path = results_dir.joinpath(f"results_{n_pts}.csv")
         build_csv(zsasa_runs, freesasa_results, rustsasa_results, csv_path)
 
-    # --- Lahuta bitmask run (separate n_points) ---
+    # --- Lahuta bitmask run (separate n_points, includes all tools for comparison) ---
     if not skip_lahuta:
-        console.print(f"\n[bold]=== Lahuta bitmask (n_points={LAHUTA_N_POINTS}) ===[/]")
+        console.print(
+            f"\n[bold]=== Lahuta bitmask + all tools "
+            f"(n_points={LAHUTA_N_POINTS}) ===[/]"
+        )
 
-        console.print("[bold cyan]Running FreeSASA...[/]")
-        lahuta_freesasa = run_freesasa(input_dir, LAHUTA_N_POINTS, threads)
-        console.print(f"  Got {len(lahuta_freesasa)} results")
+        # Run all standard tools at LAHUTA_N_POINTS for apples-to-apples comparison
+        zsasa_runs, freesasa_results, rustsasa_results = collect_results_for_npoints(
+            input_dir,
+            algorithm,
+            threads,
+            LAHUTA_N_POINTS,
+            include_rustsasa=not skip_rustsasa,
+        )
 
+        # Run lahuta_bitmask
         console.print("[bold cyan]Running lahuta_bitmask...[/]")
         lahuta_results = run_lahuta(input_dir, LAHUTA_N_POINTS, threads)
         console.print(f"  Got {len(lahuta_results)} results")
 
-        if lahuta_results:
-            import polars as pl
-
-            all_stems = set(lahuta_freesasa.keys()) | set(lahuta_results.keys())
-            rows: list[dict] = []
-            for stem in sorted(all_stems):
-                row: dict = {"structure": stem}
-                if stem in lahuta_freesasa:
-                    row["freesasa"] = round(lahuta_freesasa[stem], 2)
-                if stem in lahuta_results:
-                    row["lahuta_bitmask"] = lahuta_results[stem]
-                rows.append(row)
-
-            lahuta_csv = results_dir.joinpath(f"results_lahuta_{LAHUTA_N_POINTS}.csv")
-            df = pl.DataFrame(rows)
-            available = [
-                c
-                for c in ["structure", "freesasa", "lahuta_bitmask"]
-                if c in df.columns
-            ]
-            df.select(available).write_csv(lahuta_csv)
-            console.print(f"[green]Saved:[/] {lahuta_csv} ({df.height} structures)")
+        # Build CSV with all tools + lahuta_bitmask
+        lahuta_csv = results_dir.joinpath(f"results_lahuta_{LAHUTA_N_POINTS}.csv")
+        _build_lahuta_csv(
+            zsasa_runs, freesasa_results, rustsasa_results, lahuta_results, lahuta_csv
+        )
 
     # --- Statistics and plots ---
     print_stats_table(results_dir, n_points_list)
