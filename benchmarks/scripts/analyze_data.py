@@ -283,6 +283,21 @@ def detect_outliers(
     exceeds BOTH the per-bin fence AND the absolute ratio floor, at ANY thread
     count.
     """
+    return {name for name, _ in detect_outlier_rows(df, time_col, iqr_k, ratio_floor)}
+
+
+def detect_outlier_rows(
+    df: pl.DataFrame,
+    time_col: str = "sasa_time_ms",
+    iqr_k: float = OUTLIER_IQR_K,
+    ratio_floor: float = OUTLIER_RATIO_FLOOR,
+) -> set[tuple[str, int]]:
+    """Return set of (structure, threads) pairs that are per-bin outliers.
+
+    For each size bin × competitor, computes the Tukey fence Q3 + k*IQR on the
+    ratio (competitor_time / zsasa_time).  A row is flagged only if it exceeds
+    BOTH the per-bin fence AND the absolute ratio floor.
+    """
     pivot = (
         df.select(["structure", "threads", "tool_label", "n_atoms", time_col])
         .pivot(
@@ -296,7 +311,7 @@ def detect_outliers(
     if zsasa_col not in pivot.columns:
         return set()
 
-    outlier_structures: set[str] = set()
+    outlier_rows: set[tuple[str, int]] = set()
 
     for competitor in ("freesasa", "rustsasa"):
         if competitor not in pivot.columns:
@@ -323,9 +338,10 @@ def detect_outliers(
         outliers = joined.filter(
             (pl.col(ratio_col) > pl.col("fence")) & (pl.col(ratio_col) > ratio_floor)
         )
-        outlier_structures.update(outliers["structure"].to_list())
+        for row in outliers.iter_rows(named=True):
+            outlier_rows.add((row["structure"], row["threads"]))
 
-    return outlier_structures
+    return outlier_rows
 
 
 def split_outliers(

@@ -79,10 +79,10 @@ NPointsOption = typer.Option(
     100, "--n-points", "-N", help="Number of sphere test points"
 )
 MetricOption = typer.Option(
-    Metric.sasa,
+    Metric.wall,
     "--metric",
     "-m",
-    help="Timing metric: sasa (SASA-only, default) or wall (wall-clock incl. I/O)",
+    help="Timing metric: wall (wall-clock incl. I/O, default) or sasa (SASA-only)",
 )
 
 
