@@ -31,7 +31,11 @@ Output:
     ├── results_500.csv
     ├── results_1000.csv
     ├── results_lahuta_128.csv    # if lahuta available
-    ├── validation_grid.png       # 4x4 grid (n_points x zsasa variants)
+    ├── validation_grid.png       # 4x4 grid (rows=variants, cols=n_points)
+    ├── validation_zsasa_f64.png  # per-tool 1xN scatter
+    ├── validation_zsasa_f32.png
+    ├── validation_zsasa_bitmask_f64.png
+    ├── validation_zsasa_bitmask_f32.png
     ├── validation_quicklook.png  # zsasa_f64 n_points=100 only
     └── validation_lahuta.png     # lahuta_bitmask n_points=128
 """
@@ -44,9 +48,13 @@ import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
+
+if TYPE_CHECKING:
+    import matplotlib.axes
+    import polars as pl
 from rich.console import Console
 
 from bench_common import (
@@ -525,11 +533,9 @@ def compute_stats(x: list[float], y: list[float]) -> dict[str, float]:
 
 
 def _stats_for_pair(
-    df: "pl.DataFrame", reference: str, col: str
+    df: pl.DataFrame, reference: str, col: str
 ) -> dict[str, float] | None:
     """Compute stats for a pair of columns, or None if insufficient data."""
-    import polars as pl
-
     pair = df.select([reference, col]).drop_nulls()
     if pair.height < 2:
         return None
@@ -563,8 +569,8 @@ def _setup_style() -> None:
 
 
 def _scatter_cell(
-    ax: "matplotlib.axes.Axes",
-    df: "pl.DataFrame",
+    ax: matplotlib.axes.Axes,
+    df: pl.DataFrame,
     reference: str,
     col: str,
     title: str,
@@ -614,51 +620,62 @@ def _scatter_cell(
     ax.set_aspect("equal")
 
 
+def _load_csvs(results_dir: Path, n_points_list: list[int]) -> dict[int, pl.DataFrame]:
+    """Load results CSVs keyed by n_points. Returns only existing ones."""
+    import polars as pl
+
+    csvs: dict[int, pl.DataFrame] = {}
+    for n_pts in n_points_list:
+        csv_path = results_dir.joinpath(f"results_{n_pts}.csv")
+        if csv_path.exists():
+            csvs[n_pts] = pl.read_csv(csv_path)
+    return csvs
+
+
 def generate_grid_plot(
     results_dir: Path,
     n_points_list: list[int],
     algorithm: str,
 ) -> None:
-    """Generate 4x4 grid plot: rows=n_points, cols=zsasa variants.
+    """Generate grid plot: rows=zsasa variants, cols=n_points.
 
     Each cell shows scatter vs FreeSASA with R^2/error stats.
     RustSASA R^2 shown as annotation in each cell.
     """
     import matplotlib.pyplot as plt
-    import polars as pl
 
     _setup_style()
 
-    n_rows = len(n_points_list)
-    n_cols = len(ZSASA_VARIANTS)
+    csvs = _load_csvs(results_dir, n_points_list)
+    if not csvs:
+        console.print("[yellow]No results CSVs found, skipping grid plot[/]")
+        return
+
+    available_npts = sorted(csvs.keys())
+    n_rows = len(ZSASA_VARIANTS)
+    n_cols = len(available_npts)
 
     fig, axes = plt.subplots(
         n_rows, n_cols, figsize=(5 * n_cols, 5 * n_rows), squeeze=False
     )
 
-    for row_idx, n_pts in enumerate(n_points_list):
-        csv_path = results_dir.joinpath(f"results_{n_pts}.csv")
-        if not csv_path.exists():
-            for col_idx in range(n_cols):
-                axes[row_idx][col_idx].set_title(f"n={n_pts}: no data")
-            continue
+    for col_idx, n_pts in enumerate(available_npts):
+        df = csvs[n_pts]
 
-        df = pl.read_csv(csv_path)
-
-        # Compute rustsasa R^2 for this n_points (shared across all cells in row)
+        # Compute rustsasa R^2 for this n_points (shared across all cells in column)
         rustsasa_r2 = None
         if "rustsasa" in df.columns and "freesasa" in df.columns:
             stats = _stats_for_pair(df, "freesasa", "rustsasa")
             if stats:
                 rustsasa_r2 = stats["r_squared"]
 
-        for col_idx, (col_name, _precision, _bitmask) in enumerate(ZSASA_VARIANTS):
+        for row_idx, (col_name, _precision, _bitmask) in enumerate(ZSASA_VARIANTS):
             ax = axes[row_idx][col_idx]
             if col_name not in df.columns or "freesasa" not in df.columns:
                 ax.set_title(f"n={n_pts}: {col_name} missing")
                 continue
 
-            title = f"n={n_pts}: {col_name}"
+            title = f"{col_name} (n={n_pts})"
             _scatter_cell(ax, df, "freesasa", col_name, title, rustsasa_r2=rustsasa_r2)
 
     fig.suptitle(
@@ -671,6 +688,55 @@ def generate_grid_plot(
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     console.print(f"[green]Saved:[/] {out_path}")
+
+
+def generate_per_tool_plots(
+    results_dir: Path,
+    n_points_list: list[int],
+    algorithm: str,
+) -> None:
+    """Generate 1xN scatter plot per zsasa variant across n_points levels."""
+    import matplotlib.pyplot as plt
+
+    _setup_style()
+
+    csvs = _load_csvs(results_dir, n_points_list)
+    if not csvs:
+        return
+
+    available_npts = sorted(csvs.keys())
+
+    for col_name, _precision, _bitmask in ZSASA_VARIANTS:
+        n_cols = len(available_npts)
+        fig, axes = plt.subplots(1, n_cols, figsize=(5 * n_cols, 5), squeeze=False)
+
+        for col_idx, n_pts in enumerate(available_npts):
+            ax = axes[0][col_idx]
+            df = csvs[n_pts]
+
+            if col_name not in df.columns or "freesasa" not in df.columns:
+                ax.set_title(f"n={n_pts}: no data")
+                continue
+
+            rustsasa_r2 = None
+            if "rustsasa" in df.columns and "freesasa" in df.columns:
+                stats = _stats_for_pair(df, "freesasa", "rustsasa")
+                if stats:
+                    rustsasa_r2 = stats["r_squared"]
+
+            title = f"n={n_pts}"
+            _scatter_cell(ax, df, "freesasa", col_name, title, rustsasa_r2=rustsasa_r2)
+
+        fig.suptitle(
+            f"{algorithm.upper()}: {col_name} vs FreeSASA",
+            fontsize=13,
+            y=1.02,
+        )
+        fig.tight_layout()
+        out_path = results_dir.joinpath(f"validation_{col_name}.png")
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+        console.print(f"[green]Saved:[/] {out_path}")
 
 
 def generate_quicklook_plot(
@@ -998,6 +1064,7 @@ def run(
     # --- Statistics and plots ---
     print_stats_table(results_dir, n_points_list)
     generate_grid_plot(results_dir, n_points_list, algorithm)
+    generate_per_tool_plots(results_dir, n_points_list, algorithm)
     generate_quicklook_plot(results_dir, algorithm)
     generate_lahuta_plot(results_dir, algorithm)
 
@@ -1048,10 +1115,11 @@ def compare(
 
     print_stats_table(results_dir, n_points_list)
     generate_grid_plot(results_dir, n_points_list, algorithm)
+    generate_per_tool_plots(results_dir, n_points_list, algorithm)
     generate_quicklook_plot(results_dir, algorithm)
     generate_lahuta_plot(results_dir, algorithm)
 
-    console.print(f"\n[bold green]=== Done! ===[/]")
+    console.print("\n[bold green]=== Done! ===[/]")
 
 
 if __name__ == "__main__":
