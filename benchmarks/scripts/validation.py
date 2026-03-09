@@ -694,10 +694,10 @@ def generate_grid_plot(
         for row_idx, (col_name, _precision, _bitmask) in enumerate(ZSASA_VARIANTS):
             ax = axes[row_idx][col_idx]
             if col_name not in df.columns or "freesasa" not in df.columns:
-                ax.set_title(f"n={n_pts}: {col_name} missing")
+                ax.set_title(f"{n_pts} points: {col_name} missing")
                 continue
 
-            title = f"{col_name} (n={n_pts})"
+            title = f"{col_name} ({n_pts} points)"
             _scatter_cell(ax, df, "freesasa", col_name, title, ref_r2=ref_r2)
 
     fig.suptitle(
@@ -737,11 +737,11 @@ def generate_per_tool_plots(
             df = csvs[n_pts]
 
             if col_name not in df.columns or "freesasa" not in df.columns:
-                ax.set_title(f"n={n_pts}: no data")
+                ax.set_title(f"{n_pts} points: no data")
                 continue
 
             ref_r2 = _collect_ref_r2(df, "freesasa", ["rustsasa"])
-            title = f"n={n_pts}"
+            title = f"{n_pts} points"
             _scatter_cell(ax, df, "freesasa", col_name, title, ref_r2=ref_r2)
 
         fig.suptitle(
@@ -784,7 +784,7 @@ def generate_quicklook_plot(
         df,
         "freesasa",
         "zsasa_f64",
-        f"{algorithm.upper()}: zsasa (f64) vs FreeSASA (n_points=100)",
+        f"{algorithm.upper()}: zsasa (f64) vs FreeSASA (100 points)",
         ref_r2=ref_r2,
     )
 
@@ -832,11 +832,11 @@ def generate_lahuta_plot(
             ax.set_title(f"{col_name}: no data")
             continue
 
-        title = f"{col_name} (n={LAHUTA_N_POINTS})"
+        title = f"{col_name} ({LAHUTA_N_POINTS} points)"
         _scatter_cell(ax, df, "freesasa", col_name, title, ref_r2=ref_r2)
 
     fig.suptitle(
-        f"{algorithm.upper()} Validation at n={LAHUTA_N_POINTS}: "
+        f"{algorithm.upper()} Validation ({LAHUTA_N_POINTS} points): "
         f"zsasa variants vs FreeSASA",
         fontsize=13,
         y=1.02,
