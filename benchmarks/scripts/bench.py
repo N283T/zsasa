@@ -7,8 +7,7 @@
 
 Two independent subcommands:
   - wall: Wall-clock timing via hyperfine. Saves per-run JSON + aggregated CSV.
-  - sasa: Internal tool timing via --timing flag (parse_time_ms, sasa_time_ms).
-          Updates existing CSV from a previous `wall` run.
+  - sasa: Internal tool timing via --timing flag. Writes independent timing.csv.
 
 Tools: zig_f64, zig_f32, zig_f64_bitmask, zig_f32_bitmask, freesasa, rust
        (zig = zig_f64, zig_bitmask = zig_f64_bitmask)
@@ -17,8 +16,8 @@ Usage:
     # Wall-clock benchmarks (hyperfine)
     ./benchmarks/scripts/bench.py wall --threads 1,4,8
 
-    # Add internal timing to existing results
-    ./benchmarks/scripts/bench.py sasa
+    # Internal SASA timing (independent of wall)
+    ./benchmarks/scripts/bench.py sasa --threads 1,4,10
 
     # Specific tools
     ./benchmarks/scripts/bench.py wall --tool zig_f64 --tool freesasa --threads 1,4,8
@@ -27,20 +26,23 @@ Usage:
     ./benchmarks/scripts/bench.py wall --tool zig_f64 --threads 1 --warmup 0 --runs 1 \
         --input benchmarks/dataset/pdb/1gyt.pdb
 
-Output:
+Output (wall):
     benchmarks/results/single/<n_points>/<tool>_sr/
     ├── config.json   # System info and parameters
     ├── runs/         # Per-run hyperfine JSON (individual times preserved)
     │   ├── <structure>_<threads>t.json
     │   └── ...
     └── results.csv   # Aggregated results (generated from runs/)
+
+Output (sasa):
+    benchmarks/results/single/<n_points>/<tool>_sr/
+    └── timing.csv    # Internal timing (parse_time_ms, sasa_time_ms)
 """
 
 from __future__ import annotations
 
 import csv
 import json
-import os
 import re
 import shutil
 import statistics
@@ -669,27 +671,46 @@ def _run_wall(
 
 # === sasa command ===
 
+TIMING_CSV_COLUMNS = [
+    "tool",
+    "structure",
+    "n_atoms",
+    "algorithm",
+    "precision",
+    "threads",
+    "parse_time_ms",
+    "sasa_time_ms",
+]
+
 
 @app.command()
 def sasa(
     tools: Annotated[
         list[str] | None, typer.Option("--tool", "-t", help=_TOOL_HELP)
     ] = None,
-    input_dir: Annotated[
-        Path | None,
-        typer.Option(
-            "--input-dir",
-            "-i",
-            help="Input directory with .pdb files (for locating structures referenced in CSV)",
-        ),
-    ] = None,
+    threads: Annotated[
+        str,
+        typer.Option("--threads", "-T", help="Thread counts: '1,4,10' or '1-10'"),
+    ] = "1,4,10",
     output_dir: Annotated[
         Path | None,
         typer.Option(
             "--output-dir",
             "-o",
-            help="Output directory (must contain results.csv from a previous 'wall' run)",
+            help="Output directory (per-tool subdirs when multiple tools)",
         ),
+    ] = None,
+    input_dir: Annotated[
+        Path | None,
+        typer.Option("--input-dir", "-i", help="Input directory with .pdb files"),
+    ] = None,
+    input_file: Annotated[
+        Path | None,
+        typer.Option("--input", help="Single .pdb file to benchmark"),
+    ] = None,
+    sample_file: Annotated[
+        Path | None,
+        typer.Option("--sample-file", "-S", help="Sample file to filter structures"),
     ] = None,
     n_points: Annotated[
         int,
@@ -698,24 +719,21 @@ def sasa(
     timeout: Annotated[
         int, typer.Option("--timeout", help="Timeout per benchmark in seconds")
     ] = 600,
+    force: Annotated[
+        bool, typer.Option("--force", "-f", help="Overwrite existing results")
+    ] = False,
 ) -> None:
-    """Run internal SASA timing. Updates parse_time_ms/sasa_time_ms in existing CSV."""
+    """Run internal SASA timing. Writes timing.csv with parse_time_ms/sasa_time_ms."""
     selected_tools = _resolve_tools(tools)
-
-    if input_dir is not None:
-        if not input_dir.exists():
-            console.print(f"[red]Error:[/red] Input directory not found: {input_dir}")
-            raise typer.Exit(1)
-        pdb_dir = input_dir
-    else:
-        pdb_dir = Path(__file__).parent.parent.joinpath("dataset", "pdb")
-        if not pdb_dir.exists():
-            console.print(f"[red]Error:[/red] Default dataset not found: {pdb_dir}")
-            raise typer.Exit(1)
+    thread_counts = parse_threads(threads)
+    pdb_dir, structures = _resolve_input(input_file, input_dir, sample_file)
 
     has_zig = any(parse_tool(t)[1] == "zig" for t in selected_tools)
     if has_zig:
         ensure_zsasa_built()
+
+    console.print(f"Found [cyan]{len(structures):,}[/cyan] structures in {pdb_dir}")
+    console.print(f"Tools: [cyan]{', '.join(selected_tools)}[/cyan]")
 
     results_base = Path(__file__).parent.parent.joinpath(
         "results", "single", str(n_points)
@@ -733,10 +751,13 @@ def sasa(
 
         success = _run_sasa(
             tool_name,
+            structures=structures,
             pdb_dir=pdb_dir,
+            thread_counts=thread_counts,
             n_points=n_points,
             timeout=timeout,
             output_dir=tool_output_dir,
+            force=force,
         )
         if success:
             n_succeeded += 1
@@ -751,12 +772,15 @@ def sasa(
 def _run_sasa(
     tool_name: str,
     *,
+    structures: list[tuple[str, int]],
     pdb_dir: Path,
+    thread_counts: list[int],
     n_points: int,
     timeout: int,
     output_dir: Path,
+    force: bool,
 ) -> bool:
-    """Run internal timing for a single tool, updating existing CSV."""
+    """Run internal timing for a single tool. Writes timing.csv."""
     tool_canonical, tool_base, precision, use_bitmask = parse_tool(tool_name)
 
     if tool_base not in _TIMING_TOOLS:
@@ -765,39 +789,30 @@ def _run_sasa(
         )
         return True
 
-    csv_path = output_dir.joinpath("results.csv")
-    if not csv_path.exists():
-        console.print(
-            f"[red]Error:[/red] No results.csv found in {output_dir}. "
-            f"Run 'wall' command first."
-        )
-        return False
-
     binary = get_binary_path(tool_base)
     if not binary.exists():
         console.print(f"[red]Error:[/red] Binary not found: {binary}")
         return False
 
-    with open(csv_path, newline="") as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
+    csv_path = output_dir.joinpath("timing.csv")
+    if csv_path.exists() and not force:
+        console.print(f"[yellow]Warning:[/yellow] Results already exist: {csv_path}")
+        console.print("Use [bold]--force[/bold] to overwrite")
+        return False
 
-    if not rows:
-        console.print(f"[yellow]Warning:[/yellow] Empty CSV: {csv_path}")
-        return True
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    tool_rows = [i for i, r in enumerate(rows) if r["tool"] == tool_canonical]
-    if not tool_rows:
-        console.print(
-            f"[yellow]Warning:[/yellow] No rows for {tool_canonical} in {csv_path}"
-        )
-        return True
-
+    total = len(structures) * len(thread_counts)
     console.print(f"\n[bold]{tool_canonical.upper()} SR (sasa)[/bold]")
-    console.print(f"Structures × threads: {len(tool_rows)}, Timeout: {timeout}s\n")
+    console.print(
+        f"Threads: {thread_counts}, Structures: {len(structures)}, "
+        f"Total: {total}, Timeout: {timeout}s\n"
+    )
 
+    n_atoms_cache: dict[str, int | None] = {}
     n_success = 0
     n_failed = 0
+    rows: list[dict[str, object]] = []
 
     with Progress(
         SpinnerColumn(),
@@ -806,60 +821,72 @@ def _run_sasa(
         TextColumn("{task.completed}/{task.total}"),
         console=console,
     ) as progress:
-        task = progress.add_task("Timing", total=len(tool_rows))
+        task = progress.add_task("Timing", total=total)
 
-        for idx in tool_rows:
-            row = rows[idx]
-            structure = row["structure"]
-            n_threads = int(row["threads"])
-            pdb_path = pdb_dir.joinpath(f"{structure}.pdb")
+        for n_threads in thread_counts:
+            for pdb_id, n_atoms in structures:
+                pdb_path = pdb_dir.joinpath(f"{pdb_id}.pdb")
+                if not pdb_path.exists():
+                    console.print(f"[yellow]Skip {pdb_id}: not found[/yellow]")
+                    n_failed += 1
+                    progress.advance(task)
+                    continue
 
-            desc = f"{structure} t={n_threads}"
-            progress.update(task, description=desc)
+                if n_atoms == 0:
+                    if pdb_id not in n_atoms_cache:
+                        n_atoms_cache[pdb_id] = get_n_atoms_from_pdb(pdb_path)
+                    n_atoms = n_atoms_cache[pdb_id]
 
-            if not pdb_path.exists():
-                console.print(f"[yellow]Skip {structure}: not found[/yellow]")
-                n_failed += 1
+                desc = f"{pdb_id} t={n_threads}"
+                progress.update(task, description=desc)
+
+                timing_cmd = _build_command(
+                    tool_base,
+                    precision,
+                    pdb_path,
+                    n_threads,
+                    n_points,
+                    use_bitmask,
+                    timing=True,
+                )
+                timing = _run_timing(timing_cmd, timeout=timeout)
+
+                if timing:
+                    rows.append(
+                        {
+                            "tool": tool_canonical,
+                            "structure": pdb_id,
+                            "n_atoms": n_atoms,
+                            "algorithm": "sr",
+                            "precision": precision,
+                            "threads": n_threads,
+                            "parse_time_ms": timing.get("parse_time_ms", ""),
+                            "sasa_time_ms": timing.get("sasa_time_ms", ""),
+                        }
+                    )
+                    n_success += 1
+                else:
+                    n_failed += 1
+
                 progress.advance(task)
-                continue
 
-            timing_cmd = _build_command(
-                tool_base,
-                precision,
-                pdb_path,
-                n_threads,
-                n_points,
-                use_bitmask,
-                timing=True,
-            )
-            timing = _run_timing(timing_cmd, timeout=timeout)
+    if n_success == 0:
+        console.print("[red]Error: all timing runs failed, no results recorded[/red]")
+        return False
 
-            if timing:
-                rows[idx]["parse_time_ms"] = timing.get("parse_time_ms", "")
-                rows[idx]["sasa_time_ms"] = timing.get("sasa_time_ms", "")
-                n_success += 1
-            else:
-                n_failed += 1
-
-            progress.advance(task)
-
-    # Atomic write
-    tmp_path = csv_path.with_suffix(".csv.tmp")
-    with open(tmp_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+    # Write timing.csv
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=TIMING_CSV_COLUMNS)
         writer.writeheader()
         writer.writerows(rows)
-    os.replace(tmp_path, csv_path)
 
     if n_failed > 0:
         console.print(
-            f"\n[yellow]Warning:[/yellow] {n_failed}/{len(tool_rows)} timing runs failed"
+            f"\n[yellow]Warning:[/yellow] {n_failed}/{total} timing runs failed"
         )
 
-    console.print(
-        f"\n[green]Done![/green] {n_success}/{len(tool_rows)} timing runs completed"
-    )
-    console.print(f"  Updated: {csv_path}")
+    console.print(f"\n[green]Done![/green] {n_success}/{total} timing runs completed")
+    console.print(f"  Results: {csv_path}")
     return True
 
 
