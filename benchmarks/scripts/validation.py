@@ -67,7 +67,8 @@ app = typer.Typer(help="SASA validation: compare accuracy across tools")
 console = Console()
 
 # Default n_points levels for main validation
-DEFAULT_N_POINTS = "100,200,500,1000"
+DEFAULT_N_POINTS_SR = "100,200,500,1000"
+DEFAULT_N_SLICES_LR = "20"
 
 # Lahuta bitmask uses a fixed n_points (must be in LAHUTA_BITMASK_POINTS)
 LAHUTA_N_POINTS = 128
@@ -982,13 +983,13 @@ def run(
         ),
     ] = None,
     n_points_str: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--n-points",
             "-N",
-            help="Comma-separated n_points values (default: 100,200,500,1000)",
+            help="Comma-separated values (default: SR=100,200,500,1000 / LR=20)",
         ),
-    ] = DEFAULT_N_POINTS,
+    ] = None,
     skip_rustsasa: Annotated[
         bool,
         typer.Option(
@@ -1005,6 +1006,9 @@ def run(
     ] = False,
 ) -> None:
     """Run all tools on PDB directory and compare SASA values."""
+    # Default n_points depends on algorithm
+    if n_points_str is None:
+        n_points_str = DEFAULT_N_SLICES_LR if algorithm == "lr" else DEFAULT_N_POINTS_SR
     try:
         n_points_list = sorted(int(x.strip()) for x in n_points_str.split(","))
     except ValueError:
