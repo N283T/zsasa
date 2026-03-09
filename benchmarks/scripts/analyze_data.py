@@ -66,6 +66,60 @@ BINS = [
 # === Data Loading Functions ===
 
 
+def _merge_timing_data(df: pl.DataFrame, sr_dir: Path) -> pl.DataFrame:
+    """Merge timing.csv data into the main DataFrame.
+
+    Looks for timing.csv files alongside results.csv in each tool directory.
+    Joins on (tool, structure, threads) and fills parse_time_ms/sasa_time_ms.
+    """
+    timing_files = sorted(sr_dir.glob("*/timing.csv"))
+    if not timing_files:
+        return df
+
+    timing_dfs = []
+    for f in timing_files:
+        tdf = pl.read_csv(f)
+        timing_dfs.append(tdf)
+
+    timing = pl.concat(timing_dfs, how="diagonal")
+
+    # Apply same tool name remapping as main data
+    timing = timing.with_columns(
+        pl.col("tool")
+        .str.replace(r"^zig", "zsasa")
+        .str.replace(r"^rust$", "rustsasa")
+        .alias("tool"),
+    )
+
+    # Select only the columns we need for the join
+    timing = timing.select(
+        ["tool", "structure", "threads", "parse_time_ms", "sasa_time_ms"]
+    ).rename(
+        {
+            "parse_time_ms": "_timing_parse_ms",
+            "sasa_time_ms": "_timing_sasa_ms",
+        }
+    )
+
+    # Drop existing empty timing columns from df before join
+    drop_cols = [c for c in ("parse_time_ms", "sasa_time_ms") if c in df.columns]
+    if drop_cols:
+        df = df.drop(drop_cols)
+
+    # Left join: keep all rows from df, add timing where available
+    df = df.join(timing, on=["tool", "structure", "threads"], how="left")
+
+    # Rename timing columns back
+    df = df.rename(
+        {
+            "_timing_parse_ms": "parse_time_ms",
+            "_timing_sasa_ms": "sasa_time_ms",
+        }
+    )
+
+    return df
+
+
 def load_data(n_points: int = 100) -> pl.DataFrame:
     """Load SR benchmark results from RESULTS_BASE/<n_points>/**/results.csv.
 
@@ -114,7 +168,10 @@ def load_data(n_points: int = 100) -> pl.DataFrame:
         if "total_sasa" not in df.columns:
             df = df.with_columns(pl.lit(None).cast(pl.Float64).alias("total_sasa"))
 
-        # Internal timing columns (from --timing flag, may be absent in old CSVs)
+        # Internal timing: merge from timing.csv if available
+        df = _merge_timing_data(df, sr_dir)
+
+        # Ensure timing columns exist (may still be absent after merge)
         for col in ("parse_time_ms", "sasa_time_ms"):
             if col not in df.columns:
                 df = df.with_columns(pl.lit(None).cast(pl.Float64).alias(col))
