@@ -9,8 +9,8 @@ Two independent subcommands:
   - wall: Wall-clock timing via hyperfine. Saves per-run JSON + aggregated CSV.
   - sasa: Internal tool timing via --timing flag. Writes independent timing.csv.
 
-Tools: zig_f64, zig_f32, zig_f64_bitmask, zig_f32_bitmask, freesasa, rust
-       (zig = zig_f64, zig_bitmask = zig_f64_bitmask)
+Tools: zig_f64, zig_f32, zig_f64_bitmask, zig_f32_bitmask, freesasa, rustsasa
+       (zig = zig_f64, zig_bitmask = zig_f64_bitmask, rust = rustsasa)
 
 Usage:
     # Wall-clock benchmarks (hyperfine)
@@ -234,14 +234,23 @@ def _aggregate_runs_to_csv(
 ) -> None:
     """Generate results.csv from individual hyperfine JSON files in runs/.
 
-    Reads each JSON, extracts per-run times and metadata, computes aggregates.
+    Uses hyperfine's pre-computed statistics (mean, stddev, etc.) when available,
+    falling back to computing from individual run times.
     """
     runs_dir = output_dir.joinpath("runs")
     if not runs_dir.exists():
+        console.print(
+            f"[yellow]Warning:[/yellow] runs/ directory not found in {output_dir}, "
+            f"cannot aggregate to CSV"
+        )
         return
 
     json_files = sorted(runs_dir.glob("*.json"))
     if not json_files:
+        console.print(
+            f"[yellow]Warning:[/yellow] No JSON files found in {runs_dir}, "
+            f"cannot aggregate to CSV"
+        )
         return
 
     csv_path = output_dir.joinpath("results.csv")
@@ -261,10 +270,16 @@ def _aggregate_runs_to_csv(
             result = data.get("result")
             meta = data.get("meta", {})
             if not result:
+                console.print(
+                    f"[yellow]Warning:[/yellow] Skipping {json_file.name}: missing 'result' key"
+                )
                 continue
 
             times = result.get("times", [])
             if not times:
+                console.print(
+                    f"[yellow]Warning:[/yellow] Skipping {json_file.name}: empty 'times' array"
+                )
                 continue
 
             writer.writerow(
@@ -347,14 +362,14 @@ def _resolve_input(
     return pdb_dir, structures
 
 
-# === Shared CLI Option Helpers ===
+# === Shared CLI Constants ===
 
 _TOOL_HELP = (
     "Tools to benchmark (can specify multiple: --tool X --tool Y). "
     "Default: all. "
     "Available: all, zig_f64, zig_f32, zig_f64_bitmask, zig_f32_bitmask, "
-    "freesasa, rust "
-    "(zig = zig_f64, zig_bitmask = zig_f64_bitmask)"
+    "freesasa, rustsasa "
+    "(zig = zig_f64, zig_bitmask = zig_f64_bitmask, rust = rustsasa)"
 )
 
 
@@ -640,8 +655,14 @@ def _run_wall(
                             "result": result,
                         }
                         dest = runs_dir.joinpath(f"{pdb_id}_{n_threads}t.json")
-                        dest.write_text(json.dumps(run_data, indent=2))
-                        n_success += 1
+                        try:
+                            dest.write_text(json.dumps(run_data, indent=2))
+                            n_success += 1
+                        except OSError as e:
+                            console.print(
+                                f"[yellow]Warning:[/yellow] Failed to save {dest.name}: {e}"
+                            )
+                            n_failed += 1
                     else:
                         n_failed += 1
 
