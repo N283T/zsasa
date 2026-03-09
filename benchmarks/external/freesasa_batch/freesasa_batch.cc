@@ -1,7 +1,7 @@
 // freesasa_batch.cc
 // Batch process PDB files with FreeSASA C API and file-level parallelism
 //
-// Usage: freesasa_batch <input_dir> <output_dir> --n-threads=N --n-points=N
+// Usage: freesasa_batch <input_dir> <output_dir> [--n-threads=N] [--n-points=N] [--algorithm=sr|lr]
 //
 // Build (from benchmarks/external/):
 //   c++ -O3 -std=c++17 -I freesasa/src \
@@ -33,6 +33,7 @@ struct WorkerContext {
     const std::vector<WorkItem>* items;
     std::atomic<size_t>* next_index;
     int n_points;
+    freesasa_algorithm algorithm;
     std::atomic<int>* success_count;
     std::atomic<int>* fail_count;
 };
@@ -53,7 +54,8 @@ static std::vector<fs::path> find_pdb_files(const fs::path& dir) {
     return files;
 }
 
-static bool process_pdb_file(const fs::path& input, const fs::path& output, int n_points) {
+static bool process_pdb_file(const fs::path& input, const fs::path& output,
+                             int n_points, freesasa_algorithm algorithm) {
     FILE* in = fopen(input.c_str(), "r");
     if (!in) {
         fprintf(stderr, "Warning: cannot open %s: %s\n", input.c_str(), strerror(errno));
@@ -71,8 +73,12 @@ static bool process_pdb_file(const fs::path& input, const fs::path& output, int 
 
     freesasa_parameters params = freesasa_default_parameters;
     params.n_threads = 1;
-    params.alg = FREESASA_SHRAKE_RUPLEY;
-    params.shrake_rupley_n_points = n_points;
+    params.alg = algorithm;
+    if (algorithm == FREESASA_LEE_RICHARDS) {
+        params.lee_richards_n_slices = n_points;
+    } else {
+        params.shrake_rupley_n_points = n_points;
+    }
 
     freesasa_result* result = freesasa_calc_structure(structure, &params);
     freesasa_structure_free(structure);
@@ -103,7 +109,7 @@ static void* worker_thread(void* arg) {
         if (idx >= total) break;
 
         const auto& item = (*ctx->items)[idx];
-        if (process_pdb_file(item.input, item.output, ctx->n_points)) {
+        if (process_pdb_file(item.input, item.output, ctx->n_points, ctx->algorithm)) {
             ctx->success_count->fetch_add(1);
         } else {
             ctx->fail_count->fetch_add(1);
@@ -127,7 +133,8 @@ static bool parse_int_arg(const char* arg, const char* prefix, int* out) {
 int main(int argc, char* argv[]) {
     if (argc < 3) {
         std::cerr << "Usage: " << argv[0]
-                  << " <input_dir> <output_dir> [--n-threads=N] [--n-points=N]\n";
+                  << " <input_dir> <output_dir> [--n-threads=N] [--n-points=N]"
+                     " [--algorithm=sr|lr]\n";
         return 1;
     }
 
@@ -135,10 +142,24 @@ int main(int argc, char* argv[]) {
     fs::path output_dir(argv[2]);
     int n_threads = 1;
     int n_points = 100;
+    freesasa_algorithm algorithm = FREESASA_SHRAKE_RUPLEY;
 
     for (int i = 3; i < argc; i++) {
         if (parse_int_arg(argv[i], "--n-threads=", &n_threads)) continue;
         if (parse_int_arg(argv[i], "--n-points=", &n_points)) continue;
+        if (strncmp(argv[i], "--algorithm=", 12) == 0) {
+            const char* alg = argv[i] + 12;
+            if (strcmp(alg, "lr") == 0 || strcmp(alg, "lee-richards") == 0) {
+                algorithm = FREESASA_LEE_RICHARDS;
+            } else if (strcmp(alg, "sr") == 0 || strcmp(alg, "shrake-rupley") == 0) {
+                algorithm = FREESASA_SHRAKE_RUPLEY;
+            } else {
+                std::cerr << "Error: Unknown algorithm: " << alg
+                          << " (use sr or lr)\n";
+                return 1;
+            }
+            continue;
+        }
         std::cerr << "Error: Unknown argument: " << argv[i] << "\n";
         return 1;
     }
@@ -180,7 +201,7 @@ int main(int argc, char* argv[]) {
     std::atomic<int> success_count{0};
     std::atomic<int> fail_count{0};
 
-    WorkerContext ctx{&items, &next_index, n_points, &success_count, &fail_count};
+    WorkerContext ctx{&items, &next_index, n_points, algorithm, &success_count, &fail_count};
 
     if (actual_threads <= 1) {
         worker_thread(&ctx);
@@ -204,9 +225,11 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    const char* alg_name = (algorithm == FREESASA_LEE_RICHARDS) ? "lr" : "sr";
     std::cout << "Done: " << success_count.load() << " succeeded, "
               << fail_count.load() << " failed ("
-              << actual_threads << " threads, " << n_points << " points).\n";
+              << actual_threads << " threads, " << n_points << " points, "
+              << alg_name << ").\n";
 
     return fail_count.load() > 0 ? 1 : 0;
 }

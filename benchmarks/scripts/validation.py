@@ -167,6 +167,7 @@ def run_freesasa(
     input_dir: Path,
     n_points: int,
     threads: int = 1,
+    algorithm: str = "sr",
 ) -> dict[str, float]:
     """Run FreeSASA batch binary. Returns {stem: total_sasa}."""
     binary = _freesasa_batch_path()
@@ -184,6 +185,7 @@ def run_freesasa(
             str(out_dir),
             f"--n-threads={threads}",
             f"--n-points={n_points}",
+            f"--algorithm={algorithm}",
         ]
         console.print(f"  [dim]$ freesasa_batch (n_points={n_points})[/]")
         try:
@@ -353,7 +355,7 @@ def collect_results_for_npoints(
 
     # FreeSASA baseline
     console.print("[bold cyan]Running FreeSASA...[/]")
-    freesasa_results = run_freesasa(input_dir, n_points, threads)
+    freesasa_results = run_freesasa(input_dir, n_points, threads, algorithm=algorithm)
     console.print(f"  Got {len(freesasa_results)} results")
 
     # zsasa variants
