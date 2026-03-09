@@ -51,7 +51,12 @@ def run_mdtraj(xtc: Path, pdb: Path, n_points: int, stride: int) -> None:
 
 
 def run_zsasa_mdtraj(
-    xtc: Path, pdb: Path, n_threads: int, n_points: int, stride: int
+    xtc: Path,
+    pdb: Path,
+    n_threads: int,
+    n_points: int,
+    stride: int,
+    use_bitmask: bool = False,
 ) -> None:
     """Run zsasa via MDTraj wrapper."""
     import mdtraj as md
@@ -59,11 +64,22 @@ def run_zsasa_mdtraj(
     from zsasa.mdtraj import compute_sasa
 
     traj = md.load(str(xtc), top=str(pdb), stride=stride)
-    compute_sasa(traj, n_points=n_points, n_threads=n_threads, mode="total")
+    compute_sasa(
+        traj,
+        n_points=n_points,
+        n_threads=n_threads,
+        mode="total",
+        use_bitmask=use_bitmask,
+    )
 
 
 def run_zsasa_mdanalysis(
-    xtc: Path, pdb: Path, n_threads: int, n_points: int, stride: int
+    xtc: Path,
+    pdb: Path,
+    n_threads: int,
+    n_points: int,
+    stride: int,
+    use_bitmask: bool = False,
 ) -> None:
     """Run zsasa via MDAnalysis wrapper."""
     import MDAnalysis as mda
@@ -72,7 +88,9 @@ def run_zsasa_mdanalysis(
 
     u = mda.Universe(str(pdb), str(xtc))
     analysis = SASAAnalysis(u)
-    analysis.run(step=stride, n_points=n_points, n_threads=n_threads)
+    analysis.run(
+        step=stride, n_points=n_points, n_threads=n_threads, use_bitmask=use_bitmask
+    )
 
 
 def run_mdsasa_bolt(xtc: Path, pdb: Path, n_points: int, stride: int) -> None:
@@ -99,14 +117,19 @@ def main(
         int, typer.Option("--n-points", help="Test points per atom")
     ] = 100,
     stride: Annotated[int, typer.Option("--stride", help="Frame stride")] = 1,
+    use_bitmask: Annotated[
+        bool, typer.Option("--use-bitmask", help="Use bitmask LUT optimization")
+    ] = False,
 ) -> None:
     """Execute a single SASA benchmark tool."""
     if tool == Tool.mdtraj:
         run_mdtraj(xtc, pdb, n_points, stride)
     elif tool == Tool.zsasa_mdtraj:
-        run_zsasa_mdtraj(xtc, pdb, threads, n_points, stride)
+        run_zsasa_mdtraj(xtc, pdb, threads, n_points, stride, use_bitmask=use_bitmask)
     elif tool == Tool.zsasa_mdanalysis:
-        run_zsasa_mdanalysis(xtc, pdb, threads, n_points, stride)
+        run_zsasa_mdanalysis(
+            xtc, pdb, threads, n_points, stride, use_bitmask=use_bitmask
+        )
     elif tool == Tool.mdsasa_bolt:
         run_mdsasa_bolt(xtc, pdb, n_points, stride)
 

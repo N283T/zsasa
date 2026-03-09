@@ -55,7 +55,9 @@ Output:
     ├── bench_zig_f32_bitmask_4t.json   # --tool zig_bitmask
     ├── bench_zig_f64_bitmask_4t.json   # --tool zig_bitmask
     ├── bench_zsasa_mdtraj_4t.json
+    ├── bench_zsasa_mdtraj_bitmask_4t.json
     ├── bench_zsasa_mdanalysis_4t.json
+    ├── bench_zsasa_mdanalysis_bitmask_4t.json
     ├── bench_mdtraj_1t.json
     └── bench_mdsasa_bolt_all.json
 """
@@ -91,7 +93,9 @@ class Tool(str, Enum):
     zig = "zig"
     zig_bitmask = "zig_bitmask"
     zsasa_mdtraj = "zsasa_mdtraj"
+    zsasa_mdtraj_bitmask = "zsasa_mdtraj_bitmask"
     zsasa_mdanalysis = "zsasa_mdanalysis"
+    zsasa_mdanalysis_bitmask = "zsasa_mdanalysis_bitmask"
     mdtraj = "mdtraj"
     mdsasa_bolt = "mdsasa_bolt"
 
@@ -100,7 +104,9 @@ ALL_TOOLS = [
     Tool.zig,
     Tool.zig_bitmask,
     Tool.zsasa_mdtraj,
+    Tool.zsasa_mdtraj_bitmask,
     Tool.zsasa_mdanalysis,
+    Tool.zsasa_mdanalysis_bitmask,
     Tool.mdtraj,
     Tool.mdsasa_bolt,
 ]
@@ -202,6 +208,7 @@ def run_python_tool(
     n_points: int = 100,
     timeout: int = 600,
     prepare: str | None = None,
+    use_bitmask: bool = False,
 ) -> dict | None:
     """Run a Python-based benchmark tool via the runner script."""
     cmd_parts = [
@@ -214,6 +221,8 @@ def run_python_tool(
     ]
     if n_threads is not None:
         cmd_parts.append(f"--threads {n_threads}")
+    if use_bitmask:
+        cmd_parts.append("--use-bitmask")
 
     cmd = " ".join(cmd_parts)
 
@@ -236,15 +245,17 @@ def run_threaded_python_tool(
     n_points: int,
     timeout: int = 600,
     prepare: str | None = None,
+    use_bitmask: bool = False,
 ) -> list[dict]:
     """Run a Python-based benchmark tool across multiple thread counts.
 
     Used for zsasa_mdtraj and zsasa_mdanalysis which share the same
     loop-over-threads pattern.
     """
+    bitmask_suffix = "_bitmask" if use_bitmask else ""
     results = []
     for n_threads in thread_counts:
-        label = f"{tool_name}_{n_threads}t"
+        label = f"{tool_name}{bitmask_suffix}_{n_threads}t"
         result = run_python_tool(
             tool_name,
             label,
@@ -260,6 +271,7 @@ def run_threaded_python_tool(
             n_points=n_points,
             timeout=timeout,
             prepare=prepare,
+            use_bitmask=use_bitmask,
         )
         if result:
             results.append({"name": label, **result})
@@ -478,8 +490,15 @@ def main(
     selected_tools = tools if tools else ALL_TOOLS
 
     # Rebuild zsasa in ReleaseFast mode to ensure benchmarks use optimized code
-    zig_tools = {Tool.zig, Tool.zig_bitmask}
-    if not dry_run and zig_tools & set(selected_tools):
+    zsasa_tools = {
+        Tool.zig,
+        Tool.zig_bitmask,
+        Tool.zsasa_mdtraj,
+        Tool.zsasa_mdtraj_bitmask,
+        Tool.zsasa_mdanalysis,
+        Tool.zsasa_mdanalysis_bitmask,
+    }
+    if not dry_run and zsasa_tools & set(selected_tools):
         ensure_zsasa_built()
 
     # Get trajectory metadata
@@ -560,10 +579,19 @@ def main(
         )
         all_results.extend(results)
 
-    for python_tool in [Tool.zsasa_mdtraj, Tool.zsasa_mdanalysis]:
+    # Python wrappers: normal and bitmask variants
+    python_tool_pairs = [
+        (Tool.zsasa_mdtraj, False),
+        (Tool.zsasa_mdtraj_bitmask, True),
+        (Tool.zsasa_mdanalysis, False),
+        (Tool.zsasa_mdanalysis_bitmask, True),
+    ]
+    for python_tool, use_bitmask in python_tool_pairs:
         if python_tool in selected_tools:
+            # Runner tool name is the base name (without _bitmask suffix)
+            runner_tool = python_tool.value.removesuffix("_bitmask")
             results = run_threaded_python_tool(
-                python_tool.value,
+                runner_tool,
                 xtc,
                 pdb,
                 results_dir,
@@ -576,6 +604,7 @@ def main(
                 n_points,
                 timeout,
                 prepare,
+                use_bitmask=use_bitmask,
             )
             all_results.extend(results)
 
