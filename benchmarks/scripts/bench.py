@@ -77,7 +77,7 @@ app = typer.Typer(help="SR single-file benchmark runner")
 console = Console()
 
 
-CSV_COLUMNS = [
+CSV_COLUMNS_BASE = [
     "tool",
     "structure",
     "n_atoms",
@@ -92,8 +92,6 @@ CSV_COLUMNS = [
     "user_s",
     "system_s",
     "memory_bytes",
-    "parse_time_ms",
-    "sasa_time_ms",
 ]
 
 SR_TOOLS = [
@@ -227,6 +225,33 @@ def _resolve_tools(tools: list[str] | None) -> list[str]:
     return list(tools)
 
 
+def _load_run_json(json_file: Path) -> dict | None:
+    """Load and validate a single run JSON file. Returns parsed data or None."""
+    try:
+        data = json.loads(json_file.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        console.print(
+            f"[yellow]Warning:[/yellow] Skipping corrupt JSON: {json_file.name}: {e}"
+        )
+        return None
+
+    result = data.get("result")
+    if not result:
+        console.print(
+            f"[yellow]Warning:[/yellow] Skipping {json_file.name}: missing 'result' key"
+        )
+        return None
+
+    times = result.get("times", [])
+    if not times:
+        console.print(
+            f"[yellow]Warning:[/yellow] Skipping {json_file.name}: empty 'times' array"
+        )
+        return None
+
+    return data
+
+
 def _aggregate_runs_to_csv(
     output_dir: Path,
     tool_canonical: str,
@@ -235,7 +260,8 @@ def _aggregate_runs_to_csv(
     """Generate results.csv from individual hyperfine JSON files in runs/.
 
     Uses hyperfine's pre-computed statistics (mean, stddev, etc.) when available,
-    falling back to computing from individual run times.
+    falling back to computing from individual run times. Per-run times are
+    written as run_1_s, run_2_s, ... columns.
     """
     runs_dir = output_dir.joinpath("runs")
     if not runs_dir.exists():
@@ -253,61 +279,62 @@ def _aggregate_runs_to_csv(
         )
         return
 
+    # First pass: load all valid JSON and determine max run count
+    entries: list[dict] = []
+    max_runs = 0
+    for json_file in json_files:
+        data = _load_run_json(json_file)
+        if data is None:
+            continue
+        times = data["result"]["times"]
+        max_runs = max(max_runs, len(times))
+        entries.append(data)
+
+    if not entries:
+        return
+
+    # Build column list with per-run columns
+    run_columns = [f"run_{i + 1}_s" for i in range(max_runs)]
+    fieldnames = list(CSV_COLUMNS_BASE) + run_columns
+
     csv_path = output_dir.joinpath("results.csv")
     with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
 
-        for json_file in json_files:
-            try:
-                data = json.loads(json_file.read_text())
-            except (json.JSONDecodeError, OSError) as e:
-                console.print(
-                    f"[yellow]Warning:[/yellow] Skipping corrupt JSON: {json_file.name}: {e}"
-                )
-                continue
-
-            result = data.get("result")
+        for data in entries:
+            result = data["result"]
             meta = data.get("meta", {})
-            if not result:
-                console.print(
-                    f"[yellow]Warning:[/yellow] Skipping {json_file.name}: missing 'result' key"
-                )
-                continue
+            times = result["times"]
 
-            times = result.get("times", [])
-            if not times:
-                console.print(
-                    f"[yellow]Warning:[/yellow] Skipping {json_file.name}: empty 'times' array"
-                )
-                continue
+            row = {
+                "tool": tool_canonical,
+                "structure": meta.get("structure", ""),
+                "n_atoms": meta.get("n_atoms", 0),
+                "algorithm": "sr",
+                "precision": precision,
+                "threads": meta.get("threads", 1),
+                "mean_s": result.get("mean", statistics.mean(times)),
+                "stddev_s": result.get(
+                    "stddev", statistics.stdev(times) if len(times) > 1 else 0
+                ),
+                "min_s": result.get("min", min(times)),
+                "max_s": result.get("max", max(times)),
+                "median_s": result.get("median", statistics.median(times)),
+                "user_s": result.get("user"),
+                "system_s": result.get("system"),
+                "memory_bytes": (
+                    result["memory_usage_byte"][0]
+                    if result.get("memory_usage_byte")
+                    else None
+                ),
+            }
 
-            writer.writerow(
-                {
-                    "tool": tool_canonical,
-                    "structure": meta.get("structure", ""),
-                    "n_atoms": meta.get("n_atoms", 0),
-                    "algorithm": "sr",
-                    "precision": precision,
-                    "threads": meta.get("threads", 1),
-                    "mean_s": result.get("mean", statistics.mean(times)),
-                    "stddev_s": result.get(
-                        "stddev", statistics.stdev(times) if len(times) > 1 else 0
-                    ),
-                    "min_s": result.get("min", min(times)),
-                    "max_s": result.get("max", max(times)),
-                    "median_s": result.get("median", statistics.median(times)),
-                    "user_s": result.get("user"),
-                    "system_s": result.get("system"),
-                    "memory_bytes": (
-                        result["memory_usage_byte"][0]
-                        if result.get("memory_usage_byte")
-                        else None
-                    ),
-                    "parse_time_ms": "",
-                    "sasa_time_ms": "",
-                }
-            )
+            # Add per-run times
+            for i, t in enumerate(times):
+                row[f"run_{i + 1}_s"] = t
+
+            writer.writerow(row)
 
     console.print(f"[green]Aggregated:[/green] {csv_path}")
 
