@@ -39,6 +39,7 @@ Output:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 from datetime import datetime
@@ -799,9 +800,9 @@ def run(
         typer.Option(
             "--threads",
             "-T",
-            help="Number of threads for zsasa",
+            help="Number of threads (default: all CPU cores)",
         ),
-    ] = 1,
+    ] = os.cpu_count() or 1,
     output_dir: Annotated[
         Path | None,
         typer.Option(
