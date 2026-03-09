@@ -574,9 +574,13 @@ def _scatter_cell(
     reference: str,
     col: str,
     title: str,
-    rustsasa_r2: float | None = None,
+    ref_r2: dict[str, float] | None = None,
 ) -> None:
-    """Draw a single scatter cell: col (x) vs reference (y)."""
+    """Draw a single scatter cell: col (x) vs reference (y).
+
+    ref_r2: optional dict of {tool_name: r_squared} for reference tools,
+    displayed in a separate box at bottom-right.
+    """
     import numpy as np
 
     pair = df.select([reference, col]).drop_nulls()
@@ -598,15 +602,12 @@ def _scatter_cell(
     ax.set_ylabel(f"{reference} SASA")
     ax.set_title(title, fontsize=10)
 
-    # Stats annotation
+    # Main stats box (top-left)
     stats_lines = [
         f"R² = {stats['r_squared']:.6f}",
         f"Mean err = {stats['mean_rel_error']:.4f}%",
         f"Max err = {stats['max_rel_error']:.4f}%",
     ]
-    if rustsasa_r2 is not None:
-        stats_lines.append(f"RustSASA R² = {rustsasa_r2:.6f}")
-
     ax.text(
         0.05,
         0.95,
@@ -617,7 +618,34 @@ def _scatter_cell(
         bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
     )
 
+    # Reference R² box (bottom-right, separate)
+    if ref_r2:
+        ref_lines = [f"{name} R²={r2:.6f}" for name, r2 in ref_r2.items()]
+        ax.text(
+            0.95,
+            0.05,
+            f"vs {reference}:\n" + "\n".join(ref_lines),
+            transform=ax.transAxes,
+            fontsize=7,
+            verticalalignment="bottom",
+            horizontalalignment="right",
+            bbox=dict(boxstyle="round", facecolor="lightskyblue", alpha=0.4),
+        )
+
     ax.set_aspect("equal")
+
+
+def _collect_ref_r2(
+    df: pl.DataFrame, reference: str, ref_tools: list[str]
+) -> dict[str, float]:
+    """Collect R² values for reference tools against the baseline."""
+    ref_r2: dict[str, float] = {}
+    for tool in ref_tools:
+        if tool in df.columns and reference in df.columns:
+            stats = _stats_for_pair(df, reference, tool)
+            if stats:
+                ref_r2[tool] = stats["r_squared"]
+    return ref_r2
 
 
 def _load_csvs(results_dir: Path, n_points_list: list[int]) -> dict[int, pl.DataFrame]:
@@ -661,13 +689,7 @@ def generate_grid_plot(
 
     for col_idx, n_pts in enumerate(available_npts):
         df = csvs[n_pts]
-
-        # Compute rustsasa R^2 for this n_points (shared across all cells in column)
-        rustsasa_r2 = None
-        if "rustsasa" in df.columns and "freesasa" in df.columns:
-            stats = _stats_for_pair(df, "freesasa", "rustsasa")
-            if stats:
-                rustsasa_r2 = stats["r_squared"]
+        ref_r2 = _collect_ref_r2(df, "freesasa", ["rustsasa"])
 
         for row_idx, (col_name, _precision, _bitmask) in enumerate(ZSASA_VARIANTS):
             ax = axes[row_idx][col_idx]
@@ -676,7 +698,7 @@ def generate_grid_plot(
                 continue
 
             title = f"{col_name} (n={n_pts})"
-            _scatter_cell(ax, df, "freesasa", col_name, title, rustsasa_r2=rustsasa_r2)
+            _scatter_cell(ax, df, "freesasa", col_name, title, ref_r2=ref_r2)
 
     fig.suptitle(
         f"{algorithm.upper()} Validation: zsasa variants vs FreeSASA",
@@ -718,14 +740,9 @@ def generate_per_tool_plots(
                 ax.set_title(f"n={n_pts}: no data")
                 continue
 
-            rustsasa_r2 = None
-            if "rustsasa" in df.columns and "freesasa" in df.columns:
-                stats = _stats_for_pair(df, "freesasa", "rustsasa")
-                if stats:
-                    rustsasa_r2 = stats["r_squared"]
-
+            ref_r2 = _collect_ref_r2(df, "freesasa", ["rustsasa"])
             title = f"n={n_pts}"
-            _scatter_cell(ax, df, "freesasa", col_name, title, rustsasa_r2=rustsasa_r2)
+            _scatter_cell(ax, df, "freesasa", col_name, title, ref_r2=ref_r2)
 
         fig.suptitle(
             f"{algorithm.upper()}: {col_name} vs FreeSASA",
@@ -761,20 +778,14 @@ def generate_quicklook_plot(
 
     fig, ax = plt.subplots(1, 1, figsize=(8, 8))
 
-    # Compute rustsasa R^2 for annotation
-    rustsasa_r2 = None
-    if "rustsasa" in df.columns:
-        stats = _stats_for_pair(df, "freesasa", "rustsasa")
-        if stats:
-            rustsasa_r2 = stats["r_squared"]
-
+    ref_r2 = _collect_ref_r2(df, "freesasa", ["rustsasa"])
     _scatter_cell(
         ax,
         df,
         "freesasa",
         "zsasa_f64",
         f"{algorithm.upper()}: zsasa (f64) vs FreeSASA (n_points=100)",
-        rustsasa_r2=rustsasa_r2,
+        ref_r2=ref_r2,
     )
 
     fig.tight_layout()
@@ -788,7 +799,10 @@ def generate_lahuta_plot(
     results_dir: Path,
     algorithm: str,
 ) -> None:
-    """Generate single scatter plot: lahuta_bitmask vs FreeSASA at n_points=128."""
+    """Generate 1x4 scatter plot: zsasa variants vs FreeSASA at LAHUTA_N_POINTS.
+
+    Each cell shows a zsasa variant with lahuta_bitmask R² as reference annotation.
+    """
     import matplotlib.pyplot as plt
     import polars as pl
 
@@ -803,25 +817,30 @@ def generate_lahuta_plot(
         return
 
     df = pl.read_csv(csv_path)
-    if "lahuta_bitmask" not in df.columns or "freesasa" not in df.columns:
-        console.print(
-            "[yellow]Missing lahuta_bitmask or freesasa columns for lahuta plot[/]"
-        )
+    if "freesasa" not in df.columns:
+        console.print("[yellow]Missing freesasa column for lahuta plot[/]")
         return
 
-    fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+    n_cols = len(ZSASA_VARIANTS)
+    fig, axes = plt.subplots(1, n_cols, figsize=(5 * n_cols, 5), squeeze=False)
 
-    _scatter_cell(
-        ax,
-        df,
-        "freesasa",
-        "lahuta_bitmask",
-        (
-            f"{algorithm.upper()}: lahuta (bitmask) vs FreeSASA "
-            f"(n_points={LAHUTA_N_POINTS})"
-        ),
+    ref_r2 = _collect_ref_r2(df, "freesasa", ["lahuta_bitmask", "rustsasa"])
+
+    for col_idx, (col_name, _precision, _bitmask) in enumerate(ZSASA_VARIANTS):
+        ax = axes[0][col_idx]
+        if col_name not in df.columns:
+            ax.set_title(f"{col_name}: no data")
+            continue
+
+        title = f"{col_name} (n={LAHUTA_N_POINTS})"
+        _scatter_cell(ax, df, "freesasa", col_name, title, ref_r2=ref_r2)
+
+    fig.suptitle(
+        f"{algorithm.upper()} Validation at n={LAHUTA_N_POINTS}: "
+        f"zsasa variants vs FreeSASA",
+        fontsize=13,
+        y=1.02,
     )
-
     fig.tight_layout()
     out_path = results_dir.joinpath("validation_lahuta.png")
     fig.savefig(out_path, dpi=150)
