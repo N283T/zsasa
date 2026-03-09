@@ -66,39 +66,39 @@ BINS = [
 # === Data Loading Functions ===
 
 
-def _merge_timing_data(df: pl.DataFrame, sr_dir: Path) -> pl.DataFrame:
-    """Merge timing.csv data into the main DataFrame.
-
-    Looks for timing.csv files alongside results.csv in each tool directory.
-    Joins on (tool, structure, threads) and fills parse_time_ms/sasa_time_ms.
-    """
-    timing_files = sorted(sr_dir.glob("*/timing.csv"))
-    if not timing_files:
-        return df
-
-    timing_dfs = []
-    for f in timing_files:
-        tdf = pl.read_csv(f)
-        timing_dfs.append(tdf)
-
-    timing = pl.concat(timing_dfs, how="diagonal")
-
-    # Apply same tool name remapping as main data
-    timing = timing.with_columns(
+def _remap_tool_names(df: pl.DataFrame) -> pl.DataFrame:
+    """Remap raw tool names to canonical display names."""
+    return df.with_columns(
         pl.col("tool")
         .str.replace(r"^zig", "zsasa")
         .str.replace(r"^rust$", "rustsasa")
         .alias("tool"),
     )
 
-    # Select only the columns we need for the join
-    timing = timing.select(
-        ["tool", "structure", "threads", "parse_time_ms", "sasa_time_ms"]
-    ).rename(
-        {
-            "parse_time_ms": "_timing_parse_ms",
-            "sasa_time_ms": "_timing_sasa_ms",
-        }
+
+def _merge_timing_data(df: pl.DataFrame, sr_dir: Path) -> pl.DataFrame:
+    """Merge timing.csv data into the main DataFrame.
+
+    Looks for timing.csv files alongside results.csv in each tool directory.
+    Aggregates duplicate rows (from multiple sasa runs) by mean, then
+    left-joins on (tool, structure, threads).
+    """
+    timing_files = sorted(sr_dir.glob("*/timing.csv"))
+    if not timing_files:
+        return df
+
+    timing_dfs = [pl.read_csv(f) for f in timing_files]
+    timing = pl.concat(timing_dfs, how="diagonal")
+    timing = _remap_tool_names(timing)
+
+    # Aggregate to one row per (tool, structure, threads) to prevent row duplication
+    timing = (
+        timing.with_columns(pl.col("threads").cast(pl.Int64))
+        .group_by(["tool", "structure", "threads"])
+        .agg(
+            pl.col("parse_time_ms").mean().alias("parse_time_ms"),
+            pl.col("sasa_time_ms").mean().alias("sasa_time_ms"),
+        )
     )
 
     # Drop existing empty timing columns from df before join
@@ -107,17 +107,7 @@ def _merge_timing_data(df: pl.DataFrame, sr_dir: Path) -> pl.DataFrame:
         df = df.drop(drop_cols)
 
     # Left join: keep all rows from df, add timing where available
-    df = df.join(timing, on=["tool", "structure", "threads"], how="left")
-
-    # Rename timing columns back
-    df = df.rename(
-        {
-            "_timing_parse_ms": "parse_time_ms",
-            "_timing_sasa_ms": "sasa_time_ms",
-        }
-    )
-
-    return df
+    return df.join(timing, on=["tool", "structure", "threads"], how="left")
 
 
 def load_data(n_points: int = 100) -> pl.DataFrame:
@@ -144,13 +134,7 @@ def load_data(n_points: int = 100) -> pl.DataFrame:
         df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias("precision"))
 
     # Remap tool names: zig* → zsasa, rust → rustsasa
-    # Tool column may contain compound names like zig_f64, zig_f32_bitmask
-    df = df.with_columns(
-        pl.col("tool")
-        .str.replace(r"^zig", "zsasa")
-        .str.replace(r"^rust$", "rustsasa")
-        .alias("tool"),
-    )
+    df = _remap_tool_names(df)
 
     # Create tool_label from tool column (already contains precision/variant info)
     df = df.with_columns(pl.col("tool").alias("tool_label"))
