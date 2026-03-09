@@ -67,18 +67,30 @@ app = typer.Typer(help="SASA validation: compare accuracy across tools")
 console = Console()
 
 # Default n_points levels for main validation
-DEFAULT_N_POINTS = "100,200,500,1000"
+DEFAULT_N_POINTS_SR = "100,200,500,1000"
+DEFAULT_N_SLICES_LR = "20"
 
 # Lahuta bitmask uses a fixed n_points (must be in LAHUTA_BITMASK_POINTS)
 LAHUTA_N_POINTS = 128
 
 # zsasa variants to compare (column name, precision, use_bitmask)
-ZSASA_VARIANTS = [
+ZSASA_VARIANTS_SR = [
     ("zsasa_f64", "f64", False),
     ("zsasa_f32", "f32", False),
     ("zsasa_bitmask_f64", "f64", True),
     ("zsasa_bitmask_f32", "f32", True),
 ]
+
+# LR only supports f32/f64, no bitmask
+ZSASA_VARIANTS_LR = [
+    ("zsasa_f64", "f64", False),
+    ("zsasa_f32", "f32", False),
+]
+
+
+def zsasa_variants(algorithm: str) -> list[tuple[str, str, bool]]:
+    """Return zsasa variants for the given algorithm."""
+    return ZSASA_VARIANTS_LR if algorithm == "lr" else ZSASA_VARIANTS_SR
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +139,9 @@ def run_zsasa(
 
     with tempfile.TemporaryDirectory(prefix="validation_zsasa_") as tmp:
         out_dir = Path(tmp)
+        points_flag = (
+            f"--n-slices={n_points}" if algorithm == "lr" else f"--n-points={n_points}"
+        )
         cmd = [
             str(zsasa),
             "batch",
@@ -135,7 +150,7 @@ def run_zsasa(
             f"--algorithm={algorithm}",
             f"--precision={precision}",
             f"--threads={threads}",
-            f"--n-points={n_points}",
+            points_flag,
         ]
         if use_bitmask:
             cmd.append("--use-bitmask")
@@ -167,6 +182,7 @@ def run_freesasa(
     input_dir: Path,
     n_points: int,
     threads: int = 1,
+    algorithm: str = "sr",
 ) -> dict[str, float]:
     """Run FreeSASA batch binary. Returns {stem: total_sasa}."""
     binary = _freesasa_batch_path()
@@ -184,6 +200,7 @@ def run_freesasa(
             str(out_dir),
             f"--n-threads={threads}",
             f"--n-points={n_points}",
+            f"--algorithm={algorithm}",
         ]
         console.print(f"  [dim]$ freesasa_batch (n_points={n_points})[/]")
         try:
@@ -353,12 +370,12 @@ def collect_results_for_npoints(
 
     # FreeSASA baseline
     console.print("[bold cyan]Running FreeSASA...[/]")
-    freesasa_results = run_freesasa(input_dir, n_points, threads)
+    freesasa_results = run_freesasa(input_dir, n_points, threads, algorithm=algorithm)
     console.print(f"  Got {len(freesasa_results)} results")
 
     # zsasa variants
     zsasa_runs: dict[str, dict[str, tuple[float, int]]] = {}
-    for col_name, precision, use_bitmask in ZSASA_VARIANTS:
+    for col_name, precision, use_bitmask in zsasa_variants(algorithm):
         console.print(f"[bold cyan]Running {col_name}...[/]")
         zsasa_runs[col_name] = run_zsasa(
             input_dir, algorithm, precision, threads, n_points, use_bitmask
@@ -680,7 +697,8 @@ def generate_grid_plot(
         return
 
     available_npts = sorted(csvs.keys())
-    n_rows = len(ZSASA_VARIANTS)
+    variants = zsasa_variants(algorithm)
+    n_rows = len(variants)
     n_cols = len(available_npts)
 
     fig, axes = plt.subplots(
@@ -691,7 +709,7 @@ def generate_grid_plot(
         df = csvs[n_pts]
         ref_r2 = _collect_ref_r2(df, "freesasa", ["rustsasa"])
 
-        for row_idx, (col_name, _precision, _bitmask) in enumerate(ZSASA_VARIANTS):
+        for row_idx, (col_name, _precision, _bitmask) in enumerate(variants):
             ax = axes[row_idx][col_idx]
             if col_name not in df.columns or "freesasa" not in df.columns:
                 ax.set_title(f"{n_pts} points: {col_name} missing")
@@ -728,7 +746,7 @@ def generate_per_tool_plots(
 
     available_npts = sorted(csvs.keys())
 
-    for col_name, _precision, _bitmask in ZSASA_VARIANTS:
+    for col_name, _precision, _bitmask in zsasa_variants(algorithm):
         n_cols = len(available_npts)
         fig, axes = plt.subplots(1, n_cols, figsize=(5 * n_cols, 5), squeeze=False)
 
@@ -821,12 +839,13 @@ def generate_lahuta_plot(
         console.print("[yellow]Missing freesasa column for lahuta plot[/]")
         return
 
-    n_cols = len(ZSASA_VARIANTS)
+    variants = zsasa_variants(algorithm)
+    n_cols = len(variants)
     fig, axes = plt.subplots(1, n_cols, figsize=(5 * n_cols, 5), squeeze=False)
 
     ref_r2 = _collect_ref_r2(df, "freesasa", ["lahuta_bitmask", "rustsasa"])
 
-    for col_idx, (col_name, _precision, _bitmask) in enumerate(ZSASA_VARIANTS):
+    for col_idx, (col_name, _precision, _bitmask) in enumerate(variants):
         ax = axes[0][col_idx]
         if col_name not in df.columns:
             ax.set_title(f"{col_name}: no data")
@@ -967,13 +986,13 @@ def run(
         ),
     ] = None,
     n_points_str: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--n-points",
             "-N",
-            help="Comma-separated n_points values (default: 100,200,500,1000)",
+            help="Comma-separated values (default: SR=100,200,500,1000 / LR=20)",
         ),
-    ] = DEFAULT_N_POINTS,
+    ] = None,
     skip_rustsasa: Annotated[
         bool,
         typer.Option(
@@ -990,6 +1009,9 @@ def run(
     ] = False,
 ) -> None:
     """Run all tools on PDB directory and compare SASA values."""
+    # Default n_points depends on algorithm
+    if n_points_str is None:
+        n_points_str = DEFAULT_N_SLICES_LR if algorithm == "lr" else DEFAULT_N_POINTS_SR
     try:
         n_points_list = sorted(int(x.strip()) for x in n_points_str.split(","))
     except ValueError:
@@ -1031,18 +1053,23 @@ def run(
     }
     results_dir.joinpath("config.json").write_text(json.dumps(config, indent=2))
 
+    # LR mode: automatically skip rustsasa/lahuta (SR-only tools)
+    if algorithm == "lr":
+        skip_rustsasa = True
+        skip_lahuta = True
+
     # Print header
     console.print(f"\n[bold]=== SASA Validation: {name} ===[/]")
     console.print(f"Input: {input_dir} ({n_files} PDB files)")
     console.print(f"Output: {results_dir}")
     console.print(f"Algorithm: {algorithm}, Threads: {threads}")
     console.print(f"n_points: {n_points_list}")
-    zsasa_labels = [v[0] for v in ZSASA_VARIANTS]
+    zsasa_labels = [v[0] for v in zsasa_variants(algorithm)]
     tools_str = f"freesasa, {', '.join(zsasa_labels)}"
     if not skip_rustsasa:
         tools_str += ", rustsasa (ref)"
     if not skip_lahuta:
-        tools_str += f", lahuta_bitmask (n={LAHUTA_N_POINTS})"
+        tools_str += f", lahuta_bitmask ({LAHUTA_N_POINTS} points)"
     console.print(f"Tools: {tools_str}")
 
     # --- Main runs: each n_points level ---
