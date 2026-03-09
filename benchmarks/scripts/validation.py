@@ -139,6 +139,9 @@ def run_zsasa(
 
     with tempfile.TemporaryDirectory(prefix="validation_zsasa_") as tmp:
         out_dir = Path(tmp)
+        points_flag = (
+            f"--n-slices={n_points}" if algorithm == "lr" else f"--n-points={n_points}"
+        )
         cmd = [
             str(zsasa),
             "batch",
@@ -147,7 +150,7 @@ def run_zsasa(
             f"--algorithm={algorithm}",
             f"--precision={precision}",
             f"--threads={threads}",
-            f"--n-points={n_points}",
+            points_flag,
         ]
         if use_bitmask:
             cmd.append("--use-bitmask")
