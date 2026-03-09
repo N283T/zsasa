@@ -272,15 +272,19 @@ def run_lahuta(
         console.print(f"[yellow][SKIP] lahuta not found: {lahuta}[/]")
         return {}
 
+    # Resolve to absolute paths since cwd changes to temp directory
+    abs_input = input_dir.resolve()
+    abs_lahuta = lahuta.resolve()
+
     results: dict[str, float] = {}
 
     with tempfile.TemporaryDirectory(prefix="validation_lahuta_") as tmp:
         out_file = Path(tmp).joinpath("sasa.jsonl")
         cmd = [
-            str(lahuta),
+            str(abs_lahuta),
             "sasa-sr",
             "-d",
-            str(input_dir),
+            str(abs_input),
             "--is_af2_model",
             "--points",
             str(n_points),
