@@ -73,12 +73,23 @@ DEFAULT_N_POINTS = "100,200,500,1000"
 LAHUTA_N_POINTS = 128
 
 # zsasa variants to compare (column name, precision, use_bitmask)
-ZSASA_VARIANTS = [
+ZSASA_VARIANTS_SR = [
     ("zsasa_f64", "f64", False),
     ("zsasa_f32", "f32", False),
     ("zsasa_bitmask_f64", "f64", True),
     ("zsasa_bitmask_f32", "f32", True),
 ]
+
+# LR only supports f32/f64, no bitmask
+ZSASA_VARIANTS_LR = [
+    ("zsasa_f64", "f64", False),
+    ("zsasa_f32", "f32", False),
+]
+
+
+def zsasa_variants(algorithm: str) -> list[tuple[str, str, bool]]:
+    """Return zsasa variants for the given algorithm."""
+    return ZSASA_VARIANTS_LR if algorithm == "lr" else ZSASA_VARIANTS_SR
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +371,7 @@ def collect_results_for_npoints(
 
     # zsasa variants
     zsasa_runs: dict[str, dict[str, tuple[float, int]]] = {}
-    for col_name, precision, use_bitmask in ZSASA_VARIANTS:
+    for col_name, precision, use_bitmask in zsasa_variants(algorithm):
         console.print(f"[bold cyan]Running {col_name}...[/]")
         zsasa_runs[col_name] = run_zsasa(
             input_dir, algorithm, precision, threads, n_points, use_bitmask
@@ -682,7 +693,8 @@ def generate_grid_plot(
         return
 
     available_npts = sorted(csvs.keys())
-    n_rows = len(ZSASA_VARIANTS)
+    variants = zsasa_variants(algorithm)
+    n_rows = len(variants)
     n_cols = len(available_npts)
 
     fig, axes = plt.subplots(
@@ -693,7 +705,7 @@ def generate_grid_plot(
         df = csvs[n_pts]
         ref_r2 = _collect_ref_r2(df, "freesasa", ["rustsasa"])
 
-        for row_idx, (col_name, _precision, _bitmask) in enumerate(ZSASA_VARIANTS):
+        for row_idx, (col_name, _precision, _bitmask) in enumerate(variants):
             ax = axes[row_idx][col_idx]
             if col_name not in df.columns or "freesasa" not in df.columns:
                 ax.set_title(f"{n_pts} points: {col_name} missing")
@@ -730,7 +742,7 @@ def generate_per_tool_plots(
 
     available_npts = sorted(csvs.keys())
 
-    for col_name, _precision, _bitmask in ZSASA_VARIANTS:
+    for col_name, _precision, _bitmask in zsasa_variants(algorithm):
         n_cols = len(available_npts)
         fig, axes = plt.subplots(1, n_cols, figsize=(5 * n_cols, 5), squeeze=False)
 
@@ -823,12 +835,13 @@ def generate_lahuta_plot(
         console.print("[yellow]Missing freesasa column for lahuta plot[/]")
         return
 
-    n_cols = len(ZSASA_VARIANTS)
+    variants = zsasa_variants(algorithm)
+    n_cols = len(variants)
     fig, axes = plt.subplots(1, n_cols, figsize=(5 * n_cols, 5), squeeze=False)
 
     ref_r2 = _collect_ref_r2(df, "freesasa", ["lahuta_bitmask", "rustsasa"])
 
-    for col_idx, (col_name, _precision, _bitmask) in enumerate(ZSASA_VARIANTS):
+    for col_idx, (col_name, _precision, _bitmask) in enumerate(variants):
         ax = axes[0][col_idx]
         if col_name not in df.columns:
             ax.set_title(f"{col_name}: no data")
@@ -1033,18 +1046,23 @@ def run(
     }
     results_dir.joinpath("config.json").write_text(json.dumps(config, indent=2))
 
+    # LR mode: automatically skip rustsasa/lahuta (SR-only tools)
+    if algorithm == "lr":
+        skip_rustsasa = True
+        skip_lahuta = True
+
     # Print header
     console.print(f"\n[bold]=== SASA Validation: {name} ===[/]")
     console.print(f"Input: {input_dir} ({n_files} PDB files)")
     console.print(f"Output: {results_dir}")
     console.print(f"Algorithm: {algorithm}, Threads: {threads}")
     console.print(f"n_points: {n_points_list}")
-    zsasa_labels = [v[0] for v in ZSASA_VARIANTS]
+    zsasa_labels = [v[0] for v in zsasa_variants(algorithm)]
     tools_str = f"freesasa, {', '.join(zsasa_labels)}"
     if not skip_rustsasa:
         tools_str += ", rustsasa (ref)"
     if not skip_lahuta:
-        tools_str += f", lahuta_bitmask (n={LAHUTA_N_POINTS})"
+        tools_str += f", lahuta_bitmask ({LAHUTA_N_POINTS} points)"
     console.print(f"Tools: {tools_str}")
 
     # --- Main runs: each n_points level ---
