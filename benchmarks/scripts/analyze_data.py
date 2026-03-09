@@ -66,6 +66,50 @@ BINS = [
 # === Data Loading Functions ===
 
 
+def _remap_tool_names(df: pl.DataFrame) -> pl.DataFrame:
+    """Remap raw tool names to canonical display names."""
+    return df.with_columns(
+        pl.col("tool")
+        .str.replace(r"^zig", "zsasa")
+        .str.replace(r"^rust$", "rustsasa")
+        .alias("tool"),
+    )
+
+
+def _merge_timing_data(df: pl.DataFrame, sr_dir: Path) -> pl.DataFrame:
+    """Merge timing.csv data into the main DataFrame.
+
+    Looks for timing.csv files alongside results.csv in each tool directory.
+    Aggregates duplicate rows (from multiple sasa runs) by mean, then
+    left-joins on (tool, structure, threads).
+    """
+    timing_files = sorted(sr_dir.glob("*/timing.csv"))
+    if not timing_files:
+        return df
+
+    timing_dfs = [pl.read_csv(f) for f in timing_files]
+    timing = pl.concat(timing_dfs, how="diagonal")
+    timing = _remap_tool_names(timing)
+
+    # Aggregate to one row per (tool, structure, threads) to prevent row duplication
+    timing = (
+        timing.with_columns(pl.col("threads").cast(pl.Int64))
+        .group_by(["tool", "structure", "threads"])
+        .agg(
+            pl.col("parse_time_ms").mean().alias("parse_time_ms"),
+            pl.col("sasa_time_ms").mean().alias("sasa_time_ms"),
+        )
+    )
+
+    # Drop existing empty timing columns from df before join
+    drop_cols = [c for c in ("parse_time_ms", "sasa_time_ms") if c in df.columns]
+    if drop_cols:
+        df = df.drop(drop_cols)
+
+    # Left join: keep all rows from df, add timing where available
+    return df.join(timing, on=["tool", "structure", "threads"], how="left")
+
+
 def load_data(n_points: int = 100) -> pl.DataFrame:
     """Load SR benchmark results from RESULTS_BASE/<n_points>/**/results.csv.
 
@@ -90,13 +134,7 @@ def load_data(n_points: int = 100) -> pl.DataFrame:
         df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias("precision"))
 
     # Remap tool names: zig* → zsasa, rust → rustsasa
-    # Tool column may contain compound names like zig_f64, zig_f32_bitmask
-    df = df.with_columns(
-        pl.col("tool")
-        .str.replace(r"^zig", "zsasa")
-        .str.replace(r"^rust$", "rustsasa")
-        .alias("tool"),
-    )
+    df = _remap_tool_names(df)
 
     # Create tool_label from tool column (already contains precision/variant info)
     df = df.with_columns(pl.col("tool").alias("tool_label"))
@@ -114,7 +152,10 @@ def load_data(n_points: int = 100) -> pl.DataFrame:
         if "total_sasa" not in df.columns:
             df = df.with_columns(pl.lit(None).cast(pl.Float64).alias("total_sasa"))
 
-        # Internal timing columns (from --timing flag, may be absent in old CSVs)
+        # Internal timing: merge from timing.csv if available
+        df = _merge_timing_data(df, sr_dir)
+
+        # Ensure timing columns exist (may still be absent after merge)
         for col in ("parse_time_ms", "sasa_time_ms"):
             if col not in df.columns:
                 df = df.with_columns(pl.lit(None).cast(pl.Float64).alias(col))
