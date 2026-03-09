@@ -9,105 +9,89 @@ Runs tools on a PDB directory, collects per-file SASA values,
 and compares across tools -- completely independent of timing benchmarks.
 
 Usage:
-    # Run tools and compare (both f32 and f64)
+    # Run main validation (4 n_points levels, all zsasa variants + rustsasa)
     ./benchmarks/scripts/validation.py run \
         -i benchmarks/UP000000625_83333_ECOLI_v6/pdb \
-        -n ecoli \
-        --algorithm sr --threads 1
+        -n ecoli --threads 1
 
-    # Run with specific precision
+    # Quick run with single n_points
     ./benchmarks/scripts/validation.py run \
         -i benchmarks/UP000000625_83333_ECOLI_v6/pdb \
-        -n ecoli \
-        --algorithm sr --precision f64 --threads 1
+        -n ecoli --n-points 100 --threads 1
 
-    # Re-analyze existing CSV
+    # Re-analyze existing results
     ./benchmarks/scripts/validation.py compare \
         -d benchmarks/results/validation/ecoli/sr
 
 Output:
     benchmarks/results/validation/<name>/<algorithm>/
-    ├── config.json          # System info, parameters
-    ├── results.csv          # Per-file SASA values
-    └── validation_sr.png    # Scatter plot
+    ├── config.json
+    ├── results_100.csv
+    ├── results_200.csv
+    ├── results_500.csv
+    ├── results_1000.csv
+    ├── results_lahuta_128.csv    # if lahuta available
+    ├── validation_grid.png       # 4x4 grid (n_points x zsasa variants)
+    ├── validation_quicklook.png  # zsasa_f64 n_points=100 only
+    └── validation_lahuta.png     # lahuta_bitmask n_points=128
 """
 
 from __future__ import annotations
 
 import json
-import os
-import platform
 import subprocess
 import tempfile
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
 import typer
 from rich.console import Console
-from rich.table import Table
+
+from bench_common import (
+    LAHUTA_BITMASK_POINTS,
+    get_binary_path,
+    get_system_info,
+)
 
 app = typer.Typer(help="SASA validation: compare accuracy across tools")
 console = Console()
 
+# Default n_points levels for main validation
+DEFAULT_N_POINTS = "100,200,500,1000"
+
+# Lahuta bitmask uses a fixed n_points (must be in LAHUTA_BITMASK_POINTS)
+LAHUTA_N_POINTS = 128
+
+# zsasa variants to compare (column name, precision, use_bitmask)
+ZSASA_VARIANTS = [
+    ("zsasa_f64", "f64", False),
+    ("zsasa_f32", "f32", False),
+    ("zsasa_bitmask_f64", "f64", True),
+    ("zsasa_bitmask_f32", "f32", True),
+]
+
 
 # ---------------------------------------------------------------------------
-# Shared utilities (adapted from bench_batch.py)
+# Path helpers
 # ---------------------------------------------------------------------------
 
 
-class Tool(str, Enum):
-    zig = "zig"
-    freesasa = "freesasa"
-
-
-ALL_TOOLS = [Tool.zig, Tool.freesasa]
-
-
-def get_root_dir() -> Path:
+def _root_dir() -> Path:
     """Get project root directory."""
     return Path(__file__).parent.parent.parent
 
 
-def get_binary_paths() -> dict[str, Path]:
-    """Get paths to tool binaries."""
-    root = get_root_dir()
-    return {
-        "zsasa": root.joinpath("zig-out", "bin", "zsasa"),
-        "freesasa_batch": root.joinpath(
-            "benchmarks", "external", "freesasa-bench", "src", "freesasa_batch"
-        ),
-    }
+def _freesasa_batch_path() -> Path:
+    """Get freesasa_batch binary path (symlinked in external/bin/)."""
+    return _root_dir().joinpath("benchmarks", "external", "bin", "freesasa_batch")
 
 
-def get_system_info() -> dict:
-    """Get system information."""
-    info = {
-        "os": platform.system(),
-        "os_version": platform.release(),
-        "arch": platform.machine(),
-        "cpu_cores": os.cpu_count() or 1,
-    }
-
-    if platform.system() == "Darwin":
-        try:
-            result = subprocess.run(
-                ["sysctl", "-n", "machdep.cpu.brand_string"],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                info["cpu_model"] = result.stdout.strip()
-            result = subprocess.run(
-                ["sysctl", "-n", "hw.memsize"], capture_output=True, text=True
-            )
-            if result.returncode == 0:
-                info["memory_gb"] = int(result.stdout.strip()) // (1024**3)
-        except Exception:
-            pass
-
-    return info
+def _count_pdb_files(input_dir: Path) -> int:
+    """Count PDB/ENT files in a directory."""
+    return sum(
+        1 for f in input_dir.iterdir() if f.is_file() and f.suffix in {".pdb", ".ent"}
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -120,17 +104,17 @@ def run_zsasa(
     algorithm: str,
     precision: str,
     threads: int,
-    binaries: dict[str, Path],
-    n_points: int = 100,
+    n_points: int,
     use_bitmask: bool = False,
 ) -> dict[str, tuple[float, int]]:
     """Run zsasa in batch mode. Returns {stem: (total_sasa, n_atoms)}."""
-    zsasa = binaries["zsasa"]
+    zsasa = get_binary_path("zig")
     if not zsasa.exists():
-        console.print(f"[red]zsasa not found: {zsasa}[/]")
+        console.print(f"[yellow][SKIP] zsasa not found: {zsasa}[/]")
         return {}
 
     results: dict[str, tuple[float, int]] = {}
+    bitmask_label = " bitmask" if use_bitmask else ""
 
     with tempfile.TemporaryDirectory(prefix="validation_zsasa_") as tmp:
         out_dir = Path(tmp)
@@ -146,8 +130,14 @@ def run_zsasa(
         ]
         if use_bitmask:
             cmd.append("--use-bitmask")
-        console.print(f"  [dim]$ {' '.join(cmd)}[/]")
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        console.print(
+            f"  [dim]$ zsasa batch ({precision}{bitmask_label}, n_points={n_points})[/]"
+        )
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        except subprocess.TimeoutExpired:
+            console.print(f"[red]zsasa timed out ({precision}{bitmask_label})[/]")
+            return {}
         if proc.returncode != 0:
             console.print(f"[red]zsasa failed: {proc.stderr[:500]}[/]")
             return {}
@@ -166,14 +156,12 @@ def run_zsasa(
 
 def run_freesasa(
     input_dir: Path,
-    algorithm: str,
-    binaries: dict[str, Path],
-    n_points: int = 100,
+    n_points: int,
 ) -> dict[str, float]:
     """Run FreeSASA batch binary. Returns {stem: total_sasa}."""
-    binary = binaries["freesasa_batch"]
+    binary = _freesasa_batch_path()
     if not binary.exists():
-        console.print(f"[red]freesasa_batch not found: {binary}[/]")
+        console.print(f"[yellow][SKIP] freesasa_batch not found: {binary}[/]")
         return {}
 
     results: dict[str, float] = {}
@@ -184,11 +172,15 @@ def run_freesasa(
             str(binary),
             str(input_dir),
             str(out_dir),
-            f"--n-threads=1",
+            "--n-threads=1",
             f"--n-points={n_points}",
         ]
-        console.print(f"  [dim]$ {' '.join(cmd)}[/]")
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        console.print(f"  [dim]$ freesasa_batch (n_points={n_points})[/]")
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        except subprocess.TimeoutExpired:
+            console.print("[red]freesasa_batch timed out[/]")
+            return {}
         if proc.returncode != 0:
             console.print(f"[red]freesasa_batch failed: {proc.stderr[:500]}[/]")
             return {}
@@ -203,13 +195,236 @@ def run_freesasa(
     return results
 
 
+def run_rustsasa(
+    input_dir: Path,
+    n_points: int,
+) -> dict[str, float]:
+    """Run RustSASA on a PDB directory. Returns {stem: total_sasa}.
+
+    Output format: per-file JSON with {"Protein": {"global_total": float}}.
+    """
+    rustsasa = get_binary_path("rustsasa")
+    if not rustsasa.exists():
+        console.print(f"[yellow][SKIP] rustsasa not found: {rustsasa}[/]")
+        return {}
+
+    results: dict[str, float] = {}
+
+    with tempfile.TemporaryDirectory(prefix="validation_rustsasa_") as tmp:
+        out_dir = Path(tmp)
+        cmd = [
+            str(rustsasa),
+            str(input_dir),
+            str(out_dir),
+            "--format",
+            "json",
+            "-t",
+            "1",
+            "-n",
+            str(n_points),
+            "--allow-vdw-fallback",
+            "-o",
+            "protein",
+        ]
+        console.print(f"  [dim]$ rustsasa (n_points={n_points})[/]")
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        except subprocess.TimeoutExpired:
+            console.print("[red]rustsasa timed out[/]")
+            return {}
+        if proc.returncode != 0:
+            console.print(f"[red]rustsasa failed: {proc.stderr[:500]}[/]")
+            return {}
+
+        for json_file in sorted(out_dir.glob("*.json")):
+            try:
+                data = json.loads(json_file.read_text())
+                total = float(data["Protein"]["global_total"])
+                results[json_file.stem] = total
+            except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+                continue
+
+    return results
+
+
+def run_lahuta(
+    input_dir: Path,
+    n_points: int,
+) -> dict[str, float]:
+    """Run Lahuta bitmask on a PDB directory. Returns {stem: total_sasa}.
+
+    Output format: JSONL with {"model": "<path>", "sasa": [per_atom_floats]}.
+    Total SASA = sum(sasa).
+    """
+    if n_points not in LAHUTA_BITMASK_POINTS:
+        console.print(
+            f"[yellow][SKIP] lahuta_bitmask only supports "
+            f"n_points in {sorted(LAHUTA_BITMASK_POINTS)}, got {n_points}[/]"
+        )
+        return {}
+
+    lahuta = get_binary_path("lahuta")
+    if not lahuta.exists():
+        console.print(f"[yellow][SKIP] lahuta not found: {lahuta}[/]")
+        return {}
+
+    results: dict[str, float] = {}
+
+    with tempfile.TemporaryDirectory(prefix="validation_lahuta_") as tmp:
+        out_file = Path(tmp).joinpath("sasa.jsonl")
+        cmd = [
+            str(lahuta),
+            "sasa-sr",
+            "-d",
+            str(input_dir),
+            "--is_af2_model",
+            "--points",
+            str(n_points),
+            "--use-bitmask",
+            "-t",
+            "1",
+            "--progress",
+            "0",
+            "-o",
+            str(out_file),
+        ]
+        console.print(f"  [dim]$ lahuta sasa-sr (bitmask, n_points={n_points})[/]")
+        try:
+            proc = subprocess.run(
+                cmd, cwd=tmp, capture_output=True, text=True, timeout=3600
+            )
+        except subprocess.TimeoutExpired:
+            console.print("[red]lahuta timed out[/]")
+            return {}
+        if proc.returncode != 0:
+            console.print(f"[red]lahuta failed: {proc.stderr[:500]}[/]")
+            return {}
+
+        if not out_file.exists():
+            console.print("[red]lahuta produced no output[/]")
+            return {}
+
+        for line in out_file.read_text().strip().splitlines():
+            try:
+                data = json.loads(line)
+                model_path = Path(data["model"])
+                stem = model_path.stem
+                total = sum(data["sasa"])
+                results[stem] = round(total, 2)
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                continue
+
+    return results
+
+
 # ---------------------------------------------------------------------------
-# Statistics and plotting
+# Data collection and CSV creation
+# ---------------------------------------------------------------------------
+
+
+def collect_results_for_npoints(
+    input_dir: Path,
+    algorithm: str,
+    threads: int,
+    n_points: int,
+    include_rustsasa: bool = True,
+) -> tuple[dict[str, dict[str, tuple[float, int]]], dict[str, float], dict[str, float]]:
+    """Run all tools for a single n_points value.
+
+    Returns (zsasa_runs, freesasa_results, rustsasa_results).
+    """
+    console.print(f"\n[bold]=== n_points = {n_points} ===[/]")
+
+    # FreeSASA baseline
+    console.print("[bold cyan]Running FreeSASA...[/]")
+    freesasa_results = run_freesasa(input_dir, n_points)
+    console.print(f"  Got {len(freesasa_results)} results")
+
+    # zsasa variants
+    zsasa_runs: dict[str, dict[str, tuple[float, int]]] = {}
+    for col_name, precision, use_bitmask in ZSASA_VARIANTS:
+        console.print(f"[bold cyan]Running {col_name}...[/]")
+        zsasa_runs[col_name] = run_zsasa(
+            input_dir, algorithm, precision, threads, n_points, use_bitmask
+        )
+        console.print(f"  Got {len(zsasa_runs[col_name])} results")
+
+    # RustSASA (reference only)
+    rustsasa_results: dict[str, float] = {}
+    if include_rustsasa:
+        console.print("[bold cyan]Running RustSASA...[/]")
+        rustsasa_results = run_rustsasa(input_dir, n_points)
+        console.print(f"  Got {len(rustsasa_results)} results")
+
+    return zsasa_runs, freesasa_results, rustsasa_results
+
+
+def build_csv(
+    zsasa_runs: dict[str, dict[str, tuple[float, int]]],
+    freesasa_results: dict[str, float],
+    rustsasa_results: dict[str, float],
+    csv_path: Path,
+) -> None:
+    """Build and save CSV from collected results."""
+    import polars as pl
+
+    all_stems: set[str] = set()
+    for results in zsasa_runs.values():
+        all_stems.update(results.keys())
+    all_stems.update(freesasa_results.keys())
+    all_stems.update(rustsasa_results.keys())
+
+    if not all_stems:
+        console.print("[red]No results collected[/]")
+        return
+
+    rows: list[dict] = []
+    for stem in sorted(all_stems):
+        row: dict = {"structure": stem}
+
+        # n_atoms from any zsasa run
+        for results in zsasa_runs.values():
+            if stem in results:
+                _, n_atoms = results[stem]
+                row["n_atoms"] = n_atoms
+                break
+
+        # FreeSASA
+        if stem in freesasa_results:
+            row["freesasa"] = round(freesasa_results[stem], 2)
+
+        # zsasa variants
+        for col_name, results in zsasa_runs.items():
+            if stem in results:
+                sasa, _ = results[stem]
+                row[col_name] = round(sasa, 2)
+
+        # RustSASA
+        if stem in rustsasa_results:
+            row["rustsasa"] = round(rustsasa_results[stem], 2)
+
+        rows.append(row)
+
+    # Column order: structure, n_atoms, freesasa, zsasa variants, rustsasa
+    columns = ["structure", "n_atoms", "freesasa"]
+    columns.extend(zsasa_runs.keys())
+    if rustsasa_results:
+        columns.append("rustsasa")
+
+    df_raw = pl.DataFrame(rows)
+    available_cols = [c for c in columns if c in df_raw.columns]
+    df = df_raw.select(available_cols)
+    df.write_csv(csv_path)
+    console.print(f"[green]Saved:[/] {csv_path} ({df.height} structures)")
+
+
+# ---------------------------------------------------------------------------
+# Statistics
 # ---------------------------------------------------------------------------
 
 
 def compute_stats(x: list[float], y: list[float]) -> dict[str, float]:
-    """Compute R², mean/max relative error between two lists."""
+    """Compute R^2, mean/max relative error between two lists."""
     import numpy as np
 
     xa = np.array(x)
@@ -224,6 +439,8 @@ def compute_stats(x: list[float], y: list[float]) -> dict[str, float]:
         return {"r_squared": 0.0, "mean_rel_error": 0.0, "max_rel_error": 0.0}
 
     correlation = np.corrcoef(xa, ya)[0, 1]
+    if np.isnan(correlation):
+        return {"r_squared": 0.0, "mean_rel_error": 0.0, "max_rel_error": 0.0}
     r_squared = float(correlation**2)
 
     rel_errors = np.abs(xa - ya) / ya * 100
@@ -237,126 +454,304 @@ def compute_stats(x: list[float], y: list[float]) -> dict[str, float]:
     }
 
 
-def generate_scatter_plot(
-    results_dir: Path,
-    csv_path: Path,
-    algorithm: str,
-    reference: str = "freesasa",
-) -> None:
-    """Generate scatter plot comparing tools against reference."""
-    import matplotlib.pyplot as plt
-    import numpy as np
+def _stats_for_pair(
+    df: "pl.DataFrame", reference: str, col: str
+) -> dict[str, float] | None:
+    """Compute stats for a pair of columns, or None if insufficient data."""
     import polars as pl
 
-    df = pl.read_csv(csv_path)
+    pair = df.select([reference, col]).drop_nulls()
+    if pair.height < 2:
+        return None
+    return compute_stats(pair[col].to_list(), pair[reference].to_list())
 
-    if reference not in df.columns:
-        console.print(
-            f"[yellow]Reference column '{reference}' not in CSV, skipping plot[/]"
-        )
-        return
 
-    ref_values = df[reference]
+# ---------------------------------------------------------------------------
+# Plotting
+# ---------------------------------------------------------------------------
 
-    # Find comparison columns (everything except structure, n_atoms, and reference)
-    skip_cols = {"structure", "n_atoms", reference}
-    compare_cols = [c for c in df.columns if c not in skip_cols]
 
-    if not compare_cols:
-        console.print("[yellow]No comparison columns found, skipping plot[/]")
-        return
+def _setup_style() -> None:
+    """Set up matplotlib style."""
+    import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(
-        1, len(compare_cols), figsize=(8 * len(compare_cols), 8), squeeze=False
+    plt.rcParams.update(
+        {
+            "font.family": "sans-serif",
+            "font.size": 10,
+            "axes.titlesize": 11,
+            "axes.labelsize": 10,
+            "xtick.labelsize": 9,
+            "ytick.labelsize": 9,
+            "figure.dpi": 150,
+            "savefig.dpi": 150,
+            "savefig.bbox": "tight",
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+        }
     )
 
-    for idx, col in enumerate(compare_cols):
-        ax = axes[0][idx]
 
-        # Drop nulls for this pair
-        pair = df.select([reference, col]).drop_nulls()
-        if pair.height < 2:
-            ax.set_title(f"{col}: insufficient data")
+def _scatter_cell(
+    ax: "matplotlib.axes.Axes",
+    df: "pl.DataFrame",
+    reference: str,
+    col: str,
+    title: str,
+    rustsasa_r2: float | None = None,
+) -> None:
+    """Draw a single scatter cell: col (x) vs reference (y)."""
+    import numpy as np
+
+    pair = df.select([reference, col]).drop_nulls()
+    if pair.height < 2:
+        ax.set_title(f"{title}: insufficient data")
+        return
+
+    ref_arr = pair[reference].to_numpy()
+    comp_arr = pair[col].to_numpy()
+
+    ax.scatter(comp_arr, ref_arr, alpha=0.3, s=8, color="#3498db", edgecolors="none")
+
+    max_val = max(float(np.max(ref_arr)), float(np.max(comp_arr)))
+    ax.plot([0, max_val], [0, max_val], "r--", linewidth=1, alpha=0.7)
+
+    stats = compute_stats(comp_arr.tolist(), ref_arr.tolist())
+
+    ax.set_xlabel(f"{col} SASA")
+    ax.set_ylabel(f"{reference} SASA")
+    ax.set_title(title, fontsize=10)
+
+    # Stats annotation
+    stats_lines = [
+        f"R² = {stats['r_squared']:.6f}",
+        f"Mean err = {stats['mean_rel_error']:.4f}%",
+        f"Max err = {stats['max_rel_error']:.4f}%",
+    ]
+    if rustsasa_r2 is not None:
+        stats_lines.append(f"RustSASA R² = {rustsasa_r2:.6f}")
+
+    ax.text(
+        0.05,
+        0.95,
+        "\n".join(stats_lines),
+        transform=ax.transAxes,
+        fontsize=8,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+    )
+
+    ax.set_aspect("equal")
+
+
+def generate_grid_plot(
+    results_dir: Path,
+    n_points_list: list[int],
+    algorithm: str,
+) -> None:
+    """Generate 4x4 grid plot: rows=n_points, cols=zsasa variants.
+
+    Each cell shows scatter vs FreeSASA with R^2/error stats.
+    RustSASA R^2 shown as annotation in each cell.
+    """
+    import matplotlib.pyplot as plt
+    import polars as pl
+
+    _setup_style()
+
+    n_rows = len(n_points_list)
+    n_cols = len(ZSASA_VARIANTS)
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols, figsize=(5 * n_cols, 5 * n_rows), squeeze=False
+    )
+
+    for row_idx, n_pts in enumerate(n_points_list):
+        csv_path = results_dir.joinpath(f"results_{n_pts}.csv")
+        if not csv_path.exists():
+            for col_idx in range(n_cols):
+                axes[row_idx][col_idx].set_title(f"n={n_pts}: no data")
             continue
 
-        ref_arr = pair[reference].to_numpy()
-        comp_arr = pair[col].to_numpy()
+        df = pl.read_csv(csv_path)
 
-        ax.scatter(comp_arr, ref_arr, alpha=0.3, s=10, color="#3498db")
+        # Compute rustsasa R^2 for this n_points (shared across all cells in row)
+        rustsasa_r2 = None
+        if "rustsasa" in df.columns and "freesasa" in df.columns:
+            stats = _stats_for_pair(df, "freesasa", "rustsasa")
+            if stats:
+                rustsasa_r2 = stats["r_squared"]
 
-        max_val = max(float(np.max(ref_arr)), float(np.max(comp_arr)))
-        ax.plot([0, max_val], [0, max_val], "r--", linewidth=1.5, label="y = x")
+        for col_idx, (col_name, _precision, _bitmask) in enumerate(ZSASA_VARIANTS):
+            ax = axes[row_idx][col_idx]
+            if col_name not in df.columns or "freesasa" not in df.columns:
+                ax.set_title(f"n={n_pts}: {col_name} missing")
+                continue
 
-        stats = compute_stats(comp_arr.tolist(), ref_arr.tolist())
+            title = f"n={n_pts}: {col_name}"
+            _scatter_cell(ax, df, "freesasa", col_name, title, rustsasa_r2=rustsasa_r2)
 
-        ax.set_xlabel(f"{col} SASA")
-        ax.set_ylabel(f"{reference} SASA")
-        ax.set_title(f"{algorithm.upper()}: {col} vs {reference} (n={pair.height:,})")
-        ax.legend()
+    fig.suptitle(
+        f"{algorithm.upper()} Validation: zsasa variants vs FreeSASA",
+        fontsize=14,
+        y=1.01,
+    )
+    fig.tight_layout()
+    out_path = results_dir.joinpath("validation_grid.png")
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    console.print(f"[green]Saved:[/] {out_path}")
 
-        stats_text = (
-            f"R² = {stats['r_squared']:.6f}\n"
-            f"Mean error = {stats['mean_rel_error']:.4f}%\n"
-            f"Max error = {stats['max_rel_error']:.4f}%"
-        )
-        ax.text(
-            0.05,
-            0.95,
-            stats_text,
-            transform=ax.transAxes,
-            fontsize=10,
-            verticalalignment="top",
-            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
-        )
 
-        ax.set_aspect("equal")
+def generate_quicklook_plot(
+    results_dir: Path,
+    algorithm: str,
+) -> None:
+    """Generate single scatter plot: zsasa_f64 at n_points=100 vs FreeSASA."""
+    import matplotlib.pyplot as plt
+    import polars as pl
+
+    _setup_style()
+
+    csv_path = results_dir.joinpath("results_100.csv")
+    if not csv_path.exists():
+        console.print("[yellow]results_100.csv not found, skipping quicklook plot[/]")
+        return
+
+    df = pl.read_csv(csv_path)
+    if "zsasa_f64" not in df.columns or "freesasa" not in df.columns:
+        console.print("[yellow]Missing zsasa_f64 or freesasa columns for quicklook[/]")
+        return
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+
+    # Compute rustsasa R^2 for annotation
+    rustsasa_r2 = None
+    if "rustsasa" in df.columns:
+        stats = _stats_for_pair(df, "freesasa", "rustsasa")
+        if stats:
+            rustsasa_r2 = stats["r_squared"]
+
+    _scatter_cell(
+        ax,
+        df,
+        "freesasa",
+        "zsasa_f64",
+        f"{algorithm.upper()}: zsasa (f64) vs FreeSASA (n_points=100)",
+        rustsasa_r2=rustsasa_r2,
+    )
 
     fig.tight_layout()
-    out_path = results_dir.joinpath(f"validation_{algorithm}.png")
+    out_path = results_dir.joinpath("validation_quicklook.png")
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    console.print(f"[green]Saved:[/] {out_path}")
+
+
+def generate_lahuta_plot(
+    results_dir: Path,
+    algorithm: str,
+) -> None:
+    """Generate single scatter plot: lahuta_bitmask vs FreeSASA at n_points=128."""
+    import matplotlib.pyplot as plt
+    import polars as pl
+
+    _setup_style()
+
+    csv_path = results_dir.joinpath(f"results_lahuta_{LAHUTA_N_POINTS}.csv")
+    if not csv_path.exists():
+        console.print(
+            f"[yellow]results_lahuta_{LAHUTA_N_POINTS}.csv not found, "
+            f"skipping lahuta plot[/]"
+        )
+        return
+
+    df = pl.read_csv(csv_path)
+    if "lahuta_bitmask" not in df.columns or "freesasa" not in df.columns:
+        console.print(
+            "[yellow]Missing lahuta_bitmask or freesasa columns for lahuta plot[/]"
+        )
+        return
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+
+    _scatter_cell(
+        ax,
+        df,
+        "freesasa",
+        "lahuta_bitmask",
+        (
+            f"{algorithm.upper()}: lahuta (bitmask) vs FreeSASA "
+            f"(n_points={LAHUTA_N_POINTS})"
+        ),
+    )
+
+    fig.tight_layout()
+    out_path = results_dir.joinpath("validation_lahuta.png")
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     console.print(f"[green]Saved:[/] {out_path}")
 
 
 def print_stats_table(
-    csv_path: Path,
+    results_dir: Path,
+    n_points_list: list[int],
     reference: str = "freesasa",
 ) -> None:
-    """Print statistics table comparing tools against reference."""
+    """Print statistics table for all n_points levels."""
     import polars as pl
-
-    df = pl.read_csv(csv_path)
-
-    if reference not in df.columns:
-        console.print(f"[yellow]Reference column '{reference}' not in CSV[/]")
-        return
-
-    skip_cols = {"structure", "n_atoms", reference}
-    compare_cols = [c for c in df.columns if c not in skip_cols]
+    from rich.table import Table
 
     table = Table(title=f"Validation Statistics (reference: {reference})")
-    table.add_column("Tool", style="cyan")
+    table.add_column("n_points", style="cyan", justify="right")
+    table.add_column("Tool", style="green")
     table.add_column("N", justify="right")
-    table.add_column("R²", justify="right")
+    table.add_column("R\u00b2", justify="right")
     table.add_column("Mean Error %", justify="right")
     table.add_column("Max Error %", justify="right")
 
-    for col in compare_cols:
-        pair = df.select([reference, col]).drop_nulls()
-        if pair.height < 2:
+    for n_pts in n_points_list:
+        csv_path = results_dir.joinpath(f"results_{n_pts}.csv")
+        if not csv_path.exists():
             continue
 
-        ref_arr = pair[reference].to_list()
-        comp_arr = pair[col].to_list()
-        stats = compute_stats(comp_arr, ref_arr)
+        df = pl.read_csv(csv_path)
+        if reference not in df.columns:
+            continue
 
-        table.add_row(
-            col,
-            str(pair.height),
-            f"{stats['r_squared']:.6f}",
-            f"{stats['mean_rel_error']:.4f}",
-            f"{stats['max_rel_error']:.4f}",
-        )
+        skip_cols = {"structure", "n_atoms", reference}
+        compare_cols = [c for c in df.columns if c not in skip_cols]
+
+        for col in compare_cols:
+            stats = _stats_for_pair(df, reference, col)
+            if stats is None:
+                continue
+            pair = df.select([reference, col]).drop_nulls()
+            table.add_row(
+                str(n_pts),
+                col,
+                str(pair.height),
+                f"{stats['r_squared']:.6f}",
+                f"{stats['mean_rel_error']:.4f}",
+                f"{stats['max_rel_error']:.4f}",
+            )
+
+    # Lahuta stats
+    lahuta_csv = results_dir.joinpath(f"results_lahuta_{LAHUTA_N_POINTS}.csv")
+    if lahuta_csv.exists():
+        df = pl.read_csv(lahuta_csv)
+        if reference in df.columns and "lahuta_bitmask" in df.columns:
+            stats = _stats_for_pair(df, reference, "lahuta_bitmask")
+            if stats:
+                pair = df.select([reference, "lahuta_bitmask"]).drop_nulls()
+                table.add_row(
+                    f"{LAHUTA_N_POINTS}",
+                    "lahuta_bitmask",
+                    str(pair.height),
+                    f"{stats['r_squared']:.6f}",
+                    f"{stats['mean_rel_error']:.4f}",
+                    f"{stats['max_rel_error']:.4f}",
+                )
 
     console.print()
     console.print(table)
@@ -388,14 +783,6 @@ def run(
             help="Dataset name (used for output directory)",
         ),
     ],
-    tools: Annotated[
-        list[Tool] | None,
-        typer.Option(
-            "--tool",
-            "-t",
-            help="Tools to compare (can specify multiple). Default: all",
-        ),
-    ] = None,
     algorithm: Annotated[
         str,
         typer.Option(
@@ -404,20 +791,12 @@ def run(
             help="Algorithm: sr (shrake-rupley) or lr (lee-richards)",
         ),
     ] = "sr",
-    precision: Annotated[
-        str | None,
-        typer.Option(
-            "--precision",
-            "-p",
-            help="zsasa precision: f32, f64, or omit for both",
-        ),
-    ] = None,
     threads: Annotated[
         int,
         typer.Option(
             "--threads",
             "-T",
-            help="Number of threads (zsasa)",
+            help="Number of threads for zsasa",
         ),
     ] = 1,
     output_dir: Annotated[
@@ -425,155 +804,136 @@ def run(
         typer.Option(
             "--output",
             "-o",
-            help="Output directory (default: benchmarks/results/validation/<name>)",
+            help="Output directory (default: benchmarks/results/validation/<name>/<algo>)",
         ),
     ] = None,
-    reference: Annotated[
+    n_points_str: Annotated[
         str,
-        typer.Option(
-            "--reference",
-            "-r",
-            help="Reference tool for comparison",
-        ),
-    ] = "freesasa",
-    n_points: Annotated[
-        int,
         typer.Option(
             "--n-points",
             "-N",
-            help="Number of sphere test points per atom (default: 100)",
+            help="Comma-separated n_points values (default: 100,200,500,1000)",
         ),
-    ] = 100,
-    use_bitmask: Annotated[
+    ] = DEFAULT_N_POINTS,
+    skip_rustsasa: Annotated[
         bool,
         typer.Option(
-            "--use-bitmask",
-            help="Use bitmask neighbor list for zsasa",
+            "--skip-rustsasa",
+            help="Skip RustSASA (reference) runs",
+        ),
+    ] = False,
+    skip_lahuta: Annotated[
+        bool,
+        typer.Option(
+            "--skip-lahuta",
+            help="Skip lahuta_bitmask run",
         ),
     ] = False,
 ) -> None:
-    """Run tools on PDB directory and compare SASA values."""
-    selected_tools = tools if tools else ALL_TOOLS
-    precisions = [precision] if precision else ["f32", "f64"]
+    """Run all tools on PDB directory and compare SASA values."""
+    try:
+        n_points_list = sorted(int(x.strip()) for x in n_points_str.split(","))
+    except ValueError:
+        console.print(
+            f"[red]Invalid --n-points: '{n_points_str}'. "
+            f"Expected comma-separated integers (e.g. 100,200,500,1000)[/]"
+        )
+        raise typer.Exit(1) from None
+    if any(n <= 0 for n in n_points_list):
+        console.print("[red]All n_points values must be positive[/]")
+        raise typer.Exit(1)
 
     # Set up output
-    root = get_root_dir()
     if output_dir is None:
-        results_dir = root.joinpath(
+        results_dir = _root_dir().joinpath(
             "benchmarks", "results", "validation", name, algorithm
         )
     else:
         results_dir = output_dir
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    binaries = get_binary_paths()
-
-    # Count input files
-    n_files = sum(
-        1 for f in input_dir.iterdir() if f.is_file() and f.suffix in {".pdb", ".ent"}
-    )
+    n_files = _count_pdb_files(input_dir)
 
     # Save config
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     config = {
-        "timestamp": timestamp,
+        "timestamp": datetime.now().strftime("%Y-%m-%d_%H%M%S"),
         "system": get_system_info(),
         "parameters": {
             "name": name,
             "input_dir": str(input_dir),
             "n_files": n_files,
-            "tools": [t.value for t in selected_tools],
             "algorithm": algorithm,
-            "precision": precisions,
             "threads": threads,
-            "n_points": n_points,
-            "use_bitmask": use_bitmask,
-            "reference": reference,
+            "n_points": n_points_list,
+            "skip_rustsasa": skip_rustsasa,
+            "skip_lahuta": skip_lahuta,
+            "lahuta_n_points": LAHUTA_N_POINTS,
         },
     }
-    config_path = results_dir.joinpath("config.json")
-    config_path.write_text(json.dumps(config, indent=2))
+    results_dir.joinpath("config.json").write_text(json.dumps(config, indent=2))
 
     # Print header
-    console.print(f"[bold]=== SASA Validation: {name} ===[/]")
+    console.print(f"\n[bold]=== SASA Validation: {name} ===[/]")
     console.print(f"Input: {input_dir} ({n_files} PDB files)")
     console.print(f"Output: {results_dir}")
-    console.print(f"Tools: {', '.join(t.value for t in selected_tools)}")
-    console.print(
-        f"Algorithm: {algorithm}, Precision: {', '.join(precisions)}, Threads: {threads}"
-    )
-    console.print()
+    console.print(f"Algorithm: {algorithm}, Threads: {threads}")
+    console.print(f"n_points: {n_points_list}")
+    zsasa_labels = [v[0] for v in ZSASA_VARIANTS]
+    tools_str = f"freesasa, {', '.join(zsasa_labels)}"
+    if not skip_rustsasa:
+        tools_str += ", rustsasa (ref)"
+    if not skip_lahuta:
+        tools_str += f", lahuta_bitmask (n={LAHUTA_N_POINTS})"
+    console.print(f"Tools: {tools_str}")
 
-    # Collect results from each tool x precision
-    zsasa_runs: dict[str, dict[str, tuple[float, int]]] = {}
+    # --- Main runs: each n_points level ---
+    for n_pts in n_points_list:
+        zsasa_runs, freesasa_results, rustsasa_results = collect_results_for_npoints(
+            input_dir, algorithm, threads, n_pts, include_rustsasa=not skip_rustsasa
+        )
+        csv_path = results_dir.joinpath(f"results_{n_pts}.csv")
+        build_csv(zsasa_runs, freesasa_results, rustsasa_results, csv_path)
 
-    if Tool.zig in selected_tools:
-        for prec in precisions:
-            col = f"zsasa_{prec}"
-            console.print(f"[bold cyan]Running zsasa ({prec})...[/]")
-            zsasa_runs[col] = run_zsasa(
-                input_dir, algorithm, prec, threads, binaries, n_points, use_bitmask
-            )
-            console.print(f"  Got {len(zsasa_runs[col])} results")
+    # --- Lahuta bitmask run (separate n_points) ---
+    if not skip_lahuta:
+        console.print(f"\n[bold]=== Lahuta bitmask (n_points={LAHUTA_N_POINTS}) ===[/]")
 
-    freesasa_results: dict[str, float] = {}
-
-    if Tool.freesasa in selected_tools:
         console.print("[bold cyan]Running FreeSASA...[/]")
-        freesasa_results = run_freesasa(input_dir, algorithm, binaries, n_points)
-        console.print(f"  Got {len(freesasa_results)} results")
+        lahuta_freesasa = run_freesasa(input_dir, LAHUTA_N_POINTS)
+        console.print(f"  Got {len(lahuta_freesasa)} results")
 
-    # Merge by stem
-    import polars as pl
+        console.print("[bold cyan]Running lahuta_bitmask...[/]")
+        lahuta_results = run_lahuta(input_dir, LAHUTA_N_POINTS)
+        console.print(f"  Got {len(lahuta_results)} results")
 
-    all_stems: set[str] = set()
-    for results in zsasa_runs.values():
-        all_stems.update(results.keys())
-    if freesasa_results:
-        all_stems.update(freesasa_results.keys())
+        if lahuta_results:
+            import polars as pl
 
-    if not all_stems:
-        console.print("[red]No results collected. Check tool output above.[/]")
-        raise typer.Exit(1)
+            all_stems = set(lahuta_freesasa.keys()) | set(lahuta_results.keys())
+            rows: list[dict] = []
+            for stem in sorted(all_stems):
+                row: dict = {"structure": stem}
+                if stem in lahuta_freesasa:
+                    row["freesasa"] = round(lahuta_freesasa[stem], 2)
+                if stem in lahuta_results:
+                    row["lahuta_bitmask"] = lahuta_results[stem]
+                rows.append(row)
 
-    rows: list[dict] = []
-    for stem in sorted(all_stems):
-        row: dict = {"structure": stem}
+            lahuta_csv = results_dir.joinpath(f"results_lahuta_{LAHUTA_N_POINTS}.csv")
+            df = pl.DataFrame(rows)
+            available = [
+                c
+                for c in ["structure", "freesasa", "lahuta_bitmask"]
+                if c in df.columns
+            ]
+            df.select(available).write_csv(lahuta_csv)
+            console.print(f"[green]Saved:[/] {lahuta_csv} ({df.height} structures)")
 
-        # n_atoms from any zsasa run
-        for results in zsasa_runs.values():
-            if stem in results:
-                _, n_atoms = results[stem]
-                row["n_atoms"] = n_atoms
-                break
-
-        for col, results in zsasa_runs.items():
-            if stem in results:
-                sasa, _ = results[stem]
-                row[col] = round(sasa, 2)
-
-        if freesasa_results and stem in freesasa_results:
-            row["freesasa"] = round(freesasa_results[stem], 2)
-
-        rows.append(row)
-
-    # Build DataFrame with consistent column order
-    columns = ["structure", "n_atoms"]
-    columns.extend(zsasa_runs.keys())
-    if freesasa_results:
-        columns.append("freesasa")
-
-    df = pl.DataFrame(rows).select(
-        [c for c in columns if c in pl.DataFrame(rows).columns]
-    )
-
-    csv_path = results_dir.joinpath("results.csv")
-    df.write_csv(csv_path)
-    console.print(f"\n[green]Saved:[/] {csv_path} ({df.height} structures)")
-
-    # Statistics and plot
-    print_stats_table(csv_path, reference=reference)
-    generate_scatter_plot(results_dir, csv_path, algorithm, reference=reference)
+    # --- Statistics and plots ---
+    print_stats_table(results_dir, n_points_list)
+    generate_grid_plot(results_dir, n_points_list, algorithm)
+    generate_quicklook_plot(results_dir, algorithm)
+    generate_lahuta_plot(results_dir, algorithm)
 
     console.print(f"\n[bold green]=== Done! Results: {results_dir} ===[/]")
 
@@ -585,28 +945,15 @@ def compare(
         typer.Option(
             "--dir",
             "-d",
-            help="Directory containing results.csv",
+            help="Directory containing results CSV files",
             exists=True,
             file_okay=False,
             dir_okay=True,
         ),
     ],
-    reference: Annotated[
-        str,
-        typer.Option(
-            "--reference",
-            "-r",
-            help="Reference tool for comparison",
-        ),
-    ] = "freesasa",
 ) -> None:
-    """Re-analyze existing validation results."""
-    csv_path = results_dir.joinpath("results.csv")
-    if not csv_path.exists():
-        console.print(f"[red]results.csv not found in {results_dir}[/]")
-        raise typer.Exit(1)
-
-    # Detect algorithm from config.json if available
+    """Re-analyze existing validation results (regenerate plots and stats)."""
+    # Detect algorithm from config.json
     algorithm = "sr"
     config_path = results_dir.joinpath("config.json")
     if config_path.exists():
@@ -616,11 +963,27 @@ def compare(
         except (json.JSONDecodeError, KeyError):
             pass
 
-    console.print(f"[bold]=== Re-analyzing: {results_dir} ===[/]")
-    console.print(f"Algorithm: {algorithm}, Reference: {reference}")
+    # Discover available n_points CSVs
+    import re
 
-    print_stats_table(csv_path, reference=reference)
-    generate_scatter_plot(results_dir, csv_path, algorithm, reference=reference)
+    n_points_list: list[int] = []
+    for csv_file in sorted(results_dir.glob("results_*.csv")):
+        match = re.match(r"results_(\d+)\.csv", csv_file.name)
+        if match:
+            n_points_list.append(int(match.group(1)))
+
+    if not n_points_list:
+        console.print(f"[red]No results_*.csv files found in {results_dir}[/]")
+        raise typer.Exit(1)
+
+    console.print(f"[bold]=== Re-analyzing: {results_dir} ===[/]")
+    console.print(f"Algorithm: {algorithm}")
+    console.print(f"Found n_points: {n_points_list}")
+
+    print_stats_table(results_dir, n_points_list)
+    generate_grid_plot(results_dir, n_points_list, algorithm)
+    generate_quicklook_plot(results_dir, algorithm)
+    generate_lahuta_plot(results_dir, algorithm)
 
     console.print(f"\n[bold green]=== Done! ===[/]")
 
