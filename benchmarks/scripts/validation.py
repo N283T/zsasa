@@ -39,6 +39,7 @@ Output:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 from datetime import datetime
@@ -157,6 +158,7 @@ def run_zsasa(
 def run_freesasa(
     input_dir: Path,
     n_points: int,
+    threads: int = 1,
 ) -> dict[str, float]:
     """Run FreeSASA batch binary. Returns {stem: total_sasa}."""
     binary = _freesasa_batch_path()
@@ -172,7 +174,7 @@ def run_freesasa(
             str(binary),
             str(input_dir),
             str(out_dir),
-            "--n-threads=1",
+            f"--n-threads={threads}",
             f"--n-points={n_points}",
         ]
         console.print(f"  [dim]$ freesasa_batch (n_points={n_points})[/]")
@@ -198,6 +200,7 @@ def run_freesasa(
 def run_rustsasa(
     input_dir: Path,
     n_points: int,
+    threads: int = 1,
 ) -> dict[str, float]:
     """Run RustSASA on a PDB directory. Returns {stem: total_sasa}.
 
@@ -219,7 +222,7 @@ def run_rustsasa(
             "--format",
             "json",
             "-t",
-            "1",
+            str(threads),
             "-n",
             str(n_points),
             "--allow-vdw-fallback",
@@ -250,6 +253,7 @@ def run_rustsasa(
 def run_lahuta(
     input_dir: Path,
     n_points: int,
+    threads: int = 1,
 ) -> dict[str, float]:
     """Run Lahuta bitmask on a PDB directory. Returns {stem: total_sasa}.
 
@@ -282,7 +286,7 @@ def run_lahuta(
             str(n_points),
             "--use-bitmask",
             "-t",
-            "1",
+            str(threads),
             "--progress",
             "0",
             "-o",
@@ -337,7 +341,7 @@ def collect_results_for_npoints(
 
     # FreeSASA baseline
     console.print("[bold cyan]Running FreeSASA...[/]")
-    freesasa_results = run_freesasa(input_dir, n_points)
+    freesasa_results = run_freesasa(input_dir, n_points, threads)
     console.print(f"  Got {len(freesasa_results)} results")
 
     # zsasa variants
@@ -353,7 +357,7 @@ def collect_results_for_npoints(
     rustsasa_results: dict[str, float] = {}
     if include_rustsasa:
         console.print("[bold cyan]Running RustSASA...[/]")
-        rustsasa_results = run_rustsasa(input_dir, n_points)
+        rustsasa_results = run_rustsasa(input_dir, n_points, threads)
         console.print(f"  Got {len(rustsasa_results)} results")
 
     return zsasa_runs, freesasa_results, rustsasa_results
@@ -796,9 +800,9 @@ def run(
         typer.Option(
             "--threads",
             "-T",
-            help="Number of threads for zsasa",
+            help="Number of threads (default: all CPU cores)",
         ),
-    ] = 1,
+    ] = os.cpu_count() or 1,
     output_dir: Annotated[
         Path | None,
         typer.Option(
@@ -899,11 +903,11 @@ def run(
         console.print(f"\n[bold]=== Lahuta bitmask (n_points={LAHUTA_N_POINTS}) ===[/]")
 
         console.print("[bold cyan]Running FreeSASA...[/]")
-        lahuta_freesasa = run_freesasa(input_dir, LAHUTA_N_POINTS)
+        lahuta_freesasa = run_freesasa(input_dir, LAHUTA_N_POINTS, threads)
         console.print(f"  Got {len(lahuta_freesasa)} results")
 
         console.print("[bold cyan]Running lahuta_bitmask...[/]")
-        lahuta_results = run_lahuta(input_dir, LAHUTA_N_POINTS)
+        lahuta_results = run_lahuta(input_dir, LAHUTA_N_POINTS, threads)
         console.print(f"  Got {len(lahuta_results)} results")
 
         if lahuta_results:
