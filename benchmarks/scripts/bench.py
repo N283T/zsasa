@@ -250,7 +250,10 @@ def _aggregate_runs_to_csv(
         for json_file in json_files:
             try:
                 data = json.loads(json_file.read_text())
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError) as e:
+                console.print(
+                    f"[yellow]Warning:[/yellow] Skipping corrupt JSON: {json_file.name}: {e}"
+                )
                 continue
 
             result = data.get("result")
@@ -270,11 +273,13 @@ def _aggregate_runs_to_csv(
                     "algorithm": "sr",
                     "precision": precision,
                     "threads": meta.get("threads", 1),
-                    "mean_s": statistics.mean(times),
-                    "stddev_s": statistics.stdev(times) if len(times) > 1 else 0,
-                    "min_s": min(times),
-                    "max_s": max(times),
-                    "median_s": statistics.median(times),
+                    "mean_s": result.get("mean", statistics.mean(times)),
+                    "stddev_s": result.get(
+                        "stddev", statistics.stdev(times) if len(times) > 1 else 0
+                    ),
+                    "min_s": result.get("min", min(times)),
+                    "max_s": result.get("max", max(times)),
+                    "median_s": result.get("median", statistics.median(times)),
                     "user_s": result.get("user"),
                     "system_s": result.get("system"),
                     "memory_bytes": (
@@ -655,8 +660,8 @@ def _run_wall(
     console.print(f"\n[green]Done![/green] {n_success}/{total} benchmarks completed")
     console.print(f"  Results: {output_dir}")
     console.print(f"  - runs/ ({n_success} JSON files)")
-    console.print(f"  - results.csv")
-    console.print(f"  - config.json")
+    console.print("  - results.csv")
+    console.print("  - config.json")
 
     print_hyperfine_summary(output_dir.joinpath("results.csv"))
     return True
@@ -672,15 +677,19 @@ def sasa(
     ] = None,
     input_dir: Annotated[
         Path | None,
-        typer.Option("--input-dir", "-i", help="Input directory with .pdb files"),
+        typer.Option(
+            "--input-dir",
+            "-i",
+            help="Input directory with .pdb files (for locating structures referenced in CSV)",
+        ),
     ] = None,
-    input_file: Annotated[
+    output_dir: Annotated[
         Path | None,
-        typer.Option("--input", help="Single .pdb file to benchmark"),
-    ] = None,
-    sample_file: Annotated[
-        Path | None,
-        typer.Option("--sample-file", "-S", help="Sample file to filter structures"),
+        typer.Option(
+            "--output-dir",
+            "-o",
+            help="Output directory (must contain results.csv from a previous 'wall' run)",
+        ),
     ] = None,
     n_points: Annotated[
         int,
@@ -692,7 +701,17 @@ def sasa(
 ) -> None:
     """Run internal SASA timing. Updates parse_time_ms/sasa_time_ms in existing CSV."""
     selected_tools = _resolve_tools(tools)
-    pdb_dir, _ = _resolve_input(input_file, input_dir, sample_file)
+
+    if input_dir is not None:
+        if not input_dir.exists():
+            console.print(f"[red]Error:[/red] Input directory not found: {input_dir}")
+            raise typer.Exit(1)
+        pdb_dir = input_dir
+    else:
+        pdb_dir = Path(__file__).parent.parent.joinpath("dataset", "pdb")
+        if not pdb_dir.exists():
+            console.print(f"[red]Error:[/red] Default dataset not found: {pdb_dir}")
+            raise typer.Exit(1)
 
     has_zig = any(parse_tool(t)[1] == "zig" for t in selected_tools)
     if has_zig:
@@ -706,7 +725,11 @@ def sasa(
 
     for tool_name in selected_tools:
         tool_canonical = parse_tool(tool_name)[0]
-        tool_output_dir = results_base.joinpath(f"{tool_canonical}_sr")
+        tool_output_dir = (
+            output_dir
+            if output_dir is not None and n_tools == 1
+            else results_base.joinpath(f"{tool_canonical}_sr")
+        )
 
         success = _run_sasa(
             tool_name,
