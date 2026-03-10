@@ -226,7 +226,7 @@ jobs:
       - name: Generate CLI checksums
         run: |
           cd dist
-          sha256sum zsasa-* > SHA256SUMS 2>/dev/null || true
+          sha256sum zsasa-*-linux-* zsasa-*-macos-* zsasa-*-windows-* > SHA256SUMS 2>/dev/null || true
           if [ -f SHA256SUMS ] && [ -s SHA256SUMS ]; then
             echo "Generated checksums:"
             cat SHA256SUMS

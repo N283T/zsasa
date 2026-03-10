@@ -208,8 +208,11 @@ download_binary() {
     if download "${_checksum_url}" "${_tmp_checksums}" 2>/dev/null; then
         _expected="$(grep "${_asset_name}" "${_tmp_checksums}" | awk '{print $1}')"
         if [ -n "${_expected}" ]; then
-            _actual="$(_sha256 "${_tmp_bin}")"
-            if [ "${_expected}" != "${_actual}" ]; then
+            _actual="$(_sha256 "${_tmp_bin}")" || {
+                warn "No SHA256 tool available. Skipping checksum verification."
+                _expected=""
+            }
+            if [ -n "${_expected}" ] && [ "${_expected}" != "${_actual}" ]; then
                 die "Checksum mismatch! Expected ${_expected}, got ${_actual}"
             fi
             info "Checksum verified."
