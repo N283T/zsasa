@@ -54,5 +54,5 @@ cd zsasa && zig build -Doptimize=ReleaseFast
 | [Algorithms](guide/algorithms.mdx) | SR vs LR algorithm comparison |
 | [Classifiers](guide/classifiers.mdx) | Atom radius assignment |
 | [Trajectory Analysis](guide/trajectory.md) | MD trajectory SASA |
-| [CLI Reference](cli.md) | Full CLI options |
+| [CLI Reference](cli/commands.md) | Full CLI options |
 | [Python API](python-api/) | Python bindings documentation |
