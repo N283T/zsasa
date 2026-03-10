@@ -1,6 +1,27 @@
 # SASA Validation
 
-Accuracy comparison of zsasa against reference implementations, independent of timing benchmarks.
+Accuracy comparison of zsasa against reference implementations across the E. coli K-12 proteome (4,370 structures).
+
+> **Note**: Validation uses batch processing across the entire proteome. MD trajectory validation is covered in [md.md](md.md).
+
+## TL;DR
+
+<img src="/zsasa/assets/benchmarks/validation/sr/validation_quicklook.png" alt="SR quicklook: zsasa f64 vs FreeSASA (4,370 structures)" width="560" />
+
+| Algorithm | Tool | R² | Mean Error % | Max Error % |
+|-----------|------|---:|--------------:|------------:|
+| SR (100 pts) | zsasa f64 | 1.000000 | 0.0000 | 0.0000 |
+| SR (100 pts) | zsasa f32 | 1.000000 | 0.0001 | 0.0150 |
+| SR (100 pts) | zsasa bitmask | 0.999721 | 0.81 | 2.51 |
+| SR (100 pts) | RustSASA | 0.999963 | 0.32 | 2.49 |
+| SR (128 pts) | Lahuta bitmask | 0.999768 | 0.73 | 2.47 |
+| LR (20 slices) | zsasa f64 | 0.999980 | 0.22 | 0.31 |
+
+- **zsasa f64** is bit-identical to FreeSASA at all point counts
+- **zsasa f32** has negligible rounding error (max 0.015%)
+- **Bitmask** error plateaus at ~0.7–0.8% (LUT approximation, independent of point count)
+- **RustSASA** converges with point count: 0.32% at 100 → 0.06% at 1000
+- **Lahuta bitmask** (128 pts): comparable accuracy to zsasa bitmask
 
 ## Test Environment
 
@@ -9,100 +30,104 @@ Accuracy comparison of zsasa against reference implementations, independent of t
 | Machine | MacBook Pro |
 | Chip | Apple M4 (10 cores: 4P + 6E) |
 | Memory | 32 GB |
-| OS | macOS |
+| OS | macOS 15.3.2 (Darwin 24.6.0) |
 
-## Static Structure (PDB)
+## Shrake-Rupley (SR)
 
-Compares total SASA per structure across an entire proteome dataset.
+Dataset: AlphaFold E. coli K-12 proteome, 4,370 structures. Reference: FreeSASA.
 
-### Shrake-Rupley (E. coli Proteome, 4,370 structures)
+### n_points Convergence
 
-Dataset: AlphaFold E. coli K-12 proteome, n_points=100.
+| Tool | n_points | N | R² | Mean Error % | Max Error % |
+|------|--------:|--:|---:|--------------:|------------:|
+| zsasa f64 | 100 | 4,370 | 1.000000 | 0.0000 | 0.0000 |
+| zsasa f32 | 100 | 4,370 | 1.000000 | 0.0001 | 0.0150 |
+| zsasa bitmask f64 | 100 | 4,370 | 0.999721 | 0.8115 | 2.5060 |
+| zsasa bitmask f32 | 100 | 4,370 | 0.999721 | 0.8113 | 2.5060 |
+| RustSASA | 100 | 4,370 | 0.999963 | 0.3181 | 2.4859 |
+| zsasa f64 | 200 | 4,370 | 1.000000 | 0.0000 | 0.0000 |
+| zsasa f32 | 200 | 4,370 | 1.000000 | 0.0002 | 0.0110 |
+| zsasa bitmask f64 | 200 | 4,370 | 0.999781 | 0.7335 | 1.6818 |
+| zsasa bitmask f32 | 200 | 4,370 | 0.999781 | 0.7334 | 1.6818 |
+| RustSASA | 200 | 4,370 | 0.999988 | 0.1841 | 1.2255 |
+| zsasa f64 | 500 | 4,370 | 1.000000 | 0.0000 | 0.0000 |
+| zsasa f32 | 500 | 4,370 | 1.000000 | 0.0002 | 0.0043 |
+| zsasa bitmask f64 | 500 | 4,370 | 0.999778 | 0.7472 | 1.3270 |
+| zsasa bitmask f32 | 500 | 4,370 | 0.999778 | 0.7471 | 1.3270 |
+| RustSASA | 500 | 4,370 | 0.999997 | 0.0923 | 0.5562 |
+| zsasa f64 | 1000 | 4,370 | 1.000000 | 0.0000 | 0.0000 |
+| zsasa f32 | 1000 | 4,370 | 1.000000 | 0.0001 | 0.0028 |
+| zsasa bitmask f64 | 1000 | 4,370 | 0.999784 | 0.7389 | 1.0528 |
+| zsasa bitmask f32 | 1000 | 4,370 | 0.999785 | 0.7387 | 1.0527 |
+| RustSASA | 1000 | 4,370 | 0.999999 | 0.0558 | 0.3401 |
+
+**Key findings:**
+
+- **zsasa f64**: Bit-identical to FreeSASA at all point counts (same algorithm parameters)
+- **zsasa f32**: Max 0.015% error from floating-point rounding — negligible for practical use
+- **Bitmask variants**: Mean error ~0.7–0.8%, plateaus regardless of point count (LUT approximation error)
+- **RustSASA**: Converges toward FreeSASA with increasing points (0.32% → 0.06% mean error)
+- **f32 vs f64 bitmask**: Virtually identical — bitmask error dominates floating-point error
+
+### Lahuta Bitmask (128 pts)
+
+Lahuta requires n_points=128 for bitmask support.
 
 | Tool | N | R² | Mean Error % | Max Error % |
 |------|--:|---:|--------------:|------------:|
 | zsasa f64 | 4,370 | 1.000000 | 0.0000 | 0.0000 |
-| zsasa f32 | 4,370 | 1.000000 | 0.0001 | 0.0150 |
+| zsasa f32 | 4,370 | 1.000000 | 0.0001 | 0.0153 |
+| zsasa bitmask f64 | 4,370 | 0.999811 | 0.6618 | 2.0245 |
+| zsasa bitmask f32 | 4,370 | 0.999811 | 0.6616 | 2.0245 |
+| RustSASA | 4,370 | 0.999973 | 0.2752 | 2.1487 |
+| Lahuta bitmask | 4,370 | 0.999768 | 0.7316 | 2.4709 |
 
-- **f64**: Bit-identical to FreeSASA (both use the same algorithm parameters)
-- **f32**: Max 0.015% error from floating-point rounding — negligible for practical use
+- **Lahuta bitmask** accuracy is comparable to zsasa bitmask (~0.73% vs ~0.66% mean error)
+- Both use LUT bitmask neighbor lists — the error pattern is similar
 
-![SR validation scatter](pathname:///zsasa/benchmarks/results/validation/ecoli/sr/validation_sr.png)
+### Validation Plots
 
-### Lee-Richards (E. coli Proteome, 4,370 structures)
+![SR validation grid](pathname:///zsasa/assets/benchmarks/validation/sr/validation_grid.png)
 
-Dataset: AlphaFold E. coli K-12 proteome, n_slices=20.
+| zsasa f64 | zsasa f32 |
+|:---------:|:---------:|
+| ![f64](pathname:///zsasa/assets/benchmarks/validation/sr/validation_zsasa_f64.png) | ![f32](pathname:///zsasa/assets/benchmarks/validation/sr/validation_zsasa_f32.png) |
+
+| zsasa bitmask f64 | zsasa bitmask f32 |
+|:------------------:|:------------------:|
+| ![bm f64](pathname:///zsasa/assets/benchmarks/validation/sr/validation_zsasa_bitmask_f64.png) | ![bm f32](pathname:///zsasa/assets/benchmarks/validation/sr/validation_zsasa_bitmask_f32.png) |
+
+| Lahuta bitmask |
+|:--------------:|
+| ![lahuta](pathname:///zsasa/assets/benchmarks/validation/sr/validation_lahuta.png) |
+
+## Lee-Richards (LR)
+
+Dataset: AlphaFold E. coli K-12 proteome, 4,370 structures, n_slices=20. Reference: FreeSASA.
 
 | Tool | N | R² | Mean Error % | Max Error % |
 |------|--:|---:|--------------:|------------:|
-| zsasa f32 | 4,370 | 1.000000 | 0.2214 | 0.3097 |
-| zsasa f64 | 4,370 | 1.000000 | 0.2214 | 0.3102 |
+| zsasa f64 | 4,370 | 0.999980 | 0.2214 | 0.3102 |
+| zsasa f32 | 4,370 | 0.999980 | 0.2214 | 0.3097 |
+
+**Key findings:**
 
 - **f32 and f64 are identical** — LR error comes from slice discretization differences, not floating-point precision
 - Mean error ~0.22% is higher than SR (<0.001%) due to different slicing implementations between zsasa and FreeSASA
-- R² = 1.000000 confirms strong linear agreement
+- R² = 0.999980 confirms strong linear agreement
 
-![LR validation scatter](pathname:///zsasa/benchmarks/results/validation/ecoli/lr/validation_lr.png)
+### Validation Plots
 
-## MD Trajectory
+![LR validation grid](pathname:///zsasa/assets/benchmarks/validation/lr/validation_grid.png)
 
-Compares per-frame total SASA across trajectory tools to validate:
-
-1. **SASA accuracy**: zsasa vs MDTraj at varying n_points
-2. **XTC reader consistency**: Python bindings (mdtraj I/O) vs CLI (native Zig XTC reader)
-
-### Tools
-
-| Tool | SASA Engine | XTC Reader | Notes |
-|------|-------------|------------|-------|
-| **mdtraj** | MDTraj (C) | MDTraj | Reference implementation |
-| **zsasa_mdtraj** | zsasa (Zig) | MDTraj | Python bindings, mdtraj loads trajectory |
-| **zsasa_cli** | zsasa (Zig) | Zig (native) | CLI with built-in XTC reader |
-
-### 5wvo_C (DNMT1, 250 residues, 1,001 frames)
-
-#### SASA Accuracy vs MDTraj (n_points convergence)
-
-Reference: mdtraj at n_points=960.
-
-| Tool | n_points | R² | Mean Error % | Max Error % |
-|------|--------:|----|-------------:|------------:|
-| mdtraj | 100 | 0.992886 | 0.8707 | 1.6661 |
-| zsasa_mdtraj | 100 | 0.992725 | 0.2020 | 0.9218 |
-| zsasa_cli | 100 | 0.992727 | 0.2020 | 0.9221 |
-| mdtraj | 500 | 0.999051 | 0.1073 | 0.3291 |
-| zsasa_mdtraj | 500 | 0.999054 | 0.1111 | 0.3235 |
-| zsasa_cli | 500 | 0.999054 | 0.1110 | 0.3233 |
-| zsasa_mdtraj | 960 | 0.999444 | 0.1050 | 0.3222 |
-| zsasa_cli | 960 | 0.999444 | 0.1050 | 0.3229 |
-
-**Observations:**
-- At n_points=100, MDTraj native shows ~0.87% mean error vs n_points=960, while zsasa shows ~0.20% — both use Golden Section Spiral ([MDTraj `sasa.cpp:146-176`](https://github.com/mdtraj/mdtraj/blob/2f4b592f/mdtraj/geometry/src/sasa.cpp#L146-L176)) but with slightly different implementations (starting point, longitude accumulation), causing divergence at low n_points
-- At n_points=500+, all tools converge to <0.12% mean error
-- zsasa_mdtraj and zsasa_cli produce nearly identical results at each n_points (same SASA engine)
-
-#### XTC Reader Consistency (Python Bindings vs CLI)
-
-| Reference | Tool | R² | Mean Error % | Max Error % |
-|-----------|------|----|-------------:|------------:|
-| zsasa_mdtraj (100) | zsasa_cli (100) | 1.000000 | 0.0003 | 0.0132 |
-| zsasa_mdtraj (500) | zsasa_cli (500) | 1.000000 | 0.0003 | 0.0050 |
-| zsasa_mdtraj (960) | zsasa_cli (960) | 1.000000 | 0.0002 | 0.0017 |
-
-- **R² = 1.000000** across all n_points — Python bindings and CLI read XTC identically
-- Max error <0.014% comes from floating-point coordinate precision differences between MDTraj's C reader and zsasa's Zig XTC reader
-- Error decreases with higher n_points (more points smooth out coordinate-level noise)
-
-![MD validation n_points=100](pathname:///zsasa/benchmarks/results/validation_md/5wvo_C_R1/validation_md_100.png)
-![MD validation n_points=500](pathname:///zsasa/benchmarks/results/validation_md/5wvo_C_R1/validation_md_500.png)
-![MD validation n_points=960](pathname:///zsasa/benchmarks/results/validation_md/5wvo_C_R1/validation_md_960.png)
+| zsasa f64 | zsasa f32 |
+|:---------:|:---------:|
+| ![f64](pathname:///zsasa/assets/benchmarks/validation/lr/validation_zsasa_f64.png) | ![f32](pathname:///zsasa/assets/benchmarks/validation/lr/validation_zsasa_f32.png) |
 
 ## Running Validation
 
-### Static Structure (PDB)
-
 ```bash
-# Shrake-Rupley (both f32 and f64 vs FreeSASA)
+# Shrake-Rupley (all tools, multi-point convergence)
 ./benchmarks/scripts/validation.py run \
     -i benchmarks/UP000000625_83333_ECOLI_v6/pdb \
     -n ecoli --algorithm sr
@@ -119,26 +144,8 @@ Reference: mdtraj at n_points=960.
     -d benchmarks/results/validation/ecoli/sr
 ```
 
-### MD Trajectory
-
-```bash
-# Single n_points
-./benchmarks/scripts/validation_md.py run \
-    --xtc trajectory.xtc --pdb topology.pdb \
-    -n my_test --n-points 100
-
-# n_points convergence comparison
-./benchmarks/scripts/validation_md.py run \
-    --xtc trajectory.xtc --pdb topology.pdb \
-    -n my_test --n-points 100,500,960
-
-# Re-analyze existing results
-./benchmarks/scripts/validation_md.py compare \
-    -d benchmarks/results/validation_md/my_test
-```
-
 ## Related Documents
 
-- [single-file.md](single-file.md) - Single-file performance benchmarks
-- [batch.md](batch.md) - Batch processing benchmarks
-- [md.md](md.md) - MD trajectory performance benchmarks
+- [Single-File Benchmarks](single-file.md) — Per-structure performance across 2,013 structures
+- [Batch Processing Benchmarks](batch.md) — Proteome-scale throughput
+- [MD Trajectory Benchmarks](md.md) — MD trajectory performance and validation
