@@ -1,0 +1,42 @@
+{
+  "timestamp": "2026-03-09_164829",
+  "system": {
+    "os": "Darwin",
+    "os_version": "24.6.0",
+    "arch": "arm64",
+    "cpu_cores": 10,
+    "cpu_model": "Apple M4",
+    "memory_gb": 32
+  },
+  "parameters": {
+    "name": "5wvo_C_analysis",
+    "xtc": "benchmarks/md_data/5wvo_C_analysis/5wvo_C_R1.xtc",
+    "pdb": "benchmarks/md_data/5wvo_C_analysis/5wvo_C.pdb",
+    "tools": [
+      "zig",
+      "zig_bitmask",
+      "zsasa_mdtraj",
+      "zsasa_mdanalysis",
+      "mdtraj",
+      "mdsasa_bolt",
+      "zsasa_mdanalysis_bitmask",
+      "zsasa_mdtraj_bitmask"
+    ],
+    "thread_counts": [
+      1,
+      8,
+      10
+    ],
+    "warmup": 3,
+    "runs": 3,
+    "stride": 1,
+    "n_points": 100,
+    "precisions": [
+      "f32",
+      "f64"
+    ],
+    "prepare": "sync",
+    "atom_count": 3858,
+    "total_frames": 1001
+  }
+}
