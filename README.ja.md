@@ -15,13 +15,14 @@ FreeSASA C より**最大3倍高速**、f64 精度を維持。
 
 ## 特徴
 
-- **2つのアルゴリズム**: Shrake-Rupley（高速）と Lee-Richards（高精度）
+- **2つのアルゴリズム**: Shrake-Rupley（高速）と Lee-Richards（高精度）、ビットマスク LUT 最適化対応
 - **複数の入力形式**: mmCIF, PDB, JSON
+- **MD トラジェクトリ解析**: ネイティブ XTC/DCD リーダー、MDTraj / MDAnalysis 連携
+- **バッチ処理**: プロテオームスケールのディレクトリ一括処理
 - **解析機能**: 残基単位集計、RSA、極性/非極性分類
-- **高性能**: SIMD最適化、マルチスレッド、近傍リスト O(N)
+- **高性能**: SIMD最適化、マルチスレッド、f64/f32 選択可能
 - **クロスプラットフォーム**: Linux, macOS, Windows（`pip install zsasa` でビルド済みホイール利用可）
-- **Python バインディング**: NumPy 連携、BioPython/Biotite/Gemmi 対応
-- **MD トラジェクトリ解析**: ネイティブ XTC リーダー、MDTraj / MDAnalysis 連携
+- **Python バインディング**: NumPy 連携、Gemmi/BioPython/Biotite 対応
 
 ## クイックスタート
 
@@ -55,27 +56,26 @@ cd zsasa && zig build -Doptimize=ReleaseFast
 
 ## ベンチマーク
 
-### 単一ファイル性能
+### 単一ファイル（2,013構造、n_points=100、threads=10）
 
-| スピードアップ (threads=10) | スレッドスケーリング (50k+ atoms) |
-|:--------------------:|:----------------------------:|
-| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/large/speedup_by_threads.png) |
+| 指標 | vs FreeSASA | vs RustSASA |
+|------|-------------|-------------|
+| 中央値スピードアップ | **1.88x** | **1.84x** |
+| スレッドスケーリング (t=1→10) | 2.71x | 1.39x |
 
-**主要結果 (50k+ atoms, threads=10):**
-- FreeSASA/RustSASA 比で**2.3倍**の中央値スピードアップ (SR)
-- スレッド数増加に伴いスピードアップ向上（優れた並列効率）
+### バッチ（E. coli K-12 プロテオーム、4,370構造）
 
-> **注**: zsasa/FreeSASA は f64、RustSASA は f32 を使用。
+| ツール | 時間 | メモリ |
+|--------|------|--------|
+| zsasa bitmask (f32) | **1.42s** | 43 MB |
+| Lahuta bitmask | 2.01s | 291 MB |
+| RustSASA | 5.24s | 169 MB |
 
-### MD トラジェクトリ性能
+### MD トラジェクトリ
 
-実際の MD トラジェクトリデータで mdsasa-bolt (RustSASA) より**4.3倍高速**。
+mdsasa-bolt (RustSASA) 比で**82〜96倍少ないメモリ使用量**。10Kフレームのデータセットでは mdsasa-bolt が2時間超でタイムアウトする中、zsasa は38秒で完了。
 
-![MD Trajectory Benchmark](benchmarks/results/md/6sup_A_analysis/plots/bar.png)
-
-*33,377 atoms, 1,001 frames, n_points=100*
-
-詳細は[ベンチマーク結果](https://n283t.github.io/zsasa/benchmarks/single-file)を参照。
+詳細は[ベンチマーク結果](https://n283t.github.io/zsasa/docs/benchmarks)を参照。
 
 ## ドキュメント
 
@@ -83,10 +83,11 @@ cd zsasa && zig build -Doptimize=ReleaseFast
 
 | セクション | 説明 |
 |---------|-------------|
-| [Getting Started](https://n283t.github.io/zsasa/getting-started) | インストールと最初の計算 |
-| [CLI Reference](https://n283t.github.io/zsasa/cli) | CLI オプションと出力形式 |
-| [Python API](https://n283t.github.io/zsasa/python-api) | コア API、インテグレーション、MD トラジェクトリ |
-| [Benchmarks](https://n283t.github.io/zsasa/benchmarks/single-file) | 方法論と結果 |
+| [Getting Started](https://n283t.github.io/zsasa/docs/getting-started) | インストールと最初の計算 |
+| [Comparison](https://n283t.github.io/zsasa/docs/comparison) | FreeSASA, RustSASA, Lahuta との比較 |
+| [CLI Reference](https://n283t.github.io/zsasa/docs/cli/commands) | CLI オプションと出力形式 |
+| [Python API](https://n283t.github.io/zsasa/docs/python-api) | コア API、インテグレーション、MD トラジェクトリ |
+| [Benchmarks](https://n283t.github.io/zsasa/docs/benchmarks) | 性能・精度ベンチマーク |
 
 ## コントリビュート
 

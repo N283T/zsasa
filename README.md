@@ -15,13 +15,14 @@ High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 
 ## Features
 
-- **Two algorithms**: Shrake-Rupley (fast) and Lee-Richards (precise)
+- **Two algorithms**: Shrake-Rupley (fast) and Lee-Richards (precise), with bitmask LUT optimization
 - **Multiple input formats**: mmCIF, PDB, JSON
+- **MD trajectory analysis**: Native XTC and DCD readers, MDTraj and MDAnalysis integration
+- **Batch processing**: Native directory processing for proteome-scale datasets
 - **Analysis features**: Per-residue aggregation, RSA, polar/nonpolar classification
-- **High performance**: SIMD optimization, multi-threading, neighbor list O(N)
+- **High performance**: SIMD optimization, multi-threading, f64/f32 selectable precision
 - **Cross-platform**: Linux, macOS, and Windows (pre-built wheels via `pip install zsasa`)
-- **Python bindings**: NumPy integration with BioPython/Biotite/Gemmi support
-- **MD trajectory analysis**: Native XTC reader, MDTraj and MDAnalysis integration
+- **Python bindings**: NumPy integration with Gemmi/BioPython/Biotite support
 
 ## Quick Start
 
@@ -55,27 +56,26 @@ cd zsasa && zig build -Doptimize=ReleaseFast
 
 ## Benchmarks
 
-### Single-File Performance
+### Single-File (2,013 structures, n_points=100, threads=10)
 
-| Speedup (threads=10) | Thread Scaling (50k+ atoms) |
-|:--------------------:|:----------------------------:|
-| ![Speedup](benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](benchmarks/results/plots/large/speedup_by_threads.png) |
+| Metric | vs FreeSASA | vs RustSASA |
+|--------|-------------|-------------|
+| Median speedup | **1.88x** | **1.84x** |
+| Thread scaling (t=1→10) | 2.71x | 1.39x |
 
-**Key Results (50k+ atoms, threads=10):**
-- **2.3x** median speedup vs FreeSASA and RustSASA (SR)
-- Speedup increases with thread count (superior parallel efficiency)
+### Batch (E. coli K-12 proteome, 4,370 structures)
 
-> **Note**: zsasa/FreeSASA use f64, RustSASA uses f32.
+| Tool | Time | RSS |
+|------|------|-----|
+| zsasa bitmask (f32) | **1.42s** | 43 MB |
+| Lahuta bitmask | 2.01s | 291 MB |
+| RustSASA | 5.24s | 169 MB |
 
-### MD Trajectory Performance
+### MD Trajectory
 
-**4.3x faster** than mdsasa-bolt (RustSASA) on real MD trajectory data.
+**82–96x less memory** than mdsasa-bolt (RustSASA). On 10K-frame datasets, mdsasa-bolt timed out (>2 hours) where zsasa completed in 38 seconds.
 
-![MD Trajectory Benchmark](benchmarks/results/md/6sup_A_analysis/plots/bar.png)
-
-*33,377 atoms, 1,001 frames, n_points=100*
-
-See [benchmark details](https://n283t.github.io/zsasa/benchmarks/single-file) for full methodology and results.
+See [full benchmarks](https://n283t.github.io/zsasa/docs/benchmarks) for methodology and results.
 
 ## Documentation
 
@@ -83,10 +83,11 @@ Full documentation is available at **[n283t.github.io/zsasa](https://n283t.githu
 
 | Section | Description |
 |---------|-------------|
-| [Getting Started](https://n283t.github.io/zsasa/getting-started) | Installation and first calculation |
-| [CLI Reference](https://n283t.github.io/zsasa/cli) | Full CLI options and output formats |
-| [Python API](https://n283t.github.io/zsasa/python-api) | Core API, integrations, MD trajectory |
-| [Benchmarks](https://n283t.github.io/zsasa/benchmarks/single-file) | Methodology and results |
+| [Getting Started](https://n283t.github.io/zsasa/docs/getting-started) | Installation and first calculation |
+| [Comparison](https://n283t.github.io/zsasa/docs/comparison) | How zsasa compares to FreeSASA, RustSASA, and Lahuta |
+| [CLI Reference](https://n283t.github.io/zsasa/docs/cli/commands) | Full CLI options and output formats |
+| [Python API](https://n283t.github.io/zsasa/docs/python-api) | Core API, integrations, MD trajectory |
+| [Benchmarks](https://n283t.github.io/zsasa/docs/benchmarks) | Performance and accuracy results |
 
 ## Contributing
 

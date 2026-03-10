@@ -5,12 +5,15 @@ Python bindings for the zsasa library - a high-performance implementation of Sol
 ## Features
 
 - **NumPy integration**: Pass coordinates and radii as NumPy arrays
-- **Two algorithms**: Shrake-Rupley (point-based) and Lee-Richards (slice-based)
+- **Two algorithms**: Shrake-Rupley (point-based) and Lee-Richards (slice-based), with bitmask LUT optimization
 - **Multi-threading**: Automatic parallelization across CPU cores
+- **Selectable precision**: f64 (default) or f32 for trajectory processing
 - **Atom classification**: NACCESS, PROTOR, and OONS classifiers with polar/apolar assignment
 - **RSA calculation**: Relative Solvent Accessibility using standard reference values
 - **Per-residue aggregation**: Aggregate atom-level SASA to residue-level with RSA
-- **Library integrations**: Built-in support for gemmi, BioPython, and Biotite
+- **Batch processing**: `process_directory()` for proteome-scale datasets
+- **MD trajectory**: Native XTC/DCD readers, MDTraj and MDAnalysis integration
+- **Library integrations**: Built-in support for Gemmi, BioPython, and Biotite
 - **Type-safe**: Full type hints and runtime validation
 
 ## Installation
@@ -103,7 +106,7 @@ print(f"Apolar: {result.apolar_area:.1f} Å²")
 
 ```python
 from zsasa.integrations.gemmi import calculate_sasa_from_structure
-from zsasa.analysis import aggregate_from_result
+from zsasa import aggregate_from_result
 
 # Calculate SASA
 result = calculate_sasa_from_structure("protein.cif")
@@ -136,6 +139,8 @@ Calculate Solvent Accessible Surface Area.
 | `n_slices` | `int` | `20` | Slices per atom (LR only) |
 | `probe_radius` | `float` | `1.4` | Water probe radius in Å |
 | `n_threads` | `int` | `0` | Number of threads (0 = auto-detect) |
+| `use_bitmask` | `bool` | `False` | Use bitmask LUT optimization (SR only) |
+| `precision` | `str` | `"f64"` | `"f64"` or `"f32"` computation precision |
 
 **Returns:** `SasaResult`
 
@@ -317,7 +322,7 @@ print(f"Polar: {polar_count}, Apolar: {apolar_count}")
 
 ```python
 from zsasa.integrations.gemmi import calculate_sasa_from_structure
-from zsasa.analysis import aggregate_from_result
+from zsasa import aggregate_from_result
 
 result = calculate_sasa_from_structure("protein.cif")
 residues = aggregate_from_result(result)
@@ -336,7 +341,7 @@ for r in buried:
 # AtomWorks is built on Biotite, so use the biotite integration
 from atomworks.io.utils.io_utils import load_any
 from zsasa.integrations.biotite import calculate_sasa_from_atom_array
-from zsasa.analysis import aggregate_from_result
+from zsasa import aggregate_from_result
 
 # Load with AtomWorks
 atom_array = load_any("protein.cif.gz")
@@ -364,7 +369,7 @@ Library-to-library comparison (Python bindings vs FreeSASA Python):
 - **LR algorithm**: Zig is 2.9-5.5x faster
 - **Accuracy**: Results match FreeSASA (< 0.01% difference)
 
-Run benchmark: `./benchmarks/scripts/run.py --tool zig --algorithm sr`
+See [full benchmarks](https://n283t.github.io/zsasa/docs/benchmarks) for methodology and results.
 
 ## Development
 
