@@ -233,4 +233,4 @@ zsasa builds on ideas and methods from these excellent projects. We are grateful
 
 - **FreeSASA** by Simon Mitternacht — the foundational C library that established open-source SASA calculation. zsasa uses FreeSASA as the accuracy reference for validation.
 - **RustSASA** by Max Campbell — a modern Rust implementation that demonstrated SIMD-accelerated SASA calculation.
-- **Lahuta** by Bekim Sejdiu — a C++ toolkit that pioneered bitmask LUT optimization for SASA.
+- **Lahuta** by Besian I. Sejdiu — a C++ toolkit that pioneered bitmask LUT optimization for SASA.
