@@ -14,7 +14,15 @@ const sidebars: SidebarsConfig = {
         "guide/trajectory",
       ],
     },
-    "cli",
+    {
+      type: "category",
+      label: "CLI Reference",
+      items: [
+        "cli/commands",
+        "cli/input",
+        "cli/output",
+      ],
+    },
     {
       type: "category",
       label: "Python API",
