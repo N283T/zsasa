@@ -214,7 +214,7 @@ pub const PdbParser = struct {
 
     /// Parse PDB from a file
     pub fn parseFile(self: *PdbParser, path: []const u8) !AtomInput {
-        const mapped = try mmap_reader.mmapFile(path);
+        const mapped = try mmap_reader.mmapFile(self.allocator, path);
         defer mapped.deinit();
         return self.parse(mapped.data);
     }
