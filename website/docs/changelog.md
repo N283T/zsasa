@@ -6,41 +6,22 @@ sidebar_position: 10
 
 All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsasa/releases) for full details.
 
-## [Unreleased]
-
-Changes since v0.2.1 (2026-02-26 – 2026-03-10).
+## [v0.2.2](https://github.com/N283T/zsasa/releases/tag/v0.2.2) — 2026-03-10
 
 ### Added
 
-- **Bitmask variants for Python MD wrappers**: `use_bitmask` option for MDTraj, MDAnalysis, XTC, and DCD integrations (#275)
-- **JSONL streaming batch output**: `--format=jsonl` for memory-efficient batch results (#227, #235)
-- **Comparison page**: factual feature comparison with FreeSASA, RustSASA, and Lahuta, backed by source code references (#292)
-- **Landing page**: hero section with highlight cards and navigation buttons (#291)
-- **Python autodoc**: pdoc-generated API documentation deployed to `/python-autodoc/` (#290)
-- **Benchmarks overview page**: summary table linking all benchmark categories (#294)
-- **Changelog page**: release history on the documentation site (#294)
-
-### Changed
-
-- **Documentation site overhaul**:
-  - Split CLI reference into Commands, Input, and Output pages (#289)
-  - Rewrote single-file, batch, MD trajectory, and validation benchmark pages with new results (#280, #282, #283, #284)
-  - Enhanced bitmask LUT documentation with implementation details (#287, #288)
-  - Streamlined docs index to hub layout, removed feature duplication with landing page (#294)
+- **Bitmask variants for Python MD wrappers**: `use_bitmask` option for MDTraj, MDAnalysis, XTC, and DCD integrations
+- **JSONL streaming batch output**: `--format=jsonl` for memory-efficient batch results
+- **Documentation site overhaul**: comparison page, landing page, Python autodoc, CLI docs split, benchmarks overview, changelog, all benchmark pages rewritten
 
 ### Performance
 
-- **mmap file reading**: replaced `readToEndAlloc` with memory-mapped I/O for structure files (#229)
-- **Flat buffer NeighborList**: replaced dynamic `ArrayList` with pre-allocated flat buffers (#230)
-- **Trajectory parallel workers**: aligned with batch allocator pattern for lower overhead (#231)
-- **64KB write buffer** for JSONL output (#228)
+- mmap file reading, flat buffer NeighborList, trajectory parallel worker alignment, 64KB write buffer for JSONL
 
 ### Fixed
 
-- Corrected Lahuta placeholder URL and language (Zig → C++) in batch benchmarks (#293)
-- Corrected RustSASA precision (f64 → f32) in single-file benchmarks (#293)
-- Fixed `pathname://` image paths for Docusaurus compatibility (#284)
-- Various PDB generation fixes: chain name shortening, serial number wrapping, CRYST1 Z value handling (#251, #252, #253)
+- Corrected Lahuta/RustSASA metadata in benchmark docs
+- Various PDB generation fixes (chain names, serial numbers, CRYST1)
 
 ## [v0.2.1](https://github.com/N283T/zsasa/releases/tag/v0.2.1) — 2026-02-25
 
