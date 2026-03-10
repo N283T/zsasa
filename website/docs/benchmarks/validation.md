@@ -6,7 +6,7 @@ Accuracy comparison of zsasa against reference implementations across the E. col
 
 ## TL;DR
 
-<img src="pathname:///zsasa/assets/benchmarks/validation/sr/validation_quicklook.png" alt="SR quicklook: zsasa f64 vs FreeSASA (4,370 structures)" width="560" />
+<img src="/zsasa/assets/benchmarks/validation/sr/validation_quicklook.png" alt="SR quicklook: zsasa f64 vs FreeSASA (4,370 structures)" width="560" />
 
 | Algorithm | Tool | R² | Mean Error % | Max Error % |
 |-----------|------|---:|--------------:|------------:|
