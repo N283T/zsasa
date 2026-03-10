@@ -2,27 +2,27 @@
 
 Large-scale benchmark results for zsasa using Shrake-Rupley algorithm.
 
-- **Dataset**: 2,006 structures (stratified sampling from PDB + AlphaFold)
-- **Precision**: Zig/FreeSASA use f64, RustSASA uses f32
+- **Dataset**: 2,013 structures (stratified sampling from PDB + AlphaFold)
+- **Tools**: zsasa (f64/f32, standard/bitmask), FreeSASA (C), RustSASA (Rust)
 
 > **Note**:
 > - Absolute execution times are environment-dependent. **Relative speedup ratios** are the meaningful metric for comparison.
 > - All implementations use identical parameters: `n_points=100`, `probe_radius=1.4Å`
-> - Benchmarks measure **SASA calculation time only** (file I/O excluded). See [Methodology](#methodology) for details.
-> - SASA accuracy validated: mean error <0.001% vs FreeSASA reference. See [validation.md](validation.md) for details.
+> - Benchmarks measure **SASA calculation time only** (file I/O excluded). FreeSASA and RustSASA have unstable I/O timing, so SASA-only measurement is used for fair comparison. See [Methodology](#methodology) for details.
+> - SASA accuracy validated: mean error <0.001% vs FreeSASA reference. See [validation](validation.md) for details.
 
 ## Highlights
 
-Zig's key advantage: **Large structures + Multi-threading**
+zsasa's key advantage: **Large structures + Multi-threading**
 
-| Speedup at threads=10 | Thread Scaling (100k+ atoms) |
-|:---------------:|:----------------------------:|
-| ![Speedup](pathname:///zsasa/benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](pathname:///zsasa/benchmarks/results/plots/large/speedup_by_threads.png) |
+| Speedup at threads=10 (50k+ atoms, n=794) | Thread Scaling (50k+ atoms) |
+|:------------------------------------------:|:---------------------------:|
+| ![Speedup](pathname:///zsasa/assets/benchmarks/single/large_sasa/speedup_bar.png) | ![Thread Scaling](pathname:///zsasa/assets/benchmarks/single/large_sasa/speedup_by_threads.png) |
 
-**Key Results (100k+ atoms, n=506):**
-- **Up to 2.93x faster** than FreeSASA (8to0: 673,884 atoms, threads=10)
-- **2.3x** median speedup vs FreeSASA and RustSASA (threads=10)
-- Speedup increases with thread count (parallel efficiency advantage)
+**Key Results (50k+ atoms, n=794, threads=10):**
+- **1.89x** median speedup vs FreeSASA
+- **1.84x** median speedup vs RustSASA
+- **Bitmask mode**: ~15x less memory with competitive speed on large structures
 
 ---
 
@@ -30,7 +30,7 @@ Zig's key advantage: **Large structures + Multi-threading**
 
 ### SASA-Only Timing
 
-For fair comparison, we measure **SASA calculation time only**. File I/O is excluded.
+For fair comparison, we measure **SASA calculation time only**. File I/O is excluded because FreeSASA and RustSASA exhibit unstable I/O timing.
 
 ```
 Total time = File I/O + SASA calculation + Output
@@ -42,7 +42,7 @@ Measurement method for each implementation:
 
 | Implementation | Method |
 |----------------|--------|
-| zsasa | Internal measurement via `--timing` option (stderr output) |
+| zsasa (all variants) | Internal measurement via `--timing` option (stderr output) |
 | FreeSASA C | Patched binary outputs SASA calculation time to stderr |
 | RustSASA | Patched binary outputs `SASA_TIME_US` to stderr |
 
@@ -50,40 +50,44 @@ Measurement method for each implementation:
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| Algorithm | Shrake-Rupley | Supported by all implementations (LR: Zig/FreeSASA only) |
+| Algorithm | Shrake-Rupley | Supported by all implementations |
 | n_points | 100 | Number of test points |
-| probe_radius | 1.4 A | Water molecule radius |
+| probe_radius | 1.4 Å | Water molecule radius |
+| Warmup | 1 | Discarded before measurement |
 | Runs | 3 | Average value used |
+
+### Tool Variants
+
+| Tool | Precision | Neighbor Storage | Notes |
+|------|-----------|------------------|-------|
+| zsasa_f64 | f64 | Full array | Default, highest accuracy |
+| zsasa_f32 | f32 | Full array | ~3% faster than f64 at t=1 |
+| zsasa_f64_bitmask | f64 | Bitmask | ~15x less memory for 500k+ atoms |
+| zsasa_f32_bitmask | f32 | Bitmask | Lowest memory usage |
+| FreeSASA | f64 | — | C reference implementation |
+| RustSASA | f64 | — | Rust implementation |
 
 ### Stratified Sampling
 
-Stratified sampling from PDB and AlphaFold structures, 150 structures per bin (13 bins):
+Stratified sampling from PDB and AlphaFold structures, ~150 structures per bin (14 bins):
 
 | Bin | Atom Range | Count |
 |-----|-----------|------:|
-| 0-500 | 0 - 500 | 150 |
-| 500-1k | 500 - 1,000 | 150 |
-| 1k-2k | 1,000 - 2,000 | 150 |
-| 2k-3k | 2,000 - 3,000 | 150 |
-| 3k-5k | 3,000 - 5,000 | 150 |
-| 5k-10k | 5,000 - 10,000 | 150 |
-| 10k-20k | 10,000 - 20,000 | 150 |
-| 20k-50k | 20,000 - 50,000 | 150 |
-| 50k-75k | 50,000 - 75,000 | 150 |
-| 75k-100k | 75,000 - 100,000 | 150 |
-| 100k-150k | 100,000 - 150,000 | 150 |
-| 150k-200k | 150,000 - 200,000 | 150 |
-| 200k-500k | 200,000 - 500,000 | 150 |
-| 500k+ | 500,000+ | 56 |
-| **Total** | | **2,006** |
-
-Same seed produces identical samples (reproducible):
-
-```bash
-./benchmarks/scripts/sample.py index.json --target 75000 --seed 42 -o a.json
-./benchmarks/scripts/sample.py index.json --target 75000 --seed 42 -o b.json
-diff a.json b.json  # No differences
-```
+| 0-500 | 0 – 500 | 150 |
+| 500-1k | 500 – 1,000 | 150 |
+| 1k-2k | 1,000 – 2,000 | 150 |
+| 2k-3k | 2,000 – 3,000 | 150 |
+| 3k-5k | 3,000 – 5,000 | 150 |
+| 5k-10k | 5,000 – 10,000 | 150 |
+| 10k-20k | 10,000 – 20,000 | 150 |
+| 20k-50k | 20,000 – 50,000 | 149 |
+| 50k-75k | 50,000 – 75,000 | 150 |
+| 75k-100k | 75,000 – 100,000 | 152 |
+| 100k-150k | 100,000 – 150,000 | 148 |
+| 150k-200k | 150,000 – 200,000 | 150 |
+| 200k-500k | 200,000 – 500,000 | 150 |
+| 500k+ | 500,000+ | 63 |
+| **Total** | | **2,013** |
 
 ---
 
@@ -97,41 +101,48 @@ diff a.json b.json  # No differences
 | Memory | 32 GB |
 | OS | macOS |
 
-## Executive Summary
+---
 
-| Metric | Zig vs FreeSASA | Zig vs RustSASA |
-| --- | --- | --- |
-| **Best case (50k+ atoms)** | **2.93x** (8to0) | **2.60x** (8bsj) |
-| **Overall (threads=10)** | **2.08x** median | **2.22x** median |
-| **Large structures (100k+)** | **2.28x** | **2.32x** |
-| **Largest structure (4.5M atoms)** | **2.5x** | **2.3x** |
-| **Parallel efficiency (threads=10)** | **+43%** | **+112%** |
+## Overall Statistics (threads=10)
+
+| Tool | Structures | Median (ms) | Mean (ms) | P95 (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| **zsasa_f64** | 2,013 | **8.53** | 84.82 | 243.25 |
+| zsasa_f32 | 2,013 | 8.75 | 83.68 | 243.75 |
+| zsasa_f64_bitmask | 2,013 | 19.49 | 77.38 | 198.77 |
+| zsasa_f32_bitmask | 2,013 | 19.28 | 76.34 | 196.30 |
+| FreeSASA | 2,012 | 15.47 | 482.69 | 490.89 |
+| RustSASA | 2,013 | 16.29 | 160.29 | 449.29 |
+
+> **Note**: zsasa_f64 has lower median but bitmask variants have lower mean/P95. This is because bitmask avoids the worst-case memory allocation overhead on very large structures, resulting in more stable performance at the high end.
 
 ---
 
-## Dataset
+## Speedup by Structure Size (threads=10)
 
-| Size Bin | Atom Range | Count |
-| --- | ---: | ---: |
-| 0-500 | 0-500 | 150 |
-| 500-1k | 500-1,000 | 150 |
-| 1k-2k | 1,000-2,000 | 150 |
-| 2k-3k | 2,000-3,000 | 150 |
-| 3k-5k | 3,000-5,000 | 150 |
-| 5k-10k | 5,000-10,000 | 150 |
-| 10k-20k | 10,000-20,000 | 150 |
-| 20k-50k | 20,000-50,000 | 150 |
-| 50k-75k | 50,000-75,000 | 150 |
-| 75k-100k | 75,000-100,000 | 150 |
-| 100k-150k | 100,000-150,000 | 150 |
-| 150k-200k | 150,000-200,000 | 150 |
-| 200k-500k | 200,000-500,000 | 150 |
-| 500k+ | 500,000+ | 56 |
-| **Total** | | **2,006** |
+![Speedup by Size and Threads](pathname:///zsasa/assets/benchmarks/single/speedup_by_bin_sasa/grid.png)
 
-- **Source**: PDB and AlphaFold structures
-- **Sampling**: Stratified sampling, 150 per bin (seed 42)
-- **Large structures**: 500k+ bin has 56 structures (fewer available)
+| Size Bin | Count | vs FreeSASA | vs RustSASA |
+| --- | ---: | ---: | ---: |
+| 0-500 | 150 | 1.41x | 1.60x |
+| 500-1k | 150 | 1.60x | 1.74x |
+| 1k-2k | 150 | 1.58x | 1.81x |
+| 2k-3k | 150 | 1.63x | 1.87x |
+| 3k-5k | 150 | 1.71x | 1.87x |
+| 5k-10k | 150 | 1.81x | 1.89x |
+| 10k-20k | 150 | 1.89x | 1.89x |
+| 20k-50k | 149 | 1.74x | 1.84x |
+| 50k-75k | 150 | 1.85x | 1.84x |
+| 75k-100k | 152 | **1.98x** | 1.85x |
+| 100k-150k | 148 | 1.90x | 1.85x |
+| 150k-200k | 150 | 1.90x | 1.85x |
+| 200k-500k | 150 | 1.83x | 1.84x |
+| 500k+ | 63 | **1.89x** | 1.83x |
+
+**Observations:**
+- vs FreeSASA: speedup increases with structure size, peaking at **1.98x** (75k-100k)
+- vs RustSASA: consistently **1.8-1.9x** across medium-to-large structures
+- Small structures (0-500): overhead dominant, but still 1.4-1.6x faster
 
 ---
 
@@ -141,66 +152,25 @@ Single-threaded comparison (excluding parallelization effects):
 
 | Size Bin | Count | vs FreeSASA | vs RustSASA |
 | --- | ---: | ---: | ---: |
-| 0-500 | 150 | 1.23x | 0.84x |
-| 500-1k | 150 | 1.24x | 0.89x |
-| 1k-2k | 150 | 1.28x | 0.93x |
-| 2k-3k | 150 | 1.35x | 1.00x |
-| 3k-5k | 150 | 1.42x | 1.04x |
-| 5k-10k | 150 | 1.49x | 1.05x |
-| 10k-20k | 150 | 1.48x | 1.06x |
-| 20k-50k | 150 | 1.46x | 1.06x |
-| 50k-75k | 150 | 1.51x | 1.06x |
-| 75k-100k | 150 | 1.55x | 1.05x |
-| 100k-150k | 150 | **1.56x** | 1.07x |
-| 150k-200k | 150 | **1.58x** | 1.07x |
-| 200k-500k | 150 | **1.58x** | 1.09x |
-| 500k+ | 56 | **1.59x** | 1.08x |
+| 0-500 | 150 | 1.09x | 0.89x |
+| 500-1k | 150 | 1.25x | 0.93x |
+| 1k-2k | 150 | 1.27x | 0.95x |
+| 2k-3k | 150 | 1.28x | 0.95x |
+| 3k-5k | 150 | 1.30x | 0.96x |
+| 5k-10k | 150 | 1.37x | 0.99x |
+| 10k-20k | 150 | 1.38x | 1.00x |
+| 20k-50k | 149 | 1.40x | 1.02x |
+| 50k-75k | 150 | 1.43x | 1.02x |
+| 75k-100k | 152 | **1.46x** | 1.01x |
+| 100k-150k | 148 | **1.45x** | 1.01x |
+| 150k-200k | 150 | **1.45x** | 1.02x |
+| 200k-500k | 150 | **1.44x** | 1.02x |
+| 500k+ | 63 | **1.46x** | 1.01x |
 
 **Observations:**
-- Zig vs FreeSASA: **1.6x** on large structures (SIMD optimization)
-- Zig vs Rust: Nearly equal at 1t (both use SIMD), Zig slightly ahead on large structures
-
----
-
-## Multi-Thread Performance (threads=10)
-
-### Overall Statistics
-
-| Tool | Structures | Median (ms) | Mean (ms) | P95 (ms) |
-| --- | ---: | ---: | ---: | ---: |
-| **Zig** | 2,006 | **7.51** | 62.11 | 174.93 |
-| FreeSASA | 2,006 | 14.24 | 142.68 | 389.82 |
-| RustSASA | 2,006 | 15.77 | 143.39 | 417.80 |
-
-### Speedup by Structure Size
-
-![Speedup by Size and Threads](pathname:///zsasa/benchmarks/results/plots/speedup_by_bin/grid.png)
-
-| Size Bin | Count | vs FreeSASA | vs RustSASA |
-| --- | ---: | ---: | ---: |
-| 0-500 | 150 | 1.14x | 1.10x |
-| 500-1k | 150 | 1.48x | 1.52x |
-| 1k-2k | 150 | 1.57x | 1.66x |
-| 2k-3k | 150 | 1.68x | 1.86x |
-| 3k-5k | 150 | 1.82x | 1.99x |
-| 5k-10k | 150 | 2.02x | 2.06x |
-| 10k-20k | 150 | 2.06x | 2.17x |
-| 20k-50k | 150 | 2.07x | **2.32x** |
-| 50k-75k | 150 | 2.18x | **2.30x** |
-| 75k-100k | 150 | **2.31x** | **2.26x** |
-| 100k-150k | 150 | **2.30x** | **2.30x** |
-| 150k-200k | 150 | **2.29x** | **2.31x** |
-| 200k-500k | 150 | **2.23x** | **2.34x** |
-| 500k+ | 56 | **2.31x** | **2.33x** |
-
-**Observations:**
-- **Small (0-500)**: Overhead dominant, modest speedup
-- **Medium (1k-20k)**: Stable **1.6x-2.1x** speedup
-- **Large (50k+)**: Up to **2.3x** speedup with consistent results (narrow IQR)
-
-**Key Insight:**
-- At threads=1, Zig vs Rust is nearly equal
-- At threads=10, Zig takes a significant lead -> **parallel efficiency difference**
+- vs FreeSASA: **1.4-1.5x** on large structures (SIMD optimization)
+- vs RustSASA: nearly equal at t=1 (both use SIMD), zsasa slightly ahead on large structures
+- The gap between t=1 and t=10 speedups shows zsasa's parallel efficiency advantage
 
 ---
 
@@ -208,144 +178,134 @@ Single-threaded comparison (excluding parallelization effects):
 
 ### Median Execution Time by Thread Count
 
-![Thread Scaling](pathname:///zsasa/benchmarks/results/plots/large/speedup_by_threads.png)
+![Thread Scaling](pathname:///zsasa/assets/benchmarks/single/thread_scaling/sr_sasa.png)
 
-| Threads | Zig (ms) | FreeSASA (ms) | Rust (ms) |
-| ---: | ---: | ---: | ---: |
-| 1 | 20.71 | 30.34 | 22.21 |
-| 2 | 12.76 | 20.87 | 18.55 |
-| 4 | 9.19 | 15.96 | 16.55 |
-| 8 | 7.81 | 14.48 | 15.94 |
-| 10 | **7.31** | 14.19 | 15.77 |
+| Threads | zsasa_f64 (ms) | FreeSASA (ms) | RustSASA (ms) | zsasa_f64_bitmask (ms) |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 23.11 | 30.84 | 22.63 | 20.98 |
+| 4 | 10.32 | 16.73 | 16.82 | 19.80 |
+| 8 | 9.00 | 15.95 | 16.07 | 19.60 |
+| 10 | **8.53** | 15.47 | 16.29 | 19.49 |
 
 **Speedup from threads=1 to threads=10:**
-- Zig: 20.71 -> 7.31 = **2.83x**
-- FreeSASA: 30.34 -> 14.19 = **2.14x**
-- Rust: 22.21 -> 15.77 = **1.41x**
+- zsasa_f64: 23.11 → 8.53 = **2.71x**
+- FreeSASA: 30.84 → 15.47 = **1.99x**
+- RustSASA: 22.63 → 16.29 = **1.39x**
+
+**Key Insight:**
+- zsasa_f64 scales best with thread count, maintaining large gains up to t=10
+- RustSASA barely improves beyond t=1 (parallel efficiency issue)
+- Bitmask variants have low per-structure overhead but limited thread scaling (work is already cheap per atom)
 
 ---
 
-## Parallel Efficiency
+## Bitmask Variants
 
-### Definition
+Bitmask mode uses bit-level neighbor storage instead of full float arrays. This dramatically reduces memory usage at the cost of slightly higher per-structure computation time and minor accuracy differences.
 
-```
-Parallel Efficiency = T1 / (TN x N)
-```
+### When to Use
 
-- T1 = Single-thread execution time
-- TN = N-thread execution time
-- 1.0 = Ideal linear scaling
+| Mode | Best For | Trade-off |
+|------|----------|-----------|
+| Standard (f64) | Maximum speed, highest accuracy | Higher memory usage |
+| Bitmask (f64) | Large structures, memory-constrained | ~15x less memory for 500k+ atoms; minor accuracy difference |
 
-### Efficiency by Thread Count
+> **Accuracy note**: Bitmask mode uses a fixed cutoff for neighbor detection, which may produce slightly different SASA values compared to standard mode. The difference is negligible for most use cases. See [SASA Validation](validation.md) for detailed accuracy analysis.
 
-![Parallel Efficiency](pathname:///zsasa/benchmarks/results/plots/efficiency/summary.png)
+### Overall Performance (threads=10)
 
-| Threads | Zig | FreeSASA | Rust | Zig vs FS | Zig vs Rust |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 1.000 | 1.000 | 1.000 | - | - |
-| 2 | 0.816 | 0.724 | 0.596 | **+13%** | **+37%** |
-| 4 | 0.597 | 0.466 | 0.333 | **+28%** | **+79%** |
-| 8 | 0.350 | 0.256 | 0.173 | **+37%** | **+102%** |
-| 10 | 0.295 | 0.207 | 0.139 | **+43%** | **+112%** |
-
-### Efficiency by Size Bin (threads=10)
-
-| Size Bin | Zig | FreeSASA | Rust |
+| Tool | Median (ms) | Mean (ms) | P95 (ms) |
 | --- | ---: | ---: | ---: |
-| 0-500 | 0.16 | 0.17 | 0.12 |
-| 500-1k | 0.24 | 0.20 | 0.14 |
-| 1k-2k | 0.26 | 0.21 | 0.14 |
-| 2k-3k | 0.27 | 0.21 | 0.14 |
-| 3k-5k | 0.28 | 0.21 | 0.14 |
-| 5k-10k | 0.29 | 0.21 | 0.14 |
-| 10k-20k | 0.30 | 0.22 | 0.14 |
-| 20k-50k | 0.30 | 0.21 | 0.14 |
-| 50k-75k | 0.30 | 0.21 | 0.14 |
-| 75k-100k | 0.30 | 0.20 | 0.14 |
-| 100k-150k | **0.30** | 0.20 | 0.14 |
-| 150k-200k | **0.30** | 0.21 | 0.14 |
-| 200k-500k | 0.29 | 0.21 | 0.14 |
-| 500k+ | **0.30** | 0.20 | 0.14 |
+| zsasa_f64 | **8.53** | 84.82 | 243.25 |
+| zsasa_f64_bitmask | 19.49 | 77.38 | 198.77 |
+| zsasa_f32 | 8.75 | 83.68 | 243.75 |
+| zsasa_f32_bitmask | **19.28** | **76.34** | **196.30** |
+
+### Large Structure Performance (100k+ atoms, threads=10)
+
+On large structures, bitmask variants close the speed gap and become competitive:
+
+| Tool | n | Median (ms) | Mean (ms) | P95 (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| zsasa_f64 | 512 | 147.25 | 285.98 | 1,051.50 |
+| zsasa_f64_bitmask | 512 | **123.95** | **230.15** | **817.08** |
+| zsasa_f32 | 512 | 145.25 | 282.09 | 1,038.91 |
+| zsasa_f32_bitmask | 512 | **121.90** | **227.25** | **806.76** |
+
+> **Key finding**: For 100k+ atom structures, bitmask is actually **faster** than standard mode (16% lower median, 20% lower mean) while using far less memory. The bitmask's fixed-size neighbor storage avoids the allocation overhead that dominates large structures.
+
+---
+
+## Memory Comparison
+
+Peak memory (RSS) measured by hyperfine (threads=1):
+
+| Memory vs Structure Size | Memory Scatter |
+|:------------------------:|:--------------:|
+| ![By Size](pathname:///zsasa/assets/benchmarks/single/memory/by_size.png) | ![Scatter](pathname:///zsasa/assets/benchmarks/single/memory/scatter.png) |
 
 **Observations:**
-- Zig has the highest parallel efficiency across all sizes
-- Efficiency peaks at ~0.30 for large structures
-- Rust has low efficiency and benefits less from thread increases
+- FreeSASA uses the most memory across all sizes (~15x more than zsasa for 500k+ atoms)
+- RustSASA uses ~5x more than zsasa for large structures
+- zsasa standard and bitmask have similar memory for small structures
+- For 500k+ atoms, bitmask uses significantly less memory than standard mode
 
 ---
 
 ## Large Structure Analysis
 
-### Summary (100k+ atoms, n=506)
+### Summary (50k+ atoms, n=794, threads=10)
 
 | Speedup at threads=10 | Thread Scaling |
-|:---------------:|:--------------:|
-| ![Speedup](pathname:///zsasa/benchmarks/results/plots/large/speedup_bar.png) | ![Thread Scaling](pathname:///zsasa/benchmarks/results/plots/large/speedup_by_threads.png) |
+|:----------------------:|:--------------:|
+| ![Speedup](pathname:///zsasa/assets/benchmarks/single/large_sasa/speedup_bar.png) | ![Thread Scaling](pathname:///zsasa/assets/benchmarks/single/large_sasa/speedup_by_threads.png) |
 
 | Comparison | Median Speedup |
 | --- | ---: |
-| vs FreeSASA | **2.28x** |
-| vs RustSASA | **2.32x** |
-
-**Observations:**
-- Speedup improves with thread count (1.6x->2.3x vs FreeSASA)
-- vs Rust: dramatic improvement (1.1x->2.3x) due to parallel efficiency difference
-
-### Maximum Structure: 9fqr (4,506,416 atoms)
-
-![Max Structure Scaling](pathname:///zsasa/benchmarks/results/plots/samples/max_structure.png)
-
-Thread scaling on the largest PDB structure (9fqr, mean of 3 runs):
-
-| Threads | Zig (s) | FreeSASA (s) | Rust (s) | vs FS | vs Rust |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 8.89 | 14.50 | 9.52 | 1.6x | 1.1x |
-| 2 | 5.41 | 10.35 | 8.00 | 1.9x | 1.5x |
-| 4 | 3.68 | 8.32 | 7.22 | 2.3x | 2.0x |
-| 8 | 3.08 | 7.73 | 6.94 | 2.5x | 2.3x |
-| 10 | 2.95 | 7.51 | 6.87 | **2.5x** | **2.3x** |
-
-**Key Insight**:
-- Speedup ratio improves with increasing thread count
-- Achieves **2.5x** vs FreeSASA, **2.3x** vs Rust at threads=10
-- Rust plateaus with increasing threads (parallel efficiency issue)
+| vs FreeSASA | **1.89x** |
+| vs RustSASA | **1.84x** |
 
 ### Best Speedup Structures (50k+ atoms)
 
-![Speedup Comparison](pathname:///zsasa/benchmarks/results/plots/speedup/comparison.png)
+![Speedup Comparison](pathname:///zsasa/assets/benchmarks/single/speedup_sasa/comparison.png)
 
-Top 5 structures with highest speedup at any thread count:
+### Maximum Structure Thread Scaling
 
-| Rank | vs FreeSASA | Atoms | Threads | Speedup |
-| ---: | --- | ---: | ---: | ---: |
-| 1 | 8to0 | 673,884 | 10 | **2.93x** |
-| 2 | 8to0 | 673,884 | 8 | 2.88x |
-| 3 | 8rbs | 164,605 | 10 | 2.84x |
-| 4 | 8vkq | 150,620 | 10 | 2.70x |
-| 5 | 8vkr | 152,898 | 10 | 2.68x |
-
-| Rank | vs Rust | Atoms | Threads | Speedup |
-| ---: | --- | ---: | ---: | ---: |
-| 1 | 8bsj | 81,467 | 10 | **2.60x** |
-| 2 | 8f2n | 162,111 | 10 | 2.50x |
-| 3 | 7l5q | 248,040 | 10 | 2.44x |
-| 4 | 9n5l | 239,460 | 10 | 2.42x |
-| 5 | 9j7k | 243,000 | 10 | 2.42x |
-
-**Note**: threads=8 sometimes outperforms threads=10 (e.g., 8to0: 2.93x at t=10 vs 2.88x at t=8).
+![Max Structure Scaling](pathname:///zsasa/assets/benchmarks/single/samples_sasa/max_structure.png)
 
 ---
 
 ## Execution Time Distribution
 
-![SR Scatter Plot](pathname:///zsasa/benchmarks/results/plots/scatter/sr/grid.png)
+![SR Scatter Plot](pathname:///zsasa/assets/benchmarks/single/scatter/sr_sasa/grid.png)
 
 **Observations:**
-- Nearly linear on log scale -> O(N) neighbor list is effective (all tools use cell list)
-- Zig (green) is consistently lower (faster) across all sizes
-- Gap between 3 tools widens with increasing thread count
-- Few outliers -> stable performance
+- Nearly linear on log scale → O(N) neighbor list is effective (all tools use cell list)
+- zsasa (orange) is consistently lower (faster) across all sizes
+- Gap between tools widens with increasing thread count
+- Few outliers → stable performance
+
+---
+
+## Stability: Outlier Structures
+
+One of zsasa's key advantages is **consistent, predictable performance** across all structures. FreeSASA and RustSASA exhibit pathological slowdowns on certain structures, where computation time spikes by orders of magnitude. zsasa shows no such behavior.
+
+### FreeSASA Pathological Cases
+
+![FreeSASA Outliers](pathname:///zsasa/assets/benchmarks/single/outliers_sasa/freesasa_bar_t1.png)
+
+19 structures where FreeSASA takes **3x–114x longer** than zsasa (SASA-only time, threads=1). The worst case (7n9f, 212,962 atoms) shows **113.9x** slowdown. The cause is unknown but appears structure-dependent.
+
+### RustSASA Pathological Cases
+
+Example: **9gdy** (509,160 atoms) — RustSASA takes ~14,000ms vs zsasa's ~50ms at threads=1:
+
+![9gdy Outlier](pathname:///zsasa/assets/benchmarks/single/outliers_sasa/9gdy.png)
+
+RustSASA is **~280x slower** on this structure, and the slowdown persists across all thread counts. Including wall-clock (I/O) timing reveals even more outlier structures for both FreeSASA and RustSASA.
+
+> **Key takeaway**: zsasa produces stable, predictable timing across all 2,013 structures tested. No pathological cases were observed. This predictability is important for batch processing and pipeline reliability.
 
 ---
 
@@ -353,43 +313,42 @@ Top 5 structures with highest speedup at any thread count:
 
 Thread scaling details on representative structures selected from each size bin.
 
-| Bin | Atoms Range | Sample Plot |
-|-----|-------------|-------------|
-| 0-500 | 0-500 | [View](pathname:///zsasa/benchmarks/results/plots/samples/0-500.png) |
-| 500-1k | 500-1,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/500-1k.png) |
-| 1k-2k | 1,000-2,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/1k-2k.png) |
-| 2k-3k | 2,000-3,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/2k-3k.png) |
-| 3k-5k | 3,000-5,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/3k-5k.png) |
-| 5k-10k | 5,000-10,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/5k-10k.png) |
-| 10k-20k | 10,000-20,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/10k-20k.png) |
-| 20k-50k | 20,000-50,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/20k-50k.png) |
-| 50k-75k | 50,000-75,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/50k-75k.png) |
-| 75k-100k | 75,000-100,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/75k-100k.png) |
-| 100k-150k | 100,000-150,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/100k-150k.png) |
-| 150k-200k | 150,000-200,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/150k-200k.png) |
-| 200k-500k | 200,000-500,000 | [View](pathname:///zsasa/benchmarks/results/plots/samples/200k-500k.png) |
-| 500k+ | 500,000+ | [View](pathname:///zsasa/benchmarks/results/plots/samples/500kplus.png) |
+| Bin | Atom Range | Sample Plot |
+|-----|------------|-------------|
+| 0-500 | 0 – 500 | [View](pathname:///zsasa/assets/benchmarks/single/samples_sasa/0-500.png) |
+| 500-1k | 500 – 1,000 | [View](pathname:///zsasa/assets/benchmarks/single/samples_sasa/500-1k.png) |
+| 1k-2k | 1,000 – 2,000 | [View](pathname:///zsasa/assets/benchmarks/single/samples_sasa/1k-2k.png) |
+| 2k-3k | 2,000 – 3,000 | [View](pathname:///zsasa/assets/benchmarks/single/samples_sasa/2k-3k.png) |
+| 3k-5k | 3,000 – 5,000 | [View](pathname:///zsasa/assets/benchmarks/single/samples_sasa/3k-5k.png) |
+| 5k-10k | 5,000 – 10,000 | [View](pathname:///zsasa/assets/benchmarks/single/samples_sasa/5k-10k.png) |
+| 10k-20k | 10,000 – 20,000 | [View](pathname:///zsasa/assets/benchmarks/single/samples_sasa/10k-20k.png) |
+| 20k-50k | 20,000 – 50,000 | [View](pathname:///zsasa/assets/benchmarks/single/samples_sasa/20k-50k.png) |
+| 50k-75k | 50,000 – 75,000 | [View](pathname:///zsasa/assets/benchmarks/single/samples_sasa/50k-75k.png) |
+| 75k-100k | 75,000 – 100,000 | [View](pathname:///zsasa/assets/benchmarks/single/samples_sasa/75k-100k.png) |
+| 100k-150k | 100,000 – 150,000 | [View](pathname:///zsasa/assets/benchmarks/single/samples_sasa/100k-150k.png) |
+| 150k-200k | 150,000 – 200,000 | [View](pathname:///zsasa/assets/benchmarks/single/samples_sasa/150k-200k.png) |
+| 200k-500k | 200,000 – 500,000 | [View](pathname:///zsasa/assets/benchmarks/single/samples_sasa/200k-500k.png) |
+| 500k+ | 500,000+ | [View](pathname:///zsasa/assets/benchmarks/single/samples_sasa/500kplus.png) |
 
 ---
 
 ## Key Takeaways
 
-> **Why is Zig faster?** SIMD optimization (8-wide distance calculation), multi-threading with work stealing, and spatial hashing for O(1) neighbor lookup.
+> **Why is zsasa faster?** SIMD optimization (8-wide distance calculation), multi-threading with work stealing, and spatial hashing for O(1) neighbor lookup.
 
-1. **Maximum effect on large structures**
-   - **2.3x** speedup for 100k+ atoms
-   - **2.5x** speedup for the largest structure (4.5M atoms)
+1. **Consistent advantage across all sizes**
+   - **1.9x** vs FreeSASA, **1.8x** vs RustSASA on large structures (threads=10)
+   - Outperforms FreeSASA at all sizes (even 0-500 atoms)
 
-2. **Consistent advantage**
-   - Outperforms FreeSASA across all sizes (500+ atoms)
-   - Fastest at all thread counts
+2. **Best thread scaling**
+   - **2.71x** scaling from t=1 to t=10 (vs 1.99x FreeSASA, 1.39x RustSASA)
 
-3. **Excellent parallel efficiency**
-   - **43%** higher than FreeSASA
-   - **112%** higher than RustSASA (at threads=10)
+3. **Memory-efficient bitmask mode**
+   - ~15x less memory for 500k+ atom structures
+   - Competitive speed with lower P95 latency
 
 4. **Accurate results**
-   - See [validation.md](validation.md) for detailed accuracy analysis
+   - See [validation](validation.md) for detailed accuracy analysis
 
 ---
 
@@ -428,27 +387,28 @@ cd rustsasa-bench && cargo build --release --features cli && cd ..
 
 ```bash
 # Basic usage
-./benchmarks/scripts/bench.py --tool zig --algorithm sr --threads 1-10
-./benchmarks/scripts/bench.py --tool freesasa --algorithm lr --threads 1-10
+./benchmarks/scripts/bench.py --tool zig --algorithm sr --threads 1,4,8,10
 
-# With sample file
-./benchmarks/scripts/bench.py --tool zig --algorithm sr \
-    --input-dir benchmarks/inputs \
-    --sample-file benchmarks/dataset/sample.json \
-    --threads 1,2,4,8,10
+# All tools
+./benchmarks/scripts/bench.py --tool zig --algorithm sr --threads 1,4,8,10
+./benchmarks/scripts/bench.py --tool freesasa --algorithm sr --threads 1,4,8,10
+./benchmarks/scripts/bench.py --tool rustsasa --algorithm sr --threads 1,4,8,10
 
-# Single run for quick testing
-./benchmarks/scripts/bench.py --tool zig --algorithm sr --threads 1 --runs 1
+# With bitmask mode (Zig only)
+./benchmarks/scripts/bench.py --tool zig --algorithm sr --bitmask --threads 1,4,8,10
 
 # With f32 precision (Zig only)
-./benchmarks/scripts/bench.py --tool zig --algorithm sr --precision f32
+./benchmarks/scripts/bench.py --tool zig --algorithm sr --precision f32 --threads 1,4,8,10
 ```
 
 ### Analysis & Visualization
 
 ```bash
-# Summary tables
+# Summary tables (SASA-only metric, default)
 ./benchmarks/scripts/analyze.py summary
+
+# Summary tables (wall-clock metric)
+./benchmarks/scripts/analyze.py summary --metric wall
 
 # Generate all plots
 ./benchmarks/scripts/analyze.py all
@@ -457,10 +417,11 @@ cd rustsasa-bench && cargo build --release --features cli && cd ..
 ./benchmarks/scripts/analyze.py scatter      # Atoms vs time scatter
 ./benchmarks/scripts/analyze.py threads      # Thread scaling
 ./benchmarks/scripts/analyze.py grid         # Speedup grid by size/threads
-./benchmarks/scripts/analyze.py validation   # SASA validation
 ./benchmarks/scripts/analyze.py samples      # Per-bin sample plots
 ./benchmarks/scripts/analyze.py large        # Large structure analysis
-./benchmarks/scripts/analyze.py efficiency   # Parallel efficiency
+./benchmarks/scripts/analyze.py memory       # Peak memory comparison
+./benchmarks/scripts/analyze.py speedup      # Best speedup structures
+./benchmarks/scripts/analyze.py outliers     # Outlier advantage plots
 
 # Export to CSV
 ./benchmarks/scripts/analyze.py export-csv
@@ -474,75 +435,43 @@ cd rustsasa-bench && cargo build --release --features cli && cd ..
 | `sample.py` | Stratified sampling from index |
 | `bench.py` | Run benchmarks (single-file mode) |
 | `analyze.py` | Analyze results and generate plots |
-| `generate_json.py` | Convert CIF/PDB to JSON format |
 
 ### Notes
 
-1. **Initial runs are slow**: Due to file cache and warmup effects
-2. **Thread count depends on CPU**: Optimal when matching physical core count
+1. **Initial runs are slow**: due to file cache and warmup effects
+2. **Thread count depends on CPU**: optimal when matching physical core count
 3. **External tools require patches**: SASA-only timing requires modified binaries
 
 ---
 
 ## Appendix: Lee-Richards (LR) Algorithm
 
-Lee-Richards results using the same 2,006 structures. RustSASA does not support LR.
+zsasa also supports the Lee-Richards (LR) algorithm, which uses slice-based numerical integration instead of sphere test points.
 
-### Overall Statistics (threads=10)
+### Key Differences from Shrake-Rupley
 
-| Tool | Structures | Median (ms) | Mean (ms) | P95 (ms) |
-| --- | ---: | ---: | ---: | ---: |
-| **Zig** | 2,006 | **20.82** | 178.39 | 510.65 |
-| FreeSASA | 2,006 | 39.58 | 327.41 | 916.19 |
+| Property | Shrake-Rupley (SR) | Lee-Richards (LR) |
+|----------|-------------------|-------------------|
+| Method | Test points on sphere | Slice integration |
+| Speed | Faster | 3-5x slower |
+| Accuracy | Depends on n_points | Depends on n_slices |
+| Supported by | zsasa, FreeSASA, RustSASA | zsasa, FreeSASA |
 
-**Key Insight**: Zig is **1.79x** faster than FreeSASA (median per-structure speedup)
+LR benchmarks are not included in this comparison because RustSASA does not support LR, making a three-way comparison impossible. For LR-specific analysis, see the `analyze_lr.py` script.
 
-### Speedup by Structure Size (threads=10)
+```bash
+# Run LR benchmark
+./benchmarks/scripts/bench_lr.py --tool zig --algorithm lr --n-slices 20
 
-| Size Bin | Count | vs FreeSASA |
-| --- | ---: | ---: |
-| 0-500 | 150 | 1.04x |
-| 500-1k | 150 | 1.41x |
-| 1k-2k | 150 | 1.57x |
-| 2k-3k | 150 | 1.71x |
-| 3k-5k | 150 | 1.76x |
-| 5k-10k | 150 | 1.86x |
-| 10k-20k | 150 | 1.93x |
-| 20k-50k | 150 | 1.77x |
-| 50k-75k | 150 | 1.78x |
-| 75k-100k | 150 | **1.82x** |
-| 100k-150k | 150 | **1.82x** |
-| 150k-200k | 150 | **1.82x** |
-| 200k-500k | 150 | **1.80x** |
-| 500k+ | 56 | **1.85x** |
-
-### Thread Scaling
-
-| Threads | Zig (ms) | FreeSASA (ms) |
-| ---: | ---: | ---: |
-| 1 | 107.08 | 172.88 |
-| 2 | 58.24 | 94.63 |
-| 4 | 33.45 | 55.05 |
-| 8 | 22.90 | 40.13 |
-| 10 | **20.82** | 39.58 |
-
-**Speedup from threads=1 to threads=10:**
-- Zig: 107.08 -> 20.82 = **5.14x**
-- FreeSASA: 172.88 -> 39.58 = **4.37x**
-
-### Execution Time Distribution
-
-![LR Scatter Plot](pathname:///zsasa/benchmarks/results/plots/scatter/lr/grid.png)
-
-**Observations:**
-- Overall 3-4x slower than SR (slice integration cost)
-- Zig's advantage is maintained in LR as well
+# Analyze LR results
+./benchmarks/scripts/analyze_lr.py summary
+```
 
 ---
 
 ## Related Documents
 
-- [batch.md](batch.md) - Batch processing benchmarks (proteome datasets)
-- [md.md](md.md) - MD trajectory benchmarks
-- [validation.md](validation.md) - SASA accuracy validation
-- [Algorithms](../guide/algorithms.mdx) - Algorithm comparison and usage
+- [Batch Processing Benchmarks](batch.md) — proteome-scale batch processing
+- [MD Trajectory Benchmarks](md.md) — molecular dynamics trajectory analysis
+- [SASA Validation](validation.md) — accuracy validation vs FreeSASA reference
+- [Algorithms](../guide/algorithms.mdx) — algorithm comparison and usage
