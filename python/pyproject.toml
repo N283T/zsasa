@@ -63,7 +63,7 @@ python-version = "3.11"
 
 [tool.cibuildwheel]
 build = ["cp311-*", "cp312-*", "cp313-*"]
-skip = ["pp*", "*-win32", "*-win_arm64", "*-manylinux_i686", "*-musllinux_*", "*_s390x", "*_ppc64le"]
+skip = ["*-win32", "*-win_arm64", "*-musllinux_*", "*_s390x", "*_ppc64le"]
 test-requires = ["pytest", "numpy"]
 test-command = "pytest {project}/python/tests/test_sasa.py -x -q"
 
