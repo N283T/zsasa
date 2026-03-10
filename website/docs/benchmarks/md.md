@@ -144,7 +144,7 @@ Benchmark: warmup=1, runs=3, threads=1,8,10.
 
 ## Bitmask Variants
 
-The `_bitmask` variants use LUT (look-up table) bitmask neighbor lists:
+The `_bitmask` variants use [LUT bitmask neighbor lists](../guide/algorithms.mdx#bitmask-lut-optimization):
 
 - **~2.1x faster** than standard zsasa across all system sizes
 - Minimal memory overhead for CLI variants (~2 MB extra)

@@ -31,7 +31,7 @@ Throughput benchmarks for processing complete proteome datasets using [hyperfine
 | Tool | Language | Description |
 |------|----------|-------------|
 | zsasa | Zig | f64/f32 precision, standard neighbor lists |
-| zsasa_bitmask | Zig | f64/f32 precision, LUT bitmask neighbor lists |
+| zsasa_bitmask | Zig | f64/f32 precision, [LUT bitmask](../guide/algorithms.mdx#bitmask-lut-optimization) neighbor lists |
 | [Lahuta](https://github.com/your-repo/lahuta) | Zig | Standard neighbor lists |
 | Lahuta Bitmask | Zig | LUT bitmask neighbor lists |
 | [RustSASA](https://github.com/OWissett/rustsasa) | Rust | Native multi-threading |
