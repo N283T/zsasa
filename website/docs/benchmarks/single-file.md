@@ -136,7 +136,7 @@ Single-threaded comparison (excluding parallelization effects):
 
 ## Bitmask Variants
 
-Bitmask mode uses bit-level neighbor storage instead of full float arrays. This dramatically reduces memory usage at the cost of slightly higher per-structure computation time and minor accuracy differences.
+[Bitmask mode](../guide/algorithms.mdx#bitmask-lut-optimization) uses LUT bitmask neighbor lists instead of full float arrays. This dramatically reduces memory usage at the cost of slightly higher per-structure computation time and minor accuracy differences.
 
 ### When to Use
 

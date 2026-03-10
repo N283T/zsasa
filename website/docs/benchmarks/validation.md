@@ -65,7 +65,7 @@ Dataset: AlphaFold E. coli K-12 proteome, 4,370 structures. Reference: FreeSASA.
 
 - **zsasa f64**: Bit-identical to FreeSASA at all point counts (same algorithm parameters)
 - **zsasa f32**: Max 0.015% error from floating-point rounding — negligible for practical use
-- **Bitmask variants**: Mean error ~0.7–0.8%, plateaus regardless of point count (LUT approximation error)
+- **[Bitmask](../guide/algorithms.mdx#bitmask-lut-optimization) variants**: Mean error ~0.7–0.8%, plateaus regardless of point count (LUT approximation error)
 - **RustSASA**: Converges toward FreeSASA with increasing points (0.32% → 0.06% mean error)
 - **f32 vs f64 bitmask**: Virtually identical — bitmask error dominates floating-point error
 
