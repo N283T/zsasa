@@ -66,6 +66,16 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 
 [MIT](LICENSE)
 
+## Acknowledgments
+
+zsasa builds on ideas and methods from several excellent SASA implementations:
+
+- **[FreeSASA](https://github.com/mittinatten/freesasa)** by Simon Mitternacht — the foundational C library that established open-source SASA calculation. zsasa uses FreeSASA as the accuracy reference for validation.
+- **[RustSASA](https://github.com/maxall41/RustSASA)** by Max Campbell — a modern Rust implementation that demonstrated SIMD-accelerated SASA calculation.
+- **[Lahuta](https://github.com/bisejdiu/lahuta)** by Bekim Sejdiu — a C++ toolkit that pioneered bitmask LUT optimization for SASA.
+
+We also thank the developers of [MDTraj](https://github.com/mdtraj/mdtraj), [MDAnalysis](https://github.com/MDAnalysis/mdanalysis), [Gemmi](https://github.com/project-gemmi/gemmi), [BioPython](https://github.com/biopython/biopython), and [Biotite](https://github.com/biotite-tools/biotite) for their libraries that make structural biology analysis accessible.
+
 ## References
 
 - Shrake, A.; Rupley, J. A. *J. Mol. Biol.* 1973, 79(2), 351-371. [doi:10.1016/0022-2836(73)90011-9](https://doi.org/10.1016/0022-2836(73)90011-9)
