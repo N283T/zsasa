@@ -894,7 +894,7 @@ pub fn runBatchParallel(
     var jsonl_stream_storage: JsonlStreamWriter = if (jsonl_file) |jf|
         JsonlStreamWriter{ .file = jf }
     else
-        std.mem.zeroes(JsonlStreamWriter);
+        undefined;
     const jsonl_stream_ptr: ?*JsonlStreamWriter = if (jsonl_file != null) &jsonl_stream_storage else null;
 
     // Create shared context

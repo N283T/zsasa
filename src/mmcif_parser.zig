@@ -137,8 +137,9 @@ pub const MmcifParser = struct {
 
     /// Parse mmCIF from a file
     pub fn parseFile(self: *MmcifParser, path: []const u8) !AtomInput {
-        const mapped = try mmap_reader.mmapFile(path);
-        defer mapped.deinit();
+        const alloc_arg = if (mmap_reader.is_windows) self.allocator else {};
+        const mapped = try mmap_reader.mmapFile(alloc_arg, path);
+        defer mapped.deinit(alloc_arg);
         return self.parse(mapped.data);
     }
 
