@@ -37,6 +37,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Setup Zig
+        if: runner.os != 'Linux'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
       - name: Build wheels
         uses: pypa/cibuildwheel@ee63bf16da6cddfb925f542f2c7b59ad50e93969 # v2.22
         with:
