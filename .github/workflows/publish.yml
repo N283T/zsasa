@@ -125,16 +125,26 @@ jobs:
       - name: Build CLI
         run: zig build -Doptimize=ReleaseFast
 
+      - name: Smoke test
+        shell: bash
+        env:
+          BINARY: ${{ matrix.binary }}
+        run: |
+          "./zig-out/bin/${BINARY}" --version
+
       - name: Package binary
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          BINARY: ${{ matrix.binary }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          ASSET_NAME="zsasa-${VERSION}-${{ matrix.target }}"
+          ASSET_NAME="zsasa-${VERSION}-${TARGET}"
           mkdir -p dist
-          if [ "${{ matrix.target }}" = "windows-x86_64" ]; then
-            cp zig-out/bin/${{ matrix.binary }} "dist/${ASSET_NAME}.exe"
+          if [ "${TARGET}" = "windows-x86_64" ]; then
+            cp "zig-out/bin/${BINARY}" "dist/${ASSET_NAME}.exe"
           else
-            cp zig-out/bin/${{ matrix.binary }} "dist/${ASSET_NAME}"
+            cp "zig-out/bin/${BINARY}" "dist/${ASSET_NAME}"
             chmod +x "dist/${ASSET_NAME}"
           fi
 
@@ -158,9 +168,17 @@ jobs:
       url: ${{ (github.event_name == 'push' || inputs.target == 'pypi') && 'https://pypi.org/p/zsasa' || 'https://test.pypi.org/p/zsasa' }}
 
     steps:
-      - name: Download all artifacts
+      - name: Download wheel artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download sdist artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: sdist
           path: dist
           merge-multiple: true
 
