@@ -99,17 +99,56 @@ result = calculate_sasa(coords, radii, n_points=200)
 
 ## Bitmask LUT Optimization
 
-The Shrake-Rupley algorithm supports an optional **bitmask lookup table (LUT)** optimization that can improve performance for repeated calculations.
+The Shrake-Rupley algorithm supports an optional **bitmask lookup table (LUT)** optimization that significantly improves performance, especially for large structures and MD trajectories. This approach is inspired by [Lahuta](https://github.com/bisejdiu/lahuta), which demonstrated the effectiveness of bitmask-based neighbor occlusion for SASA calculations.
 
 ### How It Works
 
-Instead of computing neighbor occlusion for each test point individually, the bitmask approach precomputes occlusion patterns as bitmasks. This allows batch neighbor processing using bitwise operations.
+In standard SR, each neighbor's occlusion of test points is computed individually by distance checks. The bitmask LUT approach replaces this with precomputed bitmask patterns:
+
+1. **Precompute**: For each possible neighbor geometry (distance, relative orientation), a bitmask encodes which test points on the sphere are occluded
+2. **Lookup**: During calculation, the appropriate bitmask is fetched from the LUT based on neighbor position
+3. **Combine**: Neighbor occlusion masks are combined using bitwise OR — a single CPU instruction processes all test points simultaneously
+
+This converts the inner loop from per-point floating-point comparisons to bulk bitwise operations, yielding ~2x speedup on large systems.
+
+### Performance
+
+Bitmask mode provides the largest benefit on large structures and long trajectories:
+
+| Use Case | Speedup vs Standard | Details |
+|----------|-------------------:|---------|
+| Single file (100k+ atoms) | ~1.2x | [Single-file benchmarks](../benchmarks/single-file.md#bitmask-variants) |
+| Batch proteome processing | ~1.5–2x | [Batch benchmarks](../benchmarks/batch.md) |
+| MD trajectory (33k atoms, 1k frames) | ~2.1x | [MD benchmarks](../benchmarks/md.md#6sup_a_analysis-large-33377-atoms-1001-frames) |
+
+Memory usage is minimal — the LUT adds only ~2 MB overhead for CLI mode.
+
+### Accuracy
+
+Bitmask introduces a small systematic offset due to the LUT discretization:
+
+| Metric | Standard SR | Bitmask |
+|--------|------------|---------|
+| R² vs FreeSASA | 1.000000 | 0.9997 |
+| Mean error | < 0.001% | ~0.7% |
+| Max error | < 0.02% | ~2.5% |
+
+The offset is **constant** regardless of n_points (unlike standard SR where error decreases with more points). However, for MD trajectory analysis, the frame-to-frame changes (ΔR²) are nearly identical between standard and bitmask (> 0.99 at 500+ points) — the systematic offset cancels out in differences.
+
+For detailed accuracy analysis, see [SASA Validation](../benchmarks/validation.md).
 
 ### Constraints
 
 - **SR algorithm only** — not available for Lee-Richards
-- **Supported n_points**: 1..1024
-- Results may differ slightly from standard SR (< 2% relative difference per atom)
+- **Supported n_points**: 1–1024
+- Lahuta uses n_points=128 fixed; zsasa supports any value in range
+
+### When to Use
+
+| Mode | Best For |
+|------|----------|
+| Standard (default) | Maximum accuracy, small structures, single calculations |
+| Bitmask | MD trajectories, batch processing, large structures, memory-constrained environments |
 
 ### Usage
 
@@ -117,8 +156,14 @@ Instead of computing neighbor occlusion for each test point individually, the bi
   <TabItem value="cli" label="CLI" default>
 
 ```bash
-# Bitmask with 128 test points
+# Bitmask with 128 test points (recommended)
 zsasa calc --use-bitmask --n-points=128 structure.cif output.json
+
+# Trajectory with bitmask
+zsasa traj --use-bitmask --n-points=128 trajectory.xtc topology.pdb
+
+# Batch with bitmask
+zsasa batch --use-bitmask --n-points=128 input_dir/ output_dir/
 ```
 
   </TabItem>
@@ -142,3 +187,4 @@ result = calculate_sasa_batch(coords, radii, n_points=128, use_bitmask=True)
 
 - Shrake, A.; Rupley, J. A. Environment and Exposure to Solvent of Protein Atoms. *J. Mol. Biol.* 1973, 79(2), 351-371.
 - Lee, B.; Richards, F. M. The Interpretation of Protein Structures: Estimation of Static Accessibility. *J. Mol. Biol.* 1971, 55(3), 379-400.
+- [Lahuta](https://github.com/bisejdiu/lahuta) — Bitmask LUT approach for SASA neighbor occlusion.

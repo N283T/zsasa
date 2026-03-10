@@ -65,6 +65,7 @@ See [Trajectory Mode](#trajectory-mode) section below for details.
 | `--probe-radius=R` | Probe radius in Å (0 < R ≤ 10) | `1.4` |
 | `--n-points=N` | Test points per atom (SR only, 1-10000) | `100` |
 | `--n-slices=N` | Slices per atom diameter (LR only, 1-1000) | `20` |
+| `--use-bitmask` | Use [bitmask LUT optimization](guide/algorithms.mdx#bitmask-lut-optimization) (SR only, n_points 1-1024) | off |
 | `--threads=N` | Number of threads (0 = auto-detect) | `0` |
 
 ### Classifier Options
