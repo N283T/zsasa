@@ -90,6 +90,70 @@ jobs:
           name: sdist
           path: python/dist/*.tar.gz
 
+  build_cli:
+    name: CLI (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x86_64
+            binary: zsasa
+          - os: ubuntu-24.04-arm
+            target: linux-aarch64
+            binary: zsasa
+          - os: macos-15-intel
+            target: macos-x86_64
+            binary: zsasa
+          - os: macos-latest
+            target: macos-aarch64
+            binary: zsasa
+          - os: windows-latest
+            target: windows-x86_64
+            binary: zsasa.exe
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build CLI
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Smoke test
+        shell: bash
+        env:
+          BINARY: ${{ matrix.binary }}
+        run: |
+          "./zig-out/bin/${BINARY}" --version
+
+      - name: Package binary
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          BINARY: ${{ matrix.binary }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ASSET_NAME="zsasa-${VERSION}-${TARGET}"
+          mkdir -p dist
+          if [ "${TARGET}" = "windows-x86_64" ]; then
+            cp "zig-out/bin/${BINARY}" "dist/${ASSET_NAME}.exe"
+          else
+            cp "zig-out/bin/${BINARY}" "dist/${ASSET_NAME}"
+            chmod +x "dist/${ASSET_NAME}"
+          fi
+
+      - name: Upload CLI binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/zsasa-*
+
   publish:
     name: Publish
     needs: [build_wheels, build_sdist]
@@ -104,9 +168,17 @@ jobs:
       url: ${{ (github.event_name == 'push' || inputs.target == 'pypi') && 'https://pypi.org/p/zsasa' || 'https://test.pypi.org/p/zsasa' }}
 
     steps:
-      - name: Download all artifacts
+      - name: Download wheel artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download sdist artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: sdist
           path: dist
           merge-multiple: true
 
@@ -128,7 +200,7 @@ jobs:
 
   github_release:
     name: GitHub Release
-    needs: [publish]
+    needs: [publish, build_cli]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
 
@@ -150,6 +222,15 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      - name: Generate CLI checksums
+        run: |
+          cd dist
+          sha256sum zsasa-*-linux-* zsasa-*-macos-* zsasa-*-windows-* > SHA256SUMS 2>/dev/null || true
+          if [ -f SHA256SUMS ] && [ -s SHA256SUMS ]; then
+            echo "Generated checksums:"
+            cat SHA256SUMS
+          fi
 
       - name: Create GitHub Release
         env:
