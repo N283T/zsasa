@@ -344,6 +344,27 @@ def compute_stats(x: list[float], y: list[float]) -> dict[str, float]:
     }
 
 
+def compute_delta_r2(x: list[float], y: list[float]) -> float:
+    """Compute R² of frame-to-frame ΔSASA between two series.
+
+    Measures how well the tool tracks relative changes in SASA,
+    independent of absolute value offset.
+    """
+    xa = np.array(x)
+    ya = np.array(y)
+
+    if len(xa) < 3:
+        return 0.0
+
+    dx = np.diff(xa)
+    dy = np.diff(ya)
+
+    correlation = np.corrcoef(dx, dy)[0, 1]
+    if np.isnan(correlation):
+        return 0.0
+    return float(correlation**2)
+
+
 def _stats_for_pair(
     df: pl.DataFrame, reference: str, col: str
 ) -> dict[str, float] | None:
@@ -351,7 +372,11 @@ def _stats_for_pair(
     pair = df.select([reference, col]).drop_nulls()
     if pair.height < 2:
         return None
-    return compute_stats(pair[col].to_list(), pair[reference].to_list())
+    ref_list = pair[reference].to_list()
+    col_list = pair[col].to_list()
+    stats = compute_stats(col_list, ref_list)
+    stats["delta_r2"] = compute_delta_r2(col_list, ref_list)
+    return stats
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +444,10 @@ def _scatter_cell(
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
 
-    stats = compute_stats(comp_arr.tolist(), ref_arr.tolist())
+    comp_list = comp_arr.tolist()
+    ref_list = ref_arr.tolist()
+    stats = compute_stats(comp_list, ref_list)
+    delta_r2 = compute_delta_r2(comp_list, ref_list)
 
     ax.set_xlabel(f"{col} SASA")
     ax.set_ylabel(f"{reference} SASA")
@@ -428,6 +456,7 @@ def _scatter_cell(
     # Main stats box (top-left)
     stats_lines = [
         f"R² = {stats['r_squared']:.6f}",
+        f"ΔR² = {delta_r2:.6f}",
         f"Mean err = {stats['mean_rel_error']:.4f}%",
         f"Max err = {stats['max_rel_error']:.4f}%",
     ]
@@ -702,6 +731,7 @@ def print_stats_table(
     table.add_column("Tool", style="green")
     table.add_column("N", justify="right")
     table.add_column("R\u00b2", justify="right")
+    table.add_column("\u0394R\u00b2", justify="right")
     table.add_column("Mean Error %", justify="right")
     table.add_column("Max Error %", justify="right")
 
@@ -727,6 +757,7 @@ def print_stats_table(
                 col,
                 str(pair.height),
                 f"{stats['r_squared']:.6f}",
+                f"{stats['delta_r2']:.6f}",
                 f"{stats['mean_rel_error']:.4f}",
                 f"{stats['max_rel_error']:.4f}",
             )
@@ -746,6 +777,7 @@ def print_stats_table(
                     "zsasa_cli_f64 vs zsasa_mdtraj",
                     str(pair.height),
                     f"{stats['r_squared']:.6f}",
+                    f"{stats['delta_r2']:.6f}",
                     f"{stats['mean_rel_error']:.4f}",
                     f"{stats['max_rel_error']:.4f}",
                 )
@@ -762,6 +794,7 @@ def print_stats_table(
                     "bitmask_f64 vs cli_f64",
                     str(pair.height),
                     f"{stats['r_squared']:.6f}",
+                    f"{stats['delta_r2']:.6f}",
                     f"{stats['mean_rel_error']:.4f}",
                     f"{stats['max_rel_error']:.4f}",
                 )
