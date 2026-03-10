@@ -214,9 +214,8 @@ pub const PdbParser = struct {
 
     /// Parse PDB from a file
     pub fn parseFile(self: *PdbParser, path: []const u8) !AtomInput {
-        const alloc_arg = if (mmap_reader.is_windows) self.allocator else {};
-        const mapped = try mmap_reader.mmapFile(alloc_arg, path);
-        defer mapped.deinit(alloc_arg);
+        const mapped = try mmap_reader.mmapFile(self.allocator, path);
+        defer mapped.deinit();
         return self.parse(mapped.data);
     }
 

@@ -890,7 +890,8 @@ pub fn runBatchParallel(
     };
 
     // Set up the stream writer on the stack (if JSONL streaming is active).
-    // When jsonl_file is null, jsonl_stream_ptr is null so the storage is never accessed.
+    // SAFETY: `undefined` when jsonl_file is null — never accessed because
+    // jsonl_stream_ptr is also null in that case.
     var jsonl_stream_storage: JsonlStreamWriter = if (jsonl_file) |jf|
         JsonlStreamWriter{ .file = jf }
     else
