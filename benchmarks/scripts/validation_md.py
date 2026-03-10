@@ -516,6 +516,34 @@ def _compute_global_lim(
     return (lo - margin, hi + margin)
 
 
+def _load_config(results_dir: Path) -> dict | None:
+    """Load config.json from results directory."""
+    config_path = results_dir.joinpath("config.json")
+    if not config_path.exists():
+        return None
+    try:
+        return json.loads(config_path.read_text())
+    except json.JSONDecodeError:
+        return None
+
+
+def _build_subtitle(results_dir: Path) -> str:
+    """Build subtitle string with atom count and frame count from config."""
+    config = _load_config(results_dir)
+    if not config:
+        return ""
+    params = config.get("parameters", {})
+    parts: list[str] = []
+    if "atom_count" in params:
+        parts.append(f"{params['atom_count']:,} atoms")
+    if "frame_count" in params:
+        parts.append(f"{params['frame_count']:,} frames")
+    stride = params.get("stride", 1)
+    if stride and stride > 1:
+        parts.append(f"stride={stride}")
+    return ", ".join(parts)
+
+
 def _load_csvs(results_dir: Path, n_points_list: list[int]) -> dict[int, pl.DataFrame]:
     """Load results CSVs keyed by n_points. Returns only existing ones."""
     import polars as pl
@@ -571,11 +599,11 @@ def generate_grid_plot(
             title = f"{col_name} ({n_pts} points)"
             _scatter_cell(ax, df, "mdtraj", col_name, title, data_lim=data_lim)
 
-    fig.suptitle(
-        "MD Validation: zsasa variants vs mdtraj",
-        fontsize=14,
-        y=1.01,
-    )
+    subtitle = _build_subtitle(results_dir)
+    suptitle = "MD Validation: zsasa variants vs mdtraj"
+    if subtitle:
+        suptitle += f"\n({subtitle})"
+    fig.suptitle(suptitle, fontsize=14, y=1.01)
     fig.tight_layout()
     out_path = results_dir.joinpath("validation_grid.png")
     fig.savefig(out_path, dpi=150)
@@ -616,11 +644,11 @@ def generate_per_tool_plots(
             title = f"{n_pts} points"
             _scatter_cell(ax, df, "mdtraj", col_name, title, data_lim=tool_lim)
 
-        fig.suptitle(
-            f"MD: {col_name} vs mdtraj",
-            fontsize=13,
-            y=1.02,
-        )
+        subtitle = _build_subtitle(results_dir)
+        suptitle = f"MD: {col_name} vs mdtraj"
+        if subtitle:
+            suptitle += f"\n({subtitle})"
+        fig.suptitle(suptitle, fontsize=13, y=1.02)
         fig.tight_layout()
         out_path = results_dir.joinpath(f"validation_{col_name}.png")
         fig.savefig(out_path, dpi=150)
@@ -657,12 +685,16 @@ def generate_xtc_comparison_plot(
 
     fig, ax = plt.subplots(1, 1, figsize=(8, 8))
 
+    subtitle = _build_subtitle(results_dir)
+    title = "XTC comparison: zsasa_cli_f64 vs zsasa_mdtraj (100 points)"
+    if subtitle:
+        title += f"\n({subtitle})"
     _scatter_cell(
         ax,
         df,
         "zsasa_mdtraj",
         "zsasa_cli_f64",
-        "XTC comparison: zsasa_cli_f64 vs zsasa_mdtraj (100 points)",
+        title,
     )
 
     fig.tight_layout()
@@ -702,12 +734,16 @@ def generate_bitmask_comparison_plot(
 
     fig, ax = plt.subplots(1, 1, figsize=(8, 8))
 
+    subtitle = _build_subtitle(results_dir)
+    title = "Bitmask comparison: bitmask_f64 vs f64 (100 points)"
+    if subtitle:
+        title += f"\n({subtitle})"
     _scatter_cell(
         ax,
         df,
         "zsasa_cli_f64",
         "zsasa_cli_bitmask_f64",
-        "Bitmask comparison: bitmask_f64 vs f64 (100 points)",
+        title,
     )
 
     fig.tight_layout()
@@ -726,7 +762,11 @@ def print_stats_table(
     import polars as pl
     from rich.table import Table
 
-    table = Table(title=f"MD Validation Statistics (reference: {reference})")
+    subtitle = _build_subtitle(results_dir)
+    table_title = f"MD Validation Statistics (reference: {reference})"
+    if subtitle:
+        table_title += f" — {subtitle}"
+    table = Table(title=table_title)
     table.add_column("n_points", style="cyan", justify="right")
     table.add_column("Tool", style="green")
     table.add_column("N", justify="right")
@@ -896,6 +936,12 @@ def run(
         results_dir = output_dir
     results_dir.mkdir(parents=True, exist_ok=True)
 
+    # Get atom count from PDB for config metadata
+    import mdtraj as md
+
+    pdb_struct = md.load(str(pdb))
+    atom_count = pdb_struct.n_atoms
+
     # Save config
     variant_names = [v[0] for v in ZSASA_MD_VARIANTS]
     config = {
@@ -909,25 +955,33 @@ def run(
             "n_points": n_points_list,
             "stride": stride,
             "threads": threads,
+            "atom_count": atom_count,
         },
     }
-    results_dir.joinpath("config.json").write_text(json.dumps(config, indent=2))
 
     # Print header
     console.print(f"\n[bold]=== MD SASA Validation: {name} ===[/]")
     console.print(f"XTC: {xtc}")
     console.print(f"PDB: {pdb}")
     console.print(f"Output: {results_dir}")
+    console.print(f"Atoms: {atom_count}")
     console.print(f"Tools: mdtraj (ref), {', '.join(variant_names)}")
     console.print(f"n_points: {n_points_list}, Stride: {stride}, Threads: {threads}")
 
     # --- Main runs: each n_points level ---
+    frame_count = None
     for n_pts in n_points_list:
         mdtraj_results, zsasa_runs = collect_results_for_npoints(
             xtc, pdb, stride, threads, n_pts
         )
+        if frame_count is None and mdtraj_results:
+            frame_count = len(mdtraj_results)
+            config["parameters"]["frame_count"] = frame_count
         csv_path = results_dir.joinpath(f"results_{n_pts}.csv")
         build_csv(mdtraj_results, zsasa_runs, csv_path)
+
+    # Write config after runs (includes frame_count)
+    results_dir.joinpath("config.json").write_text(json.dumps(config, indent=2))
 
     # --- Statistics and plots ---
     print_stats_table(results_dir, n_points_list)
