@@ -11,7 +11,7 @@ Large-scale benchmark results for zsasa using Shrake-Rupley algorithm.
 > - Benchmarks measure **SASA calculation time only** (file I/O excluded). FreeSASA and RustSASA have unstable I/O timing, so SASA-only measurement is used for fair comparison. See [Methodology](#methodology) for details.
 > - SASA accuracy validated: mean error <0.001% vs FreeSASA reference. See [validation](validation.md) for details.
 
-## Highlights
+## TL;DR
 
 zsasa's key advantage: **Large structures + Multi-threading**
 
@@ -23,71 +23,6 @@ zsasa's key advantage: **Large structures + Multi-threading**
 - **1.89x** median speedup vs FreeSASA
 - **1.84x** median speedup vs RustSASA
 - **Bitmask mode**: ~15x less memory with competitive speed on large structures
-
----
-
-## Methodology
-
-### SASA-Only Timing
-
-For fair comparison, we measure **SASA calculation time only**. File I/O is excluded because FreeSASA and RustSASA exhibit unstable I/O timing.
-
-```
-Total time = File I/O + SASA calculation + Output
-                        ^^^^^^^^^^^^^^^^
-                        Only this is measured
-```
-
-Measurement method for each implementation:
-
-| Implementation | Method |
-|----------------|--------|
-| zsasa (all variants) | Internal measurement via `--timing` option (stderr output) |
-| FreeSASA C | Patched binary outputs SASA calculation time to stderr |
-| RustSASA | Patched binary outputs `SASA_TIME_US` to stderr |
-
-### Parameters
-
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| Algorithm | Shrake-Rupley | Supported by all implementations |
-| n_points | 100 | Number of test points |
-| probe_radius | 1.4 Å | Water molecule radius |
-| Warmup | 1 | Discarded before measurement |
-| Runs | 3 | Average value used |
-
-### Tool Variants
-
-| Tool | Precision | Neighbor Storage | Notes |
-|------|-----------|------------------|-------|
-| zsasa_f64 | f64 | Full array | Default, highest accuracy |
-| zsasa_f32 | f32 | Full array | ~3% faster than f64 at t=1 |
-| zsasa_f64_bitmask | f64 | Bitmask | ~15x less memory for 500k+ atoms |
-| zsasa_f32_bitmask | f32 | Bitmask | Lowest memory usage |
-| FreeSASA | f64 | — | C reference implementation |
-| RustSASA | f64 | — | Rust implementation |
-
-### Stratified Sampling
-
-Stratified sampling from PDB and AlphaFold structures, ~150 structures per bin (14 bins):
-
-| Bin | Atom Range | Count |
-|-----|-----------|------:|
-| 0-500 | 0 – 500 | 150 |
-| 500-1k | 500 – 1,000 | 150 |
-| 1k-2k | 1,000 – 2,000 | 150 |
-| 2k-3k | 2,000 – 3,000 | 150 |
-| 3k-5k | 3,000 – 5,000 | 150 |
-| 5k-10k | 5,000 – 10,000 | 150 |
-| 10k-20k | 10,000 – 20,000 | 150 |
-| 20k-50k | 20,000 – 50,000 | 149 |
-| 50k-75k | 50,000 – 75,000 | 150 |
-| 75k-100k | 75,000 – 100,000 | 152 |
-| 100k-150k | 100,000 – 150,000 | 148 |
-| 150k-200k | 150,000 – 200,000 | 150 |
-| 200k-500k | 200,000 – 500,000 | 150 |
-| 500k+ | 500,000+ | 63 |
-| **Total** | | **2,013** |
 
 ---
 
@@ -349,6 +284,71 @@ Thread scaling details on representative structures selected from each size bin.
 
 4. **Accurate results**
    - See [validation](validation.md) for detailed accuracy analysis
+
+---
+
+## Methodology
+
+### SASA-Only Timing
+
+For fair comparison, we measure **SASA calculation time only**. File I/O is excluded because FreeSASA and RustSASA exhibit unstable I/O timing.
+
+```
+Total time = File I/O + SASA calculation + Output
+                        ^^^^^^^^^^^^^^^^
+                        Only this is measured
+```
+
+Measurement method for each implementation:
+
+| Implementation | Method |
+|----------------|--------|
+| zsasa (all variants) | Internal measurement via `--timing` option (stderr output) |
+| FreeSASA C | Patched binary outputs SASA calculation time to stderr |
+| RustSASA | Patched binary outputs `SASA_TIME_US` to stderr |
+
+### Parameters
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| Algorithm | Shrake-Rupley | Supported by all implementations |
+| n_points | 100 | Number of test points |
+| probe_radius | 1.4 Å | Water molecule radius |
+| Warmup | 1 | Discarded before measurement |
+| Runs | 3 | Average value used |
+
+### Tool Variants
+
+| Tool | Precision | Neighbor Storage | Notes |
+|------|-----------|------------------|-------|
+| zsasa_f64 | f64 | Full array | Default, highest accuracy |
+| zsasa_f32 | f32 | Full array | ~3% faster than f64 at t=1 |
+| zsasa_f64_bitmask | f64 | Bitmask | ~15x less memory for 500k+ atoms |
+| zsasa_f32_bitmask | f32 | Bitmask | Lowest memory usage |
+| FreeSASA | f64 | — | C reference implementation |
+| RustSASA | f64 | — | Rust implementation |
+
+### Stratified Sampling
+
+Stratified sampling from PDB and AlphaFold structures, ~150 structures per bin (14 bins):
+
+| Bin | Atom Range | Count |
+|-----|-----------|------:|
+| 0-500 | 0 – 500 | 150 |
+| 500-1k | 500 – 1,000 | 150 |
+| 1k-2k | 1,000 – 2,000 | 150 |
+| 2k-3k | 2,000 – 3,000 | 150 |
+| 3k-5k | 3,000 – 5,000 | 150 |
+| 5k-10k | 5,000 – 10,000 | 150 |
+| 10k-20k | 10,000 – 20,000 | 150 |
+| 20k-50k | 20,000 – 50,000 | 149 |
+| 50k-75k | 50,000 – 75,000 | 150 |
+| 75k-100k | 75,000 – 100,000 | 152 |
+| 100k-150k | 100,000 – 150,000 | 148 |
+| 150k-200k | 150,000 – 200,000 | 150 |
+| 200k-500k | 200,000 – 500,000 | 150 |
+| 500k+ | 500,000+ | 63 |
+| **Total** | | **2,013** |
 
 ---
 
