@@ -9,18 +9,16 @@
 High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 **Up to 3x faster** than FreeSASA C with f64 precision.
 
-**[Documentation](https://n283t.github.io/zsasa/)**
+**[Documentation](https://n283t.github.io/zsasa/)** · **[Benchmarks](https://n283t.github.io/zsasa/docs/benchmarks)** · **[Comparison](https://n283t.github.io/zsasa/docs/comparison)**
 
 ## Features
 
-- **Two algorithms**: Shrake-Rupley (fast) and Lee-Richards (precise), with bitmask LUT optimization
-- **Multiple input formats**: mmCIF, PDB, JSON
-- **MD trajectory analysis**: Native XTC and DCD readers, MDTraj and MDAnalysis integration
-- **Batch processing**: Native directory processing for proteome-scale datasets
-- **Analysis features**: Per-residue aggregation, RSA, polar/nonpolar classification
-- **High performance**: SIMD optimization, multi-threading, f64/f32 selectable precision
-- **Cross-platform**: Linux, macOS, and Windows (pre-built wheels via `pip install zsasa`)
-- **Python bindings**: NumPy integration with Gemmi/BioPython/Biotite support
+- **Two algorithms**: Shrake-Rupley and Lee-Richards, with bitmask LUT optimization
+- **Multiple input formats**: mmCIF, PDB, JSON, XTC, DCD
+- **Batch & trajectory**: Proteome-scale directory processing, MD trajectory analysis
+- **Python bindings**: NumPy, Gemmi, BioPython, Biotite, MDTraj, MDAnalysis
+- **High performance**: SIMD, multi-threading, f64/f32 selectable, zero dependencies
+- **Cross-platform**: Linux, macOS, Windows (pre-built wheels on PyPI)
 
 ## Quick Start
 
@@ -28,8 +26,6 @@ High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 
 ```bash
 pip install zsasa
-# or
-uv add zsasa
 ```
 
 ```python
@@ -52,40 +48,15 @@ cd zsasa && zig build -Doptimize=ReleaseFast
 ./zig-out/bin/zsasa calc structure.cif output.json
 ```
 
-## Benchmarks
-
-### Single-File (2,013 structures, n_points=100, threads=10)
-
-| Metric | vs FreeSASA | vs RustSASA |
-|--------|-------------|-------------|
-| Median speedup | **1.88x** | **1.84x** |
-| Thread scaling (t=1→10) | 2.71x | 1.39x |
-
-### Batch (E. coli K-12 proteome, 4,370 structures)
-
-| Tool | Time | RSS |
-|------|------|-----|
-| zsasa bitmask (f32) | **1.42s** | 43 MB |
-| Lahuta bitmask | 2.01s | 291 MB |
-| RustSASA | 5.24s | 169 MB |
-
-### MD Trajectory
-
-**82–96x less memory** than mdsasa-bolt (RustSASA). On 10K-frame datasets, mdsasa-bolt timed out (>2 hours) where zsasa completed in 38 seconds.
-
-See [full benchmarks](https://n283t.github.io/zsasa/docs/benchmarks) for methodology and results.
-
 ## Documentation
 
-Full documentation is available at **[n283t.github.io/zsasa](https://n283t.github.io/zsasa/)**.
-
-| Section | Description |
-|---------|-------------|
+| | |
+|---|---|
 | [Getting Started](https://n283t.github.io/zsasa/docs/getting-started) | Installation and first calculation |
-| [Comparison](https://n283t.github.io/zsasa/docs/comparison) | How zsasa compares to FreeSASA, RustSASA, and Lahuta |
-| [CLI Reference](https://n283t.github.io/zsasa/docs/cli/commands) | Full CLI options and output formats |
-| [Python API](https://n283t.github.io/zsasa/docs/python-api) | Core API, integrations, MD trajectory |
+| [CLI Reference](https://n283t.github.io/zsasa/docs/cli/commands) | Commands, input formats, output options |
+| [Python API](https://n283t.github.io/zsasa/docs/python-api) | Core API, integrations, trajectory |
 | [Benchmarks](https://n283t.github.io/zsasa/docs/benchmarks) | Performance and accuracy results |
+| [Comparison](https://n283t.github.io/zsasa/docs/comparison) | vs FreeSASA, RustSASA, Lahuta |
 
 ## Contributing
 
@@ -97,7 +68,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 
 ## References
 
-- Shrake, A.; Rupley, J. A. Environment and Exposure to Solvent of Protein Atoms. *J. Mol. Biol.* 1973, 79(2), 351-371. [doi:10.1016/0022-2836(73)90011-9](https://doi.org/10.1016/0022-2836(73)90011-9)
-- Lee, B.; Richards, F. M. The Interpretation of Protein Structures: Estimation of Static Accessibility. *J. Mol. Biol.* 1971, 55(3), 379-400. [doi:10.1016/0022-2836(71)90324-x](https://doi.org/10.1016/0022-2836(71)90324-x)
-- Mitternacht, S. FreeSASA: An Open Source C Library for Solvent Accessible Surface Area Calculations. *F1000Res.* 2016, 5, 189. [doi:10.12688/f1000research.7931.1](https://doi.org/10.12688/f1000research.7931.1)
-- Campbell, M. J. RustSASA: A Rust Crate for Accelerated Solvent Accessible Surface Area Calculations. *J. Open Source Softw.* 2026, 11(117), 9537. [doi:10.21105/joss.09537](https://doi.org/10.21105/joss.09537)
+- Shrake, A.; Rupley, J. A. *J. Mol. Biol.* 1973, 79(2), 351-371. [doi:10.1016/0022-2836(73)90011-9](https://doi.org/10.1016/0022-2836(73)90011-9)
+- Lee, B.; Richards, F. M. *J. Mol. Biol.* 1971, 55(3), 379-400. [doi:10.1016/0022-2836(71)90324-x](https://doi.org/10.1016/0022-2836(71)90324-x)
+- Mitternacht, S. *F1000Res.* 2016, 5, 189. [doi:10.12688/f1000research.7931.1](https://doi.org/10.12688/f1000research.7931.1)
+- Campbell, M. J. *J. Open Source Softw.* 2026, 11(117), 9537. [doi:10.21105/joss.09537](https://doi.org/10.21105/joss.09537)
