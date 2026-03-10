@@ -21,6 +21,8 @@ Accuracy comparison of zsasa against reference implementations across the E. col
 - **RustSASA** converges with point count: 0.32% at 100 → 0.06% at 1000
 - **Lahuta bitmask** (128 pts): comparable accuracy to zsasa bitmask
 
+![SR quicklook: zsasa f64 vs FreeSASA (4,370 structures)](pathname:///zsasa/assets/benchmarks/validation/sr/validation_quicklook.png)
+
 ## Test Environment
 
 | Item | Value |
