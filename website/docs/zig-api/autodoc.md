@@ -19,6 +19,6 @@ functions, and modules in zsasa.
 ```bash
 zig build docs
 # Serve with HTTP server (WASM requires HTTP, not file://)
-python3 -m http.server 8080 --directory zig-out/docs
+uv run python -m http.server 8080 --directory zig-out/docs
 # Open http://localhost:8080
 ```

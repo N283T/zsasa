@@ -71,10 +71,10 @@ See [Trajectory Mode](#trajectory-mode) section below for details.
 
 | Option | Description |
 |--------|-------------|
-| `--classifier=TYPE` | Built-in classifier: `naccess`, `protor`, or `oons` |
-| `--config=FILE` | Custom classifier config file (TOML or FreeSASA format, auto-detected by extension) |
+| `--classifier=TYPE` | Built-in classifier: `naccess`, `protor`, or `oons` | `protor` for PDB/mmCIF, none for JSON |
+| `--config=FILE` | Custom classifier config file (TOML or FreeSASA format, auto-detected by extension) | none |
 
-When `--classifier` is used, atom radii are assigned based on residue and atom names. If both `--classifier` and `--config` are specified, `--config` takes precedence.
+When `--classifier` is used, atom radii are assigned based on residue and atom names. For PDB/mmCIF input, `protor` is used by default (matching FreeSASA/RustSASA defaults). If both `--classifier` and `--config` are specified, `--config` takes precedence.
 
 ### Structure Filtering
 
@@ -83,7 +83,8 @@ When `--classifier` is used, atom radii are assigned based on residue and atom n
 | `--chain=ID` | Filter by chain ID (e.g., `A` or `A,B,C`) | all chains |
 | `--model=N` | Model number for NMR structures (≥1) | all models |
 | `--auth-chain` | Use auth_asym_id instead of label_asym_id | label_asym_id |
-| `--include-hydrogens` | Include hydrogen atoms | excluded |
+| `--include-hydrogens` | Include hydrogen atoms (calc/batch default: excluded) | excluded |
+| `--no-hydrogens` | Exclude hydrogen atoms (traj default: included) | — |
 | `--include-hetatm` | Include HETATM records | excluded |
 
 ### Analysis Options
@@ -522,7 +523,8 @@ zsasa traj <trajectory> <topology> [OPTIONS]
 | `--n-points=N` | Test points per atom (SR only) | `100` |
 | `--n-slices=N` | Slices per atom diameter (LR only) | `20` |
 | `--precision=P` | Floating-point precision: `f32` or `f64` | `f32` |
-| `--include-hydrogens` | Include hydrogen atoms | excluded |
+| `--no-hydrogens` | Exclude hydrogen atoms | included |
+| `--include-hydrogens` | Include hydrogen atoms (default, for backward compat) | included |
 | `--stride=N` | Process every Nth frame | `1` |
 | `--start=N` | Start from frame N | `0` |
 | `--end=N` | End at frame N | all |
@@ -564,7 +566,7 @@ zsasa traj trajectory.xtc topology.pdb --algorithm=lr --precision=f64
 
 - Supported trajectory formats: **XTC** (GROMACS) and **DCD** (NAMD/CHARMM), auto-detected from extension
 - XTC coordinates are in nm; automatically converted to Å. DCD coordinates are already in Å.
-- Hydrogen atoms are excluded by default; use `--include-hydrogens` to include them
+- Hydrogen atoms are **included** by default in trajectory mode; use `--no-hydrogens` to exclude them
 - Topology file provides atom names for radius classification
 - The number of atoms in XTC must match the topology
 - Default precision is `f32` (faster for trajectory processing)
