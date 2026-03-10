@@ -226,3 +226,11 @@ zsasa is a young project and its CLI options, Python API, and output formats may
 | FreeSASA | [github.com/mittinatten/freesasa](https://github.com/mittinatten/freesasa) |
 | RustSASA | [github.com/maxall41/RustSASA](https://github.com/maxall41/RustSASA) |
 | Lahuta | [github.com/bisejdiu/lahuta](https://github.com/bisejdiu/lahuta) |
+
+## Acknowledgments
+
+zsasa builds on ideas and methods from these excellent projects. We are grateful to their authors for advancing open-source SASA calculation:
+
+- **FreeSASA** by Simon Mitternacht — the foundational C library that established open-source SASA calculation. zsasa uses FreeSASA as the accuracy reference for validation.
+- **RustSASA** by Max Campbell — a modern Rust implementation that demonstrated SIMD-accelerated SASA calculation.
+- **Lahuta** by Bekim Sejdiu — a C++ toolkit that pioneered bitmask LUT optimization for SASA.
