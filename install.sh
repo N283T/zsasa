@@ -38,6 +38,7 @@ fi
 
 info()    { printf "%s==>%s %s%s\n"  "${COLOR_CYAN}"  "${COLOR_RESET}" "$*" "${COLOR_RESET}"; }
 success() { printf "%s✓%s %s%s\n"   "${COLOR_GREEN}" "${COLOR_RESET}" "$*" "${COLOR_RESET}"; }
+warn()    { printf "%sWarning:%s %s%s\n" "${COLOR_BOLD}" "${COLOR_RESET}" "$*" "${COLOR_RESET}" >&2; }
 error()   { printf "%sError:%s %s%s\n" "${COLOR_RED}" "${COLOR_RESET}" "$*" "${COLOR_RESET}" >&2; }
 bold()    { printf "%s%s%s\n" "${COLOR_BOLD}" "$*" "${COLOR_RESET}"; }
 
@@ -127,17 +128,37 @@ has_required_zig() {
 }
 
 # ---------------------------------------------------------------------------
+# SHA256 helper: sha256sum (Linux) or shasum -a 256 (macOS)
+# ---------------------------------------------------------------------------
+_sha256() {
+    if command -v sha256sum > /dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum > /dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Fetch latest version from GitHub API
 # ---------------------------------------------------------------------------
 fetch_latest_version() {
     _api_url="https://api.github.com/repos/${REPO}/releases/latest"
-    _json="$(download_stdout "${_api_url}")"
-    # Extract tag_name without jq — use sed with POSIX ERE
-    _tag="$(printf '%s' "${_json}" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/p' | head -n 1)"
-    if [ -z "${_tag}" ]; then
-        die "Could not determine latest release version from GitHub API."
+    _json="$(download_stdout "${_api_url}")" \
+        || die "Could not fetch release information from GitHub."
+
+    if command -v jq > /dev/null 2>&1; then
+        _tag="$(printf '%s' "${_json}" | jq -r '.tag_name // empty' | sed 's/^v//')"
+    else
+        # Extract tag_name without jq -- use sed with POSIX BRE
+        _tag="$(printf '%s' "${_json}" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/p' | head -n 1)"
     fi
-    echo "${_tag}"
+
+    if [ -z "${_tag}" ]; then
+        die "Could not determine latest version. Try: VERSION=x.y.z $0"
+    fi
+    printf '%s' "${_tag}"
 }
 
 # ---------------------------------------------------------------------------
@@ -162,8 +183,7 @@ build_from_source() {
 
     info "Installing zsasa to ${_install_dir}/zsasa..."
     mkdir -p "${_install_dir}"
-    cp "${_binary}" "${_install_dir}/zsasa"
-    chmod +x "${_install_dir}/zsasa"
+    install -m 755 "${_binary}" "${_install_dir}/zsasa"
 }
 
 # ---------------------------------------------------------------------------
@@ -177,15 +197,30 @@ download_binary() {
     _asset_name="zsasa-${_version}-${_target}"
     _url="https://github.com/${REPO}/releases/download/v${_version}/${_asset_name}"
     _tmp_bin="${TMPDIR_WORK}/zsasa"
+    _checksum_url="https://github.com/${REPO}/releases/download/v${_version}/SHA256SUMS"
+    _tmp_checksums="${TMPDIR_WORK}/SHA256SUMS"
 
     info "Downloading ${_asset_name}..."
     download "${_url}" "${_tmp_bin}" \
         || die "Download failed. Check your network or visit https://github.com/${REPO}/releases."
 
+    info "Verifying checksum..."
+    if download "${_checksum_url}" "${_tmp_checksums}" 2>/dev/null; then
+        _expected="$(grep "${_asset_name}" "${_tmp_checksums}" | awk '{print $1}')"
+        if [ -n "${_expected}" ]; then
+            _actual="$(_sha256 "${_tmp_bin}")"
+            if [ "${_expected}" != "${_actual}" ]; then
+                die "Checksum mismatch! Expected ${_expected}, got ${_actual}"
+            fi
+            info "Checksum verified."
+        fi
+    else
+        warn "Checksum file not available. Skipping verification."
+    fi
+
     info "Installing zsasa to ${_install_dir}/zsasa..."
     mkdir -p "${_install_dir}"
-    cp "${_tmp_bin}" "${_install_dir}/zsasa"
-    chmod +x "${_install_dir}/zsasa"
+    install -m 755 "${_tmp_bin}" "${_install_dir}/zsasa"
 }
 
 # ---------------------------------------------------------------------------
@@ -228,6 +263,12 @@ main() {
     # Resolve install directory
     INSTALL_DIR="${INSTALL_DIR:-${DEFAULT_INSTALL_DIR}}"
 
+    # Validate INSTALL_DIR is an absolute path
+    case "${INSTALL_DIR}" in
+        /*) ;;
+        *) die "INSTALL_DIR must be an absolute path, got: '${INSTALL_DIR}'" ;;
+    esac
+
     # Detect platform
     TARGET="$(detect_target)"
     info "Detected: ${TARGET}"
@@ -239,11 +280,20 @@ main() {
         info "Fetching latest version from GitHub..."
         VERSION="$(fetch_latest_version)"
     fi
+
+    # Validate version format
+    case "${VERSION}" in
+        [0-9]*.[0-9]*.[0-9]*) ;;
+        *) die "Invalid version format: '${VERSION}'. Expected: X.Y.Z" ;;
+    esac
+
     info "Version: ${VERSION}"
     printf "\n"
 
     # Decide build strategy
     if has_required_zig; then
+        command -v git > /dev/null 2>&1 \
+            || die "git is required for building from source. Install git or remove Zig from PATH to use binary download."
         info "Zig ${REQUIRED_ZIG_VERSION} found — building from source..."
         build_from_source "${VERSION}" "${INSTALL_DIR}"
     else
