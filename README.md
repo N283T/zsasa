@@ -40,12 +40,20 @@ print(f"Total SASA: {result.total_area:.2f} Å²")
 
 ### CLI
 
-Requires [Zig 0.15.2+](https://ziglang.org/download/).
-
 ```bash
+# One-line install (downloads pre-built binary)
+curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | sh
+
+# Or with custom install directory
+curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | INSTALL_DIR=/usr/local/bin sh
+
+# Or build from source (requires Zig 0.15.2)
 git clone https://github.com/N283T/zsasa.git
 cd zsasa && zig build -Doptimize=ReleaseFast
-./zig-out/bin/zsasa calc structure.cif output.json
+```
+
+```bash
+zsasa calc structure.cif output.json
 ```
 
 ## Documentation
