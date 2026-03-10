@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-03-10
+
+### Added
+
+- **Bitmask variants for Python MD wrappers**: `use_bitmask` option for MDTraj, MDAnalysis, XTC, and DCD integrations (#275)
+- **JSONL streaming batch output**: `--format=jsonl` for memory-efficient batch results (#227, #235)
+- **Documentation site overhaul**:
+  - Comparison page vs FreeSASA, RustSASA, and Lahuta with source code references (#292)
+  - Landing page with hero section and feature cards (#291)
+  - Python autodoc generation with pdoc (#290)
+  - Split CLI reference into Commands, Input, and Output pages (#289)
+  - Benchmarks overview page and changelog (#294)
+  - Rewrote all benchmark pages with new results (#280, #282, #283, #284)
+
+### Performance
+
+- **mmap file reading**: replaced `readToEndAlloc` with memory-mapped I/O for structure files (#229)
+- **Flat buffer NeighborList**: replaced dynamic `ArrayList` with pre-allocated flat buffers (#230)
+- **Trajectory parallel workers**: aligned with batch allocator pattern for lower overhead (#231)
+- **64KB write buffer** for JSONL output (#228)
+
+### Fixed
+
+- Corrected Lahuta metadata (URL, language) and RustSASA precision (f64 → f32) in benchmark docs (#293)
+- Various PDB generation fixes: chain name shortening, serial number wrapping, CRYST1 Z value handling (#251, #252, #253)
+
 ## [0.2.1] - 2026-02-25
 
 ### Changed
@@ -353,7 +379,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `calc_reference_sasa.py` - Generate reference SASA
   - `benchmark.py` - Performance benchmarking
 
-[Unreleased]: https://github.com/N283T/zsasa/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/N283T/zsasa/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/N283T/zsasa/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/N283T/zsasa/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/N283T/zsasa/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/N283T/zsasa/compare/v0.1.2...v0.1.3
