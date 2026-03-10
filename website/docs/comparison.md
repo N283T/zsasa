@@ -131,7 +131,14 @@ RustSASA uses f32 throughout its entire computation pipeline — coordinates, sp
 
 Source: [lib.rs](https://github.com/maxall41/RustSASA/blob/main/src/lib.rs) — `Vec<f32>` for coordinates, `f32` for all SIMD operations
 
-zsasa defaults to f64 for maximum accuracy, with f32 available as an option for trajectory processing or when comparing with f32-based tools. See [Validation Benchmarks](benchmarks/validation.md) for accuracy comparison.
+zsasa defaults to f64 for maximum accuracy, with f32 available as an option for trajectory processing or when comparing with f32-based tools.
+
+Validation against FreeSASA reference (E. coli K-12 proteome, 4,370 structures):
+- **zsasa f64**: mean error <0.001%
+- **zsasa f32**: mean error <0.05%
+- **RustSASA f32**: mean error <0.05% (expected, same precision)
+
+See [Validation Benchmarks](benchmarks/validation.md) for full convergence analysis.
 
 ## Batch Processing
 

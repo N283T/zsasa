@@ -59,48 +59,79 @@ export default function Home(): ReactNode {
     <Layout title="Home" description={siteConfig.tagline}>
       <HomepageHeader />
       <main>
+        {/* Highlight section */}
+        <section className={styles.highlight}>
+          <div className="container">
+            <div className="row">
+              <div className="col col--6">
+                <Heading as="h2">Up to 3x Faster than FreeSASA C</Heading>
+                <p>
+                  SIMD-optimized Shrake-Rupley with multi-threading. Bitmask LUT
+                  optimization for additional speedup. Consistent performance
+                  with no pathological slowdowns.
+                </p>
+                <Link to="/docs/comparison">
+                  See how zsasa compares →
+                </Link>
+              </div>
+              <div className="col col--6">
+                <Heading as="h2">Zero Dependencies</Heading>
+                <p>
+                  Pure Zig with no external libraries. Single{" "}
+                  <code>zig build</code> command. Python wheels available on PyPI
+                  for Linux, macOS, and Windows.
+                </p>
+                <Link to="/docs/getting-started">
+                  Install in 30 seconds →
+                </Link>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Feature grid */}
         <section style={{ padding: "2rem 0" }}>
           <div className="container">
             <div className="row">
               <div className="col col--4">
-                <Heading as="h2">Fast</Heading>
-                <p>
-                  Up to 3x faster than FreeSASA C with f64 precision. SIMD
-                  optimization and multi-threading for maximum throughput.
-                </p>
-              </div>
-              <div className="col col--4">
-                <Heading as="h2">Two Algorithms</Heading>
+                <Heading as="h3">Two Algorithms</Heading>
                 <p>
                   Shrake-Rupley (fast, recommended) and Lee-Richards (precise).
-                  Bitmask LUT optimization for additional speedup.
+                  Selectable f64/f32 precision.
                 </p>
               </div>
               <div className="col col--4">
-                <Heading as="h2">Multiple Formats</Heading>
+                <Heading as="h3">Multiple Formats</Heading>
                 <p>
                   mmCIF, PDB, and JSON input. XTC and DCD trajectory support
                   with automatic unit conversion.
                 </p>
               </div>
-            </div>
-            <div className="row" style={{ marginTop: "2rem" }}>
               <div className="col col--4">
-                <Heading as="h2">Python Bindings</Heading>
+                <Heading as="h3">Python Bindings</Heading>
                 <p>
-                  NumPy integration with pre-built wheels for Linux, macOS, and
-                  Windows. Gemmi, BioPython, Biotite, MDTraj, and MDAnalysis support.
+                  NumPy integration with Gemmi, BioPython, Biotite, MDTraj, and
+                  MDAnalysis support.
                 </p>
               </div>
+            </div>
+            <div className="row" style={{ marginTop: "1.5rem" }}>
               <div className="col col--4">
-                <Heading as="h2">Analysis Tools</Heading>
+                <Heading as="h3">Analysis Tools</Heading>
                 <p>
                   Per-residue aggregation, RSA calculation, and polar/nonpolar
-                  classification. Three built-in atom classifiers.
+                  classification with three built-in classifiers.
                 </p>
               </div>
               <div className="col col--4">
-                <Heading as="h2">Cross-Platform</Heading>
+                <Heading as="h3">Batch & Trajectory</Heading>
+                <p>
+                  Native directory batch processing and MD trajectory analysis.
+                  Proteome-scale datasets in seconds.
+                </p>
+              </div>
+              <div className="col col--4">
+                <Heading as="h3">Cross-Platform</Heading>
                 <p>
                   Linux, macOS, and Windows. CLI binary, Python package on PyPI,
                   and native Zig library with interactive autodoc.

@@ -24,6 +24,7 @@ const sidebars: SidebarsConfig = {
         "cli/output",
       ],
     },
+    "changelog",
   ],
   pythonApi: [
     "python-api/index",
@@ -45,6 +46,7 @@ const sidebars: SidebarsConfig = {
     },
   ],
   benchmarks: [
+    "benchmarks/index",
     "benchmarks/single-file",
     "benchmarks/batch",
     "benchmarks/md",
