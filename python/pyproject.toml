@@ -72,17 +72,13 @@ test-command = "pytest {project}/python/tests/test_sasa.py -x -q"
 # Default manylinux2014 (glibc 2.17) is too old for our glibc 2.28 target.
 manylinux-x86_64-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"
-# Install Zig via PyPI and build shared library once per platform.
-# Uses python3/pip3 for manylinux container compatibility.
-# Pin glibc 2.28 via Zig target to ensure manylinux_2_28 compatibility.
+# Download Zig directly from official release (avoids PyPI rate limits).
 # $(uname -m) resolves to x86_64 or aarch64 depending on the runner.
-before-all = "pip3 install ziglang && python3 -m ziglang build -Doptimize=ReleaseFast -Dtarget=$(uname -m)-linux-gnu.2.28"
-# Default auditwheel repair adds manylinux_2_28 tag to wheels.
-# Zig statically links everything except libc (manylinux-allowlisted),
-# so auditwheel just retags without bundling external libs.
+before-all = "curl -sSfL https://ziglang.org/download/0.15.2/zig-$(uname -m)-linux-0.15.2.tar.xz | tar -xJ -C /usr/local && ln -sf /usr/local/zig-$(uname -m)-linux-0.15.2/zig /usr/local/bin/zig && zig build -Doptimize=ReleaseFast -Dtarget=$(uname -m)-linux-gnu.2.28"
 
 [tool.cibuildwheel.macos]
-before-all = "pip3 install ziglang && python3 -m ziglang build -Doptimize=ReleaseFast"
+# Zig installed by setup-zig action in workflow (not via PyPI).
+before-all = "zig build -Doptimize=ReleaseFast"
 # Skip delocate: libzsasa.dylib has no external dylib dependencies.
 repair-wheel-command = ""
 
@@ -90,7 +86,8 @@ repair-wheel-command = ""
 MACOSX_DEPLOYMENT_TARGET = "11.0"
 
 [tool.cibuildwheel.windows]
-before-all = "pip install ziglang && python -m ziglang build -Doptimize=ReleaseFast"
+# Zig installed by setup-zig action in workflow (not via PyPI).
+before-all = "zig build -Doptimize=ReleaseFast"
 # Skip delvewheel: Zig statically links everything, no external DLL dependencies.
 repair-wheel-command = ""
 
