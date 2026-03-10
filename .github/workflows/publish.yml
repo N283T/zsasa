@@ -43,6 +43,16 @@ jobs:
         with:
           version: 0.15.2
 
+      - name: Cache cibuildwheel
+        if: runner.os != 'Linux'
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: |
+            ~/Library/Caches/cibuildwheel
+            ~/AppData/Local/pypa/cibuildwheel/Cache
+          key: cibw-${{ runner.os }}-${{ hashFiles('python/pyproject.toml') }}
+          restore-keys: cibw-${{ runner.os }}-
+
       - name: Build wheels
         uses: pypa/cibuildwheel@ee63bf16da6cddfb925f542f2c7b59ad50e93969 # v2.22
         with:
