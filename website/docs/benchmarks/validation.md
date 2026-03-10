@@ -6,6 +6,8 @@ Accuracy comparison of zsasa against reference implementations across the E. col
 
 ## TL;DR
 
+<img src="pathname:///zsasa/assets/benchmarks/validation/sr/validation_quicklook.png" alt="SR quicklook: zsasa f64 vs FreeSASA (4,370 structures)" width="560" />
+
 | Algorithm | Tool | R² | Mean Error % | Max Error % |
 |-----------|------|---:|--------------:|------------:|
 | SR (100 pts) | zsasa f64 | 1.000000 | 0.0000 | 0.0000 |
@@ -20,8 +22,6 @@ Accuracy comparison of zsasa against reference implementations across the E. col
 - **Bitmask** error plateaus at ~0.7–0.8% (LUT approximation, independent of point count)
 - **RustSASA** converges with point count: 0.32% at 100 → 0.06% at 1000
 - **Lahuta bitmask** (128 pts): comparable accuracy to zsasa bitmask
-
-![SR quicklook: zsasa f64 vs FreeSASA (4,370 structures)](pathname:///zsasa/assets/benchmarks/validation/sr/validation_quicklook.png)
 
 ## Test Environment
 
