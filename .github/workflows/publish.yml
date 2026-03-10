@@ -54,7 +54,7 @@ jobs:
           restore-keys: cibw-${{ runner.os }}-
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@ee63bf16da6cddfb925f542f2c7b59ad50e93969 # v2.22
+        uses: pypa/cibuildwheel@54a71d3375df80d84b6d4537d04614fec04e637f # v3.4.0
         with:
           package-dir: python
 
