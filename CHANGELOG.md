@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CLI installer**: `install.sh` script for one-line CLI installation — builds from source with Zig or downloads pre-built binary from GitHub Releases
+- **CLI release binaries**: pre-built CLI binaries for linux-x86_64, linux-aarch64, macos-x86_64, macos-aarch64, windows-x86_64 attached to GitHub Releases
+
 ## [0.2.3] - 2026-03-10
 
 ### Fixed
