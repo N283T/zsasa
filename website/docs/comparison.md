@@ -207,6 +207,10 @@ Zig has not yet reached version 1.0. The language may introduce breaking changes
 
 **Mitigation:** The Python package (`zsasa`) communicates with the Zig core through the C ABI, which is stable and standardized. This means Python users are insulated from Zig-specific changes — even if the Zig internals are updated, the Python API remains unaffected as long as the C ABI interface is maintained.
 
+### Early-stage API
+
+zsasa is a young project and its CLI options, Python API, and output formats may change between releases. Established tools like FreeSASA have stable APIs refined over many years of use.
+
 ## Links
 
 | Tool | Repository |
