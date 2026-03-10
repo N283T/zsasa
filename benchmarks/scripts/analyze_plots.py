@@ -170,12 +170,12 @@ def plot_scatter(n_points: int = 100, time_col: str = "time_ms"):
         plt.close(fig)
         rprint(f"[green]Saved:[/green] {out_path}")
 
-    # Grid of all threads
+    # Grid of all threads (2x2 layout for 4 thread counts)
     n_threads = len(thread_counts)
-    n_cols = min(3, n_threads)
+    n_cols = min(2, n_threads)
     n_rows = (n_threads + n_cols - 1) // n_cols
 
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 5 * n_rows))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(7 * n_cols, 6 * n_rows))
     if n_threads == 1:
         axes = [[axes]]
     elif n_rows == 1:
@@ -589,14 +589,15 @@ def plot_large(n_points: int = 100, time_col: str = "time_ms"):
     ax.set_xlabel("Speedup (median, IQR)")
     ax.axvline(x=1.0, color="gray", linestyle="--", linewidth=1.5)
 
+    max_err = max(r["q75"] - r["speedup"] for r in results)
     for i, s in enumerate(speedups):
-        ax.text(s + 0.05, i, f"{s:.2f}x", va="center", fontsize=10)
+        ax.text(s + max_err + 0.08, i, f"{s:.2f}x", va="center", fontsize=10)
 
     n_structs = df_large.select("structure").unique().height
     ax.set_title(
         f"zsasa Speedup on Large Structures (50k+ atoms, n={n_structs}, threads={max_threads})"
     )
-    ax.set_xlim(0, max(speedups) * 1.2)
+    ax.set_xlim(0, max(s + max_err for s in speedups) + 0.4)
     ax.grid(True, alpha=0.3, axis="x")
 
     fig.tight_layout()
