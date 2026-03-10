@@ -32,9 +32,9 @@ Throughput benchmarks for processing complete proteome datasets using [hyperfine
 |------|----------|-------------|
 | zsasa | Zig | f64/f32 precision, standard neighbor lists |
 | zsasa_bitmask | Zig | f64/f32 precision, [LUT bitmask](../guide/algorithms.mdx#bitmask-lut-optimization) neighbor lists |
-| [Lahuta](https://github.com/your-repo/lahuta) | Zig | Standard neighbor lists |
-| Lahuta Bitmask | Zig | LUT bitmask neighbor lists |
-| [RustSASA](https://github.com/OWissett/rustsasa) | Rust | Native multi-threading |
+| [Lahuta](https://github.com/bisejdiu/lahuta) | C++ | Standard neighbor lists |
+| Lahuta Bitmask | C++ | LUT bitmask neighbor lists |
+| [RustSASA](https://github.com/maxall41/RustSASA) | Rust | Native multi-threading |
 | [FreeSASA](https://github.com/mittinatten/freesasa) | C | No native batch mode — custom wrapper ([`freesasa_batch.cc`](https://github.com/N283T/zsasa/tree/main/benchmarks/external/freesasa_batch)) |
 
 ## E. coli Proteome (4,370 structures)

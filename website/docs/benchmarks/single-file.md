@@ -326,7 +326,7 @@ Measurement method for each implementation:
 | zsasa_f64_bitmask | f64 | Bitmask | ~15x less memory for 500k+ atoms |
 | zsasa_f32_bitmask | f32 | Bitmask | Lowest memory usage |
 | FreeSASA | f64 | — | C reference implementation |
-| RustSASA | f64 | — | Rust implementation |
+| RustSASA | f32 | — | Rust implementation |
 
 ### Stratified Sampling
 
