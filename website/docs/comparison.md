@@ -199,6 +199,14 @@ At SwissProt scale (550K structures), zsasa uses **157 MB** vs RustSASA **1.1 GB
 
 See [Batch Benchmarks](benchmarks/batch.md) for full results including memory scaling charts.
 
+## Known Limitations of zsasa
+
+### Zig language maturity
+
+Zig has not yet reached version 1.0. The language may introduce breaking changes between releases, which could require updates to the zsasa codebase. Unreported compiler bugs are also possible in pre-1.0 software.
+
+**Mitigation:** The Python package (`zsasa`) communicates with the Zig core through the C ABI, which is stable and standardized. This means Python users are insulated from Zig-specific changes — even if the Zig internals are updated, the Python API remains unaffected as long as the C ABI interface is maintained.
+
 ## Links
 
 | Tool | Repository |
