@@ -32,6 +32,7 @@ const sidebars: SidebarsConfig = {
         "python-api/classifier",
         "python-api/analysis",
         "python-api/xtc",
+        "python-api/autodoc",
       ],
     },
     {
