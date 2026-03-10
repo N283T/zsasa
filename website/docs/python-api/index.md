@@ -7,6 +7,8 @@ sidebar_label: Overview
 
 Comprehensive documentation for the zsasa Python bindings.
 
+> Looking for the auto-generated API reference? See the **[Python Autodoc (pdoc)](pathname:///zsasa/python-autodoc/zsasa.html)**.
+
 ## Overview
 
 The Python bindings provide:
@@ -28,7 +30,6 @@ The Python bindings provide:
 | [Classifier](classifier.md) | Atom classification, RSA calculation |
 | [Analysis](analysis.md) | Per-residue aggregation, examples |
 | [Native XTC Reader](xtc.md) | Standalone XTC reading, no dependencies |
-| [Autodoc (pdoc)](autodoc.md) | Auto-generated API reference from docstrings |
 
 For structure file parsing and MD trajectory integrations, see [Integrations](../integrations/).
 
@@ -180,4 +181,24 @@ Returns the library version string.
 ```python
 from zsasa import get_version
 print(get_version())  # e.g., "0.1.2"
+```
+
+---
+
+## Generate Autodoc Locally
+
+You can generate the full API reference locally using [pdoc](https://pdoc.dev/):
+
+```bash
+cd python
+uv run pdoc zsasa --output-dir /tmp/python-autodoc
+# Open /tmp/python-autodoc/zsasa.html in browser
+```
+
+Or serve with live reload:
+
+```bash
+cd python
+uv run pdoc zsasa
+# Opens http://localhost:8080 automatically
 ```

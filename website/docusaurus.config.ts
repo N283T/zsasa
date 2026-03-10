@@ -29,11 +29,10 @@ const config: Config = {
       "classic",
       {
         docs: {
-          routeBasePath: "/",
+          routeBasePath: "docs",
           sidebarPath: "./sidebars.ts",
           editUrl: "https://github.com/N283T/zsasa/tree/main/website/",
         },
-        pages: false,
         blog: false,
         theme: {
           customCss: "./src/css/custom.css",
@@ -53,6 +52,24 @@ const config: Config = {
           label: "Docs",
         },
         {
+          type: "docSidebar",
+          sidebarId: "pythonApi",
+          position: "left",
+          label: "Python API",
+        },
+        {
+          type: "doc",
+          docId: "zig-api/autodoc",
+          position: "left",
+          label: "Zig API",
+        },
+        {
+          type: "docSidebar",
+          sidebarId: "benchmarks",
+          position: "left",
+          label: "Benchmarks",
+        },
+        {
           href: "https://github.com/N283T/zsasa",
           label: "GitHub",
           position: "right",
@@ -65,9 +82,16 @@ const config: Config = {
         {
           title: "Docs",
           items: [
-            { label: "Getting Started", to: "/getting-started" },
-            { label: "Python API", to: "/python-api" },
-            { label: "CLI Reference", to: "/cli" },
+            { label: "Getting Started", to: "/docs/getting-started" },
+            { label: "CLI Reference", to: "/docs/cli/commands" },
+          ],
+        },
+        {
+          title: "API",
+          items: [
+            { label: "Python API", to: "/docs/python-api" },
+            { label: "Zig API", to: "/docs/zig-api/autodoc" },
+            { label: "Benchmarks", to: "/docs/benchmarks/single-file" },
           ],
         },
         {
