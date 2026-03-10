@@ -23,18 +23,13 @@ const sidebars: SidebarsConfig = {
         "cli/output",
       ],
     },
-    {
-      type: "category",
-      label: "Python API",
-      items: [
-        "python-api/index",
-        "python-api/core",
-        "python-api/classifier",
-        "python-api/analysis",
-        "python-api/xtc",
-        "python-api/autodoc",
-      ],
-    },
+  ],
+  pythonApi: [
+    "python-api/index",
+    "python-api/core",
+    "python-api/classifier",
+    "python-api/analysis",
+    "python-api/xtc",
     {
       type: "category",
       label: "Integrations",
@@ -47,21 +42,12 @@ const sidebars: SidebarsConfig = {
         "integrations/mdanalysis",
       ],
     },
-    {
-      type: "category",
-      label: "Zig API",
-      items: ["zig-api/autodoc"],
-    },
-    {
-      type: "category",
-      label: "Benchmarks",
-      items: [
-        "benchmarks/single-file",
-        "benchmarks/batch",
-        "benchmarks/md",
-        "benchmarks/validation",
-      ],
-    },
+  ],
+  benchmarks: [
+    "benchmarks/single-file",
+    "benchmarks/batch",
+    "benchmarks/md",
+    "benchmarks/validation",
   ],
 };
 
