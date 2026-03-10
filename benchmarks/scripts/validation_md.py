@@ -54,7 +54,8 @@ Output:
     ├── validation_zsasa_cli_f32.png
     ├── validation_zsasa_cli_bitmask_f64.png
     ├── validation_zsasa_cli_bitmask_f32.png
-    └── validation_xtc_comparison.png
+    ├── validation_xtc_comparison.png
+    └── validation_bitmask_comparison.png
 """
 
 from __future__ import annotations
@@ -642,6 +643,51 @@ def generate_xtc_comparison_plot(
     console.print(f"[green]Saved:[/] {out_path}")
 
 
+def generate_bitmask_comparison_plot(
+    results_dir: Path,
+) -> None:
+    """Generate scatter plot: zsasa_cli_f64 vs zsasa_cli_bitmask_f64 at n_points=100.
+
+    This isolates the bitmask LUT quantization error by comparing
+    the same algorithm with and without bitmask optimization.
+    """
+    import matplotlib.pyplot as plt
+    import polars as pl
+
+    _setup_style()
+
+    csv_path = results_dir.joinpath("results_100.csv")
+    if not csv_path.exists():
+        console.print(
+            "[yellow]results_100.csv not found, skipping bitmask comparison plot[/]"
+        )
+        return
+
+    df = pl.read_csv(csv_path)
+    if "zsasa_cli_f64" not in df.columns or "zsasa_cli_bitmask_f64" not in df.columns:
+        console.print(
+            "[yellow]Missing zsasa_cli_f64 or zsasa_cli_bitmask_f64 columns "
+            "for bitmask comparison[/]"
+        )
+        return
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+
+    _scatter_cell(
+        ax,
+        df,
+        "zsasa_cli_f64",
+        "zsasa_cli_bitmask_f64",
+        "Bitmask comparison: bitmask_f64 vs f64 (100 points)",
+    )
+
+    fig.tight_layout()
+    out_path = results_dir.joinpath("validation_bitmask_comparison.png")
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    console.print(f"[green]Saved:[/] {out_path}")
+
+
 def print_stats_table(
     results_dir: Path,
     n_points_list: list[int],
@@ -685,10 +731,12 @@ def print_stats_table(
                 f"{stats['max_rel_error']:.4f}",
             )
 
-    # XTC comparison stats (zsasa_mdtraj vs zsasa_cli_f64 at 100 points)
+    # Cross-tool comparison stats at n_points=100
     csv_100 = results_dir.joinpath("results_100.csv")
     if csv_100.exists():
         df = pl.read_csv(csv_100)
+
+        # XTC comparison: zsasa_mdtraj vs zsasa_cli_f64
         if "zsasa_mdtraj" in df.columns and "zsasa_cli_f64" in df.columns:
             stats = _stats_for_pair(df, "zsasa_mdtraj", "zsasa_cli_f64")
             if stats:
@@ -696,6 +744,22 @@ def print_stats_table(
                 table.add_row(
                     "100 (XTC)",
                     "zsasa_cli_f64 vs zsasa_mdtraj",
+                    str(pair.height),
+                    f"{stats['r_squared']:.6f}",
+                    f"{stats['mean_rel_error']:.4f}",
+                    f"{stats['max_rel_error']:.4f}",
+                )
+
+        # Bitmask comparison: zsasa_cli_f64 vs zsasa_cli_bitmask_f64
+        if "zsasa_cli_f64" in df.columns and "zsasa_cli_bitmask_f64" in df.columns:
+            stats = _stats_for_pair(df, "zsasa_cli_f64", "zsasa_cli_bitmask_f64")
+            if stats:
+                pair = df.select(
+                    ["zsasa_cli_f64", "zsasa_cli_bitmask_f64"]
+                ).drop_nulls()
+                table.add_row(
+                    "100 (bitmask)",
+                    "bitmask_f64 vs cli_f64",
                     str(pair.height),
                     f"{stats['r_squared']:.6f}",
                     f"{stats['mean_rel_error']:.4f}",
@@ -837,6 +901,7 @@ def run(
     generate_grid_plot(results_dir, n_points_list)
     generate_per_tool_plots(results_dir, n_points_list)
     generate_xtc_comparison_plot(results_dir)
+    generate_bitmask_comparison_plot(results_dir)
 
     console.print(f"\n[bold green]=== Done! Results: {results_dir} ===[/]")
 
@@ -876,6 +941,7 @@ def compare(
     generate_grid_plot(results_dir, n_points_list)
     generate_per_tool_plots(results_dir, n_points_list)
     generate_xtc_comparison_plot(results_dir)
+    generate_bitmask_comparison_plot(results_dir)
 
     console.print("\n[bold green]=== Done! ===[/]")
 
