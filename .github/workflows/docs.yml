@@ -28,6 +28,11 @@ jobs:
         with:
           version: 0.15.2
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -41,6 +46,13 @@ jobs:
 
       - name: Build Zig autodoc
         run: zig build docs
+
+      - name: Build Python autodoc
+        working-directory: python
+        run: |
+          pip install "pdoc>=14.0"
+          pip install -e .
+          pdoc zsasa --output-dir /tmp/python-autodoc
 
       - name: Build Docusaurus site
         working-directory: website
@@ -57,6 +69,9 @@ jobs:
 
       - name: Copy Zig autodoc into site
         run: cp -r zig-out/docs website/build/zig-autodoc
+
+      - name: Copy Python autodoc into site
+        run: cp -r /tmp/python-autodoc website/build/python-autodoc
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

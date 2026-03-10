@@ -28,6 +28,7 @@ The Python bindings provide:
 | [Classifier](classifier.md) | Atom classification, RSA calculation |
 | [Analysis](analysis.md) | Per-residue aggregation, examples |
 | [Native XTC Reader](xtc.md) | Standalone XTC reading, no dependencies |
+| [Autodoc (pdoc)](autodoc.md) | Auto-generated API reference from docstrings |
 
 For structure file parsing and MD trajectory integrations, see [Integrations](../integrations/).
 
