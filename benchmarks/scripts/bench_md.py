@@ -125,15 +125,33 @@ def get_runner_path() -> Path:
 def get_trajectory_info(xtc: Path, pdb: Path) -> dict:
     """Get trajectory metadata (atom_count, total_frames).
 
-    Uses mdtraj if available, otherwise returns empty dict.
+    Parses PDB for atom count (no heavy dependencies needed).
+    Uses mdtraj for frame count if available, otherwise omits it.
     """
+    info: dict = {}
+
+    # Count atoms from PDB (ATOM/HETATM lines)
+    try:
+        atom_count = 0
+        with open(pdb) as f:
+            for line in f:
+                if line.startswith(("ATOM  ", "HETATM")):
+                    atom_count += 1
+        if atom_count > 0:
+            info["atom_count"] = atom_count
+    except OSError:
+        pass
+
+    # Get frame count from XTC via mdtraj if available
     try:
         import mdtraj as md
 
         traj = md.load(str(xtc), top=str(pdb))
-        return {"total_frames": traj.n_frames, "atom_count": traj.n_atoms}
+        info["total_frames"] = traj.n_frames
     except Exception:
-        return {}
+        pass
+
+    return info
 
 
 def run_zig(
