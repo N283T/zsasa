@@ -1,3 +1,7 @@
+---
+sidebar_position: 4
+---
+
 # Trajectory Analysis
 
 zsasa supports SASA calculation over MD trajectory frames using the CLI or Python bindings.

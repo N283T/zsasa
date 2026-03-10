@@ -65,7 +65,7 @@ result = calculate_sasa_from_structure("protein.cif")
 print(f"Total SASA: {result.total_area:.1f} Å²")
 
 # Per-residue analysis
-from zsasa.analysis import aggregate_from_result
+from zsasa import aggregate_from_result
 
 for res in aggregate_from_result(result):
     print(f"  {res.chain_id}:{res.residue_name}{res.residue_id} = {res.total_area:.1f} Å²")
