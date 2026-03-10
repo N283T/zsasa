@@ -90,6 +90,60 @@ jobs:
           name: sdist
           path: python/dist/*.tar.gz
 
+  build_cli:
+    name: CLI (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x86_64
+            binary: zsasa
+          - os: ubuntu-24.04-arm
+            target: linux-aarch64
+            binary: zsasa
+          - os: macos-15-intel
+            target: macos-x86_64
+            binary: zsasa
+          - os: macos-latest
+            target: macos-aarch64
+            binary: zsasa
+          - os: windows-latest
+            target: windows-x86_64
+            binary: zsasa.exe
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build CLI
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Package binary
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ASSET_NAME="zsasa-${VERSION}-${{ matrix.target }}"
+          mkdir -p dist
+          if [ "${{ matrix.target }}" = "windows-x86_64" ]; then
+            cp zig-out/bin/${{ matrix.binary }} "dist/${ASSET_NAME}.exe"
+          else
+            cp zig-out/bin/${{ matrix.binary }} "dist/${ASSET_NAME}"
+            chmod +x "dist/${ASSET_NAME}"
+          fi
+
+      - name: Upload CLI binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/zsasa-*
+
   publish:
     name: Publish
     needs: [build_wheels, build_sdist]
@@ -128,7 +182,7 @@ jobs:
 
   github_release:
     name: GitHub Release
-    needs: [publish]
+    needs: [publish, build_cli]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
 
