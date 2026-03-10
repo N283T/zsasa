@@ -6,6 +6,20 @@ sidebar_position: 10
 
 All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsasa/releases) for full details.
 
+## [v0.2.3](https://github.com/N283T/zsasa/releases/tag/v0.2.3) — 2026-03-10
+
+### Fixed
+
+- **Windows build**: fall back to heap allocation where POSIX mmap is unavailable
+- **Windows build**: replace `std.mem.zeroes` with `undefined` for `JsonlStreamWriter` placeholder
+- **Third-party license**: add BSD-2-Clause notice for libxdrfile in `src/xtc.zig`, create `THIRD_PARTY_NOTICES.md`
+- Correct Lahuta author name (Besian I. Sejdiu)
+
+### Changed
+
+- Remove legacy `docs/` directory (migrated to website)
+- Add acknowledgments section to README and comparison page
+
 ## [v0.2.2](https://github.com/N283T/zsasa/releases/tag/v0.2.2) — 2026-03-10
 
 ### Added

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-03-10
+
+### Fixed
+
+- **Windows build**: fall back to heap allocation on Windows where POSIX mmap is unavailable (#301)
+- **Windows build**: replace `std.mem.zeroes` with `undefined` for `JsonlStreamWriter` placeholder — zeroes fails on non-nullable pointers on Windows (#301)
+- **Third-party license compliance**: add BSD-2-Clause notice for libxdrfile (via chemfiles/xdrfile) in `src/xtc.zig` and create `THIRD_PARTY_NOTICES.md` (#300)
+- Correct Lahuta author name (Besian I. Sejdiu) in docs and README (#299)
+
+### Changed
+
+- Remove legacy `docs/` directory — all documentation migrated to website (#298)
+- Add acknowledgments section to README and comparison page (#297)
+
 ## [0.2.2] - 2026-03-10
 
 ### Added
