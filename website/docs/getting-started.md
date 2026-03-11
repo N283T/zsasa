@@ -60,11 +60,15 @@ brew tap N283T/zsasa
 brew install zsasa
 ```
 
-### conda-forge
+### conda-forge (coming soon)
 
 ```bash
 conda install -c conda-forge zsasa
 ```
+
+:::note
+Currently under review. See [staged-recipes PR #32551](https://github.com/conda-forge/staged-recipes/pull/32551) for status.
+:::
 
 ### Docker
 
@@ -77,12 +81,6 @@ docker run --rm -v $(pwd):/data ghcr.io/n283t/zsasa calc /data/structure.cif /da
 ```powershell
 scoop bucket add zsasa https://github.com/N283T/scoop-zsasa
 scoop install zsasa
-```
-
-### AUR (Arch Linux)
-
-```bash
-yay -S zsasa-bin
 ```
 
 ### Nix
