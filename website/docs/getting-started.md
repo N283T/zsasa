@@ -53,6 +53,38 @@ The binary is at `./zig-out/bin/zsasa` (source build) or `~/.local/bin/zsasa` (i
 If you have both the standalone binary and the Python package installed, the one that appears first in your `PATH` will be used. To avoid confusion, use only one installation method for the CLI.
 :::
 
+### Homebrew (macOS / Linux)
+
+```bash
+brew tap N283T/zsasa
+brew install zsasa
+```
+
+### conda-forge
+
+```bash
+conda install -c conda-forge zsasa
+```
+
+### Docker
+
+```bash
+docker run --rm -v $(pwd):/data ghcr.io/n283t/zsasa calc /data/structure.cif /data/output.json
+```
+
+### Scoop (Windows)
+
+```powershell
+scoop bucket add zsasa https://github.com/N283T/scoop-zsasa
+scoop install zsasa
+```
+
+### AUR (Arch Linux)
+
+```bash
+yay -S zsasa-bin
+```
+
 ### Nix
 
 ```bash
