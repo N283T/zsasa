@@ -7,10 +7,12 @@ wheels/
 *.egg-info
 .venv/
 
-# Bundled native libraries (built during pip install)
+# Bundled native artifacts (built during pip install)
 python/zsasa/*.dylib
 python/zsasa/*.so
 python/zsasa/*.dll
+python/zsasa/zsasa
+python/zsasa/zsasa.exe
 
 # Zig
 .zig-cache/
