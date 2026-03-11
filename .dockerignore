@@ -1,0 +1,12 @@
+.git
+zig-out
+zig-cache
+.zig-cache
+python
+website
+benchmarks
+node_modules
+dist
+docs
+plans
+*.whl

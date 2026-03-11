@@ -1,0 +1,16 @@
+# Maintainer: Tsubasa Nagae
+pkgname=zsasa-bin
+pkgver=0.2.4
+pkgrel=1
+pkgdesc="Fast Solvent Accessible Surface Area (SASA) calculator"
+arch=('x86_64')
+url="https://n283t.github.io/zsasa/"
+license=('MIT')
+provides=('zsasa')
+conflicts=('zsasa')
+source=("https://github.com/N283T/zsasa/releases/download/v${pkgver}/zsasa-${pkgver}-linux-x86_64")
+sha256sums=('250c660de9d0de3f2ccb9e30c6aa8244ff5bb1ea92ac814549f27de1a71a3306')
+
+package() {
+    install -Dm755 "zsasa-${pkgver}-linux-x86_64" "${pkgdir}/usr/bin/zsasa"
+}

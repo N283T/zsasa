@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build_wheels:
@@ -240,3 +241,146 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --notes-file /tmp/release_notes.md \
             dist/*
+
+  update_homebrew:
+    name: Update Homebrew tap
+    needs: [github_release]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" \
+            --repo N283T/zsasa \
+            --pattern "SHA256SUMS" \
+            --dir .
+
+      - name: Checkout tap repo
+        uses: actions/checkout@v4
+        with:
+          repository: N283T/homebrew-zsasa
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          path: homebrew-zsasa
+
+      - name: Update Formula
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          FORMULA="homebrew-zsasa/Formula/zsasa.rb"
+
+          LINUX_X86=$(grep "linux-x86_64" SHA256SUMS | awk '{print $1}')
+          LINUX_ARM=$(grep "linux-aarch64" SHA256SUMS | awk '{print $1}')
+          MACOS_X86=$(grep "macos-x86_64" SHA256SUMS | awk '{print $1}')
+          MACOS_ARM=$(grep "macos-aarch64" SHA256SUMS | awk '{print $1}')
+
+          sed -i "s/version \".*\"/version \"${VERSION}\"/" "$FORMULA"
+
+          python3 -c "
+          import re
+          with open('$FORMULA') as f:
+              content = f.read()
+          shas = re.findall(r'sha256 \"([a-f0-9]+)\"', content)
+          replacements = ['$MACOS_ARM', '$MACOS_X86', '$LINUX_ARM', '$LINUX_X86']
+          for old, new in zip(shas, replacements):
+              content = content.replace(old, new, 1)
+          with open('$FORMULA', 'w') as f:
+              f.write(content)
+          "
+
+      - name: Commit and push
+        working-directory: homebrew-zsasa
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/zsasa.rb
+          git diff --cached --quiet && exit 0
+          git commit -m "Update zsasa to ${VERSION}"
+          git push
+
+  update_scoop:
+    name: Update Scoop bucket
+    needs: [github_release]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" \
+            --repo N283T/zsasa \
+            --pattern "SHA256SUMS" \
+            --dir .
+
+      - name: Checkout bucket repo
+        uses: actions/checkout@v4
+        with:
+          repository: N283T/scoop-zsasa
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          path: scoop-zsasa
+
+      - name: Update manifest
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          WIN_HASH=$(grep "windows-x86_64" SHA256SUMS | awk '{print $1}')
+          MANIFEST="scoop-zsasa/bucket/zsasa.json"
+
+          python3 -c "
+          import json
+          with open('$MANIFEST') as f:
+              data = json.load(f)
+          data['version'] = '$VERSION'
+          data['architecture']['64bit']['url'] = f'https://github.com/N283T/zsasa/releases/download/v$VERSION/zsasa-$VERSION-windows-x86_64.exe'
+          data['architecture']['64bit']['hash'] = '$WIN_HASH'
+          data['bin'] = [['zsasa-$VERSION-windows-x86_64.exe', 'zsasa']]
+          with open('$MANIFEST', 'w') as f:
+              json.dump(data, f, indent=2)
+              f.write('\n')
+          "
+
+      - name: Commit and push
+        working-directory: scoop-zsasa
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bucket/zsasa.json
+          git diff --cached --quiet && exit 0
+          git commit -m "Update zsasa to ${VERSION}"
+          git push
+
+  docker:
+    name: Docker image
+    needs: [github_release]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/n283t/zsasa:${{ steps.version.outputs.version }}
+            ghcr.io/n283t/zsasa:latest
