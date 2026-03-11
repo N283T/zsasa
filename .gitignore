@@ -74,6 +74,9 @@ benchmarks/ecoli_bench/sasa_batch
 # XTC reader cache files
 test_data/.*.xtc_offsets.*
 
+# Nix build output
+result
+
 # Plans (local working files)
 plans/
 
