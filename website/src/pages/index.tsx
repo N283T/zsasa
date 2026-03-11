@@ -64,14 +64,15 @@ export default function Home(): ReactNode {
           <div className="container">
             <div className="row">
               <div className="col col--6">
-                <Heading as="h2">Up to 3x Faster than FreeSASA C</Heading>
+                <Heading as="h2">Up to 10x Faster than FreeSASA C</Heading>
                 <p>
-                  SIMD-optimized Shrake-Rupley with multi-threading. Bitmask LUT
-                  optimization for additional speedup. Consistent performance
-                  with no pathological slowdowns.
+                  Process 4,370 E. coli structures in 1.4s, 23,586 human
+                  proteome structures in 14s. SIMD-optimized with bitmask LUT
+                  neighbor lists and multi-threading. 3.7x faster than RustSASA,
+                  7x less memory.
                 </p>
-                <Link to="/docs/comparison">
-                  See how zsasa compares →
+                <Link to="/docs/benchmarks/batch">
+                  See batch benchmarks →
                 </Link>
               </div>
               <div className="col col--6">
