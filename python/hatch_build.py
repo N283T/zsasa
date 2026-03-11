@@ -1,8 +1,9 @@
-"""Custom build hook to compile Zig library during pip install."""
+"""Custom build hook to compile Zig library and CLI binary during pip install."""
 
 from __future__ import annotations
 
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -12,12 +13,12 @@ from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 
 class ZigBuildHook(BuildHookInterface):
-    """Build hook that compiles the Zig library before packaging."""
+    """Build hook that compiles the Zig library and CLI binary before packaging."""
 
     PLUGIN_NAME = "zig-build"
 
     def initialize(self, version: str, build_data: dict[str, Any]) -> None:
-        """Build the Zig library and copy it to the package directory."""
+        """Build the Zig library and CLI binary, then copy them to the package directory."""
         # Mark as platform-specific wheel (required for .so/.dylib bundling)
         build_data["infer_tag"] = True
 
@@ -26,7 +27,7 @@ class ZigBuildHook(BuildHookInterface):
         python_dir = Path(self.root)
         package_dir = python_dir / "zsasa"
 
-        # Platform-specific library name
+        # Platform-specific names
         if sys.platform == "darwin":
             lib_name = "libzsasa.dylib"
         elif sys.platform == "win32":
@@ -34,30 +35,56 @@ class ZigBuildHook(BuildHookInterface):
         else:
             lib_name = "libzsasa.so"
 
-        # Zig outputs DLLs to zig-out/bin/ on Windows, .so/.dylib to zig-out/lib/
+        exe_name = "zsasa.exe" if sys.platform == "win32" else "zsasa"
+
+        # Source paths (zig-out/)
         if sys.platform == "win32":
             lib_src = root_dir / "zig-out" / "bin" / lib_name
         else:
             lib_src = root_dir / "zig-out" / "lib" / lib_name
+        exe_src = root_dir / "zig-out" / "bin" / exe_name
+
+        # Destination paths (zsasa/)
         lib_dst = package_dir / lib_name
+        exe_dst = package_dir / exe_name
 
-        # Check if library already exists and is newer than source
-        if lib_dst.exists():
-            # For development, always rebuild if zig-out doesn't exist
-            if not lib_src.exists():
-                self._build_zig(root_dir)
-                shutil.copy2(lib_src, lib_dst)
-            elif lib_src.stat().st_mtime > lib_dst.stat().st_mtime:
-                self._build_zig(root_dir)
-                shutil.copy2(lib_src, lib_dst)
-        else:
-            # Build if not exists
-            if not lib_src.exists():
-                self._build_zig(root_dir)
-            shutil.copy2(lib_src, lib_dst)
+        # Build if needed
+        needs_build = self._needs_build(lib_src, lib_dst) or self._needs_build(exe_src, exe_dst)
+        if needs_build:
+            self._build_zig(root_dir)
 
-        # Include the library in the wheel
+        # Copy library
+        self._copy_artifact(lib_src, lib_dst, "library")
+
+        # Copy CLI binary
+        self._copy_artifact(exe_src, exe_dst, "CLI binary")
+        # Ensure the binary is executable (no-op on Windows which uses ACLs)
+        if sys.platform != "win32":
+            exe_dst.chmod(exe_dst.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+        # Include both artifacts in the wheel
         build_data["force_include"][str(lib_dst)] = f"zsasa/{lib_name}"
+        build_data["force_include"][str(exe_dst)] = f"zsasa/{exe_name}"
+
+    def _needs_build(self, src: Path, dst: Path) -> bool:
+        """Check if a build is needed based on file existence and timestamps."""
+        if not src.exists():
+            return True  # Must build if source artifact is missing
+        if not dst.exists():
+            return False  # Source exists, just needs copy
+        return src.stat().st_mtime > dst.stat().st_mtime
+
+    def _copy_artifact(self, src: Path, dst: Path, label: str) -> None:
+        """Copy a build artifact from zig-out to the package directory."""
+        if not src.exists():
+            msg = f"Zig build artifact not found: {src} ({label})"
+            raise FileNotFoundError(msg)
+        if not dst.exists() or src.stat().st_mtime > dst.stat().st_mtime:
+            try:
+                shutil.copy2(src, dst)
+            except OSError as e:
+                msg = f"Failed to copy {label} from {src} to {dst}"
+                raise RuntimeError(msg) from e
 
     def _find_zig(self) -> list[str]:
         """Find the Zig compiler command."""
@@ -78,7 +105,7 @@ class ZigBuildHook(BuildHookInterface):
 
     def _build_zig(self, root_dir: Path) -> None:
         """Run zig build command."""
-        self.app.display_info("Building Zig library...")
+        self.app.display_info("Building Zig library and CLI binary...")
 
         zig_cmd = self._find_zig()
         if not zig_cmd:
@@ -97,7 +124,7 @@ class ZigBuildHook(BuildHookInterface):
                 text=True,
                 timeout=600,  # 10 minute timeout
             )
-            self.app.display_success("Zig library built successfully")
+            self.app.display_success("Zig library and CLI binary built successfully")
         except subprocess.CalledProcessError as e:
             self.app.display_error(f"Zig build failed:\n{e.stderr}")
-            raise RuntimeError("Failed to build Zig library") from e
+            raise RuntimeError("Zig build failed") from e

@@ -30,6 +30,11 @@ uv add zsasa[gemmi]
 ### CLI
 
 ```bash
+# Via pip/uv (bundled with the Python package)
+pip install zsasa
+# or
+uv tool install zsasa
+
 # One-line install (downloads pre-built binary)
 curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | sh
 
@@ -43,6 +48,10 @@ zig build -Doptimize=ReleaseFast
 ```
 
 The binary is at `./zig-out/bin/zsasa` (source build) or `~/.local/bin/zsasa` (install.sh).
+
+:::note
+If you have both the standalone binary and the Python package installed, the one that appears first in your `PATH` will be used. To avoid confusion, use only one installation method for the CLI.
+:::
 
 ### Nix
 
@@ -90,13 +99,13 @@ for res in aggregate_from_result(result):
 
 ```bash
 # Calculate SASA from a structure file
-./zig-out/bin/zsasa calc structure.cif output.json
+zsasa calc structure.cif output.json
 
 # With atom classifier and per-residue output
-./zig-out/bin/zsasa calc --classifier=naccess --rsa structure.cif output.json
+zsasa calc --classifier=naccess --rsa structure.cif output.json
 
 # CSV output
-./zig-out/bin/zsasa calc --format=csv structure.cif output.csv
+zsasa calc --format=csv structure.cif output.csv
 ```
 
 ## What's Next?
