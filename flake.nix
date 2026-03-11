@@ -4,6 +4,10 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    zig-overlay = {
+      url = "github:mitchellh/zig-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -11,6 +15,7 @@
       self,
       nixpkgs,
       flake-utils,
+      zig-overlay,
     }:
     flake-utils.lib.eachSystem
       [
@@ -23,6 +28,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          zig = zig-overlay.packages.${system}."0.15.2";
 
           # Pre-fetch Zig dependencies as a fixed-output derivation.
           # This runs `zig build --fetch` with network access and captures
@@ -30,7 +36,7 @@
           zigDeps = pkgs.runCommand "zsasa-zig-deps"
             {
               src = ./.;
-              nativeBuildInputs = [ pkgs.zig ];
+              nativeBuildInputs = [ zig ];
               outputHashAlgo = "sha256";
               outputHashMode = "recursive";
               outputHash = "sha256-wxgdxQiNj7hOTagippwrDkeiZ5RZsagvJI67T28jf04=";
@@ -48,7 +54,7 @@
 
             src = ./.;
 
-            nativeBuildInputs = [ pkgs.zig ];
+            nativeBuildInputs = [ zig ];
 
             dontConfigure = true;
             dontFixup = true;
