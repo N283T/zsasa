@@ -43,25 +43,8 @@ data/*.cif
 scripts/.venv/
 scripts/uv.lock
 
-# Benchmark results (raw data, too large to commit)
-benchmarks/results/csv/
-benchmarks/results/zig_*/
-benchmarks/results/freesasa_*/
-benchmarks/results/rust_*/
-benchmarks/results/batch_*/
-benchmarks/results/batch/*/temp_out/
-benchmarks/results/python/
-
-# Per-thread individual plots (generated, not doc-referenced)
-benchmarks/results/plots/scatter/*/individual/
-benchmarks/results/plots/speedup_by_bin/individual/
-benchmarks/results/plots/efficiency/by_size.png
-
-# Validation results (raw data; only .png plots are committed)
-benchmarks/results/validation/**/config.json
-benchmarks/results/validation/**/results.csv
-benchmarks/results/validation_md/**/config.json
-benchmarks/results/validation_md/**/results.csv
+# Benchmark results (raw data — plots are copied to website/static/assets/)
+benchmarks/results/
 
 # Benchmark dataset (test JSON files)
 benchmarks/dataset/
@@ -90,6 +73,9 @@ benchmarks/ecoli_bench/sasa_batch
 
 # XTC reader cache files
 test_data/.*.xtc_offsets.*
+
+# Nix build output
+result
 
 # Plans (local working files)
 plans/
