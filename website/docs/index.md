@@ -32,6 +32,9 @@ print(f"Total SASA: {result.total_area:.2f} Å²")
 ```bash
 # One-line install
 curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | sh
+
+# Or with Nix
+nix run github:N283T/zsasa -- calc structure.cif output.json
 ```
 
 ```bash

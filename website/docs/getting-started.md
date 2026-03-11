@@ -44,6 +44,16 @@ zig build -Doptimize=ReleaseFast
 
 The binary is at `./zig-out/bin/zsasa` (source build) or `~/.local/bin/zsasa` (install.sh).
 
+### Nix
+
+```bash
+# Run directly
+nix run github:N283T/zsasa -- calc structure.cif output.json
+
+# Install to profile
+nix profile install github:N283T/zsasa
+```
+
 ## First Calculation
 
 ### Python
