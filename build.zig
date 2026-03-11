@@ -12,6 +12,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    const zxdrfile_dep = b.dependency("zxdrfile", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zxdrfile_mod = zxdrfile_dep.module("zxdrfile");
+
     // CLI executable
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
@@ -25,6 +31,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "zsasa", .module = mod },
                 .{ .name = "build_options", .module = options.createModule() },
+                .{ .name = "zxdrfile", .module = zxdrfile_mod },
             },
         }),
     });
@@ -38,6 +45,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/c_api.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zxdrfile", .module = zxdrfile_mod },
+            },
         }),
     });
     lib.linkLibC();
