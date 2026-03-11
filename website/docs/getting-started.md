@@ -29,15 +29,20 @@ uv add zsasa[gemmi]
 
 ### CLI
 
-Requires [Zig 0.15.2+](https://ziglang.org/download/).
-
 ```bash
+# One-line install (downloads pre-built binary)
+curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | sh
+
+# Or with custom install directory
+curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | INSTALL_DIR=/usr/local/bin sh
+
+# Or build from source (requires Zig 0.15.2)
 git clone https://github.com/N283T/zsasa.git
 cd zsasa
 zig build -Doptimize=ReleaseFast
 ```
 
-The binary is at `./zig-out/bin/zsasa`.
+The binary is at `./zig-out/bin/zsasa` (source build) or `~/.local/bin/zsasa` (install.sh).
 
 ## First Calculation
 
