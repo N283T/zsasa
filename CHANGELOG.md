@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **CLI installer**: `install.sh` script for one-line CLI installation — builds from source with Zig or downloads pre-built binary from GitHub Releases
 - **CLI release binaries**: pre-built CLI binaries for linux-x86_64, linux-aarch64, macos-x86_64, macos-aarch64, windows-x86_64 attached to GitHub Releases
+- **Nix flake**: `nix run github:N283T/zsasa` or `nix profile install github:N283T/zsasa` for Nix-based installation
 
 ### Changed
 
