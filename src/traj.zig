@@ -6,7 +6,7 @@
 //   - Batch parallel (N threads): reads batches of frames, distributes across threads
 //
 const std = @import("std");
-const xtc = @import("xtc.zig");
+const xtc = @import("zxdrfile").xtc;
 const dcd = @import("dcd.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
 const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");

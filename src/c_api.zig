@@ -14,7 +14,7 @@ const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_protor = @import("classifier_protor.zig");
 const classifier_oons = @import("classifier_oons.zig");
 const analysis = @import("analysis.zig");
-const xtc = @import("xtc.zig");
+const xtc = @import("zxdrfile").xtc;
 const dcd = @import("dcd.zig");
 const batch = @import("batch.zig");
 
