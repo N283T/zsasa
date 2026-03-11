@@ -30,9 +30,12 @@ print(f"Total SASA: {result.total_area:.2f} Å²")
 ### CLI
 
 ```bash
-git clone https://github.com/N283T/zsasa.git
-cd zsasa && zig build -Doptimize=ReleaseFast
-./zig-out/bin/zsasa calc structure.cif output.json
+# One-line install
+curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | sh
+```
+
+```bash
+zsasa calc structure.cif output.json
 ```
 
 ## Documentation
