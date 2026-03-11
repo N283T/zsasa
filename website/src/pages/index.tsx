@@ -59,6 +59,26 @@ export default function Home(): ReactNode {
     <Layout title="Home" description={siteConfig.tagline}>
       <HomepageHeader />
       <main>
+        {/* Install section */}
+        <section className={styles.install}>
+          <div className="container">
+            <div className="row">
+              <div className="col col--6">
+                <Heading as="h3">Python</Heading>
+                <pre className={styles.installCode}>
+                  <code>pip install zsasa</code>
+                </pre>
+              </div>
+              <div className="col col--6">
+                <Heading as="h3">CLI</Heading>
+                <pre className={styles.installCode}>
+                  <code>curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | sh</code>
+                </pre>
+              </div>
+            </div>
+          </div>
+        </section>
+
         {/* Highlight section */}
         <section className={styles.highlight}>
           <div className="container">
