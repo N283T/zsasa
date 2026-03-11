@@ -5,6 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.15.2+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776ab?logo=python&logoColor=white)](https://www.python.org/)
+[![Nix](https://img.shields.io/badge/Nix-flake-5277C3?logo=nixos&logoColor=white)](https://nixos.org/)
 
 High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 **Up to 3x faster** than FreeSASA C with f64 precision.
@@ -46,6 +47,9 @@ curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | sh
 
 # Or with custom install directory
 curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | INSTALL_DIR=/usr/local/bin sh
+
+# Or with Nix
+nix run github:N283T/zsasa -- calc structure.cif output.json
 
 # Or build from source (requires Zig 0.15.2)
 git clone https://github.com/N283T/zsasa.git
