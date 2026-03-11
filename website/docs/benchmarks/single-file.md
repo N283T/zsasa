@@ -50,6 +50,8 @@ zsasa's key advantage: **Large structures + Multi-threading**
 | RustSASA | 2,013 | 16.29 | 160.29 | 449.29 |
 
 > **Note**: zsasa_f64 has lower median but bitmask variants have lower mean/P95. This is because bitmask avoids the worst-case memory allocation overhead on very large structures, resulting in more stable performance at the high end.
+>
+> FreeSASA shows 2,012 instead of 2,013 because it was OOM-killed (exit code 137) on the largest structure in the dataset — `9mjn` (~3.8M atoms, 316MB PDB). All zsasa variants completed this structure successfully. See [#247](https://github.com/N283T/freesasa-zig/issues/247) for details.
 
 ---
 
@@ -241,6 +243,10 @@ Example: **9gdy** (509,160 atoms) — RustSASA takes ~14,000ms vs zsasa's ~50ms 
 RustSASA is **~280x slower** on this structure, and the slowdown persists across all thread counts. Including wall-clock (I/O) timing reveals even more outlier structures for both FreeSASA and RustSASA.
 
 > **Key takeaway**: zsasa produces stable, predictable timing across all 2,013 structures tested. No pathological cases were observed. This predictability is important for batch processing and pipeline reliability.
+
+### FreeSASA OOM on Very Large Structures
+
+FreeSASA was OOM-killed (SIGKILL, exit code 137) when processing `9mjn` (~3.8M atoms), the largest structure in the dataset. This was the only failure across all 2,013 structures. All zsasa variants (f64, f32, standard, bitmask) completed this structure without issue, demonstrating zsasa's ability to handle arbitrarily large inputs within bounded memory. ([#247](https://github.com/N283T/freesasa-zig/issues/247))
 
 ---
 
