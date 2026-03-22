@@ -13,6 +13,14 @@ pub fn build(b: *std.Build) void {
     });
     const zlib_artifact = zlib_dep.artifact("z");
 
+    // PIC-enabled zlib for shared library builds
+    const zlib_pic_dep = b.dependency("zlib", .{
+        .target = target,
+        .optimize = optimize,
+        .pie = true,
+    });
+    const zlib_pic_artifact = zlib_pic_dep.artifact("z");
+
     // Library module (exposed to package consumers via zig fetch)
     const mod = b.addModule("zsasa", .{
         .root_source_file = b.path("src/root.zig"),
@@ -57,7 +65,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zxdrfile", .module = zxdrfile_mod },
         },
     });
-    lib_module.linkLibrary(zlib_artifact);
+    lib_module.linkLibrary(zlib_pic_artifact);
 
     const lib = b.addLibrary(.{
         .linkage = .dynamic,
