@@ -6,13 +6,19 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // zlib dependency (built from source via allyourcodebase/zlib)
+    const zlib_dep = b.dependency("zlib", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zlib_artifact = zlib_dep.artifact("z");
+
     // Library module (exposed to package consumers via zig fetch)
     const mod = b.addModule("zsasa", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
-    mod.link_libc = true;
-    mod.linkSystemLibrary("z", .{});
+    mod.linkLibrary(zlib_artifact);
 
     const zxdrfile_dep = b.dependency("zxdrfile", .{
         .target = target,
@@ -34,8 +40,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zxdrfile", .module = zxdrfile_mod },
         },
     });
-    exe_module.link_libc = true;
-    exe_module.linkSystemLibrary("z", .{});
+    exe_module.linkLibrary(zlib_artifact);
 
     const exe = b.addExecutable(.{
         .name = "zsasa",
@@ -44,20 +49,22 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     // Shared library for C API / Python bindings
+    const lib_module = b.createModule(.{
+        .root_source_file = b.path("src/c_api.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zxdrfile", .module = zxdrfile_mod },
+        },
+    });
+    lib_module.linkLibrary(zlib_artifact);
+
     const lib = b.addLibrary(.{
         .linkage = .dynamic,
         .name = "zsasa",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/c_api.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "zxdrfile", .module = zxdrfile_mod },
-            },
-        }),
+        .root_module = lib_module,
     });
     lib.linkLibC();
-    lib.root_module.linkSystemLibrary("z", .{});
     b.installArtifact(lib);
 
     // Run step
