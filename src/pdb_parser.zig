@@ -35,6 +35,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const elem = @import("element.zig");
 const mmap_reader = @import("mmap_reader.zig");
+const gzip = @import("gzip.zig");
 const types = @import("types.zig");
 const AtomInput = types.AtomInput;
 
@@ -212,8 +213,13 @@ pub const PdbParser = struct {
         };
     }
 
-    /// Parse PDB from a file
+    /// Parse PDB from a file (handles both plain and .gz compressed)
     pub fn parseFile(self: *PdbParser, path: []const u8) !AtomInput {
+        if (std.mem.endsWith(u8, path, ".gz")) {
+            const data = try gzip.readGzip(self.allocator, path);
+            defer self.allocator.free(data);
+            return self.parse(data);
+        }
         const mapped = try mmap_reader.mmapFile(self.allocator, path);
         defer mapped.deinit();
         return self.parse(mapped.data);
