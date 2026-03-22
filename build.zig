@@ -11,6 +11,8 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
+    mod.link_libc = true;
+    mod.linkSystemLibrary("z", .{});
 
     const zxdrfile_dep = b.dependency("zxdrfile", .{
         .target = target,
@@ -22,18 +24,22 @@ pub fn build(b: *std.Build) void {
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
 
+    const exe_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zsasa", .module = mod },
+            .{ .name = "build_options", .module = options.createModule() },
+            .{ .name = "zxdrfile", .module = zxdrfile_mod },
+        },
+    });
+    exe_module.link_libc = true;
+    exe_module.linkSystemLibrary("z", .{});
+
     const exe = b.addExecutable(.{
         .name = "zsasa",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "zsasa", .module = mod },
-                .{ .name = "build_options", .module = options.createModule() },
-                .{ .name = "zxdrfile", .module = zxdrfile_mod },
-            },
-        }),
+        .root_module = exe_module,
     });
     b.installArtifact(exe);
 
@@ -51,6 +57,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     lib.linkLibC();
+    lib.root_module.linkSystemLibrary("z", .{});
     b.installArtifact(lib);
 
     // Run step

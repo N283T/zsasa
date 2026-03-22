@@ -1,8 +1,8 @@
 const std = @import("std");
 const types = @import("types.zig");
+const gzip = @import("gzip.zig");
 const AtomInput = types.AtomInput;
 const Allocator = std.mem.Allocator;
-const flate = std.compress.flate;
 
 /// JSON structure matching the input file format
 const JsonInput = struct {
@@ -273,30 +273,17 @@ pub fn parseAtomInput(allocator: Allocator, json_str: []const u8) !AtomInput {
 
 /// Read atom input from JSON file (handles both .json and .json.gz)
 pub fn readAtomInputFromFile(allocator: Allocator, path: []const u8) !AtomInput {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-
     const max_size = 200 * 1024 * 1024; // 200 MB max
 
-    // Check if file is gzip compressed
-    if (std.mem.endsWith(u8, path, ".gz")) {
-        // Read compressed file into memory first
-        const compressed = try file.readToEndAlloc(allocator, max_size);
-        defer allocator.free(compressed);
-
-        // Decompress gzip using flate with fixed reader
-        var input_reader: std.Io.Reader = .fixed(compressed);
-        var decompress: flate.Decompress = .init(&input_reader, .gzip, &.{});
-
-        // Read all decompressed data
-        const contents = try decompress.reader.allocRemaining(allocator, std.Io.Limit.limited(max_size));
-        defer allocator.free(contents);
-        return try parseAtomInput(allocator, contents);
-    } else {
-        const contents = try file.readToEndAlloc(allocator, max_size);
-        defer allocator.free(contents);
-        return try parseAtomInput(allocator, contents);
-    }
+    const contents = if (std.mem.endsWith(u8, path, ".gz"))
+        try gzip.readGzip(allocator, path)
+    else blk: {
+        const file = try std.fs.cwd().openFile(path, .{});
+        defer file.close();
+        break :blk try file.readToEndAlloc(allocator, max_size);
+    };
+    defer allocator.free(contents);
+    return try parseAtomInput(allocator, contents);
 }
 
 // Tests
