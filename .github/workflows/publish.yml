@@ -15,14 +15,31 @@ on:
           - testpypi
           - pypi
           - none
+      jobs:
+        description: "Jobs to run (tag push always runs all)"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - pypi
+          - github-release
+          - docker
+          - package-managers
 
 permissions:
   contents: write
   packages: write
 
+# ---------- Phase 1: Build everything (preflight) ----------
+
 jobs:
   build_wheels:
     name: Wheels (${{ matrix.os }})
+    if: >-
+      github.event_name == 'push'
+      || inputs.jobs == 'all'
+      || inputs.jobs == 'pypi'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -67,6 +84,10 @@ jobs:
 
   build_sdist:
     name: Source dist
+    if: >-
+      github.event_name == 'push'
+      || inputs.jobs == 'all'
+      || inputs.jobs == 'pypi'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -93,6 +114,11 @@ jobs:
 
   build_cli:
     name: CLI (${{ matrix.target }})
+    if: >-
+      github.event_name == 'push'
+      || inputs.jobs == 'all'
+      || inputs.jobs == 'github-release'
+      || inputs.jobs == 'package-managers'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -155,13 +181,34 @@ jobs:
           name: cli-${{ matrix.target }}
           path: dist/zsasa-*
 
+  build_docker:
+    name: Docker build (preflight)
+    if: >-
+      github.event_name == 'push'
+      || inputs.jobs == 'all'
+      || inputs.jobs == 'docker'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: ghcr.io/n283t/zsasa:preflight
+
+  # ---------- Phase 2: Release (after all builds pass) ----------
+
   publish:
-    name: Publish
+    name: Publish to PyPI
     needs: [build_wheels, build_sdist]
     runs-on: ubuntu-latest
     if: >-
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-      || (github.event_name == 'workflow_dispatch' && inputs.target != 'none')
+      || (github.event_name == 'workflow_dispatch' && (inputs.jobs == 'all' || inputs.jobs == 'pypi') && inputs.target != 'none')
     permissions:
       id-token: write
     environment:
@@ -201,9 +248,11 @@ jobs:
 
   github_release:
     name: GitHub Release
-    needs: [publish, build_cli]
+    needs: [build_cli, build_docker]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+      || (github.event_name == 'workflow_dispatch' && (inputs.jobs == 'all' || inputs.jobs == 'github-release'))
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -218,9 +267,10 @@ jobs:
           # Write to file to preserve multiline
           echo "$NOTES" > /tmp/release_notes.md
 
-      - name: Download all artifacts
+      - name: Download CLI artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
+          pattern: cli-*
           path: dist
           merge-multiple: true
 
@@ -246,7 +296,9 @@ jobs:
     name: Update Homebrew tap
     needs: [github_release]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+      || (github.event_name == 'workflow_dispatch' && (inputs.jobs == 'all' || inputs.jobs == 'package-managers'))
 
     steps:
       - name: Download checksums
@@ -304,7 +356,9 @@ jobs:
     name: Update Scoop bucket
     needs: [github_release]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+      || (github.event_name == 'workflow_dispatch' && (inputs.jobs == 'all' || inputs.jobs == 'package-managers'))
 
     steps:
       - name: Download checksums
@@ -354,10 +408,12 @@ jobs:
           git push
 
   docker:
-    name: Docker image
-    needs: [github_release]
+    name: Docker push
+    needs: [build_docker]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+      || (github.event_name == 'workflow_dispatch' && (inputs.jobs == 'all' || inputs.jobs == 'docker'))
     permissions:
       contents: read
       packages: write
