@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-03-22
+
+### Fixed
+
+- **Docker build**: use PIC-enabled zlib for shared library to fix `R_X86_64_32` relocation errors in Docker builds (#323)
+- **CI**: vendor zlib from source (allyourcodebase/zlib) instead of linking system library, fixing builds on Windows and manylinux containers (#322)
+
+### Changed
+
+- **Publish workflow**: decouple job dependencies to prevent cascading failures — PyPI, GitHub Release, Docker, and package managers now run independently. Added `workflow_dispatch` with selective job re-runs (#324)
+
 ## [0.2.5] - 2026-03-22
 
 ### Fixed
