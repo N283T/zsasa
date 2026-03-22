@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-03-22
+
+### Fixed
+
+- **Gzip decompression for mmCIF/PDB files**: `.cif.gz`, `.pdb.gz`, `.mmcif.gz`, `.ent.gz` files are now transparently decompressed. Previously only `.json.gz` was supported, and mmCIF/PDB parsers passed raw gzip data to the tokenizer, causing `NoAtomSiteLoop` errors (#319)
+
+### Changed
+
+- **Switch from Zig native flate to C zlib**: gzip decompression now uses C zlib (`gzopen`/`gzread`/`gzclose`) instead of Zig 0.15's `std.compress.flate`, which panics on certain valid gzip files (e.g. PDB entry 2OXD). This adds `libz` as a build dependency. See [ziglang/zig#25035](https://github.com/ziglang/zig/issues/25035). Will revert to native flate when the upstream bug is fixed (#320)
+- **Decompression bomb protection**: `readGzip` enforces a 4 GB max decompressed size limit to prevent memory exhaustion from malicious `.gz` files
+
 ## [0.2.4] - 2026-03-11
 
 ### Added
