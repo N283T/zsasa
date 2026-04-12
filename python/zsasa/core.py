@@ -56,6 +56,7 @@ ZSASA_ALGORITHM_LR = 1
 ZSASA_CLASSIFIER_NACCESS = 0
 ZSASA_CLASSIFIER_PROTOR = 1
 ZSASA_CLASSIFIER_OONS = 2
+ZSASA_CLASSIFIER_CCD = 3
 
 # Atom classes
 ZSASA_ATOM_CLASS_POLAR = 0
@@ -449,11 +450,13 @@ class ClassifierType(IntEnum):
         NACCESS: NACCESS-compatible radii (default, most commonly used).
         PROTOR: ProtOr radii based on hybridization state.
         OONS: Ooi, Oobatake, Nemethy, Scheraga radii (older FreeSASA default).
+        CCD: CCD-based radii derived from bond topology (ProtOr-compatible).
     """
 
     NACCESS = ZSASA_CLASSIFIER_NACCESS
     PROTOR = ZSASA_CLASSIFIER_PROTOR
     OONS = ZSASA_CLASSIFIER_OONS
+    CCD = ZSASA_CLASSIFIER_CCD
 
 
 class AtomClass(IntEnum):

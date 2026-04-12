@@ -222,6 +222,7 @@ class TestClassifierTypes:
         assert ClassifierType.NACCESS == 0
         assert ClassifierType.PROTOR == 1
         assert ClassifierType.OONS == 2
+        assert ClassifierType.CCD == 3
 
     def test_classifier_type_is_int(self):
         """Classifier types should be usable as integers."""
@@ -296,7 +297,12 @@ class TestGetAtomClass:
 
     def test_different_classifiers(self):
         """Different classifiers should give consistent polarity."""
-        for classifier in [ClassifierType.NACCESS, ClassifierType.PROTOR, ClassifierType.OONS]:
+        for classifier in [
+            ClassifierType.NACCESS,
+            ClassifierType.PROTOR,
+            ClassifierType.OONS,
+            ClassifierType.CCD,
+        ]:
             assert get_atom_class("ALA", "CA", classifier) == AtomClass.APOLAR
             assert get_atom_class("ALA", "O", classifier) == AtomClass.POLAR
 
@@ -408,11 +414,13 @@ class TestClassifyAtoms:
         result_naccess = classify_atoms(["ALA"], ["CA"], ClassifierType.NACCESS)
         result_protor = classify_atoms(["ALA"], ["CA"], ClassifierType.PROTOR)
         result_oons = classify_atoms(["ALA"], ["CA"], ClassifierType.OONS)
+        result_ccd = classify_atoms(["ALA"], ["CA"], ClassifierType.CCD)
 
         # All should return valid radii
         assert not np.isnan(result_naccess.radii[0])
         assert not np.isnan(result_protor.radii[0])
         assert not np.isnan(result_oons.radii[0])
+        assert not np.isnan(result_ccd.radii[0])
 
     def test_classification_result_repr(self):
         """ClassificationResult should have a clean repr."""
