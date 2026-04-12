@@ -10,6 +10,7 @@ sidebar_position: 1
 zsasa calc <input> [output] [OPTIONS]
 zsasa batch <input_dir> [output_dir] [OPTIONS]
 zsasa traj <trajectory> <topology> [output] [OPTIONS]
+zsasa compile-dict <input.cif[.gz]> -o <output.zsdc>
 ```
 
 ## Subcommands
@@ -41,6 +42,16 @@ zsasa traj trajectory.xtc topology.pdb [OPTIONS]
 ```
 
 See [Trajectory Options](#trajectory-options) for traj-specific options and details.
+
+### `compile-dict` - Compile CCD Dictionary
+
+Convert a CCD dictionary from CIF text to compact binary ZSDC format for faster loading.
+
+```bash
+zsasa compile-dict components.cif.gz -o components.zsdc
+```
+
+The compiled ZSDC file can then be used with `--ccd=components.zsdc` for faster dictionary loading compared to parsing CIF text at runtime.
 
 ## Basic Usage
 
@@ -76,10 +87,11 @@ See [Trajectory Options](#trajectory-options) for traj-specific options and deta
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--classifier=TYPE` | Built-in classifier: `naccess`, `protor`, or `oons` | `protor` for PDB/mmCIF, none for JSON |
+| `--classifier=TYPE` | Built-in classifier: `naccess`, `protor`, `oons`, or `ccd` | `protor` for PDB/mmCIF, none for JSON |
 | `--config=FILE` | Custom classifier config file (TOML or FreeSASA format, auto-detected by extension) | none |
+| `--ccd=FILE` | External CCD dictionary (CIF text or ZSDC binary) | none |
 
-When `--classifier` is used, atom radii are assigned based on residue and atom names. For PDB/mmCIF input, `protor` is used by default (matching FreeSASA/RustSASA defaults). If both `--classifier` and `--config` are specified, `--config` takes precedence.
+When `--classifier` is used, atom radii are assigned based on residue and atom names. For PDB/mmCIF input, `protor` is used by default (matching FreeSASA/RustSASA defaults). If both `--classifier` and `--config` are specified, `--config` takes precedence. When `--classifier=ccd` is used, HETATM records are included automatically without needing `--include-hetatm`.
 
 See [Classifiers](../guide/classifiers.mdx) for detailed classifier documentation.
 
