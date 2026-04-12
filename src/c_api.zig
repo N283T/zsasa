@@ -1191,8 +1191,8 @@ fn getRadiusByClassifier(classifier_type: c_int, residue: []const u8, atom: []co
         ZSASA_CLASSIFIER_PROTOR => classifier_protor.getRadius(residue, atom),
         ZSASA_CLASSIFIER_OONS => classifier_oons.getRadius(residue, atom),
         ZSASA_CLASSIFIER_CCD => blk: {
-            // Stack-local instance; hardcoded lookup needs no allocator
-            const ccd = classifier_ccd.CcdClassifier.init(std.heap.page_allocator);
+            var ccd = classifier_ccd.CcdClassifier.init(std.heap.page_allocator);
+            defer ccd.deinit();
             break :blk ccd.getRadius(residue, atom);
         },
         else => null,
@@ -1206,7 +1206,8 @@ fn getClassByClassifier(classifier_type: c_int, residue: []const u8, atom: []con
         ZSASA_CLASSIFIER_PROTOR => classifier_protor.getClass(residue, atom),
         ZSASA_CLASSIFIER_OONS => classifier_oons.getClass(residue, atom),
         ZSASA_CLASSIFIER_CCD => blk: {
-            const ccd = classifier_ccd.CcdClassifier.init(std.heap.page_allocator);
+            var ccd = classifier_ccd.CcdClassifier.init(std.heap.page_allocator);
+            defer ccd.deinit();
             break :blk ccd.getClass(residue, atom);
         },
         else => .unknown,

@@ -864,6 +864,7 @@ pub const CcdClassifier = struct {
 
             // Allocate a persistent copy of the key on the heap
             const key_copy = try self.allocator.alloc(u8, 9);
+            errdefer self.allocator.free(key_copy);
             @memcpy(key_copy, &key);
 
             try self.runtime_components.put(key_copy, RuntimeEntry{ .props = entry.props });

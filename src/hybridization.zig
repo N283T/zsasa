@@ -123,6 +123,7 @@ pub const Component = struct {
 pub const BondAnalysis = struct {
     hybridization: Hybridization,
     heavy_bond_count: u8,
+    heavy_valence_sum: u8,
     h_bond_count: u8,
     has_double: bool,
     has_triple: bool,
@@ -163,6 +164,18 @@ fn normalizeElement(type_symbol: []const u8, buf: *[4]u8) u3 {
     return @intCast(len);
 }
 
+/// Convert a BondOrder to its valence contribution (number of valence units consumed).
+fn bondValence(order: BondOrder) u8 {
+    return switch (order) {
+        .single => 1,
+        .double => 2,
+        .triple => 3,
+        .aromatic => 2, // simplified; CCD uses aromatic for ring bonds
+        .delocalized => 2,
+        .unknown => 1,
+    };
+}
+
 /// Analyze bonds around a given atom in a component.
 ///
 /// Iterates all bonds in the component to find those involving `atom_idx`,
@@ -172,6 +185,7 @@ pub fn analyzeBonds(component: *const Component, atom_idx: u16) BondAnalysis {
     var result = BondAnalysis{
         .hybridization = .unknown,
         .heavy_bond_count = 0,
+        .heavy_valence_sum = 0,
         .h_bond_count = 0,
         .has_double = false,
         .has_triple = false,
@@ -194,6 +208,7 @@ pub fn analyzeBonds(component: *const Component, atom_idx: u16) BondAnalysis {
                 result.h_bond_count += 1;
             } else {
                 result.heavy_bond_count += 1;
+                result.heavy_valence_sum += bondValence(bond.order);
             }
 
             switch (bond.order) {
@@ -265,17 +280,20 @@ pub fn deriveRadius(type_symbol: []const u8, hybridization: Hybridization, impli
 
 /// Derive polarity class from element symbol.
 ///
-/// N, O -> polar; C, S, P, SE -> apolar; others -> unknown.
+/// N, O, S, P, SE -> polar (matching ProtOr convention);
+/// C -> apolar; others -> unknown.
 pub fn deriveClass(type_symbol: []const u8) AtomClass {
     var buf: [4]u8 = undefined;
     const len = normalizeElement(type_symbol, &buf);
     const elem = buf[0..len];
 
-    if (std.mem.eql(u8, elem, "N") or std.mem.eql(u8, elem, "O")) return .polar;
-    if (std.mem.eql(u8, elem, "C") or
+    // N, O, S, P, SE -> polar (matching ProtOr convention)
+    if (std.mem.eql(u8, elem, "N") or
+        std.mem.eql(u8, elem, "O") or
         std.mem.eql(u8, elem, "S") or
         std.mem.eql(u8, elem, "P") or
-        std.mem.eql(u8, elem, "SE")) return .apolar;
+        std.mem.eql(u8, elem, "SE")) return .polar;
+    if (std.mem.eql(u8, elem, "C")) return .apolar;
 
     return .unknown;
 }
@@ -302,13 +320,14 @@ fn typicalValence(type_symbol: []const u8) ?u8 {
 
 /// Compute the number of implicit hydrogens for an atom.
 ///
-/// implicit_h = typical_valence - (heavy_bond_count + explicit_h_count),
-/// clamped to 0. Returns 0 if the element has no known typical valence.
-pub fn implicitHCount(type_symbol: []const u8, heavy_bond_count: u8, explicit_h_count: u8) u8 {
+/// implicit_h = typical_valence - (heavy_valence_sum + explicit_h_count),
+/// where heavy_valence_sum accounts for bond orders (double=2, triple=3, etc.).
+/// Clamped to 0. Returns 0 if the element has no known typical valence.
+pub fn implicitHCount(type_symbol: []const u8, heavy_valence_sum: u8, explicit_h_count: u8) u8 {
     const valence = typicalValence(type_symbol) orelse return 0;
-    const total_bonds = @as(u16, heavy_bond_count) + @as(u16, explicit_h_count);
-    if (total_bonds >= valence) return 0;
-    return @intCast(valence - total_bonds);
+    const total_valence = @as(u16, heavy_valence_sum) + @as(u16, explicit_h_count);
+    if (total_valence >= valence) return 0;
+    return @intCast(valence - total_valence);
 }
 
 // =============================================================================
@@ -341,7 +360,7 @@ pub fn deriveComponentProperties(
 
         const implicit_h = implicitHCount(
             atom.typeSymbolSlice(),
-            analysis.heavy_bond_count,
+            analysis.heavy_valence_sum,
             analysis.h_bond_count,
         );
 
@@ -535,13 +554,15 @@ test "deriveClass — all elements" {
     try std.testing.expectEqual(AtomClass.polar, deriveClass("n"));
     try std.testing.expectEqual(AtomClass.polar, deriveClass("o"));
 
+    // Polar (S, P, SE match ProtOr convention)
+    try std.testing.expectEqual(AtomClass.polar, deriveClass("S"));
+    try std.testing.expectEqual(AtomClass.polar, deriveClass("P"));
+    try std.testing.expectEqual(AtomClass.polar, deriveClass("SE"));
+    try std.testing.expectEqual(AtomClass.polar, deriveClass("Se"));
+
     // Apolar
     try std.testing.expectEqual(AtomClass.apolar, deriveClass("C"));
-    try std.testing.expectEqual(AtomClass.apolar, deriveClass("S"));
-    try std.testing.expectEqual(AtomClass.apolar, deriveClass("P"));
-    try std.testing.expectEqual(AtomClass.apolar, deriveClass("SE"));
     try std.testing.expectEqual(AtomClass.apolar, deriveClass("c"));
-    try std.testing.expectEqual(AtomClass.apolar, deriveClass("Se"));
 
     // Unknown
     try std.testing.expectEqual(AtomClass.unknown, deriveClass("FE"));
@@ -549,23 +570,30 @@ test "deriveClass — all elements" {
     try std.testing.expectEqual(AtomClass.unknown, deriveClass("H"));
 }
 
-test "implicitHCount — C with 3 heavy bonds" {
-    // C valence=4, 3 heavy bonds, 0 explicit H => 1 implicit H
+test "implicitHCount — C with valence sum 3" {
+    // C valence=4, heavy_valence_sum=3 (e.g. 3 single bonds), 0 explicit H => 1 implicit H
     try std.testing.expectEqual(@as(u8, 1), implicitHCount("C", 3, 0));
 }
 
-test "implicitHCount — N with 1 heavy bond" {
-    // N valence=3, 1 heavy bond, 0 explicit H => 2 implicit H
+test "implicitHCount — C with double bond" {
+    // C valence=4, heavy_valence_sum=2 (one double bond), 0 explicit H => 2 implicit H
+    try std.testing.expectEqual(@as(u8, 2), implicitHCount("C", 2, 0));
+    // C valence=4, heavy_valence_sum=4 (1 double + 2 single), 0 explicit H => 0 implicit H
+    try std.testing.expectEqual(@as(u8, 0), implicitHCount("C", 4, 0));
+}
+
+test "implicitHCount — N with valence sum 1" {
+    // N valence=3, heavy_valence_sum=1 (1 single bond), 0 explicit H => 2 implicit H
     try std.testing.expectEqual(@as(u8, 2), implicitHCount("N", 1, 0));
 }
 
 test "implicitHCount — with explicit H (=0)" {
-    // N valence=3, 1 heavy bond, 2 explicit H => 0 implicit H
+    // N valence=3, heavy_valence_sum=1, 2 explicit H => 0 implicit H
     try std.testing.expectEqual(@as(u8, 0), implicitHCount("N", 1, 2));
 }
 
 test "implicitHCount — clamped to zero" {
-    // If bonds exceed valence, result is 0
+    // If valence sum exceeds typical valence, result is 0
     try std.testing.expectEqual(@as(u8, 0), implicitHCount("C", 5, 0));
     try std.testing.expectEqual(@as(u8, 0), implicitHCount("O", 3, 0));
 }
@@ -615,14 +643,14 @@ test "deriveComponentProperties — simplified ALA" {
     for (results) |entry| {
         const name = entry.atomIdSlice();
         if (std.mem.eql(u8, name, "N")) {
-            // N: 1 heavy bond (CA), 0 H bonds
+            // N: 1 heavy bond (CA, single), heavy_valence_sum=1, 0 H bonds
             // implicit_h = 3 - (1+0) = 2
             // radius = 1.64 (N always 1.64)
             try std.testing.expectEqual(@as(f64, 1.64), entry.props.radius);
             try std.testing.expectEqual(AtomClass.polar, entry.props.class);
             found_n = true;
         } else if (std.mem.eql(u8, name, "CA")) {
-            // CA: 3 heavy bonds (N, C, CB), 0 H bonds
+            // CA: 3 heavy bonds (N, C, CB, all single), heavy_valence_sum=3, 0 H bonds
             // implicit_h = 4 - (3+0) = 1
             // hybridization = sp3 (all single bonds)
             // radius = sp3/H1+ = 1.88
@@ -630,23 +658,23 @@ test "deriveComponentProperties — simplified ALA" {
             try std.testing.expectEqual(AtomClass.apolar, entry.props.class);
             found_ca = true;
         } else if (std.mem.eql(u8, name, "C")) {
-            // C (carbonyl): 2 heavy bonds (CA, O), 0 H bonds
-            // implicit_h = 4 - (2+0) = 2
+            // C (carbonyl): 2 heavy bonds (CA single, O double), heavy_valence_sum=3, 0 H bonds
+            // implicit_h = 4 - (3+0) = 1
             // hybridization = sp2 (has double bond C=O)
             // radius = sp2/H1+ = 1.76
             try std.testing.expectEqual(@as(f64, 1.76), entry.props.radius);
             try std.testing.expectEqual(AtomClass.apolar, entry.props.class);
             found_c = true;
         } else if (std.mem.eql(u8, name, "O")) {
-            // O: 1 heavy bond (C), 0 H bonds
-            // implicit_h = 2 - (1+0) = 1
+            // O: 1 heavy bond (C, double), heavy_valence_sum=2, 0 H bonds
+            // implicit_h = 2 - (2+0) = 0
             // hybridization = sp2 (double bond C=O)
             // radius = sp2 = 1.42
             try std.testing.expectEqual(@as(f64, 1.42), entry.props.radius);
             try std.testing.expectEqual(AtomClass.polar, entry.props.class);
             found_o = true;
         } else if (std.mem.eql(u8, name, "CB")) {
-            // CB: 1 heavy bond (CA), 0 H bonds
+            // CB: 1 heavy bond (CA, single), heavy_valence_sum=1, 0 H bonds
             // implicit_h = 4 - (1+0) = 3
             // hybridization = sp3 (single bonds only)
             // radius = sp3/H1+ = 1.88
