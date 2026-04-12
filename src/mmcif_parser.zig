@@ -35,6 +35,7 @@ const mmap_reader = @import("mmap_reader.zig");
 const gzip = @import("gzip.zig");
 const types = @import("types.zig");
 const AtomInput = types.AtomInput;
+const ccd_parser = @import("ccd_parser.zig");
 
 /// Error types for mmCIF parsing
 pub const ParseError = error{
@@ -116,24 +117,59 @@ pub const MmcifParser = struct {
     chain_filter: ?[]const []const u8 = null,
     /// Use auth_asym_id instead of label_asym_id for chain
     use_auth_chain: bool = false,
+    /// Inline CCD data parsed from `_chem_comp_atom`/`_chem_comp_bond` loops
+    inline_ccd: ?ccd_parser.ComponentDict = null,
 
     pub fn init(allocator: Allocator) MmcifParser {
         return .{ .allocator = allocator };
     }
 
+    /// Return a pointer to the inline CCD data, or null if none was parsed.
+    pub fn getInlineCcd(self: *MmcifParser) ?*ccd_parser.ComponentDict {
+        if (self.inline_ccd != null) return &self.inline_ccd.?;
+        return null;
+    }
+
+    /// Clean up inline CCD data. Must be called before the parser goes out of
+    /// scope when `parse()` has been called and `getInlineCcd()` is non-null.
+    pub fn deinitCcd(self: *MmcifParser) void {
+        if (self.inline_ccd) |*dict| {
+            dict.deinit();
+            self.inline_ccd = null;
+        }
+    }
+
     /// Parse mmCIF from a string
     pub fn parse(self: *MmcifParser, source: []const u8) !AtomInput {
+        // First pass: extract any inline CCD data (_chem_comp_atom / _chem_comp_bond)
+        var ccd_dict = try ccd_parser.parseCcdData(self.allocator, source, null);
+        if (ccd_dict.count() == 0) {
+            ccd_dict.deinit();
+            self.inline_ccd = null;
+        } else {
+            self.inline_ccd = ccd_dict;
+        }
+
+        // Second pass: parse _atom_site loop for coordinates
         var tokenizer = cif.Tokenizer.init(source);
 
         // Skip to atom_site loop
-        const loop_info = try self.findAtomSiteLoop(&tokenizer);
+        const loop_info = self.findAtomSiteLoop(&tokenizer) catch |err| {
+            // Clean up CCD data on failure
+            self.deinitCcd();
+            return err;
+        };
 
         if (!loop_info.columns.hasRequiredFields()) {
+            self.deinitCcd();
             return ParseError.MissingCoordinateField;
         }
 
         // Parse atom data
-        return try self.parseAtomData(&tokenizer, loop_info.columns, loop_info.num_cols);
+        return self.parseAtomData(&tokenizer, loop_info.columns, loop_info.num_cols) catch |err| {
+            self.deinitCcd();
+            return err;
+        };
     }
 
     /// Parse mmCIF from a file (handles both plain and .gz compressed)
@@ -831,6 +867,7 @@ test "fuzz mmcif parser" {
     try std.testing.fuzz({}, struct {
         fn testOne(_: void, input: []const u8) !void {
             var parser = MmcifParser.init(std.testing.allocator);
+            defer parser.deinitCcd();
             var result = parser.parse(input) catch return;
             result.deinit();
         }
@@ -841,4 +878,164 @@ test "fuzz mmcif parser" {
             "data_TEST\nloop_\n_cell.length_a\n_cell.length_b\n10.0 20.0\n#\n",
         },
     });
+}
+
+test "parse mmCIF with inline CCD data" {
+    // A mmCIF file containing both _chem_comp_atom/_chem_comp_bond AND _atom_site loops
+    const source =
+        \\data_TEST
+        \\#
+        \\loop_
+        \\_chem_comp_atom.comp_id
+        \\_chem_comp_atom.atom_id
+        \\_chem_comp_atom.type_symbol
+        \\_chem_comp_atom.pdbx_aromatic_flag
+        \\_chem_comp_atom.pdbx_leaving_atom_flag
+        \\ALA N   N N N
+        \\ALA CA  C N N
+        \\ALA C   C N N
+        \\ALA O   O N N
+        \\ALA CB  C N N
+        \\ALA OXT O N Y
+        \\#
+        \\loop_
+        \\_chem_comp_bond.comp_id
+        \\_chem_comp_bond.atom_id_1
+        \\_chem_comp_bond.atom_id_2
+        \\_chem_comp_bond.value_order
+        \\ALA N   CA  SING
+        \\ALA CA  C   SING
+        \\ALA CA  CB  SING
+        \\ALA C   O   DOUB
+        \\ALA C   OXT SING
+        \\#
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.group_PDB
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 N N  ALA ATOM 10.0 20.0 30.0
+        \\2 C CA ALA ATOM 11.0 21.0 31.0
+        \\3 C C  ALA ATOM 12.0 22.0 32.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    defer parser.deinitCcd();
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    // Verify atom_site parsing works as normal
+    try std.testing.expectEqual(@as(usize, 3), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
+
+    // Verify inline CCD was parsed
+    const ccd = parser.getInlineCcd();
+    try std.testing.expect(ccd != null);
+    try std.testing.expectEqual(@as(usize, 1), ccd.?.count());
+
+    const comp = ccd.?.get("ALA");
+    try std.testing.expect(comp != null);
+    try std.testing.expectEqual(@as(usize, 6), comp.?.atoms.len);
+    try std.testing.expectEqual(@as(usize, 5), comp.?.bonds.len);
+
+    // Verify OXT is a leaving atom
+    var found_oxt = false;
+    for (comp.?.atoms) |atom| {
+        if (std.mem.eql(u8, atom.atomIdSlice(), "OXT")) {
+            try std.testing.expect(atom.leaving);
+            found_oxt = true;
+        }
+    }
+    try std.testing.expect(found_oxt);
+}
+
+test "parse mmCIF without inline CCD — getInlineCcd returns null" {
+    const source =
+        \\data_TEST
+        \\#
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C CA ALA 10.0 20.0 30.0
+        \\2 N N  ALA 11.0 21.0 31.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    defer parser.deinitCcd();
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    // No CCD loops present, so inline_ccd should be null
+    try std.testing.expect(parser.getInlineCcd() == null);
+
+    // Normal parsing still works
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+}
+
+test "parse mmCIF with inline CCD after atom_site" {
+    // CCD loops come AFTER the _atom_site loop
+    const source =
+        \\data_TEST
+        \\#
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.group_PDB
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 N N  GLY ATOM 10.0 20.0 30.0
+        \\2 C CA GLY ATOM 11.0 21.0 31.0
+        \\#
+        \\loop_
+        \\_chem_comp_atom.comp_id
+        \\_chem_comp_atom.atom_id
+        \\_chem_comp_atom.type_symbol
+        \\GLY N  N
+        \\GLY CA C
+        \\GLY C  C
+        \\GLY O  O
+        \\#
+        \\loop_
+        \\_chem_comp_bond.comp_id
+        \\_chem_comp_bond.atom_id_1
+        \\_chem_comp_bond.atom_id_2
+        \\_chem_comp_bond.value_order
+        \\GLY N  CA SING
+        \\GLY CA C  SING
+        \\GLY C  O  DOUB
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    defer parser.deinitCcd();
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    // Atom coordinates parsed correctly
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
+
+    // CCD data parsed even though it was after atom_site
+    const ccd = parser.getInlineCcd();
+    try std.testing.expect(ccd != null);
+    try std.testing.expectEqual(@as(usize, 1), ccd.?.count());
+
+    const comp = ccd.?.get("GLY");
+    try std.testing.expect(comp != null);
+    try std.testing.expectEqual(@as(usize, 4), comp.?.atoms.len);
+    try std.testing.expectEqual(@as(usize, 3), comp.?.bonds.len);
 }

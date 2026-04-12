@@ -13,6 +13,7 @@ const classifier = @import("classifier.zig");
 const classifier_protor = @import("classifier_protor.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_oons = @import("classifier_oons.zig");
+const classifier_ccd = @import("classifier_ccd.zig");
 
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
@@ -332,6 +333,10 @@ fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType) !void {
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
 
+    // For CCD: create classifier instance (hardcoded table is compile-time, no setup cost)
+    var ccd_clf: ?classifier_ccd.CcdClassifier = if (ct == .ccd) classifier_ccd.CcdClassifier.init(input.allocator) else null;
+    defer if (ccd_clf) |*c| c.deinit();
+
     const new_radii = try input.allocator.alloc(f64, n);
     errdefer input.allocator.free(new_radii);
 
@@ -340,6 +345,7 @@ fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType) !void {
             .naccess => classifier_naccess.getRadius(residues[i].slice(), atom_names[i].slice()),
             .protor => classifier_protor.getRadius(residues[i].slice(), atom_names[i].slice()),
             .oons => classifier_oons.getRadius(residues[i].slice(), atom_names[i].slice()),
+            .ccd => if (ccd_clf) |*c| c.getRadius(residues[i].slice(), atom_names[i].slice()) else null,
         };
 
         if (maybe_radius) |r| {
@@ -1087,7 +1093,7 @@ fn parseClassifierType(value: []const u8) ClassifierType {
         return ct;
     } else {
         std.debug.print("Error: Invalid classifier: {s}\n", .{value});
-        std.debug.print("Valid classifiers: naccess, protor, oons\n", .{});
+        std.debug.print("Valid classifiers: naccess, protor, oons, ccd\n", .{});
         std.process.exit(1);
     }
 }
@@ -1300,7 +1306,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\OPTIONS:
         \\    --algorithm=ALGO    Algorithm: sr (shrake-rupley), lr (lee-richards)
         \\                        Default: sr
-        \\    --classifier=TYPE   Built-in classifier: naccess, protor, oons
+        \\    --classifier=TYPE   Built-in classifier: naccess, protor, oons, ccd
         \\                        Default: protor
         \\    --threads=N         Number of threads (default: auto-detect)
         \\    --probe-radius=R    Probe radius in Angstroms (default: 1.4)

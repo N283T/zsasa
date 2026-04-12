@@ -18,6 +18,7 @@ const classifier_parser = @import("classifier_parser.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_protor = @import("classifier_protor.zig");
 const classifier_oons = @import("classifier_oons.zig");
+const classifier_ccd = @import("classifier_ccd.zig");
 
 const Config = types.Config;
 const Configf32 = types.Configf32;
@@ -45,7 +46,7 @@ pub const CalcArgs = struct {
     algorithm: Algorithm = .sr, // Default: Shrake-Rupley
     precision: Precision = .f64, // f32 or f64 (default: f64)
     output_format: OutputFormat = .json,
-    classifier_type: ?ClassifierType = null, // Built-in classifier (naccess/protor/oons)
+    classifier_type: ?ClassifierType = null, // Built-in classifier (naccess/protor/oons/ccd)
     config_path: ?[]const u8 = null, // Custom config file path
     chain_filter: ?[]const u8 = null, // Chain filter (e.g., "A" or "A,B,C")
     model_num: ?u32 = null, // Model number for NMR structures
@@ -139,7 +140,7 @@ fn parseClassifierType(value: []const u8) ClassifierType {
         return ct;
     } else {
         std.debug.print("Error: Invalid classifier: {s}\n", .{value});
-        std.debug.print("Valid classifiers: naccess, protor, oons\n", .{});
+        std.debug.print("Valid classifiers: naccess, protor, oons, ccd\n", .{});
         std.process.exit(1);
     }
 }
@@ -443,7 +444,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\OPTIONS:
         \\    --algorithm=ALGO   Algorithm: sr (shrake-rupley), lr (lee-richards)
         \\                       Default: sr
-        \\    --classifier=TYPE  Built-in classifier: naccess, protor, oons
+        \\    --classifier=TYPE  Built-in classifier: naccess, protor, oons, ccd
         \\                       Default: protor for PDB/mmCIF, none for JSON
         \\    --config=FILE      Custom classifier config file (FreeSASA format)
         \\    --chain=ID         Filter by chain ID (e.g., --chain=A or --chain=A,B,C)
@@ -608,6 +609,10 @@ fn applyBuiltinClassifier(
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
 
+    // For CCD: create classifier instance (hardcoded table is compile-time, no setup cost)
+    var ccd_clf: ?classifier_ccd.CcdClassifier = if (ct == .ccd) classifier_ccd.CcdClassifier.init(input.allocator) else null;
+    defer if (ccd_clf) |*c| c.deinit();
+
     // Allocate new radii array (use input.allocator for consistency with deinit)
     const new_radii = try input.allocator.alloc(f64, n);
     errdefer input.allocator.free(new_radii);
@@ -621,6 +626,7 @@ fn applyBuiltinClassifier(
             .naccess => classifier_naccess.getRadius(residues[i].slice(), atom_names[i].slice()),
             .protor => classifier_protor.getRadius(residues[i].slice(), atom_names[i].slice()),
             .oons => classifier_oons.getRadius(residues[i].slice(), atom_names[i].slice()),
+            .ccd => if (ccd_clf) |*c| c.getRadius(residues[i].slice(), atom_names[i].slice()) else null,
         };
 
         if (maybe_radius) |r| {
@@ -815,6 +821,9 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
             };
         } else if (effective_classifier) |ct| {
             // Use built-in classifier
+            // TODO: For CCD classifier with mmCIF input, parse inline CCD components
+            // and feed them to CcdClassifier.addComponent() to handle non-standard residues.
+            // The hardcoded table already covers all 20 standard amino acids.
             applyBuiltinClassifier(&input, ct, args.quiet) catch |err| {
                 std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
                 std.process.exit(1);

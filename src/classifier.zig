@@ -13,6 +13,7 @@
 //! - **NACCESS**: Default classifier, NACCESS-compatible radii (João Rodrigues)
 //! - **ProtOr**: Hybridization-based radii from Tsai et al. 1999
 //! - **OONS**: Ooi, Oobatake, Nemethy, Scheraga radii (older FreeSASA default)
+//! - **CCD**: Derives radii from CCD bond topology (ProtOr-compatible)
 //!
 //! ## Usage
 //!
@@ -46,11 +47,16 @@ pub const ClassifierType = enum {
     /// Reference: Ooi, Oobatake, Nemethy, Scheraga
     oons,
 
+    /// CCD-based radii derived from bond topology
+    /// Uses hybridization analysis of Chemical Component Dictionary data
+    ccd,
+
     pub fn name(self: ClassifierType) []const u8 {
         return switch (self) {
             .naccess => "NACCESS",
             .protor => "ProtOr",
             .oons => "OONS",
+            .ccd => "CCD",
         };
     }
 
@@ -58,6 +64,7 @@ pub const ClassifierType = enum {
         if (std.ascii.eqlIgnoreCase(s, "naccess")) return .naccess;
         if (std.ascii.eqlIgnoreCase(s, "protor")) return .protor;
         if (std.ascii.eqlIgnoreCase(s, "oons")) return .oons;
+        if (std.ascii.eqlIgnoreCase(s, "ccd")) return .ccd;
         return null;
     }
 };
@@ -411,6 +418,22 @@ pub fn guessRadiusFromAtomName(atom_name: []const u8) ?f64 {
 // =============================================================================
 // Tests
 // =============================================================================
+
+test "ClassifierType fromString" {
+    try std.testing.expectEqual(ClassifierType.naccess, ClassifierType.fromString("naccess").?);
+    try std.testing.expectEqual(ClassifierType.protor, ClassifierType.fromString("protor").?);
+    try std.testing.expectEqual(ClassifierType.oons, ClassifierType.fromString("oons").?);
+    try std.testing.expectEqual(ClassifierType.ccd, ClassifierType.fromString("ccd").?);
+    try std.testing.expectEqual(ClassifierType.ccd, ClassifierType.fromString("CCD").?);
+    try std.testing.expectEqual(@as(?ClassifierType, null), ClassifierType.fromString("invalid"));
+}
+
+test "ClassifierType name" {
+    try std.testing.expectEqualStrings("NACCESS", ClassifierType.naccess.name());
+    try std.testing.expectEqualStrings("ProtOr", ClassifierType.protor.name());
+    try std.testing.expectEqualStrings("OONS", ClassifierType.oons.name());
+    try std.testing.expectEqualStrings("CCD", ClassifierType.ccd.name());
+}
 
 test "AtomClass fromString" {
     try std.testing.expectEqual(AtomClass.polar, AtomClass.fromString("polar"));
