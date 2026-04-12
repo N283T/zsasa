@@ -83,31 +83,34 @@ Native DCD Reader:
     >>> print(result.total_areas)  # Per-frame SASA in Å²
 """
 
+from zsasa._ffi import get_version
 from zsasa.analysis import (
     ResidueResult,
     aggregate_by_residue,
     aggregate_from_result,
 )
-from zsasa.core import (
-    MAX_SASA,
+from zsasa.batch import BatchDirResult, process_directory
+from zsasa.classifier import (
     AtomClass,
-    BatchDirResult,
-    BatchSasaResult,
     ClassificationResult,
     ClassifierType,
-    SasaResult,
-    calculate_rsa,
-    calculate_rsa_batch,
-    calculate_sasa,
-    calculate_sasa_batch,
     classify_atoms,
     get_atom_class,
-    get_max_sasa,
     get_radius,
-    get_version,
     guess_radius,
     guess_radius_from_atom_name,
-    process_directory,
+)
+from zsasa.rsa import (
+    MAX_SASA,
+    calculate_rsa,
+    calculate_rsa_batch,
+    get_max_sasa,
+)
+from zsasa.sasa import (
+    BatchSasaResult,
+    SasaResult,
+    calculate_sasa,
+    calculate_sasa_batch,
 )
 
 __all__ = [

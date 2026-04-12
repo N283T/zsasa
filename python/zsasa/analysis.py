@@ -24,7 +24,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 
-from zsasa.core import MAX_SASA, AtomClass
+from zsasa.classifier import AtomClass
+from zsasa.rsa import MAX_SASA
 
 if TYPE_CHECKING:
     from zsasa.integrations.gemmi import SasaResultWithAtoms

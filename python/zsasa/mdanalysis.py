@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 from numpy.typing import NDArray
 
-from zsasa.core import calculate_sasa_batch
+from zsasa.sasa import calculate_sasa_batch
 
 if TYPE_CHECKING:
     from MDAnalysis.core.groups import AtomGroup

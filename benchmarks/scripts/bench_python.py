@@ -206,7 +206,7 @@ def bench_python_e2e(
 ) -> list[float]:
     """Benchmark Python end-to-end: gemmi load + classify + SASA."""
     sys.path.insert(0, str(get_root_dir().joinpath("python")))
-    from zsasa.core import ClassifierType
+    from zsasa import ClassifierType
     from zsasa.integrations.gemmi import calculate_sasa_from_structure
 
     # Warmup
@@ -243,7 +243,7 @@ def median(values: list[float]) -> float:
 def prepare_python_data(pdb_path: Path, threads: int) -> tuple[np.ndarray, np.ndarray]:
     """Load structure with gemmi and classify atoms to get coords + radii."""
     sys.path.insert(0, str(get_root_dir().joinpath("python")))
-    from zsasa.core import ClassifierType, classify_atoms
+    from zsasa import ClassifierType, classify_atoms
     from zsasa.integrations.gemmi import extract_atoms_from_model
 
     import gemmi

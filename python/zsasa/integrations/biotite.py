@@ -24,13 +24,9 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
-from zsasa.core import (
-    AtomClass,
-    ClassifierType,
-    calculate_sasa,
-    classify_atoms,
-)
+from zsasa.classifier import AtomClass, ClassifierType, classify_atoms
 from zsasa.integrations._types import AtomData, SasaResultWithAtoms
+from zsasa.sasa import calculate_sasa
 
 if TYPE_CHECKING:
     from biotite.structure import AtomArray, AtomArrayStack
