@@ -44,6 +44,7 @@ benchmarks/alphafold_pdb/
 data/*.cif
 scripts/.venv/
 scripts/uv.lock
+python/uv.lock
 
 # Benchmark results (raw data — plots are copied to website/static/assets/)
 benchmarks/results/
