@@ -1430,7 +1430,7 @@ pub fn run(allocator: Allocator, args: BatchArgs) !void {
         .quiet = args.quiet,
         .classifier_type = args.classifier_type,
         .include_hydrogens = args.include_hydrogens,
-        .include_hetatm = args.include_hetatm,
+        .include_hetatm = args.include_hetatm or (args.classifier_type == .ccd),
         .use_bitmask = args.use_bitmask,
         .store_atom_areas = (args.output_format == .jsonl),
         .external_ccd = if (ext_ccd != null) &ext_ccd.? else null,

@@ -807,9 +807,17 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
         return error.MissingArgument;
     };
 
+    // CCD classifier implies HETATM inclusion (the whole point is classifying non-standard residues)
+    var effective_args = args;
+    if (effective_args.classifier_type) |ct| {
+        if (ct == .ccd and !effective_args.include_hetatm) {
+            effective_args.include_hetatm = true;
+        }
+    }
+
     // Read input file (JSON, PDB, or mmCIF)
     timer.reset();
-    var read_result = readInputFile(allocator, input_path, args) catch |err| {
+    var read_result = readInputFile(allocator, input_path, effective_args) catch |err| {
         std.debug.print("Error reading input file '{s}': {s}\n", .{ input_path, @errorName(err) });
         std.process.exit(1);
     };
