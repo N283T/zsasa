@@ -14,6 +14,9 @@ const classifier_protor = @import("classifier_protor.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
+const ccd_parser = @import("ccd_parser.zig");
+const ccd_binary = @import("ccd_binary.zig");
+const gzip = @import("gzip.zig");
 
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
@@ -59,6 +62,7 @@ pub const BatchConfig = struct {
     include_hetatm: bool = false, // Include HETATM records (default: exclude)
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
     store_atom_areas: bool = false, // When true, copy atom_areas to result_allocator for jsonl
+    external_ccd: ?*const ccd_parser.ComponentDict = null, // External CCD dictionary
 };
 
 /// Helper to build and hold bitmask LUTs for batch processing.
@@ -328,14 +332,36 @@ fn readInputFile(allocator: Allocator, path: []const u8, config: BatchConfig) !A
 }
 
 /// Apply built-in classifier to replace radii based on residue/atom names
-fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType) !void {
+fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType, external_ccd: ?*const ccd_parser.ComponentDict) !void {
     const n = input.atomCount();
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
 
-    // For CCD: create classifier instance (hardcoded table is compile-time, no setup cost)
+    // For CCD: create classifier instance and feed external CCD components
     var ccd_clf: ?classifier_ccd.CcdClassifier = if (ct == .ccd) classifier_ccd.CcdClassifier.init(input.allocator) else null;
     defer if (ccd_clf) |*c| c.deinit();
+
+    if (ccd_clf != null) {
+        if (external_ccd) |dict| {
+            // Deduplicate: collect unique non-hardcoded residues
+            var needed = std.StringHashMap(void).init(input.allocator);
+            defer needed.deinit();
+            for (0..n) |i| {
+                const res = residues[i].slice();
+                if (!classifier_ccd.CcdClassifier.isHardcoded(res)) {
+                    try needed.put(res, {});
+                }
+            }
+            var it = needed.keyIterator();
+            while (it.next()) |key_ptr| {
+                if (dict.get(key_ptr.*)) |comp| {
+                    ccd_clf.?.addComponent(&comp) catch |err| {
+                        std.debug.print("Warning: Could not derive CCD properties for '{s}': {s}\n", .{ key_ptr.*, @errorName(err) });
+                    };
+                }
+            }
+        }
+    }
 
     const new_radii = try input.allocator.alloc(f64, n);
     errdefer input.allocator.free(new_radii);
@@ -448,7 +474,7 @@ fn processOneFile(
     if (config.classifier_type) |ct| {
         const format = format_detect.detectInputFormat(input_path);
         if (format != .json and input.hasClassificationInfo()) {
-            applyBuiltinClassifier(&input, ct) catch |err| {
+            applyBuiltinClassifier(&input, ct, config.external_ccd) catch |err| {
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
                 return result;
@@ -1011,6 +1037,7 @@ pub const BatchArgs = struct {
     include_hydrogens: bool = false,
     include_hetatm: bool = false,
     use_bitmask: bool = false,
+    ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz])
     quiet: bool = false,
     show_timing: bool = false,
     show_help: bool = false,
@@ -1232,6 +1259,18 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         else if (std.mem.eql(u8, arg, "--use-bitmask")) {
             result.use_bitmask = true;
         }
+        // --ccd=PATH or --ccd PATH (external CCD dictionary)
+        else if (std.mem.startsWith(u8, arg, "--ccd=")) {
+            const value = arg["--ccd=".len..];
+            result.ccd_path = value;
+        } else if (std.mem.eql(u8, arg, "--ccd")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --ccd\n", .{});
+                std.process.exit(1);
+            }
+            result.ccd_path = args[i];
+        }
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
@@ -1308,6 +1347,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\                        Default: sr
         \\    --classifier=TYPE   Built-in classifier: naccess, protor, oons, ccd
         \\                        Default: protor
+        \\    --ccd=PATH          External CCD dictionary file (.zsdc or .cif[.gz])
+        \\                        Used with --classifier=ccd for non-standard residues
         \\    --threads=N         Number of threads (default: auto-detect)
         \\    --probe-radius=R    Probe radius in Angstroms (default: 1.4)
         \\    --n-points=N        Test points per atom (default: 100, for sr)
@@ -1342,6 +1383,37 @@ pub fn run(allocator: Allocator, args: BatchArgs) !void {
         return error.MissingArgument;
     };
 
+    // Load external CCD dictionary if specified
+    var ext_ccd: ?ccd_parser.ComponentDict = null;
+    if (args.ccd_path) |ccd_path| {
+        const ccd_data = if (std.mem.endsWith(u8, ccd_path, ".gz"))
+            gzip.readGzip(allocator, ccd_path) catch |err| {
+                std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                std.process.exit(1);
+            }
+        else blk: {
+            const f = std.fs.cwd().openFile(ccd_path, .{}) catch |err| {
+                std.debug.print("Error opening CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                std.process.exit(1);
+            };
+            defer f.close();
+            break :blk f.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024) catch |err| {
+                std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                std.process.exit(1);
+            };
+        };
+        defer allocator.free(ccd_data);
+
+        ext_ccd = ccd_binary.loadDict(allocator, ccd_data) catch |err| {
+            std.debug.print("Error loading CCD dictionary '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+            std.process.exit(1);
+        };
+        if (!args.quiet) {
+            std.debug.print("External CCD: loaded {d} components from '{s}'\n", .{ ext_ccd.?.components.count(), ccd_path });
+        }
+    }
+    defer if (ext_ccd) |*d| d.deinit();
+
     // For jsonl, don't pass output_dir to runBatch (no per-file I/O during computation)
     const output_dir: ?[]const u8 = if (args.output_format == .jsonl) null else args.output_path;
 
@@ -1361,6 +1433,7 @@ pub fn run(allocator: Allocator, args: BatchArgs) !void {
         .include_hetatm = args.include_hetatm,
         .use_bitmask = args.use_bitmask,
         .store_atom_areas = (args.output_format == .jsonl),
+        .external_ccd = if (ext_ccd != null) &ext_ccd.? else null,
     };
 
     if (!args.quiet) {
