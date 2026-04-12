@@ -33,7 +33,8 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 from numpy.typing import NDArray
 
-from zsasa.core import _get_lib, calculate_sasa_batch
+from zsasa._ffi import _get_lib
+from zsasa.sasa import calculate_sasa_batch
 from zsasa.xtc import TrajectorySasaResult
 
 if TYPE_CHECKING:
