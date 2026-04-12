@@ -2,6 +2,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const batch = @import("batch.zig");
 const calc = @import("calc.zig");
+const compile_dict = @import("compile_dict.zig");
 const traj = @import("traj.zig");
 
 const version = build_options.version;
@@ -9,7 +10,8 @@ const version = build_options.version;
 fn isSubcommand(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "calc") or
         std.mem.eql(u8, arg, "batch") or
-        std.mem.eql(u8, arg, "traj");
+        std.mem.eql(u8, arg, "traj") or
+        std.mem.eql(u8, arg, "compile-dict");
 }
 
 fn printUsage(program_name: []const u8) void {
@@ -20,9 +22,10 @@ fn printUsage(program_name: []const u8) void {
         \\    {s} <command> [OPTIONS] <args>
         \\
         \\COMMANDS:
-        \\    calc    Calculate SASA for a single structure file
-        \\    batch   Calculate SASA for all files in a directory
-        \\    traj    Calculate SASA across trajectory frames
+        \\    calc          Calculate SASA for a single structure file
+        \\    batch         Calculate SASA for all files in a directory
+        \\    traj          Calculate SASA across trajectory frames
+        \\    compile-dict  Compile CIF dictionary to binary ZSDC format
         \\
         \\GLOBAL OPTIONS:
         \\    -h, --help       Show this help message
@@ -93,6 +96,18 @@ pub fn main() !void {
             std.debug.print("Error in trajectory mode: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
+    } else if (std.mem.eql(u8, subcmd, "compile-dict")) {
+        // Check for --help before running
+        for (args[2..]) |a| {
+            if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) {
+                compile_dict.printHelp(args[0]);
+                return;
+            }
+        }
+        compile_dict.run(allocator, args[2..]) catch |err| {
+            std.debug.print("Error: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
     } else {
         std.debug.print("Error: unknown subcommand '{s}'\n", .{subcmd});
         printUsage(args[0]);
@@ -106,12 +121,14 @@ test {
     _ = calc;
     _ = batch;
     _ = traj;
+    _ = compile_dict;
 }
 
 test "isSubcommand" {
     try std.testing.expect(isSubcommand("calc"));
     try std.testing.expect(isSubcommand("batch"));
     try std.testing.expect(isSubcommand("traj"));
+    try std.testing.expect(isSubcommand("compile-dict"));
     try std.testing.expect(!isSubcommand("unknown"));
     try std.testing.expect(!isSubcommand("--help"));
 }

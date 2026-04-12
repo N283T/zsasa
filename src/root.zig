@@ -40,6 +40,8 @@ pub const gzip = @import("gzip.zig");
 pub const hybridization = @import("hybridization.zig");
 pub const ccd_parser = @import("ccd_parser.zig");
 pub const classifier_ccd = @import("classifier_ccd.zig");
+pub const ccd_binary = @import("ccd_binary.zig");
+pub const compile_dict = @import("compile_dict.zig");
 
 test {
     _ = shrake_rupley;
@@ -59,4 +61,6 @@ test {
     _ = hybridization;
     _ = ccd_parser;
     _ = classifier_ccd;
+    _ = ccd_binary;
+    _ = compile_dict;
 }

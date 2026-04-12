@@ -20,6 +20,9 @@ const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_protor = @import("classifier_protor.zig");
 const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
+const ccd_parser = @import("ccd_parser.zig");
+const ccd_binary = @import("ccd_binary.zig");
+const gzip = @import("gzip.zig");
 
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
@@ -126,6 +129,7 @@ pub const TrajArgs = struct {
     n_slices: u32 = 20,
     precision: Precision = .f32, // Default f32 for trajectory (speed)
     classifier_type: ?ClassifierType = null,
+    ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz])
     stride: u32 = 1, // Process every Nth frame
     start_frame: u32 = 0, // Start frame
     end_frame: ?u32 = null, // End frame (null = all)
@@ -182,6 +186,16 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) TrajArgs {
             } else if (std.mem.startsWith(u8, arg, "--classifier=")) {
                 const value = arg["--classifier=".len..];
                 result.classifier_type = parseClassifierType(value);
+            } else if (std.mem.startsWith(u8, arg, "--ccd=")) {
+                const value = arg["--ccd=".len..];
+                result.ccd_path = value;
+            } else if (std.mem.eql(u8, arg, "--ccd")) {
+                i += 1;
+                if (i >= args.len) {
+                    std.debug.print("Error: Missing value for --ccd\n", .{});
+                    std.process.exit(1);
+                }
+                result.ccd_path = args[i];
             } else if (std.mem.startsWith(u8, arg, "--stride=")) {
                 const value = arg["--stride=".len..];
                 result.stride = std.fmt.parseInt(u32, value, 10) catch {
@@ -312,6 +326,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --algorithm=ALGO   Algorithm: sr (shrake-rupley), lr (lee-richards)
         \\                       Default: sr
         \\    --classifier=TYPE  Built-in classifier: naccess, protor, oons, ccd
+        \\    --ccd=PATH         External CCD dictionary file (.zsdc or .cif[.gz])
+        \\                       Used with --classifier=ccd for non-standard residues
         \\    --threads=N        Number of threads (default: auto-detect)
         \\    --probe-radius=R   Probe radius in Angstroms (default: 1.4)
         \\    --n-points=N       Test points per atom (default: 100, for sr)
@@ -654,9 +670,29 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
         std.debug.print("Topology: {d} atoms\n", .{natoms});
     }
 
+    // Load external CCD dictionary if specified
+    var ext_ccd: ?ccd_parser.ComponentDict = null;
+    if (args.ccd_path) |ccd_path| {
+        const ccd_data = if (std.mem.endsWith(u8, ccd_path, ".gz"))
+            try gzip.readGzip(allocator, ccd_path)
+        else blk: {
+            const f = try std.fs.cwd().openFile(ccd_path, .{});
+            defer f.close();
+            break :blk try f.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024);
+        };
+        defer allocator.free(ccd_data);
+
+        ext_ccd = try ccd_binary.loadDict(allocator, ccd_data);
+        if (!args.quiet) {
+            std.debug.print("External CCD: loaded {d} components from '{s}'\n", .{ ext_ccd.?.components.count(), ccd_path });
+        }
+    }
+    defer if (ext_ccd) |*d| d.deinit();
+
     // Apply classifier if specified
     if (args.classifier_type) |ct| {
-        try applyBuiltinClassifier(allocator, &topology, ct, args.quiet);
+        const ext_ccd_ptr: ?*const ccd_parser.ComponentDict = if (ext_ccd != null) &ext_ccd.? else null;
+        try applyBuiltinClassifier(allocator, &topology, ct, ext_ccd_ptr, args.quiet);
     }
 
     // Open trajectory file
@@ -1026,15 +1062,36 @@ fn applyBuiltinClassifier(
     _: Allocator,
     input: *AtomInput,
     ct: ClassifierType,
+    external_ccd: ?*const ccd_parser.ComponentDict,
     quiet: bool,
 ) !void {
     const n = input.atomCount();
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
 
-    // For CCD: create classifier instance (hardcoded table is compile-time, no setup cost)
+    // For CCD: create classifier instance and feed external CCD components
     var ccd_clf: ?classifier_ccd.CcdClassifier = if (ct == .ccd) classifier_ccd.CcdClassifier.init(input.allocator) else null;
     defer if (ccd_clf) |*c| c.deinit();
+
+    if (ccd_clf != null) {
+        if (external_ccd) |dict| {
+            var it = dict.components.iterator();
+            while (it.next()) |entry| {
+                const comp_id = entry.key_ptr.*;
+                if (!classifier_ccd.CcdClassifier.isHardcoded(comp_id)) {
+                    const comp = entry.value_ptr.view();
+                    ccd_clf.?.addComponent(&comp) catch {};
+                }
+            }
+            if (!quiet) {
+                const total = dict.components.count();
+                const runtime = ccd_clf.?.runtime_components.count();
+                if (runtime > 0) {
+                    std.debug.print("CCD: {d} external components loaded ({d} runtime-derived)\n", .{ total, runtime });
+                }
+            }
+        }
+    }
 
     var classified_count: usize = 0;
     var fallback_count: usize = 0;

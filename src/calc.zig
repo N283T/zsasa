@@ -20,6 +20,8 @@ const classifier_protor = @import("classifier_protor.zig");
 const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
 const ccd_parser = @import("ccd_parser.zig");
+const ccd_binary = @import("ccd_binary.zig");
+const gzip = @import("gzip.zig");
 
 const Config = types.Config;
 const Configf32 = types.Configf32;
@@ -58,6 +60,7 @@ pub const CalcArgs = struct {
     rsa: bool = false, // Show RSA (Relative Solvent Accessibility)
     polar: bool = false, // Show polar/nonpolar SASA summary
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
+    ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz])
     quiet: bool = false,
     validate_only: bool = false,
     show_timing: bool = false, // Show timing breakdown for benchmarking
@@ -377,6 +380,18 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
         else if (std.mem.eql(u8, arg, "--timing")) {
             result.show_timing = true;
         }
+        // --ccd=PATH or --ccd PATH (external CCD dictionary)
+        else if (std.mem.startsWith(u8, arg, "--ccd=")) {
+            const value = arg["--ccd=".len..];
+            result.ccd_path = value;
+        } else if (std.mem.eql(u8, arg, "--ccd")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --ccd\n", .{});
+                std.process.exit(1);
+            }
+            result.ccd_path = args[i];
+        }
         // --use-bitmask (bitmask LUT optimization for SR, n-points must be 1..1024)
         else if (std.mem.eql(u8, arg, "--use-bitmask")) {
             result.use_bitmask = true;
@@ -447,6 +462,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\                       Default: sr
         \\    --classifier=TYPE  Built-in classifier: naccess, protor, oons, ccd
         \\                       Default: protor for PDB/mmCIF, none for JSON
+        \\    --ccd=PATH         External CCD dictionary file (.zsdc or .cif[.gz])
+        \\                       Used with --classifier=ccd for non-standard residues
         \\    --config=FILE      Custom classifier config file (FreeSASA format)
         \\    --chain=ID         Filter by chain ID (e.g., --chain=A or --chain=A,B,C)
         \\                       Default: label_asym_id (mmCIF standard)
@@ -616,36 +633,41 @@ fn applyBuiltinClassifier(
     input: *types.AtomInput,
     ct: ClassifierType,
     inline_ccd: ?*const ccd_parser.ComponentDict,
+    external_ccd: ?*const ccd_parser.ComponentDict,
     quiet: bool,
 ) !void {
     const n = input.atomCount();
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
 
-    // For CCD: create classifier instance and feed inline CCD components
+    // For CCD: create classifier instance and feed inline/external CCD components
     var ccd_clf: ?classifier_ccd.CcdClassifier = if (ct == .ccd) classifier_ccd.CcdClassifier.init(input.allocator) else null;
     defer if (ccd_clf) |*c| c.deinit();
 
-    // Feed inline CCD components for non-standard residues
+    // Feed CCD components for non-standard residues from both sources
     if (ccd_clf != null) {
-        if (inline_ccd) |dict| {
-            var it = dict.components.iterator();
-            while (it.next()) |entry| {
-                const comp_id = entry.key_ptr.*;
-                if (!classifier_ccd.CcdClassifier.isHardcoded(comp_id)) {
-                    const comp = entry.value_ptr.view();
-                    ccd_clf.?.addComponent(&comp) catch |err| {
-                        if (!quiet) {
-                            std.debug.print("Warning: Could not derive CCD properties for '{s}': {s}\n", .{ comp_id, @errorName(err) });
-                        }
-                    };
+        const dicts: [2]?*const ccd_parser.ComponentDict = .{ inline_ccd, external_ccd };
+        const labels: [2][]const u8 = .{ "inline", "external" };
+        for (dicts, labels) |maybe_dict, label| {
+            if (maybe_dict) |dict| {
+                var it = dict.components.iterator();
+                while (it.next()) |entry| {
+                    const comp_id = entry.key_ptr.*;
+                    if (!classifier_ccd.CcdClassifier.isHardcoded(comp_id)) {
+                        const comp = entry.value_ptr.view();
+                        ccd_clf.?.addComponent(&comp) catch |err| {
+                            if (!quiet) {
+                                std.debug.print("Warning: Could not derive CCD properties for '{s}': {s}\n", .{ comp_id, @errorName(err) });
+                            }
+                        };
+                    }
                 }
-            }
-            if (!quiet) {
-                const total = dict.components.count();
-                const runtime = ccd_clf.?.runtime_components.count();
-                if (runtime > 0) {
-                    std.debug.print("CCD: {d} inline components loaded ({d} runtime-derived)\n", .{ total, runtime });
+                if (!quiet) {
+                    const total = dict.components.count();
+                    const runtime = ccd_clf.?.runtime_components.count();
+                    if (runtime > 0) {
+                        std.debug.print("CCD: {d} {s} components loaded ({d} runtime-derived)\n", .{ total, label, runtime });
+                    }
                 }
             }
         }
@@ -862,7 +884,40 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
         } else if (effective_classifier) |ct| {
             // Use built-in classifier
             const inline_ccd: ?*const ccd_parser.ComponentDict = if (read_result.mmcif) |*p| p.getInlineCcd() else null;
-            applyBuiltinClassifier(&input, ct, inline_ccd, args.quiet) catch |err| {
+
+            // Load external CCD dictionary if specified
+            var ext_ccd: ?ccd_parser.ComponentDict = null;
+            if (args.ccd_path) |ccd_path| {
+                const ccd_data = if (std.mem.endsWith(u8, ccd_path, ".gz"))
+                    gzip.readGzip(allocator, ccd_path) catch |err| {
+                        std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                        std.process.exit(1);
+                    }
+                else blk: {
+                    const f = std.fs.cwd().openFile(ccd_path, .{}) catch |err| {
+                        std.debug.print("Error opening CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                        std.process.exit(1);
+                    };
+                    defer f.close();
+                    break :blk f.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024) catch |err| {
+                        std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                        std.process.exit(1);
+                    };
+                };
+                defer allocator.free(ccd_data);
+
+                ext_ccd = ccd_binary.loadDict(allocator, ccd_data) catch |err| {
+                    std.debug.print("Error loading CCD dictionary '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                    std.process.exit(1);
+                };
+                if (!args.quiet) {
+                    std.debug.print("External CCD: loaded {d} components from '{s}'\n", .{ ext_ccd.?.components.count(), ccd_path });
+                }
+            }
+            defer if (ext_ccd) |*d| d.deinit();
+
+            const ext_ccd_ptr: ?*const ccd_parser.ComponentDict = if (ext_ccd != null) &ext_ccd.? else null;
+            applyBuiltinClassifier(&input, ct, inline_ccd, ext_ccd_ptr, args.quiet) catch |err| {
                 std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
                 std.process.exit(1);
             };
