@@ -13,6 +13,7 @@ const classifier = @import("classifier.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_protor = @import("classifier_protor.zig");
 const classifier_oons = @import("classifier_oons.zig");
+const classifier_ccd = @import("classifier_ccd.zig");
 const analysis = @import("analysis.zig");
 const xtc = @import("zxdrfile").xtc;
 const dcd = @import("dcd.zig");
@@ -54,6 +55,8 @@ pub const ZSASA_CLASSIFIER_NACCESS: c_int = 0;
 pub const ZSASA_CLASSIFIER_PROTOR: c_int = 1;
 /// OONS radii (older FreeSASA default)
 pub const ZSASA_CLASSIFIER_OONS: c_int = 2;
+/// CCD-based radii derived from bond topology
+pub const ZSASA_CLASSIFIER_CCD: c_int = 3;
 
 // =============================================================================
 // Atom Classes
@@ -1187,6 +1190,11 @@ fn getRadiusByClassifier(classifier_type: c_int, residue: []const u8, atom: []co
         ZSASA_CLASSIFIER_NACCESS => classifier_naccess.getRadius(residue, atom),
         ZSASA_CLASSIFIER_PROTOR => classifier_protor.getRadius(residue, atom),
         ZSASA_CLASSIFIER_OONS => classifier_oons.getRadius(residue, atom),
+        ZSASA_CLASSIFIER_CCD => blk: {
+            // Stack-local instance; hardcoded lookup needs no allocator
+            const ccd = classifier_ccd.CcdClassifier.init(std.heap.page_allocator);
+            break :blk ccd.getRadius(residue, atom);
+        },
         else => null,
     };
 }
@@ -1197,6 +1205,10 @@ fn getClassByClassifier(classifier_type: c_int, residue: []const u8, atom: []con
         ZSASA_CLASSIFIER_NACCESS => classifier_naccess.getClass(residue, atom),
         ZSASA_CLASSIFIER_PROTOR => classifier_protor.getClass(residue, atom),
         ZSASA_CLASSIFIER_OONS => classifier_oons.getClass(residue, atom),
+        ZSASA_CLASSIFIER_CCD => blk: {
+            const ccd = classifier_ccd.CcdClassifier.init(std.heap.page_allocator);
+            break :blk ccd.getClass(residue, atom);
+        },
         else => .unknown,
     };
 }
@@ -1317,7 +1329,7 @@ export fn zsasa_classify_atoms(
     }
 
     // Validate classifier type
-    if (classifier_type < ZSASA_CLASSIFIER_NACCESS or classifier_type > ZSASA_CLASSIFIER_OONS) {
+    if (classifier_type < ZSASA_CLASSIFIER_NACCESS or classifier_type > ZSASA_CLASSIFIER_CCD) {
         return ZSASA_ERROR_INVALID_INPUT;
     }
 
@@ -2411,6 +2423,7 @@ export fn zsasa_batch_dir_process(
         ZSASA_CLASSIFIER_NACCESS => .naccess,
         ZSASA_CLASSIFIER_PROTOR => .protor,
         ZSASA_CLASSIFIER_OONS => .oons,
+        ZSASA_CLASSIFIER_CCD => .ccd,
         -1 => null,
         else => {
             setError(error_code, ZSASA_ERROR_INVALID_INPUT);
