@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-04-12
+
 ### Added
 
 - **CCD classifier** (`--classifier=ccd`): New classifier that derives ProtOr-compatible radii from CCD (Chemical Component Dictionary) bond topology, enabling accurate radius assignment for any chemical component — not just standard amino acids (#326, #327)
@@ -17,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **CCD classifier auto-includes HETATM**: When using `--classifier=ccd`, HETATM records are included automatically without needing `--include-hetatm` (#329)
+- **Python**: Split monolithic `core.py` into focused modules (`_ffi.py`, `sasa.py`, `classifier.py`, `rsa.py`, `batch.py`). Public API unchanged (#332)
 
 ## [0.2.6] - 2026-03-22
 
