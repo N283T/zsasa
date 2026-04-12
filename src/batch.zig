@@ -343,12 +343,13 @@ fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType, external_ccd: ?
 
     if (ccd_clf != null) {
         if (external_ccd) |dict| {
-            var it = dict.components.iterator();
-            while (it.next()) |entry| {
-                const comp_id = entry.key_ptr.*;
-                if (!classifier_ccd.CcdClassifier.isHardcoded(comp_id)) {
-                    const comp = entry.value_ptr.view();
-                    ccd_clf.?.addComponent(&comp) catch {};
+            // Only load components present in input and not hardcoded
+            for (0..n) |i| {
+                const res = residues[i].slice();
+                if (!classifier_ccd.CcdClassifier.isHardcoded(res)) {
+                    if (dict.get(res)) |comp| {
+                        ccd_clf.?.addComponent(&comp) catch {};
+                    }
                 }
             }
         }

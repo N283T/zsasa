@@ -644,31 +644,41 @@ fn applyBuiltinClassifier(
     var ccd_clf: ?classifier_ccd.CcdClassifier = if (ct == .ccd) classifier_ccd.CcdClassifier.init(input.allocator) else null;
     defer if (ccd_clf) |*c| c.deinit();
 
-    // Feed CCD components for non-standard residues from both sources
+    // Feed CCD components for non-standard residues
+    // Only load components that are actually present in the input structure
     if (ccd_clf != null) {
-        const dicts: [2]?*const ccd_parser.ComponentDict = .{ inline_ccd, external_ccd };
-        const labels: [2][]const u8 = .{ "inline", "external" };
-        for (dicts, labels) |maybe_dict, label| {
-            if (maybe_dict) |dict| {
-                var it = dict.components.iterator();
-                while (it.next()) |entry| {
-                    const comp_id = entry.key_ptr.*;
-                    if (!classifier_ccd.CcdClassifier.isHardcoded(comp_id)) {
-                        const comp = entry.value_ptr.view();
-                        ccd_clf.?.addComponent(&comp) catch |err| {
-                            if (!quiet) {
-                                std.debug.print("Warning: Could not derive CCD properties for '{s}': {s}\n", .{ comp_id, @errorName(err) });
-                            }
-                        };
+        // Collect unique non-hardcoded residue names from input
+        var needed = std.StringHashMap(void).init(input.allocator);
+        defer needed.deinit();
+        for (0..n) |i| {
+            const res = residues[i].slice();
+            if (!classifier_ccd.CcdClassifier.isHardcoded(res)) {
+                needed.put(res, {}) catch {};
+            }
+        }
+
+        if (needed.count() > 0) {
+            var loaded: usize = 0;
+            const dicts: [2]?*const ccd_parser.ComponentDict = .{ inline_ccd, external_ccd };
+            for (dicts) |maybe_dict| {
+                if (maybe_dict) |dict| {
+                    var it = needed.keyIterator();
+                    while (it.next()) |key_ptr| {
+                        const comp_id = key_ptr.*;
+                        if (dict.get(comp_id)) |comp| {
+                            ccd_clf.?.addComponent(&comp) catch |err| {
+                                if (!quiet) {
+                                    std.debug.print("Warning: Could not derive CCD properties for '{s}': {s}\n", .{ comp_id, @errorName(err) });
+                                }
+                                continue;
+                            };
+                            loaded += 1;
+                        }
                     }
                 }
-                if (!quiet) {
-                    const total = dict.components.count();
-                    const runtime = ccd_clf.?.runtime_components.count();
-                    if (runtime > 0) {
-                        std.debug.print("CCD: {d} {s} components loaded ({d} runtime-derived)\n", .{ total, label, runtime });
-                    }
-                }
+            }
+            if (!quiet and loaded > 0) {
+                std.debug.print("CCD: {d} non-standard components derived from CCD data\n", .{loaded});
             }
         }
     }
