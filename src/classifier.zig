@@ -13,6 +13,7 @@
 //! - **NACCESS**: Default classifier, NACCESS-compatible radii (João Rodrigues)
 //! - **ProtOr**: Hybridization-based radii from Tsai et al. 1999
 //! - **OONS**: Ooi, Oobatake, Nemethy, Scheraga radii (older FreeSASA default)
+//! - **CCD**: Derives radii from CCD bond topology (ProtOr-compatible)
 //!
 //! ## Usage
 //!
