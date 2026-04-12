@@ -39,6 +39,7 @@ pub const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
 pub const gzip = @import("gzip.zig");
 pub const hybridization = @import("hybridization.zig");
 pub const ccd_parser = @import("ccd_parser.zig");
+pub const classifier_ccd = @import("classifier_ccd.zig");
 
 test {
     _ = shrake_rupley;
@@ -57,4 +58,5 @@ test {
     _ = gzip;
     _ = hybridization;
     _ = ccd_parser;
+    _ = classifier_ccd;
 }
