@@ -1056,3 +1056,77 @@ test "CCD getProperties returns correct struct" {
     try std.testing.expectApproxEqAbs(@as(f64, 1.88), props.?.radius, 0.001);
     try std.testing.expectEqual(AtomClass.apolar, props.?.class);
 }
+
+// =============================================================================
+// E2E tests with real structure files
+// =============================================================================
+
+const mmcif = @import("mmcif_parser.zig");
+
+test "E2E: CCD classifier matches ProtOr on 1ubq.cif" {
+    // Parse the real 1ubq structure
+    var parser = mmcif.MmcifParser.init(std.testing.allocator);
+    var input = try parser.parseFile("examples/1ubq.cif");
+    defer input.deinit();
+    defer parser.deinitCcd();
+
+    const residues = input.residue.?;
+    const atom_names = input.atom_name.?;
+    const n = input.atomCount();
+
+    var ccd = CcdClassifier.init(std.testing.allocator);
+    defer ccd.deinit();
+
+    // 1ubq contains only standard amino acids, so CCD and ProtOr must agree on all atoms
+    var mismatches: usize = 0;
+    for (0..n) |i| {
+        const res = residues[i].slice();
+        const atm = atom_names[i].slice();
+
+        const ccd_r = ccd.getRadius(res, atm);
+        const protor_r = protor.getRadius(res, atm);
+
+        // Both classifiers should return a value for standard AAs
+        if (ccd_r != null and protor_r != null) {
+            if (@abs(ccd_r.? - protor_r.?) > 0.01) {
+                mismatches += 1;
+            }
+        } else if (ccd_r == null and protor_r != null) {
+            // CCD missing an atom that ProtOr knows — counts as mismatch
+            mismatches += 1;
+        } else if (ccd_r != null and protor_r == null) {
+            // CCD has an atom that ProtOr doesn't — counts as mismatch
+            mismatches += 1;
+        }
+        // Both null: neither classifier knows this atom, not a mismatch
+    }
+    try std.testing.expectEqual(@as(usize, 0), mismatches);
+}
+
+test "E2E: CCD classifier classifies all 1ubq atoms without fallback" {
+    // Parse the real 1ubq structure
+    var parser = mmcif.MmcifParser.init(std.testing.allocator);
+    var input = try parser.parseFile("examples/1ubq.cif");
+    defer input.deinit();
+    defer parser.deinitCcd();
+
+    const residues = input.residue.?;
+    const atom_names = input.atom_name.?;
+    const n = input.atomCount();
+
+    var ccd = CcdClassifier.init(std.testing.allocator);
+    defer ccd.deinit();
+
+    // For standard amino acids (which 1ubq exclusively contains),
+    // CCD classifier should never return null — no fallback needed
+    var null_count: usize = 0;
+    for (0..n) |i| {
+        const res = residues[i].slice();
+        const atm = atom_names[i].slice();
+
+        if (ccd.getRadius(res, atm) == null) {
+            null_count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), null_count);
+}
