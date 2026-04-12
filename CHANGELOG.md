@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CCD classifier** (`--classifier=ccd`): New classifier that derives ProtOr-compatible radii from CCD (Chemical Component Dictionary) bond topology, enabling accurate radius assignment for any chemical component — not just standard amino acids (#326, #327)
+- **External CCD dictionary** (`--ccd=<path>`): Load external CCD dictionary for non-standard residues. Supports both CIF text (`.cif`, `.cif.gz`) and binary ZSDC format (#328)
+- **`compile-dict` subcommand**: Convert CCD dictionary from CIF text to compact binary ZSDC format for faster loading (`zsasa compile-dict components.cif.gz -o components.zsdc`) (#328)
+- **Python**: `ClassifierType.CCD` added to Python bindings (#330)
+
+### Changed
+
+- **CCD classifier auto-includes HETATM**: When using `--classifier=ccd`, HETATM records are included automatically without needing `--include-hetatm` (#329)
+
 ## [0.2.6] - 2026-03-22
 
 ### Fixed

@@ -6,6 +6,19 @@ sidebar_position: 10
 
 All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsasa/releases) for full details.
 
+## Unreleased
+
+### Added
+
+- **CCD classifier** (`--classifier=ccd`): Derives radii from CCD bond topology for any chemical component
+- **External CCD dictionary** (`--ccd=<path>`): Load CIF or binary ZSDC dictionaries
+- **`compile-dict` subcommand**: Convert CCD CIF to binary format
+- **Python**: `ClassifierType.CCD`
+
+### Changed
+
+- `--classifier=ccd` auto-includes HETATM records
+
 ## [v0.2.3](https://github.com/N283T/zsasa/releases/tag/v0.2.3) — 2026-03-10
 
 ### Fixed

@@ -14,6 +14,7 @@ Classifiers assign van der Waals radii and polarity classes to atoms based on re
 - **ProtOr**: CLI default for PDB/mmCIF. Hybridization-based radii (Tsai et al. 1999).
 - **NACCESS**: Widely used, compatible with FreeSASA. Use when comparing with NACCESS-based studies.
 - **OONS**: Larger aliphatic carbon radii. Use when comparing with OONS-based studies.
+- **CCD**: Derives radii from bond topology. Use for structures with ligands, modified residues, or non-standard components.
 
 ## How Classifiers Work
 
@@ -25,13 +26,13 @@ Classifiers assign van der Waals radii and polarity classes to atoms based on re
 
 ### Radius Differences
 
-| Atom Type | NACCESS | ProtOr | OONS |
-|-----------|---------|--------|------|
-| Aliphatic C (e.g., CA, CB) | 1.87 Å | 1.88 Å | **2.00 Å** |
-| Aromatic C | 1.76 Å | 1.76 Å | 1.75 Å |
-| Nitrogen | 1.65 Å | 1.64 Å | 1.55 Å |
-| Oxygen | 1.40 Å | 1.42-1.46 Å | 1.40 Å |
-| Sulfur | 1.85 Å (**apolar**) | 1.77 Å (**polar**) | 2.00 Å (**polar**) |
+| Atom Type | NACCESS | ProtOr | OONS | CCD |
+|-----------|---------|--------|------|-----|
+| Aliphatic C (e.g., CA, CB) | 1.87 Å | 1.88 Å | **2.00 Å** | 1.88 Å |
+| Aromatic C | 1.76 Å | 1.76 Å | 1.75 Å | 1.76 Å |
+| Nitrogen | 1.65 Å | 1.64 Å | 1.55 Å | 1.64 Å |
+| Oxygen | 1.40 Å | 1.42-1.46 Å | 1.40 Å | 1.42-1.46 Å |
+| Sulfur | 1.85 Å (**apolar**) | 1.77 Å (**polar**) | 2.00 Å (**polar**) | 1.77 Å (**polar**) |
 
 :::warning[Sulfur polarity varies]
 NACCESS treats sulfur as **apolar**, while ProtOr and OONS treat it as **polar**. This affects polar/nonpolar SASA classification for CYS and MET residues.
@@ -39,11 +40,11 @@ NACCESS treats sulfur as **apolar**, while ProtOr and OONS treat it as **polar**
 
 ### Key Differences
 
-| Property | NACCESS | ProtOr | OONS |
-|----------|---------|--------|------|
-| ANY fallback | Yes | **No** | Yes |
-| Classification basis | Atom type | Hybridization state | Atom type |
-| Reference | Hubbard & Thornton 1993 | Tsai et al. 1999 | Ooi et al. 1987 |
+| Property | NACCESS | ProtOr | OONS | CCD |
+|----------|---------|--------|------|-----|
+| ANY fallback | Yes | **No** | Yes | **No** |
+| Classification basis | Atom type | Hybridization state | Atom type | CCD bond topology → hybridization |
+| Reference | Hubbard & Thornton 1993 | Tsai et al. 1999 | Ooi et al. 1987 | Tsai et al. 1999 + wwPDB CCD |
 
 ## Usage
 
@@ -60,6 +61,12 @@ zsasa calc --classifier=protor structure.cif output.json
 # OONS
 zsasa calc --classifier=oons structure.cif output.json
 
+# CCD (auto-includes HETATM)
+zsasa calc --classifier=ccd structure.cif output.json
+
+# CCD with external dictionary (for non-standard residues)
+zsasa calc --classifier=ccd --ccd=components.zsdc structure.cif output.json
+
 # Custom config file
 zsasa calc --config=my_radii.toml structure.cif output.json
 ```
@@ -75,6 +82,10 @@ classification = classify_atoms(residue_names, atom_names, ClassifierType.NACCES
 
 # Step 2: Calculate SASA using classified radii
 result = calculate_sasa(coords, classification.radii)
+
+# CCD classifier
+classification = classify_atoms(residue_names, atom_names, ClassifierType.CCD)
+result = calculate_sasa(coords, classification.radii)
 ```
 
   </TabItem>
@@ -88,6 +99,12 @@ from zsasa.integrations.gemmi import calculate_sasa_from_structure
 result = calculate_sasa_from_structure(
     "protein.cif",
     classifier=ClassifierType.NACCESS,
+)
+
+# CCD classifier (auto-includes HETATM)
+result = calculate_sasa_from_structure(
+    "protein.cif",
+    classifier=ClassifierType.CCD,
 )
 ```
 
@@ -138,6 +155,54 @@ ALA CB  C_ALI
 
 The format is auto-detected by file extension: `.toml` for TOML, all others for FreeSASA format.
 
+## CCD Classifier
+
+The CCD classifier derives ProtOr-compatible van der Waals radii from the [wwPDB Chemical Component Dictionary](https://www.wwpdb.org/data/ccd) (CCD) bond topology, enabling accurate radius assignment for any chemical component — not just the standard amino acids covered by ProtOr, NACCESS, and OONS.
+
+### How It Works
+
+The CCD classifier determines hybridization state from the bond graph (single, double, aromatic bonds and hydrogen count), then maps each atom to the corresponding ProtOr radius. It uses a 4-level lookup:
+
+1. **Hardcoded radii**: Standard amino acid atoms use pre-compiled ProtOr radii (same as `--classifier=protor`)
+2. **Inline CCD**: ~35,000 components from the wwPDB CCD are embedded in the binary at compile time
+3. **External CCD**: If `--ccd=<path>` is provided, additional components are loaded from the external dictionary
+4. **Element fallback**: If no CCD entry is found, a generic van der Waals radius based on the element is used
+
+### Auto-Including HETATM
+
+When using `--classifier=ccd`, HETATM records are included automatically without needing `--include-hetatm`. This is because the CCD classifier is specifically designed to handle non-standard residues (ligands, modified amino acids, etc.) that are recorded as HETATM in PDB/mmCIF files.
+
+### External CCD Dictionary
+
+For non-standard residues not included in the inline dictionary, you can load an external CCD dictionary:
+
+```bash
+# Using CIF text (can be gzipped)
+zsasa calc --classifier=ccd --ccd=components.cif.gz structure.cif output.json
+
+# Using pre-compiled binary format (faster loading)
+zsasa calc --classifier=ccd --ccd=components.zsdc structure.cif output.json
+```
+
+### `compile-dict` Subcommand
+
+The `compile-dict` subcommand converts a CCD dictionary from CIF text to compact binary ZSDC format for faster loading:
+
+```bash
+# Download the full CCD dictionary
+wget https://files.wwpdb.org/pub/pdb/data/monomers/components.cif.gz
+
+# Compile to binary ZSDC format
+zsasa compile-dict components.cif.gz -o components.zsdc
+
+# Use with CCD classifier
+zsasa calc --classifier=ccd --ccd=components.zsdc structure.cif output.json
+```
+
+Supported input formats for `compile-dict`:
+- `.cif` — CIF text
+- `.cif.gz` — gzip-compressed CIF text
+
 ## Supported Residues
 
 ### Amino Acids
@@ -149,12 +214,18 @@ All 20 standard amino acids plus SEC (selenocysteine) and MSE (selenomethionine)
 RNA: A, C, G, I, T, U
 DNA: DA, DC, DG, DI, DT, DU
 
+### CCD Coverage
+
+The CCD classifier covers any chemical component defined in the wwPDB Chemical Component Dictionary (~35,000 components), including ligands, modified residues, post-translational modifications, and non-standard amino acids. External CCD dictionaries can extend coverage further.
+
 ## Handling Unknown Atoms
 
 When a classifier cannot find a matching (residue, atom name) pair:
 
 1. NACCESS/OONS check the `ANY` fallback entries
 2. If still unmatched, the element is extracted from the atom name and a generic van der Waals radius is assigned
+
+Alternatively, the CCD classifier can be used to avoid element fallback for non-standard residues. Since it derives radii from CCD bond topology, it provides hybridization-aware radii for any component in the CCD rather than relying on generic element-based values.
 
 To avoid ambiguity (e.g., "CA" = Carbon-alpha vs Calcium), include an `element` field (atomic numbers) in JSON input:
 

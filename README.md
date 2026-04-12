@@ -18,6 +18,7 @@ High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 - **Multiple input formats**: mmCIF, PDB, JSON, XTC, DCD
 - **Batch & trajectory**: Proteome-scale directory processing, MD trajectory analysis
 - **Python bindings**: NumPy, Gemmi, BioPython, Biotite, MDTraj, MDAnalysis
+- **Four classifiers**: ProtOr, NACCESS, OONS, and CCD (bond-topology-based radii for any chemical component)
 - **High performance**: SIMD, multi-threading, f64/f32 selectable, zero dependencies
 - **Cross-platform**: Linux, macOS, Windows (pre-built wheels on PyPI)
 
