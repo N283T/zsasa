@@ -350,7 +350,7 @@ const hardcoded_table = std.StaticStringMap(AtomProperties).initComptime(.{
     .{ "SEP :O   ", AtomProperties{ .radius = 1.42, .class = .polar } },
     .{ "SEP :CB  ", AtomProperties{ .radius = 1.88, .class = .apolar } },
     .{ "SEP :OG  ", AtomProperties{ .radius = 1.46, .class = .polar } }, // sp3, 0H (bonded to P)
-    .{ "SEP :P   ", AtomProperties{ .radius = 1.80, .class = .apolar } },
+    .{ "SEP :P   ", AtomProperties{ .radius = 1.80, .class = .polar } },
     .{ "SEP :O1P ", AtomProperties{ .radius = 1.42, .class = .polar } }, // sp2, 0H
     .{ "SEP :O2P ", AtomProperties{ .radius = 1.42, .class = .polar } }, // sp2, 0H
     .{ "SEP :O3P ", AtomProperties{ .radius = 1.42, .class = .polar } }, // sp2, 0H
@@ -364,7 +364,7 @@ const hardcoded_table = std.StaticStringMap(AtomProperties).initComptime(.{
     .{ "TPO :CB  ", AtomProperties{ .radius = 1.88, .class = .apolar } },
     .{ "TPO :CG2 ", AtomProperties{ .radius = 1.88, .class = .apolar } },
     .{ "TPO :OG1 ", AtomProperties{ .radius = 1.46, .class = .polar } }, // sp3, 0H (bonded to P)
-    .{ "TPO :P   ", AtomProperties{ .radius = 1.80, .class = .apolar } },
+    .{ "TPO :P   ", AtomProperties{ .radius = 1.80, .class = .polar } },
     .{ "TPO :O1P ", AtomProperties{ .radius = 1.42, .class = .polar } }, // sp2, 0H
     .{ "TPO :O2P ", AtomProperties{ .radius = 1.42, .class = .polar } }, // sp2, 0H
     .{ "TPO :O3P ", AtomProperties{ .radius = 1.42, .class = .polar } }, // sp2, 0H
@@ -372,7 +372,7 @@ const hardcoded_table = std.StaticStringMap(AtomProperties).initComptime(.{
 
     // PSU (pseudouridine) — like U but C-glycosidic bond (C1'-C5 instead of N1)
     .{ "PSU :OP3 ", AtomProperties{ .radius = 1.46, .class = .polar } },
-    .{ "PSU :P   ", AtomProperties{ .radius = 1.80, .class = .apolar } },
+    .{ "PSU :P   ", AtomProperties{ .radius = 1.80, .class = .polar } },
     .{ "PSU :OP1 ", AtomProperties{ .radius = 1.42, .class = .polar } },
     .{ "PSU :OP2 ", AtomProperties{ .radius = 1.46, .class = .polar } },
     .{ "PSU :O5' ", AtomProperties{ .radius = 1.46, .class = .polar } },
