@@ -19,6 +19,7 @@ const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_protor = @import("classifier_protor.zig");
 const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
+const ccd_parser = @import("ccd_parser.zig");
 
 const Config = types.Config;
 const Configf32 = types.Configf32;
@@ -504,11 +505,21 @@ pub fn printHelp(program_name: []const u8) void {
 // Input reading and classification
 // =============================================================================
 
+/// Result from readInputFile — includes optional mmCIF parser for inline CCD access.
+const ReadResult = struct {
+    input: types.AtomInput,
+    mmcif: ?mmcif_parser.MmcifParser = null,
+
+    fn deinitCcd(self: *ReadResult) void {
+        if (self.mmcif) |*p| p.deinitCcd();
+    }
+};
+
 /// Read input file (auto-detect format)
-fn readInputFile(allocator: std.mem.Allocator, path: []const u8, args: CalcArgs) !types.AtomInput {
+fn readInputFile(allocator: std.mem.Allocator, path: []const u8, args: CalcArgs) !ReadResult {
     const format = format_detect.detectInputFormat(path);
     return switch (format) {
-        .json => json_parser.readAtomInputFromFile(allocator, path),
+        .json => .{ .input = try json_parser.readAtomInputFromFile(allocator, path) },
         .mmcif => blk: {
             var parser = mmcif_parser.MmcifParser.init(allocator);
             parser.model_num = args.model_num;
@@ -524,7 +535,8 @@ fn readInputFile(allocator: std.mem.Allocator, path: []const u8, args: CalcArgs)
             }
             defer if (chain_filter_slice) |s| allocator.free(s);
 
-            break :blk parser.parseFile(path);
+            const input = try parser.parseFile(path);
+            break :blk .{ .input = input, .mmcif = parser };
         },
         .pdb => blk: {
             var parser = pdb_parser.PdbParser.init(allocator);
@@ -540,7 +552,7 @@ fn readInputFile(allocator: std.mem.Allocator, path: []const u8, args: CalcArgs)
             }
             defer if (chain_filter_slice) |s| allocator.free(s);
 
-            break :blk parser.parseFile(path);
+            break :blk .{ .input = try parser.parseFile(path) };
         },
     };
 }
@@ -603,15 +615,41 @@ fn applyClassifier(
 fn applyBuiltinClassifier(
     input: *types.AtomInput,
     ct: ClassifierType,
+    inline_ccd: ?*const ccd_parser.ComponentDict,
     quiet: bool,
 ) !void {
     const n = input.atomCount();
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
 
-    // For CCD: create classifier instance (hardcoded table is compile-time, no setup cost)
+    // For CCD: create classifier instance and feed inline CCD components
     var ccd_clf: ?classifier_ccd.CcdClassifier = if (ct == .ccd) classifier_ccd.CcdClassifier.init(input.allocator) else null;
     defer if (ccd_clf) |*c| c.deinit();
+
+    // Feed inline CCD components for non-standard residues
+    if (ccd_clf != null) {
+        if (inline_ccd) |dict| {
+            var it = dict.components.iterator();
+            while (it.next()) |entry| {
+                const comp_id = entry.key_ptr.*;
+                if (!classifier_ccd.CcdClassifier.isHardcoded(comp_id)) {
+                    const comp = entry.value_ptr.view();
+                    ccd_clf.?.addComponent(&comp) catch |err| {
+                        if (!quiet) {
+                            std.debug.print("Warning: Could not derive CCD properties for '{s}': {s}\n", .{ comp_id, @errorName(err) });
+                        }
+                    };
+                }
+            }
+            if (!quiet) {
+                const total = dict.components.count();
+                const runtime = ccd_clf.?.runtime_components.count();
+                if (runtime > 0) {
+                    std.debug.print("CCD: {d} inline components loaded ({d} runtime-derived)\n", .{ total, runtime });
+                }
+            }
+        }
+    }
 
     // Allocate new radii array (use input.allocator for consistency with deinit)
     const new_radii = try input.allocator.alloc(f64, n);
@@ -739,10 +777,12 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
 
     // Read input file (JSON, PDB, or mmCIF)
     timer.reset();
-    var input = readInputFile(allocator, input_path, args) catch |err| {
+    var read_result = readInputFile(allocator, input_path, args) catch |err| {
         std.debug.print("Error reading input file '{s}': {s}\n", .{ input_path, @errorName(err) });
         std.process.exit(1);
     };
+    defer read_result.deinitCcd();
+    var input = read_result.input;
     defer input.deinit();
 
     // Validate input data
@@ -821,10 +861,8 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
             };
         } else if (effective_classifier) |ct| {
             // Use built-in classifier
-            // TODO: For CCD classifier with mmCIF input, parse inline CCD components
-            // and feed them to CcdClassifier.addComponent() to handle non-standard residues.
-            // The hardcoded table already covers all 20 standard amino acids.
-            applyBuiltinClassifier(&input, ct, args.quiet) catch |err| {
+            const inline_ccd: ?*const ccd_parser.ComponentDict = if (read_result.mmcif) |*p| p.getInlineCcd() else null;
+            applyBuiltinClassifier(&input, ct, inline_ccd, args.quiet) catch |err| {
                 std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
                 std.process.exit(1);
             };
