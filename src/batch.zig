@@ -343,13 +343,21 @@ fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType, external_ccd: ?
 
     if (ccd_clf != null) {
         if (external_ccd) |dict| {
-            // Only load components present in input and not hardcoded
+            // Deduplicate: collect unique non-hardcoded residues
+            var needed = std.StringHashMap(void).init(input.allocator);
+            defer needed.deinit();
             for (0..n) |i| {
                 const res = residues[i].slice();
                 if (!classifier_ccd.CcdClassifier.isHardcoded(res)) {
-                    if (dict.get(res)) |comp| {
-                        ccd_clf.?.addComponent(&comp) catch {};
-                    }
+                    try needed.put(res, {});
+                }
+            }
+            var it = needed.keyIterator();
+            while (it.next()) |key_ptr| {
+                if (dict.get(key_ptr.*)) |comp| {
+                    ccd_clf.?.addComponent(&comp) catch |err| {
+                        std.debug.print("Warning: Could not derive CCD properties for '{s}': {s}\n", .{ key_ptr.*, @errorName(err) });
+                    };
                 }
             }
         }

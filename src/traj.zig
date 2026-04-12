@@ -1075,14 +1075,26 @@ fn applyBuiltinClassifier(
 
     if (ccd_clf != null) {
         if (external_ccd) |dict| {
-            var loaded: usize = 0;
+            // Deduplicate: collect unique non-hardcoded residues
+            var needed = std.StringHashMap(void).init(input.allocator);
+            defer needed.deinit();
             for (0..n) |i| {
                 const res = residues[i].slice();
                 if (!classifier_ccd.CcdClassifier.isHardcoded(res)) {
-                    if (dict.get(res)) |comp| {
-                        ccd_clf.?.addComponent(&comp) catch continue;
-                        loaded += 1;
-                    }
+                    try needed.put(res, {});
+                }
+            }
+            var loaded: usize = 0;
+            var it = needed.keyIterator();
+            while (it.next()) |key_ptr| {
+                if (dict.get(key_ptr.*)) |comp| {
+                    ccd_clf.?.addComponent(&comp) catch |err| {
+                        if (!quiet) {
+                            std.debug.print("Warning: Could not derive CCD properties for '{s}': {s}\n", .{ key_ptr.*, @errorName(err) });
+                        }
+                        continue;
+                    };
+                    loaded += 1;
                 }
             }
             if (!quiet and loaded > 0) {

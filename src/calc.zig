@@ -653,7 +653,7 @@ fn applyBuiltinClassifier(
         for (0..n) |i| {
             const res = residues[i].slice();
             if (!classifier_ccd.CcdClassifier.isHardcoded(res)) {
-                needed.put(res, {}) catch {};
+                try needed.put(res, {});
             }
         }
 

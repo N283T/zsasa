@@ -192,13 +192,11 @@ pub fn readDict(allocator: Allocator, reader: anytype) ReadError!ccd_parser.Comp
 
         // Read atoms
         const atoms = allocator.alloc(CompAtom, atom_count) catch return error.OutOfMemory;
-        errdefer allocator.free(atoms);
+        var atoms_owned = true;
+        defer if (atoms_owned) allocator.free(atoms);
         for (0..atom_count) |i| {
             var packed_buf: [@sizeOf(PackedAtom)]u8 = undefined;
-            reader.readNoEof(&packed_buf) catch {
-                allocator.free(atoms);
-                return error.UnexpectedEof;
-            };
+            reader.readNoEof(&packed_buf) catch return error.UnexpectedEof;
             const pa: PackedAtom = @bitCast(packed_buf);
             atoms[i] = pa.toCompAtom();
         }
@@ -209,29 +207,20 @@ pub fn readDict(allocator: Allocator, reader: anytype) ReadError!ccd_parser.Comp
         const bond_count: u16 = std.mem.littleToNative(u16, std.mem.bytesToValue(u16, &bond_count_buf));
 
         // Read bonds
-        const bonds = allocator.alloc(CompBond, bond_count) catch {
-            allocator.free(atoms);
-            return error.OutOfMemory;
-        };
-        errdefer allocator.free(bonds);
+        const bonds = allocator.alloc(CompBond, bond_count) catch return error.OutOfMemory;
+        var bonds_owned = true;
+        defer if (bonds_owned) allocator.free(bonds);
         for (0..bond_count) |i| {
             var packed_buf: [@sizeOf(PackedBond)]u8 = undefined;
-            reader.readNoEof(&packed_buf) catch {
-                allocator.free(atoms);
-                allocator.free(bonds);
-                return error.UnexpectedEof;
-            };
+            reader.readNoEof(&packed_buf) catch return error.UnexpectedEof;
             const pb: PackedBond = @bitCast(packed_buf);
             bonds[i] = pb.toCompBond();
         }
 
         // Build comp_id key
-        const key = allocator.dupe(u8, cid_buf[0..cid_len]) catch {
-            allocator.free(atoms);
-            allocator.free(bonds);
-            return error.OutOfMemory;
-        };
-        errdefer allocator.free(key);
+        const key = allocator.dupe(u8, cid_buf[0..cid_len]) catch return error.OutOfMemory;
+        var key_owned = true;
+        defer if (key_owned) allocator.free(key);
 
         // Build stored component
         var comp_id_fixed: [5]u8 = .{ 0, 0, 0, 0, 0 };
@@ -246,17 +235,17 @@ pub fn readDict(allocator: Allocator, reader: anytype) ReadError!ccd_parser.Comp
             .allocator = allocator,
         };
 
-        dict.components.put(key, stored) catch {
-            allocator.free(key);
-            allocator.free(atoms);
-            allocator.free(bonds);
-            return error.OutOfMemory;
-        };
+        // Transfer ownership to dict
+        dict.components.put(key, stored) catch return error.OutOfMemory;
         dict.owned_keys.append(allocator, key) catch {
             // Key is already in the map, so we should not free it here;
             // dict.deinit() via errdefer will handle cleanup.
             return error.OutOfMemory;
         };
+        // Ownership successfully transferred to dict
+        atoms_owned = false;
+        bonds_owned = false;
+        key_owned = false;
     }
 
     return dict;

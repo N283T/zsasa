@@ -862,17 +862,17 @@ pub const CcdClassifier = struct {
             const atom_id = entry.atomIdSlice();
             const key = formatKey(comp_id, atom_id);
 
-            // Use getOrPut to avoid leaking keys on duplicate entries
-            const gop = try self.runtime_components.getOrPut(&key);
-            if (gop.found_existing) {
-                // Update value, key already allocated
-                gop.value_ptr.* = RuntimeEntry{ .props = entry.props };
+            // Use getPtr to update existing entries in place (avoids key reallocation).
+            // For new entries, allocate key on heap first to avoid dangling stack pointers.
+            if (self.runtime_components.getPtr(&key)) |value_ptr| {
+                value_ptr.* = RuntimeEntry{ .props = entry.props };
             } else {
-                // Allocate a persistent copy of the key on the heap
                 const key_copy = try self.allocator.alloc(u8, 9);
                 @memcpy(key_copy, &key);
-                gop.key_ptr.* = key_copy;
-                gop.value_ptr.* = RuntimeEntry{ .props = entry.props };
+                self.runtime_components.put(key_copy, RuntimeEntry{ .props = entry.props }) catch |err| {
+                    self.allocator.free(key_copy);
+                    return err;
+                };
             }
         }
     }
