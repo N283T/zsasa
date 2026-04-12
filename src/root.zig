@@ -37,6 +37,7 @@ pub const dcd = @import("dcd.zig");
 pub const bitmask_lut = @import("bitmask_lut.zig");
 pub const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
 pub const gzip = @import("gzip.zig");
+pub const hybridization = @import("hybridization.zig");
 
 test {
     _ = shrake_rupley;
@@ -53,4 +54,5 @@ test {
     _ = bitmask_lut;
     _ = shrake_rupley_bitmask;
     _ = gzip;
+    _ = hybridization;
 }
