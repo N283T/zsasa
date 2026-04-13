@@ -42,6 +42,7 @@ pub const ccd_parser = @import("ccd_parser.zig");
 pub const classifier_ccd = @import("classifier_ccd.zig");
 pub const ccd_binary = @import("ccd_binary.zig");
 pub const compile_dict = @import("compile_dict.zig");
+pub const sdf_parser = @import("sdf_parser.zig");
 
 test {
     _ = shrake_rupley;
@@ -63,4 +64,5 @@ test {
     _ = classifier_ccd;
     _ = ccd_binary;
     _ = compile_dict;
+    _ = sdf_parser;
 }
