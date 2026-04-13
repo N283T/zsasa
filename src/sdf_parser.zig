@@ -6,7 +6,7 @@
 //! ## Supported Formats
 //!
 //! - V2000 MOL/SDF (fully supported)
-//! - V3000 MOL/SDF (stub — returns `error.InvalidV3000`)
+//! - V3000 MOL/SDF (fully supported)
 //!
 //! ## SDF V2000 Record Format (Fixed Width)
 //!
@@ -70,7 +70,7 @@ pub const SdfError = error{
     InvalidBondLine,
     /// Counts line is too short or malformed.
     InvalidCountsLine,
-    /// V3000 format detected (not yet supported).
+    /// V3000 format is malformed.
     InvalidV3000,
     /// Float parsing failed.
     InvalidFloat,
@@ -173,7 +173,7 @@ fn parseSingleMolecule(
 
         // Check for V3000
         if (std.mem.indexOf(u8, counts_line, "V3000") != null) {
-            return error.InvalidV3000;
+            return try parseV3000Body(allocator, name, line_iter);
         }
 
         const counts = parseCounts(counts_line) orelse return error.InvalidCountsLine;
@@ -225,6 +225,164 @@ fn parseSingleMolecule(
             .has_terminator = found_terminator,
         };
     }
+}
+
+/// Parse a V3000 molecule body.
+/// The line iterator is positioned just after the counts line (which contained "V3000").
+/// We expect `M  V30 BEGIN CTAB`, `M  V30 COUNTS ...`, ATOM/BOND blocks, and `M  END`.
+fn parseV3000Body(
+    allocator: Allocator,
+    name: []const u8,
+    line_iter: *std.mem.SplitIterator(u8, .scalar),
+) SdfError!MoleculeResult {
+    errdefer allocator.free(name);
+
+    // Helper: strip "M  V30 " prefix from a line and return the payload, or null.
+    const stripV30 = struct {
+        fn strip(line: []const u8) ?[]const u8 {
+            const trimmed = std.mem.trimLeft(u8, line, " ");
+            if (std.mem.startsWith(u8, trimmed, "M  V30 ")) {
+                return trimmed["M  V30 ".len..];
+            }
+            return null;
+        }
+    }.strip;
+
+    // Read lines until we get COUNTS
+    var atom_count: u16 = 0;
+    var bond_count: u16 = 0;
+    var found_counts = false;
+
+    while (line_iter.next()) |raw_line| {
+        const line = stripCr(raw_line);
+        if (std.mem.startsWith(u8, std.mem.trimLeft(u8, line, " "), "M  END")) break;
+
+        if (stripV30(line)) |payload| {
+            if (std.mem.startsWith(u8, payload, "COUNTS ")) {
+                // Parse "COUNTS natoms nbonds ..."
+                var tok = std.mem.tokenizeScalar(u8, payload, ' ');
+                _ = tok.next(); // skip "COUNTS"
+                const na = tok.next() orelse return error.InvalidCountsLine;
+                const nb = tok.next() orelse return error.InvalidCountsLine;
+                atom_count = std.fmt.parseInt(u16, na, 10) catch return error.InvalidInteger;
+                bond_count = std.fmt.parseInt(u16, nb, 10) catch return error.InvalidInteger;
+                found_counts = true;
+            } else if (std.mem.startsWith(u8, payload, "BEGIN ATOM")) {
+                break; // proceed to atom parsing
+            }
+        }
+    }
+
+    if (!found_counts) return error.InvalidCountsLine;
+
+    // Parse ATOM block
+    var atom_list = std.ArrayListUnmanaged(SdfAtom){};
+    errdefer atom_list.deinit(allocator);
+    try atom_list.ensureTotalCapacity(allocator, atom_count);
+
+    while (line_iter.next()) |raw_line| {
+        const line = stripCr(raw_line);
+        if (stripV30(line)) |payload| {
+            if (std.mem.startsWith(u8, payload, "END ATOM")) break;
+
+            // "index element x y z charge [...]"
+            var tok = std.mem.tokenizeScalar(u8, payload, ' ');
+            _ = tok.next() orelse return error.InvalidAtomLine; // index (skip)
+            const elem_str = tok.next() orelse return error.InvalidAtomLine;
+            const x_str = tok.next() orelse return error.InvalidAtomLine;
+            const y_str = tok.next() orelse return error.InvalidAtomLine;
+            const z_str = tok.next() orelse return error.InvalidAtomLine;
+            // charge and remaining fields are ignored
+
+            const x = std.fmt.parseFloat(f64, x_str) catch return error.InvalidFloat;
+            const y = std.fmt.parseFloat(f64, y_str) catch return error.InvalidFloat;
+            const z = std.fmt.parseFloat(f64, z_str) catch return error.InvalidFloat;
+            const element = elem.fromSymbol(elem_str);
+
+            atom_list.appendAssumeCapacity(.{ .x = x, .y = y, .z = z, .element = element });
+        }
+    }
+
+    // Look for BEGIN BOND (there may be lines between END ATOM and BEGIN BOND)
+    var bond_list = std.ArrayListUnmanaged(SdfBond){};
+    errdefer bond_list.deinit(allocator);
+    try bond_list.ensureTotalCapacity(allocator, bond_count);
+
+    // We may have already consumed "BEGIN ATOM"... now scan for "BEGIN BOND"
+    var in_bond_block = false;
+    while (line_iter.next()) |raw_line| {
+        const line = stripCr(raw_line);
+        if (std.mem.startsWith(u8, std.mem.trimLeft(u8, line, " "), "M  END")) {
+            // Reached M  END — no bond block or we're done
+            break;
+        }
+        if (std.mem.startsWith(u8, std.mem.trimLeft(u8, line, " "), "$$$$")) {
+            // Terminator found before M  END
+            const atoms = try atom_list.toOwnedSlice(allocator);
+            errdefer allocator.free(atoms);
+            const bonds = try bond_list.toOwnedSlice(allocator);
+
+            return .{
+                .molecule = .{ .name = name, .atoms = atoms, .bonds = bonds },
+                .has_terminator = true,
+            };
+        }
+
+        if (stripV30(line)) |payload| {
+            if (std.mem.startsWith(u8, payload, "BEGIN BOND")) {
+                in_bond_block = true;
+                continue;
+            }
+            if (std.mem.startsWith(u8, payload, "END BOND")) {
+                in_bond_block = false;
+                continue;
+            }
+            if (std.mem.startsWith(u8, payload, "END CTAB")) {
+                continue;
+            }
+
+            if (in_bond_block) {
+                // "index bondtype atom1 atom2 [...]"
+                var tok = std.mem.tokenizeScalar(u8, payload, ' ');
+                _ = tok.next() orelse return error.InvalidBondLine; // index (skip)
+                const bt_str = tok.next() orelse return error.InvalidBondLine;
+                const a1_str = tok.next() orelse return error.InvalidBondLine;
+                const a2_str = tok.next() orelse return error.InvalidBondLine;
+
+                const bond_type = std.fmt.parseInt(u8, bt_str, 10) catch return error.InvalidInteger;
+                const idx1_raw = std.fmt.parseInt(u16, a1_str, 10) catch return error.InvalidInteger;
+                const idx2_raw = std.fmt.parseInt(u16, a2_str, 10) catch return error.InvalidInteger;
+
+                if (idx1_raw == 0 or idx1_raw > atom_count) return error.BondIndexOutOfRange;
+                if (idx2_raw == 0 or idx2_raw > atom_count) return error.BondIndexOutOfRange;
+
+                bond_list.appendAssumeCapacity(.{
+                    .atom_idx_1 = idx1_raw - 1,
+                    .atom_idx_2 = idx2_raw - 1,
+                    .order = sdfBondOrder(bond_type),
+                });
+            }
+        }
+    }
+
+    // Skip remaining lines until $$$$ or EOF
+    var found_terminator = false;
+    while (line_iter.next()) |rest_raw| {
+        const rest_line = stripCr(rest_raw);
+        if (std.mem.startsWith(u8, rest_line, "$$$$")) {
+            found_terminator = true;
+            break;
+        }
+    }
+
+    const atoms = try atom_list.toOwnedSlice(allocator);
+    errdefer allocator.free(atoms);
+    const bonds = try bond_list.toOwnedSlice(allocator);
+
+    return .{
+        .molecule = .{ .name = name, .atoms = atoms, .bonds = bonds },
+        .has_terminator = found_terminator,
+    };
 }
 
 const Counts = struct {
@@ -468,24 +626,60 @@ test "parse SDF with bad bond index returns error" {
     try std.testing.expectError(error.BondIndexOutOfRange, result);
 }
 
-test "parse V3000 returns InvalidV3000 error" {
+test "parse V3000 single molecule — ethanol" {
     const allocator = std.testing.allocator;
     const source =
         \\ethanol
-        \\     zsasa   3D
+        \\     RDKit          3D
         \\
         \\  0  0  0  0  0  0  0  0  0  0999 V3000
         \\M  V30 BEGIN CTAB
         \\M  V30 COUNTS 9 8 0 0 0
         \\M  V30 BEGIN ATOM
         \\M  V30 1 C 0.0000 0.0000 0.0000 0
+        \\M  V30 2 C 1.5200 0.0000 0.0000 0
+        \\M  V30 3 O 2.0800 1.2100 0.0000 0
+        \\M  V30 4 H -0.3900 0.9800 -0.2600 0
+        \\M  V30 5 H -0.3900 -0.5400 0.8700 0
+        \\M  V30 6 H -0.3900 -0.4400 -0.9200 0
+        \\M  V30 7 H 1.9100 -0.5400 0.8700 0
+        \\M  V30 8 H 1.9100 0.5400 -0.8700 0
+        \\M  V30 9 H 3.0400 1.2100 0.0000 0
         \\M  V30 END ATOM
+        \\M  V30 BEGIN BOND
+        \\M  V30 1 1 1 2
+        \\M  V30 2 1 1 4
+        \\M  V30 3 1 1 5
+        \\M  V30 4 1 1 6
+        \\M  V30 5 1 2 3
+        \\M  V30 6 1 2 7
+        \\M  V30 7 1 2 8
+        \\M  V30 8 1 3 9
+        \\M  V30 END BOND
         \\M  V30 END CTAB
         \\M  END
         \\$$$$
     ;
-    const result = parse(allocator, source);
-    try std.testing.expectError(error.InvalidV3000, result);
+    const molecules = try parse(allocator, source);
+    defer freeMolecules(allocator, molecules);
+
+    try std.testing.expectEqual(@as(usize, 1), molecules.len);
+    const mol = molecules[0];
+    try std.testing.expectEqualStrings("ethanol", mol.name);
+    try std.testing.expectEqual(@as(usize, 9), mol.atoms.len);
+    try std.testing.expectEqual(@as(usize, 8), mol.bonds.len);
+
+    // Same coordinates as V2000
+    try std.testing.expectEqual(elem.Element.C, mol.atoms[0].element);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), mol.atoms[0].x, 0.001);
+    try std.testing.expectEqual(elem.Element.C, mol.atoms[1].element);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.52), mol.atoms[1].x, 0.001);
+    try std.testing.expectEqual(elem.Element.O, mol.atoms[2].element);
+
+    // Bond: atom 0-1, single
+    try std.testing.expectEqual(@as(u16, 0), mol.bonds[0].atom_idx_1);
+    try std.testing.expectEqual(@as(u16, 1), mol.bonds[0].atom_idx_2);
+    try std.testing.expectEqual(hybridization.BondOrder.single, mol.bonds[0].order);
 }
 
 test "parse SDF with CRLF line endings" {
