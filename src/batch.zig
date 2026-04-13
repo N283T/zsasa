@@ -16,6 +16,7 @@ const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
 const ccd_parser = @import("ccd_parser.zig");
 const ccd_binary = @import("ccd_binary.zig");
+const sdf_parser = @import("sdf_parser.zig");
 const gzip = @import("gzip.zig");
 
 const Allocator = std.mem.Allocator;
@@ -63,6 +64,7 @@ pub const BatchConfig = struct {
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
     store_atom_areas: bool = false, // When true, copy atom_areas to result_allocator for jsonl
     external_ccd: ?*const ccd_parser.ComponentDict = null, // External CCD dictionary
+    sdf_ccd: ?*const ccd_parser.ComponentDict = null, // SDF bond topology dictionary
 };
 
 /// Helper to build and hold bitmask LUTs for batch processing.
@@ -328,11 +330,26 @@ fn readInputFile(allocator: Allocator, path: []const u8, config: BatchConfig) !A
             parser.atom_only = !config.include_hetatm;
             break :blk parser.parseFile(path);
         },
+        .sdf => blk: {
+            const source = if (std.mem.endsWith(u8, path, ".gz"))
+                try gzip.readGzip(allocator, path)
+            else file_blk: {
+                const f = try std.fs.cwd().openFile(path, .{});
+                defer f.close();
+                break :file_blk try f.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024);
+            };
+            defer allocator.free(source);
+
+            const molecules = try sdf_parser.parse(allocator, source);
+            defer sdf_parser.freeMolecules(allocator, molecules);
+
+            break :blk try sdf_parser.toAtomInput(allocator, molecules, !config.include_hydrogens);
+        },
     };
 }
 
 /// Apply built-in classifier to replace radii based on residue/atom names
-fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType, external_ccd: ?*const ccd_parser.ComponentDict) !void {
+fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType, sdf_ccd: ?*const ccd_parser.ComponentDict, external_ccd: ?*const ccd_parser.ComponentDict) !void {
     const n = input.atomCount();
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
@@ -342,22 +359,28 @@ fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType, external_ccd: ?
     defer if (ccd_clf) |*c| c.deinit();
 
     if (ccd_clf != null) {
-        if (external_ccd) |dict| {
-            // Deduplicate: collect unique non-hardcoded residues
-            var needed = std.StringHashMap(void).init(input.allocator);
-            defer needed.deinit();
-            for (0..n) |i| {
-                const res = residues[i].slice();
-                if (!classifier_ccd.CcdClassifier.isHardcoded(res)) {
-                    try needed.put(res, {});
-                }
+        // Deduplicate: collect unique non-hardcoded residues
+        var needed = std.StringHashMap(void).init(input.allocator);
+        defer needed.deinit();
+        for (0..n) |i| {
+            const res = residues[i].slice();
+            if (!classifier_ccd.CcdClassifier.isHardcoded(res)) {
+                try needed.put(res, {});
             }
-            var it = needed.keyIterator();
-            while (it.next()) |key_ptr| {
-                if (dict.get(key_ptr.*)) |comp| {
-                    ccd_clf.?.addComponent(&comp) catch |err| {
-                        std.debug.print("Warning: Could not derive CCD properties for '{s}': {s}\n", .{ key_ptr.*, @errorName(err) });
-                    };
+        }
+
+        if (needed.count() > 0) {
+            const dicts: [2]?*const ccd_parser.ComponentDict = .{ sdf_ccd, external_ccd };
+            for (dicts) |maybe_dict| {
+                if (maybe_dict) |dict| {
+                    var it = needed.keyIterator();
+                    while (it.next()) |key_ptr| {
+                        if (dict.get(key_ptr.*)) |comp| {
+                            ccd_clf.?.addComponent(&comp) catch |err| {
+                                std.debug.print("Warning: Could not derive CCD properties for '{s}': {s}\n", .{ key_ptr.*, @errorName(err) });
+                            };
+                        }
+                    }
                 }
             }
         }
@@ -473,7 +496,7 @@ fn processOneFile(
     if (config.classifier_type) |ct| {
         const format = format_detect.detectInputFormat(input_path);
         if (format != .json and input.hasClassificationInfo()) {
-            applyBuiltinClassifier(&input, ct, config.external_ccd) catch |err| {
+            applyBuiltinClassifier(&input, ct, config.sdf_ccd, config.external_ccd) catch |err| {
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
                 return result;
@@ -1021,6 +1044,8 @@ pub fn runBatch(
 // =============================================================================
 
 /// Parsed command-line arguments for the batch subcommand
+const SdfPathList = sdf_parser.SdfPathList;
+
 pub const BatchArgs = struct {
     input_path: ?[]const u8 = null,
     output_path: ?[]const u8 = null, // Output directory; null means no file output
@@ -1037,6 +1062,7 @@ pub const BatchArgs = struct {
     include_hetatm: bool = false,
     use_bitmask: bool = false,
     ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz])
+    sdf_paths: SdfPathList = .{}, // --sdf=PATH (up to 16)
     quiet: bool = false,
     show_timing: bool = false,
     show_help: bool = false,
@@ -1270,6 +1296,24 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
             }
             result.ccd_path = args[i];
         }
+        // --sdf=PATH or --sdf PATH (SDF file with bond topology for CCD classifier)
+        else if (std.mem.startsWith(u8, arg, "--sdf=")) {
+            const value = arg["--sdf=".len..];
+            result.sdf_paths.append(value) catch {
+                std.debug.print("Error: Too many --sdf paths (max 16)\n", .{});
+                std.process.exit(1);
+            };
+        } else if (std.mem.eql(u8, arg, "--sdf")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --sdf\n", .{});
+                std.process.exit(1);
+            }
+            result.sdf_paths.append(args[i]) catch {
+                std.debug.print("Error: Too many --sdf paths (max 16)\n", .{});
+                std.process.exit(1);
+            };
+        }
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
@@ -1348,6 +1392,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\                        Default: ccd (protor is an alias for ccd)
         \\    --ccd=PATH          External CCD dictionary file (.zsdc or .cif[.gz])
         \\                        Used with --classifier=ccd for non-standard residues
+        \\    --sdf=PATH          SDF file with bond topology for CCD classifier
+        \\                        Can be specified multiple times for multiple ligands
         \\    --threads=N         Number of threads (default: auto-detect)
         \\    --probe-radius=R    Probe radius in Angstroms (default: 1.4)
         \\    --n-points=N        Test points per atom (default: 100, for sr)
@@ -1373,6 +1419,10 @@ pub fn printHelp(program_name: []const u8) void {
         \\
     , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
+
+/// Load SDF files and build a ComponentDict from their bond topology.
+/// Delegates to sdf_parser.loadSdfComponents.
+const loadSdfComponents = sdf_parser.loadSdfComponents;
 
 /// Run batch processing from parsed CLI arguments
 pub fn run(allocator: Allocator, args: BatchArgs) !void {
@@ -1413,6 +1463,16 @@ pub fn run(allocator: Allocator, args: BatchArgs) !void {
     }
     defer if (ext_ccd) |*d| d.deinit();
 
+    // Load SDF components from --sdf option
+    var sdf_ccd: ?ccd_parser.ComponentDict = null;
+    if (args.sdf_paths.len > 0) {
+        sdf_ccd = loadSdfComponents(allocator, args.sdf_paths.constSlice(), args.quiet) catch |err| {
+            std.debug.print("Error loading SDF components: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+    }
+    defer if (sdf_ccd) |*d| d.deinit();
+
     // For jsonl, don't pass output_dir to runBatch (no per-file I/O during computation)
     const output_dir: ?[]const u8 = if (args.output_format == .jsonl) null else args.output_path;
 
@@ -1439,6 +1499,7 @@ pub fn run(allocator: Allocator, args: BatchArgs) !void {
         .use_bitmask = args.use_bitmask,
         .store_atom_areas = (args.output_format == .jsonl),
         .external_ccd = if (ext_ccd != null) &ext_ccd.? else null,
+        .sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null,
     };
 
     if (!args.quiet) {

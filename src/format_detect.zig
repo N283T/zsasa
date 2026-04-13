@@ -5,6 +5,7 @@ pub const InputFormat = enum {
     json,
     mmcif,
     pdb,
+    sdf,
 };
 
 /// Supported file extensions (lowercase, with .gz compression)
@@ -19,6 +20,10 @@ pub const supported_extensions = [_][]const u8{
     ".mmcif.gz",
     ".ent",
     ".ent.gz",
+    ".sdf",
+    ".sdf.gz",
+    ".mol",
+    ".mol.gz",
 };
 
 /// Check if filename has a supported structure file extension
@@ -34,6 +39,8 @@ pub fn isSupportedFile(name: []const u8) bool {
     if (std.mem.endsWith(u8, name, ".JSON")) return true;
     if (std.mem.endsWith(u8, name, ".MMCIF")) return true;
     if (std.mem.endsWith(u8, name, ".mmCIF")) return true;
+    if (std.mem.endsWith(u8, name, ".SDF")) return true;
+    if (std.mem.endsWith(u8, name, ".MOL")) return true;
     return false;
 }
 
@@ -61,6 +68,12 @@ pub fn detectInputFormat(path: []const u8) InputFormat {
     if (std.mem.endsWith(u8, base, ".PDB")) return .pdb;
     if (std.mem.endsWith(u8, base, ".ent")) return .pdb;
     if (std.mem.endsWith(u8, base, ".ENT")) return .pdb;
+
+    // SDF/MOL formats
+    if (std.mem.endsWith(u8, base, ".sdf")) return .sdf;
+    if (std.mem.endsWith(u8, base, ".SDF")) return .sdf;
+    if (std.mem.endsWith(u8, base, ".mol")) return .sdf;
+    if (std.mem.endsWith(u8, base, ".MOL")) return .sdf;
 
     // Default to JSON
     return .json;
@@ -116,4 +129,22 @@ test "detectInputFormat handles .gz compressed files" {
     try std.testing.expectEqual(InputFormat.pdb, detectInputFormat("file.pdb.gz"));
     try std.testing.expectEqual(InputFormat.mmcif, detectInputFormat("file.cif.gz"));
     try std.testing.expectEqual(InputFormat.json, detectInputFormat("file.json.gz"));
+}
+
+test "isSupportedFile accepts SDF/MOL files" {
+    try std.testing.expect(isSupportedFile("molecule.sdf"));
+    try std.testing.expect(isSupportedFile("molecule.sdf.gz"));
+    try std.testing.expect(isSupportedFile("molecule.SDF"));
+    try std.testing.expect(isSupportedFile("molecule.mol"));
+    try std.testing.expect(isSupportedFile("molecule.mol.gz"));
+    try std.testing.expect(isSupportedFile("molecule.MOL"));
+}
+
+test "detectInputFormat handles SDF/MOL files" {
+    try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("file.sdf"));
+    try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("file.SDF"));
+    try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("file.mol"));
+    try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("file.MOL"));
+    try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("file.sdf.gz"));
+    try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("file.mol.gz"));
 }

@@ -246,12 +246,19 @@ class TestAtomClass:
 class TestGetRadius:
     """Tests for get_radius function."""
 
+    def test_get_radius_ccd_default(self):
+        """Default CCD classifier should return correct radii."""
+        assert get_radius("ALA", "CA") == pytest.approx(1.88, abs=0.01)
+        assert get_radius("ALA", "O") == pytest.approx(1.42, abs=0.01)
+        assert get_radius("ALA", "N") == pytest.approx(1.64, abs=0.01)
+        assert get_radius("ALA", "CB") == pytest.approx(1.88, abs=0.01)
+
     def test_get_radius_naccess(self):
         """NACCESS classifier should return correct radii."""
-        assert get_radius("ALA", "CA") == pytest.approx(1.87, abs=0.01)
-        assert get_radius("ALA", "O") == pytest.approx(1.40, abs=0.01)
-        assert get_radius("ALA", "N") == pytest.approx(1.65, abs=0.01)
-        assert get_radius("ALA", "CB") == pytest.approx(1.87, abs=0.01)
+        assert get_radius("ALA", "CA", ClassifierType.NACCESS) == pytest.approx(1.87, abs=0.01)
+        assert get_radius("ALA", "O", ClassifierType.NACCESS) == pytest.approx(1.40, abs=0.01)
+        assert get_radius("ALA", "N", ClassifierType.NACCESS) == pytest.approx(1.65, abs=0.01)
+        assert get_radius("ALA", "CB", ClassifierType.NACCESS) == pytest.approx(1.87, abs=0.01)
 
     def test_get_radius_protor(self):
         """ProtoR classifier should return valid radii."""
@@ -270,11 +277,16 @@ class TestGetRadius:
         assert get_radius("ALA", "XX") is None
         assert get_radius("XXX", "YY") is None
 
-    def test_get_radius_any_fallback(self):
-        """Should fall back to ANY residue for common atoms."""
-        # Backbone atoms should work for any residue
-        assert get_radius("UNK", "CA") == pytest.approx(1.87, abs=0.01)
-        assert get_radius("UNK", "O") == pytest.approx(1.40, abs=0.01)
+    def test_get_radius_naccess_fallback(self):
+        """NACCESS should fall back to ANY residue for common atoms."""
+        # Backbone atoms should work for any residue with NACCESS
+        assert get_radius("UNK", "CA", ClassifierType.NACCESS) == pytest.approx(1.87, abs=0.01)
+        assert get_radius("UNK", "O", ClassifierType.NACCESS) == pytest.approx(1.40, abs=0.01)
+
+    def test_get_radius_ccd_unknown_residue(self):
+        """CCD classifier returns None for unknown residues (no ANY fallback)."""
+        assert get_radius("UNK", "CA") is None
+        assert get_radius("UNK", "O") is None
 
 
 class TestGetAtomClass:
@@ -366,16 +378,16 @@ class TestClassifyAtoms:
     """Tests for classify_atoms batch function."""
 
     def test_basic_classification(self):
-        """Basic batch classification should work."""
+        """Basic batch classification should work with default CCD classifier."""
         result = classify_atoms(["ALA", "ALA", "GLY"], ["CA", "O", "N"])
 
         assert isinstance(result, ClassificationResult)
         assert len(result.radii) == 3
         assert len(result.classes) == 3
 
-        assert result.radii[0] == pytest.approx(1.87, abs=0.01)
-        assert result.radii[1] == pytest.approx(1.40, abs=0.01)
-        assert result.radii[2] == pytest.approx(1.65, abs=0.01)
+        assert result.radii[0] == pytest.approx(1.88, abs=0.01)
+        assert result.radii[1] == pytest.approx(1.42, abs=0.01)
+        assert result.radii[2] == pytest.approx(1.64, abs=0.01)
 
         assert result.classes[0] == AtomClass.APOLAR
         assert result.classes[1] == AtomClass.POLAR
@@ -404,8 +416,8 @@ class TestClassifyAtoms:
         """Should work without computing classes."""
         result = classify_atoms(["ALA", "ALA"], ["CA", "O"], include_classes=False)
 
-        assert result.radii[0] == pytest.approx(1.87, abs=0.01)
-        assert result.radii[1] == pytest.approx(1.40, abs=0.01)
+        assert result.radii[0] == pytest.approx(1.88, abs=0.01)
+        assert result.radii[1] == pytest.approx(1.42, abs=0.01)
         # Classes should all be UNKNOWN when not computed
         assert all(c == AtomClass.UNKNOWN for c in result.classes)
 
