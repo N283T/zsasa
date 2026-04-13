@@ -31,6 +31,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const elem = @import("element.zig");
 const hybridization = @import("hybridization.zig");
+const ccd_parser = @import("ccd_parser.zig");
+const types = @import("types.zig");
 
 // =============================================================================
 // Types
@@ -470,6 +472,195 @@ fn stripCr(line: []const u8) []const u8 {
 }
 
 // =============================================================================
+// Conversion Functions
+// =============================================================================
+
+/// Generate atom names like "C1", "C2", "O1" by appending a per-element counter
+/// to the element symbol. Writes the result into a FixedString4-compatible [4]u8
+/// and returns the length.
+fn formatAtomName(symbol_str: []const u8, counter: u16, buf: *[4]u8) u3 {
+    // Format counter as decimal (up to 3 digits for 4-char limit)
+    var num_buf: [3]u8 = undefined;
+    const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{counter}) catch "";
+
+    const total_len = @min(symbol_str.len + num_str.len, 4);
+    buf.* = .{ 0, 0, 0, 0 };
+
+    const sym_copy: usize = @min(symbol_str.len, 4);
+    for (symbol_str[0..sym_copy], 0..) |c, i| {
+        buf[i] = c;
+    }
+    const remaining = 4 - sym_copy;
+    const num_copy = @min(num_str.len, remaining);
+    for (num_str[0..num_copy], 0..) |c, i| {
+        buf[sym_copy + i] = c;
+    }
+
+    return @intCast(total_len);
+}
+
+/// Convert an SdfMolecule to a StoredComponent for the CCD classifier.
+///
+/// - `comp_id` = molecule name truncated to 5 chars
+/// - Atom names are generated as element symbol + per-element counter (C1, C2, O1...)
+/// - Bond indices and orders are preserved from the SDF data
+/// - Caller must call `.deinit()` on the returned StoredComponent.
+pub fn toStoredComponent(allocator: Allocator, molecule: *const SdfMolecule) !ccd_parser.StoredComponent {
+    // Build per-element counters for atom naming
+    const atoms = try allocator.alloc(hybridization.CompAtom, molecule.atoms.len);
+    errdefer allocator.free(atoms);
+
+    // Element counter: keyed by element enum value
+    var element_counts: [119]u16 = .{0} ** 119;
+
+    for (molecule.atoms, 0..) |sdf_atom, i| {
+        const sym = sdf_atom.element.symbol();
+        const elem_idx = sdf_atom.element.atomicNumber();
+        element_counts[elem_idx] += 1;
+
+        var name_buf: [4]u8 = undefined;
+        const name_len = formatAtomName(sym, element_counts[elem_idx], &name_buf);
+
+        atoms[i] = hybridization.CompAtom{
+            .atom_id = name_buf,
+            .atom_id_len = name_len,
+            .type_symbol = .{ 0, 0, 0, 0 },
+            .type_symbol_len = 0,
+            .aromatic = false,
+            .leaving = false,
+        };
+
+        // Copy type_symbol from element symbol
+        const ts_len: usize = @min(sym.len, 4);
+        atoms[i].type_symbol_len = @intCast(ts_len);
+        for (sym[0..ts_len], 0..) |c, j| {
+            atoms[i].type_symbol[j] = c;
+        }
+    }
+
+    const bonds = try allocator.alloc(hybridization.CompBond, molecule.bonds.len);
+    errdefer allocator.free(bonds);
+
+    for (molecule.bonds, 0..) |sdf_bond, i| {
+        bonds[i] = .{
+            .atom_idx_1 = sdf_bond.atom_idx_1,
+            .atom_idx_2 = sdf_bond.atom_idx_2,
+            .order = sdf_bond.order,
+            .aromatic = sdf_bond.order == .aromatic,
+        };
+    }
+
+    // Build comp_id from molecule name (truncated to 5, lowercased for consistency)
+    var comp_id: [5]u8 = .{ 0, 0, 0, 0, 0 };
+    const name_len: usize = @min(molecule.name.len, 5);
+    for (molecule.name[0..name_len], 0..) |c, i| {
+        comp_id[i] = c;
+    }
+
+    return .{
+        .comp_id = comp_id,
+        .comp_id_len = @intCast(name_len),
+        .atoms = atoms,
+        .bonds = bonds,
+        .allocator = allocator,
+    };
+}
+
+/// Convert SDF molecules into AtomInput for SASA calculation.
+///
+/// - Each molecule becomes one chain (A, B, C... up to Z, max 26)
+/// - Residue name = molecule name truncated to 5 chars
+/// - Atom names generated as element + per-element index (C1, C2, O1...)
+/// - Radii default to element VdW radius (classifier will override later)
+/// - When `skip_hydrogens` is true, H atoms are excluded
+pub fn toAtomInput(allocator: Allocator, molecules: []const SdfMolecule, skip_hydrogens: bool) !types.AtomInput {
+    // First pass: count total atoms
+    var total_atoms: usize = 0;
+    for (molecules) |mol| {
+        for (mol.atoms) |atom| {
+            if (skip_hydrogens and atom.element == .H) continue;
+            total_atoms += 1;
+        }
+    }
+
+    // Allocate arrays
+    const x = try allocator.alloc(f64, total_atoms);
+    errdefer allocator.free(x);
+    const y = try allocator.alloc(f64, total_atoms);
+    errdefer allocator.free(y);
+    const z = try allocator.alloc(f64, total_atoms);
+    errdefer allocator.free(z);
+    const r = try allocator.alloc(f64, total_atoms);
+    errdefer allocator.free(r);
+    const residue = try allocator.alloc(types.FixedString5, total_atoms);
+    errdefer allocator.free(residue);
+    const atom_name = try allocator.alloc(types.FixedString4, total_atoms);
+    errdefer allocator.free(atom_name);
+    const element_arr = try allocator.alloc(u8, total_atoms);
+    errdefer allocator.free(element_arr);
+    const chain_id = try allocator.alloc(types.FixedString4, total_atoms);
+    errdefer allocator.free(chain_id);
+    const residue_num = try allocator.alloc(i32, total_atoms);
+    errdefer allocator.free(residue_num);
+    const insertion_code = try allocator.alloc(types.FixedString4, total_atoms);
+    errdefer allocator.free(insertion_code);
+
+    var idx: usize = 0;
+    const max_chains: usize = @min(molecules.len, 26);
+
+    for (molecules[0..max_chains], 0..) |mol, mol_idx| {
+        const chain_letter: u8 = 'A' + @as(u8, @intCast(mol_idx));
+        const chain = types.FixedString4.fromSlice(&[_]u8{chain_letter});
+        const res_name = types.FixedString5.fromSlice(mol.name[0..@min(mol.name.len, 5)]);
+        const empty_insertion = types.FixedString4.fromSlice("");
+
+        // Per-element counters for atom naming (reset per molecule)
+        var element_counts: [119]u16 = .{0} ** 119;
+
+        for (mol.atoms) |atom| {
+            if (skip_hydrogens and atom.element == .H) continue;
+
+            const sym = atom.element.symbol();
+            const elem_idx = atom.element.atomicNumber();
+            element_counts[elem_idx] += 1;
+
+            var name_buf: [4]u8 = undefined;
+            const name_len = formatAtomName(sym, element_counts[elem_idx], &name_buf);
+
+            x[idx] = atom.x;
+            y[idx] = atom.y;
+            z[idx] = atom.z;
+            r[idx] = atom.element.vdwRadius();
+            residue[idx] = res_name;
+            atom_name[idx] = .{
+                .data = name_buf,
+                .len = name_len,
+            };
+            element_arr[idx] = atom.element.atomicNumber();
+            chain_id[idx] = chain;
+            residue_num[idx] = 1;
+            insertion_code[idx] = empty_insertion;
+
+            idx += 1;
+        }
+    }
+
+    return .{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .residue = residue,
+        .atom_name = atom_name,
+        .element = element_arr,
+        .chain_id = chain_id,
+        .residue_num = residue_num,
+        .insertion_code = insertion_code,
+        .allocator = allocator,
+    };
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -691,4 +882,167 @@ test "parse SDF with CRLF line endings" {
     try std.testing.expectEqual(@as(usize, 1), molecules.len);
     try std.testing.expectEqualStrings("methane", molecules[0].name);
     try std.testing.expectEqual(@as(usize, 5), molecules[0].atoms.len);
+}
+
+test "toStoredComponent — ethanol molecule" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\ethanol
+        \\     zsasa   3D
+        \\
+        \\  9  8  0  0  0  0  0  0  0  0999 V2000
+        \\    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    1.5200    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    2.0800    1.2124    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+        \\   -0.5200    0.9400    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\   -0.5200   -0.5100    0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\   -0.5200   -0.5100   -0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    1.8800   -0.5100    0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    1.8800   -0.5100   -0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    2.9200    1.2124    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\  1  2  1  0  0  0  0
+        \\  1  4  1  0  0  0  0
+        \\  1  5  1  0  0  0  0
+        \\  1  6  1  0  0  0  0
+        \\  2  3  1  0  0  0  0
+        \\  2  7  1  0  0  0  0
+        \\  2  8  1  0  0  0  0
+        \\  3  9  1  0  0  0  0
+        \\M  END
+        \\$$$$
+    ;
+    const molecules = try parse(allocator, source);
+    defer freeMolecules(allocator, molecules);
+
+    var stored = try toStoredComponent(allocator, &molecules[0]);
+    defer stored.deinit();
+
+    // comp_id = "ethan" (truncated to 5)
+    const view = stored.view();
+    try std.testing.expectEqualStrings("ethan", view.compIdSlice());
+
+    // 9 atoms, 8 bonds
+    try std.testing.expectEqual(@as(usize, 9), stored.atoms.len);
+    try std.testing.expectEqual(@as(usize, 8), stored.bonds.len);
+
+    // First atom: type_symbol = "C"
+    try std.testing.expectEqualStrings("C", stored.atoms[0].typeSymbolSlice());
+    // Third atom: type_symbol = "O"
+    try std.testing.expectEqualStrings("O", stored.atoms[2].typeSymbolSlice());
+
+    // Atom names: C1, C2, O1, H1, H2, ...
+    try std.testing.expectEqualStrings("C1", stored.atoms[0].atomIdSlice());
+    try std.testing.expectEqualStrings("C2", stored.atoms[1].atomIdSlice());
+    try std.testing.expectEqualStrings("O1", stored.atoms[2].atomIdSlice());
+    try std.testing.expectEqualStrings("H1", stored.atoms[3].atomIdSlice());
+}
+
+test "toAtomInput — two molecules get separate chains" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\methane
+        \\     zsasa   3D
+        \\
+        \\  5  4  0  0  0  0  0  0  0  0999 V2000
+        \\    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    0.6300    0.6300    0.6300 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\   -0.6300   -0.6300    0.6300 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\   -0.6300    0.6300   -0.6300 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    0.6300   -0.6300   -0.6300 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\  1  2  1  0  0  0  0
+        \\  1  3  1  0  0  0  0
+        \\  1  4  1  0  0  0  0
+        \\  1  5  1  0  0  0  0
+        \\M  END
+        \\$$$$
+        \\water
+        \\     zsasa   3D
+        \\
+        \\  3  2  0  0  0  0  0  0  0  0999 V2000
+        \\    0.0000    0.0000    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    0.7572    0.5858    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\   -0.7572    0.5858    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\  1  2  1  0  0  0  0
+        \\  1  3  1  0  0  0  0
+        \\M  END
+        \\$$$$
+    ;
+    const molecules = try parse(allocator, source);
+    defer freeMolecules(allocator, molecules);
+
+    var input = try toAtomInput(allocator, molecules, false);
+    defer input.deinit();
+
+    // methane(5) + water(3) = 8 atoms total
+    try std.testing.expectEqual(@as(usize, 8), input.atomCount());
+
+    // Chain IDs: methane atoms = "A", water atoms = "B"
+    const chains = input.chain_id.?;
+    try std.testing.expectEqualStrings("A", chains[0].slice());
+    try std.testing.expectEqualStrings("A", chains[4].slice());
+    try std.testing.expectEqualStrings("B", chains[5].slice());
+    try std.testing.expectEqualStrings("B", chains[7].slice());
+
+    // Residue names: "metha" (truncated from "methane"), "water"
+    const residues = input.residue.?;
+    try std.testing.expectEqualStrings("metha", residues[0].slice());
+    try std.testing.expectEqualStrings("water", residues[5].slice());
+
+    // Residue numbers = 1
+    const res_nums = input.residue_num.?;
+    try std.testing.expectEqual(@as(i32, 1), res_nums[0]);
+    try std.testing.expectEqual(@as(i32, 1), res_nums[5]);
+
+    // Insertion codes are empty
+    const ins_codes = input.insertion_code.?;
+    try std.testing.expectEqualStrings("", ins_codes[0].slice());
+}
+
+test "toAtomInput — skip hydrogens" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\ethanol
+        \\     zsasa   3D
+        \\
+        \\  9  8  0  0  0  0  0  0  0  0999 V2000
+        \\    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    1.5200    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    2.0800    1.2124    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+        \\   -0.5200    0.9400    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\   -0.5200   -0.5100    0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\   -0.5200   -0.5100   -0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    1.8800   -0.5100    0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    1.8800   -0.5100   -0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    2.9200    1.2124    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\  1  2  1  0  0  0  0
+        \\  1  4  1  0  0  0  0
+        \\  1  5  1  0  0  0  0
+        \\  1  6  1  0  0  0  0
+        \\  2  3  1  0  0  0  0
+        \\  2  7  1  0  0  0  0
+        \\  2  8  1  0  0  0  0
+        \\  3  9  1  0  0  0  0
+        \\M  END
+        \\$$$$
+    ;
+    const molecules = try parse(allocator, source);
+    defer freeMolecules(allocator, molecules);
+
+    var input = try toAtomInput(allocator, molecules, true);
+    defer input.deinit();
+
+    // Ethanol has 3 heavy atoms (2C + 1O), 6H skipped
+    try std.testing.expectEqual(@as(usize, 3), input.atomCount());
+
+    // Elements should be C, C, O
+    const elements = input.element.?;
+    try std.testing.expectEqual(@as(u8, 6), elements[0]); // C
+    try std.testing.expectEqual(@as(u8, 6), elements[1]); // C
+    try std.testing.expectEqual(@as(u8, 8), elements[2]); // O
+
+    // Atom names should be C1, C2, O1 (H counter not incremented)
+    const names = input.atom_name.?;
+    try std.testing.expectEqualStrings("C1", names[0].slice());
+    try std.testing.expectEqualStrings("C2", names[1].slice());
+    try std.testing.expectEqualStrings("O1", names[2].slice());
 }
