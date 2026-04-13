@@ -76,7 +76,7 @@ def process_directory(
     n_slices: int = 20,
     probe_radius: float = 1.4,
     n_threads: int = 0,
-    classifier: ClassifierType | None = ClassifierType.PROTOR,
+    classifier: ClassifierType | None = ClassifierType.CCD,
     include_hydrogens: bool = False,
     include_hetatm: bool = False,
 ) -> BatchDirResult:
@@ -96,7 +96,7 @@ def process_directory(
         probe_radius: Water probe radius in Angstroms. Default: 1.4.
         n_threads: Number of threads to use. 0 = auto-detect. Default: 0.
         classifier: Classifier for radius assignment. None = use input radii.
-            Default: ClassifierType.PROTOR.
+            Default: ClassifierType.CCD.
         include_hydrogens: Whether to include hydrogen atoms. Default: False.
         include_hetatm: Whether to include HETATM records. Default: False.
 

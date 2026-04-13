@@ -297,14 +297,11 @@ fn parsePrecision(value: []const u8) Precision {
 }
 
 fn parseClassifierType(value: []const u8) ClassifierType {
-    if (std.mem.eql(u8, value, "naccess")) {
-        return .naccess;
-    } else if (std.mem.eql(u8, value, "protor")) {
-        return .protor;
-    } else if (std.mem.eql(u8, value, "oons")) {
-        return .oons;
+    if (ClassifierType.fromString(value)) |ct| {
+        return ct;
     } else {
         std.debug.print("Error: Invalid classifier: {s}\n", .{value});
+        std.debug.print("Valid classifiers: ccd, protor, naccess, oons\n", .{});
         std.process.exit(1);
     }
 }

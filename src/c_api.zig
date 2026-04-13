@@ -49,13 +49,13 @@ pub const ZSASA_ALGORITHM_LR: c_int = 1;
 // Classifier Types
 // =============================================================================
 
-/// NACCESS-compatible radii (default)
+/// NACCESS-compatible radii
 pub const ZSASA_CLASSIFIER_NACCESS: c_int = 0;
-/// ProtOr radii based on hybridization state
+/// Alias for CCD (backward compatibility)
 pub const ZSASA_CLASSIFIER_PROTOR: c_int = 1;
 /// OONS radii (older FreeSASA default)
 pub const ZSASA_CLASSIFIER_OONS: c_int = 2;
-/// CCD-based radii derived from bond topology
+/// CCD-based radii derived from bond topology (default)
 pub const ZSASA_CLASSIFIER_CCD: c_int = 3;
 
 // =============================================================================

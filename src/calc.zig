@@ -144,7 +144,7 @@ fn parseClassifierType(value: []const u8) ClassifierType {
         return ct;
     } else {
         std.debug.print("Error: Invalid classifier: {s}\n", .{value});
-        std.debug.print("Valid classifiers: naccess, protor, oons, ccd\n", .{});
+        std.debug.print("Valid classifiers: ccd, protor, naccess, oons\n", .{});
         std.process.exit(1);
     }
 }
