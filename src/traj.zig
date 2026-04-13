@@ -17,7 +17,7 @@ const pdb_parser = @import("pdb_parser.zig");
 const mmcif_parser = @import("mmcif_parser.zig");
 const classifier = @import("classifier.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
-const classifier_protor = @import("classifier_protor.zig");
+// classifier_protor removed — ProtOr is now an alias for CCD
 const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
 const ccd_parser = @import("ccd_parser.zig");
@@ -297,14 +297,11 @@ fn parsePrecision(value: []const u8) Precision {
 }
 
 fn parseClassifierType(value: []const u8) ClassifierType {
-    if (std.mem.eql(u8, value, "naccess")) {
-        return .naccess;
-    } else if (std.mem.eql(u8, value, "protor")) {
-        return .protor;
-    } else if (std.mem.eql(u8, value, "oons")) {
-        return .oons;
+    if (ClassifierType.fromString(value)) |ct| {
+        return ct;
     } else {
         std.debug.print("Error: Invalid classifier: {s}\n", .{value});
+        std.debug.print("Valid classifiers: ccd, protor, naccess, oons\n", .{});
         std.process.exit(1);
     }
 }
@@ -325,7 +322,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\OPTIONS:
         \\    --algorithm=ALGO   Algorithm: sr (shrake-rupley), lr (lee-richards)
         \\                       Default: sr
-        \\    --classifier=TYPE  Built-in classifier: naccess, protor, oons, ccd
+        \\    --classifier=TYPE  Built-in classifier: ccd, protor, naccess, oons
         \\    --ccd=PATH         External CCD dictionary file (.zsdc or .cif[.gz])
         \\                       Used with --classifier=ccd for non-standard residues
         \\    --threads=N        Number of threads (default: auto-detect)
@@ -1069,8 +1066,8 @@ fn applyBuiltinClassifier(
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
 
-    // For CCD: create classifier instance and feed external CCD components
-    var ccd_clf: ?classifier_ccd.CcdClassifier = if (ct == .ccd) classifier_ccd.CcdClassifier.init(input.allocator) else null;
+    // For CCD/ProtOr: create classifier instance and feed external CCD components
+    var ccd_clf: ?classifier_ccd.CcdClassifier = if (ct == .ccd or ct == .protor) classifier_ccd.CcdClassifier.init(input.allocator) else null;
     defer if (ccd_clf) |*c| c.deinit();
 
     if (ccd_clf != null) {
@@ -1109,9 +1106,8 @@ fn applyBuiltinClassifier(
     for (0..n) |i| {
         const radius_opt: ?f64 = switch (ct) {
             .naccess => classifier_naccess.getRadius(residues[i].slice(), atom_names[i].slice()),
-            .protor => classifier_protor.getRadius(residues[i].slice(), atom_names[i].slice()),
+            .protor, .ccd => if (ccd_clf) |*c| c.getRadius(residues[i].slice(), atom_names[i].slice()) else null,
             .oons => classifier_oons.getRadius(residues[i].slice(), atom_names[i].slice()),
-            .ccd => if (ccd_clf) |*c| c.getRadius(residues[i].slice(), atom_names[i].slice()) else null,
         };
         if (radius_opt) |r| {
             input.r[i] = r;

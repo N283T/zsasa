@@ -17,7 +17,7 @@ const hybridization = @import("hybridization.zig");
 const Component = hybridization.Component;
 
 // =============================================================================
-// Hardcoded table (same entries and values as classifier_protor.zig)
+// Hardcoded ProtOr-compatible radii table
 // =============================================================================
 
 /// Key format: "RES :ATOM" — 4 chars residue (space-padded) + ':' + 4 chars atom (space-padded) = 9 chars total
@@ -882,7 +882,6 @@ pub const CcdClassifier = struct {
 // Tests
 // =============================================================================
 
-const protor = @import("classifier_protor.zig");
 const CompAtom = hybridization.CompAtom;
 const CompBond = hybridization.CompBond;
 
@@ -975,10 +974,12 @@ test "CCD runtime component via addComponent" {
     try std.testing.expectEqual(@as(?f64, null), ccd.getRadius("LIG", "H1"));
 }
 
-test "CCD ProtOr compatibility — backbone atoms for all 20 standard amino acids" {
+test "CCD ProtOr-compatible radii — backbone atoms for all 20 standard amino acids" {
     var ccd = CcdClassifier.init(std.testing.allocator);
     defer ccd.deinit();
 
+    // Expected ProtOr backbone radii: N=1.64, CA=1.88, C=1.61, O=1.42
+    const expected = [_]f64{ 1.64, 1.88, 1.61, 1.42 };
     const residues = [_][]const u8{
         "ALA", "ARG", "ASN", "ASP", "CYS",
         "GLN", "GLU", "GLY", "HIS", "ILE",
@@ -989,16 +990,10 @@ test "CCD ProtOr compatibility — backbone atoms for all 20 standard amino acid
     const backbone_atoms = [_][]const u8{ "N", "CA", "C", "O" };
 
     for (residues) |res| {
-        for (backbone_atoms) |atom| {
-            const ccd_radius = ccd.getRadius(res, atom);
-            const protor_radius = protor.getRadius(res, atom);
-
-            // Both must return a value
-            try std.testing.expect(ccd_radius != null);
-            try std.testing.expect(protor_radius != null);
-
-            // Values must match
-            try std.testing.expectApproxEqAbs(protor_radius.?, ccd_radius.?, 0.001);
+        for (backbone_atoms, 0..) |atom, j| {
+            const radius = ccd.getRadius(res, atom);
+            try std.testing.expect(radius != null);
+            try std.testing.expectApproxEqAbs(expected[j], radius.?, 0.001);
         }
     }
 }
@@ -1070,8 +1065,8 @@ test "CCD getProperties returns correct struct" {
 
 const mmcif = @import("mmcif_parser.zig");
 
-test "E2E: CCD classifier matches ProtOr on 1ubq.cif" {
-    // Parse the real 1ubq structure
+test "E2E: CCD classifies all standard amino acid atoms in 1ubq.cif" {
+    // Parse the real 1ubq structure (standard amino acids only)
     var parser = mmcif.MmcifParser.init(std.testing.allocator);
     var input = try parser.parseFile("examples/1ubq.cif");
     defer input.deinit();
@@ -1084,30 +1079,14 @@ test "E2E: CCD classifier matches ProtOr on 1ubq.cif" {
     var ccd = CcdClassifier.init(std.testing.allocator);
     defer ccd.deinit();
 
-    // 1ubq contains only standard amino acids, so CCD and ProtOr must agree on all atoms
-    var mismatches: usize = 0;
+    // All atoms in 1ubq should be classified (no nulls for standard AAs)
+    var unclassified: usize = 0;
     for (0..n) |i| {
-        const res = residues[i].slice();
-        const atm = atom_names[i].slice();
-
-        const ccd_r = ccd.getRadius(res, atm);
-        const protor_r = protor.getRadius(res, atm);
-
-        // Both classifiers should return a value for standard AAs
-        if (ccd_r != null and protor_r != null) {
-            if (@abs(ccd_r.? - protor_r.?) > 0.01) {
-                mismatches += 1;
-            }
-        } else if (ccd_r == null and protor_r != null) {
-            // CCD missing an atom that ProtOr knows — counts as mismatch
-            mismatches += 1;
-        } else if (ccd_r != null and protor_r == null) {
-            // CCD has an atom that ProtOr doesn't — counts as mismatch
-            mismatches += 1;
+        if (ccd.getRadius(residues[i].slice(), atom_names[i].slice()) == null) {
+            unclassified += 1;
         }
-        // Both null: neither classifier knows this atom, not a mismatch
     }
-    try std.testing.expectEqual(@as(usize, 0), mismatches);
+    try std.testing.expectEqual(@as(usize, 0), unclassified);
 }
 
 test "E2E: CCD classifier classifies all 1ubq atoms without fallback" {

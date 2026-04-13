@@ -10,21 +10,22 @@
 //!
 //! ## Available Built-in Classifiers
 //!
-//! - **NACCESS**: Default classifier, NACCESS-compatible radii (João Rodrigues)
-//! - **ProtOr**: Hybridization-based radii from Tsai et al. 1999
+//! - **CCD**: Default. Derives radii from CCD bond topology (ProtOr-compatible).
+//!   ProtOr is an alias for CCD — they use the same hardcoded radii, but CCD
+//!   additionally supports runtime analysis of non-standard residues.
+//! - **NACCESS**: NACCESS-compatible radii (João Rodrigues)
 //! - **OONS**: Ooi, Oobatake, Nemethy, Scheraga radii (older FreeSASA default)
-//! - **CCD**: Derives radii from CCD bond topology (ProtOr-compatible)
 //!
 //! ## Usage
 //!
 //! ```zig
 //! const classifier = @import("classifier.zig");
 //! const naccess = @import("classifier_naccess.zig");
-//! const protor = @import("classifier_protor.zig");
+//! const ccd = @import("classifier_ccd.zig");
 //! const oons = @import("classifier_oons.zig");
 //!
 //! // Get classifier by type
-//! const classifier_type = classifier.ClassifierType.naccess;
+//! const classifier_type = classifier.ClassifierType.ccd;
 //!
 //! // Or use built-in classifiers directly
 //! const r = naccess.getRadius("ALA", "CA");
@@ -35,20 +36,20 @@ const Allocator = std.mem.Allocator;
 
 /// Built-in classifier types
 pub const ClassifierType = enum {
-    /// NACCESS-compatible radii (default)
+    /// NACCESS-compatible radii
     /// Based on naccess.config from FreeSASA (João Rodrigues)
     naccess,
 
-    /// ProtOr radii based on hybridization state
-    /// Reference: Tsai et al. 1999, J. Mol. Biol. 290:253-266
+    /// Alias for CCD — kept for backward compatibility
+    /// Uses the same CCD classifier internally
     protor,
 
     /// OONS radii (older FreeSASA default)
     /// Reference: Ooi, Oobatake, Nemethy, Scheraga
     oons,
 
-    /// CCD-based radii derived from bond topology
-    /// Uses hybridization analysis of Chemical Component Dictionary data
+    /// CCD-based radii derived from bond topology (default)
+    /// Hardcoded ProtOr radii + runtime CCD analysis for non-standard residues
     ccd,
 
     pub fn name(self: ClassifierType) []const u8 {

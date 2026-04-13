@@ -11,7 +11,7 @@ const lee_richards = @import("lee_richards.zig");
 const types = @import("types.zig");
 const classifier = @import("classifier.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
-const classifier_protor = @import("classifier_protor.zig");
+// classifier_protor removed — ProtOr is now an alias for CCD
 const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
 const analysis = @import("analysis.zig");
@@ -49,13 +49,13 @@ pub const ZSASA_ALGORITHM_LR: c_int = 1;
 // Classifier Types
 // =============================================================================
 
-/// NACCESS-compatible radii (default)
+/// NACCESS-compatible radii
 pub const ZSASA_CLASSIFIER_NACCESS: c_int = 0;
-/// ProtOr radii based on hybridization state
+/// Alias for CCD (backward compatibility)
 pub const ZSASA_CLASSIFIER_PROTOR: c_int = 1;
 /// OONS radii (older FreeSASA default)
 pub const ZSASA_CLASSIFIER_OONS: c_int = 2;
-/// CCD-based radii derived from bond topology
+/// CCD-based radii derived from bond topology (default)
 pub const ZSASA_CLASSIFIER_CCD: c_int = 3;
 
 // =============================================================================
@@ -1188,13 +1188,12 @@ export fn zsasa_calc_lr(
 fn getRadiusByClassifier(classifier_type: c_int, residue: []const u8, atom: []const u8) ?f64 {
     return switch (classifier_type) {
         ZSASA_CLASSIFIER_NACCESS => classifier_naccess.getRadius(residue, atom),
-        ZSASA_CLASSIFIER_PROTOR => classifier_protor.getRadius(residue, atom),
-        ZSASA_CLASSIFIER_OONS => classifier_oons.getRadius(residue, atom),
-        ZSASA_CLASSIFIER_CCD => blk: {
+        ZSASA_CLASSIFIER_PROTOR, ZSASA_CLASSIFIER_CCD => blk: {
             var ccd = classifier_ccd.CcdClassifier.init(std.heap.page_allocator);
             defer ccd.deinit();
             break :blk ccd.getRadius(residue, atom);
         },
+        ZSASA_CLASSIFIER_OONS => classifier_oons.getRadius(residue, atom),
         else => null,
     };
 }
@@ -1203,13 +1202,12 @@ fn getRadiusByClassifier(classifier_type: c_int, residue: []const u8, atom: []co
 fn getClassByClassifier(classifier_type: c_int, residue: []const u8, atom: []const u8) classifier.AtomClass {
     return switch (classifier_type) {
         ZSASA_CLASSIFIER_NACCESS => classifier_naccess.getClass(residue, atom),
-        ZSASA_CLASSIFIER_PROTOR => classifier_protor.getClass(residue, atom),
-        ZSASA_CLASSIFIER_OONS => classifier_oons.getClass(residue, atom),
-        ZSASA_CLASSIFIER_CCD => blk: {
+        ZSASA_CLASSIFIER_PROTOR, ZSASA_CLASSIFIER_CCD => blk: {
             var ccd = classifier_ccd.CcdClassifier.init(std.heap.page_allocator);
             defer ccd.deinit();
             break :blk ccd.getClass(residue, atom);
         },
+        ZSASA_CLASSIFIER_OONS => classifier_oons.getClass(residue, atom),
         else => .unknown,
     };
 }

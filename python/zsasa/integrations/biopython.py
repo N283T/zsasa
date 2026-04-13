@@ -149,7 +149,7 @@ def extract_atoms_from_model(
 def calculate_sasa_from_model(
     model: Model,
     *,
-    classifier: ClassifierType = ClassifierType.NACCESS,
+    classifier: ClassifierType = ClassifierType.CCD,
     algorithm: Literal["sr", "lr"] = "sr",
     n_points: int = 100,
     n_slices: int = 20,
@@ -165,7 +165,7 @@ def calculate_sasa_from_model(
 
     Args:
         model: A BioPython Model object.
-        classifier: Classifier for atom radii. Default: NACCESS.
+        classifier: Classifier for atom radii. Default: CCD.
         algorithm: SASA algorithm ("sr" or "lr"). Default: "sr".
         n_points: Test points per atom (SR algorithm). Default: 100.
         n_slices: Slices per atom (LR algorithm). Default: 20.
@@ -242,7 +242,7 @@ def calculate_sasa_from_structure(
     source: str | Path | Structure,
     *,
     model_index: int = 0,
-    classifier: ClassifierType = ClassifierType.NACCESS,
+    classifier: ClassifierType = ClassifierType.CCD,
     algorithm: Literal["sr", "lr"] = "sr",
     n_points: int = 100,
     n_slices: int = 20,
@@ -259,7 +259,7 @@ def calculate_sasa_from_structure(
     Args:
         source: Path to structure file (PDB/mmCIF) or BioPython Structure object.
         model_index: Model index to use. Default: 0 (first model).
-        classifier: Classifier for atom radii. Default: NACCESS.
+        classifier: Classifier for atom radii. Default: CCD.
         algorithm: SASA algorithm ("sr" or "lr"). Default: "sr".
         n_points: Test points per atom (SR algorithm). Default: 100.
         n_slices: Slices per atom (LR algorithm). Default: 20.
