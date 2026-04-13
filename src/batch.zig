@@ -125,6 +125,25 @@ fn replaceExtension(allocator: Allocator, filename: []const u8, new_ext: []const
     return std.fmt.allocPrint(allocator, "{s}{s}", .{ base, new_ext });
 }
 
+/// Build a display name for an SDF molecule in batch results.
+/// Strips the SDF file extension to produce "stem_molname" or "stem_N" format.
+/// This ensures `replaceExtension` produces unique output filenames.
+fn sdfMoleculeDisplayName(allocator: Allocator, filename: []const u8, mol_name: []const u8, mol_idx: usize) ![]const u8 {
+    // Strip extension (.sdf, .sdf.gz, .mol, .mol.gz) to get stem
+    var base = filename;
+    if (std.mem.endsWith(u8, base, ".gz")) base = base[0 .. base.len - 3];
+    const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot_idx|
+        base[0..dot_idx]
+    else
+        base;
+
+    if (mol_name.len > 0) {
+        return std.fmt.allocPrint(allocator, "{s}_{s}", .{ stem, mol_name });
+    } else {
+        return std.fmt.allocPrint(allocator, "{s}_{d}", .{ stem, mol_idx + 1 });
+    }
+}
+
 /// Generic SASA calculation dispatcher.
 /// When bitmask_lut_ptr is non-null, uses bitmask-optimized Shrake-Rupley
 /// (the algorithm parameter is ignored). Otherwise selects SR or LR.
@@ -601,6 +620,199 @@ fn processOneFile(
     return result;
 }
 
+/// Process a single SDF molecule and return result.
+/// The molecule is provided as a pre-parsed slice of 1 element.
+/// `display_name` is used as the filename in the result (e.g., "file.sdf:methane").
+fn processOneSdfMolecule(
+    arena: Allocator,
+    result_allocator: Allocator,
+    display_name: []const u8,
+    molecule: *const sdf_parser.SdfMolecule,
+    output_dir: ?[]const u8,
+    config: BatchConfig,
+    n_threads: usize,
+    lut_f64: ?*const bitmask_lut.BitmaskLut,
+    lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+) FileResult {
+    var result = FileResult{
+        .filename = display_name,
+        .n_atoms = 0,
+        .sasa_time_ns = 0,
+        .total_sasa = 0,
+        .status = .ok,
+    };
+
+    // Convert single molecule to AtomInput
+    const mol_slice: []const sdf_parser.SdfMolecule = @as([*]const sdf_parser.SdfMolecule, @ptrCast(molecule))[0..1];
+    var input = sdf_parser.toAtomInput(arena, mol_slice, !config.include_hydrogens) catch |err| {
+        result.status = .err;
+        result.error_msg = std.fmt.allocPrint(result_allocator, "SDF toAtomInput failed: {s}", .{@errorName(err)}) catch null;
+        return result;
+    };
+    defer input.deinit();
+
+    // Build CCD component dict for this molecule's bond topology
+    var sdf_dict: ?ccd_parser.ComponentDict = null;
+    if (molecule.name.len > 0) {
+        const stored = sdf_parser.toStoredComponent(arena, molecule) catch null;
+        if (stored) |s| {
+            var dict = ccd_parser.ComponentDict.init(arena);
+            const comp_id_str = molecule.name[0..@min(molecule.name.len, 5)];
+            const dict_key = arena.dupe(u8, comp_id_str) catch {
+                var mut_s = s;
+                mut_s.deinit();
+                dict.deinit();
+                sdf_dict = null;
+                // fall through to classifier without SDF dict
+                return processOneSdfMoleculeInner(arena, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, null);
+            };
+            dict.owned_keys.append(arena, dict_key) catch {
+                arena.free(dict_key);
+                var mut_s = s;
+                mut_s.deinit();
+                dict.deinit();
+                return processOneSdfMoleculeInner(arena, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, null);
+            };
+            dict.components.put(dict_key, s) catch {
+                var mut_s = s;
+                mut_s.deinit();
+                dict.deinit();
+                return processOneSdfMoleculeInner(arena, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, null);
+            };
+            sdf_dict = dict;
+        }
+    }
+    defer if (sdf_dict) |*d| d.deinit();
+
+    const sdf_ccd_ptr: ?*const ccd_parser.ComponentDict = if (sdf_dict) |*d| d else null;
+    return processOneSdfMoleculeInner(arena, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, sdf_ccd_ptr);
+}
+
+/// Inner helper: apply classifier, run SASA, write output for a single SDF molecule.
+fn processOneSdfMoleculeInner(
+    arena: Allocator,
+    result_allocator: Allocator,
+    result: *FileResult,
+    input: *AtomInput,
+    output_dir: ?[]const u8,
+    display_name: []const u8,
+    config: BatchConfig,
+    n_threads: usize,
+    lut_f64: ?*const bitmask_lut.BitmaskLut,
+    lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+    sdf_ccd: ?*const ccd_parser.ComponentDict,
+) FileResult {
+    var res = result.*;
+
+    // Apply classifier (SDF molecules always have classification info)
+    if (config.classifier_type) |ct| {
+        if (input.hasClassificationInfo()) {
+            // Merge SDF-derived dict with external CCD if available
+            const effective_sdf_ccd = sdf_ccd orelse config.sdf_ccd;
+            applyBuiltinClassifier(input, ct, effective_sdf_ccd, config.external_ccd) catch |err| {
+                res.status = .err;
+                res.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
+                return res;
+            };
+        }
+    }
+
+    res.n_atoms = input.atomCount();
+
+    // Time SASA calculation
+    var timer = std.time.Timer.start() catch |err| {
+        res.status = .err;
+        res.error_msg = std.fmt.allocPrint(result_allocator, "timer unavailable: {s}", .{@errorName(err)}) catch null;
+        return res;
+    };
+
+    var total_area: f64 = 0;
+    switch (config.precision) {
+        .f64 => {
+            var sasa_result = calculateSasaDispatch(
+                f64,
+                arena,
+                input.*,
+                config.algorithm,
+                config.n_points,
+                config.n_slices,
+                config.probe_radius,
+                n_threads,
+                lut_f64,
+            ) catch |err| {
+                res.status = .err;
+                res.error_msg = std.fmt.allocPrint(result_allocator, "SASA calculation failed: {s}", .{@errorName(err)}) catch null;
+                return res;
+            };
+            defer sasa_result.deinit();
+            res.sasa_time_ns = timer.read();
+            total_area = sasa_result.total_area;
+
+            if (config.store_atom_areas) {
+                res.atom_areas = arena.dupe(f64, sasa_result.atom_areas) catch {
+                    res.status = .err;
+                    res.error_msg = std.fmt.allocPrint(result_allocator, "atom_areas allocation failed", .{}) catch null;
+                    return res;
+                };
+            }
+
+            if (output_dir) |out_dir| {
+                if (!config.store_atom_areas) {
+                    writeSasaOutput(f64, arena, &sasa_result, out_dir, display_name, config.output_format) catch |err| {
+                        res.status = .err;
+                        res.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
+                        return res;
+                    };
+                }
+            }
+        },
+        .f32 => {
+            var sasa_result = calculateSasaDispatch(
+                f32,
+                arena,
+                input.*,
+                config.algorithm,
+                config.n_points,
+                config.n_slices,
+                @as(f32, @floatCast(config.probe_radius)),
+                n_threads,
+                lut_f32,
+            ) catch |err| {
+                res.status = .err;
+                res.error_msg = std.fmt.allocPrint(result_allocator, "SASA calculation failed: {s}", .{@errorName(err)}) catch null;
+                return res;
+            };
+            defer sasa_result.deinit();
+            res.sasa_time_ns = timer.read();
+            total_area = @floatCast(sasa_result.total_area);
+
+            if (config.store_atom_areas) {
+                const areas_f32 = sasa_result.atom_areas;
+                const areas_f64 = arena.alloc(f64, areas_f32.len) catch {
+                    res.status = .err;
+                    res.error_msg = std.fmt.allocPrint(result_allocator, "atom_areas allocation failed", .{}) catch null;
+                    return res;
+                };
+                for (areas_f32, 0..) |v, j| areas_f64[j] = @floatCast(v);
+                res.atom_areas = areas_f64;
+            }
+
+            if (output_dir) |out_dir| {
+                if (!config.store_atom_areas) {
+                    writeSasaOutput(f32, arena, &sasa_result, out_dir, display_name, config.output_format) catch |err| {
+                        res.status = .err;
+                        res.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
+                        return res;
+                    };
+                }
+            }
+        },
+    }
+
+    res.total_sasa = total_area;
+    return res;
+}
+
 /// Thread-safe JSONL streaming writer.
 /// Each call to writeResult acquires the mutex, serializes one line, and flushes.
 const JsonlStreamWriter = struct {
@@ -645,6 +857,30 @@ const JsonlStreamWriter = struct {
 };
 
 /// Run batch processing sequentially (single-threaded path, used when n_threads <= 1)
+/// Write a JSONL line for a result via the buffered writer.
+/// atom_areas live on the arena and are invalidated after arena reset.
+fn writeJsonlResult(
+    jsonl_writer: *std.fs.File.Writer,
+    arena_alloc: Allocator,
+    result: *FileResult,
+) void {
+    if (result.status != .ok) return;
+    const areas = result.atom_areas orelse return;
+    const line = json_writer.fileResultToJsonlLine(arena_alloc, result.filename, result.total_sasa, areas) catch |err| {
+        logWarning("failed to serialize {s}: {s}", .{ result.filename, @errorName(err) });
+        return;
+    };
+    jsonl_writer.interface.writeAll(line) catch |err| {
+        logWarning("JSONL write failed for {s}: {s}", .{ result.filename, @errorName(err) });
+    };
+    jsonl_writer.interface.writeAll("\n") catch |err| {
+        logWarning("JSONL newline write failed for {s}: {s}", .{ result.filename, @errorName(err) });
+    };
+    jsonl_writer.interface.flush() catch |err| {
+        logWarning("JSONL flush failed for {s}: {s}", .{ result.filename, @errorName(err) });
+    };
+}
+
 pub fn runBatchSequential(
     allocator: Allocator,
     input_dir: []const u8,
@@ -680,9 +916,9 @@ pub fn runBatchSequential(
         if (jsonl_file) |f| f.close();
     };
 
-    // Allocate results
-    const file_results = try allocator.alloc(FileResult, files.len);
-    errdefer allocator.free(file_results);
+    // Use ArrayList for results (SDF files may expand into multiple entries)
+    var results_list = std.ArrayListUnmanaged(FileResult){};
+    defer results_list.deinit(allocator);
 
     // Process each file
     var total_sasa_time_ns: u64 = 0;
@@ -705,65 +941,170 @@ pub fn runBatchSequential(
     else
         null;
 
-    for (files, 0..) |filename, i| {
-        // Copy filename to result allocator
-        const filename_copy = try allocator.dupe(u8, filename);
+    var total_items: usize = 0;
 
-        // Process file (single-threaded for sequential mode)
-        var result = processOneFile(
-            arena.allocator(),
-            allocator,
-            input_dir,
-            output_dir,
-            filename,
-            config,
-            1, // single-threaded
-            luts.f64Ptr(),
-            luts.f32Ptr(),
-        );
-        result.filename = filename_copy;
+    for (files, 0..) |filename, file_idx| {
+        const format = format_detect.detectInputFormat(filename);
 
-        if (result.status == .ok) {
-            successful += 1;
-            total_sasa_time_ns += result.sasa_time_ns;
-        } else {
-            failed += 1;
-        }
+        if (format == .sdf) {
+            // SDF: parse and process each molecule individually
+            const input_path = std.fs.path.join(arena.allocator(), &.{ input_dir, filename }) catch |err| {
+                const filename_copy = try allocator.dupe(u8, filename);
+                try results_list.append(allocator, FileResult{
+                    .filename = filename_copy,
+                    .n_atoms = 0,
+                    .sasa_time_ns = 0,
+                    .total_sasa = 0,
+                    .status = .err,
+                    .error_msg = std.fmt.allocPrint(allocator, "path join failed: {s}", .{@errorName(err)}) catch null,
+                });
+                failed += 1;
+                total_items += 1;
+                _ = arena.reset(.retain_capacity);
+                continue;
+            };
 
-        // Stream JSONL output (atom_areas on arena, valid until reset)
-        if (jsonl_writer) |*w| {
-            if (result.status == .ok) {
-                if (result.atom_areas) |areas| {
-                    const line = json_writer.fileResultToJsonlLine(arena.allocator(), result.filename, result.total_sasa, areas) catch |err| {
-                        logWarning("failed to serialize {s}: {s}", .{ result.filename, @errorName(err) });
-                        result.atom_areas = null;
-                        file_results[i] = result;
-                        _ = arena.reset(.retain_capacity);
-                        continue;
-                    };
-                    w.interface.writeAll(line) catch |err| {
-                        logWarning("JSONL write failed for {s}: {s}", .{ result.filename, @errorName(err) });
-                    };
-                    w.interface.writeAll("\n") catch |err| {
-                        logWarning("JSONL newline write failed for {s}: {s}", .{ result.filename, @errorName(err) });
-                    };
-                    w.interface.flush() catch |err| {
-                        logWarning("JSONL flush failed for {s}: {s}", .{ result.filename, @errorName(err) });
-                    };
+            const source = if (std.mem.endsWith(u8, input_path, ".gz"))
+                gzip.readGzip(arena.allocator(), input_path) catch |err| {
+                    const filename_copy = try allocator.dupe(u8, filename);
+                    try results_list.append(allocator, FileResult{
+                        .filename = filename_copy,
+                        .n_atoms = 0,
+                        .sasa_time_ns = 0,
+                        .total_sasa = 0,
+                        .status = .err,
+                        .error_msg = std.fmt.allocPrint(allocator, "read failed: {s}", .{@errorName(err)}) catch null,
+                    });
+                    failed += 1;
+                    total_items += 1;
+                    _ = arena.reset(.retain_capacity);
+                    continue;
                 }
+            else file_blk: {
+                const f = std.fs.cwd().openFile(input_path, .{}) catch |err| {
+                    const filename_copy = try allocator.dupe(u8, filename);
+                    try results_list.append(allocator, FileResult{
+                        .filename = filename_copy,
+                        .n_atoms = 0,
+                        .sasa_time_ns = 0,
+                        .total_sasa = 0,
+                        .status = .err,
+                        .error_msg = std.fmt.allocPrint(allocator, "open failed: {s}", .{@errorName(err)}) catch null,
+                    });
+                    failed += 1;
+                    total_items += 1;
+                    _ = arena.reset(.retain_capacity);
+                    continue;
+                };
+                defer f.close();
+                break :file_blk f.readToEndAlloc(arena.allocator(), 4 * 1024 * 1024 * 1024) catch |err| {
+                    const filename_copy = try allocator.dupe(u8, filename);
+                    try results_list.append(allocator, FileResult{
+                        .filename = filename_copy,
+                        .n_atoms = 0,
+                        .sasa_time_ns = 0,
+                        .total_sasa = 0,
+                        .status = .err,
+                        .error_msg = std.fmt.allocPrint(allocator, "read failed: {s}", .{@errorName(err)}) catch null,
+                    });
+                    failed += 1;
+                    total_items += 1;
+                    _ = arena.reset(.retain_capacity);
+                    continue;
+                };
+            };
+
+            const molecules = sdf_parser.parse(arena.allocator(), source) catch |err| {
+                const filename_copy = try allocator.dupe(u8, filename);
+                try results_list.append(allocator, FileResult{
+                    .filename = filename_copy,
+                    .n_atoms = 0,
+                    .sasa_time_ns = 0,
+                    .total_sasa = 0,
+                    .status = .err,
+                    .error_msg = std.fmt.allocPrint(allocator, "SDF parse failed: {s}", .{@errorName(err)}) catch null,
+                });
+                failed += 1;
+                total_items += 1;
+                _ = arena.reset(.retain_capacity);
+                continue;
+            };
+
+            // Process each molecule individually
+            for (molecules, 0..) |*mol, mol_idx| {
+                // Build display name: "stem_molname" or "stem_N"
+                const display_name = sdfMoleculeDisplayName(allocator, filename, mol.name, mol_idx) catch try allocator.dupe(u8, filename);
+
+                var mol_result = processOneSdfMolecule(
+                    arena.allocator(),
+                    allocator,
+                    display_name,
+                    mol,
+                    output_dir,
+                    config,
+                    1, // single-threaded
+                    luts.f64Ptr(),
+                    luts.f32Ptr(),
+                );
+                mol_result.filename = display_name;
+
+                if (mol_result.status == .ok) {
+                    successful += 1;
+                    total_sasa_time_ns += mol_result.sasa_time_ns;
+                } else {
+                    failed += 1;
+                }
+
+                // Stream JSONL output
+                if (jsonl_writer) |*w| {
+                    writeJsonlResult(w, arena.allocator(), &mol_result);
+                }
+                mol_result.atom_areas = null;
+
+                try results_list.append(allocator, mol_result);
+                total_items += 1;
             }
+
+            _ = arena.reset(.retain_capacity);
+        } else {
+            // Non-SDF: existing logic
+            const filename_copy = try allocator.dupe(u8, filename);
+
+            var result = processOneFile(
+                arena.allocator(),
+                allocator,
+                input_dir,
+                output_dir,
+                filename,
+                config,
+                1, // single-threaded
+                luts.f64Ptr(),
+                luts.f32Ptr(),
+            );
+            result.filename = filename_copy;
+
+            if (result.status == .ok) {
+                successful += 1;
+                total_sasa_time_ns += result.sasa_time_ns;
+            } else {
+                failed += 1;
+            }
+
+            // Stream JSONL output
+            if (jsonl_writer) |*w| {
+                writeJsonlResult(w, arena.allocator(), &result);
+            }
+            result.atom_areas = null;
+
+            try results_list.append(allocator, result);
+            total_items += 1;
+
+            _ = arena.reset(.retain_capacity);
         }
-        // Clear atom_areas since arena will free them
-        result.atom_areas = null;
-
-        file_results[i] = result;
-
-        // Reset arena for next file
-        _ = arena.reset(.retain_capacity);
 
         // Progress output
         if (!config.quiet) {
-            std.debug.print("\rProcessing: {d}/{d}", .{ i + 1, files.len });
+            std.debug.print("\rProcessing: {d}/{d} files", .{ file_idx + 1, files.len });
         }
     }
 
@@ -774,29 +1115,40 @@ pub fn runBatchSequential(
     const total_time_ns = total_timer.read();
 
     return BatchResult{
-        .total_files = files.len,
+        .total_files = total_items,
         .successful = successful,
         .failed = failed,
         .total_sasa_time_ns = total_sasa_time_ns,
         .total_time_ns = total_time_ns,
-        .file_results = file_results,
+        .file_results = try results_list.toOwnedSlice(allocator),
         .allocator = allocator,
     };
 }
 
+/// A work item for parallel batch processing.
+/// Represents either a plain file or a specific molecule within an SDF file.
+const WorkItem = struct {
+    filename: []const u8, // Original filename in the input directory
+    display_name: []const u8, // Display name for results (e.g., "file.sdf:water")
+    mol_idx: ?usize, // If non-null, SDF molecule index (0-based) within pre-parsed molecules
+};
+
 /// Shared context for parallel workers
 const ParallelContext = struct {
-    files: []const []const u8,
+    work_items: []const WorkItem,
     input_dir: []const u8,
     output_dir: ?[]const u8,
     config: BatchConfig,
     results: []FileResult,
     result_allocator: Allocator,
-    next_file: std.atomic.Value(usize),
+    next_item: std.atomic.Value(usize),
     processed_count: std.atomic.Value(usize),
     lut_f64: ?*const bitmask_lut.BitmaskLut,
     lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
     jsonl_stream: ?*JsonlStreamWriter,
+    /// Pre-parsed SDF data: keyed by filename, each entry is the parsed source bytes.
+    /// Workers read these (read-only) to avoid re-parsing the same SDF file.
+    sdf_sources: std.StringHashMapUnmanaged([]const u8),
 };
 
 /// Worker thread function for parallel batch processing
@@ -808,25 +1160,25 @@ fn parallelWorker(ctx: *ParallelContext) void {
     defer arena.deinit();
 
     while (true) {
-        // Atomically grab the next file index.
+        // Atomically grab the next work item index.
         // .monotonic suffices: we only need atomic increment, no ordering
         // between unrelated memory accesses across threads.
-        const file_idx = ctx.next_file.fetchAdd(1, .monotonic);
+        const item_idx = ctx.next_item.fetchAdd(1, .monotonic);
 
-        if (file_idx >= ctx.files.len) {
-            break; // No more files
+        if (item_idx >= ctx.work_items.len) {
+            break; // No more work items
         }
 
-        const filename = ctx.files[file_idx];
+        const work = ctx.work_items[item_idx];
 
-        // Copy filename to result allocator (thread-safe: each index is unique)
-        const filename_copy = ctx.result_allocator.dupe(u8, filename) catch {
+        // Copy display name to result allocator (thread-safe: each index is unique)
+        const name_copy = ctx.result_allocator.dupe(u8, work.display_name) catch {
             const empty = ctx.result_allocator.alloc(u8, 0) catch {
                 _ = ctx.processed_count.fetchAdd(1, .release);
                 _ = arena.reset(.retain_capacity);
                 continue;
             };
-            ctx.results[file_idx] = FileResult{
+            ctx.results[item_idx] = FileResult{
                 .filename = empty,
                 .n_atoms = 0,
                 .sasa_time_ns = 0,
@@ -838,40 +1190,202 @@ fn parallelWorker(ctx: *ParallelContext) void {
             continue;
         };
 
-        // Process file using thread-local arena (single-threaded SASA per file in file-parallel mode)
-        var result = processOneFile(
-            arena.allocator(),
-            ctx.result_allocator,
-            ctx.input_dir,
-            ctx.output_dir,
-            filename,
-            ctx.config,
-            1, // single-threaded SASA per file
-            ctx.lut_f64,
-            ctx.lut_f32,
-        );
-        result.filename = filename_copy;
+        if (work.mol_idx) |mol_idx| {
+            // SDF molecule: re-parse from pre-loaded source on thread-local arena
+            const source = ctx.sdf_sources.get(work.filename) orelse {
+                ctx.results[item_idx] = FileResult{
+                    .filename = name_copy,
+                    .n_atoms = 0,
+                    .sasa_time_ns = 0,
+                    .total_sasa = 0,
+                    .status = .err,
+                    .error_msg = ctx.result_allocator.dupe(u8, "SDF source not found") catch null,
+                };
+                _ = ctx.processed_count.fetchAdd(1, .release);
+                _ = arena.reset(.retain_capacity);
+                continue;
+            };
 
-        // Store result (thread-safe: each index is unique)
-        ctx.results[file_idx] = result;
+            const molecules = sdf_parser.parse(arena.allocator(), source) catch {
+                ctx.results[item_idx] = FileResult{
+                    .filename = name_copy,
+                    .n_atoms = 0,
+                    .sasa_time_ns = 0,
+                    .total_sasa = 0,
+                    .status = .err,
+                    .error_msg = ctx.result_allocator.dupe(u8, "SDF re-parse failed") catch null,
+                };
+                _ = ctx.processed_count.fetchAdd(1, .release);
+                _ = arena.reset(.retain_capacity);
+                continue;
+            };
 
-        // Stream JSONL output (atom_areas on arena, valid until reset)
-        if (ctx.jsonl_stream) |stream| {
-            if (result.status == .ok) {
-                if (result.atom_areas) |areas| {
-                    stream.writeResult(arena.allocator(), result.filename, result.total_sasa, areas);
+            if (mol_idx >= molecules.len) {
+                ctx.results[item_idx] = FileResult{
+                    .filename = name_copy,
+                    .n_atoms = 0,
+                    .sasa_time_ns = 0,
+                    .total_sasa = 0,
+                    .status = .err,
+                    .error_msg = ctx.result_allocator.dupe(u8, "SDF molecule index out of range") catch null,
+                };
+                _ = ctx.processed_count.fetchAdd(1, .release);
+                _ = arena.reset(.retain_capacity);
+                continue;
+            }
+
+            var result = processOneSdfMolecule(
+                arena.allocator(),
+                ctx.result_allocator,
+                name_copy,
+                &molecules[mol_idx],
+                ctx.output_dir,
+                ctx.config,
+                1, // single-threaded SASA per molecule
+                ctx.lut_f64,
+                ctx.lut_f32,
+            );
+            result.filename = name_copy;
+
+            ctx.results[item_idx] = result;
+
+            if (ctx.jsonl_stream) |stream| {
+                if (result.status == .ok) {
+                    if (result.atom_areas) |areas| {
+                        stream.writeResult(arena.allocator(), result.filename, result.total_sasa, areas);
+                    }
                 }
             }
+            ctx.results[item_idx].atom_areas = null;
+        } else {
+            // Non-SDF file: existing logic
+            var result = processOneFile(
+                arena.allocator(),
+                ctx.result_allocator,
+                ctx.input_dir,
+                ctx.output_dir,
+                work.filename,
+                ctx.config,
+                1, // single-threaded SASA per file
+                ctx.lut_f64,
+                ctx.lut_f32,
+            );
+            result.filename = name_copy;
+
+            // Store result (thread-safe: each index is unique)
+            ctx.results[item_idx] = result;
+
+            // Stream JSONL output (atom_areas on arena, valid until reset)
+            if (ctx.jsonl_stream) |stream| {
+                if (result.status == .ok) {
+                    if (result.atom_areas) |areas| {
+                        stream.writeResult(arena.allocator(), result.filename, result.total_sasa, areas);
+                    }
+                }
+            }
+            // Clear atom_areas since arena will free them
+            ctx.results[item_idx].atom_areas = null;
         }
-        // Clear atom_areas since arena will free them
-        ctx.results[file_idx].atom_areas = null;
 
         // Update progress counter (.release pairs with .acquire in progress monitor)
         _ = ctx.processed_count.fetchAdd(1, .release);
 
-        // Reset arena for next file
+        // Reset arena for next work item
         _ = arena.reset(.retain_capacity);
     }
+}
+
+/// Build work items from file list, expanding SDF files into per-molecule items.
+/// Returns the work items and a map of SDF sources (caller must free both).
+fn buildWorkItems(
+    allocator: Allocator,
+    files: []const []const u8,
+    input_dir: []const u8,
+) !struct { items: []WorkItem, sdf_sources: std.StringHashMapUnmanaged([]const u8) } {
+    var items = std.ArrayListUnmanaged(WorkItem){};
+    errdefer items.deinit(allocator);
+
+    var sdf_sources = std.StringHashMapUnmanaged([]const u8){};
+    errdefer {
+        var it = sdf_sources.valueIterator();
+        while (it.next()) |v| allocator.free(v.*);
+        sdf_sources.deinit(allocator);
+    }
+
+    for (files) |filename| {
+        const format = format_detect.detectInputFormat(filename);
+        if (format == .sdf) {
+            // Read and parse SDF to count molecules
+            const input_path = try std.fs.path.join(allocator, &.{ input_dir, filename });
+            defer allocator.free(input_path);
+
+            const source = if (std.mem.endsWith(u8, input_path, ".gz"))
+                gzip.readGzip(allocator, input_path) catch {
+                    // If read fails, add a single error item
+                    try items.append(allocator, .{
+                        .filename = filename,
+                        .display_name = filename,
+                        .mol_idx = null,
+                    });
+                    continue;
+                }
+            else file_blk: {
+                const f = std.fs.cwd().openFile(input_path, .{}) catch {
+                    try items.append(allocator, .{
+                        .filename = filename,
+                        .display_name = filename,
+                        .mol_idx = null,
+                    });
+                    continue;
+                };
+                defer f.close();
+                break :file_blk f.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024) catch {
+                    try items.append(allocator, .{
+                        .filename = filename,
+                        .display_name = filename,
+                        .mol_idx = null,
+                    });
+                    continue;
+                };
+            };
+
+            const molecules = sdf_parser.parse(allocator, source) catch {
+                allocator.free(source);
+                try items.append(allocator, .{
+                    .filename = filename,
+                    .display_name = filename,
+                    .mol_idx = null,
+                });
+                continue;
+            };
+            defer sdf_parser.freeMolecules(allocator, molecules);
+
+            // Store the source for workers to re-parse
+            try sdf_sources.put(allocator, filename, source);
+
+            // Create one work item per molecule
+            for (molecules, 0..) |mol, mol_idx| {
+                const display_name = sdfMoleculeDisplayName(allocator, filename, mol.name, mol_idx) catch try allocator.dupe(u8, filename);
+
+                try items.append(allocator, .{
+                    .filename = filename,
+                    .display_name = display_name,
+                    .mol_idx = mol_idx,
+                });
+            }
+        } else {
+            try items.append(allocator, .{
+                .filename = filename,
+                .display_name = filename,
+                .mol_idx = null,
+            });
+        }
+    }
+
+    return .{
+        .items = try items.toOwnedSlice(allocator),
+        .sdf_sources = sdf_sources,
+    };
 }
 
 /// Run batch processing in parallel
@@ -909,8 +1423,26 @@ pub fn runBatchParallel(
         try std.fs.cwd().makePath(out_dir);
     }
 
-    // Allocate results
-    const file_results = try allocator.alloc(FileResult, files.len);
+    // Build work items (expanding SDF files into per-molecule items)
+    var build_result = try buildWorkItems(allocator, files, input_dir);
+    const work_items = build_result.items;
+    defer {
+        for (work_items) |item| {
+            // Free display names that were allocated (not the same pointer as filename)
+            if (item.display_name.ptr != item.filename.ptr) {
+                allocator.free(item.display_name);
+            }
+        }
+        allocator.free(work_items);
+    }
+    defer {
+        var it = build_result.sdf_sources.valueIterator();
+        while (it.next()) |v| allocator.free(v.*);
+        build_result.sdf_sources.deinit(allocator);
+    }
+
+    // Allocate results (one per work item)
+    const file_results = try allocator.alloc(FileResult, work_items.len);
     errdefer allocator.free(file_results);
 
     // Determine thread count
@@ -920,8 +1452,8 @@ pub fn runBatchParallel(
     else
         @min(config.n_threads, cpu_count);
 
-    // For single file or single thread, use sequential
-    if (files.len == 1 or n_threads <= 1) {
+    // For single item or single thread, use sequential
+    if (work_items.len == 1 or n_threads <= 1) {
         allocator.free(file_results);
         return runBatchSequential(allocator, input_dir, output_dir, config, jsonl_output_path);
     }
@@ -954,21 +1486,22 @@ pub fn runBatchParallel(
 
     // Create shared context
     var ctx = ParallelContext{
-        .files = files,
+        .work_items = work_items,
         .input_dir = input_dir,
         .output_dir = output_dir,
         .config = config,
         .results = file_results,
         .result_allocator = allocator,
-        .next_file = std.atomic.Value(usize).init(0),
+        .next_item = std.atomic.Value(usize).init(0),
         .processed_count = std.atomic.Value(usize).init(0),
         .lut_f64 = luts.f64Ptr(),
         .lut_f32 = luts.f32Ptr(),
         .jsonl_stream = jsonl_stream_ptr,
+        .sdf_sources = build_result.sdf_sources,
     };
 
     // Spawn worker threads
-    const actual_threads = @min(n_threads, files.len);
+    const actual_threads = @min(n_threads, work_items.len);
     const threads = try allocator.alloc(std.Thread, actual_threads);
     defer allocator.free(threads);
 
@@ -978,12 +1511,12 @@ pub fn runBatchParallel(
 
     // Progress monitoring (optional)
     if (!config.quiet) {
-        while (ctx.processed_count.load(.acquire) < files.len) {
+        while (ctx.processed_count.load(.acquire) < work_items.len) {
             const processed = ctx.processed_count.load(.acquire);
-            std.debug.print("\rProcessing: {d}/{d}", .{ processed, files.len });
+            std.debug.print("\rProcessing: {d}/{d}", .{ processed, work_items.len });
             std.Thread.sleep(50 * std.time.ns_per_ms); // 50ms update interval
         }
-        std.debug.print("\rProcessing: {d}/{d}\n", .{ files.len, files.len });
+        std.debug.print("\rProcessing: {d}/{d}\n", .{ work_items.len, work_items.len });
     }
 
     // Wait for all threads to complete
@@ -1008,7 +1541,7 @@ pub fn runBatchParallel(
     const total_time_ns = total_timer.read();
 
     return BatchResult{
-        .total_files = files.len,
+        .total_files = work_items.len,
         .successful = successful,
         .failed = failed,
         .total_sasa_time_ns = total_sasa_time_ns,
