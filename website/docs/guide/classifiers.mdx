@@ -157,16 +157,54 @@ The format is auto-detected by file extension: `.toml` for TOML, all others for 
 
 ## CCD Classifier
 
-The CCD classifier derives ProtOr-compatible van der Waals radii from the [wwPDB Chemical Component Dictionary](https://www.wwpdb.org/data/ccd) (CCD) bond topology, enabling accurate radius assignment for any chemical component — not just the standard amino acids covered by ProtOr, NACCESS, and OONS.
+The CCD classifier is zsasa's original classifier that derives ProtOr-compatible van der Waals radii from the [wwPDB Chemical Component Dictionary](https://www.wwpdb.org/data/ccd) (CCD) bond topology. Unlike ProtOr, NACCESS, and OONS — which only cover standard amino acids and nucleotides — the CCD classifier can assign hybridization-aware radii to **any** chemical component: ligands, modified residues, cofactors, post-translational modifications, and more.
+
+### Why Use CCD?
+
+Traditional classifiers (ProtOr, NACCESS, OONS) have a fixed set of known residues. When they encounter a non-standard residue (e.g., HEM, ATP, NAG), they fall back to generic element-based radii that ignore hybridization. This can lead to inaccurate SASA values for structures containing ligands or modified residues.
+
+The CCD classifier solves this by analyzing bond topology (single, double, aromatic bonds and hydrogen count) to determine the hybridization state of each atom, then mapping it to the corresponding ProtOr radius. This gives you ProtOr-quality radii for _any_ component with CCD data.
 
 ### How It Works
 
-The CCD classifier determines hybridization state from the bond graph (single, double, aromatic bonds and hydrogen count), then maps each atom to the corresponding ProtOr radius. It uses a 4-level lookup:
+The CCD classifier uses a 3-level lookup:
 
-1. **Hardcoded radii**: Standard amino acid atoms use pre-compiled ProtOr radii (same as `--classifier=protor`)
-2. **Inline CCD**: ~35,000 components from the wwPDB CCD are embedded in the binary at compile time
-3. **External CCD**: If `--ccd=<path>` is provided, additional components are loaded from the external dictionary
-4. **Element fallback**: If no CCD entry is found, a generic van der Waals radius based on the element is used
+1. **Hardcoded table** (compile-time, O(1)): Pre-compiled ProtOr radii for 37 common residues — the 20 standard amino acids, modified amino acids (SEC, MSE, PYL, HYP, MLY, SEP, TPO, PSU), nucleotides (A, C, G, I, T, U, DA, DC, DG, DI, DT, DU), capping groups (ACE, NH2), ambiguous (ASX, GLX), and water (HOH).
+2. **Runtime CCD analysis**: For non-standard residues, bond topology from CCD data is analyzed at runtime to derive hybridization-aware radii. CCD data comes from two sources:
+   - **Inline CCD** — `_chem_comp_atom` / `_chem_comp_bond` loops embedded in mmCIF structure files
+   - **External CCD** — a separate CCD dictionary loaded via `--ccd=<path>` (CIF or ZSDC format)
+3. **Element fallback**: If no CCD data is available, a generic van der Waals radius based on the element symbol is used.
+
+:::info[Inline CCD vs External CCD]
+**Inline CCD** refers to the `_chem_comp_atom` and `_chem_comp_bond` data loops that many mmCIF files include alongside coordinate data. These describe the bond topology for each chemical component present in the structure.
+
+**External CCD** is a separate dictionary file (the full wwPDB CCD or subsets of it) that you provide via `--ccd=<path>`. This works with both mmCIF and PDB input formats.
+:::
+
+### Input Format Support
+
+| Input Format | Hardcoded Table | Inline CCD | External CCD (`--ccd=`) |
+|-------------|:-:|:-:|:-:|
+| **mmCIF** | ✅ | ✅ auto-extracted | ✅ |
+| **PDB** | ✅ | — (not available in PDB format) | ✅ |
+
+- **mmCIF input**: Inline CCD data (if present) is automatically parsed. No extra flags needed.
+- **PDB input**: PDB format does not include bond topology, so inline CCD is not available. For non-standard residues, provide an external CCD dictionary with `--ccd=<path>` to get the same hybridization-aware radii.
+
+```bash
+# mmCIF — inline CCD is automatically used
+zsasa calc --classifier=ccd structure.cif output.json
+
+# PDB — use external CCD for non-standard residues
+zsasa calc --classifier=ccd --ccd=HEM.cif structure.pdb output.json
+
+# PDB with full CCD dictionary (covers all ~35,000 components)
+zsasa calc --classifier=ccd --ccd=components.zsdc structure.pdb output.json
+```
+
+:::tip[PDB users]
+If your PDB file contains only standard amino acids and nucleotides, `--classifier=ccd` works identically to `--classifier=protor` without needing an external dictionary. The hardcoded table covers all standard residues.
+:::
 
 ### Auto-Including HETATM
 
@@ -174,40 +212,62 @@ When using `--classifier=ccd`, HETATM records are included automatically without
 
 ### External CCD Dictionary
 
-For non-standard residues not included in the inline dictionary, you can load an external CCD dictionary:
+You can provide CCD data for specific components or the entire wwPDB CCD:
 
 ```bash
-# Using CIF text (can be gzipped)
-zsasa calc --classifier=ccd --ccd=components.cif.gz structure.cif output.json
+# Single component CIF (downloadable from RCSB)
+zsasa calc --classifier=ccd --ccd=HEM.cif structure.pdb output.json
 
-# Using pre-compiled binary format (faster loading)
-zsasa calc --classifier=ccd --ccd=components.zsdc structure.cif output.json
+# Multiple components concatenated
+cat HEM.cif PO4.cif ATP.cif > my_ligands.cif
+zsasa calc --classifier=ccd --ccd=my_ligands.cif structure.pdb output.json
+
+# Gzipped CIF
+zsasa calc --classifier=ccd --ccd=components.cif.gz structure.pdb output.json
+
+# Pre-compiled binary format (faster loading)
+zsasa calc --classifier=ccd --ccd=components.zsdc structure.pdb output.json
 ```
+
+Component CIF files can be downloaded from [RCSB Ligand Expo](https://www.rcsb.org/ligand/), e.g.:
+- `https://files.rcsb.org/ligands/view/HEM.cif`
+- `https://files.rcsb.org/ligands/view/ATP.cif`
 
 ### `compile-dict` Subcommand
 
 The `compile-dict` subcommand converts a CCD dictionary from CIF text to compact binary ZSDC format for faster loading:
 
 ```bash
-# Download the full CCD dictionary
+# Download the full CCD dictionary (~35,000 components)
 wget https://files.wwpdb.org/pub/pdb/data/monomers/components.cif.gz
 
 # Compile to binary ZSDC format
 zsasa compile-dict components.cif.gz -o components.zsdc
 
 # Use with CCD classifier
-zsasa calc --classifier=ccd --ccd=components.zsdc structure.cif output.json
+zsasa calc --classifier=ccd --ccd=components.zsdc structure.pdb output.json
 ```
 
 Supported input formats for `compile-dict`:
 - `.cif` — CIF text
 - `.cif.gz` — gzip-compressed CIF text
 
+### Hybridization Analysis
+
+The CCD classifier determines van der Waals radii through the following process:
+
+1. **Parse bond graph** — Extract atoms and bonds from CCD `_chem_comp_atom` / `_chem_comp_bond` loops
+2. **Analyze bonds** — For each non-hydrogen atom, count single, double, and aromatic bonds
+3. **Determine hybridization** — Classify as sp, sp2, or sp3 based on bond pattern
+4. **Map to ProtOr radius** — Each (element, hybridization) pair maps to a specific ProtOr-compatible radius
+
+For example, a carbon atom with one double bond and two single bonds is classified as sp2, receiving a radius of 1.76 Å (same as ProtOr aromatic carbon). A carbon with four single bonds is sp3, receiving 1.88 Å (same as ProtOr aliphatic carbon).
+
 ## Supported Residues
 
 ### Amino Acids
 
-All 20 standard amino acids plus SEC (selenocysteine) and MSE (selenomethionine).
+All 20 standard amino acids plus SEC (selenocysteine), MSE (selenomethionine), PYL (pyrrolysine), HYP (hydroxyproline), MLY (N-dimethyllysine), SEP (phosphoserine), and TPO (phosphothreonine).
 
 ### Nucleic Acids
 
@@ -216,7 +276,7 @@ DNA: DA, DC, DG, DI, DT, DU
 
 ### CCD Coverage
 
-The CCD classifier covers any chemical component defined in the wwPDB Chemical Component Dictionary (~35,000 components), including ligands, modified residues, post-translational modifications, and non-standard amino acids. External CCD dictionaries can extend coverage further.
+With an external CCD dictionary or inline CCD data from mmCIF files, the CCD classifier can handle any of the ~35,000 components in the wwPDB Chemical Component Dictionary — including ligands, cofactors, modified residues, and post-translational modifications.
 
 ## Handling Unknown Atoms
 
@@ -225,7 +285,9 @@ When a classifier cannot find a matching (residue, atom name) pair:
 1. NACCESS/OONS check the `ANY` fallback entries
 2. If still unmatched, the element is extracted from the atom name and a generic van der Waals radius is assigned
 
-Alternatively, the CCD classifier can be used to avoid element fallback for non-standard residues. Since it derives radii from CCD bond topology, it provides hybridization-aware radii for any component in the CCD rather than relying on generic element-based values.
+The CCD classifier avoids this element fallback for non-standard residues by deriving hybridization-aware radii from CCD bond topology. To maximize coverage:
+- Use mmCIF input (inline CCD is auto-extracted)
+- Or provide `--ccd=<path>` for PDB input
 
 To avoid ambiguity (e.g., "CA" = Carbon-alpha vs Calcium), include an `element` field (atomic numbers) in JSON input:
 
