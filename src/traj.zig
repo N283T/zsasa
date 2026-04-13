@@ -22,6 +22,7 @@ const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
 const ccd_parser = @import("ccd_parser.zig");
 const ccd_binary = @import("ccd_binary.zig");
+const sdf_parser = @import("sdf_parser.zig");
 const gzip = @import("gzip.zig");
 
 const Allocator = std.mem.Allocator;
@@ -117,6 +118,22 @@ const TrajectoryReader = struct {
     }
 };
 
+/// Fixed-capacity list for SDF paths (max 16)
+const SdfPathList = struct {
+    items: [16][]const u8 = undefined,
+    len: usize = 0,
+
+    fn append(self: *SdfPathList, value: []const u8) error{Overflow}!void {
+        if (self.len >= 16) return error.Overflow;
+        self.items[self.len] = value;
+        self.len += 1;
+    }
+
+    fn constSlice(self: *const SdfPathList) []const []const u8 {
+        return self.items[0..self.len];
+    }
+};
+
 /// Trajectory mode arguments
 pub const TrajArgs = struct {
     traj_path: ?[]const u8 = null,
@@ -130,6 +147,7 @@ pub const TrajArgs = struct {
     precision: Precision = .f32, // Default f32 for trajectory (speed)
     classifier_type: ?ClassifierType = .naccess, // Default: NACCESS for trajectories (supports explicit H)
     ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz])
+    sdf_paths: SdfPathList = .{}, // --sdf=PATH (up to 16)
     stride: u32 = 1, // Process every Nth frame
     start_frame: u32 = 0, // Start frame
     end_frame: ?u32 = null, // End frame (null = all)
@@ -196,6 +214,22 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) TrajArgs {
                     std.process.exit(1);
                 }
                 result.ccd_path = args[i];
+            } else if (std.mem.startsWith(u8, arg, "--sdf=")) {
+                const value = arg["--sdf=".len..];
+                result.sdf_paths.append(value) catch {
+                    std.debug.print("Error: Too many --sdf paths (max 16)\n", .{});
+                    std.process.exit(1);
+                };
+            } else if (std.mem.eql(u8, arg, "--sdf")) {
+                i += 1;
+                if (i >= args.len) {
+                    std.debug.print("Error: Missing value for --sdf\n", .{});
+                    std.process.exit(1);
+                }
+                result.sdf_paths.append(args[i]) catch {
+                    std.debug.print("Error: Too many --sdf paths (max 16)\n", .{});
+                    std.process.exit(1);
+                };
             } else if (std.mem.startsWith(u8, arg, "--stride=")) {
                 const value = arg["--stride=".len..];
                 result.stride = std.fmt.parseInt(u32, value, 10) catch {
@@ -326,6 +360,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\                       Default: naccess (supports explicit H in MD trajectories)
         \\    --ccd=PATH         External CCD dictionary file (.zsdc or .cif[.gz])
         \\                       Used with --classifier=ccd for non-standard residues
+        \\    --sdf=PATH         SDF file with bond topology for CCD classifier
+        \\                       Can be specified multiple times for multiple ligands
         \\    --threads=N        Number of threads (default: auto-detect)
         \\    --probe-radius=R   Probe radius in Angstroms (default: 1.4)
         \\    --n-points=N       Test points per atom (default: 100, for sr)
@@ -693,10 +729,21 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
     }
     defer if (ext_ccd) |*d| d.deinit();
 
+    // Load SDF components from --sdf option
+    var sdf_ccd: ?ccd_parser.ComponentDict = null;
+    if (args.sdf_paths.len > 0) {
+        sdf_ccd = loadSdfComponents(allocator, args.sdf_paths.constSlice(), args.quiet) catch |err| {
+            std.debug.print("Error loading SDF components: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+    }
+    defer if (sdf_ccd) |*d| d.deinit();
+
     // Apply classifier if specified
     if (args.classifier_type) |ct| {
+        const sdf_ccd_ptr: ?*const ccd_parser.ComponentDict = if (sdf_ccd != null) &sdf_ccd.? else null;
         const ext_ccd_ptr: ?*const ccd_parser.ComponentDict = if (ext_ccd != null) &ext_ccd.? else null;
-        try applyBuiltinClassifier(allocator, &topology, ct, ext_ccd_ptr, args.quiet);
+        try applyBuiltinClassifier(allocator, &topology, ct, sdf_ccd_ptr, ext_ccd_ptr, args.quiet);
     }
 
     // Open trajectory file
@@ -1062,10 +1109,77 @@ fn runBatchParallel(
 }
 
 /// Apply built-in classifier to topology
+/// Load SDF files and build a ComponentDict from their bond topology
+fn loadSdfComponents(
+    allocator: Allocator,
+    sdf_paths: []const []const u8,
+    quiet: bool,
+) !?ccd_parser.ComponentDict {
+    if (sdf_paths.len == 0) return null;
+
+    var dict = ccd_parser.ComponentDict.init(allocator);
+    errdefer dict.deinit();
+
+    for (sdf_paths) |sdf_path| {
+        const source = if (std.mem.endsWith(u8, sdf_path, ".gz"))
+            gzip.readGzip(allocator, sdf_path) catch |err| {
+                std.debug.print("Error reading SDF file '{s}': {s}\n", .{ sdf_path, @errorName(err) });
+                std.process.exit(1);
+            }
+        else file_blk: {
+            const f = std.fs.cwd().openFile(sdf_path, .{}) catch |err| {
+                std.debug.print("Error opening SDF file '{s}': {s}\n", .{ sdf_path, @errorName(err) });
+                std.process.exit(1);
+            };
+            defer f.close();
+            break :file_blk f.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024) catch |err| {
+                std.debug.print("Error reading SDF file '{s}': {s}\n", .{ sdf_path, @errorName(err) });
+                std.process.exit(1);
+            };
+        };
+        defer allocator.free(source);
+
+        const molecules = sdf_parser.parse(allocator, source) catch |err| {
+            std.debug.print("Error parsing SDF file '{s}': {s}\n", .{ sdf_path, @errorName(err) });
+            std.process.exit(1);
+        };
+        defer sdf_parser.freeMolecules(allocator, molecules);
+
+        for (molecules) |mol| {
+            if (mol.name.len == 0) {
+                if (!quiet) std.debug.print("Warning: SDF molecule has no name, skipping\n", .{});
+                continue;
+            }
+            const stored = sdf_parser.toStoredComponent(allocator, &mol) catch |err| {
+                if (!quiet) std.debug.print("Warning: Could not convert SDF molecule '{s}': {s}\n", .{ mol.name, @errorName(err) });
+                continue;
+            };
+            const comp_id_str = mol.name[0..@min(mol.name.len, 5)];
+            const dict_key = allocator.dupe(u8, comp_id_str) catch continue;
+            dict.owned_keys.append(allocator, dict_key) catch {
+                allocator.free(dict_key);
+                continue;
+            };
+            dict.components.put(dict_key, stored) catch continue;
+        }
+
+        if (!quiet) {
+            std.debug.print("SDF: loaded from '{s}'\n", .{sdf_path});
+        }
+    }
+
+    if (dict.components.count() == 0) {
+        dict.deinit();
+        return null;
+    }
+    return dict;
+}
+
 fn applyBuiltinClassifier(
     _: Allocator,
     input: *AtomInput,
     ct: ClassifierType,
+    sdf_ccd: ?*const ccd_parser.ComponentDict,
     external_ccd: ?*const ccd_parser.ComponentDict,
     quiet: bool,
 ) !void {
@@ -1078,31 +1192,37 @@ fn applyBuiltinClassifier(
     defer if (ccd_clf) |*c| c.deinit();
 
     if (ccd_clf != null) {
-        if (external_ccd) |dict| {
-            // Deduplicate: collect unique non-hardcoded residues
-            var needed = std.StringHashMap(void).init(input.allocator);
-            defer needed.deinit();
-            for (0..n) |i| {
-                const res = residues[i].slice();
-                if (!classifier_ccd.CcdClassifier.isHardcoded(res)) {
-                    try needed.put(res, {});
-                }
+        // Deduplicate: collect unique non-hardcoded residues
+        var needed = std.StringHashMap(void).init(input.allocator);
+        defer needed.deinit();
+        for (0..n) |i| {
+            const res = residues[i].slice();
+            if (!classifier_ccd.CcdClassifier.isHardcoded(res)) {
+                try needed.put(res, {});
             }
+        }
+
+        if (needed.count() > 0) {
             var loaded: usize = 0;
-            var it = needed.keyIterator();
-            while (it.next()) |key_ptr| {
-                if (dict.get(key_ptr.*)) |comp| {
-                    ccd_clf.?.addComponent(&comp) catch |err| {
-                        if (!quiet) {
-                            std.debug.print("Warning: Could not derive CCD properties for '{s}': {s}\n", .{ key_ptr.*, @errorName(err) });
+            const dicts: [2]?*const ccd_parser.ComponentDict = .{ sdf_ccd, external_ccd };
+            for (dicts) |maybe_dict| {
+                if (maybe_dict) |dict| {
+                    var it = needed.keyIterator();
+                    while (it.next()) |key_ptr| {
+                        if (dict.get(key_ptr.*)) |comp| {
+                            ccd_clf.?.addComponent(&comp) catch |err| {
+                                if (!quiet) {
+                                    std.debug.print("Warning: Could not derive CCD properties for '{s}': {s}\n", .{ key_ptr.*, @errorName(err) });
+                                }
+                                continue;
+                            };
+                            loaded += 1;
                         }
-                        continue;
-                    };
-                    loaded += 1;
+                    }
                 }
             }
             if (!quiet and loaded > 0) {
-                std.debug.print("CCD: {d} non-standard components derived from external CCD\n", .{loaded});
+                std.debug.print("CCD: {d} non-standard components derived from CCD data\n", .{loaded});
             }
         }
     }
