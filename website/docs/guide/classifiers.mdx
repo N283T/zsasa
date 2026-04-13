@@ -26,7 +26,15 @@ Classifiers assign van der Waals radii and polarity classes to atoms based on re
 
 ### Radii Reference Table
 
-All classifiers use united-atom radii (implicit hydrogens). The ProtOr/CCD column differentiates radii by hybridization state and hydrogen count, following [Tsai et al. 1999](https://doi.org/10.1006/jmbi.1999.2829).
+All classifiers use united-atom radii (implicit hydrogens) — heavy atom radii already account for the volume of attached hydrogen atoms. The CCD column differentiates radii by hybridization state and implicit hydrogen count, following [Tsai et al. 1999](https://doi.org/10.1006/jmbi.1999.2829).
+
+:::warning[Explicit hydrogens and united-atom radii]
+All built-in classifiers use **united-atom** radii where heavy atom radii already include the contribution of implicit hydrogens (e.g., C sp3 with 3 implicit H = 1.88 Å). Using `--include-hydrogens` with these classifiers causes double-counting and inaccurate SASA values. The CCD classifier will warn if `--include-hydrogens` is specified.
+
+For MD trajectories with explicit hydrogens, either:
+- Use `--no-hydrogens` (or `--exclude-hydrogens`) to filter them out, or
+- Provide a custom all-atom classifier via `--config=<path>` with smaller heavy-atom radii and explicit H radii
+:::
 
 | Element | Context | ProtOr / CCD | NACCESS | OONS | Polarity |
 |---------|---------|:---:|:---:|:---:|----------|

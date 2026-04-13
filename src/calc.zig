@@ -815,6 +815,11 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
         if (ct == .ccd and !effective_args.include_hetatm) {
             effective_args.include_hetatm = true;
         }
+        // CCD/ProtOr use united-atom radii (implicit H) — warn if explicit H included
+        if ((ct == .ccd or ct == .protor) and effective_args.include_hydrogens and !effective_args.quiet) {
+            std.debug.print("Warning: --include-hydrogens with CCD classifier may give inaccurate results\n", .{});
+            std.debug.print("         CCD uses united-atom radii that already account for implicit hydrogens\n", .{});
+        }
     }
 
     // Read input file (JSON, PDB, or mmCIF)

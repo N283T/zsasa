@@ -643,6 +643,12 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
         return error.UnsupportedFormat;
     };
 
+    // CCD/ProtOr use united-atom radii (implicit H) — warn if explicit H included
+    if ((args.classifier_type == .ccd or args.classifier_type == .protor) and args.include_hydrogens and !args.quiet) {
+        std.debug.print("Warning: --include-hydrogens with CCD classifier may give inaccurate results\n", .{});
+        std.debug.print("         CCD uses united-atom radii that already account for implicit hydrogens\n", .{});
+    }
+
     // Read topology to get atom names and radii
     if (!args.quiet) {
         std.debug.print("Reading topology: {s}\n", .{topology_path});

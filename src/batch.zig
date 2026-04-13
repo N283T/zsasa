@@ -1417,6 +1417,12 @@ pub fn run(allocator: Allocator, args: BatchArgs) !void {
     const output_dir: ?[]const u8 = if (args.output_format == .jsonl) null else args.output_path;
 
     // Build batch config from parsed args
+    // CCD/ProtOr use united-atom radii (implicit H) — warn if explicit H included
+    if ((args.classifier_type == .ccd or args.classifier_type == .protor) and args.include_hydrogens and !args.quiet) {
+        std.debug.print("Warning: --include-hydrogens with CCD classifier may give inaccurate results\n", .{});
+        std.debug.print("         CCD uses united-atom radii that already account for implicit hydrogens\n", .{});
+    }
+
     const config = BatchConfig{
         .n_threads = args.n_threads,
         .algorithm = args.algorithm,
