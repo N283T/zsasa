@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-04-13
+
+### Added
+
+- **SDF/MOL file support**: New SDF parser supporting V2000 and V3000 formats. Calculate SASA for small molecules directly from SDF files (`zsasa calc molecule.sdf`) (#338)
+- **`--sdf` option**: Provide bond topology for CCD-unregistered compounds (e.g., Boltz-predicted ligands) via `--sdf=ligand.sdf`. Available in `calc`, `batch`, and `traj` subcommands (#338)
+- **`--mol` option**: Select a specific molecule from multi-molecule SDF by name or 1-based index (`--mol=water` or `--mol=2`) (#339)
+- **Batch SDF expansion**: Multi-molecule SDF files in batch mode are expanded into individual items, each molecule calculated independently (#339)
+
+### Changed
+
+- **ProtOr is now an alias for CCD**: `--classifier=protor` uses the same CCD bond-topology classifier. Default classifier for Python bindings changed from NACCESS to CCD (#335, #337)
+- **Trajectory classifier default**: `traj` subcommand defaults to NACCESS for MD trajectories (#337)
+
+### Fixed
+
+- **SDF per-molecule SASA**: Multi-molecule SDF files now calculate each molecule independently instead of combining them into one structure (#339)
+- **Python classifier tests**: Updated expected values for CCD default (ALA:O = 1.42 Å) (#338)
+- **Memory safety**: Fixed StoredComponent leaks on ComponentDict insertion failure, toAtomInput over-allocation with >26 molecules (#338, #339)
+
+### Documentation
+
+- CCD classifier documentation rewritten with accurate architecture details (#334, #336)
+
 ## [0.2.7] - 2026-04-12
 
 ### Added
