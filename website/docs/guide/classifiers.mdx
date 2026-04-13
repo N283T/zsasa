@@ -11,8 +11,8 @@ Classifiers assign van der Waals radii and polarity classes to atoms based on re
 
 ## Quick Recommendation
 
-- **CCD** (recommended): Superset of ProtOr that extends coverage to any chemical component via CCD bond topology. Best for structures with ligands, modified residues, or non-standard components. For standard-residue-only structures, CCD produces identical results to ProtOr.
-- **ProtOr**: CLI default for PDB/mmCIF. Hybridization-based radii (Tsai et al. 1999). Also the default classifier in [FreeSASA](https://freesasa.github.io/).
+- **CCD** (default): ProtOr-compatible hybridization-based radii (Tsai et al. 1999), extended with CCD bond topology analysis for non-standard residues. Recommended for all use cases.
+- **ProtOr**: Alias for CCD. Accepted for backward compatibility with [FreeSASA](https://freesasa.github.io/).
 - **NACCESS**: Use when reproducing or comparing with NACCESS-based studies.
 - **OONS**: Larger aliphatic carbon radii (2.00 Å). Use when reproducing or comparing with OONS-based studies.
 
@@ -48,17 +48,17 @@ NACCESS treats S, Se, and P as **apolar**, while ProtOr, OONS, and CCD treat the
 
 ### Key Differences
 
-| Property | ProtOr | CCD | NACCESS | OONS |
-|----------|:---:|:---:|:---:|:---:|
-| **Basis** | Hybridization state | Hybridization state | Atom type | Atom type |
-| **ANY fallback** | No | No | Yes | Yes |
-| **S, Se, P polarity** | Polar | Polar | Apolar | Polar |
-| **Carbonyl C polarity** | Apolar | Apolar | Apolar | **Polar** |
-| **Non-standard residues** | Element fallback | **CCD bond topology** | Element fallback | Element fallback |
-| **Reference** | Tsai et al. 1999 | Tsai et al. 1999 + wwPDB CCD | Hubbard & Thornton 1993 | Ooi et al. 1987 |
+| Property | CCD (= ProtOr) | NACCESS | OONS |
+|----------|:---:|:---:|:---:|
+| **Basis** | Hybridization state | Atom type | Atom type |
+| **ANY fallback** | No | Yes | Yes |
+| **S, Se, P polarity** | Polar | Apolar | Polar |
+| **Carbonyl C polarity** | Apolar | Apolar | **Polar** |
+| **Non-standard residues** | CCD bond topology | Element fallback | Element fallback |
+| **Reference** | Tsai et al. 1999 + wwPDB CCD | Hubbard & Thornton 1993 | Ooi et al. 1987 |
 
-:::info[ProtOr and CCD produce identical radii for all shared residues]
-The CCD classifier uses the same ProtOr radii for all residues covered by ProtOr (standard amino acids, modified amino acids, nucleotides, capping groups, and water). The difference is that CCD can derive hybridization-aware radii for _any_ component with CCD bond topology data, while ProtOr falls back to element-based estimation for unknown residues.
+:::info[ProtOr is an alias for CCD]
+`--classifier=protor` and `--classifier=ccd` use the same classifier internally. ProtOr is accepted for backward compatibility with FreeSASA. There is no reason to prefer ProtOr over CCD — CCD is strictly a superset.
 :::
 
 ## Usage
@@ -67,8 +67,8 @@ The CCD classifier uses the same ProtOr radii for all residues covered by ProtOr
   <TabItem value="cli" label="CLI" default>
 
 ```bash
-# ProtOr (default for PDB/mmCIF)
-zsasa calc --classifier=protor structure.cif output.json
+# CCD (default for PDB/mmCIF)
+zsasa calc --classifier=ccd structure.cif output.json
 
 # NACCESS
 zsasa calc --classifier=naccess structure.cif output.json
@@ -92,8 +92,8 @@ zsasa calc --config=my_radii.toml structure.cif output.json
 ```python
 from zsasa import classify_atoms, calculate_sasa, ClassifierType
 
-# Step 1: Classify atoms to get radii (ProtOr is the default)
-classification = classify_atoms(residue_names, atom_names, ClassifierType.PROTOR)
+# Step 1: Classify atoms to get radii (CCD is the default)
+classification = classify_atoms(residue_names, atom_names, ClassifierType.CCD)
 
 # Step 2: Calculate SASA using classified radii
 result = calculate_sasa(coords, classification.radii)
@@ -113,7 +113,7 @@ from zsasa.integrations.gemmi import calculate_sasa_from_structure
 # Classifier is applied automatically
 result = calculate_sasa_from_structure(
     "protein.cif",
-    classifier=ClassifierType.PROTOR,
+    classifier=ClassifierType.CCD,
 )
 
 # CCD classifier (auto-includes HETATM)
@@ -172,13 +172,13 @@ The format is auto-detected by file extension: `.toml` for TOML, all others for 
 
 ## CCD Classifier
 
-The CCD classifier is unique to zsasa, deriving ProtOr-compatible van der Waals radii from the [wwPDB Chemical Component Dictionary](https://www.wwpdb.org/data/ccd) (CCD) bond topology. Unlike ProtOr, NACCESS, and OONS — which only cover standard amino acids and nucleotides — the CCD classifier can assign hybridization-aware radii to **any** chemical component: ligands, modified residues, cofactors, post-translational modifications, and more.
+The CCD classifier is the default classifier in zsasa (`--classifier=protor` is an alias). It derives van der Waals radii from the [wwPDB Chemical Component Dictionary](https://www.wwpdb.org/data/ccd) (CCD) bond topology, using the same hybridization-based radii as ProtOr (Tsai et al. 1999). Unlike NACCESS and OONS — which only cover standard amino acids and nucleotides — the CCD classifier can assign hybridization-aware radii to **any** chemical component: ligands, modified residues, cofactors, post-translational modifications, and more.
 
-### Why Use CCD?
+### Why CCD?
 
-Traditional classifiers (ProtOr, NACCESS, OONS) have a fixed set of known residues. When they encounter a non-standard residue (e.g., HEM, ATP, NAG), they fall back to generic element-based radii that ignore hybridization. This can lead to inaccurate SASA values for structures containing ligands or modified residues.
+NACCESS and OONS have a fixed set of known residues. When they encounter a non-standard residue (e.g., HEM, ATP, NAG), they fall back to generic element-based radii that ignore hybridization. This can lead to inaccurate SASA values for structures containing ligands or modified residues.
 
-The CCD classifier solves this by analyzing bond topology (single, double, aromatic bonds and hydrogen count) to determine the hybridization state of each atom, then mapping it to the corresponding ProtOr radius. This gives you ProtOr-quality radii for _any_ component with CCD data.
+The CCD classifier solves this by analyzing bond topology (single, double, aromatic bonds and hydrogen count) to determine the hybridization state of each atom, then mapping it to the corresponding ProtOr-compatible radius. This gives you hybridization-aware radii for _any_ component with CCD data.
 
 ### How It Works
 
@@ -218,7 +218,7 @@ zsasa calc --classifier=ccd --ccd=components.zsdc structure.pdb output.json
 ```
 
 :::tip[PDB users]
-If your PDB file contains only standard amino acids and nucleotides, `--classifier=ccd` works identically to `--classifier=protor` without needing an external dictionary. The hardcoded table covers all standard residues.
+If your PDB file contains only standard amino acids and nucleotides, no external dictionary is needed — the hardcoded table covers all standard residues. For non-standard residues, provide `--ccd=<path>` to get hybridization-aware radii.
 :::
 
 ### Auto-Including HETATM
@@ -285,7 +285,7 @@ For example, an aromatic CH carbon like PHE CD1 (two aromatic bonds to heavy ato
 All 20 standard amino acids are supported by all classifiers. Additional residues vary by classifier:
 
 - **All classifiers**: SEC (selenocysteine), MSE (selenomethionine)
-- **ProtOr, OONS, CCD**: PYL (pyrrolysine)
+- **CCD and OONS**: PYL (pyrrolysine)
 - **CCD only**: HYP (hydroxyproline), MLY (N-dimethyllysine), SEP (phosphoserine), TPO (phosphothreonine)
 
 ### Nucleic Acids
