@@ -65,6 +65,7 @@ pub const CalcArgs = struct {
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
     ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz])
     sdf_paths: SdfPathList = .{}, // --sdf=PATH (up to 16)
+    mol_selector: ?[]const u8 = null, // --mol=NAME or --mol=N (1-based index)
     quiet: bool = false,
     validate_only: bool = false,
     show_timing: bool = false, // Show timing breakdown for benchmarking
@@ -414,6 +415,18 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
                 std.process.exit(1);
             };
         }
+        // --mol=NAME|N or --mol NAME|N (select molecule from multi-molecule SDF)
+        else if (std.mem.startsWith(u8, arg, "--mol=")) {
+            const value = arg["--mol=".len..];
+            result.mol_selector = value;
+        } else if (std.mem.eql(u8, arg, "--mol")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --mol\n", .{});
+                std.process.exit(1);
+            }
+            result.mol_selector = args[i];
+        }
         // --use-bitmask (bitmask LUT optimization for SR, n-points must be 1..1024)
         else if (std.mem.eql(u8, arg, "--use-bitmask")) {
             result.use_bitmask = true;
@@ -489,6 +502,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\                       Extends CCD coverage for non-standard residues
         \\    --sdf=PATH         SDF file with bond topology for CCD classifier
         \\                       Can be specified multiple times for multiple ligands
+        \\    --mol=NAME|N       Select molecule from multi-molecule SDF by name or
+        \\                       1-based index (default: first molecule)
         \\    --config=FILE      Custom classifier config file (FreeSASA format)
         \\    --chain=ID         Filter by chain ID (e.g., --chain=A or --chain=A,B,C)
         \\                       Default: label_asym_id (mmCIF standard)
@@ -560,6 +575,42 @@ const ReadResult = struct {
     }
 };
 
+/// Select a molecule from parsed SDF by --mol value or default to first.
+/// Warns if multiple molecules exist and no --mol specified.
+fn selectMolecule(molecules: []const sdf_parser.SdfMolecule, mol_selector: ?[]const u8, quiet: bool) usize {
+    if (molecules.len == 0) {
+        std.debug.print("Error: SDF file contains no molecules\n", .{});
+        std.process.exit(1);
+    }
+
+    if (mol_selector) |selector| {
+        // Try as 1-based index first
+        if (std.fmt.parseInt(usize, selector, 10)) |idx| {
+            if (idx >= 1 and idx <= molecules.len) {
+                return idx - 1;
+            }
+            std.debug.print("Error: --mol={d} out of range (SDF has {d} molecules, use 1-based index)\n", .{ idx, molecules.len });
+            std.process.exit(1);
+        } else |_| {
+            // Try as molecule name
+            for (molecules, 0..) |mol, i| {
+                if (std.mem.eql(u8, std.mem.trim(u8, mol.name, " "), selector)) {
+                    return i;
+                }
+            }
+            std.debug.print("Error: --mol='{s}' not found in SDF file\n", .{selector});
+            std.process.exit(1);
+        }
+    }
+
+    // No --mol specified: default to first, warn if multiple
+    if (molecules.len > 1 and !quiet) {
+        std.debug.print("Warning: SDF contains {d} molecules, processing only the first.\n", .{molecules.len});
+        std.debug.print("         Use 'batch' for all molecules or --mol to select one.\n", .{});
+    }
+    return 0;
+}
+
 /// Read input file (auto-detect format)
 fn readInputFile(allocator: std.mem.Allocator, path: []const u8, args: CalcArgs) !ReadResult {
     const format = format_detect.detectInputFormat(path);
@@ -612,13 +663,17 @@ fn readInputFile(allocator: std.mem.Allocator, path: []const u8, args: CalcArgs)
             const molecules = try sdf_parser.parse(allocator, source);
             defer sdf_parser.freeMolecules(allocator, molecules);
 
-            const input_result = try sdf_parser.toAtomInput(allocator, molecules, !args.include_hydrogens);
+            // Select a single molecule (--mol or default to first)
+            const mol_idx = selectMolecule(molecules, args.mol_selector, args.quiet);
+            const selected = molecules[mol_idx .. mol_idx + 1];
 
-            // Build CCD component dict from SDF bond topology for auto-classification
+            const input_result = try sdf_parser.toAtomInput(allocator, selected, !args.include_hydrogens);
+
+            // Build CCD component dict from selected molecule's bond topology
             var sdf_dict = ccd_parser.ComponentDict.init(allocator);
             errdefer sdf_dict.deinit();
             var has_components = false;
-            for (molecules) |mol| {
+            for (selected) |mol| {
                 if (mol.name.len == 0) continue;
                 const stored = sdf_parser.toStoredComponent(allocator, &mol) catch continue;
                 const comp_id_str = mol.name[0..@min(mol.name.len, 5)];

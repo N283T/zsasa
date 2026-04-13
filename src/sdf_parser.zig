@@ -1120,6 +1120,84 @@ test "toAtomInput — two molecules get separate chains" {
     try std.testing.expectEqualStrings("", ins_codes[0].slice());
 }
 
+test "toAtomInput — single molecule from multi-molecule SDF" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\methane
+        \\     zsasa   3D
+        \\
+        \\  5  4  0  0  0  0  0  0  0  0999 V2000
+        \\    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    0.6300    0.6300    0.6300 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\   -0.6300   -0.6300    0.6300 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\   -0.6300    0.6300   -0.6300 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    0.6300   -0.6300   -0.6300 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\  1  2  1  0  0  0  0
+        \\  1  3  1  0  0  0  0
+        \\  1  4  1  0  0  0  0
+        \\  1  5  1  0  0  0  0
+        \\M  END
+        \\$$$$
+        \\water
+        \\     zsasa   3D
+        \\
+        \\  3  2  0  0  0  0  0  0  0  0999 V2000
+        \\    0.0000    0.0000    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    0.7572    0.5858    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\   -0.7572    0.5858    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\  1  2  1  0  0  0  0
+        \\  1  3  1  0  0  0  0
+        \\M  END
+        \\$$$$
+    ;
+    const molecules = try parse(allocator, source);
+    defer freeMolecules(allocator, molecules);
+
+    // Process only the first molecule (methane) as a slice of 1
+    {
+        var input = try toAtomInput(allocator, molecules[0..1], false);
+        defer input.deinit();
+
+        // methane has 5 atoms (1 C + 4 H)
+        try std.testing.expectEqual(@as(usize, 5), input.atomCount());
+
+        // All atoms should be chain "A"
+        const chains = input.chain_id.?;
+        try std.testing.expectEqualStrings("A", chains[0].slice());
+        try std.testing.expectEqualStrings("A", chains[4].slice());
+
+        // Residue name should be "metha" (truncated from "methane")
+        try std.testing.expectEqualStrings("metha", input.residue.?[0].slice());
+    }
+
+    // Process only the second molecule (water) as a slice of 1
+    {
+        var input = try toAtomInput(allocator, molecules[1..2], false);
+        defer input.deinit();
+
+        // water has 3 atoms (1 O + 2 H)
+        try std.testing.expectEqual(@as(usize, 3), input.atomCount());
+
+        // All atoms should be chain "A" (not "B" — it's the first molecule in this slice)
+        const chains = input.chain_id.?;
+        try std.testing.expectEqualStrings("A", chains[0].slice());
+        try std.testing.expectEqualStrings("A", chains[2].slice());
+
+        // Residue name should be "water"
+        try std.testing.expectEqualStrings("water", input.residue.?[0].slice());
+    }
+
+    // Process second molecule with skip_hydrogens
+    {
+        var input = try toAtomInput(allocator, molecules[1..2], true);
+        defer input.deinit();
+
+        // water without H: 1 atom (O only)
+        try std.testing.expectEqual(@as(usize, 1), input.atomCount());
+        try std.testing.expectEqualStrings("A", input.chain_id.?[0].slice());
+    }
+}
+
 test "toAtomInput — skip hydrogens" {
     const allocator = std.testing.allocator;
     const source =
