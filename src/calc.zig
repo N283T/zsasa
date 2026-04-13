@@ -578,7 +578,10 @@ const ReadResult = struct {
 /// Select a molecule from parsed SDF by --mol value or default to first.
 /// Warns if multiple molecules exist and no --mol specified.
 fn selectMolecule(molecules: []const sdf_parser.SdfMolecule, mol_selector: ?[]const u8, quiet: bool) usize {
-    if (molecules.len == 0) return 0; // shouldn't happen (parse ensures >=1)
+    if (molecules.len == 0) {
+        std.debug.print("Error: SDF file contains no molecules\n", .{});
+        std.process.exit(1);
+    }
 
     if (mol_selector) |selector| {
         // Try as 1-based index first
@@ -586,7 +589,7 @@ fn selectMolecule(molecules: []const sdf_parser.SdfMolecule, mol_selector: ?[]co
             if (idx >= 1 and idx <= molecules.len) {
                 return idx - 1;
             }
-            std.debug.print("Error: --mol={d} out of range (SDF has {d} molecules)\n", .{ idx, molecules.len });
+            std.debug.print("Error: --mol={d} out of range (SDF has {d} molecules, use 1-based index)\n", .{ idx, molecules.len });
             std.process.exit(1);
         } else |_| {
             // Try as molecule name

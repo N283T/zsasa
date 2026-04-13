@@ -654,11 +654,15 @@ fn processOneSdfMolecule(
     // Build CCD component dict for this molecule's bond topology
     var sdf_dict: ?ccd_parser.ComponentDict = null;
     if (molecule.name.len > 0) {
-        const stored = sdf_parser.toStoredComponent(arena, molecule) catch null;
+        const stored = sdf_parser.toStoredComponent(arena, molecule) catch |err| blk: {
+            logWarning("{s}: failed to build SDF component: {s}", .{ display_name, @errorName(err) });
+            break :blk null;
+        };
         if (stored) |s| {
             var dict = ccd_parser.ComponentDict.init(arena);
             const comp_id_str = molecule.name[0..@min(molecule.name.len, 5)];
-            const dict_key = arena.dupe(u8, comp_id_str) catch {
+            const dict_key = arena.dupe(u8, comp_id_str) catch |err| {
+                logWarning("{s}: SDF component registration failed: {s}", .{ display_name, @errorName(err) });
                 var mut_s = s;
                 mut_s.deinit();
                 dict.deinit();
@@ -666,14 +670,16 @@ fn processOneSdfMolecule(
                 // fall through to classifier without SDF dict
                 return processOneSdfMoleculeInner(arena, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, null);
             };
-            dict.owned_keys.append(arena, dict_key) catch {
+            dict.owned_keys.append(arena, dict_key) catch |err| {
+                logWarning("{s}: SDF component registration failed: {s}", .{ display_name, @errorName(err) });
                 arena.free(dict_key);
                 var mut_s = s;
                 mut_s.deinit();
                 dict.deinit();
                 return processOneSdfMoleculeInner(arena, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, null);
             };
-            dict.components.put(dict_key, s) catch {
+            dict.components.put(dict_key, s) catch |err| {
+                logWarning("{s}: SDF component registration failed: {s}", .{ display_name, @errorName(err) });
                 var mut_s = s;
                 mut_s.deinit();
                 dict.deinit();
@@ -856,7 +862,6 @@ const JsonlStreamWriter = struct {
     }
 };
 
-/// Run batch processing sequentially (single-threaded path, used when n_threads <= 1)
 /// Write a JSONL line for a result via the buffered writer.
 /// atom_areas live on the arena and are invalidated after arena reset.
 fn writeJsonlResult(
@@ -872,15 +877,18 @@ fn writeJsonlResult(
     };
     jsonl_writer.interface.writeAll(line) catch |err| {
         logWarning("JSONL write failed for {s}: {s}", .{ result.filename, @errorName(err) });
+        return; // Don't attempt newline or flush
     };
     jsonl_writer.interface.writeAll("\n") catch |err| {
         logWarning("JSONL newline write failed for {s}: {s}", .{ result.filename, @errorName(err) });
+        return; // Don't flush a corrupted line
     };
     jsonl_writer.interface.flush() catch |err| {
         logWarning("JSONL flush failed for {s}: {s}", .{ result.filename, @errorName(err) });
     };
 }
 
+/// Run batch processing sequentially (single-threaded path, used when n_threads <= 1)
 pub fn runBatchSequential(
     allocator: Allocator,
     input_dir: []const u8,
@@ -1033,7 +1041,10 @@ pub fn runBatchSequential(
             // Process each molecule individually
             for (molecules, 0..) |*mol, mol_idx| {
                 // Build display name: "stem_molname" or "stem_N"
-                const display_name = sdfMoleculeDisplayName(allocator, filename, mol.name, mol_idx) catch try allocator.dupe(u8, filename);
+                const display_name = sdfMoleculeDisplayName(allocator, filename, mol.name, mol_idx) catch |err| blk: {
+                    logWarning("{s}: molecule {d} display name failed ({s}), using filename", .{ filename, mol_idx, @errorName(err) });
+                    break :blk try allocator.dupe(u8, filename);
+                };
 
                 var mol_result = processOneSdfMolecule(
                     arena.allocator(),
@@ -1174,6 +1185,14 @@ fn parallelWorker(ctx: *ParallelContext) void {
         // Copy display name to result allocator (thread-safe: each index is unique)
         const name_copy = ctx.result_allocator.dupe(u8, work.display_name) catch {
             const empty = ctx.result_allocator.alloc(u8, 0) catch {
+                ctx.results[item_idx] = FileResult{
+                    .filename = "",
+                    .n_atoms = 0,
+                    .sasa_time_ns = 0,
+                    .total_sasa = 0,
+                    .status = .err,
+                    .error_msg = null,
+                };
                 _ = ctx.processed_count.fetchAdd(1, .release);
                 _ = arena.reset(.retain_capacity);
                 continue;
@@ -1303,7 +1322,15 @@ fn buildWorkItems(
     input_dir: []const u8,
 ) !struct { items: []WorkItem, sdf_sources: std.StringHashMapUnmanaged([]const u8) } {
     var items = std.ArrayListUnmanaged(WorkItem){};
-    errdefer items.deinit(allocator);
+    errdefer {
+        for (items.items) |item| {
+            // Only free if display_name was separately allocated (not same as filename)
+            if (item.display_name.ptr != item.filename.ptr) {
+                allocator.free(item.display_name);
+            }
+        }
+        items.deinit(allocator);
+    }
 
     var sdf_sources = std.StringHashMapUnmanaged([]const u8){};
     errdefer {
@@ -1320,8 +1347,9 @@ fn buildWorkItems(
             defer allocator.free(input_path);
 
             const source = if (std.mem.endsWith(u8, input_path, ".gz"))
-                gzip.readGzip(allocator, input_path) catch {
+                gzip.readGzip(allocator, input_path) catch |err| {
                     // If read fails, add a single error item
+                    logWarning("{s}: failed to read SDF (gzip): {s}", .{ filename, @errorName(err) });
                     try items.append(allocator, .{
                         .filename = filename,
                         .display_name = filename,
@@ -1330,7 +1358,8 @@ fn buildWorkItems(
                     continue;
                 }
             else file_blk: {
-                const f = std.fs.cwd().openFile(input_path, .{}) catch {
+                const f = std.fs.cwd().openFile(input_path, .{}) catch |err| {
+                    logWarning("{s}: failed to open SDF: {s}", .{ filename, @errorName(err) });
                     try items.append(allocator, .{
                         .filename = filename,
                         .display_name = filename,
@@ -1339,7 +1368,8 @@ fn buildWorkItems(
                     continue;
                 };
                 defer f.close();
-                break :file_blk f.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024) catch {
+                break :file_blk f.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024) catch |err| {
+                    logWarning("{s}: failed to read SDF: {s}", .{ filename, @errorName(err) });
                     try items.append(allocator, .{
                         .filename = filename,
                         .display_name = filename,
@@ -1349,7 +1379,8 @@ fn buildWorkItems(
                 };
             };
 
-            const molecules = sdf_parser.parse(allocator, source) catch {
+            const molecules = sdf_parser.parse(allocator, source) catch |err| {
+                logWarning("{s}: failed to parse SDF: {s}", .{ filename, @errorName(err) });
                 allocator.free(source);
                 try items.append(allocator, .{
                     .filename = filename,
@@ -1361,11 +1392,17 @@ fn buildWorkItems(
             defer sdf_parser.freeMolecules(allocator, molecules);
 
             // Store the source for workers to re-parse
-            try sdf_sources.put(allocator, filename, source);
+            sdf_sources.put(allocator, filename, source) catch |err| {
+                allocator.free(source);
+                return err;
+            };
 
             // Create one work item per molecule
             for (molecules, 0..) |mol, mol_idx| {
-                const display_name = sdfMoleculeDisplayName(allocator, filename, mol.name, mol_idx) catch try allocator.dupe(u8, filename);
+                const display_name = sdfMoleculeDisplayName(allocator, filename, mol.name, mol_idx) catch |err| blk: {
+                    logWarning("{s}: molecule {d} display name failed ({s}), using filename", .{ filename, mol_idx, @errorName(err) });
+                    break :blk try allocator.dupe(u8, filename);
+                };
 
                 try items.append(allocator, .{
                     .filename = filename,
