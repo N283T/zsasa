@@ -11,9 +11,9 @@ Classifiers assign van der Waals radii and polarity classes to atoms based on re
 
 ## Quick Recommendation
 
-- **CCD** (default): ProtOr-compatible hybridization-based radii (Tsai et al. 1999), extended with CCD bond topology analysis for non-standard residues. Recommended for all use cases.
+- **CCD** (default for `calc`/`batch`): ProtOr-compatible hybridization-based radii (Tsai et al. 1999), extended with CCD bond topology analysis for non-standard residues. Uses united-atom radii (implicit H). Recommended for crystal structures.
 - **ProtOr**: Alias for CCD. Accepted for backward compatibility with [FreeSASA](https://freesasa.github.io/).
-- **NACCESS**: Use when reproducing or comparing with NACCESS-based studies.
+- **NACCESS** (default for `traj`): Use for MD trajectories with explicit hydrogens, or when reproducing NACCESS-based studies.
 - **OONS**: Larger aliphatic carbon radii (2.00 Å). Use when reproducing or comparing with OONS-based studies.
 
 ## How Classifiers Work
@@ -29,11 +29,9 @@ Classifiers assign van der Waals radii and polarity classes to atoms based on re
 All classifiers use united-atom radii (implicit hydrogens) — heavy atom radii already account for the volume of attached hydrogen atoms. The CCD column differentiates radii by hybridization state and implicit hydrogen count, following [Tsai et al. 1999](https://doi.org/10.1006/jmbi.1999.2829).
 
 :::warning[Explicit hydrogens and united-atom radii]
-All built-in classifiers use **united-atom** radii where heavy atom radii already include the contribution of implicit hydrogens (e.g., C sp3 with 3 implicit H = 1.88 Å). Using `--include-hydrogens` with these classifiers causes double-counting and inaccurate SASA values. The CCD classifier will warn if `--include-hydrogens` is specified.
+CCD and ProtOr use **united-atom** radii where heavy atom radii already include the contribution of implicit hydrogens (e.g., C sp3 with 3 implicit H = 1.88 Å). Using `--include-hydrogens` with CCD/ProtOr causes double-counting and inaccurate SASA values. A warning is printed if this combination is detected.
 
-For MD trajectories with explicit hydrogens, either:
-- Use `--no-hydrogens` (or `--exclude-hydrogens`) to filter them out, or
-- Provide a custom all-atom classifier via `--config=<path>` with smaller heavy-atom radii and explicit H radii
+For **MD trajectories** with explicit hydrogens, use `zsasa traj` which defaults to NACCESS. NACCESS handles explicit H atoms via element-based fallback (H = 1.10 Å).
 :::
 
 | Element | Context | ProtOr / CCD | NACCESS | OONS | Polarity |
