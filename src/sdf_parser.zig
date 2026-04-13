@@ -105,9 +105,7 @@ pub fn parse(allocator: Allocator, source: []const u8) SdfError![]const SdfMolec
     var has_content = false;
 
     while (true) {
-        const mol = parseSingleMolecule(allocator, &line_iter, &has_content) catch |err| {
-            return err;
-        } orelse break;
+        const mol = (try parseSingleMolecule(allocator, &line_iter, &has_content)) orelse break;
         try molecules.append(allocator, mol.molecule);
         if (!mol.has_terminator) break;
         has_content = false;
@@ -156,12 +154,21 @@ fn parseSingleMolecule(
         errdefer allocator.free(name);
 
         // Line 2 = program/timestamp (skip)
-        _ = line_iter.next() orelse return null;
+        _ = line_iter.next() orelse {
+            allocator.free(name);
+            return null;
+        };
         // Line 3 = comment (skip)
-        _ = line_iter.next() orelse return null;
+        _ = line_iter.next() orelse {
+            allocator.free(name);
+            return null;
+        };
 
         // Line 4 = counts line
-        const counts_raw = line_iter.next() orelse return null;
+        const counts_raw = line_iter.next() orelse {
+            allocator.free(name);
+            return null;
+        };
         const counts_line = stripCr(counts_raw);
 
         // Check for V3000
@@ -205,11 +212,15 @@ fn parseSingleMolecule(
             }
         }
 
+        const atoms = try atom_list.toOwnedSlice(allocator);
+        errdefer allocator.free(atoms);
+        const bonds = try bond_list.toOwnedSlice(allocator);
+
         return .{
             .molecule = .{
                 .name = name,
-                .atoms = try atom_list.toOwnedSlice(allocator),
-                .bonds = try bond_list.toOwnedSlice(allocator),
+                .atoms = atoms,
+                .bonds = bonds,
             },
             .has_terminator = found_terminator,
         };
@@ -259,18 +270,22 @@ fn parseBondLine(line: []const u8, atom_count: u16) SdfError!SdfBond {
     if (idx2_raw == 0 or idx2_raw > atom_count) return error.BondIndexOutOfRange;
 
     // Convert to 0-based
-    const order: hybridization.BondOrder = switch (bond_type) {
+    return .{
+        .atom_idx_1 = idx1_raw - 1,
+        .atom_idx_2 = idx2_raw - 1,
+        .order = sdfBondOrder(bond_type),
+    };
+}
+
+/// Map an SDF bond-type integer to a BondOrder.
+/// Reusable for both V2000 and (future) V3000 parsers.
+fn sdfBondOrder(bond_type: u8) hybridization.BondOrder {
+    return switch (bond_type) {
         1 => .single,
         2 => .double,
         3 => .triple,
         4 => .aromatic,
         else => .unknown,
-    };
-
-    return .{
-        .atom_idx_1 = idx1_raw - 1,
-        .atom_idx_2 = idx2_raw - 1,
-        .order = order,
     };
 }
 
