@@ -32,6 +32,7 @@ const Allocator = std.mem.Allocator;
 const elem = @import("element.zig");
 const hybridization = @import("hybridization.zig");
 const ccd_parser = @import("ccd_parser.zig");
+const gzip = @import("gzip.zig");
 const types = @import("types.zig");
 
 // =============================================================================
@@ -153,7 +154,6 @@ fn parseSingleMolecule(
 
         // Line 1 = molecule name
         const name = try allocator.dupe(u8, std.mem.trim(u8, first_line, " \t"));
-        errdefer allocator.free(name);
 
         // Line 2 = program/timestamp (skip)
         _ = line_iter.next() orelse {
@@ -173,10 +173,15 @@ fn parseSingleMolecule(
         };
         const counts_line = stripCr(counts_raw);
 
-        // Check for V3000
+        // Check for V3000 — parseV3000Body takes ownership of `name`
+        // (handles cleanup on both success and error), so we must NOT
+        // free `name` here on this path.
         if (std.mem.indexOf(u8, counts_line, "V3000") != null) {
             return try parseV3000Body(allocator, name, line_iter);
         }
+
+        // From this point, `name` is our responsibility on error paths.
+        errdefer allocator.free(name);
 
         const counts = parseCounts(counts_line) orelse return error.InvalidCountsLine;
 
@@ -574,9 +579,12 @@ pub fn toStoredComponent(allocator: Allocator, molecule: *const SdfMolecule) !cc
 /// - Radii default to element VdW radius (classifier will override later)
 /// - When `skip_hydrogens` is true, H atoms are excluded
 pub fn toAtomInput(allocator: Allocator, molecules: []const SdfMolecule, skip_hydrogens: bool) !types.AtomInput {
-    // First pass: count total atoms
+    // Limit to 26 chains (A-Z)
+    const max_chains: usize = @min(molecules.len, 26);
+
+    // First pass: count total atoms (only for molecules we will process)
     var total_atoms: usize = 0;
-    for (molecules) |mol| {
+    for (molecules[0..max_chains]) |mol| {
         for (mol.atoms) |atom| {
             if (skip_hydrogens and atom.element == .H) continue;
             total_atoms += 1;
@@ -606,7 +614,6 @@ pub fn toAtomInput(allocator: Allocator, molecules: []const SdfMolecule, skip_hy
     errdefer allocator.free(insertion_code);
 
     var idx: usize = 0;
-    const max_chains: usize = @min(molecules.len, 26);
 
     for (molecules[0..max_chains], 0..) |mol, mol_idx| {
         const chain_letter: u8 = 'A' + @as(u8, @intCast(mol_idx));
@@ -658,6 +665,121 @@ pub fn toAtomInput(allocator: Allocator, molecules: []const SdfMolecule, skip_hy
         .insertion_code = insertion_code,
         .allocator = allocator,
     };
+}
+
+// =============================================================================
+// SDF Path List and Component Loading
+// =============================================================================
+
+/// Fixed-capacity list for SDF paths (max 16).
+pub const SdfPathList = struct {
+    items: [max_sdf_paths][]const u8 = undefined,
+    len: usize = 0,
+
+    const max_sdf_paths = 16;
+
+    pub fn append(self: *SdfPathList, value: []const u8) error{Overflow}!void {
+        if (self.len >= max_sdf_paths) return error.Overflow;
+        self.items[self.len] = value;
+        self.len += 1;
+    }
+
+    pub fn constSlice(self: *const SdfPathList) []const []const u8 {
+        return self.items[0..self.len];
+    }
+};
+
+/// Load SDF files and build a ComponentDict from their bond topology.
+///
+/// Reads each SDF file (plain or gzip-compressed), parses molecules, and
+/// converts them to StoredComponents. Duplicate molecule names (truncated
+/// to 5 chars) are skipped to avoid leaking the first entry.
+///
+/// Returns `null` if no valid components were loaded.
+pub fn loadSdfComponents(
+    allocator: Allocator,
+    sdf_paths: []const []const u8,
+    quiet: bool,
+) !?ccd_parser.ComponentDict {
+    if (sdf_paths.len == 0) return null;
+
+    var dict = ccd_parser.ComponentDict.init(allocator);
+    errdefer dict.deinit();
+
+    for (sdf_paths) |sdf_path| {
+        const source = if (std.mem.endsWith(u8, sdf_path, ".gz"))
+            gzip.readGzip(allocator, sdf_path) catch |err| {
+                std.debug.print("Error reading SDF file '{s}': {s}\n", .{ sdf_path, @errorName(err) });
+                std.process.exit(1);
+            }
+        else file_blk: {
+            const f = std.fs.cwd().openFile(sdf_path, .{}) catch |err| {
+                std.debug.print("Error opening SDF file '{s}': {s}\n", .{ sdf_path, @errorName(err) });
+                std.process.exit(1);
+            };
+            defer f.close();
+            break :file_blk f.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024) catch |err| {
+                std.debug.print("Error reading SDF file '{s}': {s}\n", .{ sdf_path, @errorName(err) });
+                std.process.exit(1);
+            };
+        };
+        defer allocator.free(source);
+
+        const molecules = parse(allocator, source) catch |err| {
+            std.debug.print("Error parsing SDF file '{s}': {s}\n", .{ sdf_path, @errorName(err) });
+            std.process.exit(1);
+        };
+        defer freeMolecules(allocator, molecules);
+
+        for (molecules) |mol| {
+            if (mol.name.len == 0) {
+                if (!quiet) std.debug.print("Warning: SDF molecule has no name, skipping\n", .{});
+                continue;
+            }
+            const stored = toStoredComponent(allocator, &mol) catch |err| {
+                if (!quiet) std.debug.print("Warning: Could not convert SDF molecule '{s}': {s}\n", .{ mol.name, @errorName(err) });
+                continue;
+            };
+            const comp_id_str = mol.name[0..@min(mol.name.len, 5)];
+
+            // Skip if already registered (avoid StoredComponent leak from duplicate names)
+            if (dict.components.get(comp_id_str) != null) {
+                var s = stored;
+                s.deinit();
+                continue;
+            }
+
+            const dict_key = allocator.dupe(u8, comp_id_str) catch {
+                var s = stored;
+                s.deinit();
+                continue;
+            };
+            dict.owned_keys.append(allocator, dict_key) catch {
+                allocator.free(dict_key);
+                var s = stored;
+                s.deinit();
+                continue;
+            };
+            dict.components.put(dict_key, stored) catch {
+                // owned_keys already has dict_key; it will be freed by dict.deinit().
+                // But we must free the stored component since it was not successfully
+                // placed into the map.
+                var s = stored;
+                s.deinit();
+                continue;
+            };
+        }
+
+        if (!quiet) {
+            std.debug.print("SDF: loaded from '{s}'\n", .{sdf_path});
+        }
+    }
+
+    if (dict.components.count() == 0) {
+        dict.deinit();
+        return null;
+    }
+    return dict;
 }
 
 // =============================================================================
@@ -1045,4 +1167,72 @@ test "toAtomInput — skip hydrogens" {
     try std.testing.expectEqualStrings("C1", names[0].slice());
     try std.testing.expectEqualStrings("C2", names[1].slice());
     try std.testing.expectEqualStrings("O1", names[2].slice());
+}
+
+test "toAtomInput — max 26 chains" {
+    const allocator = std.testing.allocator;
+
+    // Build 28 single-atom molecules inline
+    var source_buf: [28 * 256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&source_buf);
+    const writer = fbs.writer();
+    for (0..28) |i| {
+        writer.print("mol{d:0>2}\n", .{i}) catch unreachable;
+        writer.writeAll("     zsasa   3D\n") catch unreachable;
+        writer.writeAll("\n") catch unreachable;
+        writer.writeAll("  1  0  0  0  0  0  0  0  0  0999 V2000\n") catch unreachable;
+        writer.writeAll("    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n") catch unreachable;
+        writer.writeAll("M  END\n") catch unreachable;
+        writer.writeAll("$$$$\n") catch unreachable;
+    }
+    const source = fbs.getWritten();
+
+    const molecules = try parse(allocator, source);
+    defer freeMolecules(allocator, molecules);
+
+    try std.testing.expectEqual(@as(usize, 28), molecules.len);
+
+    var input = try toAtomInput(allocator, molecules, false);
+    defer input.deinit();
+
+    // Only 26 molecules should be processed (A-Z), not 28
+    try std.testing.expectEqual(@as(usize, 26), input.atomCount());
+
+    // Last chain should be 'Z'
+    const chains = input.chain_id.?;
+    try std.testing.expectEqualStrings("Z", chains[25].slice());
+}
+
+test "parse V3000 with bad bond index returns error" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\bad_v3k
+        \\     RDKit          3D
+        \\
+        \\  0  0  0  0  0  0  0  0  0  0999 V3000
+        \\M  V30 BEGIN CTAB
+        \\M  V30 COUNTS 2 1 0 0 0
+        \\M  V30 BEGIN ATOM
+        \\M  V30 1 C 0.0000 0.0000 0.0000 0
+        \\M  V30 2 C 1.5000 0.0000 0.0000 0
+        \\M  V30 END ATOM
+        \\M  V30 BEGIN BOND
+        \\M  V30 1 1 1 5
+        \\M  V30 END BOND
+        \\M  V30 END CTAB
+        \\M  END
+        \\$$$$
+    ;
+    const result = parse(allocator, source);
+    try std.testing.expectError(error.BondIndexOutOfRange, result);
+}
+
+test "sdfBondOrder maps all types correctly" {
+    try std.testing.expectEqual(hybridization.BondOrder.single, sdfBondOrder(1));
+    try std.testing.expectEqual(hybridization.BondOrder.double, sdfBondOrder(2));
+    try std.testing.expectEqual(hybridization.BondOrder.triple, sdfBondOrder(3));
+    try std.testing.expectEqual(hybridization.BondOrder.aromatic, sdfBondOrder(4));
+    try std.testing.expectEqual(hybridization.BondOrder.unknown, sdfBondOrder(5));
+    try std.testing.expectEqual(hybridization.BondOrder.unknown, sdfBondOrder(0));
+    try std.testing.expectEqual(hybridization.BondOrder.unknown, sdfBondOrder(255));
 }

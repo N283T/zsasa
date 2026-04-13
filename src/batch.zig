@@ -1044,21 +1044,7 @@ pub fn runBatch(
 // =============================================================================
 
 /// Parsed command-line arguments for the batch subcommand
-/// Fixed-capacity list for SDF paths (max 16)
-const SdfPathList = struct {
-    items: [16][]const u8 = undefined,
-    len: usize = 0,
-
-    fn append(self: *SdfPathList, value: []const u8) error{Overflow}!void {
-        if (self.len >= 16) return error.Overflow;
-        self.items[self.len] = value;
-        self.len += 1;
-    }
-
-    fn constSlice(self: *const SdfPathList) []const []const u8 {
-        return self.items[0..self.len];
-    }
-};
+const SdfPathList = sdf_parser.SdfPathList;
 
 pub const BatchArgs = struct {
     input_path: ?[]const u8 = null,
@@ -1434,71 +1420,9 @@ pub fn printHelp(program_name: []const u8) void {
     , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
-/// Load SDF files and build a ComponentDict from their bond topology
-fn loadSdfComponents(
-    allocator: Allocator,
-    sdf_paths: []const []const u8,
-    quiet: bool,
-) !?ccd_parser.ComponentDict {
-    if (sdf_paths.len == 0) return null;
-
-    var dict = ccd_parser.ComponentDict.init(allocator);
-    errdefer dict.deinit();
-
-    for (sdf_paths) |sdf_path| {
-        const source = if (std.mem.endsWith(u8, sdf_path, ".gz"))
-            gzip.readGzip(allocator, sdf_path) catch |err| {
-                std.debug.print("Error reading SDF file '{s}': {s}\n", .{ sdf_path, @errorName(err) });
-                std.process.exit(1);
-            }
-        else file_blk: {
-            const f = std.fs.cwd().openFile(sdf_path, .{}) catch |err| {
-                std.debug.print("Error opening SDF file '{s}': {s}\n", .{ sdf_path, @errorName(err) });
-                std.process.exit(1);
-            };
-            defer f.close();
-            break :file_blk f.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024) catch |err| {
-                std.debug.print("Error reading SDF file '{s}': {s}\n", .{ sdf_path, @errorName(err) });
-                std.process.exit(1);
-            };
-        };
-        defer allocator.free(source);
-
-        const molecules = sdf_parser.parse(allocator, source) catch |err| {
-            std.debug.print("Error parsing SDF file '{s}': {s}\n", .{ sdf_path, @errorName(err) });
-            std.process.exit(1);
-        };
-        defer sdf_parser.freeMolecules(allocator, molecules);
-
-        for (molecules) |mol| {
-            if (mol.name.len == 0) {
-                if (!quiet) std.debug.print("Warning: SDF molecule has no name, skipping\n", .{});
-                continue;
-            }
-            const stored = sdf_parser.toStoredComponent(allocator, &mol) catch |err| {
-                if (!quiet) std.debug.print("Warning: Could not convert SDF molecule '{s}': {s}\n", .{ mol.name, @errorName(err) });
-                continue;
-            };
-            const comp_id_str = mol.name[0..@min(mol.name.len, 5)];
-            const dict_key = allocator.dupe(u8, comp_id_str) catch continue;
-            dict.owned_keys.append(allocator, dict_key) catch {
-                allocator.free(dict_key);
-                continue;
-            };
-            dict.components.put(dict_key, stored) catch continue;
-        }
-
-        if (!quiet) {
-            std.debug.print("SDF: loaded from '{s}'\n", .{sdf_path});
-        }
-    }
-
-    if (dict.components.count() == 0) {
-        dict.deinit();
-        return null;
-    }
-    return dict;
-}
+/// Load SDF files and build a ComponentDict from their bond topology.
+/// Delegates to sdf_parser.loadSdfComponents.
+const loadSdfComponents = sdf_parser.loadSdfComponents;
 
 /// Run batch processing from parsed CLI arguments
 pub fn run(allocator: Allocator, args: BatchArgs) !void {
