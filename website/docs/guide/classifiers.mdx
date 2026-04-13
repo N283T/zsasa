@@ -11,10 +11,10 @@ Classifiers assign van der Waals radii and polarity classes to atoms based on re
 
 ## Quick Recommendation
 
-- **ProtOr**: CLI default for PDB/mmCIF. Hybridization-based radii (Tsai et al. 1999).
-- **NACCESS**: Widely used, compatible with FreeSASA. Use when comparing with NACCESS-based studies.
-- **OONS**: Larger aliphatic carbon radii. Use when comparing with OONS-based studies.
-- **CCD**: Derives radii from bond topology. Use for structures with ligands, modified residues, or non-standard components.
+- **CCD** (recommended): Superset of ProtOr that extends coverage to any chemical component via CCD bond topology. Best for structures with ligands, modified residues, or non-standard components.
+- **ProtOr**: CLI default for PDB/mmCIF. Hybridization-based radii (Tsai et al. 1999). Also the default classifier in [FreeSASA](https://freesasa.github.io/).
+- **NACCESS**: Use when reproducing or comparing with NACCESS-based studies.
+- **OONS**: Larger aliphatic carbon radii (2.00 Å). Use when reproducing or comparing with OONS-based studies.
 
 ## How Classifiers Work
 
@@ -24,27 +24,41 @@ Classifiers assign van der Waals radii and polarity classes to atoms based on re
 
 ## Classifier Comparison
 
-### Radius Differences
+### Radii Reference Table
 
-| Atom Type | NACCESS | ProtOr | OONS | CCD |
-|-----------|---------|--------|------|-----|
-| Aliphatic C (e.g., CA, CB) | 1.87 Å | 1.88 Å | **2.00 Å** | 1.88 Å |
-| Aromatic C | 1.76 Å | 1.76 Å | 1.75 Å | 1.76 Å |
-| Nitrogen | 1.65 Å | 1.64 Å | 1.55 Å | 1.64 Å |
-| Oxygen | 1.40 Å | 1.42-1.46 Å | 1.40 Å | 1.42-1.46 Å |
-| Sulfur | 1.85 Å (**apolar**) | 1.77 Å (**polar**) | 2.00 Å (**polar**) | 1.77 Å (**polar**) |
+All classifiers use united-atom radii (implicit hydrogens). The ProtOr/CCD column differentiates radii by hybridization state and hydrogen count, following [Tsai et al. 1999](https://doi.org/10.1006/jmbi.1999.2829).
 
-:::warning[Sulfur polarity varies]
-NACCESS treats sulfur as **apolar**, while ProtOr and OONS treat it as **polar**. This affects polar/nonpolar SASA classification for CYS and MET residues.
+| Element | Hybridization | ProtOr / CCD | NACCESS | OONS | Polarity |
+|---------|--------------|:---:|:---:|:---:|----------|
+| **Carbon** | sp2, 0 H (carbonyl C, aromatic C without H) | 1.61 | 1.76 | 1.55 | apolar (all) |
+| | sp2, 1 H (aromatic CH) | 1.76 | 1.76 | 1.75 | apolar (all) |
+| | sp3, 1–3 H (CA, CB, CG, etc.) | 1.88 | 1.87 | **2.00** | apolar (all) |
+| **Nitrogen** | all (amide, amino, imino, etc.) | 1.64 | 1.50–1.65 | 1.55 | polar (all) |
+| **Oxygen** | sp2, 0 H (C=O carbonyl) | 1.42 | 1.40 | 1.40 | polar (all) |
+| | sp3, 0–1 H (O-H hydroxyl, ether) | 1.46 | 1.40 | 1.40 | polar (all) |
+| | sp3, 2 H (water) | 1.46 | 1.40 | 1.40 | polar (all) |
+| **Sulfur** | sp3 (thiol, thioether) | 1.77 | 1.85 | 2.00 | **polar** / apolar^NACCESS^ / polar |
+| **Selenium** | sp3 (MSE, SEC) | 1.90 | 1.80 | 1.90 | **polar** / apolar^NACCESS^ / polar |
+| **Phosphorus** | sp3 (nucleic acid backbone) | 1.80 | 1.90 | 1.80 | **polar** / apolar^NACCESS^ / polar |
+
+:::warning[Sulfur, Selenium, and Phosphorus polarity]
+NACCESS treats S, Se, and P as **apolar**, while ProtOr, OONS, and CCD treat them as **polar**. This affects polar/nonpolar SASA partitioning for CYS, MET, MSE, SEC residues and nucleic acid backbones.
 :::
 
 ### Key Differences
 
-| Property | NACCESS | ProtOr | OONS | CCD |
-|----------|---------|--------|------|-----|
-| ANY fallback | Yes | **No** | Yes | **No** |
-| Classification basis | Atom type | Hybridization state | Atom type | CCD bond topology → hybridization |
-| Reference | Hubbard & Thornton 1993 | Tsai et al. 1999 | Ooi et al. 1987 | Tsai et al. 1999 + wwPDB CCD |
+| Property | ProtOr / CCD | NACCESS | OONS |
+|----------|:---:|:---:|:---:|
+| **Basis** | Hybridization state | Atom type | Atom type |
+| **ANY fallback** | No | Yes | Yes |
+| **S, Se, P polarity** | Polar | Apolar | Polar |
+| **OONS C_CAR polarity** | Apolar | Apolar | **Polar** |
+| **Non-standard residues** | CCD bond topology | Element fallback | Element fallback |
+| **Reference** | Tsai et al. 1999 | Hubbard & Thornton 1993 | Ooi et al. 1987 |
+
+:::info[ProtOr and CCD produce identical radii for standard residues]
+The CCD classifier uses the same ProtOr radii for the 20 standard amino acids and nucleotides. The difference is that CCD can derive hybridization-aware radii for _any_ component with CCD bond topology data, while ProtOr falls back to element-based estimation for unknown residues.
+:::
 
 ## Usage
 
@@ -52,11 +66,11 @@ NACCESS treats sulfur as **apolar**, while ProtOr and OONS treat it as **polar**
   <TabItem value="cli" label="CLI" default>
 
 ```bash
-# NACCESS (recommended)
-zsasa calc --classifier=naccess structure.cif output.json
-
-# ProtOr
+# ProtOr (default for PDB/mmCIF)
 zsasa calc --classifier=protor structure.cif output.json
+
+# NACCESS
+zsasa calc --classifier=naccess structure.cif output.json
 
 # OONS
 zsasa calc --classifier=oons structure.cif output.json
@@ -77,8 +91,8 @@ zsasa calc --config=my_radii.toml structure.cif output.json
 ```python
 from zsasa import classify_atoms, calculate_sasa, ClassifierType
 
-# Step 1: Classify atoms to get radii
-classification = classify_atoms(residue_names, atom_names, ClassifierType.NACCESS)
+# Step 1: Classify atoms to get radii (ProtOr is the default)
+classification = classify_atoms(residue_names, atom_names, ClassifierType.PROTOR)
 
 # Step 2: Calculate SASA using classified radii
 result = calculate_sasa(coords, classification.radii)
@@ -98,7 +112,7 @@ from zsasa.integrations.gemmi import calculate_sasa_from_structure
 # Classifier is applied automatically
 result = calculate_sasa_from_structure(
     "protein.cif",
-    classifier=ClassifierType.NACCESS,
+    classifier=ClassifierType.PROTOR,
 )
 
 # CCD classifier (auto-includes HETATM)
