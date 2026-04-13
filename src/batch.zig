@@ -10,7 +10,7 @@ const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
 const bitmask_lut = @import("bitmask_lut.zig");
 const lee_richards = @import("lee_richards.zig");
 const classifier = @import("classifier.zig");
-const classifier_protor = @import("classifier_protor.zig");
+// classifier_protor removed — ProtOr is now an alias for CCD
 const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
@@ -57,7 +57,7 @@ pub const BatchConfig = struct {
     show_timing: bool = false,
     quiet: bool = false,
     precision: Precision = .f64, // f32 or f64
-    classifier_type: ?ClassifierType = .protor, // Default: protor (matches FreeSASA/RustSASA)
+    classifier_type: ?ClassifierType = .ccd, // Default: ccd (ProtOr-compatible with CCD extension)
     include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
     include_hetatm: bool = false, // Include HETATM records (default: exclude)
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
@@ -337,8 +337,8 @@ fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType, external_ccd: ?
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
 
-    // For CCD: create classifier instance and feed external CCD components
-    var ccd_clf: ?classifier_ccd.CcdClassifier = if (ct == .ccd) classifier_ccd.CcdClassifier.init(input.allocator) else null;
+    // For CCD/ProtOr: create classifier instance and feed external CCD components
+    var ccd_clf: ?classifier_ccd.CcdClassifier = if (ct == .ccd or ct == .protor) classifier_ccd.CcdClassifier.init(input.allocator) else null;
     defer if (ccd_clf) |*c| c.deinit();
 
     if (ccd_clf != null) {
@@ -369,9 +369,8 @@ fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType, external_ccd: ?
     for (0..n) |i| {
         const maybe_radius: ?f64 = switch (ct) {
             .naccess => classifier_naccess.getRadius(residues[i].slice(), atom_names[i].slice()),
-            .protor => classifier_protor.getRadius(residues[i].slice(), atom_names[i].slice()),
+            .protor, .ccd => if (ccd_clf) |*c| c.getRadius(residues[i].slice(), atom_names[i].slice()) else null,
             .oons => classifier_oons.getRadius(residues[i].slice(), atom_names[i].slice()),
-            .ccd => if (ccd_clf) |*c| c.getRadius(residues[i].slice(), atom_names[i].slice()) else null,
         };
 
         if (maybe_radius) |r| {
@@ -1033,7 +1032,7 @@ pub const BatchArgs = struct {
     algorithm: Algorithm = .sr,
     precision: Precision = .f64,
     output_format: OutputFormat = .json,
-    classifier_type: ClassifierType = .protor, // Default: protor (matches FreeSASA/RustSASA)
+    classifier_type: ClassifierType = .ccd, // Default: ccd (ProtOr-compatible with CCD extension)
     include_hydrogens: bool = false,
     include_hetatm: bool = false,
     use_bitmask: bool = false,
@@ -1120,7 +1119,7 @@ fn parseClassifierType(value: []const u8) ClassifierType {
         return ct;
     } else {
         std.debug.print("Error: Invalid classifier: {s}\n", .{value});
-        std.debug.print("Valid classifiers: naccess, protor, oons, ccd\n", .{});
+        std.debug.print("Valid classifiers: ccd, protor, naccess, oons\n", .{});
         std.process.exit(1);
     }
 }
@@ -1345,8 +1344,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\OPTIONS:
         \\    --algorithm=ALGO    Algorithm: sr (shrake-rupley), lr (lee-richards)
         \\                        Default: sr
-        \\    --classifier=TYPE   Built-in classifier: naccess, protor, oons, ccd
-        \\                        Default: protor
+        \\    --classifier=TYPE   Built-in classifier: ccd, protor, naccess, oons
+        \\                        Default: ccd (protor is an alias for ccd)
         \\    --ccd=PATH          External CCD dictionary file (.zsdc or .cif[.gz])
         \\                        Used with --classifier=ccd for non-standard residues
         \\    --threads=N         Number of threads (default: auto-detect)
@@ -1640,8 +1639,8 @@ test "BatchArgs --algorithm=shrake-rupley (long form)" {
     try std.testing.expectEqual(Algorithm.sr, parsed.algorithm);
 }
 
-test "BatchArgs classifier_type defaults to protor" {
+test "BatchArgs classifier_type defaults to ccd" {
     const args = [_][]const u8{ "zsasa", "batch", "input_dir/" };
     const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(ClassifierType.protor, parsed.classifier_type);
+    try std.testing.expectEqual(ClassifierType.ccd, parsed.classifier_type);
 }

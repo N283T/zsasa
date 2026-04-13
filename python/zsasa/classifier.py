@@ -26,10 +26,11 @@ class ClassifierType(IntEnum):
     """Available classifier types for atom radius assignment.
 
     Attributes:
-        NACCESS: NACCESS-compatible radii (default, most commonly used).
-        PROTOR: ProtOr radii based on hybridization state.
-        OONS: Ooi, Oobatake, Nemethy, Scheraga radii (older FreeSASA default).
-        CCD: CCD-based radii derived from bond topology (ProtOr-compatible).
+        CCD: CCD-based radii (default). Hardcoded ProtOr radii + runtime CCD
+             analysis for non-standard residues via bond topology.
+        PROTOR: Alias for CCD. Kept for backward compatibility.
+        NACCESS: NACCESS-compatible radii.
+        OONS: Ooi, Oobatake, Nemethy, Scheraga radii.
     """
 
     NACCESS = ZSASA_CLASSIFIER_NACCESS
@@ -55,14 +56,14 @@ class AtomClass(IntEnum):
 def get_radius(
     residue: str,
     atom: str,
-    classifier_type: ClassifierType = ClassifierType.NACCESS,
+    classifier_type: ClassifierType = ClassifierType.CCD,
 ) -> float | None:
     """Get van der Waals radius for an atom using the specified classifier.
 
     Args:
         residue: Residue name (e.g., "ALA", "GLY").
         atom: Atom name (e.g., "CA", "CB").
-        classifier_type: Classifier to use. Default: ClassifierType.NACCESS.
+        classifier_type: Classifier to use. Default: ClassifierType.CCD.
 
     Returns:
         Radius in Angstroms, or None if atom is not found in classifier.
@@ -88,14 +89,14 @@ def get_radius(
 def get_atom_class(
     residue: str,
     atom: str,
-    classifier_type: ClassifierType = ClassifierType.NACCESS,
+    classifier_type: ClassifierType = ClassifierType.CCD,
 ) -> int:
     """Get atom polarity class using the specified classifier.
 
     Args:
         residue: Residue name (e.g., "ALA", "GLY").
         atom: Atom name (e.g., "CA", "CB").
-        classifier_type: Classifier to use. Default: ClassifierType.NACCESS.
+        classifier_type: Classifier to use. Default: ClassifierType.CCD.
 
     Returns:
         AtomClass constant (POLAR, APOLAR, or UNKNOWN).
@@ -195,7 +196,7 @@ class ClassificationResult:
 def classify_atoms(
     residues: list[str],
     atoms: list[str],
-    classifier_type: ClassifierType = ClassifierType.NACCESS,
+    classifier_type: ClassifierType = ClassifierType.CCD,
     *,
     include_classes: bool = True,
 ) -> ClassificationResult:
@@ -206,7 +207,7 @@ def classify_atoms(
     Args:
         residues: List of residue names.
         atoms: List of atom names (must be same length as residues).
-        classifier_type: Classifier to use. Default: ClassifierType.NACCESS.
+        classifier_type: Classifier to use. Default: ClassifierType.CCD.
         include_classes: Whether to compute atom classes. Default: True.
 
     Returns:

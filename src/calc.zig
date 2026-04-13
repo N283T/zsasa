@@ -16,7 +16,7 @@ const types = @import("types.zig");
 const classifier = @import("classifier.zig");
 const classifier_parser = @import("classifier_parser.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
-const classifier_protor = @import("classifier_protor.zig");
+// classifier_protor removed — ProtOr is now an alias for CCD
 const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
 const ccd_parser = @import("ccd_parser.zig");
@@ -460,10 +460,11 @@ pub fn printHelp(program_name: []const u8) void {
         \\OPTIONS:
         \\    --algorithm=ALGO   Algorithm: sr (shrake-rupley), lr (lee-richards)
         \\                       Default: sr
-        \\    --classifier=TYPE  Built-in classifier: naccess, protor, oons, ccd
-        \\                       Default: protor for PDB/mmCIF, none for JSON
+        \\    --classifier=TYPE  Built-in classifier: ccd, protor, naccess, oons
+        \\                       Default: ccd for PDB/mmCIF, none for JSON
+        \\                       protor is an alias for ccd
         \\    --ccd=PATH         External CCD dictionary file (.zsdc or .cif[.gz])
-        \\                       Used with --classifier=ccd for non-standard residues
+        \\                       Extends CCD coverage for non-standard residues
         \\    --config=FILE      Custom classifier config file (FreeSASA format)
         \\    --chain=ID         Filter by chain ID (e.g., --chain=A or --chain=A,B,C)
         \\                       Default: label_asym_id (mmCIF standard)
@@ -495,7 +496,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\    lr, lee-richards   Slice-based method
         \\
         \\CLASSIFIERS:
-        \\    protor   ProtOr radii (Tsai et al. 1999) - default for PDB/mmCIF
+        \\    ccd      CCD bond-topology radii (default for PDB/mmCIF)
+        \\    protor   Alias for ccd (ProtOr-compatible, Tsai et al. 1999)
         \\    naccess  NACCESS-compatible radii
         \\    oons     OONS radii (Ooi et al.)
         \\
@@ -640,8 +642,9 @@ fn applyBuiltinClassifier(
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
 
-    // For CCD: create classifier instance and feed inline/external CCD components
-    var ccd_clf: ?classifier_ccd.CcdClassifier = if (ct == .ccd) classifier_ccd.CcdClassifier.init(input.allocator) else null;
+    // For CCD/ProtOr: create classifier instance and feed inline/external CCD components
+    // ProtOr is an alias for CCD (same hardcoded radii, plus runtime CCD analysis)
+    var ccd_clf: ?classifier_ccd.CcdClassifier = if (ct == .ccd or ct == .protor) classifier_ccd.CcdClassifier.init(input.allocator) else null;
     defer if (ccd_clf) |*c| c.deinit();
 
     // Feed CCD components for non-standard residues
@@ -694,9 +697,8 @@ fn applyBuiltinClassifier(
         // Try built-in classifier lookup
         const maybe_radius: ?f64 = switch (ct) {
             .naccess => classifier_naccess.getRadius(residues[i].slice(), atom_names[i].slice()),
-            .protor => classifier_protor.getRadius(residues[i].slice(), atom_names[i].slice()),
+            .protor, .ccd => if (ccd_clf) |*c| c.getRadius(residues[i].slice(), atom_names[i].slice()) else null,
             .oons => classifier_oons.getRadius(residues[i].slice(), atom_names[i].slice()),
-            .ccd => if (ccd_clf) |*c| c.getRadius(residues[i].slice(), atom_names[i].slice()) else null,
         };
 
         if (maybe_radius) |r| {
@@ -866,11 +868,11 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
     }
 
     // Apply classifier (--config takes precedence over --classifier)
-    // Default: protor for PDB/mmCIF input (matches FreeSASA/RustSASA defaults)
+    // Default: ccd for PDB/mmCIF input (ProtOr-compatible with CCD extension)
     timer.reset();
     const input_format = format_detect.detectInputFormat(args.input_path.?);
     const effective_classifier: ?ClassifierType = args.classifier_type orelse
-        if (args.config_path == null and input_format != .json) .protor else null;
+        if (args.config_path == null and input_format != .json) .ccd else null;
 
     if (args.config_path != null or effective_classifier != null) {
         // Warn if both are specified
