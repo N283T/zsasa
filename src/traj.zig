@@ -128,7 +128,7 @@ pub const TrajArgs = struct {
     n_points: u32 = 100,
     n_slices: u32 = 20,
     precision: Precision = .f32, // Default f32 for trajectory (speed)
-    classifier_type: ?ClassifierType = null,
+    classifier_type: ?ClassifierType = .naccess, // Default: NACCESS for trajectories (supports explicit H)
     ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz])
     stride: u32 = 1, // Process every Nth frame
     start_frame: u32 = 0, // Start frame
@@ -323,6 +323,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --algorithm=ALGO   Algorithm: sr (shrake-rupley), lr (lee-richards)
         \\                       Default: sr
         \\    --classifier=TYPE  Built-in classifier: ccd, protor, naccess, oons
+        \\                       Default: naccess (supports explicit H in MD trajectories)
         \\    --ccd=PATH         External CCD dictionary file (.zsdc or .cif[.gz])
         \\                       Used with --classifier=ccd for non-standard residues
         \\    --threads=N        Number of threads (default: auto-detect)
@@ -642,6 +643,12 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
         std.debug.print("Error: Unknown trajectory format. Supported: .xtc, .dcd\n", .{});
         return error.UnsupportedFormat;
     };
+
+    // CCD/ProtOr use united-atom radii (implicit H) — warn if explicit H included
+    if ((args.classifier_type == .ccd or args.classifier_type == .protor) and args.include_hydrogens and !args.quiet) {
+        std.debug.print("Warning: --include-hydrogens with CCD classifier may give inaccurate results\n", .{});
+        std.debug.print("         CCD uses united-atom radii that already account for implicit hydrogens\n", .{});
+    }
 
     // Read topology to get atom names and radii
     if (!args.quiet) {
