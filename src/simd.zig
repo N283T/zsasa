@@ -893,7 +893,7 @@ pub fn circlesOverlapBatch4(
     const sum_radii = ri + rj;
     const overlaps = d < sum_radii;
 
-    return @bitCast(overlaps);
+    return @bitCast(@as(@Vector(4, u1), @intFromBool(overlaps)));
 }
 
 /// SIMD-optimized batch xy-distance calculation for Lee-Richards (8-wide).
@@ -981,7 +981,7 @@ pub fn circlesOverlapBatch8(
     const sum_radii = ri + rj;
     const overlaps = d < sum_radii;
 
-    return @bitCast(overlaps);
+    return @bitCast(@as(@Vector(8, u1), @intFromBool(overlaps)));
 }
 
 // Lee-Richards SIMD tests
@@ -1372,7 +1372,7 @@ pub fn circlesOverlapBatch4Gen(comptime T: type) type {
             const sum_radii = ri + rj;
             const overlaps = d < sum_radii;
 
-            return @bitCast(overlaps);
+            return @bitCast(@as(@Vector(4, u1), @intFromBool(overlaps)));
         }
     };
 }
@@ -1444,7 +1444,7 @@ pub fn circlesOverlapBatch8Gen(comptime T: type) type {
             const sum_radii = ri + rj;
             const overlaps = d < sum_radii;
 
-            return @bitCast(overlaps);
+            return @bitCast(@as(@Vector(8, u1), @intFromBool(overlaps)));
         }
     };
 }
