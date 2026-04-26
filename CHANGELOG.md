@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-04-26
+
+### Changed
+
+- **Gzip decompression: C-zlib → native `std.compress.flate`**. Reverts the workaround introduced in #320 now that the upstream panic ([ziglang/zig#25035](https://github.com/ziglang/zig/issues/25035)) is fixed in Zig 0.16. Public API (`readGzip`, `readGzipLimited`, `DEFAULT_MAX_SIZE`, `GzipError`) and the 4 GB decompression-bomb cap unchanged; callers untouched. (#351)
+
+### Added
+
+- **Explicit gzip CRC32 + ISIZE trailer verification** in `gzip.zig`. `std.compress.flate` parses the gzip trailer fields but does not compare them against the decompressed bytes; without this check a corrupt `.cif.gz` could silently decompress to wrong bytes. Adds a regression test (`readGzip rejects gzip with corrupted CRC`). (#351)
+
+### Removed
+
+- **`zlib` dependency** — removed from `build.zig.zon`, `build.zig` (`b.dependency`, `linkLibrary`, `b.addTranslateC`), and `src/c/zlib_wrapper.h`. The shared library no longer links zlib. (#351)
+
 ## [0.2.9] - 2026-04-26
 
 ### Changed
