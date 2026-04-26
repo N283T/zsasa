@@ -420,7 +420,7 @@ test "writeSasaResultWithFormat json" {
     defer allocator.free(content);
 
     // Should be pretty-printed
-    try std.testing.expect(std.mem.indexOf(u8, content, "\n") != null);
+    try std.testing.expect(std.mem.find(u8, content, "\n") != null);
 }
 
 test "writeSasaResultWithFormat csv" {
@@ -574,11 +574,11 @@ test "sasaResultToRichCsv with full info" {
     try std.testing.expect(std.mem.startsWith(u8, csv, "chain,residue,resnum,atom_name,x,y,z,radius,area\n"));
 
     // Check it contains expected data
-    try std.testing.expect(std.mem.indexOf(u8, csv, "A,ALA,1,N,") != null);
-    try std.testing.expect(std.mem.indexOf(u8, csv, "A,ALA,1,CA,") != null);
+    try std.testing.expect(std.mem.find(u8, csv, "A,ALA,1,N,") != null);
+    try std.testing.expect(std.mem.find(u8, csv, "A,ALA,1,CA,") != null);
 
     // Check total row exists
-    try std.testing.expect(std.mem.indexOf(u8, csv, ",,,,,,,,30.800000\n") != null);
+    try std.testing.expect(std.mem.find(u8, csv, ",,,,,,,,30.800000\n") != null);
 }
 
 test "sasaResultToRichCsv without residue info uses dashes" {
@@ -615,7 +615,7 @@ test "sasaResultToRichCsv without residue info uses dashes" {
     defer allocator.free(csv);
 
     // Check that missing fields produce dashes
-    try std.testing.expect(std.mem.indexOf(u8, csv, "-,-,-,-,1.000,2.000,3.000,1.500,15.000000\n") != null);
+    try std.testing.expect(std.mem.find(u8, csv, "-,-,-,-,1.000,2.000,3.000,1.500,15.000000\n") != null);
 }
 
 test "fileResultToJsonlLine basic" {

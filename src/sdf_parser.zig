@@ -176,7 +176,7 @@ fn parseSingleMolecule(
         // Check for V3000 — parseV3000Body takes ownership of `name`
         // (handles cleanup on both success and error), so we must NOT
         // free `name` here on this path.
-        if (std.mem.indexOf(u8, counts_line, "V3000") != null) {
+        if (std.mem.find(u8, counts_line, "V3000") != null) {
             return try parseV3000Body(allocator, name, line_iter);
         }
 

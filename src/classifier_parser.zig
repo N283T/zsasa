@@ -299,7 +299,7 @@ fn readFileContent(allocator: Allocator, io: std.Io, path: []const u8) Error![]u
 
 /// Strip comment from a line (everything after # is removed)
 fn stripComment(line: []const u8) []const u8 {
-    if (std.mem.indexOfScalar(u8, line, '#')) |idx| {
+    if (std.mem.findScalar(u8, line, '#')) |idx| {
         return line[0..idx];
     }
     return line;

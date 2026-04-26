@@ -113,7 +113,7 @@ fn replaceExtension(allocator: Allocator, filename: []const u8, new_ext: []const
     }
 
     // Find and strip existing extension
-    if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot_idx| {
+    if (std.mem.findScalarLast(u8, base, '.')) |dot_idx| {
         const stem = base[0..dot_idx];
         return std.fmt.allocPrint(allocator, "{s}{s}", .{ stem, new_ext });
     }
@@ -129,7 +129,7 @@ fn sdfMoleculeDisplayName(allocator: Allocator, filename: []const u8, mol_name: 
     // Strip extension (.sdf, .sdf.gz, .mol, .mol.gz) to get stem
     var base = filename;
     if (std.mem.endsWith(u8, base, ".gz")) base = base[0 .. base.len - 3];
-    const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot_idx|
+    const stem = if (std.mem.findScalarLast(u8, base, '.')) |dot_idx|
         base[0..dot_idx]
     else
         base;
@@ -454,7 +454,7 @@ pub fn scanDirectory(allocator: Allocator, io: std.Io, dir_path: []const u8) ![]
 
         const name = entry.name;
         // Skip filenames with path separators (defense in depth)
-        if (std.mem.indexOfAny(u8, name, "/\\") != null) continue;
+        if (std.mem.findAny(u8, name, "/\\") != null) continue;
         if (format_detect.isSupportedFile(name)) {
             const filename = try allocator.dupe(u8, name);
             try files.append(allocator, filename);
