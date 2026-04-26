@@ -6,27 +6,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // zlib dependency (built from source via allyourcodebase/zlib)
-    const zlib_dep = b.dependency("zlib", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const zlib_artifact = zlib_dep.artifact("z");
-
-    // PIC-enabled zlib for shared library builds
-    const zlib_pic_dep = b.dependency("zlib", .{
-        .target = target,
-        .optimize = optimize,
-        .pie = true,
-    });
-    const zlib_pic_artifact = zlib_pic_dep.artifact("z");
-
     // Library module (exposed to package consumers via zig fetch)
     const mod = b.addModule("zsasa", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
-    mod.linkLibrary(zlib_artifact);
 
     const zxdrfile_dep = b.dependency("zxdrfile", .{
         .target = target,
@@ -50,7 +34,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zxdrfile", .module = zxdrfile_mod },
         },
     });
-    exe_module.linkLibrary(zlib_artifact);
 
     const exe = b.addExecutable(.{
         .name = "zsasa",
@@ -58,25 +41,11 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
-    // Translate zlib.h to a Zig module via addTranslateC (preferred over @cImport
-    // in 0.16). The wrapper header (src/c/zlib_wrapper.h) exists because
-    // addTranslateC requires a build-rooted b.path() as root_source_file; lazy
-    // paths returned from dependencies (e.g. zlib_dep.path("zlib.h")) cannot
-    // serve as the root — only as include paths.
-    const zlib_c = b.addTranslateC(.{
-        .root_source_file = b.path("src/c/zlib_wrapper.h"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    zlib_c.addIncludePath(zlib_dep.path("."));
-    const zlib_c_mod = zlib_c.createModule();
-
-    // Wire zlib_c into the modules that need it
-    mod.addImport("zlib_c", zlib_c_mod);
-    exe_module.addImport("zlib_c", zlib_c_mod);
-
-    // Shared library for C API / Python bindings
+    // Shared library for C API / Python bindings.
+    // libc is required because c_api.zig uses std.heap.c_allocator (so the
+    // FFI surface uses C's malloc/free rather than a per-call GeneralPurposeAllocator,
+    // matching Python ctypes' lifetime expectations). On macOS the dylib auto-links
+    // libSystem so this is implicit, but Linux needs the explicit flag.
     const lib_module = b.createModule(.{
         .root_source_file = b.path("src/c_api.zig"),
         .target = target,
@@ -86,8 +55,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zxdrfile", .module = zxdrfile_mod },
         },
     });
-    lib_module.linkLibrary(zlib_pic_artifact);
-    lib_module.addImport("zlib_c", zlib_c_mod);
 
     const lib = b.addLibrary(.{
         .linkage = .dynamic,
