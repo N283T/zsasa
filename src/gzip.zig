@@ -2,7 +2,9 @@
 //!
 //! Workaround for Zig 0.15 flate bug (unreachable in Writer.rebase).
 //! See: https://github.com/ziglang/zig/issues/25035
-//! TODO: revert to native flate when Zig fixes the bug (test with 2oxd.cif.gz)
+//!
+//! TODO(PR2): revert to std.compress.flate now that ziglang/zig#25035 is fixed
+//! in Zig 0.16. Verify regression with 2oxd.cif.gz (the original reproducer).
 
 const std = @import("std");
 const c = @import("zlib_c");

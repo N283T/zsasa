@@ -58,9 +58,11 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
-    // Translate zlib.h to a Zig module (replaces source-level @cImport in 0.16).
-    // Use a local wrapper header so that addTranslateC gets a concrete b.path()
-    // (dependency lazy paths cannot serve as root_source_file for translate-c).
+    // Translate zlib.h to a Zig module via addTranslateC (preferred over @cImport
+    // in 0.16). The wrapper header (src/c/zlib_wrapper.h) exists because
+    // addTranslateC requires a build-rooted b.path() as root_source_file; lazy
+    // paths returned from dependencies (e.g. zlib_dep.path("zlib.h")) cannot
+    // serve as the root — only as include paths.
     const zlib_c = b.addTranslateC(.{
         .root_source_file = b.path("src/c/zlib_wrapper.h"),
         .target = target,

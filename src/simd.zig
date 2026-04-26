@@ -893,6 +893,9 @@ pub fn circlesOverlapBatch4(
     const sum_radii = ri + rj;
     const overlaps = d < sum_radii;
 
+    // Cross-platform packed bit layout: @Vector(N, bool) layout is target-defined
+    // in Zig 0.16+. Forcing through @Vector(N, u1) before @bitCast guarantees a
+    // packed uN result on all platforms (Linux x86_64 regression caught in CI).
     return @bitCast(@as(@Vector(4, u1), @intFromBool(overlaps)));
 }
 
@@ -981,6 +984,7 @@ pub fn circlesOverlapBatch8(
     const sum_radii = ri + rj;
     const overlaps = d < sum_radii;
 
+    // See circlesOverlapBatch4 comment on @Vector(N, bool) layout fix.
     return @bitCast(@as(@Vector(8, u1), @intFromBool(overlaps)));
 }
 
@@ -1372,6 +1376,7 @@ pub fn circlesOverlapBatch4Gen(comptime T: type) type {
             const sum_radii = ri + rj;
             const overlaps = d < sum_radii;
 
+            // See circlesOverlapBatch4 comment on @Vector(N, bool) layout fix.
             return @bitCast(@as(@Vector(4, u1), @intFromBool(overlaps)));
         }
     };
@@ -1444,6 +1449,7 @@ pub fn circlesOverlapBatch8Gen(comptime T: type) type {
             const sum_radii = ri + rj;
             const overlaps = d < sum_radii;
 
+            // See circlesOverlapBatch4 comment on @Vector(N, bool) layout fix.
             return @bitCast(@as(@Vector(8, u1), @intFromBool(overlaps)));
         }
     };
