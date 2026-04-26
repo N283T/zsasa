@@ -15,26 +15,6 @@ TEST_DATA_DIR = Path(__file__).parent.parent.parent / "test_data"
 XTC_FILE = TEST_DATA_DIR / "1l2y.xtc"
 
 
-def _xtc_enabled() -> bool:
-    """Return True if XTC support was compiled in."""
-    try:
-        XtcReader("/nonexistent/path.xtc")
-    except RuntimeError as e:
-        if "Error opening XTC file: -6" in str(e):
-            return False
-        # Any other RuntimeError means XTC is enabled but the file wasn't found
-        return True
-    except (FileNotFoundError, OSError):
-        return True
-    return True
-
-
-pytestmark = pytest.mark.skipif(
-    not _xtc_enabled(),
-    reason="XTC support disabled (rebuild with -Dxtc=true)",
-)
-
-
 class TestXtcReader:
     """Test XtcReader class."""
 

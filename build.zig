@@ -6,12 +6,6 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const xtc_enabled = b.option(
-        bool,
-        "xtc",
-        "Enable XTC trajectory support via zxdrfile dependency (default: false until zxdrfile is migrated to Zig 0.16)",
-    ) orelse false;
-
     // zlib dependency (built from source via allyourcodebase/zlib)
     const zlib_dep = b.dependency("zlib", .{
         .target = target,
@@ -34,21 +28,15 @@ pub fn build(b: *std.Build) void {
     });
     mod.linkLibrary(zlib_artifact);
 
-    const zxdrfile_mod = if (xtc_enabled) blk: {
-        const zxdrfile_dep = b.dependency("zxdrfile", .{
-            .target = target,
-            .optimize = optimize,
-        });
-        break :blk zxdrfile_dep.module("zxdrfile");
-    } else b.createModule(.{
-        .root_source_file = b.path("src/zxdrfile_stub.zig"),
+    const zxdrfile_dep = b.dependency("zxdrfile", .{
         .target = target,
+        .optimize = optimize,
     });
+    const zxdrfile_mod = zxdrfile_dep.module("zxdrfile");
 
     // CLI executable
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
-    options.addOption(bool, "xtc", xtc_enabled);
 
     const options_mod = options.createModule();
 
@@ -94,7 +82,6 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{
             .{ .name = "zxdrfile", .module = zxdrfile_mod },
-            .{ .name = "build_options", .module = options_mod },
         },
     });
     lib_module.linkLibrary(zlib_pic_artifact);

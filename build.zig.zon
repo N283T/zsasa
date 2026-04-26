@@ -33,8 +33,8 @@
     // internet connectivity.
     .dependencies = .{
         .zxdrfile = .{
-            .url = "git+https://github.com/N283T/zxdrfile.git?ref=v0.1.1#ef0e63dfd74eae5f3a0b49d19fac002989c0a351",
-            .hash = "zxdrfile-0.1.1-JIaQ9ir5AACu7dbzJDk9taGRu7tRROckg6kClL58b9dP",
+            .url = "git+https://github.com/N283T/zxdrfile.git?ref=v0.4.0#47d8c42cff9b098febd1990cc50438c26987f85c",
+            .hash = "zxdrfile-0.4.0-JIaQ9mIfAgAHB9bW-_p9g6_gfd0tyG3-MmA0LYJKB8rb",
         },
         .zlib = .{
             .url = "git+https://github.com/allyourcodebase/zlib.git?ref=v1.3.1.1-2#c5115f4b69ef660f72a835c6638f80508ef284c7",

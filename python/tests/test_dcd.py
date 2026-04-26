@@ -16,27 +16,6 @@ DCD_FILE = TEST_DATA_DIR / "1l2y.dcd"
 XTC_FILE = TEST_DATA_DIR / "1l2y.xtc"
 
 
-def _xtc_enabled() -> bool:
-    """Return True if XTC support was compiled in."""
-    from zsasa.xtc import XtcReader
-
-    try:
-        XtcReader("/nonexistent/path.xtc")
-    except RuntimeError as e:
-        if "Error opening XTC file: -6" in str(e):
-            return False
-        return True
-    except (FileNotFoundError, OSError):
-        return True
-    return True
-
-
-_skip_if_xtc_disabled = pytest.mark.skipif(
-    not _xtc_enabled(),
-    reason="XTC support disabled (rebuild with -Dxtc=true)",
-)
-
-
 @pytest.fixture(autouse=True)
 def _skip_if_no_dcd() -> None:
     """Skip tests if DCD test file is not available."""
@@ -130,7 +109,6 @@ class TestDcdCoordinateUnits:
             assert np.all(frame.coords > -50)
             assert np.all(frame.coords < 50)
 
-    @_skip_if_xtc_disabled
     def test_dcd_matches_xtc_coordinates(self) -> None:
         """Test that DCD coordinates match XTC coordinates (after unit conversion)."""
         from zsasa.xtc import XtcReader
@@ -175,7 +153,6 @@ class TestComputeSasaTrajectory:
         assert result.total_areas.shape == (38,)
         assert np.all(result.total_areas > 0)
 
-    @_skip_if_xtc_disabled
     def test_sasa_matches_xtc(self, radii: np.ndarray) -> None:
         """Test that DCD SASA matches XTC SASA."""
         from zsasa.xtc import compute_sasa_trajectory as compute_xtc

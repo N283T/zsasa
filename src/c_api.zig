@@ -4,7 +4,6 @@
 //! other languages (Python, C, etc.) via FFI/ctypes.
 
 const std = @import("std");
-const build_options = @import("build_options");
 const shrake_rupley = @import("shrake_rupley.zig");
 const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
 const bitmask_lut = @import("bitmask_lut.zig");
@@ -36,8 +35,6 @@ pub const ZSASA_ERROR_CALCULATION: c_int = -3;
 pub const ZSASA_ERROR_FILE_IO: c_int = -4;
 /// Unsupported n_points value for bitmask algorithm (must be 1..1024)
 pub const ZSASA_ERROR_UNSUPPORTED_N_POINTS: c_int = -5;
-/// XTC support was disabled at compile time (rebuild with -Dxtc=true)
-pub const ZSASA_ERROR_XTC_DISABLED: c_int = -6;
 
 // =============================================================================
 // Algorithm Constants
@@ -1460,10 +1457,6 @@ export fn zsasa_xtc_open(
     natoms_out: *i32,
     error_code: *c_int,
 ) callconv(.c) ?*anyopaque {
-    if (comptime !build_options.xtc) {
-        error_code.* = ZSASA_ERROR_XTC_DISABLED;
-        return null;
-    }
     const path_slice = std.mem.span(path);
 
     const handle = c_allocator.create(XtcHandle) catch {
@@ -1471,7 +1464,7 @@ export fn zsasa_xtc_open(
         return null;
     };
 
-    handle.reader = xtc.XtcReader.open(c_allocator, path_slice) catch |err| {
+    handle.reader = xtc.XtcReader.open(cIo(), c_allocator, path_slice) catch |err| {
         c_allocator.destroy(handle);
         error_code.* = switch (err) {
             xtc.XtcError.FileNotFound => ZSASA_ERROR_INVALID_INPUT,
@@ -1494,9 +1487,6 @@ export fn zsasa_xtc_open(
 export fn zsasa_xtc_close(
     handle: ?*anyopaque,
 ) callconv(.c) void {
-    if (comptime !build_options.xtc) {
-        return;
-    }
     if (handle) |h| {
         const xtc_handle: *XtcHandle = @ptrCast(@alignCast(h));
         xtc_handle.reader.close();
@@ -1526,9 +1516,6 @@ export fn zsasa_xtc_read_frame(
     box_out: [*]f32,
     precision_out: *f32,
 ) callconv(.c) c_int {
-    if (comptime !build_options.xtc) {
-        return ZSASA_ERROR_XTC_DISABLED;
-    }
     if (handle == null) {
         return ZSASA_ERROR_INVALID_INPUT;
     }
@@ -1574,9 +1561,6 @@ export fn zsasa_xtc_read_frame(
 export fn zsasa_xtc_get_natoms(
     handle: ?*anyopaque,
 ) callconv(.c) i32 {
-    if (comptime !build_options.xtc) {
-        return -1;
-    }
     if (handle == null) {
         return -1;
     }
