@@ -48,7 +48,7 @@ Python 3.11-3.13 supported.
 
 ### From Source (Development)
 
-Requires Zig 0.15.2+.
+Requires Zig 0.16.0+.
 
 ```bash
 cd zsasa/python

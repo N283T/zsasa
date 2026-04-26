@@ -4,9 +4,9 @@ FROM alpine:3.21 AS builder
 # Install Zig
 RUN apk add --no-cache curl xz git && \
     ARCH=$(uname -m) && \
-    curl -fsSL "https://ziglang.org/download/0.15.2/zig-${ARCH}-linux-0.15.2.tar.xz" | \
+    curl -fsSL "https://ziglang.org/download/0.16.0/zig-${ARCH}-linux-0.16.0.tar.xz" | \
     tar -xJ -C /usr/local && \
-    ln -s /usr/local/zig-${ARCH}-linux-0.15.2/zig /usr/local/bin/zig
+    ln -s /usr/local/zig-${ARCH}-linux-0.16.0/zig /usr/local/bin/zig
 
 # Copy source and build
 WORKDIR /src
