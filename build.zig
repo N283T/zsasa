@@ -41,11 +41,16 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
-    // Shared library for C API / Python bindings
+    // Shared library for C API / Python bindings.
+    // libc is required because c_api.zig uses std.heap.c_allocator (so the
+    // FFI surface uses C's malloc/free rather than a per-call GeneralPurposeAllocator,
+    // matching Python ctypes' lifetime expectations). On macOS the dylib auto-links
+    // libSystem so this is implicit, but Linux needs the explicit flag.
     const lib_module = b.createModule(.{
         .root_source_file = b.path("src/c_api.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
         .imports = &.{
             .{ .name = "zxdrfile", .module = zxdrfile_mod },
         },
