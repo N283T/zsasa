@@ -45,6 +45,9 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
@@ -72,7 +75,7 @@ pub fn main() !void {
             calc.printHelp(args[0]);
             return;
         }
-        calc.run(allocator, calc_args) catch |err| {
+        calc.run(allocator, io, calc_args) catch |err| {
             std.debug.print("Error: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
@@ -82,7 +85,7 @@ pub fn main() !void {
             batch.printHelp(args[0]);
             return;
         }
-        batch.run(allocator, batch_args) catch |err| {
+        batch.run(allocator, io, batch_args) catch |err| {
             std.debug.print("Error: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
@@ -92,7 +95,7 @@ pub fn main() !void {
             traj.printHelp(args[0]);
             return;
         }
-        traj.run(allocator, traj_args) catch |err| {
+        traj.run(allocator, io, traj_args) catch |err| {
             std.debug.print("Error in trajectory mode: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
@@ -104,7 +107,7 @@ pub fn main() !void {
                 return;
             }
         }
-        compile_dict.run(allocator, args[2..]) catch |err| {
+        compile_dict.run(allocator, io, args[2..]) catch |err| {
             std.debug.print("Error: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };

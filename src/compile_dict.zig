@@ -33,7 +33,8 @@ pub fn printHelp(program_name: []const u8) void {
     , .{ program_name, program_name, program_name });
 }
 
-pub fn run(allocator: Allocator, args: []const []const u8) !void {
+pub fn run(allocator: Allocator, io: std.Io, args: []const []const u8) !void {
+    _ = io;
     var input_path: ?[]const u8 = null;
     var output_path: ?[]const u8 = null;
     var show_help = false;

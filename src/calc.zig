@@ -935,7 +935,8 @@ fn printPerChainResults(chain_ids: []const types.FixedString4, atom_areas: []con
 // =============================================================================
 
 /// Run the calc subcommand — single-file SASA processing
-pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
+pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
+    _ = io;
     // Timing variables (in nanoseconds)
     var timer = std.time.Timer.start() catch {
         std.debug.print("Error: Timer not supported\n", .{});

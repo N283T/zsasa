@@ -1995,7 +1995,8 @@ pub fn printHelp(program_name: []const u8) void {
 const loadSdfComponents = sdf_parser.loadSdfComponents;
 
 /// Run batch processing from parsed CLI arguments
-pub fn run(allocator: Allocator, args: BatchArgs) !void {
+pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
+    _ = io;
     const input_dir = args.input_path orelse {
         std.debug.print("Error: Missing input directory\n", .{});
         std.debug.print("Usage: zsasa batch [OPTIONS] <input_dir> [output_dir]\n", .{});

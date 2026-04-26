@@ -649,7 +649,8 @@ fn readBatch(
 // =============================================================================
 
 /// Run trajectory analysis
-pub fn run(allocator: Allocator, args: TrajArgs) !void {
+pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
+    _ = io;
     // Validate required arguments
     const traj_path = args.traj_path orelse {
         std.debug.print("Error: Missing trajectory file\n", .{});
