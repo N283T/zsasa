@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-04-26
+
+### Fixed
+
+- **Build & Publish workflow**: Bump remaining Zig **0.15.2 → 0.16.0** pins missed by PR1 (#345). The `Dockerfile` and the `cibuildwheel` `before-all` in `python/pyproject.toml` were both pulling the old toolchain and rejecting 0.16-only API; the result is that wheels and the Docker image have not been published since v0.2.8. Also updates `install.sh`, `python/hatch_build.py`, `python/zsasa/_ffi.py` error messages, `CONTRIBUTING.md`, the website docs, and the bug-report ISSUE template. (#353)
+- **Windows wheel test**: `examples/1ubq.cif` was failing with `StreamTooLong` because the Windows `mmapFile` path used `.limited64(stat.size)` and Windows occasionally reports a byte count divergent from the buffered reader. Switch to `.unlimited` — `mmapFile`'s callers already trust the input path. (#353)
+- **aarch64 wheel build**: `cibuildwheel`'s short alias `manylinux_2_28` resolved to the retired quay.io tag `2026.03.01-1`. Pin both `manylinux-x86_64-image` and `manylinux-aarch64-image` to an explicit current tag (`2026.04.25-0`). (#353)
+- **`flake.nix` derivation version**: Catch up to `0.2.11` (was stale at `0.2.4` until v0.2.10).
+
 ## [0.2.10] - 2026-04-26
 
 ### Changed
