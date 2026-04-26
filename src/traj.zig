@@ -6,6 +6,7 @@
 //   - Batch parallel (N threads): reads batches of frames, distributes across threads
 //
 const std = @import("std");
+const build_options = @import("build_options");
 const xtc = @import("zxdrfile").xtc;
 const dcd = @import("dcd.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
@@ -747,6 +748,13 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
     var dcd_reader: ?dcd.DcdReader = null;
     const traj_natoms: i32 = switch (traj_format) {
         .xtc => blk: {
+            if (comptime !build_options.xtc) {
+                std.debug.print(
+                    "Error: XTC support was disabled at compile time. Rebuild with -Dxtc=true.\n",
+                    .{},
+                );
+                return error.XtcSupportDisabled;
+            }
             xtc_reader = try xtc.XtcReader.open(allocator, traj_path);
             break :blk xtc_reader.?.natoms;
         },
