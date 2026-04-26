@@ -78,9 +78,9 @@ pub fn CellListGen(comptime T: type) type {
             z_max += cell_size;
 
             // Calculate grid dimensions (minimum 1 cell)
-            const nx = @max(1, @as(usize, @intFromFloat(@ceil((x_max - x_min) / cell_size))));
-            const ny = @max(1, @as(usize, @intFromFloat(@ceil((y_max - y_min) / cell_size))));
-            const nz = @max(1, @as(usize, @intFromFloat(@ceil((z_max - z_min) / cell_size))));
+            const nx: usize = @max(1, @as(usize, @ceil((x_max - x_min) / cell_size)));
+            const ny: usize = @max(1, @as(usize, @ceil((y_max - y_min) / cell_size)));
+            const nz: usize = @max(1, @as(usize, @ceil((z_max - z_min) / cell_size)));
             const n_cells = nx * ny * nz;
 
             // Pass 1: count atoms per cell
