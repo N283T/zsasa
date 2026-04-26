@@ -28,7 +28,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          zig = zig-overlay.packages.${system}."0.15.2";
+          zig = zig-overlay.packages.${system}."0.16.0";
 
           # Pre-fetch Zig dependencies as a fixed-output derivation.
           # This runs `zig build --fetch` with network access and captures
@@ -39,7 +39,7 @@
               nativeBuildInputs = [ zig ];
               outputHashAlgo = "sha256";
               outputHashMode = "recursive";
-              outputHash = "sha256-wxgdxQiNj7hOTagippwrDkeiZ5RZsagvJI67T28jf04=";
+              outputHash = "sha256-30G6nwi2dPa3iqZT/xr4se2bRhigiaSC90JDswDjNmU=";
             }
             ''
               export ZIG_GLOBAL_CACHE_DIR=$(mktemp -d)

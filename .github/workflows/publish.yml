@@ -59,7 +59,7 @@ jobs:
         if: runner.os != 'Linux'
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
 
       - name: Cache cibuildwheel
         if: runner.os != 'Linux'
@@ -147,7 +147,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
 
       - name: Build CLI
         run: zig build -Doptimize=ReleaseFast
