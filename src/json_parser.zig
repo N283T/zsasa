@@ -49,7 +49,7 @@ fn isValidRadius(value: f64) bool {
 
 /// Validate input data and collect all errors
 pub fn validateInput(allocator: Allocator, input: AtomInput) !ValidationResult {
-    var errors = std.ArrayListUnmanaged(ValidationError){};
+    var errors = std.ArrayListUnmanaged(ValidationError).empty;
     errdefer errors.deinit(allocator);
 
     const n = input.atomCount();
@@ -154,14 +154,14 @@ pub fn checkDuplicateCoordinates(allocator: Allocator, input: AtomInput) !usize 
         }
     };
 
-    var seen = std.AutoHashMap(CoordKey, usize).init(allocator);
-    defer seen.deinit();
+    var seen: std.AutoHashMapUnmanaged(CoordKey, usize) = .empty;
+    defer seen.deinit(allocator);
 
     var duplicate_count: usize = 0;
 
     for (0..n) |i| {
         const key = CoordKey.fromCoords(input.x[i], input.y[i], input.z[i]);
-        const result = try seen.getOrPut(key);
+        const result = try seen.getOrPut(allocator, key);
         if (result.found_existing) {
             duplicate_count += 1;
         } else {
@@ -272,15 +272,17 @@ pub fn parseAtomInput(allocator: Allocator, json_str: []const u8) !AtomInput {
 }
 
 /// Read atom input from JSON file (handles both .json and .json.gz)
-pub fn readAtomInputFromFile(allocator: Allocator, path: []const u8) !AtomInput {
+pub fn readAtomInputFromFile(allocator: Allocator, io: std.Io, path: []const u8) !AtomInput {
     const max_size = 200 * 1024 * 1024; // 200 MB max
 
     const contents = if (std.mem.endsWith(u8, path, ".gz"))
         try gzip.readGzip(allocator, path)
     else blk: {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-        break :blk try file.readToEndAlloc(allocator, max_size);
+        const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+        defer file.close(io);
+        var read_buf: [65536]u8 = undefined;
+        var r = file.reader(io, &read_buf);
+        break :blk try r.interface.allocRemaining(allocator, .limited64(max_size));
     };
     defer allocator.free(contents);
     return try parseAtomInput(allocator, contents);
@@ -414,17 +416,18 @@ test "parseAtomInput invalid JSON" {
 
 test "readAtomInputFromFile with real file" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     const path = "examples/input_1a0q.json";
 
     // Check if file exists
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch {
         // File doesn't exist, skip test
         return error.SkipZigTest;
     };
-    file.close();
+    file.close(io);
 
-    var input = try readAtomInputFromFile(allocator, path);
+    var input = try readAtomInputFromFile(allocator, io, path);
     defer input.deinit();
 
     // Verify we got 3183 atoms as expected
@@ -445,8 +448,9 @@ test "readAtomInputFromFile with real file" {
 
 test "readAtomInputFromFile nonexistent file" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
-    const result = readAtomInputFromFile(allocator, "nonexistent_file.json");
+    const result = readAtomInputFromFile(allocator, io, "nonexistent_file.json");
     try std.testing.expectError(error.FileNotFound, result);
 }
 

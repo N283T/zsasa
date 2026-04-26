@@ -649,7 +649,7 @@ fn readBatch(
 // =============================================================================
 
 /// Run trajectory analysis
-pub fn run(allocator: Allocator, args: TrajArgs) !void {
+pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
     // Validate required arguments
     const traj_path = args.traj_path orelse {
         std.debug.print("Error: Missing trajectory file\n", .{});
@@ -681,12 +681,12 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
         .pdb => blk: {
             var parser = pdb_parser.PdbParser.init(allocator);
             parser.skip_hydrogens = !args.include_hydrogens;
-            break :blk try parser.parseFile(topology_path);
+            break :blk try parser.parseFile(io, topology_path);
         },
         .mmcif => blk: {
             var parser = mmcif_parser.MmcifParser.init(allocator);
             parser.skip_hydrogens = !args.include_hydrogens;
-            break :blk try parser.parseFile(topology_path);
+            break :blk try parser.parseFile(io, topology_path);
         },
     };
     defer topology.deinit();
@@ -702,9 +702,11 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
         const ccd_data = if (std.mem.endsWith(u8, ccd_path, ".gz"))
             try gzip.readGzip(allocator, ccd_path)
         else blk: {
-            const f = try std.fs.cwd().openFile(ccd_path, .{});
-            defer f.close();
-            break :blk try f.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024);
+            const f = try std.Io.Dir.cwd().openFile(io, ccd_path, .{});
+            defer f.close(io);
+            var read_buf_ccd: [65536]u8 = undefined;
+            var file_r_ccd = f.reader(io, &read_buf_ccd);
+            break :blk try file_r_ccd.interface.allocRemaining(allocator, .unlimited);
         };
         defer allocator.free(ccd_data);
 
@@ -718,7 +720,7 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
     // Load SDF components from --sdf option
     var sdf_ccd: ?ccd_parser.ComponentDict = null;
     if (args.sdf_paths.len > 0) {
-        sdf_ccd = loadSdfComponents(allocator, args.sdf_paths.constSlice(), args.quiet) catch |err| {
+        sdf_ccd = loadSdfComponents(allocator, io, args.sdf_paths.constSlice(), args.quiet) catch |err| {
             std.debug.print("Error loading SDF components: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
@@ -746,11 +748,11 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
     var dcd_reader: ?dcd.DcdReader = null;
     const traj_natoms: i32 = switch (traj_format) {
         .xtc => blk: {
-            xtc_reader = try xtc.XtcReader.open(allocator, traj_path);
-            break :blk xtc_reader.?.natoms;
+            xtc_reader = try xtc.XtcReader.open(io, allocator, traj_path);
+            break :blk xtc_reader.?.getNumAtoms();
         },
         .dcd => blk: {
-            dcd_reader = try dcd.DcdReader.open(allocator, traj_path);
+            dcd_reader = try dcd.DcdReader.open(allocator, io, traj_path);
             break :blk dcd_reader.?.natoms;
         },
     };
@@ -769,10 +771,10 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
     }
 
     // Open output file with buffered writer
-    const output_file = try std.fs.cwd().createFile(args.output_path, .{});
-    defer output_file.close();
+    const output_file = try std.Io.Dir.cwd().createFile(io, args.output_path, .{});
+    defer output_file.close(io);
     var write_buffer: [4096]u8 = undefined;
-    var buffered_writer = output_file.writer(&write_buffer);
+    var buffered_writer = output_file.writer(io, &write_buffer);
     const writer = &buffered_writer.interface;
 
     // Write CSV header
@@ -820,7 +822,7 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
     // Process frames
     var frame_idx: u32 = 0;
     var processed_count: u32 = 0;
-    const timer_start = std.time.milliTimestamp();
+    var timer_start = std.Io.Timestamp.now(io, .awake);
 
     var traj_reader = TrajectoryReader{
         .xtc_reader = if (xtc_reader) |*r| r else null,
@@ -839,13 +841,14 @@ pub fn run(allocator: Allocator, args: TrajArgs) !void {
     // Flush buffered output
     try writer.flush();
 
-    const elapsed = std.time.milliTimestamp() - timer_start;
+    const elapsed_ns = timer_start.untilNow(io, .awake).nanoseconds;
+    const elapsed_ms = @divTrunc(elapsed_ns, std.time.ns_per_ms);
 
     if (!args.quiet) {
         std.debug.print("\r  Processed {d} frames in {d}ms ({d:.1} frames/sec)\n", .{
             processed_count,
-            elapsed,
-            if (elapsed > 0) @as(f64, @floatFromInt(processed_count)) * 1000.0 / @as(f64, @floatFromInt(elapsed)) else 0,
+            elapsed_ms,
+            if (elapsed_ms > 0) @as(f64, @floatFromInt(processed_count)) * 1000.0 / @as(f64, @floatFromInt(elapsed_ms)) else 0,
         });
         std.debug.print("Output written to: {s}\n", .{args.output_path});
     }
@@ -1116,12 +1119,12 @@ fn applyBuiltinClassifier(
 
     if (ccd_clf != null) {
         // Deduplicate: collect unique non-hardcoded residues
-        var needed = std.StringHashMap(void).init(input.allocator);
-        defer needed.deinit();
+        var needed: std.StringHashMapUnmanaged(void) = .empty;
+        defer needed.deinit(input.allocator);
         for (0..n) |i| {
             const res = residues[i].slice();
             if (!classifier_ccd.CcdClassifier.isHardcoded(res)) {
-                try needed.put(res, {});
+                try needed.put(input.allocator, res, {});
             }
         }
 

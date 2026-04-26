@@ -868,7 +868,8 @@ pub fn sliceRadiiBatch4(
     const zero: @Vector(4, f64) = @splat(0.0);
     const rp_sq_clamped = @max(rp_sq, zero);
 
-    return @sqrt(rp_sq_clamped);
+    const result: @Vector(4, f64) = @sqrt(rp_sq_clamped);
+    return result;
 }
 
 /// Check if circles overlap (dij < Ri' + Rj') for 4 neighbors.
@@ -892,7 +893,10 @@ pub fn circlesOverlapBatch4(
     const sum_radii = ri + rj;
     const overlaps = d < sum_radii;
 
-    return @bitCast(overlaps);
+    // Cross-platform packed bit layout: @Vector(N, bool) layout is target-defined
+    // in Zig 0.16+. Forcing through @Vector(N, u1) before @bitCast guarantees a
+    // packed uN result on all platforms (Linux x86_64 regression caught in CI).
+    return @bitCast(@as(@Vector(4, u1), @intFromBool(overlaps)));
 }
 
 /// SIMD-optimized batch xy-distance calculation for Lee-Richards (8-wide).
@@ -955,7 +959,8 @@ pub fn sliceRadiiBatch8(
     const zero: @Vector(8, f64) = @splat(0.0);
     const rp_sq_clamped = @max(rp_sq, zero);
 
-    return @sqrt(rp_sq_clamped);
+    const result: @Vector(8, f64) = @sqrt(rp_sq_clamped);
+    return result;
 }
 
 /// Check if circles overlap (dij < Ri' + Rj') for 8 neighbors.
@@ -979,7 +984,8 @@ pub fn circlesOverlapBatch8(
     const sum_radii = ri + rj;
     const overlaps = d < sum_radii;
 
-    return @bitCast(overlaps);
+    // See circlesOverlapBatch4 comment on @Vector(N, bool) layout fix.
+    return @bitCast(@as(@Vector(8, u1), @intFromBool(overlaps)));
 }
 
 // Lee-Richards SIMD tests
@@ -1322,7 +1328,8 @@ pub fn xyDistanceBatch4Gen(comptime T: type) type {
             const dy = ny - py;
 
             const dist_sq = dx * dx + dy * dy;
-            return @sqrt(dist_sq);
+            const result: @Vector(4, T) = @sqrt(dist_sq);
+            return result;
         }
     };
 }
@@ -1348,7 +1355,8 @@ pub fn sliceRadiiBatch4Gen(comptime T: type) type {
             const zero: @Vector(4, T) = @splat(0.0);
             const rp_sq_clamped = @max(rp_sq, zero);
 
-            return @sqrt(rp_sq_clamped);
+            const result: @Vector(4, T) = @sqrt(rp_sq_clamped);
+            return result;
         }
     };
 }
@@ -1368,7 +1376,8 @@ pub fn circlesOverlapBatch4Gen(comptime T: type) type {
             const sum_radii = ri + rj;
             const overlaps = d < sum_radii;
 
-            return @bitCast(overlaps);
+            // See circlesOverlapBatch4 comment on @Vector(N, bool) layout fix.
+            return @bitCast(@as(@Vector(4, u1), @intFromBool(overlaps)));
         }
     };
 }
@@ -1392,7 +1401,8 @@ pub fn xyDistanceBatch8Gen(comptime T: type) type {
             const dy = ny - py;
 
             const dist_sq = dx * dx + dy * dy;
-            return @sqrt(dist_sq);
+            const result: @Vector(8, T) = @sqrt(dist_sq);
+            return result;
         }
     };
 }
@@ -1418,7 +1428,8 @@ pub fn sliceRadiiBatch8Gen(comptime T: type) type {
             const zero: @Vector(8, T) = @splat(0.0);
             const rp_sq_clamped = @max(rp_sq, zero);
 
-            return @sqrt(rp_sq_clamped);
+            const result: @Vector(8, T) = @sqrt(rp_sq_clamped);
+            return result;
         }
     };
 }
@@ -1438,7 +1449,8 @@ pub fn circlesOverlapBatch8Gen(comptime T: type) type {
             const sum_radii = ri + rj;
             const overlaps = d < sum_radii;
 
-            return @bitCast(overlaps);
+            // See circlesOverlapBatch4 comment on @Vector(N, bool) layout fix.
+            return @bitCast(@as(@Vector(8, u1), @intFromBool(overlaps)));
         }
     };
 }

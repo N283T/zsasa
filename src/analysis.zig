@@ -241,7 +241,7 @@ pub fn aggregateByResidue(
 
     // Use a simple approach: collect unique residues and sum areas
     // For efficiency, we use a fixed-size buffer then convert to owned slice
-    var residue_list = std.ArrayListUnmanaged(ResidueSasa){};
+    var residue_list = std.ArrayListUnmanaged(ResidueSasa).empty;
     defer residue_list.deinit(allocator);
 
     for (0..n) |i| {

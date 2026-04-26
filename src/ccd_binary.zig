@@ -122,7 +122,7 @@ pub fn isBinaryDict(data: []const u8) bool {
 }
 
 /// Write a ComponentDict to binary ZSDC format.
-pub fn writeDict(writer: anytype, dict: *const ccd_parser.ComponentDict) !void {
+pub fn writeDict(writer: *std.Io.Writer, dict: *const ccd_parser.ComponentDict) !void {
     // Count components
     const comp_count: u32 = @intCast(dict.components.count());
 
@@ -162,13 +162,13 @@ pub fn writeDict(writer: anytype, dict: *const ccd_parser.ComponentDict) !void {
 }
 
 /// Read a ComponentDict from binary ZSDC format.
-pub fn readDict(allocator: Allocator, reader: anytype) ReadError!ccd_parser.ComponentDict {
+pub fn readDict(allocator: Allocator, reader: *std.Io.Reader) ReadError!ccd_parser.ComponentDict {
     var dict = ccd_parser.ComponentDict.init(allocator);
     errdefer dict.deinit();
 
     // Read header
     var header: [HEADER_SIZE]u8 = undefined;
-    reader.readNoEof(&header) catch return error.UnexpectedEof;
+    reader.readSliceAll(&header) catch return error.UnexpectedEof;
 
     if (!std.mem.eql(u8, header[0..4], &MAGIC)) return error.InvalidMagic;
     if (header[4] != FORMAT_VERSION) return error.UnsupportedVersion;
@@ -179,15 +179,15 @@ pub fn readDict(allocator: Allocator, reader: anytype) ReadError!ccd_parser.Comp
     // Read components
     for (0..comp_count) |_| {
         // Read comp_id
-        const cid_len_byte = reader.readByte() catch return error.UnexpectedEof;
+        const cid_len_byte = (reader.takeArray(1) catch return error.UnexpectedEof)[0];
         const cid_len: usize = cid_len_byte;
         if (cid_len == 0 or cid_len > 255) return error.UnexpectedEof;
         var cid_buf: [255]u8 = undefined;
-        reader.readNoEof(cid_buf[0..cid_len]) catch return error.UnexpectedEof;
+        reader.readSliceAll(cid_buf[0..cid_len]) catch return error.UnexpectedEof;
 
         // Read atom count
         var atom_count_buf: [2]u8 = undefined;
-        reader.readNoEof(&atom_count_buf) catch return error.UnexpectedEof;
+        reader.readSliceAll(&atom_count_buf) catch return error.UnexpectedEof;
         const atom_count: u16 = std.mem.littleToNative(u16, std.mem.bytesToValue(u16, &atom_count_buf));
 
         // Read atoms
@@ -196,14 +196,14 @@ pub fn readDict(allocator: Allocator, reader: anytype) ReadError!ccd_parser.Comp
         defer if (atoms_owned) allocator.free(atoms);
         for (0..atom_count) |i| {
             var packed_buf: [@sizeOf(PackedAtom)]u8 = undefined;
-            reader.readNoEof(&packed_buf) catch return error.UnexpectedEof;
+            reader.readSliceAll(&packed_buf) catch return error.UnexpectedEof;
             const pa: PackedAtom = @bitCast(packed_buf);
             atoms[i] = pa.toCompAtom();
         }
 
         // Read bond count
         var bond_count_buf: [2]u8 = undefined;
-        reader.readNoEof(&bond_count_buf) catch return error.UnexpectedEof;
+        reader.readSliceAll(&bond_count_buf) catch return error.UnexpectedEof;
         const bond_count: u16 = std.mem.littleToNative(u16, std.mem.bytesToValue(u16, &bond_count_buf));
 
         // Read bonds
@@ -212,7 +212,7 @@ pub fn readDict(allocator: Allocator, reader: anytype) ReadError!ccd_parser.Comp
         defer if (bonds_owned) allocator.free(bonds);
         for (0..bond_count) |i| {
             var packed_buf: [@sizeOf(PackedBond)]u8 = undefined;
-            reader.readNoEof(&packed_buf) catch return error.UnexpectedEof;
+            reader.readSliceAll(&packed_buf) catch return error.UnexpectedEof;
             const pb: PackedBond = @bitCast(packed_buf);
             bonds[i] = pb.toCompBond();
         }
@@ -236,7 +236,7 @@ pub fn readDict(allocator: Allocator, reader: anytype) ReadError!ccd_parser.Comp
         };
 
         // Transfer ownership to dict
-        dict.components.put(key, stored) catch return error.OutOfMemory;
+        dict.components.put(allocator, key, stored) catch return error.OutOfMemory;
         dict.owned_keys.append(allocator, key) catch {
             // Key is already in the map, so we should not free it here;
             // dict.deinit() via errdefer will handle cleanup.
@@ -255,8 +255,8 @@ pub fn readDict(allocator: Allocator, reader: anytype) ReadError!ccd_parser.Comp
 /// If data starts with ZSDC magic, decode as binary; otherwise parse as CIF text.
 pub fn loadDict(allocator: Allocator, data: []const u8) !ccd_parser.ComponentDict {
     if (isBinaryDict(data)) {
-        var fbs = std.io.fixedBufferStream(data);
-        return readDict(allocator, fbs.reader());
+        var reader = std.Io.Reader.fixed(data);
+        return readDict(allocator, &reader);
     } else {
         return ccd_parser.parseCcdData(allocator, data, null);
     }
@@ -317,18 +317,18 @@ test "round-trip: create ComponentDict -> writeDict -> readDict -> verify" {
         .bonds = bonds,
         .allocator = allocator,
     };
-    try dict.components.put(key, stored);
+    try dict.components.put(allocator, key, stored);
     try dict.owned_keys.append(allocator, key);
 
     // Write to buffer
     var buf: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try writeDict(fbs.writer(), &dict);
+    var w = std.Io.Writer.fixed(&buf);
+    try writeDict(&w, &dict);
 
     // Read back
-    const written = fbs.getWritten();
-    var read_fbs = std.io.fixedBufferStream(written);
-    var read_dict = try readDict(allocator, read_fbs.reader());
+    const written = buf[0..w.end];
+    var read_reader = std.Io.Reader.fixed(written);
+    var read_dict = try readDict(allocator, &read_reader);
     defer read_dict.deinit();
 
     // Verify
@@ -363,11 +363,11 @@ test "round-trip: empty dictionary" {
     defer dict.deinit();
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try writeDict(fbs.writer(), &dict);
+    var w = std.Io.Writer.fixed(&buf);
+    try writeDict(&w, &dict);
 
-    var read_fbs = std.io.fixedBufferStream(fbs.getWritten());
-    var read_dict = try readDict(allocator, read_fbs.reader());
+    var read_reader = std.Io.Reader.fixed(buf[0..w.end]);
+    var read_dict = try readDict(allocator, &read_reader);
     defer read_dict.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), read_dict.components.count());
@@ -381,10 +381,10 @@ test "loadDict — auto-detect binary" {
     defer dict.deinit();
 
     var buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    try writeDict(fbs.writer(), &dict);
+    var w = std.Io.Writer.fixed(&buf);
+    try writeDict(&w, &dict);
 
-    const data = fbs.getWritten();
+    const data = buf[0..w.end];
     var loaded = try loadDict(allocator, data);
     defer loaded.deinit();
 

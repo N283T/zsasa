@@ -463,7 +463,8 @@ test "quoted string with embedded quote char" {
 
 test "fuzz tokenizer" {
     try std.testing.fuzz({}, struct {
-        fn testOne(_: void, input: []const u8) !void {
+        fn testOne(_: void, smith: *std.testing.Smith) !void {
+            const input = smith.in orelse return;
             var tok = Tokenizer.init(input);
             // Consume all tokens until EOF
             while (true) {

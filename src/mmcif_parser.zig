@@ -173,13 +173,13 @@ pub const MmcifParser = struct {
     }
 
     /// Parse mmCIF from a file (handles both plain and .gz compressed)
-    pub fn parseFile(self: *MmcifParser, path: []const u8) !AtomInput {
+    pub fn parseFile(self: *MmcifParser, io: std.Io, path: []const u8) !AtomInput {
         if (std.mem.endsWith(u8, path, ".gz")) {
             const data = try gzip.readGzip(self.allocator, path);
             defer self.allocator.free(data);
             return self.parse(data);
         }
-        const mapped = try mmap_reader.mmapFile(self.allocator, path);
+        const mapped = try mmap_reader.mmapFile(self.allocator, io, path);
         defer mapped.deinit();
         return self.parse(mapped.data);
     }
@@ -300,25 +300,25 @@ pub const MmcifParser = struct {
         num_cols: usize,
     ) !AtomInput {
         // Dynamic arrays for collecting data
-        var x_list = std.ArrayListUnmanaged(f64){};
+        var x_list = std.ArrayListUnmanaged(f64).empty;
         defer x_list.deinit(self.allocator);
-        var y_list = std.ArrayListUnmanaged(f64){};
+        var y_list = std.ArrayListUnmanaged(f64).empty;
         defer y_list.deinit(self.allocator);
-        var z_list = std.ArrayListUnmanaged(f64){};
+        var z_list = std.ArrayListUnmanaged(f64).empty;
         defer z_list.deinit(self.allocator);
-        var r_list = std.ArrayListUnmanaged(f64){};
+        var r_list = std.ArrayListUnmanaged(f64).empty;
         defer r_list.deinit(self.allocator);
-        var residue_list = std.ArrayListUnmanaged(types.FixedString5){};
+        var residue_list = std.ArrayListUnmanaged(types.FixedString5).empty;
         defer residue_list.deinit(self.allocator);
-        var atom_name_list = std.ArrayListUnmanaged(types.FixedString4){};
+        var atom_name_list = std.ArrayListUnmanaged(types.FixedString4).empty;
         defer atom_name_list.deinit(self.allocator);
-        var element_list = std.ArrayListUnmanaged(u8){};
+        var element_list = std.ArrayListUnmanaged(u8).empty;
         defer element_list.deinit(self.allocator);
-        var chain_id_list = std.ArrayListUnmanaged(types.FixedString4){};
+        var chain_id_list = std.ArrayListUnmanaged(types.FixedString4).empty;
         defer chain_id_list.deinit(self.allocator);
-        var residue_num_list = std.ArrayListUnmanaged(i32){};
+        var residue_num_list = std.ArrayListUnmanaged(i32).empty;
         defer residue_num_list.deinit(self.allocator);
-        var insertion_code_list = std.ArrayListUnmanaged(types.FixedString4){};
+        var insertion_code_list = std.ArrayListUnmanaged(types.FixedString4).empty;
         defer insertion_code_list.deinit(self.allocator);
 
         // Buffer for current row values
@@ -865,7 +865,8 @@ test "startsWithIgnoreCase" {
 
 test "fuzz mmcif parser" {
     try std.testing.fuzz({}, struct {
-        fn testOne(_: void, input: []const u8) !void {
+        fn testOne(_: void, smith: *std.testing.Smith) !void {
+            const input = smith.in orelse return;
             var parser = MmcifParser.init(std.testing.allocator);
             defer parser.deinitCcd();
             var result = parser.parse(input) catch return;

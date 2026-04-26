@@ -3,7 +3,7 @@
 [![CI](https://github.com/N283T/zsasa/actions/workflows/ci.yml/badge.svg)](https://github.com/N283T/zsasa/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/zsasa?color=blue)](https://pypi.org/project/zsasa/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Zig](https://img.shields.io/badge/Zig-0.15.2+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
+[![Zig](https://img.shields.io/badge/Zig-0.16.0+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776ab?logo=python&logoColor=white)](https://www.python.org/)
 [![Nix](https://img.shields.io/badge/Nix-flake-5277C3?logo=nixos&logoColor=white)](https://nixos.org/)
 
@@ -52,7 +52,7 @@ curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | INSTA
 # Or with Nix
 nix run github:N283T/zsasa -- calc structure.cif output.json
 
-# Or build from source (requires Zig 0.15.2)
+# Or build from source (requires Zig 0.16.0)
 git clone https://github.com/N283T/zsasa.git
 cd zsasa && zig build -Doptimize=ReleaseFast
 ```

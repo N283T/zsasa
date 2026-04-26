@@ -38,13 +38,15 @@ pub fn build(b: *std.Build) void {
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
 
+    const options_mod = options.createModule();
+
     const exe_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "zsasa", .module = mod },
-            .{ .name = "build_options", .module = options.createModule() },
+            .{ .name = "build_options", .module = options_mod },
             .{ .name = "zxdrfile", .module = zxdrfile_mod },
         },
     });
@@ -56,23 +58,42 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
+    // Translate zlib.h to a Zig module via addTranslateC (preferred over @cImport
+    // in 0.16). The wrapper header (src/c/zlib_wrapper.h) exists because
+    // addTranslateC requires a build-rooted b.path() as root_source_file; lazy
+    // paths returned from dependencies (e.g. zlib_dep.path("zlib.h")) cannot
+    // serve as the root — only as include paths.
+    const zlib_c = b.addTranslateC(.{
+        .root_source_file = b.path("src/c/zlib_wrapper.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    zlib_c.addIncludePath(zlib_dep.path("."));
+    const zlib_c_mod = zlib_c.createModule();
+
+    // Wire zlib_c into the modules that need it
+    mod.addImport("zlib_c", zlib_c_mod);
+    exe_module.addImport("zlib_c", zlib_c_mod);
+
     // Shared library for C API / Python bindings
     const lib_module = b.createModule(.{
         .root_source_file = b.path("src/c_api.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
         .imports = &.{
             .{ .name = "zxdrfile", .module = zxdrfile_mod },
         },
     });
     lib_module.linkLibrary(zlib_pic_artifact);
+    lib_module.addImport("zlib_c", zlib_c_mod);
 
     const lib = b.addLibrary(.{
         .linkage = .dynamic,
         .name = "zsasa",
         .root_module = lib_module,
     });
-    lib.linkLibC();
     b.installArtifact(lib);
 
     // Run step

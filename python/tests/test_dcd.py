@@ -63,9 +63,7 @@ class TestDcdReader:
         # DCD coordinates are in Angstroms
         # XTC reference: atom[0] = [-0.8901, 0.4127, -0.0555] nm
         # In Angstroms: [-8.901, 4.127, -0.555]
-        np.testing.assert_allclose(
-            frame.coords[0], [-8.901, 4.127, -0.555], atol=0.05
-        )
+        np.testing.assert_allclose(frame.coords[0], [-8.901, 4.127, -0.555], atol=0.05)
 
     def test_read_all_frames(self, reader: DcdReader) -> None:
         """Test reading all frames via iteration."""
@@ -128,9 +126,7 @@ class TestDcdCoordinateUnits:
             # XTC coords in nm, DCD in Angstroms
             xtc_angstrom = xtc_frame.coords * 10.0
 
-            np.testing.assert_allclose(
-                dcd_frame.coords, xtc_angstrom, atol=0.05
-            )
+            np.testing.assert_allclose(dcd_frame.coords, xtc_angstrom, atol=0.05)
 
 
 class TestComputeSasaTrajectory:

@@ -167,7 +167,7 @@ fn parsePrecision(value: []const u8) Precision {
 
 /// Parse chain filter string into array of chain IDs
 fn parseChainFilter(allocator: std.mem.Allocator, filter_str: []const u8) ![]const []const u8 {
-    var chains = std.ArrayListUnmanaged([]const u8){};
+    var chains = std.ArrayListUnmanaged([]const u8).empty;
     errdefer chains.deinit(allocator);
 
     var iter = std.mem.splitScalar(u8, filter_str, ',');
@@ -612,10 +612,10 @@ fn selectMolecule(molecules: []const sdf_parser.SdfMolecule, mol_selector: ?[]co
 }
 
 /// Read input file (auto-detect format)
-fn readInputFile(allocator: std.mem.Allocator, path: []const u8, args: CalcArgs) !ReadResult {
+fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, args: CalcArgs) !ReadResult {
     const format = format_detect.detectInputFormat(path);
     return switch (format) {
-        .json => .{ .input = try json_parser.readAtomInputFromFile(allocator, path) },
+        .json => .{ .input = try json_parser.readAtomInputFromFile(allocator, io, path) },
         .mmcif => blk: {
             var parser = mmcif_parser.MmcifParser.init(allocator);
             parser.model_num = args.model_num;
@@ -631,7 +631,7 @@ fn readInputFile(allocator: std.mem.Allocator, path: []const u8, args: CalcArgs)
             }
             defer if (chain_filter_slice) |s| allocator.free(s);
 
-            const input = try parser.parseFile(path);
+            const input = try parser.parseFile(io, path);
             break :blk .{ .input = input, .mmcif = parser };
         },
         .pdb => blk: {
@@ -648,15 +648,17 @@ fn readInputFile(allocator: std.mem.Allocator, path: []const u8, args: CalcArgs)
             }
             defer if (chain_filter_slice) |s| allocator.free(s);
 
-            break :blk .{ .input = try parser.parseFile(path) };
+            break :blk .{ .input = try parser.parseFile(io, path) };
         },
         .sdf => blk: {
             const source = if (std.mem.endsWith(u8, path, ".gz"))
                 try gzip.readGzip(allocator, path)
             else file_blk: {
-                const f = try std.fs.cwd().openFile(path, .{});
-                defer f.close();
-                break :file_blk try f.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024);
+                const f = try std.Io.Dir.cwd().openFile(io, path, .{});
+                defer f.close(io);
+                var read_buf: [65536]u8 = undefined;
+                var file_r = f.reader(io, &read_buf);
+                break :file_blk try file_r.interface.allocRemaining(allocator, .unlimited);
             };
             defer allocator.free(source);
 
@@ -696,7 +698,7 @@ fn readInputFile(allocator: std.mem.Allocator, path: []const u8, args: CalcArgs)
                     s.deinit();
                     continue;
                 };
-                sdf_dict.components.put(dict_key, stored) catch {
+                sdf_dict.components.put(allocator, dict_key, stored) catch {
                     var s = stored;
                     s.deinit();
                     continue;
@@ -791,12 +793,12 @@ fn applyBuiltinClassifier(
     // Only load components that are actually present in the input structure
     if (ccd_clf != null) {
         // Collect unique non-hardcoded residue names from input
-        var needed = std.StringHashMap(void).init(input.allocator);
-        defer needed.deinit();
+        var needed: std.StringHashMapUnmanaged(void) = .empty;
+        defer needed.deinit(input.allocator);
         for (0..n) |i| {
             const res = residues[i].slice();
             if (!classifier_ccd.CcdClassifier.isHardcoded(res)) {
-                try needed.put(res, {});
+                try needed.put(input.allocator, res, {});
             }
         }
 
@@ -935,12 +937,9 @@ fn printPerChainResults(chain_ids: []const types.FixedString4, atom_areas: []con
 // =============================================================================
 
 /// Run the calc subcommand — single-file SASA processing
-pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
+pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
     // Timing variables (in nanoseconds)
-    var timer = std.time.Timer.start() catch {
-        std.debug.print("Error: Timer not supported\n", .{});
-        std.process.exit(1);
-    };
+    var timer = std.Io.Timestamp.now(io, .awake);
     var time_parse: u64 = 0;
     var time_classify: u64 = 0;
     var time_sasa: u64 = 0;
@@ -967,8 +966,8 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
     }
 
     // Read input file (JSON, PDB, or mmCIF)
-    timer.reset();
-    var read_result = readInputFile(allocator, input_path, effective_args) catch |err| {
+    timer = std.Io.Timestamp.now(io, .awake);
+    var read_result = readInputFile(allocator, io, input_path, effective_args) catch |err| {
         std.debug.print("Error reading input file '{s}': {s}\n", .{ input_path, @errorName(err) });
         std.process.exit(1);
     };
@@ -994,7 +993,7 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
             std.debug.print("Warning: Could not check for duplicate coordinates: {s}\n", .{@errorName(err)});
         };
     }
-    time_parse = timer.read();
+    time_parse = @intCast(timer.untilNow(io, .awake).nanoseconds);
 
     // Handle --validate (dry-run)
     if (args.validate_only) {
@@ -1018,7 +1017,7 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
 
     // Apply classifier (--config takes precedence over --classifier)
     // Default: ccd for PDB/mmCIF input (ProtOr-compatible with CCD extension)
-    timer.reset();
+    timer = std.Io.Timestamp.now(io, .awake);
     const input_format = format_detect.detectInputFormat(args.input_path.?);
     const effective_classifier: ?ClassifierType = args.classifier_type orelse
         if (args.config_path == null and input_format != .json) .ccd else null;
@@ -1040,7 +1039,7 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
         // Load classifier and apply radii
         if (args.config_path) |config_path| {
             // Load from custom config file
-            var custom_classifier = classifier_parser.parseConfigFile(allocator, config_path) catch |err| {
+            var custom_classifier = classifier_parser.parseConfigFile(allocator, io, config_path) catch |err| {
                 std.debug.print("Error loading config file '{s}': {s}\n", .{ config_path, @errorName(err) });
                 std.process.exit(1);
             };
@@ -1063,12 +1062,14 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
                         std.process.exit(1);
                     }
                 else blk: {
-                    const f = std.fs.cwd().openFile(ccd_path, .{}) catch |err| {
+                    const f = std.Io.Dir.cwd().openFile(io, ccd_path, .{}) catch |err| {
                         std.debug.print("Error opening CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
                         std.process.exit(1);
                     };
-                    defer f.close();
-                    break :blk f.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024) catch |err| {
+                    defer f.close(io);
+                    var read_buf: [65536]u8 = undefined;
+                    var file_r = f.reader(io, &read_buf);
+                    break :blk file_r.interface.allocRemaining(allocator, .unlimited) catch |err| {
                         std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
                         std.process.exit(1);
                     };
@@ -1088,7 +1089,7 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
             // Load SDF components from --sdf option
             var sdf_ccd: ?ccd_parser.ComponentDict = null;
             if (effective_args.sdf_paths.len > 0) {
-                sdf_ccd = loadSdfComponents(allocator, effective_args.sdf_paths.constSlice(), effective_args.quiet) catch |err| {
+                sdf_ccd = loadSdfComponents(allocator, io, effective_args.sdf_paths.constSlice(), effective_args.quiet) catch |err| {
                     std.debug.print("Error loading SDF components: {s}\n", .{@errorName(err)});
                     std.process.exit(1);
                 };
@@ -1108,10 +1109,10 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
             };
         }
     }
-    time_classify = timer.read();
+    time_classify = @intCast(timer.untilNow(io, .awake).nanoseconds);
 
     // Calculate SASA with configured parameters
-    timer.reset();
+    timer = std.Io.Timestamp.now(io, .awake);
     var result = switch (args.precision) {
         .f64 => switch (args.algorithm) {
             .sr => blk: {
@@ -1218,15 +1219,15 @@ pub fn run(allocator: std.mem.Allocator, args: CalcArgs) !void {
         },
     };
     defer result.deinit();
-    time_sasa = timer.read();
+    time_sasa = @intCast(timer.untilNow(io, .awake).nanoseconds);
 
     // Write output file
-    timer.reset();
-    json_writer.writeSasaResultWithFormatAndInput(allocator, result, input, args.output_path, args.output_format) catch |err| {
+    timer = std.Io.Timestamp.now(io, .awake);
+    json_writer.writeSasaResultWithFormatAndInput(allocator, io, result, input, args.output_path, args.output_format) catch |err| {
         std.debug.print("Error writing output file '{s}': {s}\n", .{ args.output_path, @errorName(err) });
         std.process.exit(1);
     };
-    time_write = timer.read();
+    time_write = @intCast(timer.untilNow(io, .awake).nanoseconds);
 
     // Calculate total time
     const time_total = time_parse + time_classify + time_sasa + time_write;

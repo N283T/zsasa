@@ -149,7 +149,7 @@ const SectionKind = enum {
 /// arrays are heap-allocated. Call `Document.deinit()` to free all owned
 /// memory.
 pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
-    var tables = std.ArrayListUnmanaged(Table){};
+    var tables = std.ArrayListUnmanaged(Table).empty;
     errdefer {
         for (tables.items) |table| {
             for (table.entries) |entry| {
@@ -160,7 +160,7 @@ pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
         tables.deinit(allocator);
     }
 
-    var array_tables = std.ArrayListUnmanaged(Document.ArrayTable){};
+    var array_tables = std.ArrayListUnmanaged(Document.ArrayTable).empty;
     errdefer {
         for (array_tables.items) |at| {
             for (at.entries) |entry| {
@@ -174,7 +174,7 @@ pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
     // Current section state
     var current_name: []const u8 = "";
     var current_kind: SectionKind = .table;
-    var current_entries = std.ArrayListUnmanaged(Value.Entry){};
+    var current_entries = std.ArrayListUnmanaged(Value.Entry).empty;
     errdefer {
         for (current_entries.items) |entry| {
             freeValue(allocator, entry.value);
@@ -190,7 +190,7 @@ pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
 
         // [[array_of_tables]]
         if (std.mem.startsWith(u8, trimmed, "[[")) {
-            const end = std.mem.indexOf(u8, trimmed[2..], "]]") orelse
+            const end = std.mem.find(u8, trimmed[2..], "]]") orelse
                 return error.UnexpectedCharacter;
             // Flush current section
             try flushSection(
@@ -208,7 +208,7 @@ pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
 
         // [table]
         if (trimmed[0] == '[') {
-            if (std.mem.indexOfScalar(u8, trimmed, ']')) |end| {
+            if (std.mem.findScalar(u8, trimmed, ']')) |end| {
                 // Flush current section
                 try flushSection(
                     allocator,
@@ -225,7 +225,7 @@ pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
         }
 
         // key = value
-        if (std.mem.indexOf(u8, trimmed, "=")) |eq_pos| {
+        if (std.mem.find(u8, trimmed, "=")) |eq_pos| {
             // Split on the first '=' to separate key and value.
             const key_raw = trimmed[0..eq_pos];
             const key = std.mem.trim(u8, key_raw, " \t");
@@ -350,7 +350,7 @@ fn parseInlineTable(allocator: Allocator, raw: []const u8) Error!Value {
     std.debug.assert(raw[0] == '{');
 
     // Find the closing '}'
-    const close = std.mem.indexOfScalar(u8, raw, '}') orelse
+    const close = std.mem.findScalar(u8, raw, '}') orelse
         return error.InvalidInlineTable;
 
     const inner = std.mem.trim(u8, raw[1..close], " \t");
@@ -360,7 +360,7 @@ fn parseInlineTable(allocator: Allocator, raw: []const u8) Error!Value {
         return Value{ .inline_table = empty };
     }
 
-    var entries = std.ArrayListUnmanaged(Value.Entry){};
+    var entries = std.ArrayListUnmanaged(Value.Entry).empty;
     errdefer {
         for (entries.items) |entry| {
             freeValue(allocator, entry.value);
@@ -377,7 +377,7 @@ fn parseInlineTable(allocator: Allocator, raw: []const u8) Error!Value {
         const pair = std.mem.trim(u8, pair_raw, " \t");
         if (pair.len == 0) continue;
 
-        const eq = std.mem.indexOfScalar(u8, pair, '=') orelse
+        const eq = std.mem.findScalar(u8, pair, '=') orelse
             return error.ExpectedEquals;
 
         const key = std.mem.trim(u8, pair[0..eq], " \t");
@@ -397,9 +397,9 @@ fn parseNumber(raw: []const u8) Error!Value {
     if (std.fmt.parseFloat(f64, raw)) |f| {
         // Distinguish floats from integers: if the raw text contains a '.'
         // or 'e'/'E', treat it as float.
-        if (std.mem.indexOfScalar(u8, raw, '.') != null or
-            std.mem.indexOfScalar(u8, raw, 'e') != null or
-            std.mem.indexOfScalar(u8, raw, 'E') != null)
+        if (std.mem.findScalar(u8, raw, '.') != null or
+            std.mem.findScalar(u8, raw, 'e') != null or
+            std.mem.findScalar(u8, raw, 'E') != null)
         {
             return Value{ .float = f };
         }

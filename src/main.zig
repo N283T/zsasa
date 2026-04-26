@@ -40,13 +40,14 @@ fn printVersion() void {
     std.debug.print("zsasa {s}\n", .{version});
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    // Collect args into a slice using the arena allocator
+    const args_z = try init.minimal.args.toSlice(init.arena.allocator());
+    // Coerce [:0]const u8 -> []const u8 for each element
+    const args: []const []const u8 = @ptrCast(args_z);
 
     if (args.len < 2) {
         printUsage(args[0]);
@@ -72,7 +73,7 @@ pub fn main() !void {
             calc.printHelp(args[0]);
             return;
         }
-        calc.run(allocator, calc_args) catch |err| {
+        calc.run(allocator, io, calc_args) catch |err| {
             std.debug.print("Error: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
@@ -82,7 +83,7 @@ pub fn main() !void {
             batch.printHelp(args[0]);
             return;
         }
-        batch.run(allocator, batch_args) catch |err| {
+        batch.run(allocator, io, batch_args) catch |err| {
             std.debug.print("Error: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
@@ -92,7 +93,7 @@ pub fn main() !void {
             traj.printHelp(args[0]);
             return;
         }
-        traj.run(allocator, traj_args) catch |err| {
+        traj.run(allocator, io, traj_args) catch |err| {
             std.debug.print("Error in trajectory mode: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
@@ -104,7 +105,7 @@ pub fn main() !void {
                 return;
             }
         }
-        compile_dict.run(allocator, args[2..]) catch |err| {
+        compile_dict.run(allocator, io, args[2..]) catch |err| {
             std.debug.print("Error: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };

@@ -783,7 +783,7 @@ const RuntimeEntry = struct {
 };
 
 /// Runtime component storage: maps formatted 9-char keys to properties.
-const RuntimeMap = std.StringHashMap(RuntimeEntry);
+const RuntimeMap = std.StringHashMapUnmanaged(RuntimeEntry);
 
 // =============================================================================
 // CcdClassifier
@@ -797,7 +797,7 @@ pub const CcdClassifier = struct {
 
     pub fn init(allocator: Allocator) CcdClassifier {
         return .{
-            .runtime_components = RuntimeMap.init(allocator),
+            .runtime_components = .empty,
             .allocator = allocator,
         };
     }
@@ -808,7 +808,7 @@ pub const CcdClassifier = struct {
         while (it.next()) |key_ptr| {
             self.allocator.free(key_ptr.*);
         }
-        self.runtime_components.deinit();
+        self.runtime_components.deinit(self.allocator);
     }
 
     /// Get radius for a (residue, atom) pair.
@@ -869,7 +869,7 @@ pub const CcdClassifier = struct {
             } else {
                 const key_copy = try self.allocator.alloc(u8, 9);
                 @memcpy(key_copy, &key);
-                self.runtime_components.put(key_copy, RuntimeEntry{ .props = entry.props }) catch |err| {
+                self.runtime_components.put(self.allocator, key_copy, RuntimeEntry{ .props = entry.props }) catch |err| {
                     self.allocator.free(key_copy);
                     return err;
                 };
@@ -1068,7 +1068,7 @@ const mmcif = @import("mmcif_parser.zig");
 test "E2E: CCD classifies all standard amino acid atoms in 1ubq.cif" {
     // Parse the real 1ubq structure (standard amino acids only)
     var parser = mmcif.MmcifParser.init(std.testing.allocator);
-    var input = try parser.parseFile("examples/1ubq.cif");
+    var input = try parser.parseFile(std.testing.io, "examples/1ubq.cif");
     defer input.deinit();
     defer parser.deinitCcd();
 
@@ -1092,7 +1092,7 @@ test "E2E: CCD classifies all standard amino acid atoms in 1ubq.cif" {
 test "E2E: CCD classifier classifies all 1ubq atoms without fallback" {
     // Parse the real 1ubq structure
     var parser = mmcif.MmcifParser.init(std.testing.allocator);
-    var input = try parser.parseFile("examples/1ubq.cif");
+    var input = try parser.parseFile(std.testing.io, "examples/1ubq.cif");
     defer input.deinit();
     defer parser.deinitCcd();
 

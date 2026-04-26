@@ -33,7 +33,7 @@ pub fn printHelp(program_name: []const u8) void {
     , .{ program_name, program_name, program_name });
 }
 
-pub fn run(allocator: Allocator, args: []const []const u8) !void {
+pub fn run(allocator: Allocator, io: std.Io, args: []const []const u8) !void {
     var input_path: ?[]const u8 = null;
     var output_path: ?[]const u8 = null;
     var show_help = false;
@@ -86,12 +86,14 @@ pub fn run(allocator: Allocator, args: []const []const u8) !void {
     const source = if (std.mem.endsWith(u8, in_path, ".gz"))
         try gzip.readGzip(allocator, in_path)
     else blk: {
-        const file = std.fs.cwd().openFile(in_path, .{}) catch |err| {
+        const file = std.Io.Dir.cwd().openFile(io, in_path, .{}) catch |err| {
             std.debug.print("Error: Could not open '{s}': {s}\n", .{ in_path, @errorName(err) });
             std.process.exit(1);
         };
-        defer file.close();
-        break :blk file.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024) catch |err| {
+        defer file.close(io);
+        var read_buf: [65536]u8 = undefined;
+        var file_r = file.reader(io, &read_buf);
+        break :blk file_r.interface.allocRemaining(allocator, .unlimited) catch |err| {
             std.debug.print("Error: Could not read '{s}': {s}\n", .{ in_path, @errorName(err) });
             std.process.exit(1);
         };
@@ -110,14 +112,14 @@ pub fn run(allocator: Allocator, args: []const []const u8) !void {
     std.debug.print("Parsed {d} components\n", .{comp_count});
 
     // Write binary output
-    const out_file = std.fs.cwd().createFile(out_path, .{}) catch |err| {
+    const out_file = std.Io.Dir.cwd().createFile(io, out_path, .{}) catch |err| {
         std.debug.print("Error: Could not create '{s}': {s}\n", .{ out_path, @errorName(err) });
         std.process.exit(1);
     };
-    defer out_file.close();
+    defer out_file.close(io);
 
     var write_buf: [64 * 1024]u8 = undefined;
-    var buffered = out_file.writer(&write_buf);
+    var buffered = out_file.writer(io, &write_buf);
     ccd_binary.writeDict(&buffered.interface, &dict) catch |err| {
         std.debug.print("Error: Failed to write binary dict: {s}\n", .{@errorName(err)});
         std.process.exit(1);
