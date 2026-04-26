@@ -5,7 +5,7 @@
 //! TODO: revert to native flate when Zig fixes the bug (test with 2oxd.cif.gz)
 
 const std = @import("std");
-const c = @cImport(@cInclude("zlib.h"));
+const c = @import("zlib_c");
 
 pub const GzipError = error{ GzipOpenFailed, GzipReadFailed, FileTooLarge, OutOfMemory };
 

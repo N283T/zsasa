@@ -56,23 +56,40 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
+    // Translate zlib.h to a Zig module (replaces source-level @cImport in 0.16).
+    // Use a local wrapper header so that addTranslateC gets a concrete b.path()
+    // (dependency lazy paths cannot serve as root_source_file for translate-c).
+    const zlib_c = b.addTranslateC(.{
+        .root_source_file = b.path("src/c/zlib_wrapper.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    zlib_c.addIncludePath(zlib_dep.path("."));
+    const zlib_c_mod = zlib_c.createModule();
+
+    // Wire zlib_c into the modules that need it
+    mod.addImport("zlib_c", zlib_c_mod);
+    exe_module.addImport("zlib_c", zlib_c_mod);
+
     // Shared library for C API / Python bindings
     const lib_module = b.createModule(.{
         .root_source_file = b.path("src/c_api.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
         .imports = &.{
             .{ .name = "zxdrfile", .module = zxdrfile_mod },
         },
     });
     lib_module.linkLibrary(zlib_pic_artifact);
+    lib_module.addImport("zlib_c", zlib_c_mod);
 
     const lib = b.addLibrary(.{
         .linkage = .dynamic,
         .name = "zsasa",
         .root_module = lib_module,
     });
-    lib.linkLibC();
     b.installArtifact(lib);
 
     // Run step
