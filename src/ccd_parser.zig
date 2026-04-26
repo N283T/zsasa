@@ -58,7 +58,7 @@ pub const ComponentDict = struct {
         return .{
             .components = std.StringHashMap(StoredComponent).init(allocator),
             .allocator = allocator,
-            .owned_keys = .{},
+            .owned_keys = .empty,
         };
     }
 
@@ -133,8 +133,8 @@ const ComponentBuilder = struct {
 
     fn init(allocator: Allocator) ComponentBuilder {
         return .{
-            .atoms = .{},
-            .bonds = .{},
+            .atoms = .empty,
+            .bonds = .empty,
             .atom_name_map = std.StringHashMap(u16).init(allocator),
         };
     }

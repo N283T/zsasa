@@ -34,11 +34,8 @@ const LeeRichardsConfigGen = lee_richards.LeeRichardsConfigGen;
 /// Write a warning message to stderr. Unlike std.debug.print, this is not
 /// stripped in release builds, so I/O errors are always visible.
 fn logWarning(comptime fmt: []const u8, args: anytype) void {
-    const stderr_file = std.fs.File.stderr();
-    var buf: [4096]u8 = undefined;
-    var w = std.fs.File.Writer.initStreaming(stderr_file, &buf);
-    w.interface.print("Warning: " ++ fmt ++ "\n", args) catch {};
-    w.interface.flush() catch {};
+    // Use std.debug.print for warnings (stderr, always visible in release builds)
+    std.debug.print("Warning: " ++ fmt ++ "\n", args);
 }
 
 /// SASA algorithm selection
@@ -201,6 +198,7 @@ fn calculateSasaDispatch(
 fn writeSasaOutput(
     comptime T: type,
     allocator: Allocator,
+    io: std.Io,
     result: *const SasaResultGen(T),
     output_dir: []const u8,
     filename: []const u8,
@@ -211,11 +209,11 @@ fn writeSasaOutput(
     const output_path = try std.fs.path.join(allocator, &.{ output_dir, output_filename });
 
     if (T == f64) {
-        try json_writer.writeSasaResultWithFormat(allocator, result.*, output_path, format);
+        try json_writer.writeSasaResultWithFormat(allocator, io, result.*, output_path, format);
     } else {
         var result_f64 = try result.toF64(allocator);
         defer result_f64.deinit();
-        try json_writer.writeSasaResultWithFormat(allocator, result_f64, output_path, format);
+        try json_writer.writeSasaResultWithFormat(allocator, io, result_f64, output_path, format);
     }
 }
 
@@ -333,29 +331,31 @@ pub const BatchResult = struct {
 };
 
 /// Read input file with auto-format detection
-fn readInputFile(allocator: Allocator, path: []const u8, config: BatchConfig) !AtomInput {
+fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: BatchConfig) !AtomInput {
     const format = format_detect.detectInputFormat(path);
     return switch (format) {
-        .json => json_parser.readAtomInputFromFile(allocator, path),
+        .json => json_parser.readAtomInputFromFile(allocator, io, path),
         .mmcif => blk: {
             var parser = mmcif_parser.MmcifParser.init(allocator);
             parser.skip_hydrogens = !config.include_hydrogens;
             parser.atom_only = !config.include_hetatm;
-            break :blk parser.parseFile(path);
+            break :blk parser.parseFile(io, path);
         },
         .pdb => blk: {
             var parser = pdb_parser.PdbParser.init(allocator);
             parser.skip_hydrogens = !config.include_hydrogens;
             parser.atom_only = !config.include_hetatm;
-            break :blk parser.parseFile(path);
+            break :blk parser.parseFile(io, path);
         },
         .sdf => blk: {
             const source = if (std.mem.endsWith(u8, path, ".gz"))
                 try gzip.readGzip(allocator, path)
             else file_blk: {
-                const f = try std.fs.cwd().openFile(path, .{});
-                defer f.close();
-                break :file_blk try f.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024);
+                const f = try std.Io.Dir.cwd().openFile(io, path, .{});
+                defer f.close(io);
+                var read_buf: [65536]u8 = undefined;
+                var file_r = f.reader(io, &read_buf);
+                break :file_blk try file_r.interface.allocRemaining(allocator, .unlimited);
             };
             defer allocator.free(source);
 
@@ -435,20 +435,20 @@ fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType, sdf_ccd: ?*cons
 }
 
 /// Scan directory for structure files (.json, .pdb, .cif, .mmcif, .ent and compressed variants)
-pub fn scanDirectory(allocator: Allocator, dir_path: []const u8) ![][]const u8 {
-    var files = std.ArrayListUnmanaged([]const u8){};
+pub fn scanDirectory(allocator: Allocator, io: std.Io, dir_path: []const u8) ![][]const u8 {
+    var files: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer {
         for (files.items) |f| allocator.free(f);
         files.deinit(allocator);
     }
 
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
         return err;
     };
-    defer dir.close();
+    defer dir.close(io);
 
     var iter = dir.iterate();
-    while (try iter.next()) |entry| {
+    while (try iter.next(io)) |entry| {
         // Accept regular files and symlinks (for sampled batch benchmarking)
         if (entry.kind != .file and entry.kind != .sym_link) continue;
 
@@ -479,6 +479,7 @@ pub fn scanDirectory(allocator: Allocator, dir_path: []const u8) ![][]const u8 {
 /// n_threads: number of threads for SASA calculation (1 = single-threaded)
 fn processOneFile(
     arena: Allocator,
+    io: std.Io,
     result_allocator: Allocator,
     input_dir: []const u8,
     output_dir: ?[]const u8,
@@ -504,7 +505,7 @@ fn processOneFile(
     };
 
     // Read and parse input (auto-detect format from extension)
-    var input = readInputFile(arena, input_path, config) catch |err| {
+    var input = readInputFile(arena, io, input_path, config) catch |err| {
         result.status = .err;
         result.error_msg = std.fmt.allocPrint(result_allocator, "read/parse failed: {s}", .{@errorName(err)}) catch null;
         return result;
@@ -526,11 +527,7 @@ fn processOneFile(
     result.n_atoms = input.atomCount();
 
     // Time SASA calculation only
-    var timer = std.time.Timer.start() catch |err| {
-        result.status = .err;
-        result.error_msg = std.fmt.allocPrint(result_allocator, "timer unavailable: {s}", .{@errorName(err)}) catch null;
-        return result;
-    };
+    var sasa_timer = std.Io.Timestamp.now(io, .awake);
 
     // Calculate SASA using generic dispatcher
     var total_area: f64 = 0;
@@ -552,7 +549,7 @@ fn processOneFile(
                 return result;
             };
             defer sasa_result.deinit();
-            result.sasa_time_ns = timer.read();
+            result.sasa_time_ns = @intCast(sasa_timer.untilNow(io, .awake).nanoseconds);
             total_area = sasa_result.total_area;
 
             if (config.store_atom_areas) {
@@ -565,7 +562,7 @@ fn processOneFile(
 
             if (output_dir) |out_dir| {
                 if (!config.store_atom_areas) {
-                    writeSasaOutput(f64, arena, &sasa_result, out_dir, filename, config.output_format) catch |err| {
+                    writeSasaOutput(f64, arena, io, &sasa_result, out_dir, filename, config.output_format) catch |err| {
                         result.status = .err;
                         result.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
                         return result;
@@ -590,7 +587,7 @@ fn processOneFile(
                 return result;
             };
             defer sasa_result.deinit();
-            result.sasa_time_ns = timer.read();
+            result.sasa_time_ns = @intCast(sasa_timer.untilNow(io, .awake).nanoseconds);
             total_area = @floatCast(sasa_result.total_area);
 
             if (config.store_atom_areas) {
@@ -606,7 +603,7 @@ fn processOneFile(
 
             if (output_dir) |out_dir| {
                 if (!config.store_atom_areas) {
-                    writeSasaOutput(f32, arena, &sasa_result, out_dir, filename, config.output_format) catch |err| {
+                    writeSasaOutput(f32, arena, io, &sasa_result, out_dir, filename, config.output_format) catch |err| {
                         result.status = .err;
                         result.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
                         return result;
@@ -625,6 +622,7 @@ fn processOneFile(
 /// `display_name` is used as the filename in the result (e.g., "file.sdf:methane").
 fn processOneSdfMolecule(
     arena: Allocator,
+    io: std.Io,
     result_allocator: Allocator,
     display_name: []const u8,
     molecule: *const sdf_parser.SdfMolecule,
@@ -668,7 +666,7 @@ fn processOneSdfMolecule(
                 dict.deinit();
                 sdf_dict = null;
                 // fall through to classifier without SDF dict
-                return processOneSdfMoleculeInner(arena, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, null);
+                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, null);
             };
             dict.owned_keys.append(arena, dict_key) catch |err| {
                 logWarning("{s}: SDF component registration failed: {s}", .{ display_name, @errorName(err) });
@@ -676,14 +674,14 @@ fn processOneSdfMolecule(
                 var mut_s = s;
                 mut_s.deinit();
                 dict.deinit();
-                return processOneSdfMoleculeInner(arena, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, null);
+                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, null);
             };
             dict.components.put(dict_key, s) catch |err| {
                 logWarning("{s}: SDF component registration failed: {s}", .{ display_name, @errorName(err) });
                 var mut_s = s;
                 mut_s.deinit();
                 dict.deinit();
-                return processOneSdfMoleculeInner(arena, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, null);
+                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, null);
             };
             sdf_dict = dict;
         }
@@ -691,12 +689,13 @@ fn processOneSdfMolecule(
     defer if (sdf_dict) |*d| d.deinit();
 
     const sdf_ccd_ptr: ?*const ccd_parser.ComponentDict = if (sdf_dict) |*d| d else null;
-    return processOneSdfMoleculeInner(arena, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, sdf_ccd_ptr);
+    return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, sdf_ccd_ptr);
 }
 
 /// Inner helper: apply classifier, run SASA, write output for a single SDF molecule.
 fn processOneSdfMoleculeInner(
     arena: Allocator,
+    io: std.Io,
     result_allocator: Allocator,
     result: *FileResult,
     input: *AtomInput,
@@ -726,11 +725,7 @@ fn processOneSdfMoleculeInner(
     res.n_atoms = input.atomCount();
 
     // Time SASA calculation
-    var timer = std.time.Timer.start() catch |err| {
-        res.status = .err;
-        res.error_msg = std.fmt.allocPrint(result_allocator, "timer unavailable: {s}", .{@errorName(err)}) catch null;
-        return res;
-    };
+    var sasa_timer = std.Io.Timestamp.now(io, .awake);
 
     var total_area: f64 = 0;
     switch (config.precision) {
@@ -751,7 +746,7 @@ fn processOneSdfMoleculeInner(
                 return res;
             };
             defer sasa_result.deinit();
-            res.sasa_time_ns = timer.read();
+            res.sasa_time_ns = @intCast(sasa_timer.untilNow(io, .awake).nanoseconds);
             total_area = sasa_result.total_area;
 
             if (config.store_atom_areas) {
@@ -764,7 +759,7 @@ fn processOneSdfMoleculeInner(
 
             if (output_dir) |out_dir| {
                 if (!config.store_atom_areas) {
-                    writeSasaOutput(f64, arena, &sasa_result, out_dir, display_name, config.output_format) catch |err| {
+                    writeSasaOutput(f64, arena, io, &sasa_result, out_dir, display_name, config.output_format) catch |err| {
                         res.status = .err;
                         res.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
                         return res;
@@ -789,7 +784,7 @@ fn processOneSdfMoleculeInner(
                 return res;
             };
             defer sasa_result.deinit();
-            res.sasa_time_ns = timer.read();
+            res.sasa_time_ns = @intCast(sasa_timer.untilNow(io, .awake).nanoseconds);
             total_area = @floatCast(sasa_result.total_area);
 
             if (config.store_atom_areas) {
@@ -805,7 +800,7 @@ fn processOneSdfMoleculeInner(
 
             if (output_dir) |out_dir| {
                 if (!config.store_atom_areas) {
-                    writeSasaOutput(f32, arena, &sasa_result, out_dir, display_name, config.output_format) catch |err| {
+                    writeSasaOutput(f32, arena, io, &sasa_result, out_dir, display_name, config.output_format) catch |err| {
                         res.status = .err;
                         res.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
                         return res;
@@ -822,8 +817,9 @@ fn processOneSdfMoleculeInner(
 /// Thread-safe JSONL streaming writer.
 /// Each call to writeResult acquires the mutex, serializes one line, and flushes.
 const JsonlStreamWriter = struct {
-    mutex: std.Thread.Mutex = .{},
-    file: std.fs.File,
+    mutex: std.Io.Mutex = .init,
+    file: std.Io.File,
+    io: std.Io,
 
     /// Serialize and write one JSONL line for a completed file result.
     /// alloc is a short-lived allocator (e.g., thread-local arena) used only for
@@ -841,13 +837,13 @@ const JsonlStreamWriter = struct {
         };
         // line is on alloc (arena); no explicit free needed — arena reset handles it.
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lock(self.io) catch unreachable;
+        defer self.mutex.unlock(self.io);
 
         // 64KB stack buffer; use streaming mode so the OS seek position
         // advances (safe under mutex — only one thread writes at a time).
         var buf: [64 * 1024]u8 = undefined;
-        var w = std.fs.File.Writer.initStreaming(self.file, &buf);
+        var w = std.Io.File.Writer.initStreaming(self.file, self.io, &buf);
         w.interface.writeAll(line) catch |err| {
             logWarning("JSONL write failed for {s}: {s}", .{ filename, @errorName(err) });
             return;
@@ -865,7 +861,7 @@ const JsonlStreamWriter = struct {
 /// Write a JSONL line for a result via the buffered writer.
 /// atom_areas live on the arena and are invalidated after arena reset.
 fn writeJsonlResult(
-    jsonl_writer: *std.fs.File.Writer,
+    jsonl_writer: *std.Io.File.Writer,
     arena_alloc: Allocator,
     result: *FileResult,
 ) void {
@@ -891,16 +887,17 @@ fn writeJsonlResult(
 /// Run batch processing sequentially (single-threaded path, used when n_threads <= 1)
 pub fn runBatchSequential(
     allocator: Allocator,
+    io: std.Io,
     input_dir: []const u8,
     output_dir: ?[]const u8,
     config: BatchConfig,
     jsonl_output_path: ?[]const u8,
 ) !BatchResult {
     // Start total timer
-    var total_timer = try std.time.Timer.start();
+    var total_timer = std.Io.Timestamp.now(io, .awake);
 
     // Scan directory for files
-    const files = try scanDirectory(allocator, input_dir);
+    const files = try scanDirectory(allocator, io, input_dir);
     defer {
         for (files) |f| allocator.free(f);
         allocator.free(files);
@@ -908,24 +905,24 @@ pub fn runBatchSequential(
 
     // Create output directory if specified
     if (output_dir) |out_dir| {
-        try std.fs.cwd().makePath(out_dir);
+        try std.Io.Dir.cwd().createDirPath(io, out_dir);
     }
 
     // Open JSONL output file (or stdout) when streaming is requested
-    var jsonl_file: ?std.fs.File = null;
+    var jsonl_file: ?std.Io.File = null;
     var jsonl_file_needs_close = false;
     if (jsonl_output_path) |path| {
-        jsonl_file = try std.fs.cwd().createFile(path, .{});
+        jsonl_file = try std.Io.Dir.cwd().createFile(io, path, .{});
         jsonl_file_needs_close = true;
     } else if (config.store_atom_areas) {
-        jsonl_file = std.fs.File.stdout();
+        jsonl_file = std.Io.File.stdout();
     }
     defer if (jsonl_file_needs_close) {
-        if (jsonl_file) |f| f.close();
+        if (jsonl_file) |f| f.close(io);
     };
 
     // Use ArrayList for results (SDF files may expand into multiple entries)
-    var results_list = std.ArrayListUnmanaged(FileResult){};
+    var results_list = std.ArrayListUnmanaged(FileResult).empty;
     defer results_list.deinit(allocator);
 
     // Process each file
@@ -944,8 +941,8 @@ pub fn runBatchSequential(
     // JSONL buffered writer: created once, reused across all files.
     // Uses streaming mode so OS seek position advances with each write.
     var jsonl_write_buf: [64 * 1024]u8 = undefined;
-    var jsonl_writer: ?std.fs.File.Writer = if (jsonl_file) |jf|
-        std.fs.File.Writer.initStreaming(jf, &jsonl_write_buf)
+    var jsonl_writer: ?std.Io.File.Writer = if (jsonl_file) |jf|
+        std.Io.File.Writer.initStreaming(jf, io, &jsonl_write_buf)
     else
         null;
 
@@ -989,7 +986,7 @@ pub fn runBatchSequential(
                     continue;
                 }
             else file_blk: {
-                const f = std.fs.cwd().openFile(input_path, .{}) catch |err| {
+                const f = std.Io.Dir.cwd().openFile(io, input_path, .{}) catch |err| {
                     const filename_copy = try allocator.dupe(u8, filename);
                     try results_list.append(allocator, FileResult{
                         .filename = filename_copy,
@@ -1004,8 +1001,10 @@ pub fn runBatchSequential(
                     _ = arena.reset(.retain_capacity);
                     continue;
                 };
-                defer f.close();
-                break :file_blk f.readToEndAlloc(arena.allocator(), 4 * 1024 * 1024 * 1024) catch |err| {
+                defer f.close(io);
+                var read_buf_seq: [65536]u8 = undefined;
+                var file_r_seq = f.reader(io, &read_buf_seq);
+                break :file_blk file_r_seq.interface.allocRemaining(arena.allocator(), .unlimited) catch |err| {
                     const filename_copy = try allocator.dupe(u8, filename);
                     try results_list.append(allocator, FileResult{
                         .filename = filename_copy,
@@ -1048,6 +1047,7 @@ pub fn runBatchSequential(
 
                 var mol_result = processOneSdfMolecule(
                     arena.allocator(),
+                    io,
                     allocator,
                     display_name,
                     mol,
@@ -1083,6 +1083,7 @@ pub fn runBatchSequential(
 
             var result = processOneFile(
                 arena.allocator(),
+                io,
                 allocator,
                 input_dir,
                 output_dir,
@@ -1123,7 +1124,7 @@ pub fn runBatchSequential(
         std.debug.print("\n", .{});
     }
 
-    const total_time_ns = total_timer.read();
+    const total_time_ns: u64 = @intCast(total_timer.untilNow(io, .awake).nanoseconds);
 
     return BatchResult{
         .total_files = total_items,
@@ -1157,6 +1158,7 @@ const ParallelContext = struct {
     lut_f64: ?*const bitmask_lut.BitmaskLut,
     lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
     jsonl_stream: ?*JsonlStreamWriter,
+    io: std.Io,
     /// Pre-parsed SDF data: keyed by filename, each entry is the parsed source bytes.
     /// Workers read these (read-only) to avoid re-parsing the same SDF file.
     sdf_sources: std.StringHashMapUnmanaged([]const u8),
@@ -1255,6 +1257,7 @@ fn parallelWorker(ctx: *ParallelContext) void {
 
             var result = processOneSdfMolecule(
                 arena.allocator(),
+                ctx.io,
                 ctx.result_allocator,
                 name_copy,
                 &molecules[mol_idx],
@@ -1280,6 +1283,7 @@ fn parallelWorker(ctx: *ParallelContext) void {
             // Non-SDF file: existing logic
             var result = processOneFile(
                 arena.allocator(),
+                ctx.io,
                 ctx.result_allocator,
                 ctx.input_dir,
                 ctx.output_dir,
@@ -1318,10 +1322,11 @@ fn parallelWorker(ctx: *ParallelContext) void {
 /// Returns the work items and a map of SDF sources (caller must free both).
 fn buildWorkItems(
     allocator: Allocator,
+    io: std.Io,
     files: []const []const u8,
     input_dir: []const u8,
 ) !struct { items: []WorkItem, sdf_sources: std.StringHashMapUnmanaged([]const u8) } {
-    var items = std.ArrayListUnmanaged(WorkItem){};
+    var items = std.ArrayListUnmanaged(WorkItem).empty;
     errdefer {
         for (items.items) |item| {
             // Only free if display_name was separately allocated (not same as filename)
@@ -1358,7 +1363,7 @@ fn buildWorkItems(
                     continue;
                 }
             else file_blk: {
-                const f = std.fs.cwd().openFile(input_path, .{}) catch |err| {
+                const f = std.Io.Dir.cwd().openFile(io, input_path, .{}) catch |err| {
                     logWarning("{s}: failed to open SDF: {s}", .{ filename, @errorName(err) });
                     try items.append(allocator, .{
                         .filename = filename,
@@ -1367,8 +1372,10 @@ fn buildWorkItems(
                     });
                     continue;
                 };
-                defer f.close();
-                break :file_blk f.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024) catch |err| {
+                defer f.close(io);
+                var read_buf_build: [65536]u8 = undefined;
+                var file_r_build = f.reader(io, &read_buf_build);
+                break :file_blk file_r_build.interface.allocRemaining(allocator, .unlimited) catch |err| {
                     logWarning("{s}: failed to read SDF: {s}", .{ filename, @errorName(err) });
                     try items.append(allocator, .{
                         .filename = filename,
@@ -1428,16 +1435,17 @@ fn buildWorkItems(
 /// Run batch processing in parallel
 pub fn runBatchParallel(
     allocator: Allocator,
+    io: std.Io,
     input_dir: []const u8,
     output_dir: ?[]const u8,
     config: BatchConfig,
     jsonl_output_path: ?[]const u8,
 ) !BatchResult {
     // Start total timer
-    var total_timer = try std.time.Timer.start();
+    var total_timer = std.Io.Timestamp.now(io, .awake);
 
     // Scan directory for files
-    const files = try scanDirectory(allocator, input_dir);
+    const files = try scanDirectory(allocator, io, input_dir);
     defer {
         for (files) |f| allocator.free(f);
         allocator.free(files);
@@ -1449,7 +1457,7 @@ pub fn runBatchParallel(
             .successful = 0,
             .failed = 0,
             .total_sasa_time_ns = 0,
-            .total_time_ns = total_timer.read(),
+            .total_time_ns = @intCast(total_timer.untilNow(io, .awake).nanoseconds),
             .file_results = try allocator.alloc(FileResult, 0),
             .allocator = allocator,
         };
@@ -1457,11 +1465,11 @@ pub fn runBatchParallel(
 
     // Create output directory if specified
     if (output_dir) |out_dir| {
-        try std.fs.cwd().makePath(out_dir);
+        try std.Io.Dir.cwd().createDirPath(io, out_dir);
     }
 
     // Build work items (expanding SDF files into per-molecule items)
-    var build_result = try buildWorkItems(allocator, files, input_dir);
+    var build_result = try buildWorkItems(allocator, io, files, input_dir);
     const work_items = build_result.items;
     defer {
         for (work_items) |item| {
@@ -1492,7 +1500,7 @@ pub fn runBatchParallel(
     // For single item or single thread, use sequential
     if (work_items.len == 1 or n_threads <= 1) {
         allocator.free(file_results);
-        return runBatchSequential(allocator, input_dir, output_dir, config, jsonl_output_path);
+        return runBatchSequential(allocator, io, input_dir, output_dir, config, jsonl_output_path);
     }
 
     // Build bitmask LUT once (if enabled)
@@ -1500,23 +1508,23 @@ pub fn runBatchParallel(
     defer luts.deinit();
 
     // Open JSONL output file (or stdout) when streaming is requested
-    var jsonl_file: ?std.fs.File = null;
+    var jsonl_file: ?std.Io.File = null;
     var jsonl_file_needs_close = false;
     if (jsonl_output_path) |path| {
-        jsonl_file = try std.fs.cwd().createFile(path, .{});
+        jsonl_file = try std.Io.Dir.cwd().createFile(io, path, .{});
         jsonl_file_needs_close = true;
     } else if (config.store_atom_areas) {
-        jsonl_file = std.fs.File.stdout();
+        jsonl_file = std.Io.File.stdout();
     }
     defer if (jsonl_file_needs_close) {
-        if (jsonl_file) |f| f.close();
+        if (jsonl_file) |f| f.close(io);
     };
 
     // Set up the stream writer on the stack (if JSONL streaming is active).
     // SAFETY: `undefined` when jsonl_file is null — never accessed because
     // jsonl_stream_ptr is also null in that case.
     var jsonl_stream_storage: JsonlStreamWriter = if (jsonl_file) |jf|
-        JsonlStreamWriter{ .file = jf }
+        JsonlStreamWriter{ .file = jf, .io = io }
     else
         undefined;
     const jsonl_stream_ptr: ?*JsonlStreamWriter = if (jsonl_file != null) &jsonl_stream_storage else null;
@@ -1534,6 +1542,7 @@ pub fn runBatchParallel(
         .lut_f64 = luts.f64Ptr(),
         .lut_f32 = luts.f32Ptr(),
         .jsonl_stream = jsonl_stream_ptr,
+        .io = io,
         .sdf_sources = build_result.sdf_sources,
     };
 
@@ -1551,7 +1560,7 @@ pub fn runBatchParallel(
         while (ctx.processed_count.load(.acquire) < work_items.len) {
             const processed = ctx.processed_count.load(.acquire);
             std.debug.print("\rProcessing: {d}/{d}", .{ processed, work_items.len });
-            std.Thread.sleep(50 * std.time.ns_per_ms); // 50ms update interval
+            std.Io.sleep(io, .fromMilliseconds(50), .awake) catch {}; // 50ms update interval
         }
         std.debug.print("\rProcessing: {d}/{d}\n", .{ work_items.len, work_items.len });
     }
@@ -1575,7 +1584,7 @@ pub fn runBatchParallel(
         }
     }
 
-    const total_time_ns = total_timer.read();
+    const total_time_ns: u64 = @intCast(total_timer.untilNow(io, .awake).nanoseconds);
 
     return BatchResult{
         .total_files = work_items.len,
@@ -1592,6 +1601,7 @@ pub fn runBatchParallel(
 /// Uses file-level parallelism: N files in parallel, 1 thread per file
 pub fn runBatch(
     allocator: Allocator,
+    io: std.Io,
     input_dir: []const u8,
     output_dir: ?[]const u8,
     config: BatchConfig,
@@ -1604,9 +1614,9 @@ pub fn runBatch(
         config.n_threads;
 
     if (n_threads <= 1) {
-        return runBatchSequential(allocator, input_dir, output_dir, config, jsonl_output_path);
+        return runBatchSequential(allocator, io, input_dir, output_dir, config, jsonl_output_path);
     }
-    return runBatchParallel(allocator, input_dir, output_dir, config, jsonl_output_path);
+    return runBatchParallel(allocator, io, input_dir, output_dir, config, jsonl_output_path);
 }
 
 // =============================================================================
@@ -1996,7 +2006,6 @@ const loadSdfComponents = sdf_parser.loadSdfComponents;
 
 /// Run batch processing from parsed CLI arguments
 pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
-    _ = io;
     const input_dir = args.input_path orelse {
         std.debug.print("Error: Missing input directory\n", .{});
         std.debug.print("Usage: zsasa batch [OPTIONS] <input_dir> [output_dir]\n", .{});
@@ -2012,12 +2021,14 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
                 std.process.exit(1);
             }
         else blk: {
-            const f = std.fs.cwd().openFile(ccd_path, .{}) catch |err| {
+            const f = std.Io.Dir.cwd().openFile(io, ccd_path, .{}) catch |err| {
                 std.debug.print("Error opening CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
                 std.process.exit(1);
             };
-            defer f.close();
-            break :blk f.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024) catch |err| {
+            defer f.close(io);
+            var read_buf_ccd: [65536]u8 = undefined;
+            var file_r_ccd = f.reader(io, &read_buf_ccd);
+            break :blk file_r_ccd.interface.allocRemaining(allocator, .unlimited) catch |err| {
                 std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
                 std.process.exit(1);
             };
@@ -2037,7 +2048,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     // Load SDF components from --sdf option
     var sdf_ccd: ?ccd_parser.ComponentDict = null;
     if (args.sdf_paths.len > 0) {
-        sdf_ccd = loadSdfComponents(allocator, args.sdf_paths.constSlice(), args.quiet) catch |err| {
+        sdf_ccd = loadSdfComponents(allocator, io, args.sdf_paths.constSlice(), args.quiet) catch |err| {
             std.debug.print("Error loading SDF components: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
@@ -2088,7 +2099,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     // Determine JSONL output path: stream during computation instead of accumulating in memory
     const jsonl_output_path: ?[]const u8 = if (args.output_format == .jsonl) args.output_path else null;
 
-    var result = try runBatch(allocator, input_dir, output_dir, config, jsonl_output_path);
+    var result = try runBatch(allocator, io, input_dir, output_dir, config, jsonl_output_path);
     defer result.deinit();
 
     // Print results

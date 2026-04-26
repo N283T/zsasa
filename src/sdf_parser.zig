@@ -94,7 +94,7 @@ pub const SdfError = error{
 pub fn parse(allocator: Allocator, source: []const u8) SdfError![]const SdfMolecule {
     if (source.len == 0) return error.EmptySdf;
 
-    var molecules = std.ArrayListUnmanaged(SdfMolecule){};
+    var molecules = std.ArrayListUnmanaged(SdfMolecule).empty;
     errdefer {
         for (molecules.items) |mol| {
             allocator.free(mol.atoms);
@@ -186,7 +186,7 @@ fn parseSingleMolecule(
         const counts = parseCounts(counts_line) orelse return error.InvalidCountsLine;
 
         // Parse atom block
-        var atom_list = std.ArrayListUnmanaged(SdfAtom){};
+        var atom_list = std.ArrayListUnmanaged(SdfAtom).empty;
         errdefer atom_list.deinit(allocator);
         try atom_list.ensureTotalCapacity(allocator, counts.atom_count);
 
@@ -198,7 +198,7 @@ fn parseSingleMolecule(
         }
 
         // Parse bond block
-        var bond_list = std.ArrayListUnmanaged(SdfBond){};
+        var bond_list = std.ArrayListUnmanaged(SdfBond).empty;
         errdefer bond_list.deinit(allocator);
         try bond_list.ensureTotalCapacity(allocator, counts.bond_count);
 
@@ -247,7 +247,7 @@ fn parseV3000Body(
     // Helper: strip "M  V30 " prefix from a line and return the payload, or null.
     const stripV30 = struct {
         fn strip(line: []const u8) ?[]const u8 {
-            const trimmed = std.mem.trimLeft(u8, line, " ");
+            const trimmed = std.mem.trimStart(u8, line, " ");
             if (std.mem.startsWith(u8, trimmed, "M  V30 ")) {
                 return trimmed["M  V30 ".len..];
             }
@@ -262,7 +262,7 @@ fn parseV3000Body(
 
     while (line_iter.next()) |raw_line| {
         const line = stripCr(raw_line);
-        if (std.mem.startsWith(u8, std.mem.trimLeft(u8, line, " "), "M  END")) break;
+        if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " "), "M  END")) break;
 
         if (stripV30(line)) |payload| {
             if (std.mem.startsWith(u8, payload, "COUNTS ")) {
@@ -283,7 +283,7 @@ fn parseV3000Body(
     if (!found_counts) return error.InvalidCountsLine;
 
     // Parse ATOM block
-    var atom_list = std.ArrayListUnmanaged(SdfAtom){};
+    var atom_list = std.ArrayListUnmanaged(SdfAtom).empty;
     errdefer atom_list.deinit(allocator);
     try atom_list.ensureTotalCapacity(allocator, atom_count);
 
@@ -311,7 +311,7 @@ fn parseV3000Body(
     }
 
     // Look for BEGIN BOND (there may be lines between END ATOM and BEGIN BOND)
-    var bond_list = std.ArrayListUnmanaged(SdfBond){};
+    var bond_list = std.ArrayListUnmanaged(SdfBond).empty;
     errdefer bond_list.deinit(allocator);
     try bond_list.ensureTotalCapacity(allocator, bond_count);
 
@@ -319,11 +319,11 @@ fn parseV3000Body(
     var in_bond_block = false;
     while (line_iter.next()) |raw_line| {
         const line = stripCr(raw_line);
-        if (std.mem.startsWith(u8, std.mem.trimLeft(u8, line, " "), "M  END")) {
+        if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " "), "M  END")) {
             // Reached M  END — no bond block or we're done
             break;
         }
-        if (std.mem.startsWith(u8, std.mem.trimLeft(u8, line, " "), "$$$$")) {
+        if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " "), "$$$$")) {
             // Terminator found before M  END
             const atoms = try atom_list.toOwnedSlice(allocator);
             errdefer allocator.free(atoms);
@@ -698,6 +698,7 @@ pub const SdfPathList = struct {
 /// Returns `null` if no valid components were loaded.
 pub fn loadSdfComponents(
     allocator: Allocator,
+    io: std.Io,
     sdf_paths: []const []const u8,
     quiet: bool,
 ) !?ccd_parser.ComponentDict {
@@ -713,12 +714,14 @@ pub fn loadSdfComponents(
                 std.process.exit(1);
             }
         else file_blk: {
-            const f = std.fs.cwd().openFile(sdf_path, .{}) catch |err| {
+            const f = std.Io.Dir.cwd().openFile(io, sdf_path, .{}) catch |err| {
                 std.debug.print("Error opening SDF file '{s}': {s}\n", .{ sdf_path, @errorName(err) });
                 std.process.exit(1);
             };
-            defer f.close();
-            break :file_blk f.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024) catch |err| {
+            defer f.close(io);
+            var read_buf: [65536]u8 = undefined;
+            var file_reader = f.reader(io, &read_buf);
+            break :file_blk file_reader.interface.allocRemaining(allocator, .unlimited) catch |err| {
                 std.debug.print("Error reading SDF file '{s}': {s}\n", .{ sdf_path, @errorName(err) });
                 std.process.exit(1);
             };
@@ -1252,18 +1255,17 @@ test "toAtomInput — max 26 chains" {
 
     // Build 28 single-atom molecules inline
     var source_buf: [28 * 256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&source_buf);
-    const writer = fbs.writer();
+    var w = std.Io.Writer.fixed(&source_buf);
     for (0..28) |i| {
-        writer.print("mol{d:0>2}\n", .{i}) catch unreachable;
-        writer.writeAll("     zsasa   3D\n") catch unreachable;
-        writer.writeAll("\n") catch unreachable;
-        writer.writeAll("  1  0  0  0  0  0  0  0  0  0999 V2000\n") catch unreachable;
-        writer.writeAll("    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n") catch unreachable;
-        writer.writeAll("M  END\n") catch unreachable;
-        writer.writeAll("$$$$\n") catch unreachable;
+        w.print("mol{d:0>2}\n", .{i}) catch unreachable;
+        w.writeAll("     zsasa   3D\n") catch unreachable;
+        w.writeAll("\n") catch unreachable;
+        w.writeAll("  1  0  0  0  0  0  0  0  0  0999 V2000\n") catch unreachable;
+        w.writeAll("    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n") catch unreachable;
+        w.writeAll("M  END\n") catch unreachable;
+        w.writeAll("$$$$\n") catch unreachable;
     }
-    const source = fbs.getWritten();
+    const source = source_buf[0..w.end];
 
     const molecules = try parse(allocator, source);
     defer freeMolecules(allocator, molecules);

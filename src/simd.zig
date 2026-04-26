@@ -868,7 +868,8 @@ pub fn sliceRadiiBatch4(
     const zero: @Vector(4, f64) = @splat(0.0);
     const rp_sq_clamped = @max(rp_sq, zero);
 
-    return @sqrt(rp_sq_clamped);
+    const result: @Vector(4, f64) = @sqrt(rp_sq_clamped);
+    return result;
 }
 
 /// Check if circles overlap (dij < Ri' + Rj') for 4 neighbors.
@@ -955,7 +956,8 @@ pub fn sliceRadiiBatch8(
     const zero: @Vector(8, f64) = @splat(0.0);
     const rp_sq_clamped = @max(rp_sq, zero);
 
-    return @sqrt(rp_sq_clamped);
+    const result: @Vector(8, f64) = @sqrt(rp_sq_clamped);
+    return result;
 }
 
 /// Check if circles overlap (dij < Ri' + Rj') for 8 neighbors.
@@ -1322,7 +1324,8 @@ pub fn xyDistanceBatch4Gen(comptime T: type) type {
             const dy = ny - py;
 
             const dist_sq = dx * dx + dy * dy;
-            return @sqrt(dist_sq);
+            const result: @Vector(4, T) = @sqrt(dist_sq);
+            return result;
         }
     };
 }
@@ -1348,7 +1351,8 @@ pub fn sliceRadiiBatch4Gen(comptime T: type) type {
             const zero: @Vector(4, T) = @splat(0.0);
             const rp_sq_clamped = @max(rp_sq, zero);
 
-            return @sqrt(rp_sq_clamped);
+            const result: @Vector(4, T) = @sqrt(rp_sq_clamped);
+            return result;
         }
     };
 }
@@ -1392,7 +1396,8 @@ pub fn xyDistanceBatch8Gen(comptime T: type) type {
             const dy = ny - py;
 
             const dist_sq = dx * dx + dy * dy;
-            return @sqrt(dist_sq);
+            const result: @Vector(8, T) = @sqrt(dist_sq);
+            return result;
         }
     };
 }
@@ -1418,7 +1423,8 @@ pub fn sliceRadiiBatch8Gen(comptime T: type) type {
             const zero: @Vector(8, T) = @splat(0.0);
             const rp_sq_clamped = @max(rp_sq, zero);
 
-            return @sqrt(rp_sq_clamped);
+            const result: @Vector(8, T) = @sqrt(rp_sq_clamped);
+            return result;
         }
     };
 }

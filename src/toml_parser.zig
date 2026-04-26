@@ -149,7 +149,7 @@ const SectionKind = enum {
 /// arrays are heap-allocated. Call `Document.deinit()` to free all owned
 /// memory.
 pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
-    var tables = std.ArrayListUnmanaged(Table){};
+    var tables = std.ArrayListUnmanaged(Table).empty;
     errdefer {
         for (tables.items) |table| {
             for (table.entries) |entry| {
@@ -160,7 +160,7 @@ pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
         tables.deinit(allocator);
     }
 
-    var array_tables = std.ArrayListUnmanaged(Document.ArrayTable){};
+    var array_tables = std.ArrayListUnmanaged(Document.ArrayTable).empty;
     errdefer {
         for (array_tables.items) |at| {
             for (at.entries) |entry| {
@@ -174,7 +174,7 @@ pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
     // Current section state
     var current_name: []const u8 = "";
     var current_kind: SectionKind = .table;
-    var current_entries = std.ArrayListUnmanaged(Value.Entry){};
+    var current_entries = std.ArrayListUnmanaged(Value.Entry).empty;
     errdefer {
         for (current_entries.items) |entry| {
             freeValue(allocator, entry.value);
@@ -360,7 +360,7 @@ fn parseInlineTable(allocator: Allocator, raw: []const u8) Error!Value {
         return Value{ .inline_table = empty };
     }
 
-    var entries = std.ArrayListUnmanaged(Value.Entry){};
+    var entries = std.ArrayListUnmanaged(Value.Entry).empty;
     errdefer {
         for (entries.items) |entry| {
             freeValue(allocator, entry.value);

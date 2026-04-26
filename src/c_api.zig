@@ -78,6 +78,11 @@ const VERSION = "0.1.1";
 /// Thread-safe allocator for C API (uses C allocator for simplicity)
 const c_allocator = std.heap.c_allocator;
 
+/// IO instance for C API (uses global single-threaded IO, no concurrency/cancellation)
+fn cIo() std.Io {
+    return std.Io.Threaded.global_single_threaded.io();
+}
+
 /// Get library version string.
 export fn zsasa_version() callconv(.c) [*:0]const u8 {
     return VERSION;
@@ -2153,7 +2158,7 @@ export fn zsasa_dcd_open(
         return null;
     };
 
-    handle.reader = dcd.DcdReader.open(c_allocator, path_slice) catch |err| {
+    handle.reader = dcd.DcdReader.open(c_allocator, cIo(), path_slice) catch |err| {
         c_allocator.destroy(handle);
         error_code.* = switch (err) {
             dcd.DcdError.FileNotFound => ZSASA_ERROR_INVALID_INPUT,
@@ -2463,7 +2468,7 @@ export fn zsasa_batch_dir_process(
     const output_dir_slice: ?[]const u8 = if (output_dir) |od| std.mem.span(od) else null;
 
     // Run batch processing
-    var batch_result = batch.runBatch(c_allocator, input_dir_slice, output_dir_slice, config, null) catch |err| {
+    var batch_result = batch.runBatch(c_allocator, cIo(), input_dir_slice, output_dir_slice, config, null) catch |err| {
         const code = switch (err) {
             error.OutOfMemory => ZSASA_ERROR_OUT_OF_MEMORY,
             else => ZSASA_ERROR_FILE_IO,

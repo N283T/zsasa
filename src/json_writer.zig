@@ -47,10 +47,8 @@ pub fn sasaResultToJsonPretty(allocator: Allocator, result: SasaResult) ![]u8 {
 /// Format: atom_index,area (with total at end)
 /// Caller must free the returned slice
 pub fn sasaResultToCsv(allocator: Allocator, result: SasaResult) ![]u8 {
-    var list = std.ArrayListUnmanaged(u8){};
-    errdefer list.deinit(allocator);
-
-    const writer = list.writer(allocator);
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    const writer = &aw.writer;
 
     // Header
     try writer.writeAll("atom_index,area\n");
@@ -63,17 +61,15 @@ pub fn sasaResultToCsv(allocator: Allocator, result: SasaResult) ![]u8 {
     // Total
     try writer.print("total,{d:.6}\n", .{result.total_area});
 
-    return list.toOwnedSlice(allocator);
+    return aw.toOwnedSlice();
 }
 
 /// Convert SasaResult to rich CSV string with structural information
 /// Format: chain,residue,resnum,atom_name,x,y,z,radius,area
 /// Caller must free the returned slice
 pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: []const f64) ![]u8 {
-    var list = std.ArrayListUnmanaged(u8){};
-    errdefer list.deinit(allocator);
-
-    const writer = list.writer(allocator);
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    const writer = &aw.writer;
 
     // Header
     try writer.writeAll("chain,residue,resnum,atom_name,x,y,z,radius,area\n");
@@ -128,7 +124,7 @@ pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: [
     for (atom_areas) |a| total += a;
     try writer.print(",,,,,,,,{d:.6}\n", .{total});
 
-    return list.toOwnedSlice(allocator);
+    return aw.toOwnedSlice();
 }
 
 /// Write SasaResult to file with specified format.
@@ -136,6 +132,7 @@ pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: [
 /// to avoid per-atom write overhead (thousands of syscalls per file).
 pub fn writeSasaResultWithFormat(
     allocator: Allocator,
+    io: std.Io,
     result: SasaResult,
     path: []const u8,
     format: OutputFormat,
@@ -148,15 +145,16 @@ pub fn writeSasaResultWithFormat(
     };
     defer allocator.free(output_str);
 
-    const file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().createFile(io, path, .{});
+    defer file.close(io);
 
-    try file.writeAll(output_str);
+    try file.writeStreamingAll(io, output_str);
 }
 
 /// Write SasaResult to file with specified format, using rich CSV when input has structural info
 pub fn writeSasaResultWithFormatAndInput(
     allocator: Allocator,
+    io: std.Io,
     result: SasaResult,
     input: AtomInput,
     path: []const u8,
@@ -173,15 +171,15 @@ pub fn writeSasaResultWithFormatAndInput(
     };
     defer allocator.free(output_str);
 
-    const file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().createFile(io, path, .{});
+    defer file.close(io);
 
-    try file.writeAll(output_str);
+    try file.writeStreamingAll(io, output_str);
 }
 
 /// Write SasaResult to JSON file (default: compact for backward compatibility)
-pub fn writeSasaResult(allocator: Allocator, result: SasaResult, path: []const u8) !void {
-    return writeSasaResultWithFormat(allocator, result, path, .compact);
+pub fn writeSasaResult(allocator: Allocator, io: std.Io, result: SasaResult, path: []const u8) !void {
+    return writeSasaResultWithFormat(allocator, io, result, path, .compact);
 }
 
 /// Serialize a single batch result as a JSONL line: {"filename":"...","total_area":...,"atom_areas":[...]}
@@ -358,6 +356,7 @@ test "sasaResultToCsv empty atoms" {
 
 test "writeSasaResult creates file" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     const atom_areas = try allocator.alloc(f64, 2);
     defer allocator.free(atom_areas);
@@ -372,15 +371,17 @@ test "writeSasaResult creates file" {
     };
 
     const test_path = "test_output.json";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, test_path) catch {};
 
-    try writeSasaResult(allocator, result, test_path);
+    try writeSasaResult(allocator, io, result, test_path);
 
     // Read back and verify
-    const file = try std.fs.cwd().openFile(test_path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().openFile(io, test_path, .{});
+    defer file.close(io);
 
-    const content = try file.readToEndAlloc(allocator, 1024);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = try r.interface.allocRemaining(allocator, .unlimited);
     defer allocator.free(content);
 
     try std.testing.expectEqualStrings(
@@ -391,6 +392,7 @@ test "writeSasaResult creates file" {
 
 test "writeSasaResultWithFormat json" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     const atom_areas = try allocator.alloc(f64, 2);
     defer allocator.free(atom_areas);
@@ -405,14 +407,16 @@ test "writeSasaResultWithFormat json" {
     };
 
     const test_path = "test_format_json.json";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, test_path) catch {};
 
-    try writeSasaResultWithFormat(allocator, result, test_path, .json);
+    try writeSasaResultWithFormat(allocator, io, result, test_path, .json);
 
-    const file = try std.fs.cwd().openFile(test_path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().openFile(io, test_path, .{});
+    defer file.close(io);
 
-    const content = try file.readToEndAlloc(allocator, 1024);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = try r.interface.allocRemaining(allocator, .unlimited);
     defer allocator.free(content);
 
     // Should be pretty-printed
@@ -421,6 +425,7 @@ test "writeSasaResultWithFormat json" {
 
 test "writeSasaResultWithFormat csv" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     const atom_areas = try allocator.alloc(f64, 2);
     defer allocator.free(atom_areas);
@@ -435,14 +440,16 @@ test "writeSasaResultWithFormat csv" {
     };
 
     const test_path = "test_format.csv";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, test_path) catch {};
 
-    try writeSasaResultWithFormat(allocator, result, test_path, .csv);
+    try writeSasaResultWithFormat(allocator, io, result, test_path, .csv);
 
-    const file = try std.fs.cwd().openFile(test_path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().openFile(io, test_path, .{});
+    defer file.close(io);
 
-    const content = try file.readToEndAlloc(allocator, 1024);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = try r.interface.allocRemaining(allocator, .unlimited);
     defer allocator.free(content);
 
     // Should start with header
@@ -451,6 +458,7 @@ test "writeSasaResultWithFormat csv" {
 
 test "writeSasaResult overwrites existing file" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     const atom_areas = try allocator.alloc(f64, 1);
     defer allocator.free(atom_areas);
@@ -464,10 +472,10 @@ test "writeSasaResult overwrites existing file" {
     };
 
     const test_path = "test_overwrite.json";
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, test_path) catch {};
 
     // Write first time
-    try writeSasaResult(allocator, result, test_path);
+    try writeSasaResult(allocator, io, result, test_path);
 
     // Write second time (overwrite)
     atom_areas[0] = 99.9;
@@ -476,13 +484,15 @@ test "writeSasaResult overwrites existing file" {
         .atom_areas = atom_areas,
         .allocator = allocator,
     };
-    try writeSasaResult(allocator, result2, test_path);
+    try writeSasaResult(allocator, io, result2, test_path);
 
     // Verify overwrite
-    const file = try std.fs.cwd().openFile(test_path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().openFile(io, test_path, .{});
+    defer file.close(io);
 
-    const content = try file.readToEndAlloc(allocator, 1024);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = try r.interface.allocRemaining(allocator, .unlimited);
     defer allocator.free(content);
 
     try std.testing.expectEqualStrings(

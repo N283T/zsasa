@@ -69,9 +69,9 @@ test "readGzip decompresses gzip store block" {
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try tmp_dir.dir.writeFile(.{ .sub_path = "test.gz", .data = &gz_data });
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "test.gz", .data = &gz_data });
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, "test.gz");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "test.gz", allocator);
     defer allocator.free(tmp_path);
 
     const content = try readGzip(allocator, tmp_path);
@@ -99,9 +99,9 @@ test "readGzipLimited returns FileTooLarge when limit exceeded" {
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try tmp_dir.dir.writeFile(.{ .sub_path = "test.gz", .data = &gz_data });
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "test.gz", .data = &gz_data });
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, "test.gz");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "test.gz", allocator);
     defer allocator.free(tmp_path);
 
     // Limit to 5 bytes — "Hello world\n" is 12 bytes, should fail

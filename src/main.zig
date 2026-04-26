@@ -40,16 +40,14 @@ fn printVersion() void {
     std.debug.print("zsasa {s}\n", .{version});
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    // Collect args into a slice using the arena allocator
+    const args_z = try init.minimal.args.toSlice(init.arena.allocator());
+    // Coerce [:0]const u8 -> []const u8 for each element
+    const args: []const []const u8 = @ptrCast(args_z);
 
     if (args.len < 2) {
         printUsage(args[0]);

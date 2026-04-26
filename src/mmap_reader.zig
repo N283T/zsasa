@@ -22,22 +22,24 @@ pub const MappedFile = struct {
     }
 };
 
-pub fn mmapFile(allocator: std.mem.Allocator, path: []const u8) !MappedFile {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+pub fn mmapFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !MappedFile {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
 
-    const stat = try file.stat();
+    const stat = try file.stat(io);
     const size: usize = std.math.cast(usize, stat.size) orelse return error.FileTooBig;
     if (size == 0) return .{ .data = &.{}, .allocator = if (is_windows) allocator else {} };
 
     if (is_windows) {
-        const data = try file.readToEndAlloc(allocator, size);
+        var read_buf: [65536]u8 = undefined;
+        var r = file.reader(io, &read_buf);
+        const data = try r.interface.allocRemaining(allocator, .unlimited);
         return .{ .data = data, .allocator = allocator };
     } else {
         const mapped = try std.posix.mmap(
             null,
             size,
-            std.posix.PROT.READ,
+            .{ .READ = true },
             .{ .TYPE = .PRIVATE },
             file.handle,
             0,
@@ -47,7 +49,7 @@ pub fn mmapFile(allocator: std.mem.Allocator, path: []const u8) !MappedFile {
 }
 
 test "mmapFile reads valid PDB" {
-    const mapped = try mmapFile(std.testing.allocator, "test_data/1l2y.pdb");
+    const mapped = try mmapFile(std.testing.allocator, std.testing.io, "test_data/1l2y.pdb");
     defer mapped.deinit();
     try std.testing.expect(mapped.data.len > 0);
     try std.testing.expect(std.mem.startsWith(u8, mapped.data, "REMARK") or

@@ -348,7 +348,7 @@ pub fn deriveComponentProperties(
     allocator: Allocator,
     component: *const Component,
 ) ![]const DerivedAtomEntry {
-    var results = std.ArrayListUnmanaged(DerivedAtomEntry){};
+    var results = std.ArrayListUnmanaged(DerivedAtomEntry).empty;
     errdefer results.deinit(allocator);
 
     for (component.atoms, 0..) |atom, idx| {
