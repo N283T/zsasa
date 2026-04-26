@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-04-26
+
+### Changed
+
+- **Zig 0.16.0 migration**: minimum Zig version bumped to 0.16.0. Toolchain (build.zig.zon, flake.nix, CI workflows, README badge) updated. (#345)
+- **`std.fs.*` → `std.Io.*`**: ~48 file I/O sites migrated to the new `std.Io` interface. "Juicy Main" pattern: a single `std.Io.Threaded` constructed in `main()` is threaded through subcommand handlers; `c_api.zig` constructs per-FFI-call `Io.Threaded` for batch entries (correct concurrency) and uses the global single-threaded variant for single-call entries. C ABI is preserved. (#345)
+- **`std.heap.GeneralPurposeAllocator` → `std.heap.DebugAllocator`**, **`std.time.Timer` → `std.Io.Timestamp`**, **`std.Thread.Mutex` → `std.Io.Mutex`** (with `lockUncancelable`), **`std.Thread.sleep` → `std.Io.sleep`**. (#345)
+- **`std.Io.Writer.Allocating` / `Writer.fixed` / `Reader.fixed`** replace `ArrayList(u8).writer()` / `fixedBufferStream`. (#345)
+- **`mem.indexOf*` → `mem.find*`** rename across 18 sites; **Managed → Unmanaged HashMaps** across 11 files (`StringHashMapUnmanaged.empty` + op-time allocator); **`std.mem.trimStart/trimEnd`** replace deprecated `trimLeft/trimRight`; **`std.posix.PROT`** packed-struct syntax. (#345)
+- **`@cImport(@cInclude("zlib.h"))`** moved to `b.addTranslateC` in `build.zig` (uses `src/c/zlib_wrapper.h` because dep lazy paths cannot serve as `root_source_file`). (#345)
+- **`@Vector` annotation** for `@sqrt` coercion in `simd.zig` (8 sites — array → vector); `@bitCast(@Vector(N, bool))` → `@bitCast(@as(@Vector(N, u1), @intFromBool(...)))` for cross-platform vector-mask packing (Linux x86_64 fix). (#345)
+- **`@floor`/`@ceil`/`@round`/`@trunc` audit**: simplify `@as(usize, @intFromFloat(@ceil(x)))` → `@as(usize, @ceil(x))` where 0.16 supports direct int return. (#345)
+- **`std.testing.Smith`** for fuzz tests in `mmcif_parser`, `pdb_parser`, `cif_tokenizer`. (#345)
+- **`zxdrfile` v0.1.1 → v0.4.0** (Zig 0.16 compatible release, 2026-04-26). `XtcReader.open` signature gained `io_handle` parameter; both call sites updated. (#345)
+
+### Fixed
+
+- **`Io.Writer.Allocating` errdefer leak** in `json_writer.zig`: `sasaResultToCsv` and `sasaResultToRichCsv` now properly clean up the buffer on write errors. (#345)
+- **`mmap_reader.zig` Windows path**: restored `size` cap (`.limited64(size)`) lost during migration; added TOCTOU assertion. (#345)
+- **`JsonlStreamWriter.writeResult`** now records write failures via `hasError()` for downstream propagation; `mutex.lock(io) catch unreachable` replaced with `lockUncancelable(io)`. (#345)
+
 ## [0.2.8] - 2026-04-13
 
 ### Added
