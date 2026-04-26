@@ -379,12 +379,12 @@ fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType, sdf_ccd: ?*cons
 
     if (ccd_clf != null) {
         // Deduplicate: collect unique non-hardcoded residues
-        var needed = std.StringHashMap(void).init(input.allocator);
-        defer needed.deinit();
+        var needed: std.StringHashMapUnmanaged(void) = .empty;
+        defer needed.deinit(input.allocator);
         for (0..n) |i| {
             const res = residues[i].slice();
             if (!classifier_ccd.CcdClassifier.isHardcoded(res)) {
-                try needed.put(res, {});
+                try needed.put(input.allocator, res, {});
             }
         }
 
@@ -676,7 +676,7 @@ fn processOneSdfMolecule(
                 dict.deinit();
                 return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, null);
             };
-            dict.components.put(dict_key, s) catch |err| {
+            dict.components.put(arena, dict_key, s) catch |err| {
                 logWarning("{s}: SDF component registration failed: {s}", .{ display_name, @errorName(err) });
                 var mut_s = s;
                 mut_s.deinit();

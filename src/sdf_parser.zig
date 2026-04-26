@@ -763,7 +763,7 @@ pub fn loadSdfComponents(
                 s.deinit();
                 continue;
             };
-            dict.components.put(dict_key, stored) catch {
+            dict.components.put(allocator, dict_key, stored) catch {
                 // owned_keys already has dict_key; it will be freed by dict.deinit().
                 // But we must free the stored component since it was not successfully
                 // placed into the map.

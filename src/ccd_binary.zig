@@ -236,7 +236,7 @@ pub fn readDict(allocator: Allocator, reader: *std.Io.Reader) ReadError!ccd_pars
         };
 
         // Transfer ownership to dict
-        dict.components.put(key, stored) catch return error.OutOfMemory;
+        dict.components.put(allocator, key, stored) catch return error.OutOfMemory;
         dict.owned_keys.append(allocator, key) catch {
             // Key is already in the map, so we should not free it here;
             // dict.deinit() via errdefer will handle cleanup.
@@ -317,7 +317,7 @@ test "round-trip: create ComponentDict -> writeDict -> readDict -> verify" {
         .bonds = bonds,
         .allocator = allocator,
     };
-    try dict.components.put(key, stored);
+    try dict.components.put(allocator, key, stored);
     try dict.owned_keys.append(allocator, key);
 
     // Write to buffer

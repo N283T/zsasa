@@ -49,14 +49,14 @@ pub const StoredComponent = struct {
 
 /// Dictionary of parsed CCD components.
 pub const ComponentDict = struct {
-    components: std.StringHashMap(StoredComponent),
+    components: std.StringHashMapUnmanaged(StoredComponent),
     allocator: Allocator,
     /// Keys that we allocated and must free.
     owned_keys: std.ArrayListUnmanaged([]const u8),
 
     pub fn init(allocator: Allocator) ComponentDict {
         return .{
-            .components = std.StringHashMap(StoredComponent).init(allocator),
+            .components = .empty,
             .allocator = allocator,
             .owned_keys = .empty,
         };
@@ -73,7 +73,7 @@ pub const ComponentDict = struct {
             self.allocator.free(key);
         }
         self.owned_keys.deinit(self.allocator);
-        self.components.deinit();
+        self.components.deinit(self.allocator);
     }
 
     /// Look up a component by comp_id string, returning a non-owning view.
@@ -129,13 +129,13 @@ const ComponentBuilder = struct {
     atoms: std.ArrayListUnmanaged(CompAtom),
     bonds: std.ArrayListUnmanaged(CompBond),
     /// Map from atom_id (fixed-size key) -> index in atoms list.
-    atom_name_map: std.StringHashMap(u16),
+    atom_name_map: std.StringHashMapUnmanaged(u16),
 
-    fn init(allocator: Allocator) ComponentBuilder {
+    fn init(_: Allocator) ComponentBuilder {
         return .{
             .atoms = .empty,
             .bonds = .empty,
-            .atom_name_map = std.StringHashMap(u16).init(allocator),
+            .atom_name_map = .empty,
         };
     }
 
@@ -147,7 +147,7 @@ const ComponentBuilder = struct {
         while (it.next()) |entry| {
             allocator.free(entry.key_ptr.*);
         }
-        self.atom_name_map.deinit();
+        self.atom_name_map.deinit(allocator);
     }
 };
 
@@ -171,14 +171,14 @@ pub fn parseCcdData(
     errdefer dict.deinit();
 
     // Temporary builders keyed by comp_id (duped key).
-    var builders = std.StringHashMap(ComponentBuilder).init(allocator);
+    var builders: std.StringHashMapUnmanaged(ComponentBuilder) = .empty;
     defer {
         var bit = builders.iterator();
         while (bit.next()) |entry| {
             allocator.free(entry.key_ptr.*);
             entry.value_ptr.deinit(allocator);
         }
-        builders.deinit();
+        builders.deinit(allocator);
     }
 
     var tokenizer = Tokenizer.init(source);
@@ -236,7 +236,7 @@ pub fn parseCcdData(
             allocator.free(dict_key);
             return e;
         };
-        try dict.components.put(dict_key, stored);
+        try dict.components.put(allocator, dict_key, stored);
     }
 
     return dict;
@@ -262,7 +262,7 @@ fn parseAtomLoop(
     allocator: Allocator,
     tokenizer: *Tokenizer,
     first_tag: Token,
-    builders: *std.StringHashMap(ComponentBuilder),
+    builders: *std.StringHashMapUnmanaged(ComponentBuilder),
     filter: ?[]const []const u8,
 ) !void {
     var cols = AtomColumns{};
@@ -342,7 +342,7 @@ fn parseAtomLoop(
 
                                     // Store atom name -> index mapping for bond resolution.
                                     const name_key = try allocator.dupe(u8, aid);
-                                    builder.atom_name_map.put(name_key, atom_idx) catch |e| {
+                                    builder.atom_name_map.put(allocator, name_key, atom_idx) catch |e| {
                                         allocator.free(name_key);
                                         return e;
                                     };
@@ -406,7 +406,7 @@ fn parseBondLoop(
     allocator: Allocator,
     tokenizer: *Tokenizer,
     first_tag: Token,
-    builders: *std.StringHashMap(ComponentBuilder),
+    builders: *std.StringHashMapUnmanaged(ComponentBuilder),
     filter: ?[]const []const u8,
 ) !void {
     var cols = BondColumns{};
@@ -557,10 +557,10 @@ fn isFiltered(comp_id: []const u8, filter: ?[]const []const u8) bool {
 /// Get or create a ComponentBuilder for a given comp_id.
 fn getOrCreateBuilder(
     allocator: Allocator,
-    builders: *std.StringHashMap(ComponentBuilder),
+    builders: *std.StringHashMapUnmanaged(ComponentBuilder),
     comp_id: []const u8,
 ) !*ComponentBuilder {
-    const gop = try builders.getOrPut(comp_id);
+    const gop = try builders.getOrPut(allocator, comp_id);
     if (!gop.found_existing) {
         // Dupe the key so the builder map owns it.
         const key_copy = try allocator.dupe(u8, comp_id);

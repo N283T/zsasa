@@ -1127,12 +1127,12 @@ fn applyBuiltinClassifier(
 
     if (ccd_clf != null) {
         // Deduplicate: collect unique non-hardcoded residues
-        var needed = std.StringHashMap(void).init(input.allocator);
-        defer needed.deinit();
+        var needed: std.StringHashMapUnmanaged(void) = .empty;
+        defer needed.deinit(input.allocator);
         for (0..n) |i| {
             const res = residues[i].slice();
             if (!classifier_ccd.CcdClassifier.isHardcoded(res)) {
-                try needed.put(res, {});
+                try needed.put(input.allocator, res, {});
             }
         }
 

@@ -154,14 +154,14 @@ pub fn checkDuplicateCoordinates(allocator: Allocator, input: AtomInput) !usize 
         }
     };
 
-    var seen = std.AutoHashMap(CoordKey, usize).init(allocator);
-    defer seen.deinit();
+    var seen: std.AutoHashMapUnmanaged(CoordKey, usize) = .empty;
+    defer seen.deinit(allocator);
 
     var duplicate_count: usize = 0;
 
     for (0..n) |i| {
         const key = CoordKey.fromCoords(input.x[i], input.y[i], input.z[i]);
-        const result = try seen.getOrPut(key);
+        const result = try seen.getOrPut(allocator, key);
         if (result.found_existing) {
             duplicate_count += 1;
         } else {

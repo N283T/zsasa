@@ -115,8 +115,8 @@ pub fn parseConfig(allocator: Allocator, content: []const u8) Error!Classifier {
 /// Parse configuration with line number tracking for better error context.
 pub fn parseConfigWithLineInfo(allocator: Allocator, content: []const u8) Error!ParseResult {
     // Temporary storage for type definitions
-    var types = std.StringHashMap(TypeDef).init(allocator);
-    defer types.deinit();
+    var types: std.StringHashMapUnmanaged(TypeDef) = .empty;
+    defer types.deinit(allocator);
 
     // We need to track allocated keys to free them
     var type_keys = std.ArrayListUnmanaged([]u8).empty;
@@ -191,7 +191,7 @@ pub fn parseConfigWithLineInfo(allocator: Allocator, content: []const u8) Error!
                 // Store type (need to dupe the key since it's from content slice)
                 const key = try allocator.dupe(u8, type_name);
                 try type_keys.append(allocator, key);
-                try types.put(key, TypeDef{ .radius = radius, .class = class });
+                try types.put(allocator, key, TypeDef{ .radius = radius, .class = class });
             },
             .atoms => {
                 // Skip atoms in first pass

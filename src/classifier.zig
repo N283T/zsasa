@@ -167,7 +167,7 @@ pub const AtomKeyContext = struct {
 pub const Classifier = struct {
     name: []const u8,
     /// Map from (residue, atom) -> AtomProperties
-    atoms: std.HashMap(AtomKey, AtomProperties, AtomKeyContext, 80),
+    atoms: std.HashMapUnmanaged(AtomKey, AtomProperties, AtomKeyContext, 80),
     allocator: Allocator,
 
     const Self = @This();
@@ -177,7 +177,7 @@ pub const Classifier = struct {
         const name_copy = try allocator.dupe(u8, name);
         return Self{
             .name = name_copy,
-            .atoms = std.HashMap(AtomKey, AtomProperties, AtomKeyContext, 80).init(allocator),
+            .atoms = .empty,
             .allocator = allocator,
         };
     }
@@ -185,7 +185,7 @@ pub const Classifier = struct {
     /// Free all resources
     pub fn deinit(self: *Self) void {
         self.allocator.free(self.name);
-        self.atoms.deinit();
+        self.atoms.deinit(self.allocator);
     }
 
     /// Add an atom type to the classifier
@@ -197,7 +197,7 @@ pub const Classifier = struct {
         class: AtomClass,
     ) !void {
         const key = AtomKey.init(residue, atom);
-        try self.atoms.put(key, AtomProperties{ .radius = radius, .class = class });
+        try self.atoms.put(self.allocator, key, AtomProperties{ .radius = radius, .class = class });
     }
 
     /// Get radius for an atom, with ANY fallback

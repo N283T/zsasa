@@ -69,8 +69,8 @@ pub fn parseConfig(allocator: Allocator, content: []const u8) Error!Classifier {
     const name = doc.getString("name") orelse "custom";
 
     // Parse [types] section into temporary map
-    var types = std.StringHashMap(TypeDef).init(allocator);
-    defer types.deinit();
+    var types: std.StringHashMapUnmanaged(TypeDef) = .empty;
+    defer types.deinit(allocator);
 
     if (doc.getTable("types")) |types_table| {
         for (types_table.entries) |entry| {
@@ -80,7 +80,7 @@ pub fn parseConfig(allocator: Allocator, content: []const u8) Error!Classifier {
                     const class_str = getString(fields, "class") orelse return error.InvalidClass;
                     const class = parseClass(class_str) orelse return error.InvalidClass;
                     if (types.contains(entry.key)) return error.DuplicateType;
-                    try types.put(entry.key, .{ .radius = radius, .class = class });
+                    try types.put(allocator, entry.key, .{ .radius = radius, .class = class });
                 },
                 else => return error.InvalidTypeDefinition,
             }

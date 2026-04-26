@@ -698,7 +698,7 @@ fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, arg
                     s.deinit();
                     continue;
                 };
-                sdf_dict.components.put(dict_key, stored) catch {
+                sdf_dict.components.put(allocator, dict_key, stored) catch {
                     var s = stored;
                     s.deinit();
                     continue;
@@ -793,12 +793,12 @@ fn applyBuiltinClassifier(
     // Only load components that are actually present in the input structure
     if (ccd_clf != null) {
         // Collect unique non-hardcoded residue names from input
-        var needed = std.StringHashMap(void).init(input.allocator);
-        defer needed.deinit();
+        var needed: std.StringHashMapUnmanaged(void) = .empty;
+        defer needed.deinit(input.allocator);
         for (0..n) |i| {
             const res = residues[i].slice();
             if (!classifier_ccd.CcdClassifier.isHardcoded(res)) {
-                try needed.put(res, {});
+                try needed.put(input.allocator, res, {});
             }
         }
 
