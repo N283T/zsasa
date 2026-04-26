@@ -75,7 +75,9 @@ const VERSION = "0.1.1";
 /// Thread-safe allocator for C API (uses C allocator for simplicity)
 const c_allocator = std.heap.c_allocator;
 
-/// IO instance for C API (uses global single-threaded IO, no concurrency/cancellation)
+/// Returns a single-threaded Io for FFI entries that do not spawn threads.
+/// Multi-threaded FFI entries (e.g., zsasa_batch_dir_process) MUST construct
+/// their own std.Io.Threaded.init(allocator, .{}) and pass that downstream.
 fn cIo() std.Io {
     return std.Io.Threaded.global_single_threaded.io();
 }
@@ -2451,8 +2453,14 @@ export fn zsasa_batch_dir_process(
     const input_dir_slice = std.mem.span(input_dir.?);
     const output_dir_slice: ?[]const u8 = if (output_dir) |od| std.mem.span(od) else null;
 
+    // Batch processing spawns N worker threads, so we need a multi-threaded Io
+    // rather than the global single-threaded Io returned by cIo().
+    var threaded = std.Io.Threaded.init(c_allocator, .{});
+    defer threaded.deinit();
+    const batch_io = threaded.io();
+
     // Run batch processing
-    var batch_result = batch.runBatch(c_allocator, cIo(), input_dir_slice, output_dir_slice, config, null) catch |err| {
+    var batch_result = batch.runBatch(c_allocator, batch_io, input_dir_slice, output_dir_slice, config, null) catch |err| {
         const code = switch (err) {
             error.OutOfMemory => ZSASA_ERROR_OUT_OF_MEMORY,
             else => ZSASA_ERROR_FILE_IO,

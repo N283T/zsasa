@@ -33,7 +33,11 @@ pub fn mmapFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Map
     if (is_windows) {
         var read_buf: [65536]u8 = undefined;
         var r = file.reader(io, &read_buf);
-        const data = try r.interface.allocRemaining(allocator, .unlimited);
+        // Cap read to the file size obtained above to avoid unbounded allocation.
+        // .limited64 accepts u64 and treats values > maxInt(usize) as .unlimited.
+        const data = try r.interface.allocRemaining(allocator, .limited64(size));
+        // Detect TOCTOU: file grew/shrank between stat and read.
+        std.debug.assert(data.len == size);
         return .{ .data = data, .allocator = allocator };
     } else {
         const mapped = try std.posix.mmap(

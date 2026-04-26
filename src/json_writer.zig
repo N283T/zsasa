@@ -48,6 +48,7 @@ pub fn sasaResultToJsonPretty(allocator: Allocator, result: SasaResult) ![]u8 {
 /// Caller must free the returned slice
 pub fn sasaResultToCsv(allocator: Allocator, result: SasaResult) ![]u8 {
     var aw = std.Io.Writer.Allocating.init(allocator);
+    errdefer aw.deinit();
     const writer = &aw.writer;
 
     // Header
@@ -69,6 +70,7 @@ pub fn sasaResultToCsv(allocator: Allocator, result: SasaResult) ![]u8 {
 /// Caller must free the returned slice
 pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: []const f64) ![]u8 {
     var aw = std.Io.Writer.Allocating.init(allocator);
+    errdefer aw.deinit();
     const writer = &aw.writer;
 
     // Header
