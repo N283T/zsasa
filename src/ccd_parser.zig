@@ -131,7 +131,7 @@ const ComponentBuilder = struct {
     /// Map from atom_id (fixed-size key) -> index in atoms list.
     atom_name_map: std.StringHashMapUnmanaged(u16),
 
-    fn init(_: Allocator) ComponentBuilder {
+    fn init() ComponentBuilder {
         return .{
             .atoms = .empty,
             .bonds = .empty,
@@ -565,7 +565,7 @@ fn getOrCreateBuilder(
         // Dupe the key so the builder map owns it.
         const key_copy = try allocator.dupe(u8, comp_id);
         gop.key_ptr.* = key_copy;
-        gop.value_ptr.* = ComponentBuilder.init(allocator);
+        gop.value_ptr.* = ComponentBuilder.init();
     }
     return gop.value_ptr;
 }
