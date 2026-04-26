@@ -12,7 +12,7 @@
 set -eu
 
 REPO="N283T/zsasa"
-REQUIRED_ZIG_VERSION="0.15.2"
+REQUIRED_ZIG_VERSION="0.16.0"
 DEFAULT_INSTALL_DIR="${HOME}/.local/bin"
 
 # ---------------------------------------------------------------------------

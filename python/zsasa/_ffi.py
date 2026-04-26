@@ -224,7 +224,7 @@ def _find_library() -> Path:
     msg = (
         f"Could not find {lib_name}. "
         f"Please install with: pip install zsasa "
-        f"(requires Zig 0.15.2+ to be installed)"
+        f"(requires Zig 0.16.0+ to be installed)"
     )
     raise FileNotFoundError(msg)
 

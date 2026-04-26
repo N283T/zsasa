@@ -73,11 +73,14 @@ test-command = "pytest {project}/python/tests/test_sasa.py {project}/python/test
 [tool.cibuildwheel.linux]
 # Use manylinux_2_28 (glibc 2.28) containers to match Zig glibc target.
 # Default manylinux2014 (glibc 2.17) is too old for our glibc 2.28 target.
-manylinux-x86_64-image = "manylinux_2_28"
-manylinux-aarch64-image = "manylinux_2_28"
+# Pin to an explicit quay.io tag because the short alias resolves to a
+# tag baked into cibuildwheel that has been retired upstream
+# (e.g. 2026.03.01-1 disappeared from quay.io and broke v0.2.10's wheel build).
+manylinux-x86_64-image = "quay.io/pypa/manylinux_2_28_x86_64:2026.04.25-0"
+manylinux-aarch64-image = "quay.io/pypa/manylinux_2_28_aarch64:2026.04.25-0"
 # Download Zig directly from official release (avoids PyPI rate limits).
 # $(uname -m) resolves to x86_64 or aarch64 depending on the runner.
-before-all = "curl -sSfL https://ziglang.org/download/0.15.2/zig-$(uname -m)-linux-0.15.2.tar.xz | tar -xJ -C /usr/local && ln -sf /usr/local/zig-$(uname -m)-linux-0.15.2/zig /usr/local/bin/zig && zig build -Doptimize=ReleaseFast -Dtarget=$(uname -m)-linux-gnu.2.28"
+before-all = "curl -sSfL https://ziglang.org/download/0.16.0/zig-$(uname -m)-linux-0.16.0.tar.xz | tar -xJ -C /usr/local && ln -sf /usr/local/zig-$(uname -m)-linux-0.16.0/zig /usr/local/bin/zig && zig build -Doptimize=ReleaseFast -Dtarget=$(uname -m)-linux-gnu.2.28"
 
 [tool.cibuildwheel.macos]
 # Zig installed by setup-zig action in workflow (not via PyPI).

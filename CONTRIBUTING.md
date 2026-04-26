@@ -6,7 +6,7 @@ Thank you for your interest in contributing to zsasa!
 
 ### Prerequisites
 
-- **Zig 0.15.2+** - Required for building the project
+- **Zig 0.16.0+** - Required for building the project
 - **Python 3.11+** - Required for benchmarks and Python bindings
 - **FreeSASA C** (optional) - For benchmark comparisons
 
@@ -43,7 +43,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-Note: Requires Zig 0.15.2+ to be installed. The build hook compiles the library with ReleaseFast optimization.
+Note: Requires Zig 0.16.0+ to be installed. The build hook compiles the library with ReleaseFast optimization.
 
 For benchmark scripts:
 

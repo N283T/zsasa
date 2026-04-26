@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | sh
 # Or with custom install directory
 curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | INSTALL_DIR=/usr/local/bin sh
 
-# Or build from source (requires Zig 0.15.2)
+# Or build from source (requires Zig 0.16.0)
 git clone https://github.com/N283T/zsasa.git
 cd zsasa
 zig build -Doptimize=ReleaseFast

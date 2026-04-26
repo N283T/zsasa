@@ -110,7 +110,7 @@ class ZigBuildHook(BuildHookInterface):
         zig_cmd = self._find_zig()
         if not zig_cmd:
             msg = (
-                "Zig compiler not found. Install Zig 0.15.2+ from "
+                "Zig compiler not found. Install Zig 0.16.0+ from "
                 "https://ziglang.org/download/ or run: pip install ziglang"
             )
             raise RuntimeError(msg)
