@@ -31,10 +31,13 @@ const OutputFormat = json_writer.OutputFormat;
 const LeeRichardsConfig = lee_richards.LeeRichardsConfig;
 const LeeRichardsConfigGen = lee_richards.LeeRichardsConfigGen;
 
-/// Write a warning message to stderr. Unlike std.debug.print, this is not
-/// stripped in release builds, so I/O errors are always visible.
+/// Write a warning message to stderr.
+///
+/// Uses std.debug.print which writes to stderr. Note: errors during the write
+/// are silently dropped (debug.print is best-effort). For most CLI use cases
+/// this is fine because terminal writes rarely fail; for piped output (e.g.,
+/// to a logger that is down), warnings may be lost silently.
 fn logWarning(comptime fmt: []const u8, args: anytype) void {
-    // Use std.debug.print for warnings (stderr, always visible in release builds)
     std.debug.print("Warning: " ++ fmt ++ "\n", args);
 }
 
@@ -820,6 +823,10 @@ const JsonlStreamWriter = struct {
     mutex: std.Io.Mutex = .init,
     file: std.Io.File,
     io: std.Io,
+    /// Set to true if any writeResult call failed to write to the output file.
+    /// TODO: surface this from runBatch return value to make the CLI exit
+    /// non-zero on partial JSONL write failure.
+    write_failed: bool = false,
 
     /// Serialize and write one JSONL line for a completed file result.
     /// alloc is a short-lived allocator (e.g., thread-local arena) used only for
@@ -837,7 +844,7 @@ const JsonlStreamWriter = struct {
         };
         // line is on alloc (arena); no explicit free needed — arena reset handles it.
 
-        self.mutex.lock(self.io) catch unreachable;
+        self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
         // 64KB stack buffer; use streaming mode so the OS seek position
@@ -846,15 +853,23 @@ const JsonlStreamWriter = struct {
         var w = std.Io.File.Writer.initStreaming(self.file, self.io, &buf);
         w.interface.writeAll(line) catch |err| {
             logWarning("JSONL write failed for {s}: {s}", .{ filename, @errorName(err) });
+            self.write_failed = true;
             return;
         };
         w.interface.writeAll("\n") catch |err| {
             logWarning("JSONL newline write failed for {s}: {s}", .{ filename, @errorName(err) });
+            self.write_failed = true;
             return;
         };
         w.interface.flush() catch |err| {
             logWarning("JSONL flush failed for {s}: {s}", .{ filename, @errorName(err) });
+            self.write_failed = true;
         };
+    }
+
+    /// Returns true if any write to the JSONL file failed.
+    pub fn hasError(self: *const JsonlStreamWriter) bool {
+        return self.write_failed;
     }
 };
 
