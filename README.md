@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logos/logo.svg" alt="zsasa logo" width="480">
+</p>
+
 # zsasa
 
 [![CI](https://github.com/N283T/zsasa/actions/workflows/ci.yml/badge.svg)](https://github.com/N283T/zsasa/actions/workflows/ci.yml)
