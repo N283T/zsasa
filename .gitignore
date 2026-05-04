@@ -26,6 +26,9 @@ zig-out/
 .idea/
 .vscode/
 
+# Design source files
+logos/*.af
+
 # macOS
 **/.DS_Store
 
