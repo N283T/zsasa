@@ -145,6 +145,10 @@ pub const TrajArgs = struct {
     show_help: bool = false,
 };
 
+fn shouldShowProgress(args: TrajArgs) bool {
+    return args.show_progress and !args.quiet;
+}
+
 /// Parse trajectory mode arguments
 pub fn parseArgs(args: []const []const u8, start_idx: usize) TrajArgs {
     var result = TrajArgs{};
@@ -840,7 +844,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
     };
 
     {
-        var progress_root: std.Progress.Node = if (args.show_progress)
+        var progress_root: std.Progress.Node = if (shouldShowProgress(args))
             std.Progress.start(io, .{ .root_name = "Processing frames", .estimated_total_items = estimateProcessedFrames(args) })
         else
             .none;
@@ -1211,4 +1215,9 @@ test "TrajArgs quiet disables progress" {
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(true, parsed.quiet);
     try std.testing.expectEqual(false, parsed.show_progress);
+}
+
+test "TrajArgs quiet suppresses progress even when show_progress defaults true" {
+    const args = TrajArgs{ .quiet = true };
+    try std.testing.expectEqual(false, shouldShowProgress(args));
 }

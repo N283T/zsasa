@@ -31,6 +31,10 @@ const OutputFormat = json_writer.OutputFormat;
 const LeeRichardsConfig = lee_richards.LeeRichardsConfig;
 const LeeRichardsConfigGen = lee_richards.LeeRichardsConfigGen;
 
+fn shouldShowProgress(config: BatchConfig) bool {
+    return config.show_progress and !config.quiet;
+}
+
 /// Write a warning message to stderr.
 ///
 /// Uses std.debug.print which writes to stderr. Note: errors during the write
@@ -925,12 +929,12 @@ pub fn runBatchSequential(
         allocator.free(files);
     }
 
-    var progress_root: std.Progress.Node = if (config.show_progress)
+    var progress_root: std.Progress.Node = if (shouldShowProgress(config))
         std.Progress.start(io, .{ .root_name = "Processing files", .estimated_total_items = files.len })
     else
         .none;
     defer progress_root.end();
-    const progress_node: ?std.Progress.Node = if (config.show_progress) progress_root else null;
+    const progress_node: ?std.Progress.Node = if (shouldShowProgress(config)) progress_root else null;
 
     // Create output directory if specified
     if (output_dir) |out_dir| {
@@ -1579,14 +1583,14 @@ pub fn runBatchParallel(
         thread.* = try std.Thread.spawn(.{}, parallelWorker, .{&ctx});
     }
 
-    var progress_root: std.Progress.Node = if (config.show_progress)
+    var progress_root: std.Progress.Node = if (shouldShowProgress(config))
         std.Progress.start(io, .{ .root_name = "Processing items", .estimated_total_items = work_items.len })
     else
         .none;
     defer progress_root.end();
 
     // Progress monitoring (optional)
-    if (config.show_progress) {
+    if (shouldShowProgress(config)) {
         while (ctx.processed_count.load(.acquire) < work_items.len) {
             const processed = ctx.processed_count.load(.acquire);
             progress_root.setCompletedItems(processed);
@@ -2327,4 +2331,9 @@ test "BatchArgs classifier_type defaults to ccd" {
     const args = [_][]const u8{ "zsasa", "batch", "input_dir/" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(ClassifierType.ccd, parsed.classifier_type);
+}
+
+test "BatchConfig quiet suppresses progress even when show_progress defaults true" {
+    const config = BatchConfig{ .quiet = true };
+    try std.testing.expectEqual(false, shouldShowProgress(config));
 }
