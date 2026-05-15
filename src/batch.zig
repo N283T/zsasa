@@ -31,6 +31,10 @@ const OutputFormat = json_writer.OutputFormat;
 const LeeRichardsConfig = lee_richards.LeeRichardsConfig;
 const LeeRichardsConfigGen = lee_richards.LeeRichardsConfigGen;
 
+fn shouldShowProgress(config: BatchConfig) bool {
+    return config.show_progress and !config.quiet;
+}
+
 /// Write a warning message to stderr.
 ///
 /// Uses std.debug.print which writes to stderr. Note: errors during the write
@@ -57,6 +61,7 @@ pub const BatchConfig = struct {
     output_format: OutputFormat = .json,
     show_timing: bool = false,
     quiet: bool = false,
+    show_progress: bool = true,
     precision: Precision = .f64, // f32 or f64
     classifier_type: ?ClassifierType = .ccd, // Default: ccd (ProtOr-compatible with CCD extension)
     include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
@@ -924,6 +929,13 @@ pub fn runBatchSequential(
         allocator.free(files);
     }
 
+    var progress_root: std.Progress.Node = if (shouldShowProgress(config))
+        std.Progress.start(io, .{ .root_name = "Processing files", .estimated_total_items = files.len })
+    else
+        .none;
+    defer progress_root.end();
+    const progress_node: ?std.Progress.Node = if (shouldShowProgress(config)) progress_root else null;
+
     // Create output directory if specified
     if (output_dir) |out_dir| {
         try std.Io.Dir.cwd().createDirPath(io, out_dir);
@@ -969,7 +981,7 @@ pub fn runBatchSequential(
 
     var total_items: usize = 0;
 
-    for (files, 0..) |filename, file_idx| {
+    for (files) |filename| {
         const format = format_detect.detectInputFormat(filename);
 
         if (format == .sdf) {
@@ -1135,14 +1147,9 @@ pub fn runBatchSequential(
             _ = arena.reset(.retain_capacity);
         }
 
-        // Progress output
-        if (!config.quiet) {
-            std.debug.print("\rProcessing: {d}/{d} files", .{ file_idx + 1, files.len });
+        if (progress_node) |node| {
+            node.completeOne();
         }
-    }
-
-    if (!config.quiet) {
-        std.debug.print("\n", .{});
     }
 
     const total_time_ns: u64 = @intCast(total_timer.untilNow(io, .awake).nanoseconds);
@@ -1576,14 +1583,20 @@ pub fn runBatchParallel(
         thread.* = try std.Thread.spawn(.{}, parallelWorker, .{&ctx});
     }
 
+    var progress_root: std.Progress.Node = if (shouldShowProgress(config))
+        std.Progress.start(io, .{ .root_name = "Processing items", .estimated_total_items = work_items.len })
+    else
+        .none;
+    defer progress_root.end();
+
     // Progress monitoring (optional)
-    if (!config.quiet) {
+    if (shouldShowProgress(config)) {
         while (ctx.processed_count.load(.acquire) < work_items.len) {
             const processed = ctx.processed_count.load(.acquire);
-            std.debug.print("\rProcessing: {d}/{d}", .{ processed, work_items.len });
+            progress_root.setCompletedItems(processed);
             std.Io.sleep(io, .fromMilliseconds(50), .awake) catch {}; // 50ms update interval
         }
-        std.debug.print("\rProcessing: {d}/{d}\n", .{ work_items.len, work_items.len });
+        progress_root.setCompletedItems(work_items.len);
     }
 
     // Wait for all threads to complete
@@ -1665,6 +1678,7 @@ pub const BatchArgs = struct {
     ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz|.zst])
     sdf_paths: SdfPathList = .{}, // --sdf=PATH (up to 16)
     quiet: bool = false,
+    show_progress: bool = true,
     show_timing: bool = false,
     show_help: bool = false,
 };
@@ -1918,6 +1932,7 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
+            result.show_progress = false;
         }
         // --timing
         else if (std.mem.eql(u8, arg, "--timing")) {
@@ -2096,6 +2111,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .output_format = args.output_format,
         .show_timing = args.show_timing,
         .quiet = args.quiet,
+        .show_progress = args.show_progress,
         .classifier_type = args.classifier_type,
         .include_hydrogens = args.include_hydrogens,
         .include_hetatm = args.include_hetatm or (args.classifier_type == .ccd),
@@ -2186,6 +2202,7 @@ test "BatchArgs defaults" {
     try std.testing.expectEqual(@as(usize, 0), parsed.n_threads);
     try std.testing.expectEqual(Algorithm.sr, parsed.algorithm);
     try std.testing.expectEqual(false, parsed.quiet);
+    try std.testing.expectEqual(true, parsed.show_progress);
     try std.testing.expectEqual(false, parsed.show_help);
     try std.testing.expectEqual(false, parsed.include_hydrogens);
     try std.testing.expectEqual(false, parsed.include_hetatm);
@@ -2212,6 +2229,7 @@ test "BatchArgs with options" {
     try std.testing.expectEqual(Algorithm.lr, parsed.algorithm);
     try std.testing.expectEqual(@as(usize, 4), parsed.n_threads);
     try std.testing.expectEqual(true, parsed.quiet);
+    try std.testing.expectEqual(false, parsed.show_progress);
     try std.testing.expectEqual(true, parsed.show_timing);
 }
 
@@ -2313,4 +2331,9 @@ test "BatchArgs classifier_type defaults to ccd" {
     const args = [_][]const u8{ "zsasa", "batch", "input_dir/" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(ClassifierType.ccd, parsed.classifier_type);
+}
+
+test "BatchConfig quiet suppresses progress even when show_progress defaults true" {
+    const config = BatchConfig{ .quiet = true };
+    try std.testing.expectEqual(false, shouldShowProgress(config));
 }

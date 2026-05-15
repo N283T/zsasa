@@ -141,8 +141,13 @@ pub const TrajArgs = struct {
     batch_size: u32 = 0, // Frames per batch for parallel processing (0 = auto)
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
     quiet: bool = false,
+    show_progress: bool = true,
     show_help: bool = false,
 };
+
+fn shouldShowProgress(args: TrajArgs) bool {
+    return args.show_progress and !args.quiet;
+}
 
 /// Parse trajectory mode arguments
 pub fn parseArgs(args: []const []const u8, start_idx: usize) TrajArgs {
@@ -257,6 +262,7 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) TrajArgs {
                 result.use_bitmask = true;
             } else if (std.mem.eql(u8, arg, "-q") or std.mem.eql(u8, arg, "--quiet")) {
                 result.quiet = true;
+                result.show_progress = false;
             } else {
                 std.debug.print("Error: Unknown option: {s}\n", .{arg});
                 std.process.exit(1);
@@ -265,6 +271,7 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) TrajArgs {
             result.show_help = true;
         } else if (std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
+            result.show_progress = false;
         } else if (std.mem.startsWith(u8, arg, "-o")) {
             // -o FILE
             if (arg.len > 2) {
@@ -403,6 +410,12 @@ const FrameData = struct {
     step: i32,
     time: f32,
 };
+
+fn estimateProcessedFrames(args: TrajArgs) usize {
+    const end = args.end_frame orelse return 0;
+    if (end < args.start_frame) return 0;
+    return @as(usize, @intCast((end - args.start_frame) / args.stride)) + 1;
+}
 
 /// SASA result for one frame
 const FrameResult = struct {
@@ -830,12 +843,20 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
         .format = traj_format,
     };
 
-    if (n_threads <= 1) {
-        // Sequential path: single-threaded SASA per frame
-        try runSequential(allocator, &traj_reader, writer, &topology, args, &luts, &frame_idx, &processed_count);
-    } else {
-        // Batch parallel path: frame-level parallelism across threads
-        try runBatchParallel(allocator, &traj_reader, writer, &topology, args, &luts, n_threads, natoms, &frame_idx, &processed_count);
+    {
+        var progress_root: std.Progress.Node = if (shouldShowProgress(args))
+            std.Progress.start(io, .{ .root_name = "Processing frames", .estimated_total_items = estimateProcessedFrames(args) })
+        else
+            .none;
+        defer progress_root.end();
+
+        if (n_threads <= 1) {
+            // Sequential path: single-threaded SASA per frame
+            try runSequential(allocator, &traj_reader, writer, &topology, args, &luts, &frame_idx, &processed_count, progress_root);
+        } else {
+            // Batch parallel path: frame-level parallelism across threads
+            try runBatchParallel(allocator, &traj_reader, writer, &topology, args, &luts, n_threads, natoms, &frame_idx, &processed_count, progress_root);
+        }
     }
 
     // Flush buffered output
@@ -864,6 +885,7 @@ fn runSequential(
     luts: *const TrajLuts,
     frame_idx: *u32,
     processed_count: *u32,
+    progress_node: std.Progress.Node,
 ) !void {
     const natoms = topology.atomCount();
 
@@ -978,10 +1000,7 @@ fn runSequential(
         processed_count.* += 1;
         frame_idx.* += 1;
 
-        // Progress indicator
-        if (!args.quiet and processed_count.* % 100 == 0) {
-            std.debug.print("\r  Processed {d} frames...", .{processed_count.*});
-        }
+        progress_node.completeOne();
     }
 }
 
@@ -997,6 +1016,7 @@ fn runBatchParallel(
     natoms: usize,
     frame_idx: *u32,
     processed_count: *u32,
+    progress_node: std.Progress.Node,
 ) !void {
     const batch_size: usize = if (args.batch_size > 0) args.batch_size else n_threads * 2;
 
@@ -1089,9 +1109,7 @@ fn runBatchParallel(
 
         processed_count.* += @intCast(read_result.count);
 
-        if (!args.quiet and processed_count.* % 100 < @as(u32, @intCast(read_result.count))) {
-            std.debug.print("\r  Processed {d} frames...", .{processed_count.*});
-        }
+        progress_node.setCompletedItems(processed_count.*);
 
         if (read_result.eof) break;
     }
@@ -1183,4 +1201,23 @@ fn applyBuiltinClassifier(
             fallback_count,
         });
     }
+}
+
+test "TrajArgs progress defaults to visible" {
+    const args = [_][]const u8{ "zsasa", "traj", "traj.xtc", "topology.pdb" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(false, parsed.quiet);
+    try std.testing.expectEqual(true, parsed.show_progress);
+}
+
+test "TrajArgs quiet disables progress" {
+    const args = [_][]const u8{ "zsasa", "traj", "--quiet", "traj.xtc", "topology.pdb" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.quiet);
+    try std.testing.expectEqual(false, parsed.show_progress);
+}
+
+test "TrajArgs quiet suppresses progress even when show_progress defaults true" {
+    const args = TrajArgs{ .quiet = true };
+    try std.testing.expectEqual(false, shouldShowProgress(args));
 }

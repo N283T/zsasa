@@ -123,7 +123,7 @@ See [Output & Analysis](output.md#analysis-features) for detailed output descrip
 | `-o, --output=FILE` | Output file path | `output.json` |
 | `--format=FMT` | Output format: `json`, `compact`, `csv` | `json` |
 | `--timing` | Show timing breakdown (for benchmarking) | off |
-| `-q, --quiet` | Suppress progress output | off |
+| `-q, --quiet` | Suppress progress output, including standard progress bars shown by `batch` and `traj` | off |
 | `--validate` | Validate input only, do not calculate | off |
 
 ### Information Options
