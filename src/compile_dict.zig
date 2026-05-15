@@ -1,7 +1,7 @@
 //! compile-dict subcommand: convert CIF text CCD data to ZSDC binary format.
 //!
 //! Usage:
-//!   zsasa compile-dict <input.cif[.gz]> -o <output.zsdc>
+//!   zsasa compile-dict <input.cif[.gz|.zst]> -o <output.zsdc>
 //!
 //! Reads a CIF (Chemical Component Dictionary) file, parses all components,
 //! and writes a compact binary dictionary suitable for use with `--ccd`.
@@ -10,17 +10,17 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ccd_parser = @import("ccd_parser.zig");
 const ccd_binary = @import("ccd_binary.zig");
-const gzip = @import("gzip.zig");
+const compressed = @import("compressed.zig");
 
 pub fn printHelp(program_name: []const u8) void {
     std.debug.print(
         \\zsasa compile-dict - Compile CIF dictionary to binary ZSDC format
         \\
         \\USAGE:
-        \\    {s} compile-dict <input.cif[.gz]> -o <output.zsdc>
+        \\    {s} compile-dict <input.cif[.gz|.zst]> -o <output.zsdc>
         \\
         \\ARGUMENTS:
-        \\    <input>          Input CIF file (supports .gz compression)
+        \\    <input>          Input CIF file (supports .gz and .zst compression)
         \\
         \\OPTIONS:
         \\    -o, --output PATH  Output binary dictionary file (required)
@@ -28,7 +28,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\
         \\EXAMPLES:
         \\    {s} compile-dict components.cif -o components.zsdc
-        \\    {s} compile-dict components.cif.gz -o components.zsdc
+        \\    {s} compile-dict components.cif.zst -o components.zsdc
         \\
     , .{ program_name, program_name, program_name });
 }
@@ -72,7 +72,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: []const []const u8) !void {
 
     const in_path = input_path orelse {
         std.debug.print("Error: Missing input file\n", .{});
-        std.debug.print("Usage: zsasa compile-dict <input.cif[.gz]> -o <output.zsdc>\n", .{});
+        std.debug.print("Usage: zsasa compile-dict <input.cif[.gz|.zst]> -o <output.zsdc>\n", .{});
         return error.MissingArgument;
     };
 
@@ -81,10 +81,10 @@ pub fn run(allocator: Allocator, io: std.Io, args: []const []const u8) !void {
         return error.MissingArgument;
     };
 
-    // Read input file (handle .gz)
+    // Read input file (handle .gz/.zst)
     std.debug.print("Reading '{s}'...\n", .{in_path});
-    const source = if (std.mem.endsWith(u8, in_path, ".gz"))
-        try gzip.readGzip(allocator, in_path)
+    const source = if (compressed.isCompressed(in_path))
+        try compressed.read(allocator, in_path)
     else blk: {
         const file = std.Io.Dir.cwd().openFile(io, in_path, .{}) catch |err| {
             std.debug.print("Error: Could not open '{s}': {s}\n", .{ in_path, @errorName(err) });

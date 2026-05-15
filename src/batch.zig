@@ -17,7 +17,7 @@ const classifier_ccd = @import("classifier_ccd.zig");
 const ccd_parser = @import("ccd_parser.zig");
 const ccd_binary = @import("ccd_binary.zig");
 const sdf_parser = @import("sdf_parser.zig");
-const gzip = @import("gzip.zig");
+const compressed = @import("compressed.zig");
 
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
@@ -109,10 +109,12 @@ fn getOutputExtension(format: OutputFormat) []const u8 {
 
 /// Replace file extension for output (e.g., "file.pdb" -> "file.json")
 fn replaceExtension(allocator: Allocator, filename: []const u8, new_ext: []const u8) ![]const u8 {
-    // Strip .gz if present
+    // Strip compression extension if present.
     var base = filename;
-    if (std.mem.endsWith(u8, base, ".gz")) {
+    if (compressed.isGzip(base)) {
         base = base[0 .. base.len - 3];
+    } else if (compressed.isZstd(base)) {
+        base = base[0 .. base.len - 4];
     }
 
     // Find and strip existing extension
@@ -129,9 +131,13 @@ fn replaceExtension(allocator: Allocator, filename: []const u8, new_ext: []const
 /// Strips the SDF file extension to produce "stem_molname" or "stem_N" format.
 /// This ensures `replaceExtension` produces unique output filenames.
 fn sdfMoleculeDisplayName(allocator: Allocator, filename: []const u8, mol_name: []const u8, mol_idx: usize) ![]const u8 {
-    // Strip extension (.sdf, .sdf.gz, .mol, .mol.gz) to get stem
+    // Strip extension (.sdf, .sdf.gz, .sdf.zst, .mol, .mol.gz, .mol.zst) to get stem.
     var base = filename;
-    if (std.mem.endsWith(u8, base, ".gz")) base = base[0 .. base.len - 3];
+    if (compressed.isGzip(base)) {
+        base = base[0 .. base.len - 3];
+    } else if (compressed.isZstd(base)) {
+        base = base[0 .. base.len - 4];
+    }
     const stem = if (std.mem.findScalarLast(u8, base, '.')) |dot_idx|
         base[0..dot_idx]
     else
@@ -351,8 +357,8 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             break :blk parser.parseFile(io, path);
         },
         .sdf => blk: {
-            const source = if (std.mem.endsWith(u8, path, ".gz"))
-                try gzip.readGzip(allocator, path)
+            const source = if (compressed.isCompressed(path))
+                try compressed.read(allocator, path)
             else file_blk: {
                 const f = try std.Io.Dir.cwd().openFile(io, path, .{});
                 defer f.close(io);
@@ -984,8 +990,8 @@ pub fn runBatchSequential(
                 continue;
             };
 
-            const source = if (std.mem.endsWith(u8, input_path, ".gz"))
-                gzip.readGzip(arena.allocator(), input_path) catch |err| {
+            const source = if (compressed.isCompressed(input_path))
+                compressed.read(arena.allocator(), input_path) catch |err| {
                     const filename_copy = try allocator.dupe(u8, filename);
                     try results_list.append(allocator, FileResult{
                         .filename = filename_copy,
@@ -1366,10 +1372,10 @@ fn buildWorkItems(
             const input_path = try std.fs.path.join(allocator, &.{ input_dir, filename });
             defer allocator.free(input_path);
 
-            const source = if (std.mem.endsWith(u8, input_path, ".gz"))
-                gzip.readGzip(allocator, input_path) catch |err| {
+            const source = if (compressed.isCompressed(input_path))
+                compressed.read(allocator, input_path) catch |err| {
                     // If read fails, add a single error item
-                    logWarning("{s}: failed to read SDF (gzip): {s}", .{ filename, @errorName(err) });
+                    logWarning("{s}: failed to read SDF (compressed): {s}", .{ filename, @errorName(err) });
                     try items.append(allocator, .{
                         .filename = filename,
                         .display_name = filename,
@@ -1656,7 +1662,7 @@ pub const BatchArgs = struct {
     include_hydrogens: bool = false,
     include_hetatm: bool = false,
     use_bitmask: bool = false,
-    ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz])
+    ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz|.zst])
     sdf_paths: SdfPathList = .{}, // --sdf=PATH (up to 16)
     quiet: bool = false,
     show_timing: bool = false,
@@ -1985,7 +1991,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\                        Default: sr
         \\    --classifier=TYPE   Built-in classifier: ccd, protor, naccess, oons
         \\                        Default: ccd (protor is an alias for ccd)
-        \\    --ccd=PATH          External CCD dictionary file (.zsdc or .cif[.gz])
+        \\    --ccd=PATH          External CCD dictionary file (.zsdc or .cif[.gz|.zst])
         \\                        Used with --classifier=ccd for non-standard residues
         \\    --sdf=PATH          SDF file with bond topology for CCD classifier
         \\                        Can be specified multiple times for multiple ligands
@@ -2030,8 +2036,8 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     // Load external CCD dictionary if specified
     var ext_ccd: ?ccd_parser.ComponentDict = null;
     if (args.ccd_path) |ccd_path| {
-        const ccd_data = if (std.mem.endsWith(u8, ccd_path, ".gz"))
-            gzip.readGzip(allocator, ccd_path) catch |err| {
+        const ccd_data = if (compressed.isCompressed(ccd_path))
+            compressed.read(allocator, ccd_path) catch |err| {
                 std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
                 std.process.exit(1);
             }
