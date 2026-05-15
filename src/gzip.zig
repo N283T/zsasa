@@ -68,7 +68,24 @@ fn readGzipLimitedOptions(allocator: std.mem.Allocator, path: []const u8, max_si
     var crc = std.hash.Crc32.init();
 
     while (true) {
-        if (buf.items.len >= max_size) return error.FileTooLarge;
+        if (buf.items.len == max_size) {
+            var extra: [1]u8 = undefined;
+            const n = reader.readSliceShort(&extra) catch {
+                // The underlying decompressor parks the real cause (BadGzipHeader,
+                // InvalidCode, WrongStoredBlockNlen, raw I/O error, etc.) on
+                // decompress.err. Surface it via the log so debugging corrupt
+                // archives doesn't require a debugger.
+                if (options.log_errors) {
+                    if (decompress.err) |inner| {
+                        std.log.warn("gzip decode failed for {s}: {s}", .{ path, @errorName(inner) });
+                    }
+                }
+                return error.GzipReadFailed;
+            };
+            if (n == 0) break;
+            return error.FileTooLarge;
+        }
+
         const room = max_size - buf.items.len;
         const want = @min(CHUNK_SIZE, room);
         try buf.ensureUnusedCapacity(allocator, want);
@@ -141,6 +158,30 @@ test "readGzip returns GzipOpenFailed for nonexistent file" {
     const allocator = std.testing.allocator;
     const result = readGzip(allocator, "/nonexistent/path/file.gz");
     try std.testing.expectError(error.GzipOpenFailed, result);
+}
+
+test "readGzipLimited accepts exact size limit" {
+    const allocator = std.testing.allocator;
+
+    // Minimal gzip containing "Hello world\n" (12 bytes decompressed)
+    const gz_data = [_]u8{
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
+        0x01, 0x0c, 0x00, 0xf3, 0xff, 0x48, 0x65, 0x6c, 0x6c, 0x6f,
+        0x20, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x0a, 0xd5, 0xe0, 0x39,
+        0xb7, 0x0c, 0x00, 0x00, 0x00,
+    };
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "test.gz", .data = &gz_data });
+
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "test.gz", allocator);
+    defer allocator.free(tmp_path);
+
+    const content = try readGzipLimited(allocator, tmp_path, 12);
+    defer allocator.free(content);
+
+    try std.testing.expectEqualStrings("Hello world\n", content);
 }
 
 test "readGzipLimited returns FileTooLarge when limit exceeded" {

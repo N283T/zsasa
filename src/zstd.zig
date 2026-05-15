@@ -41,7 +41,18 @@ fn readZstdFromReader(allocator: std.mem.Allocator, path: []const u8, input: *st
     errdefer buf.deinit(allocator);
 
     while (true) {
-        if (buf.items.len >= max_size) return error.FileTooLarge;
+        if (buf.items.len == max_size) {
+            var extra: [1]u8 = undefined;
+            const n = reader.readSliceShort(&extra) catch {
+                if (decompress.err) |inner| {
+                    std.log.warn("zstd decode failed for {s}: {s}", .{ path, @errorName(inner) });
+                }
+                return error.ZstdReadFailed;
+            };
+            if (n == 0) break;
+            return error.FileTooLarge;
+        }
+
         const room = max_size - buf.items.len;
         const want = @min(CHUNK_SIZE, room);
         try buf.ensureUnusedCapacity(allocator, want);
@@ -76,6 +87,28 @@ test "readZstd decompresses zstd frame" {
     defer allocator.free(tmp_path);
 
     const content = try readZstd(allocator, tmp_path);
+    defer allocator.free(content);
+
+    try std.testing.expectEqualStrings("Hello world\n", content);
+}
+
+test "readZstdLimited accepts exact size limit" {
+    const allocator = std.testing.allocator;
+
+    const zst_data = [_]u8{
+        0x28, 0xb5, 0x2f, 0xfd, 0x24, 0x0c, 0x61, 0x00, 0x00, 0x48, 0x65, 0x6c,
+        0x6c, 0x6f, 0x20, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x0a, 0x8c, 0xa0, 0x38,
+        0x9a,
+    };
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "test.zst", .data = &zst_data });
+
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "test.zst", allocator);
+    defer allocator.free(tmp_path);
+
+    const content = try readZstdLimited(allocator, tmp_path, 12);
     defer allocator.free(content);
 
     try std.testing.expectEqualStrings("Hello world\n", content);
