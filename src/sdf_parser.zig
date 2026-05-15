@@ -32,7 +32,7 @@ const Allocator = std.mem.Allocator;
 const elem = @import("element.zig");
 const hybridization = @import("hybridization.zig");
 const ccd_parser = @import("ccd_parser.zig");
-const gzip = @import("gzip.zig");
+const compressed = @import("compressed.zig");
 const types = @import("types.zig");
 
 // =============================================================================
@@ -691,7 +691,7 @@ pub const SdfPathList = struct {
 
 /// Load SDF files and build a ComponentDict from their bond topology.
 ///
-/// Reads each SDF file (plain or gzip-compressed), parses molecules, and
+/// Reads each SDF file (plain, gzip-compressed, or zstd-compressed), parses molecules, and
 /// converts them to StoredComponents. Duplicate molecule names (truncated
 /// to 5 chars) are skipped to avoid leaking the first entry.
 ///
@@ -708,8 +708,8 @@ pub fn loadSdfComponents(
     errdefer dict.deinit();
 
     for (sdf_paths) |sdf_path| {
-        const source = if (std.mem.endsWith(u8, sdf_path, ".gz"))
-            gzip.readGzip(allocator, sdf_path) catch |err| {
+        const source = if (compressed.isCompressed(sdf_path))
+            compressed.read(allocator, sdf_path) catch |err| {
                 std.debug.print("Error reading SDF file '{s}': {s}\n", .{ sdf_path, @errorName(err) });
                 std.process.exit(1);
             }

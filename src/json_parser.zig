@@ -1,6 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
-const gzip = @import("gzip.zig");
+const compressed = @import("compressed.zig");
 const AtomInput = types.AtomInput;
 const Allocator = std.mem.Allocator;
 
@@ -130,11 +130,19 @@ pub fn printValidationErrors(errors: []const ValidationError) void {
     }
 }
 
+const DuplicateCoordinateOptions = struct {
+    log_warning: bool = true,
+};
+
 /// Check for duplicate coordinates and print warning if found.
 /// Returns the number of duplicate coordinate sets found.
 /// This is a warning only - duplicate atoms can cause SASA calculation discrepancies
 /// but are not treated as validation errors.
 pub fn checkDuplicateCoordinates(allocator: Allocator, input: AtomInput) !usize {
+    return checkDuplicateCoordinatesOptions(allocator, input, .{});
+}
+
+fn checkDuplicateCoordinatesOptions(allocator: Allocator, input: AtomInput, options: DuplicateCoordinateOptions) !usize {
     const n = input.atomCount();
     if (n < 2) return 0;
 
@@ -169,7 +177,7 @@ pub fn checkDuplicateCoordinates(allocator: Allocator, input: AtomInput) !usize 
         }
     }
 
-    if (duplicate_count > 0) {
+    if (duplicate_count > 0 and options.log_warning) {
         std.debug.print(
             "Warning: Found {} duplicate coordinate(s) in {} atoms. " ++
                 "This may cause SASA calculation discrepancies with other tools.\n",
@@ -271,12 +279,12 @@ pub fn parseAtomInput(allocator: Allocator, json_str: []const u8) !AtomInput {
     };
 }
 
-/// Read atom input from JSON file (handles both .json and .json.gz)
+/// Read atom input from JSON file (handles plain, .gz, and .zst files)
 pub fn readAtomInputFromFile(allocator: Allocator, io: std.Io, path: []const u8) !AtomInput {
     const max_size = 200 * 1024 * 1024; // 200 MB max
 
-    const contents = if (std.mem.endsWith(u8, path, ".gz"))
-        try gzip.readGzip(allocator, path)
+    const contents = if (compressed.isCompressed(path))
+        try compressed.read(allocator, path)
     else blk: {
         const file = try std.Io.Dir.cwd().openFile(io, path, .{});
         defer file.close(io);
@@ -753,7 +761,7 @@ test "checkDuplicateCoordinates with duplicates" {
         .allocator = allocator,
     };
 
-    const count = try checkDuplicateCoordinates(allocator, input);
+    const count = try checkDuplicateCoordinatesOptions(allocator, input, .{ .log_warning = false });
     try std.testing.expectEqual(@as(usize, 2), count);
 }
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Zstandard decompression for structure inputs**: `.json.zst`, `.pdb.zst`, `.cif.zst`, `.mmcif.zst`, `.ent.zst`, `.sdf.zst`, and `.mol.zst` are now detected and transparently decompressed via native `std.compress.zstd`.
+
 ## [0.2.11] - 2026-04-26
 
 ### Fixed

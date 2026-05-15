@@ -22,7 +22,7 @@ const classifier_ccd = @import("classifier_ccd.zig");
 const ccd_parser = @import("ccd_parser.zig");
 const ccd_binary = @import("ccd_binary.zig");
 const sdf_parser = @import("sdf_parser.zig");
-const gzip = @import("gzip.zig");
+const compressed = @import("compressed.zig");
 
 const Config = types.Config;
 const Configf32 = types.Configf32;
@@ -63,7 +63,7 @@ pub const CalcArgs = struct {
     rsa: bool = false, // Show RSA (Relative Solvent Accessibility)
     polar: bool = false, // Show polar/nonpolar SASA summary
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
-    ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz])
+    ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz|.zst])
     sdf_paths: SdfPathList = .{}, // --sdf=PATH (up to 16)
     mol_selector: ?[]const u8 = null, // --mol=NAME or --mol=N (1-based index)
     quiet: bool = false,
@@ -498,7 +498,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --classifier=TYPE  Built-in classifier: ccd, protor, naccess, oons
         \\                       Default: ccd for PDB/mmCIF, none for JSON
         \\                       protor is an alias for ccd
-        \\    --ccd=PATH         External CCD dictionary file (.zsdc or .cif[.gz])
+        \\    --ccd=PATH         External CCD dictionary file (.zsdc or .cif[.gz|.zst])
         \\                       Extends CCD coverage for non-standard residues
         \\    --sdf=PATH         SDF file with bond topology for CCD classifier
         \\                       Can be specified multiple times for multiple ligands
@@ -651,8 +651,8 @@ fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, arg
             break :blk .{ .input = try parser.parseFile(io, path) };
         },
         .sdf => blk: {
-            const source = if (std.mem.endsWith(u8, path, ".gz"))
-                try gzip.readGzip(allocator, path)
+            const source = if (compressed.isCompressed(path))
+                try compressed.read(allocator, path)
             else file_blk: {
                 const f = try std.Io.Dir.cwd().openFile(io, path, .{});
                 defer f.close(io);
@@ -1056,8 +1056,8 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
             // Load external CCD dictionary if specified
             var ext_ccd: ?ccd_parser.ComponentDict = null;
             if (args.ccd_path) |ccd_path| {
-                const ccd_data = if (std.mem.endsWith(u8, ccd_path, ".gz"))
-                    gzip.readGzip(allocator, ccd_path) catch |err| {
+                const ccd_data = if (compressed.isCompressed(ccd_path))
+                    compressed.read(allocator, ccd_path) catch |err| {
                         std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
                         std.process.exit(1);
                     }

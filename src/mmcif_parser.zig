@@ -32,7 +32,7 @@ const Allocator = std.mem.Allocator;
 const cif = @import("cif_tokenizer.zig");
 const elem = @import("element.zig");
 const mmap_reader = @import("mmap_reader.zig");
-const gzip = @import("gzip.zig");
+const compressed = @import("compressed.zig");
 const types = @import("types.zig");
 const AtomInput = types.AtomInput;
 const ccd_parser = @import("ccd_parser.zig");
@@ -172,10 +172,10 @@ pub const MmcifParser = struct {
         };
     }
 
-    /// Parse mmCIF from a file (handles both plain and .gz compressed)
+    /// Parse mmCIF from a file (handles plain, .gz, and .zst compressed)
     pub fn parseFile(self: *MmcifParser, io: std.Io, path: []const u8) !AtomInput {
-        if (std.mem.endsWith(u8, path, ".gz")) {
-            const data = try gzip.readGzip(self.allocator, path);
+        if (compressed.isCompressed(path)) {
+            const data = try compressed.read(self.allocator, path);
             defer self.allocator.free(data);
             return self.parse(data);
         }

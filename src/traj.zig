@@ -23,7 +23,7 @@ const classifier_ccd = @import("classifier_ccd.zig");
 const ccd_parser = @import("ccd_parser.zig");
 const ccd_binary = @import("ccd_binary.zig");
 const sdf_parser = @import("sdf_parser.zig");
-const gzip = @import("gzip.zig");
+const compressed = @import("compressed.zig");
 
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
@@ -132,7 +132,7 @@ pub const TrajArgs = struct {
     n_slices: u32 = 20,
     precision: Precision = .f32, // Default f32 for trajectory (speed)
     classifier_type: ?ClassifierType = .naccess, // Default: NACCESS for trajectories (supports explicit H)
-    ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz])
+    ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz|.zst])
     sdf_paths: SdfPathList = .{}, // --sdf=PATH (up to 16)
     stride: u32 = 1, // Process every Nth frame
     start_frame: u32 = 0, // Start frame
@@ -344,7 +344,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\                       Default: sr
         \\    --classifier=TYPE  Built-in classifier: ccd, protor, naccess, oons
         \\                       Default: naccess (supports explicit H in MD trajectories)
-        \\    --ccd=PATH         External CCD dictionary file (.zsdc or .cif[.gz])
+        \\    --ccd=PATH         External CCD dictionary file (.zsdc or .cif[.gz|.zst])
         \\                       Used with --classifier=ccd for non-standard residues
         \\    --sdf=PATH         SDF file with bond topology for CCD classifier
         \\                       Can be specified multiple times for multiple ligands
@@ -699,8 +699,8 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
     // Load external CCD dictionary if specified
     var ext_ccd: ?ccd_parser.ComponentDict = null;
     if (args.ccd_path) |ccd_path| {
-        const ccd_data = if (std.mem.endsWith(u8, ccd_path, ".gz"))
-            try gzip.readGzip(allocator, ccd_path)
+        const ccd_data = if (compressed.isCompressed(ccd_path))
+            try compressed.read(allocator, ccd_path)
         else blk: {
             const f = try std.Io.Dir.cwd().openFile(io, ccd_path, .{});
             defer f.close(io);

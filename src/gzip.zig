@@ -17,10 +17,18 @@ pub fn readGzip(allocator: std.mem.Allocator, path: []const u8) GzipError![]u8 {
     return readGzipLimited(allocator, path, DEFAULT_MAX_SIZE);
 }
 
+const ReadOptions = struct {
+    log_errors: bool = true,
+};
+
 /// Decompress a gzip file with a custom size limit. Caller owns the returned slice.
 /// The size limit is checked before each chunk read so a malicious file cannot
 /// allocate more than `max_size` bytes before the cap is detected.
 pub fn readGzipLimited(allocator: std.mem.Allocator, path: []const u8, max_size: usize) GzipError![]u8 {
+    return readGzipLimitedOptions(allocator, path, max_size, .{});
+}
+
+fn readGzipLimitedOptions(allocator: std.mem.Allocator, path: []const u8, max_size: usize, options: ReadOptions) GzipError![]u8 {
     // NOTE: gzip.zig deliberately does not take an `io: std.Io` parameter to
     // preserve the existing public API used by all callers (mmcif/pdb/json/sdf
     // parsers + batch + compile_dict + the FFI surface in c_api.zig). The
@@ -70,8 +78,10 @@ pub fn readGzipLimited(allocator: std.mem.Allocator, path: []const u8, max_size:
             // InvalidCode, WrongStoredBlockNlen, raw I/O error, etc.) on
             // decompress.err. Surface it via the log so debugging corrupt
             // archives doesn't require a debugger.
-            if (decompress.err) |inner| {
-                std.log.warn("gzip decode failed for {s}: {s}", .{ path, @errorName(inner) });
+            if (options.log_errors) {
+                if (decompress.err) |inner| {
+                    std.log.warn("gzip decode failed for {s}: {s}", .{ path, @errorName(inner) });
+                }
             }
             return error.GzipReadFailed;
         };
@@ -85,12 +95,16 @@ pub fn readGzipLimited(allocator: std.mem.Allocator, path: []const u8, max_size:
     // bytes. See the comment above the Crc32.init() for context.
     const meta = decompress.container_metadata.gzip;
     if (crc.final() != meta.crc) {
-        std.log.warn("gzip CRC mismatch for {s}", .{path});
+        if (options.log_errors) {
+            std.log.warn("gzip CRC mismatch for {s}", .{path});
+        }
         return error.GzipReadFailed;
     }
     const truncated_size: u32 = @truncate(buf.items.len);
     if (truncated_size != meta.count) {
-        std.log.warn("gzip ISIZE mismatch for {s}", .{path});
+        if (options.log_errors) {
+            std.log.warn("gzip ISIZE mismatch for {s}", .{path});
+        }
         return error.GzipReadFailed;
     }
 
@@ -171,6 +185,6 @@ test "readGzip rejects gzip with corrupted CRC" {
     const tmp_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "test.gz", allocator);
     defer allocator.free(tmp_path);
 
-    const result = readGzip(allocator, tmp_path);
+    const result = readGzipLimitedOptions(allocator, tmp_path, DEFAULT_MAX_SIZE, .{ .log_errors = false });
     try std.testing.expectError(error.GzipReadFailed, result);
 }

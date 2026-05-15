@@ -8,22 +8,29 @@ pub const InputFormat = enum {
     sdf,
 };
 
-/// Supported file extensions (lowercase, with .gz compression)
+/// Supported file extensions (lowercase, with .gz/.zst compression)
 pub const supported_extensions = [_][]const u8{
     ".json",
     ".json.gz",
+    ".json.zst",
     ".pdb",
     ".pdb.gz",
+    ".pdb.zst",
     ".cif",
     ".cif.gz",
+    ".cif.zst",
     ".mmcif",
     ".mmcif.gz",
+    ".mmcif.zst",
     ".ent",
     ".ent.gz",
+    ".ent.zst",
     ".sdf",
     ".sdf.gz",
+    ".sdf.zst",
     ".mol",
     ".mol.gz",
+    ".mol.zst",
 };
 
 /// Check if filename has a supported structure file extension
@@ -44,17 +51,20 @@ pub fn isSupportedFile(name: []const u8) bool {
     return false;
 }
 
-/// Strip .gz extension from path
-fn stripGzExt(path: []const u8) []const u8 {
+/// Strip supported compression extension from path.
+fn stripCompressionExt(path: []const u8) []const u8 {
     if (std.mem.endsWith(u8, path, ".gz")) {
         return path[0 .. path.len - 3];
+    }
+    if (std.mem.endsWith(u8, path, ".zst")) {
+        return path[0 .. path.len - 4];
     }
     return path;
 }
 
-/// Detect input file format from extension (handles .gz compression)
+/// Detect input file format from extension (handles .gz/.zst compression)
 pub fn detectInputFormat(path: []const u8) InputFormat {
-    const base = stripGzExt(path);
+    const base = stripCompressionExt(path);
 
     // mmCIF formats
     if (std.mem.endsWith(u8, base, ".cif")) return .mmcif;
@@ -87,11 +97,13 @@ test "isSupportedFile accepts structure files" {
     // PDB
     try std.testing.expect(isSupportedFile("structure.pdb"));
     try std.testing.expect(isSupportedFile("structure.pdb.gz"));
+    try std.testing.expect(isSupportedFile("structure.pdb.zst"));
     try std.testing.expect(isSupportedFile("structure.PDB"));
 
     // mmCIF
     try std.testing.expect(isSupportedFile("structure.cif"));
     try std.testing.expect(isSupportedFile("structure.cif.gz"));
+    try std.testing.expect(isSupportedFile("structure.cif.zst"));
     try std.testing.expect(isSupportedFile("structure.mmcif"));
     try std.testing.expect(isSupportedFile("structure.CIF"));
     try std.testing.expect(isSupportedFile("structure.mmCIF"));
@@ -103,6 +115,7 @@ test "isSupportedFile accepts structure files" {
     // JSON
     try std.testing.expect(isSupportedFile("structure.json"));
     try std.testing.expect(isSupportedFile("structure.json.gz"));
+    try std.testing.expect(isSupportedFile("structure.json.zst"));
 
     // Unsupported
     try std.testing.expect(!isSupportedFile("structure.txt"));
@@ -127,16 +140,21 @@ test "detectInputFormat handles plain files" {
 
 test "detectInputFormat handles .gz compressed files" {
     try std.testing.expectEqual(InputFormat.pdb, detectInputFormat("file.pdb.gz"));
+    try std.testing.expectEqual(InputFormat.pdb, detectInputFormat("file.pdb.zst"));
     try std.testing.expectEqual(InputFormat.mmcif, detectInputFormat("file.cif.gz"));
+    try std.testing.expectEqual(InputFormat.mmcif, detectInputFormat("file.cif.zst"));
     try std.testing.expectEqual(InputFormat.json, detectInputFormat("file.json.gz"));
+    try std.testing.expectEqual(InputFormat.json, detectInputFormat("file.json.zst"));
 }
 
 test "isSupportedFile accepts SDF/MOL files" {
     try std.testing.expect(isSupportedFile("molecule.sdf"));
     try std.testing.expect(isSupportedFile("molecule.sdf.gz"));
+    try std.testing.expect(isSupportedFile("molecule.sdf.zst"));
     try std.testing.expect(isSupportedFile("molecule.SDF"));
     try std.testing.expect(isSupportedFile("molecule.mol"));
     try std.testing.expect(isSupportedFile("molecule.mol.gz"));
+    try std.testing.expect(isSupportedFile("molecule.mol.zst"));
     try std.testing.expect(isSupportedFile("molecule.MOL"));
 }
 
@@ -146,5 +164,7 @@ test "detectInputFormat handles SDF/MOL files" {
     try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("file.mol"));
     try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("file.MOL"));
     try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("file.sdf.gz"));
+    try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("file.sdf.zst"));
     try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("file.mol.gz"));
+    try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("file.mol.zst"));
 }

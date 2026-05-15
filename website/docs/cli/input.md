@@ -8,9 +8,9 @@ The input format is auto-detected from the file extension.
 
 | Extension | Format |
 |-----------|--------|
-| `.json`, `.json.gz` | JSON |
-| `.cif`, `.mmcif`, `.CIF`, `.mmCIF` | mmCIF |
-| `.pdb`, `.PDB`, `.ent`, `.ENT` | PDB |
+| `.json`, `.json.gz`, `.json.zst` | JSON |
+| `.cif`, `.cif.gz`, `.cif.zst`, `.mmcif`, `.mmcif.gz`, `.mmcif.zst`, `.CIF`, `.mmCIF` | mmCIF |
+| `.pdb`, `.pdb.gz`, `.pdb.zst`, `.PDB`, `.ent`, `.ent.gz`, `.ent.zst`, `.ENT` | PDB |
 
 ## JSON Format
 

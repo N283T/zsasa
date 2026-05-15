@@ -10,7 +10,7 @@ sidebar_position: 1
 zsasa calc <input> [output] [OPTIONS]
 zsasa batch <input_dir> [output_dir] [OPTIONS]
 zsasa traj <trajectory> <topology> [output] [OPTIONS]
-zsasa compile-dict <input.cif[.gz]> -o <output.zsdc>
+zsasa compile-dict <input.cif[.gz|.zst]> -o <output.zsdc>
 ```
 
 ## Subcommands
