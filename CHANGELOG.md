@@ -7,9 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-17
+
 ### Added
 
-- **Zstandard decompression for structure inputs**: `.json.zst`, `.pdb.zst`, `.cif.zst`, `.mmcif.zst`, `.ent.zst`, `.sdf.zst`, and `.mol.zst` are now detected and transparently decompressed via native `std.compress.zstd`.
+- **Zstandard decompression for structure inputs**: `.json.zst`, `.pdb.zst`, `.cif.zst`, `.mmcif.zst`, `.ent.zst`, `.sdf.zst`, and `.mol.zst` are now detected and transparently decompressed via native `std.compress.zstd`. (#357)
+
+### Changed
+
+- **CLI progress bars** now use Zig's standard progress API for `batch` and `traj`, reducing custom rendering logic while preserving progress reporting. (#358)
+- **Project branding documentation**: add the project logo to README and refresh logo SVG assets. (#355, #356)
 
 ## [0.2.11] - 2026-04-26
 
