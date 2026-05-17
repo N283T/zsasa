@@ -73,6 +73,7 @@ pub const BatchConfig = struct {
     sdf_ccd: ?*const ccd_parser.ComponentDict = null, // SDF bond topology dictionary
     chain_filter: ?[]const []const u8 = null,
     use_auth_chain: bool = false,
+    residue_map: bool = false,
 };
 
 /// Helper to build and hold bitmask LUTs for batch processing.
@@ -1683,6 +1684,7 @@ pub const BatchArgs = struct {
     manifest_path: ?[]const u8 = null,
     chain_filter: ?[]const u8 = null,
     use_auth_chain: bool = false,
+    residue_map: bool = false,
     n_threads: usize = 0,
     probe_radius: f64 = 1.4,
     n_points: u32 = 100,
@@ -1996,6 +1998,10 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         else if (std.mem.eql(u8, arg, "--auth-chain")) {
             result.use_auth_chain = true;
         }
+        // --residue-map
+        else if (std.mem.eql(u8, arg, "--residue-map")) {
+            result.residue_map = true;
+        }
         // --include-hydrogens
         else if (std.mem.eql(u8, arg, "--include-hydrogens")) {
             result.include_hydrogens = true;
@@ -2133,6 +2139,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --manifest=PATH     TOML manifest with one or more named batch jobs
         \\    --chain=ID          Filter by chain ID for non-manifest batch (e.g. A or A,B)
         \\    --auth-chain        Use auth_asym_id instead of label_asym_id for mmCIF chain matching
+        \\    --residue-map      Include compact residue map arrays in JSONL output
         \\    --probe-radius=R    Probe radius in Angstroms (default: 1.4)
         \\    --n-points=N        Test points per atom (default: 100, for sr)
         \\    --n-slices=N        Slices per atom diameter (default: 20, for lr)
@@ -2218,6 +2225,7 @@ fn applyManifestGlobals(config: *BatchConfig, args: BatchArgs, globals: batch_ma
         if (globals.use_bitmask) |v| config.use_bitmask = v;
     }
     if (globals.auth_chain) |v| config.use_auth_chain = v;
+    if (globals.residue_map) |v| config.residue_map = v;
 }
 
 fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
@@ -2238,6 +2246,7 @@ fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
     if (args.include_hetatm_explicit) config.include_hetatm = args.include_hetatm;
     if (args.use_bitmask_explicit) config.use_bitmask = args.use_bitmask;
     if (args.use_auth_chain) config.use_auth_chain = true;
+    if (args.residue_map) config.residue_map = true;
 }
 
 fn applyManifestJobOverrides(config: *BatchConfig, args: BatchArgs, job: batch_manifest.Job) void {
@@ -2472,6 +2481,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null,
         .chain_filter = chain_filter_slice,
         .use_auth_chain = args.use_auth_chain,
+        .residue_map = args.residue_map,
     };
 
     if (!args.quiet) {
@@ -2611,6 +2621,13 @@ test "BatchArgs --auth-chain" {
     try std.testing.expectEqual(true, parsed.use_auth_chain);
 }
 
+test "BatchArgs --residue-map" {
+    const args = [_][]const u8{ "zsasa", "batch", "--format=jsonl", "--residue-map", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(OutputFormat.jsonl, parsed.output_format);
+    try std.testing.expectEqual(true, parsed.residue_map);
+}
+
 test "parseBatchChainFilter splits comma-separated chains" {
     const chains = try parseBatchChainFilter(std.testing.allocator, "A, B,AB");
     defer std.testing.allocator.free(chains);
@@ -2648,6 +2665,17 @@ test "CLI auth-chain overrides manifest job auth_chain false" {
     applyManifestJobOverrides(&config, args, job);
 
     try std.testing.expectEqual(true, config.use_auth_chain);
+}
+
+test "manifest residue_map applies when CLI does not override format" {
+    var config = BatchConfig{};
+    const args = BatchArgs{};
+    const globals = batch_manifest.Globals{ .format = "jsonl", .residue_map = true };
+
+    try applyManifestGlobals(&config, args, globals);
+
+    try std.testing.expectEqual(OutputFormat.jsonl, config.output_format);
+    try std.testing.expectEqual(true, config.residue_map);
 }
 
 test "manifestJsonlOutputPath uses job file under output dir" {

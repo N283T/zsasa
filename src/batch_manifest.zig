@@ -32,6 +32,7 @@ pub const Globals = struct {
     timing: ?bool = null,
     quiet: ?bool = null,
     auth_chain: ?bool = null,
+    residue_map: ?bool = null,
 };
 
 pub const Job = struct {
@@ -141,6 +142,7 @@ fn parseGlobals(allocator: Allocator, root: toml_parser.Table) Error!Globals {
     globals.timing = try optionalBool(root.entries, "timing");
     globals.quiet = try optionalBool(root.entries, "quiet");
     globals.auth_chain = try optionalBool(root.entries, "auth_chain");
+    globals.residue_map = try optionalBool(root.entries, "residue_map");
     return globals;
 }
 
@@ -246,6 +248,7 @@ test "parse A B AB manifest" {
         \\output_dir = "results"
         \\
         \\format = "jsonl"
+        \\residue_map = true
         \\use_bitmask = true
         \\n_points = 128
         \\classifier = "ccd"
@@ -269,6 +272,7 @@ test "parse A B AB manifest" {
     try std.testing.expectEqualStrings("structures", manifest.globals.input_dir.?);
     try std.testing.expectEqualStrings("results", manifest.globals.output_dir.?);
     try std.testing.expectEqualStrings("jsonl", manifest.globals.format.?);
+    try std.testing.expectEqual(true, manifest.globals.residue_map.?);
     try std.testing.expectEqual(true, manifest.globals.use_bitmask.?);
     try std.testing.expectEqual(@as(u32, 128), manifest.globals.n_points.?);
     try std.testing.expectEqualStrings("ccd", manifest.globals.classifier.?);
