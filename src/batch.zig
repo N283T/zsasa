@@ -2233,6 +2233,12 @@ fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
     if (args.use_auth_chain) config.use_auth_chain = true;
 }
 
+fn applyManifestJobOverrides(config: *BatchConfig, args: BatchArgs, job: batch_manifest.Job) void {
+    if (job.auth_chain) |v| config.use_auth_chain = v;
+    if (args.use_auth_chain) config.use_auth_chain = true;
+    config.chain_filter = job.chains;
+}
+
 fn parseManifestFile(allocator: Allocator, io: std.Io, path: []const u8) !batch_manifest.Manifest {
     const file = try std.Io.Dir.cwd().openFile(io, path, .{});
     defer file.close(io);
@@ -2329,8 +2335,7 @@ fn runManifest(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         config.store_atom_areas = (config.output_format == .jsonl);
         config.external_ccd = if (ext_ccd != null) &ext_ccd.? else null;
         config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
-        if (job.auth_chain) |v| config.use_auth_chain = v;
-        config.chain_filter = job.chains;
+        applyManifestJobOverrides(&config, args, job);
 
         if ((config.classifier_type == .ccd or config.classifier_type == .protor) and config.include_hydrogens and !config.quiet) {
             std.debug.print("Warning: --include-hydrogens with CCD classifier may give inaccurate results\n", .{});
@@ -2623,6 +2628,19 @@ test "manifest numeric validators reject invalid values" {
     try std.testing.expectError(error.InvalidArgument, validateManifestNPoints(10001));
     try std.testing.expectError(error.InvalidArgument, validateManifestNSlices(0));
     try std.testing.expectError(error.InvalidArgument, validateManifestNSlices(1001));
+}
+
+test "CLI auth-chain overrides manifest job auth_chain false" {
+    var config = BatchConfig{};
+    const args = BatchArgs{ .use_auth_chain = true };
+    const job = batch_manifest.Job{
+        .name = "chain_A",
+        .auth_chain = false,
+    };
+
+    applyManifestJobOverrides(&config, args, job);
+
+    try std.testing.expectEqual(true, config.use_auth_chain);
 }
 
 test "manifestJsonlOutputPath uses job file under output dir" {
