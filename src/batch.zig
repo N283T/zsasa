@@ -2201,7 +2201,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --manifest=PATH     TOML manifest with one or more named batch jobs
         \\    --chain=ID          Filter by chain ID for non-manifest batch (e.g. A or A,B)
         \\    --auth-chain        Use auth_asym_id instead of label_asym_id for mmCIF chain matching
-        \\    --residue-map      Include compact residue map arrays in JSONL output
+        \\    --residue-map       Include compact residue map arrays in JSONL output
         \\    --probe-radius=R    Probe radius in Angstroms (default: 1.4)
         \\    --n-points=N        Test points per atom (default: 100, for sr)
         \\    --n-slices=N        Slices per atom diameter (default: 20, for lr)

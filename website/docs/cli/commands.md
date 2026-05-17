@@ -51,6 +51,7 @@ version = 1
 input_dir = "structures"
 output_dir = "results"
 format = "jsonl"
+residue_map = true
 use_bitmask = true
 n_points = 128
 classifier = "ccd"
@@ -71,6 +72,8 @@ chains = ["A", "B"]
 For `format = "jsonl"`, each job writes one file such as `results/chain_A.jsonl`. For `json`, `compact`, and `csv`, each job writes a directory such as `results/chain_A/`.
 
 Precedence is: built-in defaults < manifest globals < job settings < explicit CLI options. `--chain` is for non-manifest single-job batch mode; manifest jobs should use `[[jobs]].chains`.
+
+Set `residue_map = true` in a manifest, or pass `--residue-map` with `--format=jsonl`, to add compact residue-level mapping arrays (`residue_chain`, `residue_name`, `residue_number`, `residue_insertion_code`, `residue_atom_start`, `residue_atom_count`, `residue_sasa`) to each JSONL row. The default JSONL schema remains unchanged unless this option is enabled.
 
 ### `traj` - Trajectory Analysis
 
@@ -160,7 +163,8 @@ See [Output & Analysis](output.md#analysis-features) for detailed output descrip
 | Option | Description | Default |
 |--------|-------------|---------|
 | `-o, --output=FILE` | Output file path | `output.json` |
-| `--format=FMT` | Output format: `json`, `compact`, `csv` | `json` |
+| `--format=FMT` | Output format: `json`, `compact`, `csv`, `jsonl` | `json` |
+| `--residue-map` | Add compact residue map arrays to batch JSONL output (`--format=jsonl` only) | off |
 | `--timing` | Show timing breakdown (for benchmarking) | off |
 | `-q, --quiet` | Suppress progress output, including standard progress bars shown by `batch` and `traj` | off |
 | `--validate` | Validate input only, do not calculate | off |
