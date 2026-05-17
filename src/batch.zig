@@ -73,6 +73,7 @@ pub const BatchConfig = struct {
     sdf_ccd: ?*const ccd_parser.ComponentDict = null, // SDF bond topology dictionary
     chain_filter: ?[]const []const u8 = null,
     use_auth_chain: bool = false,
+    residue_map: bool = false,
 };
 
 /// Helper to build and hold bitmask LUTs for batch processing.
@@ -253,6 +254,7 @@ pub const FileResult = struct {
     status: Status,
     error_msg: ?[]const u8 = null,
     atom_areas: ?[]const f64 = null, // Populated for jsonl output
+    residue_map: ?json_writer.ResidueMap = null, // Populated for jsonl residue-map output
 
     pub const Status = enum {
         ok,
@@ -278,6 +280,9 @@ pub const BatchResult = struct {
             }
             if (result.atom_areas) |areas| {
                 self.allocator.free(areas);
+            }
+            if (result.residue_map) |*map| {
+                map.deinit();
             }
         }
         self.allocator.free(self.file_results);
@@ -464,6 +469,21 @@ fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType, sdf_ccd: ?*cons
     input.r = new_radii;
 }
 
+fn attachResidueMap(
+    arena: Allocator,
+    result_allocator: Allocator,
+    input: AtomInput,
+    atom_areas: []const f64,
+    result: *FileResult,
+) bool {
+    result.residue_map = json_writer.buildResidueMap(arena, input, atom_areas) catch |err| {
+        result.status = .err;
+        result.error_msg = std.fmt.allocPrint(result_allocator, "residue map failed: {s}", .{@errorName(err)}) catch null;
+        return false;
+    };
+    return true;
+}
+
 /// Scan directory for structure files (.json, .pdb, .cif, .mmcif, .ent and compressed variants)
 pub fn scanDirectory(allocator: Allocator, io: std.Io, dir_path: []const u8) ![][]const u8 {
     var files: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -589,6 +609,10 @@ fn processOneFile(
                     return result;
                 };
             }
+            if (config.residue_map) {
+                const areas = result.atom_areas orelse sasa_result.atom_areas;
+                if (!attachResidueMap(arena, result_allocator, input, areas, &result)) return result;
+            }
 
             if (output_dir) |out_dir| {
                 if (!config.store_atom_areas) {
@@ -629,6 +653,18 @@ fn processOneFile(
                 };
                 for (areas_f32, 0..) |v, j| areas_f64[j] = @floatCast(v);
                 result.atom_areas = areas_f64;
+            }
+            if (config.residue_map) {
+                const areas = result.atom_areas orelse blk: {
+                    const areas_f64 = arena.alloc(f64, sasa_result.atom_areas.len) catch {
+                        result.status = .err;
+                        result.error_msg = std.fmt.allocPrint(result_allocator, "atom_areas allocation failed", .{}) catch null;
+                        return result;
+                    };
+                    for (sasa_result.atom_areas, 0..) |v, j| areas_f64[j] = @floatCast(v);
+                    break :blk areas_f64;
+                };
+                if (!attachResidueMap(arena, result_allocator, input, areas, &result)) return result;
             }
 
             if (output_dir) |out_dir| {
@@ -786,6 +822,10 @@ fn processOneSdfMoleculeInner(
                     return res;
                 };
             }
+            if (config.residue_map) {
+                const areas = res.atom_areas orelse sasa_result.atom_areas;
+                if (!attachResidueMap(arena, result_allocator, input.*, areas, &res)) return res;
+            }
 
             if (output_dir) |out_dir| {
                 if (!config.store_atom_areas) {
@@ -827,6 +867,18 @@ fn processOneSdfMoleculeInner(
                 for (areas_f32, 0..) |v, j| areas_f64[j] = @floatCast(v);
                 res.atom_areas = areas_f64;
             }
+            if (config.residue_map) {
+                const areas = res.atom_areas orelse blk: {
+                    const areas_f64 = arena.alloc(f64, sasa_result.atom_areas.len) catch {
+                        res.status = .err;
+                        res.error_msg = std.fmt.allocPrint(result_allocator, "atom_areas allocation failed", .{}) catch null;
+                        return res;
+                    };
+                    for (sasa_result.atom_areas, 0..) |v, j| areas_f64[j] = @floatCast(v);
+                    break :blk areas_f64;
+                };
+                if (!attachResidueMap(arena, result_allocator, input.*, areas, &res)) return res;
+            }
 
             if (output_dir) |out_dir| {
                 if (!config.store_atom_areas) {
@@ -861,12 +913,10 @@ const JsonlStreamWriter = struct {
     pub fn writeResult(
         self: *JsonlStreamWriter,
         alloc: Allocator,
-        filename: []const u8,
-        total_sasa: f64,
-        atom_areas: []const f64,
+        result: *FileResult,
     ) void {
-        const line = json_writer.fileResultToJsonlLine(alloc, filename, total_sasa, atom_areas) catch |err| {
-            logWarning("failed to serialize {s}: {s}", .{ filename, @errorName(err) });
+        const line = fileResultToJsonlLine(alloc, result) catch |err| {
+            logWarning("failed to serialize {s}: {s}", .{ result.filename, @errorName(err) });
             return;
         };
         // line is on alloc (arena); no explicit free needed — arena reset handles it.
@@ -879,17 +929,17 @@ const JsonlStreamWriter = struct {
         var buf: [64 * 1024]u8 = undefined;
         var w = std.Io.File.Writer.initStreaming(self.file, self.io, &buf);
         w.interface.writeAll(line) catch |err| {
-            logWarning("JSONL write failed for {s}: {s}", .{ filename, @errorName(err) });
+            logWarning("JSONL write failed for {s}: {s}", .{ result.filename, @errorName(err) });
             self.write_failed = true;
             return;
         };
         w.interface.writeAll("\n") catch |err| {
-            logWarning("JSONL newline write failed for {s}: {s}", .{ filename, @errorName(err) });
+            logWarning("JSONL newline write failed for {s}: {s}", .{ result.filename, @errorName(err) });
             self.write_failed = true;
             return;
         };
         w.interface.flush() catch |err| {
-            logWarning("JSONL flush failed for {s}: {s}", .{ filename, @errorName(err) });
+            logWarning("JSONL flush failed for {s}: {s}", .{ result.filename, @errorName(err) });
             self.write_failed = true;
         };
     }
@@ -902,14 +952,21 @@ const JsonlStreamWriter = struct {
 
 /// Write a JSONL line for a result via the buffered writer.
 /// atom_areas live on the arena and are invalidated after arena reset.
+fn fileResultToJsonlLine(allocator: Allocator, result: *FileResult) ![]u8 {
+    const areas = result.atom_areas orelse return error.MissingAtomAreas;
+    if (result.residue_map) |map| {
+        return json_writer.fileResultWithResidueMapToJsonlLine(allocator, result.filename, result.total_sasa, areas, map);
+    }
+    return json_writer.fileResultToJsonlLine(allocator, result.filename, result.total_sasa, areas);
+}
+
 fn writeJsonlResult(
     jsonl_writer: *std.Io.File.Writer,
     arena_alloc: Allocator,
     result: *FileResult,
 ) void {
     if (result.status != .ok) return;
-    const areas = result.atom_areas orelse return;
-    const line = json_writer.fileResultToJsonlLine(arena_alloc, result.filename, result.total_sasa, areas) catch |err| {
+    const line = fileResultToJsonlLine(arena_alloc, result) catch |err| {
         logWarning("failed to serialize {s}: {s}", .{ result.filename, @errorName(err) });
         return;
     };
@@ -1120,6 +1177,7 @@ pub fn runBatchSequential(
                     writeJsonlResult(w, arena.allocator(), &mol_result);
                 }
                 mol_result.atom_areas = null;
+                mol_result.residue_map = null;
 
                 try results_list.append(allocator, mol_result);
                 total_items += 1;
@@ -1156,6 +1214,7 @@ pub fn runBatchSequential(
                 writeJsonlResult(w, arena.allocator(), &result);
             }
             result.atom_areas = null;
+            result.residue_map = null;
 
             try results_list.append(allocator, result);
             total_items += 1;
@@ -1317,12 +1376,11 @@ fn parallelWorker(ctx: *ParallelContext) void {
 
             if (ctx.jsonl_stream) |stream| {
                 if (result.status == .ok) {
-                    if (result.atom_areas) |areas| {
-                        stream.writeResult(arena.allocator(), result.filename, result.total_sasa, areas);
-                    }
+                    stream.writeResult(arena.allocator(), &result);
                 }
             }
             ctx.results[item_idx].atom_areas = null;
+            ctx.results[item_idx].residue_map = null;
         } else {
             // Non-SDF file: existing logic
             var result = processOneFile(
@@ -1345,13 +1403,12 @@ fn parallelWorker(ctx: *ParallelContext) void {
             // Stream JSONL output (atom_areas on arena, valid until reset)
             if (ctx.jsonl_stream) |stream| {
                 if (result.status == .ok) {
-                    if (result.atom_areas) |areas| {
-                        stream.writeResult(arena.allocator(), result.filename, result.total_sasa, areas);
-                    }
+                    stream.writeResult(arena.allocator(), &result);
                 }
             }
             // Clear atom_areas since arena will free them
             ctx.results[item_idx].atom_areas = null;
+            ctx.results[item_idx].residue_map = null;
         }
 
         // Update progress counter (.release pairs with .acquire in progress monitor)
@@ -1683,6 +1740,7 @@ pub const BatchArgs = struct {
     manifest_path: ?[]const u8 = null,
     chain_filter: ?[]const u8 = null,
     use_auth_chain: bool = false,
+    residue_map: bool = false,
     n_threads: usize = 0,
     probe_radius: f64 = 1.4,
     n_points: u32 = 100,
@@ -1738,6 +1796,12 @@ fn validateManifestNSlices(n: u32) !u32 {
         return error.InvalidArgument;
     }
     return n;
+}
+
+fn validateResidueMapFormat(output_format: OutputFormat, residue_map: bool) !void {
+    if (residue_map and output_format != .jsonl) {
+        return error.InvalidArgument;
+    }
 }
 
 /// Parse and validate probe radius value
@@ -1996,6 +2060,10 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         else if (std.mem.eql(u8, arg, "--auth-chain")) {
             result.use_auth_chain = true;
         }
+        // --residue-map
+        else if (std.mem.eql(u8, arg, "--residue-map")) {
+            result.residue_map = true;
+        }
         // --include-hydrogens
         else if (std.mem.eql(u8, arg, "--include-hydrogens")) {
             result.include_hydrogens = true;
@@ -2133,6 +2201,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --manifest=PATH     TOML manifest with one or more named batch jobs
         \\    --chain=ID          Filter by chain ID for non-manifest batch (e.g. A or A,B)
         \\    --auth-chain        Use auth_asym_id instead of label_asym_id for mmCIF chain matching
+        \\    --residue-map       Include compact residue map arrays in JSONL output
         \\    --probe-radius=R    Probe radius in Angstroms (default: 1.4)
         \\    --n-points=N        Test points per atom (default: 100, for sr)
         \\    --n-slices=N        Slices per atom diameter (default: 20, for lr)
@@ -2218,6 +2287,7 @@ fn applyManifestGlobals(config: *BatchConfig, args: BatchArgs, globals: batch_ma
         if (globals.use_bitmask) |v| config.use_bitmask = v;
     }
     if (globals.auth_chain) |v| config.use_auth_chain = v;
+    if (globals.residue_map) |v| config.residue_map = v;
 }
 
 fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
@@ -2238,6 +2308,7 @@ fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
     if (args.include_hetatm_explicit) config.include_hetatm = args.include_hetatm;
     if (args.use_bitmask_explicit) config.use_bitmask = args.use_bitmask;
     if (args.use_auth_chain) config.use_auth_chain = true;
+    if (args.residue_map) config.residue_map = true;
 }
 
 fn applyManifestJobOverrides(config: *BatchConfig, args: BatchArgs, job: batch_manifest.Job) void {
@@ -2343,6 +2414,10 @@ fn runManifest(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         config.external_ccd = if (ext_ccd != null) &ext_ccd.? else null;
         config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
         applyManifestJobOverrides(&config, args, job);
+        validateResidueMapFormat(config.output_format, config.residue_map) catch {
+            std.debug.print("Error: residue_map is only supported with format = \"jsonl\"\n", .{});
+            return error.InvalidArgument;
+        };
 
         if ((config.classifier_type == .ccd or config.classifier_type == .protor) and config.include_hydrogens and !config.quiet) {
             std.debug.print("Warning: --include-hydrogens with CCD classifier may give inaccurate results\n", .{});
@@ -2436,6 +2511,11 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     }
     defer if (sdf_ccd) |*d| d.deinit();
 
+    validateResidueMapFormat(args.output_format, args.residue_map) catch {
+        std.debug.print("Error: --residue-map is only supported with --format=jsonl\n", .{});
+        return error.InvalidArgument;
+    };
+
     // For jsonl, don't pass output_dir to runBatch (no per-file I/O during computation)
     const output_dir: ?[]const u8 = if (args.output_format == .jsonl) null else args.output_path;
 
@@ -2472,6 +2552,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null,
         .chain_filter = chain_filter_slice,
         .use_auth_chain = args.use_auth_chain,
+        .residue_map = args.residue_map,
     };
 
     if (!args.quiet) {
@@ -2611,6 +2692,13 @@ test "BatchArgs --auth-chain" {
     try std.testing.expectEqual(true, parsed.use_auth_chain);
 }
 
+test "BatchArgs --residue-map" {
+    const args = [_][]const u8{ "zsasa", "batch", "--format=jsonl", "--residue-map", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(OutputFormat.jsonl, parsed.output_format);
+    try std.testing.expectEqual(true, parsed.residue_map);
+}
+
 test "parseBatchChainFilter splits comma-separated chains" {
     const chains = try parseBatchChainFilter(std.testing.allocator, "A, B,AB");
     defer std.testing.allocator.free(chains);
@@ -2637,6 +2725,18 @@ test "manifest numeric validators reject invalid values" {
     try std.testing.expectError(error.InvalidArgument, validateManifestNSlices(1001));
 }
 
+test "validateResidueMapFormat accepts JSONL residue map" {
+    try validateResidueMapFormat(.jsonl, true);
+    try validateResidueMapFormat(.jsonl, false);
+    try validateResidueMapFormat(.json, false);
+}
+
+test "validateResidueMapFormat rejects non-JSONL residue map" {
+    try std.testing.expectError(error.InvalidArgument, validateResidueMapFormat(.json, true));
+    try std.testing.expectError(error.InvalidArgument, validateResidueMapFormat(.compact, true));
+    try std.testing.expectError(error.InvalidArgument, validateResidueMapFormat(.csv, true));
+}
+
 test "CLI auth-chain overrides manifest job auth_chain false" {
     var config = BatchConfig{};
     const args = BatchArgs{ .use_auth_chain = true };
@@ -2650,6 +2750,17 @@ test "CLI auth-chain overrides manifest job auth_chain false" {
     try std.testing.expectEqual(true, config.use_auth_chain);
 }
 
+test "manifest residue_map applies when CLI does not override format" {
+    var config = BatchConfig{};
+    const args = BatchArgs{};
+    const globals = batch_manifest.Globals{ .format = "jsonl", .residue_map = true };
+
+    try applyManifestGlobals(&config, args, globals);
+
+    try std.testing.expectEqual(OutputFormat.jsonl, config.output_format);
+    try std.testing.expectEqual(true, config.residue_map);
+}
+
 test "manifestJsonlOutputPath uses job file under output dir" {
     const path = try manifestJsonlOutputPath(std.testing.allocator, "results", "chain_A");
     defer std.testing.allocator.free(path);
@@ -2660,6 +2771,45 @@ test "manifestPerFileOutputDir uses job directory under output dir" {
     const path = try manifestPerFileOutputDir(std.testing.allocator, "results", "complex_AB");
     defer std.testing.allocator.free(path);
     try std.testing.expectEqualStrings("results/complex_AB", path);
+}
+
+test "FileResult JSONL uses residue map serializer when present" {
+    const allocator = std.testing.allocator;
+    const atom_areas = [_]f64{ 1.0, 2.0 };
+    const residue_chain = [_]types.FixedString4{types.FixedString4.fromSlice("A")};
+    const residue_name = [_]types.FixedString5{types.FixedString5.fromSlice("GLY")};
+    const residue_number = [_]i32{5};
+    const residue_insertion_code = [_]types.FixedString4{types.FixedString4.fromSlice("")};
+    const residue_atom_start = [_]usize{0};
+    const residue_atom_count = [_]usize{2};
+    const residue_sasa = [_]f64{3.0};
+
+    const map = json_writer.ResidueMap{
+        .allocator = allocator,
+        .residue_chain = residue_chain[0..],
+        .residue_name = residue_name[0..],
+        .residue_number = residue_number[0..],
+        .residue_insertion_code = residue_insertion_code[0..],
+        .residue_atom_start = residue_atom_start[0..],
+        .residue_atom_count = residue_atom_count[0..],
+        .residue_sasa = residue_sasa[0..],
+    };
+
+    var result = FileResult{
+        .filename = "example.cif",
+        .n_atoms = 2,
+        .sasa_time_ns = 0,
+        .total_sasa = 3.0,
+        .status = .ok,
+        .atom_areas = atom_areas[0..],
+        .residue_map = map,
+    };
+
+    const line = try fileResultToJsonlLine(allocator, &result);
+    defer allocator.free(line);
+
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"residue_chain\":[\"A\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"residue_sasa\":[3]") != null);
 }
 
 test "BatchArgs explicit option flags" {

@@ -184,6 +184,110 @@ pub fn writeSasaResult(allocator: Allocator, io: std.Io, result: SasaResult, pat
     return writeSasaResultWithFormat(allocator, io, result, path, .compact);
 }
 
+pub const ResidueMap = struct {
+    allocator: Allocator,
+    residue_chain: []const types.FixedString4,
+    residue_name: []const types.FixedString5,
+    residue_number: []const i32,
+    residue_insertion_code: []const types.FixedString4,
+    residue_atom_start: []const usize,
+    residue_atom_count: []const usize,
+    residue_sasa: []const f64,
+
+    pub fn len(self: ResidueMap) usize {
+        return self.residue_chain.len;
+    }
+
+    pub fn deinit(self: *ResidueMap) void {
+        self.allocator.free(self.residue_chain);
+        self.allocator.free(self.residue_name);
+        self.allocator.free(self.residue_number);
+        self.allocator.free(self.residue_insertion_code);
+        self.allocator.free(self.residue_atom_start);
+        self.allocator.free(self.residue_atom_count);
+        self.allocator.free(self.residue_sasa);
+        self.* = undefined;
+    }
+};
+
+fn sameResidue(
+    chain_ids: []const types.FixedString4,
+    residue_names: []const types.FixedString5,
+    residue_nums: []const i32,
+    insertion_codes: []const types.FixedString4,
+    a: usize,
+    b: usize,
+) bool {
+    return residue_nums[a] == residue_nums[b] and
+        std.mem.eql(u8, chain_ids[a].slice(), chain_ids[b].slice()) and
+        std.mem.eql(u8, residue_names[a].slice(), residue_names[b].slice()) and
+        std.mem.eql(u8, insertion_codes[a].slice(), insertion_codes[b].slice());
+}
+
+pub fn buildResidueMap(allocator: Allocator, input: AtomInput, atom_areas: []const f64) !ResidueMap {
+    const n = input.atomCount();
+    if (atom_areas.len != n) return error.LengthMismatch;
+
+    const chain_ids = input.chain_id orelse return error.MissingChainInfo;
+    const residue_names = input.residue orelse return error.MissingResidueInfo;
+    const residue_nums = input.residue_num orelse return error.MissingResidueNumInfo;
+    const insertion_codes = input.insertion_code orelse return error.MissingInsertionCodeInfo;
+
+    var residue_count: usize = 0;
+    var i: usize = 0;
+    while (i < n) {
+        const start = i;
+        residue_count += 1;
+        i += 1;
+        while (i < n and sameResidue(chain_ids, residue_names, residue_nums, insertion_codes, start, i)) : (i += 1) {}
+    }
+
+    const residue_chain = try allocator.alloc(types.FixedString4, residue_count);
+    errdefer allocator.free(residue_chain);
+    const residue_name = try allocator.alloc(types.FixedString5, residue_count);
+    errdefer allocator.free(residue_name);
+    const residue_number = try allocator.alloc(i32, residue_count);
+    errdefer allocator.free(residue_number);
+    const residue_insertion_code = try allocator.alloc(types.FixedString4, residue_count);
+    errdefer allocator.free(residue_insertion_code);
+    const residue_atom_start = try allocator.alloc(usize, residue_count);
+    errdefer allocator.free(residue_atom_start);
+    const residue_atom_count = try allocator.alloc(usize, residue_count);
+    errdefer allocator.free(residue_atom_count);
+    const residue_sasa = try allocator.alloc(f64, residue_count);
+    errdefer allocator.free(residue_sasa);
+
+    i = 0;
+    var residue_idx: usize = 0;
+    while (i < n) : (residue_idx += 1) {
+        const start = i;
+        var sasa = atom_areas[i];
+        i += 1;
+        while (i < n and sameResidue(chain_ids, residue_names, residue_nums, insertion_codes, start, i)) : (i += 1) {
+            sasa += atom_areas[i];
+        }
+
+        residue_chain[residue_idx] = chain_ids[start];
+        residue_name[residue_idx] = residue_names[start];
+        residue_number[residue_idx] = residue_nums[start];
+        residue_insertion_code[residue_idx] = insertion_codes[start];
+        residue_atom_start[residue_idx] = start;
+        residue_atom_count[residue_idx] = i - start;
+        residue_sasa[residue_idx] = sasa;
+    }
+
+    return .{
+        .allocator = allocator,
+        .residue_chain = residue_chain,
+        .residue_name = residue_name,
+        .residue_number = residue_number,
+        .residue_insertion_code = residue_insertion_code,
+        .residue_atom_start = residue_atom_start,
+        .residue_atom_count = residue_atom_count,
+        .residue_sasa = residue_sasa,
+    };
+}
+
 /// Serialize a single batch result as a JSONL line: {"filename":"...","total_area":...,"atom_areas":[...]}
 pub fn fileResultToJsonlLine(allocator: Allocator, filename: []const u8, total_area: f64, atom_areas: []const f64) ![]u8 {
     const JsonlEntry = struct {
@@ -201,7 +305,210 @@ pub fn fileResultToJsonlLine(allocator: Allocator, filename: []const u8, total_a
     return std.json.Stringify.valueAlloc(allocator, entry, .{});
 }
 
+pub fn fileResultWithResidueMapToJsonlLine(
+    allocator: Allocator,
+    filename: []const u8,
+    total_area: f64,
+    atom_areas: []const f64,
+    residue_map: ResidueMap,
+) ![]u8 {
+    const residue_chain = try allocator.alloc([]const u8, residue_map.len());
+    defer allocator.free(residue_chain);
+    const residue_name = try allocator.alloc([]const u8, residue_map.len());
+    defer allocator.free(residue_name);
+    const residue_insertion_code = try allocator.alloc([]const u8, residue_map.len());
+    defer allocator.free(residue_insertion_code);
+
+    for (0..residue_map.len()) |i| {
+        residue_chain[i] = residue_map.residue_chain[i].slice();
+        residue_name[i] = residue_map.residue_name[i].slice();
+        residue_insertion_code[i] = residue_map.residue_insertion_code[i].slice();
+    }
+
+    const JsonlEntry = struct {
+        filename: []const u8,
+        total_area: f64,
+        atom_areas: []const f64,
+        residue_chain: []const []const u8,
+        residue_name: []const []const u8,
+        residue_number: []const i32,
+        residue_insertion_code: []const []const u8,
+        residue_atom_start: []const usize,
+        residue_atom_count: []const usize,
+        residue_sasa: []const f64,
+    };
+
+    const entry = JsonlEntry{
+        .filename = filename,
+        .total_area = total_area,
+        .atom_areas = atom_areas,
+        .residue_chain = residue_chain,
+        .residue_name = residue_name,
+        .residue_number = residue_map.residue_number,
+        .residue_insertion_code = residue_insertion_code,
+        .residue_atom_start = residue_map.residue_atom_start,
+        .residue_atom_count = residue_map.residue_atom_count,
+        .residue_sasa = residue_map.residue_sasa,
+    };
+
+    return std.json.Stringify.valueAlloc(allocator, entry, .{});
+}
+
 // Tests
+test "buildResidueMap groups consecutive atoms" {
+    const allocator = std.testing.allocator;
+
+    const x = [_]f64{ 0, 1, 2, 3, 4 };
+    const y = [_]f64{ 0, 0, 0, 0, 0 };
+    const z = [_]f64{ 0, 0, 0, 0, 0 };
+    var r = [_]f64{ 1, 1, 1, 1, 1 };
+    const chain = [_]types.FixedString4{
+        types.FixedString4.fromSlice("A"),
+        types.FixedString4.fromSlice("A"),
+        types.FixedString4.fromSlice("A"),
+        types.FixedString4.fromSlice("A"),
+        types.FixedString4.fromSlice("B"),
+    };
+    const residue = [_]types.FixedString5{
+        types.FixedString5.fromSlice("MET"),
+        types.FixedString5.fromSlice("MET"),
+        types.FixedString5.fromSlice("GLY"),
+        types.FixedString5.fromSlice("GLY"),
+        types.FixedString5.fromSlice("ALA"),
+    };
+    const residue_num = [_]i32{ 1, 1, 2, 2, 7 };
+    const insertion = [_]types.FixedString4{
+        types.FixedString4.fromSlice(""),
+        types.FixedString4.fromSlice(""),
+        types.FixedString4.fromSlice("A"),
+        types.FixedString4.fromSlice("A"),
+        types.FixedString4.fromSlice(""),
+    };
+    const atom_areas = [_]f64{ 10.0, 2.5, 4.0, 6.0, 1.25 };
+
+    const input = types.AtomInput{
+        .x = x[0..],
+        .y = y[0..],
+        .z = z[0..],
+        .r = r[0..],
+        .chain_id = chain[0..],
+        .residue = residue[0..],
+        .residue_num = residue_num[0..],
+        .insertion_code = insertion[0..],
+        .allocator = allocator,
+    };
+
+    var map = try buildResidueMap(allocator, input, atom_areas[0..]);
+    defer map.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), map.len());
+    try std.testing.expectEqualStrings("A", map.residue_chain[0].slice());
+    try std.testing.expectEqualStrings("MET", map.residue_name[0].slice());
+    try std.testing.expectEqual(@as(i32, 1), map.residue_number[0]);
+    try std.testing.expectEqualStrings("", map.residue_insertion_code[0].slice());
+    try std.testing.expectEqual(@as(usize, 0), map.residue_atom_start[0]);
+    try std.testing.expectEqual(@as(usize, 2), map.residue_atom_count[0]);
+    try std.testing.expectApproxEqAbs(@as(f64, 12.5), map.residue_sasa[0], 1e-9);
+
+    try std.testing.expectEqualStrings("A", map.residue_chain[1].slice());
+    try std.testing.expectEqualStrings("GLY", map.residue_name[1].slice());
+    try std.testing.expectEqual(@as(i32, 2), map.residue_number[1]);
+    try std.testing.expectEqualStrings("A", map.residue_insertion_code[1].slice());
+    try std.testing.expectEqual(@as(usize, 2), map.residue_atom_start[1]);
+    try std.testing.expectEqual(@as(usize, 2), map.residue_atom_count[1]);
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), map.residue_sasa[1], 1e-9);
+}
+
+test "buildResidueMap keeps non-contiguous repeated residues as separate ranges" {
+    const allocator = std.testing.allocator;
+
+    const x = [_]f64{ 0, 1, 2 };
+    const y = [_]f64{ 0, 0, 0 };
+    const z = [_]f64{ 0, 0, 0 };
+    var r = [_]f64{ 1, 1, 1 };
+    const chain = [_]types.FixedString4{
+        types.FixedString4.fromSlice("A"),
+        types.FixedString4.fromSlice("A"),
+        types.FixedString4.fromSlice("A"),
+    };
+    const residue = [_]types.FixedString5{
+        types.FixedString5.fromSlice("MET"),
+        types.FixedString5.fromSlice("GLY"),
+        types.FixedString5.fromSlice("MET"),
+    };
+    const residue_num = [_]i32{ 1, 2, 1 };
+    const insertion = [_]types.FixedString4{
+        types.FixedString4.fromSlice(""),
+        types.FixedString4.fromSlice(""),
+        types.FixedString4.fromSlice(""),
+    };
+    const atom_areas = [_]f64{ 1.0, 2.0, 3.0 };
+
+    const input = types.AtomInput{
+        .x = x[0..],
+        .y = y[0..],
+        .z = z[0..],
+        .r = r[0..],
+        .chain_id = chain[0..],
+        .residue = residue[0..],
+        .residue_num = residue_num[0..],
+        .insertion_code = insertion[0..],
+        .allocator = allocator,
+    };
+
+    var map = try buildResidueMap(allocator, input, atom_areas[0..]);
+    defer map.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), map.len());
+    try std.testing.expectEqual(@as(usize, 0), map.residue_atom_start[0]);
+    try std.testing.expectEqual(@as(usize, 1), map.residue_atom_count[0]);
+    try std.testing.expectEqual(@as(usize, 2), map.residue_atom_start[2]);
+    try std.testing.expectEqual(@as(usize, 1), map.residue_atom_count[2]);
+    try std.testing.expectEqualStrings("MET", map.residue_name[0].slice());
+    try std.testing.expectEqualStrings("MET", map.residue_name[2].slice());
+}
+
+test "fileResultWithResidueMapToJsonlLine serializes columnar residue arrays" {
+    const allocator = std.testing.allocator;
+
+    const atom_areas = [_]f64{ 10.0, 2.5, 1.25 };
+    const residue_chain = [_]types.FixedString4{
+        types.FixedString4.fromSlice("A"),
+        types.FixedString4.fromSlice("B"),
+    };
+    const residue_name = [_]types.FixedString5{
+        types.FixedString5.fromSlice("MET"),
+        types.FixedString5.fromSlice("ALA"),
+    };
+    const residue_number = [_]i32{ 1, 7 };
+    const residue_insertion_code = [_]types.FixedString4{
+        types.FixedString4.fromSlice(""),
+        types.FixedString4.fromSlice(""),
+    };
+    const residue_atom_start = [_]usize{ 0, 2 };
+    const residue_atom_count = [_]usize{ 2, 1 };
+    const residue_sasa = [_]f64{ 12.5, 1.25 };
+
+    const map = ResidueMap{
+        .allocator = allocator,
+        .residue_chain = residue_chain[0..],
+        .residue_name = residue_name[0..],
+        .residue_number = residue_number[0..],
+        .residue_insertion_code = residue_insertion_code[0..],
+        .residue_atom_start = residue_atom_start[0..],
+        .residue_atom_count = residue_atom_count[0..],
+        .residue_sasa = residue_sasa[0..],
+    };
+
+    const line = try fileResultWithResidueMapToJsonlLine(allocator, "example.cif", 13.75, atom_areas[0..], map);
+    defer allocator.free(line);
+
+    try std.testing.expectEqualStrings(
+        "{\"filename\":\"example.cif\",\"total_area\":13.75,\"atom_areas\":[10,2.5,1.25],\"residue_chain\":[\"A\",\"B\"],\"residue_name\":[\"MET\",\"ALA\"],\"residue_number\":[1,7],\"residue_insertion_code\":[\"\",\"\"],\"residue_atom_start\":[0,2],\"residue_atom_count\":[2,1],\"residue_sasa\":[12.5,1.25]}",
+        line,
+    );
+}
+
 test "sasaResultToJson basic" {
     const allocator = std.testing.allocator;
 
