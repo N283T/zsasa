@@ -1742,6 +1742,12 @@ fn validateManifestNSlices(n: u32) !u32 {
     return n;
 }
 
+fn validateResidueMapFormat(output_format: OutputFormat, residue_map: bool) !void {
+    if (residue_map and output_format != .jsonl) {
+        return error.InvalidArgument;
+    }
+}
+
 /// Parse and validate probe radius value
 fn parseProbeRadius(value: []const u8) f64 {
     const radius = std.fmt.parseFloat(f64, value) catch {
@@ -2352,6 +2358,10 @@ fn runManifest(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         config.external_ccd = if (ext_ccd != null) &ext_ccd.? else null;
         config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
         applyManifestJobOverrides(&config, args, job);
+        validateResidueMapFormat(config.output_format, config.residue_map) catch {
+            std.debug.print("Error: residue_map is only supported with format = \"jsonl\"\n", .{});
+            return error.InvalidArgument;
+        };
 
         if ((config.classifier_type == .ccd or config.classifier_type == .protor) and config.include_hydrogens and !config.quiet) {
             std.debug.print("Warning: --include-hydrogens with CCD classifier may give inaccurate results\n", .{});
@@ -2444,6 +2454,11 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         };
     }
     defer if (sdf_ccd) |*d| d.deinit();
+
+    validateResidueMapFormat(args.output_format, args.residue_map) catch {
+        std.debug.print("Error: --residue-map is only supported with --format=jsonl\n", .{});
+        return error.InvalidArgument;
+    };
 
     // For jsonl, don't pass output_dir to runBatch (no per-file I/O during computation)
     const output_dir: ?[]const u8 = if (args.output_format == .jsonl) null else args.output_path;
@@ -2652,6 +2667,18 @@ test "manifest numeric validators reject invalid values" {
     try std.testing.expectError(error.InvalidArgument, validateManifestNPoints(10001));
     try std.testing.expectError(error.InvalidArgument, validateManifestNSlices(0));
     try std.testing.expectError(error.InvalidArgument, validateManifestNSlices(1001));
+}
+
+test "validateResidueMapFormat accepts JSONL residue map" {
+    try validateResidueMapFormat(.jsonl, true);
+    try validateResidueMapFormat(.jsonl, false);
+    try validateResidueMapFormat(.json, false);
+}
+
+test "validateResidueMapFormat rejects non-JSONL residue map" {
+    try std.testing.expectError(error.InvalidArgument, validateResidueMapFormat(.json, true));
+    try std.testing.expectError(error.InvalidArgument, validateResidueMapFormat(.compact, true));
+    try std.testing.expectError(error.InvalidArgument, validateResidueMapFormat(.csv, true));
 }
 
 test "CLI auth-chain overrides manifest job auth_chain false" {
