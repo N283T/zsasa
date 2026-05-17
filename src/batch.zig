@@ -1,4 +1,5 @@
 const std = @import("std");
+const batch_manifest = @import("batch_manifest.zig");
 const types = @import("types.zig");
 const format_detect = @import("format_detect.zig");
 const json_parser = @import("json_parser.zig");
@@ -70,6 +71,8 @@ pub const BatchConfig = struct {
     store_atom_areas: bool = false, // When true, copy atom_areas to result_allocator for jsonl
     external_ccd: ?*const ccd_parser.ComponentDict = null, // External CCD dictionary
     sdf_ccd: ?*const ccd_parser.ComponentDict = null, // SDF bond topology dictionary
+    chain_filter: ?[]const []const u8 = null,
+    use_auth_chain: bool = false,
 };
 
 /// Helper to build and hold bitmask LUTs for batch processing.
@@ -110,6 +113,16 @@ fn getOutputExtension(format: OutputFormat) []const u8 {
         .jsonl => ".jsonl",
         .csv => ".csv",
     };
+}
+
+fn manifestJsonlOutputPath(allocator: Allocator, output_dir: []const u8, job_name: []const u8) ![]const u8 {
+    const filename = try std.fmt.allocPrint(allocator, "{s}.jsonl", .{job_name});
+    defer allocator.free(filename);
+    return std.fs.path.join(allocator, &.{ output_dir, filename });
+}
+
+fn manifestPerFileOutputDir(allocator: Allocator, output_dir: []const u8, job_name: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ output_dir, job_name });
 }
 
 /// Replace file extension for output (e.g., "file.pdb" -> "file.json")
@@ -353,12 +366,15 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             var parser = mmcif_parser.MmcifParser.init(allocator);
             parser.skip_hydrogens = !config.include_hydrogens;
             parser.atom_only = !config.include_hetatm;
+            parser.chain_filter = config.chain_filter;
+            parser.use_auth_chain = config.use_auth_chain;
             break :blk parser.parseFile(io, path);
         },
         .pdb => blk: {
             var parser = pdb_parser.PdbParser.init(allocator);
             parser.skip_hydrogens = !config.include_hydrogens;
             parser.atom_only = !config.include_hetatm;
+            parser.chain_filter = config.chain_filter;
             break :blk parser.parseFile(io, path);
         },
         .sdf => blk: {
@@ -1664,6 +1680,9 @@ pub const BatchArgs = struct {
     input_path: ?[]const u8 = null,
     output_path: ?[]const u8 = null, // Output directory; null means no file output
     output_path_explicit: bool = false, // Track if -o/--output was explicitly set
+    manifest_path: ?[]const u8 = null,
+    chain_filter: ?[]const u8 = null,
+    use_auth_chain: bool = false,
     n_threads: usize = 0,
     probe_radius: f64 = 1.4,
     n_points: u32 = 100,
@@ -1681,9 +1700,45 @@ pub const BatchArgs = struct {
     show_progress: bool = true,
     show_timing: bool = false,
     show_help: bool = false,
+    threads_explicit: bool = false,
+    probe_radius_explicit: bool = false,
+    n_points_explicit: bool = false,
+    n_slices_explicit: bool = false,
+    algorithm_explicit: bool = false,
+    precision_explicit: bool = false,
+    format_explicit: bool = false,
+    classifier_explicit: bool = false,
+    include_hydrogens_explicit: bool = false,
+    include_hetatm_explicit: bool = false,
+    use_bitmask_explicit: bool = false,
+    ccd_explicit: bool = false,
+    sdf_explicit: bool = false,
+    quiet_explicit: bool = false,
+    timing_explicit: bool = false,
 };
 
 // Parse helper functions (local to batch.zig)
+
+fn validateManifestProbeRadius(radius: f64) !f64 {
+    if (radius <= 0 or radius > 10.0 or !std.math.isFinite(radius)) {
+        return error.InvalidArgument;
+    }
+    return radius;
+}
+
+fn validateManifestNPoints(n: u32) !u32 {
+    if (n == 0 or n > 10000) {
+        return error.InvalidArgument;
+    }
+    return n;
+}
+
+fn validateManifestNSlices(n: u32) !u32 {
+    if (n == 0 or n > 1000) {
+        return error.InvalidArgument;
+    }
+    return n;
+}
 
 /// Parse and validate probe radius value
 fn parseProbeRadius(value: []const u8) f64 {
@@ -1691,11 +1746,10 @@ fn parseProbeRadius(value: []const u8) f64 {
         std.debug.print("Error: Invalid probe radius: {s}\n", .{value});
         std.process.exit(1);
     };
-    if (radius <= 0 or radius > 10.0 or !std.math.isFinite(radius)) {
+    return validateManifestProbeRadius(radius) catch {
         std.debug.print("Error: Probe radius must be between 0 and 10 Angstroms: {d}\n", .{radius});
         std.process.exit(1);
-    }
-    return radius;
+    };
 }
 
 /// Parse and validate n-points value
@@ -1704,11 +1758,10 @@ fn parseNPoints(value: []const u8) u32 {
         std.debug.print("Error: Invalid n-points: {s}\n", .{value});
         std.process.exit(1);
     };
-    if (n == 0 or n > 10000) {
+    return validateManifestNPoints(n) catch {
         std.debug.print("Error: n-points must be between 1 and 10000: {d}\n", .{n});
         std.process.exit(1);
-    }
-    return n;
+    };
 }
 
 /// Parse and validate n-slices value (for Lee-Richards)
@@ -1717,11 +1770,10 @@ fn parseNSlices(value: []const u8) u32 {
         std.debug.print("Error: Invalid n-slices: {s}\n", .{value});
         std.process.exit(1);
     };
-    if (n == 0 or n > 1000) {
+    return validateManifestNSlices(n) catch {
         std.debug.print("Error: n-slices must be between 1 and 1000: {d}\n", .{n});
         std.process.exit(1);
-    }
-    return n;
+    };
 }
 
 /// Parse and validate algorithm value
@@ -1776,6 +1828,21 @@ fn parsePrecision(value: []const u8) Precision {
     }
 }
 
+fn parseBatchChainFilter(allocator: Allocator, filter_str: []const u8) ![]const []const u8 {
+    var chains = std.ArrayListUnmanaged([]const u8).empty;
+    errdefer chains.deinit(allocator);
+
+    var iter = std.mem.splitScalar(u8, filter_str, ',');
+    while (iter.next()) |chain| {
+        const trimmed = std.mem.trim(u8, chain, " ");
+        if (trimmed.len > 0) {
+            try chains.append(allocator, trimmed);
+        }
+    }
+
+    return chains.toOwnedSlice(allocator);
+}
+
 /// Parse batch subcommand arguments
 pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
     var result = BatchArgs{};
@@ -1787,12 +1854,14 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
 
         // --threads=N or --threads N
         if (std.mem.startsWith(u8, arg, "--threads=")) {
+            result.threads_explicit = true;
             const value = arg["--threads=".len..];
             result.n_threads = std.fmt.parseInt(usize, value, 10) catch {
                 std.debug.print("Error: Invalid thread count: {s}\n", .{value});
                 std.process.exit(1);
             };
         } else if (std.mem.eql(u8, arg, "--threads")) {
+            result.threads_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --threads\n", .{});
@@ -1805,9 +1874,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         }
         // --probe-radius=R or --probe-radius R
         else if (std.mem.startsWith(u8, arg, "--probe-radius=")) {
+            result.probe_radius_explicit = true;
             const value = arg["--probe-radius=".len..];
             result.probe_radius = parseProbeRadius(value);
         } else if (std.mem.eql(u8, arg, "--probe-radius")) {
+            result.probe_radius_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --probe-radius\n", .{});
@@ -1817,9 +1888,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         }
         // --n-points=N or --n-points N
         else if (std.mem.startsWith(u8, arg, "--n-points=")) {
+            result.n_points_explicit = true;
             const value = arg["--n-points=".len..];
             result.n_points = parseNPoints(value);
         } else if (std.mem.eql(u8, arg, "--n-points")) {
+            result.n_points_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --n-points\n", .{});
@@ -1829,9 +1902,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         }
         // --n-slices=N or --n-slices N (for Lee-Richards)
         else if (std.mem.startsWith(u8, arg, "--n-slices=")) {
+            result.n_slices_explicit = true;
             const value = arg["--n-slices=".len..];
             result.n_slices = parseNSlices(value);
         } else if (std.mem.eql(u8, arg, "--n-slices")) {
+            result.n_slices_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --n-slices\n", .{});
@@ -1841,9 +1916,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         }
         // --format=FORMAT or --format FORMAT
         else if (std.mem.startsWith(u8, arg, "--format=")) {
+            result.format_explicit = true;
             const value = arg["--format=".len..];
             result.output_format = parseOutputFormat(value);
         } else if (std.mem.eql(u8, arg, "--format")) {
+            result.format_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --format\n", .{});
@@ -1853,9 +1930,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         }
         // --algorithm=ALGO or --algorithm ALGO
         else if (std.mem.startsWith(u8, arg, "--algorithm=")) {
+            result.algorithm_explicit = true;
             const value = arg["--algorithm=".len..];
             result.algorithm = parseAlgorithm(value);
         } else if (std.mem.eql(u8, arg, "--algorithm")) {
+            result.algorithm_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --algorithm\n", .{});
@@ -1865,9 +1944,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         }
         // --classifier=TYPE or --classifier TYPE
         else if (std.mem.startsWith(u8, arg, "--classifier=")) {
+            result.classifier_explicit = true;
             const value = arg["--classifier=".len..];
             result.classifier_type = parseClassifierType(value);
         } else if (std.mem.eql(u8, arg, "--classifier")) {
+            result.classifier_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --classifier\n", .{});
@@ -1877,9 +1958,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         }
         // --precision=PREC or --precision PREC
         else if (std.mem.startsWith(u8, arg, "--precision=")) {
+            result.precision_explicit = true;
             const value = arg["--precision=".len..];
             result.precision = parsePrecision(value);
         } else if (std.mem.eql(u8, arg, "--precision")) {
+            result.precision_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --precision\n", .{});
@@ -1887,23 +1970,54 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
             }
             result.precision = parsePrecision(args[i]);
         }
+        // --manifest=PATH or --manifest PATH
+        else if (std.mem.startsWith(u8, arg, "--manifest=")) {
+            result.manifest_path = arg["--manifest=".len..];
+        } else if (std.mem.eql(u8, arg, "--manifest")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --manifest\n", .{});
+                std.process.exit(1);
+            }
+            result.manifest_path = args[i];
+        }
+        // --chain=ID or --chain ID
+        else if (std.mem.startsWith(u8, arg, "--chain=")) {
+            result.chain_filter = arg["--chain=".len..];
+        } else if (std.mem.eql(u8, arg, "--chain")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --chain\n", .{});
+                std.process.exit(1);
+            }
+            result.chain_filter = args[i];
+        }
+        // --auth-chain
+        else if (std.mem.eql(u8, arg, "--auth-chain")) {
+            result.use_auth_chain = true;
+        }
         // --include-hydrogens
         else if (std.mem.eql(u8, arg, "--include-hydrogens")) {
             result.include_hydrogens = true;
+            result.include_hydrogens_explicit = true;
         }
         // --include-hetatm
         else if (std.mem.eql(u8, arg, "--include-hetatm")) {
             result.include_hetatm = true;
+            result.include_hetatm_explicit = true;
         }
         // --use-bitmask
         else if (std.mem.eql(u8, arg, "--use-bitmask")) {
             result.use_bitmask = true;
+            result.use_bitmask_explicit = true;
         }
         // --ccd=PATH or --ccd PATH (external CCD dictionary)
         else if (std.mem.startsWith(u8, arg, "--ccd=")) {
+            result.ccd_explicit = true;
             const value = arg["--ccd=".len..];
             result.ccd_path = value;
         } else if (std.mem.eql(u8, arg, "--ccd")) {
+            result.ccd_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --ccd\n", .{});
@@ -1913,12 +2027,14 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         }
         // --sdf=PATH or --sdf PATH (SDF file with bond topology for CCD classifier)
         else if (std.mem.startsWith(u8, arg, "--sdf=")) {
+            result.sdf_explicit = true;
             const value = arg["--sdf=".len..];
             result.sdf_paths.append(value) catch {
                 std.debug.print("Error: Too many --sdf paths (max 16)\n", .{});
                 std.process.exit(1);
             };
         } else if (std.mem.eql(u8, arg, "--sdf")) {
+            result.sdf_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --sdf\n", .{});
@@ -1932,11 +2048,13 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
+            result.quiet_explicit = true;
             result.show_progress = false;
         }
         // --timing
         else if (std.mem.eql(u8, arg, "--timing")) {
             result.show_timing = true;
+            result.timing_explicit = true;
         }
         // --help or -h
         else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -1995,6 +2113,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\zsasa batch - Calculate SASA for all files in a directory
         \\
         \\USAGE:
+        \\    {s} batch --manifest <manifest.toml>
         \\    {s} batch [OPTIONS] <input_dir> [output_dir]
         \\
         \\ARGUMENTS:
@@ -2011,6 +2130,9 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --sdf=PATH          SDF file with bond topology for CCD classifier
         \\                        Can be specified multiple times for multiple ligands
         \\    --threads=N         Number of threads (default: auto-detect)
+        \\    --manifest=PATH     TOML manifest with one or more named batch jobs
+        \\    --chain=ID          Filter by chain ID for non-manifest batch (e.g. A or A,B)
+        \\    --auth-chain        Use auth_asym_id instead of label_asym_id for mmCIF chain matching
         \\    --probe-radius=R    Probe radius in Angstroms (default: 1.4)
         \\    --n-points=N        Test points per atom (default: 100, for sr)
         \\    --n-slices=N        Slices per atom diameter (default: 20, for lr)
@@ -2032,16 +2154,239 @@ pub fn printHelp(program_name: []const u8) void {
         \\    {s} batch structures/ --classifier=naccess --format=csv
         \\    {s} batch structures/ results/ --timing --quiet
         \\    {s} batch structures/ -o results.jsonl --format=jsonl
+        \\    {s} batch --manifest bsa.toml
+        \\    {s} batch structures/ results/ --manifest bsa.toml
+        \\    {s} batch structures/ results_A.jsonl --chain=A --format=jsonl
         \\
-    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name });
+    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 /// Load SDF files and build a ComponentDict from their bond topology.
 /// Delegates to sdf_parser.loadSdfComponents.
 const loadSdfComponents = sdf_parser.loadSdfComponents;
 
+fn applyManifestGlobals(config: *BatchConfig, args: BatchArgs, globals: batch_manifest.Globals) !void {
+    if (!args.threads_explicit) {
+        if (globals.threads) |v| config.n_threads = v;
+    }
+    if (!args.algorithm_explicit) {
+        if (globals.algorithm) |v| config.algorithm = parseAlgorithm(v);
+    }
+    if (!args.n_points_explicit) {
+        if (globals.n_points) |v| config.n_points = validateManifestNPoints(v) catch |err| {
+            std.debug.print("Error: manifest n_points must be between 1 and 10000: {d}\n", .{v});
+            return err;
+        };
+    }
+    if (!args.n_slices_explicit) {
+        if (globals.n_slices) |v| config.n_slices = validateManifestNSlices(v) catch |err| {
+            std.debug.print("Error: manifest n_slices must be between 1 and 1000: {d}\n", .{v});
+            return err;
+        };
+    }
+    if (!args.probe_radius_explicit) {
+        if (globals.probe_radius) |v| config.probe_radius = validateManifestProbeRadius(v) catch |err| {
+            std.debug.print("Error: manifest probe_radius must be finite and between 0 and 10 Angstroms: {d}\n", .{v});
+            return err;
+        };
+    }
+    if (!args.precision_explicit) {
+        if (globals.precision) |v| config.precision = parsePrecision(v);
+    }
+    if (!args.format_explicit) {
+        if (globals.format) |v| config.output_format = parseOutputFormat(v);
+    }
+    if (!args.timing_explicit) {
+        if (globals.timing) |v| config.show_timing = v;
+    }
+    if (!args.quiet_explicit) {
+        if (globals.quiet) |v| {
+            config.quiet = v;
+            config.show_progress = !v;
+        }
+    }
+    if (!args.classifier_explicit) {
+        if (globals.classifier) |v| config.classifier_type = parseClassifierType(v);
+    }
+    if (!args.include_hydrogens_explicit) {
+        if (globals.include_hydrogens) |v| config.include_hydrogens = v;
+    }
+    if (!args.include_hetatm_explicit) {
+        if (globals.include_hetatm) |v| config.include_hetatm = v;
+    }
+    if (!args.use_bitmask_explicit) {
+        if (globals.use_bitmask) |v| config.use_bitmask = v;
+    }
+    if (globals.auth_chain) |v| config.use_auth_chain = v;
+}
+
+fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
+    if (args.threads_explicit) config.n_threads = args.n_threads;
+    if (args.algorithm_explicit) config.algorithm = args.algorithm;
+    if (args.n_points_explicit) config.n_points = args.n_points;
+    if (args.n_slices_explicit) config.n_slices = args.n_slices;
+    if (args.probe_radius_explicit) config.probe_radius = args.probe_radius;
+    if (args.precision_explicit) config.precision = args.precision;
+    if (args.format_explicit) config.output_format = args.output_format;
+    if (args.timing_explicit) config.show_timing = args.show_timing;
+    if (args.quiet_explicit) {
+        config.quiet = args.quiet;
+        config.show_progress = args.show_progress;
+    }
+    if (args.classifier_explicit) config.classifier_type = args.classifier_type;
+    if (args.include_hydrogens_explicit) config.include_hydrogens = args.include_hydrogens;
+    if (args.include_hetatm_explicit) config.include_hetatm = args.include_hetatm;
+    if (args.use_bitmask_explicit) config.use_bitmask = args.use_bitmask;
+    if (args.use_auth_chain) config.use_auth_chain = true;
+}
+
+fn applyManifestJobOverrides(config: *BatchConfig, args: BatchArgs, job: batch_manifest.Job) void {
+    if (job.auth_chain) |v| config.use_auth_chain = v;
+    if (args.use_auth_chain) config.use_auth_chain = true;
+    config.chain_filter = job.chains;
+}
+
+fn parseManifestFile(allocator: Allocator, io: std.Io, path: []const u8) !batch_manifest.Manifest {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+
+    var read_buf: [65536]u8 = undefined;
+    var reader = file.reader(io, &read_buf);
+    const content = try reader.interface.allocRemaining(allocator, .unlimited);
+    errdefer allocator.free(content);
+
+    const manifest = try batch_manifest.parse(allocator, content);
+    allocator.free(content);
+    return manifest;
+}
+
+fn runManifest(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
+    if (args.chain_filter != null) {
+        std.debug.print("Error: --manifest cannot be combined with --chain; use [[jobs]].chains in the manifest\n", .{});
+        return error.InvalidArgument;
+    }
+
+    const manifest_path = args.manifest_path.?;
+    var manifest = parseManifestFile(allocator, io, manifest_path) catch |err| {
+        std.debug.print("Error reading manifest '{s}': {s}\n", .{ manifest_path, @errorName(err) });
+        return err;
+    };
+    defer manifest.deinit();
+
+    const input_dir = args.input_path orelse manifest.globals.input_dir orelse {
+        std.debug.print("Error: Missing input directory (provide positional input_dir or input_dir in manifest)\n", .{});
+        return error.MissingArgument;
+    };
+    const output_dir = args.output_path orelse manifest.globals.output_dir;
+
+    if (manifest.jobs.len > 1 and output_dir == null) {
+        std.debug.print("Error: --manifest with multiple jobs requires an output directory\n", .{});
+        return error.InvalidArgument;
+    }
+
+    const load_quiet = if (args.quiet_explicit) args.quiet else (manifest.globals.quiet orelse args.quiet);
+
+    const ccd_path = if (args.ccd_explicit) args.ccd_path else manifest.globals.ccd;
+    var ext_ccd: ?ccd_parser.ComponentDict = null;
+    if (ccd_path) |path| {
+        const ccd_data = if (compressed.isCompressed(path))
+            compressed.read(allocator, path) catch |err| {
+                std.debug.print("Error reading CCD file '{s}': {s}\n", .{ path, @errorName(err) });
+                return err;
+            }
+        else blk: {
+            const f = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
+                std.debug.print("Error opening CCD file '{s}': {s}\n", .{ path, @errorName(err) });
+                return err;
+            };
+            defer f.close(io);
+            var read_buf_ccd: [65536]u8 = undefined;
+            var file_r_ccd = f.reader(io, &read_buf_ccd);
+            break :blk file_r_ccd.interface.allocRemaining(allocator, .unlimited) catch |err| {
+                std.debug.print("Error reading CCD file '{s}': {s}\n", .{ path, @errorName(err) });
+                return err;
+            };
+        };
+        defer allocator.free(ccd_data);
+
+        ext_ccd = ccd_binary.loadDict(allocator, ccd_data) catch |err| {
+            std.debug.print("Error loading CCD dictionary '{s}': {s}\n", .{ path, @errorName(err) });
+            return err;
+        };
+        if (!load_quiet) {
+            std.debug.print("External CCD: loaded {d} components from '{s}'\n", .{ ext_ccd.?.components.count(), path });
+        }
+    }
+    defer if (ext_ccd) |*d| d.deinit();
+
+    const manifest_sdf_paths: []const []const u8 = manifest.globals.sdf orelse &.{};
+    const sdf_paths = if (args.sdf_explicit) args.sdf_paths.constSlice() else manifest_sdf_paths;
+    var sdf_ccd: ?ccd_parser.ComponentDict = null;
+    if (sdf_paths.len > 0) {
+        sdf_ccd = loadSdfComponents(allocator, io, sdf_paths, load_quiet) catch |err| {
+            std.debug.print("Error loading SDF components: {s}\n", .{@errorName(err)});
+            return err;
+        };
+    }
+    defer if (sdf_ccd) |*d| d.deinit();
+
+    var successful: usize = 0;
+    var failed: usize = 0;
+
+    for (manifest.jobs) |job| {
+        var config = BatchConfig{};
+        try applyManifestGlobals(&config, args, manifest.globals);
+        applyCliOverrides(&config, args);
+
+        config.include_hetatm = config.include_hetatm or (config.classifier_type == .ccd);
+        config.store_atom_areas = (config.output_format == .jsonl);
+        config.external_ccd = if (ext_ccd != null) &ext_ccd.? else null;
+        config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
+        applyManifestJobOverrides(&config, args, job);
+
+        if ((config.classifier_type == .ccd or config.classifier_type == .protor) and config.include_hydrogens and !config.quiet) {
+            std.debug.print("Warning: --include-hydrogens with CCD classifier may give inaccurate results\n", .{});
+            std.debug.print("         CCD uses united-atom radii that already account for implicit hydrogens\n", .{});
+        }
+
+        var job_output_dir: ?[]const u8 = null;
+        defer if (job_output_dir) |path| allocator.free(path);
+        var jsonl_output_path: ?[]const u8 = null;
+        defer if (jsonl_output_path) |path| allocator.free(path);
+
+        if (config.output_format == .jsonl) {
+            if (output_dir) |out| {
+                try std.Io.Dir.cwd().createDirPath(io, out);
+                jsonl_output_path = try manifestJsonlOutputPath(allocator, out, job.name);
+            }
+        } else if (output_dir) |out| {
+            job_output_dir = try manifestPerFileOutputDir(allocator, out, job.name);
+        }
+
+        if (!config.quiet) {
+            std.debug.print("Manifest job: {s}\n", .{job.name});
+        }
+
+        var result = runBatch(allocator, io, input_dir, job_output_dir, config, jsonl_output_path) catch |err| {
+            std.debug.print("Error running manifest job '{s}': {s}\n", .{ job.name, @errorName(err) });
+            failed += 1;
+            continue;
+        };
+        defer result.deinit();
+
+        successful += result.successful;
+        failed += result.failed;
+    }
+
+    std.debug.print("Manifest complete: {d} successful, {d} failed\n", .{ successful, failed });
+}
+
 /// Run batch processing from parsed CLI arguments
 pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
+    if (args.manifest_path != null) {
+        return runManifest(allocator, io, args);
+    }
+
     const input_dir = args.input_path orelse {
         std.debug.print("Error: Missing input directory\n", .{});
         std.debug.print("Usage: zsasa batch [OPTIONS] <input_dir> [output_dir]\n", .{});
@@ -2094,6 +2439,12 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     // For jsonl, don't pass output_dir to runBatch (no per-file I/O during computation)
     const output_dir: ?[]const u8 = if (args.output_format == .jsonl) null else args.output_path;
 
+    var chain_filter_slice: ?[]const []const u8 = null;
+    if (args.chain_filter) |filter_str| {
+        chain_filter_slice = try parseBatchChainFilter(allocator, filter_str);
+    }
+    defer if (chain_filter_slice) |s| allocator.free(s);
+
     // Build batch config from parsed args
     // CCD/ProtOr use united-atom radii (implicit H) — warn if explicit H included
     if ((args.classifier_type == .ccd or args.classifier_type == .protor) and args.include_hydrogens and !args.quiet) {
@@ -2119,6 +2470,8 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .store_atom_areas = (args.output_format == .jsonl),
         .external_ccd = if (ext_ccd != null) &ext_ccd.? else null,
         .sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null,
+        .chain_filter = chain_filter_slice,
+        .use_auth_chain = args.use_auth_chain,
     };
 
     if (!args.quiet) {
@@ -2237,6 +2590,87 @@ test "BatchArgs help flag" {
     const args = [_][]const u8{ "zsasa", "batch", "--help" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(true, parsed.show_help);
+}
+
+test "BatchArgs --manifest" {
+    const args = [_][]const u8{ "zsasa", "batch", "--manifest", "bsa.toml" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("bsa.toml", parsed.manifest_path.?);
+}
+
+test "BatchArgs --chain=A" {
+    const args = [_][]const u8{ "zsasa", "batch", "--chain=A", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("A", parsed.chain_filter.?);
+    try std.testing.expectEqualStrings("input_dir/", parsed.input_path.?);
+}
+
+test "BatchArgs --auth-chain" {
+    const args = [_][]const u8{ "zsasa", "batch", "--auth-chain", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.use_auth_chain);
+}
+
+test "parseBatchChainFilter splits comma-separated chains" {
+    const chains = try parseBatchChainFilter(std.testing.allocator, "A, B,AB");
+    defer std.testing.allocator.free(chains);
+    try std.testing.expectEqual(@as(usize, 3), chains.len);
+    try std.testing.expectEqualStrings("A", chains[0]);
+    try std.testing.expectEqualStrings("B", chains[1]);
+    try std.testing.expectEqualStrings("AB", chains[2]);
+}
+
+test "manifest numeric validators reject invalid values" {
+    try std.testing.expectEqual(@as(f64, 1.4), try validateManifestProbeRadius(1.4));
+    try std.testing.expectEqual(@as(u32, 1), try validateManifestNPoints(1));
+    try std.testing.expectEqual(@as(u32, 10000), try validateManifestNPoints(10000));
+    try std.testing.expectEqual(@as(u32, 1), try validateManifestNSlices(1));
+    try std.testing.expectEqual(@as(u32, 1000), try validateManifestNSlices(1000));
+
+    try std.testing.expectError(error.InvalidArgument, validateManifestProbeRadius(0));
+    try std.testing.expectError(error.InvalidArgument, validateManifestProbeRadius(-1));
+    try std.testing.expectError(error.InvalidArgument, validateManifestProbeRadius(10.1));
+    try std.testing.expectError(error.InvalidArgument, validateManifestProbeRadius(std.math.nan(f64)));
+    try std.testing.expectError(error.InvalidArgument, validateManifestNPoints(0));
+    try std.testing.expectError(error.InvalidArgument, validateManifestNPoints(10001));
+    try std.testing.expectError(error.InvalidArgument, validateManifestNSlices(0));
+    try std.testing.expectError(error.InvalidArgument, validateManifestNSlices(1001));
+}
+
+test "CLI auth-chain overrides manifest job auth_chain false" {
+    var config = BatchConfig{};
+    const args = BatchArgs{ .use_auth_chain = true };
+    const job = batch_manifest.Job{
+        .name = "chain_A",
+        .auth_chain = false,
+    };
+
+    applyManifestJobOverrides(&config, args, job);
+
+    try std.testing.expectEqual(true, config.use_auth_chain);
+}
+
+test "manifestJsonlOutputPath uses job file under output dir" {
+    const path = try manifestJsonlOutputPath(std.testing.allocator, "results", "chain_A");
+    defer std.testing.allocator.free(path);
+    try std.testing.expectEqualStrings("results/chain_A.jsonl", path);
+}
+
+test "manifestPerFileOutputDir uses job directory under output dir" {
+    const path = try manifestPerFileOutputDir(std.testing.allocator, "results", "complex_AB");
+    defer std.testing.allocator.free(path);
+    try std.testing.expectEqualStrings("results/complex_AB", path);
+}
+
+test "BatchArgs explicit option flags" {
+    const args = [_][]const u8{
+        "zsasa", "batch", "--threads=8", "--n-points=128", "--format=jsonl", "--use-bitmask", "input_dir/",
+    };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.threads_explicit);
+    try std.testing.expectEqual(true, parsed.n_points_explicit);
+    try std.testing.expectEqual(true, parsed.format_explicit);
+    try std.testing.expectEqual(true, parsed.use_bitmask_explicit);
 }
 
 test "BatchArgs output via -o flag" {

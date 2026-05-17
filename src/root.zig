@@ -33,6 +33,7 @@ pub const classifier = @import("classifier.zig");
 pub const analysis = @import("analysis.zig");
 pub const toml_parser = @import("toml_parser.zig");
 pub const toml_classifier_parser = @import("toml_classifier_parser.zig");
+pub const batch_manifest = @import("batch_manifest.zig");
 pub const dcd = @import("dcd.zig");
 pub const bitmask_lut = @import("bitmask_lut.zig");
 pub const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
@@ -57,6 +58,7 @@ test {
     _ = analysis;
     _ = toml_parser;
     _ = toml_classifier_parser;
+    _ = batch_manifest;
     _ = dcd;
     _ = bitmask_lut;
     _ = shrake_rupley_bitmask;
