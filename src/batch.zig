@@ -254,6 +254,7 @@ pub const FileResult = struct {
     status: Status,
     error_msg: ?[]const u8 = null,
     atom_areas: ?[]const f64 = null, // Populated for jsonl output
+    residue_map: ?json_writer.ResidueMap = null, // Populated for jsonl residue-map output
 
     pub const Status = enum {
         ok,
@@ -279,6 +280,9 @@ pub const BatchResult = struct {
             }
             if (result.atom_areas) |areas| {
                 self.allocator.free(areas);
+            }
+            if (result.residue_map) |*map| {
+                map.deinit();
             }
         }
         self.allocator.free(self.file_results);
@@ -903,14 +907,21 @@ const JsonlStreamWriter = struct {
 
 /// Write a JSONL line for a result via the buffered writer.
 /// atom_areas live on the arena and are invalidated after arena reset.
+fn fileResultToJsonlLineForTest(allocator: Allocator, result: *FileResult) ![]u8 {
+    const areas = result.atom_areas orelse return error.MissingAtomAreas;
+    if (result.residue_map) |map| {
+        return json_writer.fileResultWithResidueMapToJsonlLine(allocator, result.filename, result.total_sasa, areas, map);
+    }
+    return json_writer.fileResultToJsonlLine(allocator, result.filename, result.total_sasa, areas);
+}
+
 fn writeJsonlResult(
     jsonl_writer: *std.Io.File.Writer,
     arena_alloc: Allocator,
     result: *FileResult,
 ) void {
     if (result.status != .ok) return;
-    const areas = result.atom_areas orelse return;
-    const line = json_writer.fileResultToJsonlLine(arena_alloc, result.filename, result.total_sasa, areas) catch |err| {
+    const line = fileResultToJsonlLineForTest(arena_alloc, result) catch |err| {
         logWarning("failed to serialize {s}: {s}", .{ result.filename, @errorName(err) });
         return;
     };
@@ -2715,6 +2726,45 @@ test "manifestPerFileOutputDir uses job directory under output dir" {
     const path = try manifestPerFileOutputDir(std.testing.allocator, "results", "complex_AB");
     defer std.testing.allocator.free(path);
     try std.testing.expectEqualStrings("results/complex_AB", path);
+}
+
+test "FileResult JSONL uses residue map serializer when present" {
+    const allocator = std.testing.allocator;
+    const atom_areas = [_]f64{ 1.0, 2.0 };
+    const residue_chain = [_]types.FixedString4{types.FixedString4.fromSlice("A")};
+    const residue_name = [_]types.FixedString5{types.FixedString5.fromSlice("GLY")};
+    const residue_number = [_]i32{5};
+    const residue_insertion_code = [_]types.FixedString4{types.FixedString4.fromSlice("")};
+    const residue_atom_start = [_]usize{0};
+    const residue_atom_count = [_]usize{2};
+    const residue_sasa = [_]f64{3.0};
+
+    const map = json_writer.ResidueMap{
+        .allocator = allocator,
+        .residue_chain = residue_chain[0..],
+        .residue_name = residue_name[0..],
+        .residue_number = residue_number[0..],
+        .residue_insertion_code = residue_insertion_code[0..],
+        .residue_atom_start = residue_atom_start[0..],
+        .residue_atom_count = residue_atom_count[0..],
+        .residue_sasa = residue_sasa[0..],
+    };
+
+    var result = FileResult{
+        .filename = "example.cif",
+        .n_atoms = 2,
+        .sasa_time_ns = 0,
+        .total_sasa = 3.0,
+        .status = .ok,
+        .atom_areas = atom_areas[0..],
+        .residue_map = map,
+    };
+
+    const line = try fileResultToJsonlLineForTest(allocator, &result);
+    defer allocator.free(line);
+
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"residue_chain\":[\"A\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"residue_sasa\":[3]") != null);
 }
 
 test "BatchArgs explicit option flags" {
