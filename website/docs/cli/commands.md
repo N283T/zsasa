@@ -9,6 +9,7 @@ sidebar_position: 1
 ```
 zsasa calc <input> [output] [OPTIONS]
 zsasa batch <input_dir> [output_dir] [OPTIONS]
+zsasa batch --manifest <manifest.toml>
 zsasa traj <trajectory> <topology> [output] [OPTIONS]
 zsasa compile-dict <input.cif[.gz|.zst]> -o <output.zsdc>
 ```
@@ -29,7 +30,10 @@ Process all structure files in a directory.
 
 ```bash
 zsasa batch input_dir/ output_dir/ [OPTIONS]
+zsasa batch --manifest manifest.toml
 ```
+
+Positional paths are required for ordinary batch mode, but can be supplied by the manifest when using `--manifest`.
 
 Batch mode uses file-level parallelism: multiple files are processed simultaneously, one thread per file. Use `--threads` to control the number of concurrent files.
 

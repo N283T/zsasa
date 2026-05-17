@@ -2113,6 +2113,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\zsasa batch - Calculate SASA for all files in a directory
         \\
         \\USAGE:
+        \\    {s} batch --manifest <manifest.toml>
         \\    {s} batch [OPTIONS] <input_dir> [output_dir]
         \\
         \\ARGUMENTS:
@@ -2155,9 +2156,9 @@ pub fn printHelp(program_name: []const u8) void {
         \\    {s} batch structures/ -o results.jsonl --format=jsonl
         \\    {s} batch --manifest bsa.toml
         \\    {s} batch structures/ results/ --manifest bsa.toml
-        \\    {s} batch structures/ results_A/ --chain=A --format=jsonl
+        \\    {s} batch structures/ results_A.jsonl --chain=A --format=jsonl
         \\
-    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
+    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 /// Load SDF files and build a ComponentDict from their bond topology.
