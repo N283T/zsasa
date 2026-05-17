@@ -469,8 +469,11 @@ fn parseInlineTable(allocator: Allocator, raw: []const u8) Error!Value {
         const val_raw = std.mem.trim(u8, pair[eq + 1 ..], " \t");
         if (val_raw.len == 0) return error.ExpectedValue;
 
-        const value = try parseValue(allocator, val_raw);
-        try entries.append(allocator, .{ .key = key, .value = value });
+        {
+            const value = try parseValue(allocator, val_raw);
+            errdefer freeValue(allocator, value);
+            try entries.append(allocator, .{ .key = key, .value = value });
+        }
     }
 
     return Value{ .inline_table = try entries.toOwnedSlice(allocator) };
@@ -666,6 +669,17 @@ test "parse cleans up owned values on allocation failure" {
         \\chains = ["A", "B"]
         \\[types]
         \\C = { radius = 1.70, class = "apolar" }
+    ;
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        parseAndDeinitForAllocationFailure,
+        .{input},
+    );
+}
+
+test "parse inline table cleans up owned values on allocation failure" {
+    const input =
+        \\settings = { chains = ["A"] }
     ;
     try std.testing.checkAllAllocationFailures(
         std.testing.allocator,
