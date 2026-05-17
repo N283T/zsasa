@@ -6,11 +6,13 @@
 //! - `[[array_of_tables]]` sections
 //! - Inline tables `{ key = value, ... }`
 //! - `"string"` values (with `\"` and `\\` escape handling)
+//! - Boolean values
+//! - Arrays of string values
 //! - Float and integer values
 //! - `#` comments (line-end and full-line)
 //!
 //! All string slices point into the original input buffer; only inline table
-//! entry slices are heap-allocated.
+//! entry slices and string array slices are heap-allocated.
 //!
 //! ## Usage
 //!
@@ -41,6 +43,8 @@ pub const Error = TomlError || Allocator.Error;
 /// A TOML value.
 pub const Value = union(enum) {
     string: []const u8,
+    boolean: bool,
+    string_array: []const []const u8,
     float: f64,
     integer: i64,
     inline_table: []const Entry,
@@ -129,7 +133,8 @@ fn freeValue(allocator: Allocator, value: Value) void {
             }
             allocator.free(entries);
         },
-        .string, .float, .integer => {},
+        .string_array => |items| allocator.free(items),
+        .string, .boolean, .float, .integer => {},
     }
 }
 
@@ -318,6 +323,13 @@ fn parseValue(allocator: Allocator, raw: []const u8) Error!Value {
     // Inline table
     if (raw[0] == '{') return parseInlineTable(allocator, raw);
 
+    // String array
+    if (raw[0] == '[') return parseStringArray(allocator, raw);
+
+    // Boolean
+    if (std.mem.eql(u8, raw, "true")) return Value{ .boolean = true };
+    if (std.mem.eql(u8, raw, "false")) return Value{ .boolean = false };
+
     // Number (float or integer)
     return parseNumber(raw);
 }
@@ -343,6 +355,32 @@ fn parseString(raw: []const u8) Error!Value {
         i += 1;
     }
     return error.UnterminatedString;
+}
+
+fn parseStringArray(allocator: Allocator, raw: []const u8) Error!Value {
+    std.debug.assert(raw[0] == '[');
+    const close = std.mem.findScalar(u8, raw, ']') orelse return error.UnexpectedCharacter;
+    const trailing = std.mem.trim(u8, raw[close + 1 ..], " \t");
+    if (trailing.len != 0) return error.UnexpectedCharacter;
+
+    const inner = std.mem.trim(u8, raw[1..close], " \t");
+    var items = std.ArrayListUnmanaged([]const u8).empty;
+    errdefer items.deinit(allocator);
+
+    if (inner.len != 0) {
+        var iter = std.mem.splitScalar(u8, inner, ',');
+        while (iter.next()) |part_raw| {
+            const part = std.mem.trim(u8, part_raw, " \t");
+            if (part.len == 0) return error.ExpectedValue;
+            const parsed = try parseString(part);
+            switch (parsed) {
+                .string => |s| try items.append(allocator, s),
+                else => unreachable,
+            }
+        }
+    }
+
+    return Value{ .string_array = try items.toOwnedSlice(allocator) };
 }
 
 /// Parse an inline table `{ key = value, key = value }`.
@@ -505,6 +543,52 @@ test "parse float and integer values" {
     defer doc.deinit();
     const root = doc.getTable("").?;
     try std.testing.expectEqual(@as(usize, 2), root.entries.len);
+}
+
+test "parse boolean values" {
+    const input =
+        \\use_bitmask = true
+        \\quiet = false
+    ;
+    var doc = try parse(std.testing.allocator, input);
+    defer doc.deinit();
+    const root = doc.getTable("").?;
+    try std.testing.expectEqual(@as(usize, 2), root.entries.len);
+    switch (root.entries[0].value) {
+        .boolean => |b| try std.testing.expectEqual(true, b),
+        else => return error.TestUnexpectedResult,
+    }
+    switch (root.entries[1].value) {
+        .boolean => |b| try std.testing.expectEqual(false, b),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parse string array values" {
+    const input =
+        \\chains = ["A", "B"]
+        \\sdf = ["lig1.sdf", "lig2.sdf"]
+    ;
+    var doc = try parse(std.testing.allocator, input);
+    defer doc.deinit();
+    const root = doc.getTable("").?;
+    try std.testing.expectEqual(@as(usize, 2), root.entries.len);
+    switch (root.entries[0].value) {
+        .string_array => |items| {
+            try std.testing.expectEqual(@as(usize, 2), items.len);
+            try std.testing.expectEqualStrings("A", items[0]);
+            try std.testing.expectEqualStrings("B", items[1]);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    switch (root.entries[1].value) {
+        .string_array => |items| {
+            try std.testing.expectEqual(@as(usize, 2), items.len);
+            try std.testing.expectEqualStrings("lig1.sdf", items[0]);
+            try std.testing.expectEqualStrings("lig2.sdf", items[1]);
+        },
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "parse error: unterminated string" {
