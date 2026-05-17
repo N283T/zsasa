@@ -915,7 +915,7 @@ const JsonlStreamWriter = struct {
         alloc: Allocator,
         result: *FileResult,
     ) void {
-        const line = fileResultToJsonlLineForTest(alloc, result) catch |err| {
+        const line = fileResultToJsonlLine(alloc, result) catch |err| {
             logWarning("failed to serialize {s}: {s}", .{ result.filename, @errorName(err) });
             return;
         };
@@ -952,7 +952,7 @@ const JsonlStreamWriter = struct {
 
 /// Write a JSONL line for a result via the buffered writer.
 /// atom_areas live on the arena and are invalidated after arena reset.
-fn fileResultToJsonlLineForTest(allocator: Allocator, result: *FileResult) ![]u8 {
+fn fileResultToJsonlLine(allocator: Allocator, result: *FileResult) ![]u8 {
     const areas = result.atom_areas orelse return error.MissingAtomAreas;
     if (result.residue_map) |map| {
         return json_writer.fileResultWithResidueMapToJsonlLine(allocator, result.filename, result.total_sasa, areas, map);
@@ -966,7 +966,7 @@ fn writeJsonlResult(
     result: *FileResult,
 ) void {
     if (result.status != .ok) return;
-    const line = fileResultToJsonlLineForTest(arena_alloc, result) catch |err| {
+    const line = fileResultToJsonlLine(arena_alloc, result) catch |err| {
         logWarning("failed to serialize {s}: {s}", .{ result.filename, @errorName(err) });
         return;
     };
@@ -2805,7 +2805,7 @@ test "FileResult JSONL uses residue map serializer when present" {
         .residue_map = map,
     };
 
-    const line = try fileResultToJsonlLineForTest(allocator, &result);
+    const line = try fileResultToJsonlLine(allocator, &result);
     defer allocator.free(line);
 
     try std.testing.expect(std.mem.indexOf(u8, line, "\"residue_chain\":[\"A\"]") != null);
