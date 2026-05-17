@@ -240,8 +240,11 @@ pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
             const value_trimmed = std.mem.trim(u8, value_raw, " \t");
             if (value_trimmed.len == 0) return error.ExpectedValue;
 
-            const value = try parseValue(allocator, value_trimmed);
-            try current_entries.append(allocator, .{ .key = key, .value = value });
+            {
+                const value = try parseValue(allocator, value_trimmed);
+                errdefer freeValue(allocator, value);
+                try current_entries.append(allocator, .{ .key = key, .value = value });
+            }
             continue;
         }
 
@@ -296,7 +299,12 @@ fn flushSection(
     }
 
     const owned_entries = try entries.toOwnedSlice(allocator);
-    errdefer allocator.free(owned_entries);
+    errdefer {
+        for (owned_entries) |entry| {
+            freeValue(allocator, entry.value);
+        }
+        allocator.free(owned_entries);
+    }
     switch (kind) {
         .table => try tables.append(allocator, .{
             .name = name,
@@ -338,6 +346,15 @@ fn parseValue(allocator: Allocator, raw: []const u8) Error!Value {
 /// Returns a slice into the original input (no allocation).
 fn parseString(raw: []const u8) Error!Value {
     std.debug.assert(raw[0] == '"');
+    const close = try findStringClose(raw);
+    // Return the content between the quotes (excluding quotes).
+    // Note: this returns the raw content including escape sequences.
+    // For our use case (identifiers and simple strings), this is fine.
+    return Value{ .string = raw[1..close] };
+}
+
+fn findStringClose(raw: []const u8) Error!usize {
+    std.debug.assert(raw[0] == '"');
     var i: usize = 1;
     while (i < raw.len) {
         if (raw[i] == '\\') {
@@ -347,10 +364,7 @@ fn parseString(raw: []const u8) Error!Value {
             continue;
         }
         if (raw[i] == '"') {
-            // Return the content between the quotes (excluding quotes).
-            // Note: this returns the raw content including escape sequences.
-            // For our use case (identifiers and simple strings), this is fine.
-            return Value{ .string = raw[1..i] };
+            return i;
         }
         i += 1;
     }
@@ -359,28 +373,61 @@ fn parseString(raw: []const u8) Error!Value {
 
 fn parseStringArray(allocator: Allocator, raw: []const u8) Error!Value {
     std.debug.assert(raw[0] == '[');
-    const close = std.mem.findScalar(u8, raw, ']') orelse return error.UnexpectedCharacter;
+    const close = try findArrayClose(raw);
     const trailing = std.mem.trim(u8, raw[close + 1 ..], " \t");
     if (trailing.len != 0) return error.UnexpectedCharacter;
 
-    const inner = std.mem.trim(u8, raw[1..close], " \t");
+    const inner = raw[1..close];
     var items = std.ArrayListUnmanaged([]const u8).empty;
     errdefer items.deinit(allocator);
 
-    if (inner.len != 0) {
-        var iter = std.mem.splitScalar(u8, inner, ',');
-        while (iter.next()) |part_raw| {
-            const part = std.mem.trim(u8, part_raw, " \t");
-            if (part.len == 0) return error.ExpectedValue;
-            const parsed = try parseString(part);
-            switch (parsed) {
-                .string => |s| try items.append(allocator, s),
-                else => unreachable,
-            }
+    var pos: usize = 0;
+    skipArrayWhitespace(inner, &pos);
+    while (pos < inner.len) {
+        if (inner[pos] != '"') return error.ExpectedValue;
+
+        const value_start = pos;
+        const value_close = try findStringClose(inner[value_start..]);
+        try items.append(allocator, inner[value_start + 1 .. value_start + value_close]);
+        pos = value_start + value_close + 1;
+
+        skipArrayWhitespace(inner, &pos);
+        if (pos == inner.len) break;
+        if (inner[pos] != ',') return error.UnexpectedCharacter;
+        pos += 1;
+        skipArrayWhitespace(inner, &pos);
+        if (pos == inner.len) {
+            return error.ExpectedValue;
         }
     }
 
     return Value{ .string_array = try items.toOwnedSlice(allocator) };
+}
+
+fn findArrayClose(raw: []const u8) Error!usize {
+    std.debug.assert(raw[0] == '[');
+    var in_string = false;
+    var i: usize = 1;
+    while (i < raw.len) {
+        if (raw[i] == '\\' and in_string) {
+            if (i + 1 >= raw.len) return error.UnterminatedString;
+            i += 2;
+            continue;
+        }
+        if (raw[i] == '"') {
+            in_string = !in_string;
+        } else if (raw[i] == ']' and !in_string) {
+            return i;
+        }
+        i += 1;
+    }
+    return error.UnexpectedCharacter;
+}
+
+fn skipArrayWhitespace(raw: []const u8, pos: *usize) void {
+    while (pos.* < raw.len and (raw[pos.*] == ' ' or raw[pos.*] == '\t')) {
+        pos.* += 1;
+    }
 }
 
 /// Parse an inline table `{ key = value, key = value }`.
@@ -589,6 +636,42 @@ test "parse string array values" {
         },
         else => return error.TestUnexpectedResult,
     }
+}
+
+test "parse string array values containing comma and bracket" {
+    const input =
+        \\chains = ["A,B", "a]b"]
+    ;
+    var doc = try parse(std.testing.allocator, input);
+    defer doc.deinit();
+    const root = doc.getTable("").?;
+    try std.testing.expectEqual(@as(usize, 1), root.entries.len);
+    switch (root.entries[0].value) {
+        .string_array => |items| {
+            try std.testing.expectEqual(@as(usize, 2), items.len);
+            try std.testing.expectEqualStrings("A,B", items[0]);
+            try std.testing.expectEqualStrings("a]b", items[1]);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+fn parseAndDeinitForAllocationFailure(allocator: Allocator, input: []const u8) !void {
+    var doc = try parse(allocator, input);
+    defer doc.deinit();
+}
+
+test "parse cleans up owned values on allocation failure" {
+    const input =
+        \\chains = ["A", "B"]
+        \\[types]
+        \\C = { radius = 1.70, class = "apolar" }
+    ;
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        parseAndDeinitForAllocationFailure,
+        .{input},
+    );
 }
 
 test "parse error: unterminated string" {
