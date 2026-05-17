@@ -1719,17 +1719,37 @@ pub const BatchArgs = struct {
 
 // Parse helper functions (local to batch.zig)
 
+fn validateManifestProbeRadius(radius: f64) !f64 {
+    if (radius <= 0 or radius > 10.0 or !std.math.isFinite(radius)) {
+        return error.InvalidArgument;
+    }
+    return radius;
+}
+
+fn validateManifestNPoints(n: u32) !u32 {
+    if (n == 0 or n > 10000) {
+        return error.InvalidArgument;
+    }
+    return n;
+}
+
+fn validateManifestNSlices(n: u32) !u32 {
+    if (n == 0 or n > 1000) {
+        return error.InvalidArgument;
+    }
+    return n;
+}
+
 /// Parse and validate probe radius value
 fn parseProbeRadius(value: []const u8) f64 {
     const radius = std.fmt.parseFloat(f64, value) catch {
         std.debug.print("Error: Invalid probe radius: {s}\n", .{value});
         std.process.exit(1);
     };
-    if (radius <= 0 or radius > 10.0 or !std.math.isFinite(radius)) {
+    return validateManifestProbeRadius(radius) catch {
         std.debug.print("Error: Probe radius must be between 0 and 10 Angstroms: {d}\n", .{radius});
         std.process.exit(1);
-    }
-    return radius;
+    };
 }
 
 /// Parse and validate n-points value
@@ -1738,11 +1758,10 @@ fn parseNPoints(value: []const u8) u32 {
         std.debug.print("Error: Invalid n-points: {s}\n", .{value});
         std.process.exit(1);
     };
-    if (n == 0 or n > 10000) {
+    return validateManifestNPoints(n) catch {
         std.debug.print("Error: n-points must be between 1 and 10000: {d}\n", .{n});
         std.process.exit(1);
-    }
-    return n;
+    };
 }
 
 /// Parse and validate n-slices value (for Lee-Richards)
@@ -1751,11 +1770,10 @@ fn parseNSlices(value: []const u8) u32 {
         std.debug.print("Error: Invalid n-slices: {s}\n", .{value});
         std.process.exit(1);
     };
-    if (n == 0 or n > 1000) {
+    return validateManifestNSlices(n) catch {
         std.debug.print("Error: n-slices must be between 1 and 1000: {d}\n", .{n});
         std.process.exit(1);
-    }
-    return n;
+    };
 }
 
 /// Parse and validate algorithm value
@@ -2140,7 +2158,7 @@ pub fn printHelp(program_name: []const u8) void {
 /// Delegates to sdf_parser.loadSdfComponents.
 const loadSdfComponents = sdf_parser.loadSdfComponents;
 
-fn applyManifestGlobals(config: *BatchConfig, args: BatchArgs, globals: batch_manifest.Globals) void {
+fn applyManifestGlobals(config: *BatchConfig, args: BatchArgs, globals: batch_manifest.Globals) !void {
     if (!args.threads_explicit) {
         if (globals.threads) |v| config.n_threads = v;
     }
@@ -2148,13 +2166,22 @@ fn applyManifestGlobals(config: *BatchConfig, args: BatchArgs, globals: batch_ma
         if (globals.algorithm) |v| config.algorithm = parseAlgorithm(v);
     }
     if (!args.n_points_explicit) {
-        if (globals.n_points) |v| config.n_points = v;
+        if (globals.n_points) |v| config.n_points = validateManifestNPoints(v) catch |err| {
+            std.debug.print("Error: manifest n_points must be between 1 and 10000: {d}\n", .{v});
+            return err;
+        };
     }
     if (!args.n_slices_explicit) {
-        if (globals.n_slices) |v| config.n_slices = v;
+        if (globals.n_slices) |v| config.n_slices = validateManifestNSlices(v) catch |err| {
+            std.debug.print("Error: manifest n_slices must be between 1 and 1000: {d}\n", .{v});
+            return err;
+        };
     }
     if (!args.probe_radius_explicit) {
-        if (globals.probe_radius) |v| config.probe_radius = v;
+        if (globals.probe_radius) |v| config.probe_radius = validateManifestProbeRadius(v) catch |err| {
+            std.debug.print("Error: manifest probe_radius must be finite and between 0 and 10 Angstroms: {d}\n", .{v});
+            return err;
+        };
     }
     if (!args.precision_explicit) {
         if (globals.precision) |v| config.precision = parsePrecision(v);
@@ -2295,7 +2322,7 @@ fn runManifest(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
 
     for (manifest.jobs) |job| {
         var config = BatchConfig{};
-        applyManifestGlobals(&config, args, manifest.globals);
+        try applyManifestGlobals(&config, args, manifest.globals);
         applyCliOverrides(&config, args);
 
         config.include_hetatm = config.include_hetatm or (config.classifier_type == .ccd);
@@ -2579,6 +2606,23 @@ test "parseBatchChainFilter splits comma-separated chains" {
     try std.testing.expectEqualStrings("A", chains[0]);
     try std.testing.expectEqualStrings("B", chains[1]);
     try std.testing.expectEqualStrings("AB", chains[2]);
+}
+
+test "manifest numeric validators reject invalid values" {
+    try std.testing.expectEqual(@as(f64, 1.4), try validateManifestProbeRadius(1.4));
+    try std.testing.expectEqual(@as(u32, 1), try validateManifestNPoints(1));
+    try std.testing.expectEqual(@as(u32, 10000), try validateManifestNPoints(10000));
+    try std.testing.expectEqual(@as(u32, 1), try validateManifestNSlices(1));
+    try std.testing.expectEqual(@as(u32, 1000), try validateManifestNSlices(1000));
+
+    try std.testing.expectError(error.InvalidArgument, validateManifestProbeRadius(0));
+    try std.testing.expectError(error.InvalidArgument, validateManifestProbeRadius(-1));
+    try std.testing.expectError(error.InvalidArgument, validateManifestProbeRadius(10.1));
+    try std.testing.expectError(error.InvalidArgument, validateManifestProbeRadius(std.math.nan(f64)));
+    try std.testing.expectError(error.InvalidArgument, validateManifestNPoints(0));
+    try std.testing.expectError(error.InvalidArgument, validateManifestNPoints(10001));
+    try std.testing.expectError(error.InvalidArgument, validateManifestNSlices(0));
+    try std.testing.expectError(error.InvalidArgument, validateManifestNSlices(1001));
 }
 
 test "manifestJsonlOutputPath uses job file under output dir" {
