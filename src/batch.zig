@@ -71,6 +71,8 @@ pub const BatchConfig = struct {
     store_atom_areas: bool = false, // When true, copy atom_areas to result_allocator for jsonl
     external_ccd: ?*const ccd_parser.ComponentDict = null, // External CCD dictionary
     sdf_ccd: ?*const ccd_parser.ComponentDict = null, // SDF bond topology dictionary
+    chain_filter: ?[]const []const u8 = null,
+    use_auth_chain: bool = false,
 };
 
 /// Helper to build and hold bitmask LUTs for batch processing.
@@ -354,12 +356,15 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             var parser = mmcif_parser.MmcifParser.init(allocator);
             parser.skip_hydrogens = !config.include_hydrogens;
             parser.atom_only = !config.include_hetatm;
+            parser.chain_filter = config.chain_filter;
+            parser.use_auth_chain = config.use_auth_chain;
             break :blk parser.parseFile(io, path);
         },
         .pdb => blk: {
             var parser = pdb_parser.PdbParser.init(allocator);
             parser.skip_hydrogens = !config.include_hydrogens;
             parser.atom_only = !config.include_hetatm;
+            parser.chain_filter = config.chain_filter;
             break :blk parser.parseFile(io, path);
         },
         .sdf => blk: {
@@ -1795,6 +1800,21 @@ fn parsePrecision(value: []const u8) Precision {
     }
 }
 
+fn parseBatchChainFilter(allocator: Allocator, filter_str: []const u8) ![]const []const u8 {
+    var chains = std.ArrayListUnmanaged([]const u8).empty;
+    errdefer chains.deinit(allocator);
+
+    var iter = std.mem.splitScalar(u8, filter_str, ',');
+    while (iter.next()) |chain| {
+        const trimmed = std.mem.trim(u8, chain, " ");
+        if (trimmed.len > 0) {
+            try chains.append(allocator, trimmed);
+        }
+    }
+
+    return chains.toOwnedSlice(allocator);
+}
+
 /// Parse batch subcommand arguments
 pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
     var result = BatchArgs{};
@@ -2164,6 +2184,12 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     // For jsonl, don't pass output_dir to runBatch (no per-file I/O during computation)
     const output_dir: ?[]const u8 = if (args.output_format == .jsonl) null else args.output_path;
 
+    var chain_filter_slice: ?[]const []const u8 = null;
+    if (args.chain_filter) |filter_str| {
+        chain_filter_slice = try parseBatchChainFilter(allocator, filter_str);
+    }
+    defer if (chain_filter_slice) |s| allocator.free(s);
+
     // Build batch config from parsed args
     // CCD/ProtOr use united-atom radii (implicit H) — warn if explicit H included
     if ((args.classifier_type == .ccd or args.classifier_type == .protor) and args.include_hydrogens and !args.quiet) {
@@ -2189,6 +2215,8 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .store_atom_areas = (args.output_format == .jsonl),
         .external_ccd = if (ext_ccd != null) &ext_ccd.? else null,
         .sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null,
+        .chain_filter = chain_filter_slice,
+        .use_auth_chain = args.use_auth_chain,
     };
 
     if (!args.quiet) {
@@ -2326,6 +2354,15 @@ test "BatchArgs --auth-chain" {
     const args = [_][]const u8{ "zsasa", "batch", "--auth-chain", "input_dir/" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(true, parsed.use_auth_chain);
+}
+
+test "parseBatchChainFilter splits comma-separated chains" {
+    const chains = try parseBatchChainFilter(std.testing.allocator, "A, B,AB");
+    defer std.testing.allocator.free(chains);
+    try std.testing.expectEqual(@as(usize, 3), chains.len);
+    try std.testing.expectEqualStrings("A", chains[0]);
+    try std.testing.expectEqualStrings("B", chains[1]);
+    try std.testing.expectEqualStrings("AB", chains[2]);
 }
 
 test "BatchArgs explicit option flags" {
