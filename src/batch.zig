@@ -469,6 +469,21 @@ fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType, sdf_ccd: ?*cons
     input.r = new_radii;
 }
 
+fn attachResidueMap(
+    arena: Allocator,
+    result_allocator: Allocator,
+    input: AtomInput,
+    atom_areas: []const f64,
+    result: *FileResult,
+) bool {
+    result.residue_map = json_writer.buildResidueMap(arena, input, atom_areas) catch |err| {
+        result.status = .err;
+        result.error_msg = std.fmt.allocPrint(result_allocator, "residue map failed: {s}", .{@errorName(err)}) catch null;
+        return false;
+    };
+    return true;
+}
+
 /// Scan directory for structure files (.json, .pdb, .cif, .mmcif, .ent and compressed variants)
 pub fn scanDirectory(allocator: Allocator, io: std.Io, dir_path: []const u8) ![][]const u8 {
     var files: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -594,6 +609,10 @@ fn processOneFile(
                     return result;
                 };
             }
+            if (config.residue_map) {
+                const areas = result.atom_areas orelse sasa_result.atom_areas;
+                if (!attachResidueMap(arena, result_allocator, input, areas, &result)) return result;
+            }
 
             if (output_dir) |out_dir| {
                 if (!config.store_atom_areas) {
@@ -634,6 +653,18 @@ fn processOneFile(
                 };
                 for (areas_f32, 0..) |v, j| areas_f64[j] = @floatCast(v);
                 result.atom_areas = areas_f64;
+            }
+            if (config.residue_map) {
+                const areas = result.atom_areas orelse blk: {
+                    const areas_f64 = arena.alloc(f64, sasa_result.atom_areas.len) catch {
+                        result.status = .err;
+                        result.error_msg = std.fmt.allocPrint(result_allocator, "atom_areas allocation failed", .{}) catch null;
+                        return result;
+                    };
+                    for (sasa_result.atom_areas, 0..) |v, j| areas_f64[j] = @floatCast(v);
+                    break :blk areas_f64;
+                };
+                if (!attachResidueMap(arena, result_allocator, input, areas, &result)) return result;
             }
 
             if (output_dir) |out_dir| {
@@ -791,6 +822,10 @@ fn processOneSdfMoleculeInner(
                     return res;
                 };
             }
+            if (config.residue_map) {
+                const areas = res.atom_areas orelse sasa_result.atom_areas;
+                if (!attachResidueMap(arena, result_allocator, input.*, areas, &res)) return res;
+            }
 
             if (output_dir) |out_dir| {
                 if (!config.store_atom_areas) {
@@ -832,6 +867,18 @@ fn processOneSdfMoleculeInner(
                 for (areas_f32, 0..) |v, j| areas_f64[j] = @floatCast(v);
                 res.atom_areas = areas_f64;
             }
+            if (config.residue_map) {
+                const areas = res.atom_areas orelse blk: {
+                    const areas_f64 = arena.alloc(f64, sasa_result.atom_areas.len) catch {
+                        res.status = .err;
+                        res.error_msg = std.fmt.allocPrint(result_allocator, "atom_areas allocation failed", .{}) catch null;
+                        return res;
+                    };
+                    for (sasa_result.atom_areas, 0..) |v, j| areas_f64[j] = @floatCast(v);
+                    break :blk areas_f64;
+                };
+                if (!attachResidueMap(arena, result_allocator, input.*, areas, &res)) return res;
+            }
 
             if (output_dir) |out_dir| {
                 if (!config.store_atom_areas) {
@@ -866,12 +913,10 @@ const JsonlStreamWriter = struct {
     pub fn writeResult(
         self: *JsonlStreamWriter,
         alloc: Allocator,
-        filename: []const u8,
-        total_sasa: f64,
-        atom_areas: []const f64,
+        result: *FileResult,
     ) void {
-        const line = json_writer.fileResultToJsonlLine(alloc, filename, total_sasa, atom_areas) catch |err| {
-            logWarning("failed to serialize {s}: {s}", .{ filename, @errorName(err) });
+        const line = fileResultToJsonlLineForTest(alloc, result) catch |err| {
+            logWarning("failed to serialize {s}: {s}", .{ result.filename, @errorName(err) });
             return;
         };
         // line is on alloc (arena); no explicit free needed — arena reset handles it.
@@ -884,17 +929,17 @@ const JsonlStreamWriter = struct {
         var buf: [64 * 1024]u8 = undefined;
         var w = std.Io.File.Writer.initStreaming(self.file, self.io, &buf);
         w.interface.writeAll(line) catch |err| {
-            logWarning("JSONL write failed for {s}: {s}", .{ filename, @errorName(err) });
+            logWarning("JSONL write failed for {s}: {s}", .{ result.filename, @errorName(err) });
             self.write_failed = true;
             return;
         };
         w.interface.writeAll("\n") catch |err| {
-            logWarning("JSONL newline write failed for {s}: {s}", .{ filename, @errorName(err) });
+            logWarning("JSONL newline write failed for {s}: {s}", .{ result.filename, @errorName(err) });
             self.write_failed = true;
             return;
         };
         w.interface.flush() catch |err| {
-            logWarning("JSONL flush failed for {s}: {s}", .{ filename, @errorName(err) });
+            logWarning("JSONL flush failed for {s}: {s}", .{ result.filename, @errorName(err) });
             self.write_failed = true;
         };
     }
@@ -1132,6 +1177,7 @@ pub fn runBatchSequential(
                     writeJsonlResult(w, arena.allocator(), &mol_result);
                 }
                 mol_result.atom_areas = null;
+                mol_result.residue_map = null;
 
                 try results_list.append(allocator, mol_result);
                 total_items += 1;
@@ -1168,6 +1214,7 @@ pub fn runBatchSequential(
                 writeJsonlResult(w, arena.allocator(), &result);
             }
             result.atom_areas = null;
+            result.residue_map = null;
 
             try results_list.append(allocator, result);
             total_items += 1;
@@ -1329,12 +1376,11 @@ fn parallelWorker(ctx: *ParallelContext) void {
 
             if (ctx.jsonl_stream) |stream| {
                 if (result.status == .ok) {
-                    if (result.atom_areas) |areas| {
-                        stream.writeResult(arena.allocator(), result.filename, result.total_sasa, areas);
-                    }
+                    stream.writeResult(arena.allocator(), &result);
                 }
             }
             ctx.results[item_idx].atom_areas = null;
+            ctx.results[item_idx].residue_map = null;
         } else {
             // Non-SDF file: existing logic
             var result = processOneFile(
@@ -1357,13 +1403,12 @@ fn parallelWorker(ctx: *ParallelContext) void {
             // Stream JSONL output (atom_areas on arena, valid until reset)
             if (ctx.jsonl_stream) |stream| {
                 if (result.status == .ok) {
-                    if (result.atom_areas) |areas| {
-                        stream.writeResult(arena.allocator(), result.filename, result.total_sasa, areas);
-                    }
+                    stream.writeResult(arena.allocator(), &result);
                 }
             }
             // Clear atom_areas since arena will free them
             ctx.results[item_idx].atom_areas = null;
+            ctx.results[item_idx].residue_map = null;
         }
 
         // Update progress counter (.release pairs with .acquire in progress monitor)
