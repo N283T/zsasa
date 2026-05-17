@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-05-17
+
+### Added
+
+- **Batch JSONL residue maps**: add opt-in `--residue-map` / `residue_map = true` output with compact columnar residue identifiers, atom ranges, and residue SASA for large-scale JSONL workflows. (#364)
+
 ## [0.3.1] - 2026-05-17
 
 ### Added
