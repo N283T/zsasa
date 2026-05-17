@@ -115,6 +115,16 @@ fn getOutputExtension(format: OutputFormat) []const u8 {
     };
 }
 
+fn manifestJsonlOutputPath(allocator: Allocator, output_dir: []const u8, job_name: []const u8) ![]const u8 {
+    const filename = try std.fmt.allocPrint(allocator, "{s}.jsonl", .{job_name});
+    defer allocator.free(filename);
+    return std.fs.path.join(allocator, &.{ output_dir, filename });
+}
+
+fn manifestPerFileOutputDir(allocator: Allocator, output_dir: []const u8, job_name: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ output_dir, job_name });
+}
+
 /// Replace file extension for output (e.g., "file.pdb" -> "file.json")
 fn replaceExtension(allocator: Allocator, filename: []const u8, new_ext: []const u8) ![]const u8 {
     // Strip compression extension if present.
@@ -2130,8 +2140,214 @@ pub fn printHelp(program_name: []const u8) void {
 /// Delegates to sdf_parser.loadSdfComponents.
 const loadSdfComponents = sdf_parser.loadSdfComponents;
 
+fn applyManifestGlobals(config: *BatchConfig, args: BatchArgs, globals: batch_manifest.Globals) void {
+    if (!args.threads_explicit) {
+        if (globals.threads) |v| config.n_threads = v;
+    }
+    if (!args.algorithm_explicit) {
+        if (globals.algorithm) |v| config.algorithm = parseAlgorithm(v);
+    }
+    if (!args.n_points_explicit) {
+        if (globals.n_points) |v| config.n_points = v;
+    }
+    if (!args.n_slices_explicit) {
+        if (globals.n_slices) |v| config.n_slices = v;
+    }
+    if (!args.probe_radius_explicit) {
+        if (globals.probe_radius) |v| config.probe_radius = v;
+    }
+    if (!args.precision_explicit) {
+        if (globals.precision) |v| config.precision = parsePrecision(v);
+    }
+    if (!args.format_explicit) {
+        if (globals.format) |v| config.output_format = parseOutputFormat(v);
+    }
+    if (!args.timing_explicit) {
+        if (globals.timing) |v| config.show_timing = v;
+    }
+    if (!args.quiet_explicit) {
+        if (globals.quiet) |v| {
+            config.quiet = v;
+            config.show_progress = !v;
+        }
+    }
+    if (!args.classifier_explicit) {
+        if (globals.classifier) |v| config.classifier_type = parseClassifierType(v);
+    }
+    if (!args.include_hydrogens_explicit) {
+        if (globals.include_hydrogens) |v| config.include_hydrogens = v;
+    }
+    if (!args.include_hetatm_explicit) {
+        if (globals.include_hetatm) |v| config.include_hetatm = v;
+    }
+    if (!args.use_bitmask_explicit) {
+        if (globals.use_bitmask) |v| config.use_bitmask = v;
+    }
+    if (globals.auth_chain) |v| config.use_auth_chain = v;
+}
+
+fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
+    if (args.threads_explicit) config.n_threads = args.n_threads;
+    if (args.algorithm_explicit) config.algorithm = args.algorithm;
+    if (args.n_points_explicit) config.n_points = args.n_points;
+    if (args.n_slices_explicit) config.n_slices = args.n_slices;
+    if (args.probe_radius_explicit) config.probe_radius = args.probe_radius;
+    if (args.precision_explicit) config.precision = args.precision;
+    if (args.format_explicit) config.output_format = args.output_format;
+    if (args.timing_explicit) config.show_timing = args.show_timing;
+    if (args.quiet_explicit) {
+        config.quiet = args.quiet;
+        config.show_progress = args.show_progress;
+    }
+    if (args.classifier_explicit) config.classifier_type = args.classifier_type;
+    if (args.include_hydrogens_explicit) config.include_hydrogens = args.include_hydrogens;
+    if (args.include_hetatm_explicit) config.include_hetatm = args.include_hetatm;
+    if (args.use_bitmask_explicit) config.use_bitmask = args.use_bitmask;
+    if (args.use_auth_chain) config.use_auth_chain = true;
+}
+
+fn parseManifestFile(allocator: Allocator, io: std.Io, path: []const u8) !batch_manifest.Manifest {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+
+    var read_buf: [65536]u8 = undefined;
+    var reader = file.reader(io, &read_buf);
+    const content = try reader.interface.allocRemaining(allocator, .unlimited);
+    errdefer allocator.free(content);
+
+    const manifest = try batch_manifest.parse(allocator, content);
+    allocator.free(content);
+    return manifest;
+}
+
+fn runManifest(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
+    if (args.chain_filter != null) {
+        std.debug.print("Error: --manifest cannot be combined with --chain; use [[jobs]].chains in the manifest\n", .{});
+        return error.InvalidArgument;
+    }
+
+    const manifest_path = args.manifest_path.?;
+    var manifest = parseManifestFile(allocator, io, manifest_path) catch |err| {
+        std.debug.print("Error reading manifest '{s}': {s}\n", .{ manifest_path, @errorName(err) });
+        return err;
+    };
+    defer manifest.deinit();
+
+    const input_dir = args.input_path orelse manifest.globals.input_dir orelse {
+        std.debug.print("Error: Missing input directory (provide positional input_dir or input_dir in manifest)\n", .{});
+        return error.MissingArgument;
+    };
+    const output_dir = args.output_path orelse manifest.globals.output_dir;
+
+    if (manifest.jobs.len > 1 and output_dir == null) {
+        std.debug.print("Error: --manifest with multiple jobs requires an output directory\n", .{});
+        return error.InvalidArgument;
+    }
+
+    const load_quiet = if (args.quiet_explicit) args.quiet else (manifest.globals.quiet orelse args.quiet);
+
+    const ccd_path = if (args.ccd_explicit) args.ccd_path else manifest.globals.ccd;
+    var ext_ccd: ?ccd_parser.ComponentDict = null;
+    if (ccd_path) |path| {
+        const ccd_data = if (compressed.isCompressed(path))
+            compressed.read(allocator, path) catch |err| {
+                std.debug.print("Error reading CCD file '{s}': {s}\n", .{ path, @errorName(err) });
+                return err;
+            }
+        else blk: {
+            const f = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
+                std.debug.print("Error opening CCD file '{s}': {s}\n", .{ path, @errorName(err) });
+                return err;
+            };
+            defer f.close(io);
+            var read_buf_ccd: [65536]u8 = undefined;
+            var file_r_ccd = f.reader(io, &read_buf_ccd);
+            break :blk file_r_ccd.interface.allocRemaining(allocator, .unlimited) catch |err| {
+                std.debug.print("Error reading CCD file '{s}': {s}\n", .{ path, @errorName(err) });
+                return err;
+            };
+        };
+        defer allocator.free(ccd_data);
+
+        ext_ccd = ccd_binary.loadDict(allocator, ccd_data) catch |err| {
+            std.debug.print("Error loading CCD dictionary '{s}': {s}\n", .{ path, @errorName(err) });
+            return err;
+        };
+        if (!load_quiet) {
+            std.debug.print("External CCD: loaded {d} components from '{s}'\n", .{ ext_ccd.?.components.count(), path });
+        }
+    }
+    defer if (ext_ccd) |*d| d.deinit();
+
+    const manifest_sdf_paths: []const []const u8 = manifest.globals.sdf orelse &.{};
+    const sdf_paths = if (args.sdf_explicit) args.sdf_paths.constSlice() else manifest_sdf_paths;
+    var sdf_ccd: ?ccd_parser.ComponentDict = null;
+    if (sdf_paths.len > 0) {
+        sdf_ccd = loadSdfComponents(allocator, io, sdf_paths, load_quiet) catch |err| {
+            std.debug.print("Error loading SDF components: {s}\n", .{@errorName(err)});
+            return err;
+        };
+    }
+    defer if (sdf_ccd) |*d| d.deinit();
+
+    var successful: usize = 0;
+    var failed: usize = 0;
+
+    for (manifest.jobs) |job| {
+        var config = BatchConfig{};
+        applyManifestGlobals(&config, args, manifest.globals);
+        applyCliOverrides(&config, args);
+
+        config.include_hetatm = config.include_hetatm or (config.classifier_type == .ccd);
+        config.store_atom_areas = (config.output_format == .jsonl);
+        config.external_ccd = if (ext_ccd != null) &ext_ccd.? else null;
+        config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
+        if (job.auth_chain) |v| config.use_auth_chain = v;
+        config.chain_filter = job.chains;
+
+        if ((config.classifier_type == .ccd or config.classifier_type == .protor) and config.include_hydrogens and !config.quiet) {
+            std.debug.print("Warning: --include-hydrogens with CCD classifier may give inaccurate results\n", .{});
+            std.debug.print("         CCD uses united-atom radii that already account for implicit hydrogens\n", .{});
+        }
+
+        var job_output_dir: ?[]const u8 = null;
+        defer if (job_output_dir) |path| allocator.free(path);
+        var jsonl_output_path: ?[]const u8 = null;
+        defer if (jsonl_output_path) |path| allocator.free(path);
+
+        if (config.output_format == .jsonl) {
+            if (output_dir) |out| {
+                try std.Io.Dir.cwd().createDirPath(io, out);
+                jsonl_output_path = try manifestJsonlOutputPath(allocator, out, job.name);
+            }
+        } else if (output_dir) |out| {
+            job_output_dir = try manifestPerFileOutputDir(allocator, out, job.name);
+        }
+
+        if (!config.quiet) {
+            std.debug.print("Manifest job: {s}\n", .{job.name});
+        }
+
+        var result = runBatch(allocator, io, input_dir, job_output_dir, config, jsonl_output_path) catch |err| {
+            std.debug.print("Error running manifest job '{s}': {s}\n", .{ job.name, @errorName(err) });
+            failed += 1;
+            continue;
+        };
+        defer result.deinit();
+
+        successful += result.successful;
+        failed += result.failed;
+    }
+
+    std.debug.print("Manifest complete: {d} successful, {d} failed\n", .{ successful, failed });
+}
+
 /// Run batch processing from parsed CLI arguments
 pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
+    if (args.manifest_path != null) {
+        return runManifest(allocator, io, args);
+    }
+
     const input_dir = args.input_path orelse {
         std.debug.print("Error: Missing input directory\n", .{});
         std.debug.print("Usage: zsasa batch [OPTIONS] <input_dir> [output_dir]\n", .{});
@@ -2363,6 +2579,18 @@ test "parseBatchChainFilter splits comma-separated chains" {
     try std.testing.expectEqualStrings("A", chains[0]);
     try std.testing.expectEqualStrings("B", chains[1]);
     try std.testing.expectEqualStrings("AB", chains[2]);
+}
+
+test "manifestJsonlOutputPath uses job file under output dir" {
+    const path = try manifestJsonlOutputPath(std.testing.allocator, "results", "chain_A");
+    defer std.testing.allocator.free(path);
+    try std.testing.expectEqualStrings("results/chain_A.jsonl", path);
+}
+
+test "manifestPerFileOutputDir uses job directory under output dir" {
+    const path = try manifestPerFileOutputDir(std.testing.allocator, "results", "complex_AB");
+    defer std.testing.allocator.free(path);
+    try std.testing.expectEqualStrings("results/complex_AB", path);
 }
 
 test "BatchArgs explicit option flags" {
