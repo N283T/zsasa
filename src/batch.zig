@@ -1,4 +1,5 @@
 const std = @import("std");
+const batch_manifest = @import("batch_manifest.zig");
 const types = @import("types.zig");
 const format_detect = @import("format_detect.zig");
 const json_parser = @import("json_parser.zig");
@@ -1664,6 +1665,9 @@ pub const BatchArgs = struct {
     input_path: ?[]const u8 = null,
     output_path: ?[]const u8 = null, // Output directory; null means no file output
     output_path_explicit: bool = false, // Track if -o/--output was explicitly set
+    manifest_path: ?[]const u8 = null,
+    chain_filter: ?[]const u8 = null,
+    use_auth_chain: bool = false,
     n_threads: usize = 0,
     probe_radius: f64 = 1.4,
     n_points: u32 = 100,
@@ -1681,6 +1685,21 @@ pub const BatchArgs = struct {
     show_progress: bool = true,
     show_timing: bool = false,
     show_help: bool = false,
+    threads_explicit: bool = false,
+    probe_radius_explicit: bool = false,
+    n_points_explicit: bool = false,
+    n_slices_explicit: bool = false,
+    algorithm_explicit: bool = false,
+    precision_explicit: bool = false,
+    format_explicit: bool = false,
+    classifier_explicit: bool = false,
+    include_hydrogens_explicit: bool = false,
+    include_hetatm_explicit: bool = false,
+    use_bitmask_explicit: bool = false,
+    ccd_explicit: bool = false,
+    sdf_explicit: bool = false,
+    quiet_explicit: bool = false,
+    timing_explicit: bool = false,
 };
 
 // Parse helper functions (local to batch.zig)
@@ -1787,12 +1806,14 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
 
         // --threads=N or --threads N
         if (std.mem.startsWith(u8, arg, "--threads=")) {
+            result.threads_explicit = true;
             const value = arg["--threads=".len..];
             result.n_threads = std.fmt.parseInt(usize, value, 10) catch {
                 std.debug.print("Error: Invalid thread count: {s}\n", .{value});
                 std.process.exit(1);
             };
         } else if (std.mem.eql(u8, arg, "--threads")) {
+            result.threads_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --threads\n", .{});
@@ -1805,9 +1826,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         }
         // --probe-radius=R or --probe-radius R
         else if (std.mem.startsWith(u8, arg, "--probe-radius=")) {
+            result.probe_radius_explicit = true;
             const value = arg["--probe-radius=".len..];
             result.probe_radius = parseProbeRadius(value);
         } else if (std.mem.eql(u8, arg, "--probe-radius")) {
+            result.probe_radius_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --probe-radius\n", .{});
@@ -1817,9 +1840,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         }
         // --n-points=N or --n-points N
         else if (std.mem.startsWith(u8, arg, "--n-points=")) {
+            result.n_points_explicit = true;
             const value = arg["--n-points=".len..];
             result.n_points = parseNPoints(value);
         } else if (std.mem.eql(u8, arg, "--n-points")) {
+            result.n_points_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --n-points\n", .{});
@@ -1829,9 +1854,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         }
         // --n-slices=N or --n-slices N (for Lee-Richards)
         else if (std.mem.startsWith(u8, arg, "--n-slices=")) {
+            result.n_slices_explicit = true;
             const value = arg["--n-slices=".len..];
             result.n_slices = parseNSlices(value);
         } else if (std.mem.eql(u8, arg, "--n-slices")) {
+            result.n_slices_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --n-slices\n", .{});
@@ -1841,9 +1868,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         }
         // --format=FORMAT or --format FORMAT
         else if (std.mem.startsWith(u8, arg, "--format=")) {
+            result.format_explicit = true;
             const value = arg["--format=".len..];
             result.output_format = parseOutputFormat(value);
         } else if (std.mem.eql(u8, arg, "--format")) {
+            result.format_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --format\n", .{});
@@ -1853,9 +1882,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         }
         // --algorithm=ALGO or --algorithm ALGO
         else if (std.mem.startsWith(u8, arg, "--algorithm=")) {
+            result.algorithm_explicit = true;
             const value = arg["--algorithm=".len..];
             result.algorithm = parseAlgorithm(value);
         } else if (std.mem.eql(u8, arg, "--algorithm")) {
+            result.algorithm_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --algorithm\n", .{});
@@ -1865,9 +1896,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         }
         // --classifier=TYPE or --classifier TYPE
         else if (std.mem.startsWith(u8, arg, "--classifier=")) {
+            result.classifier_explicit = true;
             const value = arg["--classifier=".len..];
             result.classifier_type = parseClassifierType(value);
         } else if (std.mem.eql(u8, arg, "--classifier")) {
+            result.classifier_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --classifier\n", .{});
@@ -1877,9 +1910,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         }
         // --precision=PREC or --precision PREC
         else if (std.mem.startsWith(u8, arg, "--precision=")) {
+            result.precision_explicit = true;
             const value = arg["--precision=".len..];
             result.precision = parsePrecision(value);
         } else if (std.mem.eql(u8, arg, "--precision")) {
+            result.precision_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --precision\n", .{});
@@ -1887,23 +1922,54 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
             }
             result.precision = parsePrecision(args[i]);
         }
+        // --manifest=PATH or --manifest PATH
+        else if (std.mem.startsWith(u8, arg, "--manifest=")) {
+            result.manifest_path = arg["--manifest=".len..];
+        } else if (std.mem.eql(u8, arg, "--manifest")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --manifest\n", .{});
+                std.process.exit(1);
+            }
+            result.manifest_path = args[i];
+        }
+        // --chain=ID or --chain ID
+        else if (std.mem.startsWith(u8, arg, "--chain=")) {
+            result.chain_filter = arg["--chain=".len..];
+        } else if (std.mem.eql(u8, arg, "--chain")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --chain\n", .{});
+                std.process.exit(1);
+            }
+            result.chain_filter = args[i];
+        }
+        // --auth-chain
+        else if (std.mem.eql(u8, arg, "--auth-chain")) {
+            result.use_auth_chain = true;
+        }
         // --include-hydrogens
         else if (std.mem.eql(u8, arg, "--include-hydrogens")) {
             result.include_hydrogens = true;
+            result.include_hydrogens_explicit = true;
         }
         // --include-hetatm
         else if (std.mem.eql(u8, arg, "--include-hetatm")) {
             result.include_hetatm = true;
+            result.include_hetatm_explicit = true;
         }
         // --use-bitmask
         else if (std.mem.eql(u8, arg, "--use-bitmask")) {
             result.use_bitmask = true;
+            result.use_bitmask_explicit = true;
         }
         // --ccd=PATH or --ccd PATH (external CCD dictionary)
         else if (std.mem.startsWith(u8, arg, "--ccd=")) {
+            result.ccd_explicit = true;
             const value = arg["--ccd=".len..];
             result.ccd_path = value;
         } else if (std.mem.eql(u8, arg, "--ccd")) {
+            result.ccd_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --ccd\n", .{});
@@ -1913,12 +1979,14 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         }
         // --sdf=PATH or --sdf PATH (SDF file with bond topology for CCD classifier)
         else if (std.mem.startsWith(u8, arg, "--sdf=")) {
+            result.sdf_explicit = true;
             const value = arg["--sdf=".len..];
             result.sdf_paths.append(value) catch {
                 std.debug.print("Error: Too many --sdf paths (max 16)\n", .{});
                 std.process.exit(1);
             };
         } else if (std.mem.eql(u8, arg, "--sdf")) {
+            result.sdf_explicit = true;
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --sdf\n", .{});
@@ -1932,11 +2000,13 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
+            result.quiet_explicit = true;
             result.show_progress = false;
         }
         // --timing
         else if (std.mem.eql(u8, arg, "--timing")) {
             result.show_timing = true;
+            result.timing_explicit = true;
         }
         // --help or -h
         else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -2237,6 +2307,36 @@ test "BatchArgs help flag" {
     const args = [_][]const u8{ "zsasa", "batch", "--help" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(true, parsed.show_help);
+}
+
+test "BatchArgs --manifest" {
+    const args = [_][]const u8{ "zsasa", "batch", "--manifest", "bsa.toml" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("bsa.toml", parsed.manifest_path.?);
+}
+
+test "BatchArgs --chain=A" {
+    const args = [_][]const u8{ "zsasa", "batch", "--chain=A", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("A", parsed.chain_filter.?);
+    try std.testing.expectEqualStrings("input_dir/", parsed.input_path.?);
+}
+
+test "BatchArgs --auth-chain" {
+    const args = [_][]const u8{ "zsasa", "batch", "--auth-chain", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.use_auth_chain);
+}
+
+test "BatchArgs explicit option flags" {
+    const args = [_][]const u8{
+        "zsasa", "batch", "--threads=8", "--n-points=128", "--format=jsonl", "--use-bitmask", "input_dir/",
+    };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.threads_explicit);
+    try std.testing.expectEqual(true, parsed.n_points_explicit);
+    try std.testing.expectEqual(true, parsed.format_explicit);
+    try std.testing.expectEqual(true, parsed.use_bitmask_explicit);
 }
 
 test "BatchArgs output via -o flag" {
