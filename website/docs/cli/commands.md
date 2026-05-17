@@ -33,6 +33,41 @@ zsasa batch input_dir/ output_dir/ [OPTIONS]
 
 Batch mode uses file-level parallelism: multiple files are processed simultaneously, one thread per file. Use `--threads` to control the number of concurrent files.
 
+#### Batch TOML manifest
+
+Use `--manifest` to run several named batch jobs over the same input directory. CLI positional paths and explicit options override manifest values.
+
+```bash
+zsasa batch --manifest bsa.toml
+zsasa batch structures/ results/ --manifest bsa.toml --threads=8
+```
+
+```toml
+version = 1
+input_dir = "structures"
+output_dir = "results"
+format = "jsonl"
+use_bitmask = true
+n_points = 128
+classifier = "ccd"
+
+[[jobs]]
+name = "chain_A"
+chains = ["A"]
+
+[[jobs]]
+name = "chain_B"
+chains = ["B"]
+
+[[jobs]]
+name = "complex_AB"
+chains = ["A", "B"]
+```
+
+For `format = "jsonl"`, each job writes one file such as `results/chain_A.jsonl`. For `json`, `compact`, and `csv`, each job writes a directory such as `results/chain_A/`.
+
+Precedence is: built-in defaults < manifest globals < job settings < explicit CLI options. `--chain` is for non-manifest single-job batch mode; manifest jobs should use `[[jobs]].chains`.
+
 ### `traj` - Trajectory Analysis
 
 Calculate SASA for each frame in a trajectory file (XTC or DCD).
