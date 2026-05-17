@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-17
+
+### Added
+
+- **Batch TOML manifests**: add `zsasa batch --manifest` for named multi-job workflows such as chain A, chain B, and AB complex SASA; includes batch `--chain` / `--auth-chain` support, per-job JSONL and per-file output layout, and CLI/docs coverage. (#361)
+
 ## [0.3.0] - 2026-05-17
 
 ### Added
@@ -521,7 +527,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `calc_reference_sasa.py` - Generate reference SASA
   - `benchmark.py` - Performance benchmarking
 
-[Unreleased]: https://github.com/N283T/zsasa/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/N283T/zsasa/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/N283T/zsasa/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/N283T/zsasa/compare/v0.2.11...v0.3.0
 [0.2.2]: https://github.com/N283T/zsasa/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/N283T/zsasa/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/N283T/zsasa/compare/v0.1.3...v0.2.0
