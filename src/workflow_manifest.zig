@@ -266,6 +266,13 @@ fn validateClassifier(config: ClassifierConfig) WorkflowError!void {
         return;
     }
     if (config.config != null) return error.InvalidClassifierConfig;
+    if (!classifierAllowsCcdResources(classifier_type) and (config.ccd != null or config.sdf != null)) {
+        return error.InvalidClassifierConfig;
+    }
+}
+
+fn classifierAllowsCcdResources(classifier_type: []const u8) bool {
+    return std.mem.eql(u8, classifier_type, "ccd") or std.mem.eql(u8, classifier_type, "protor");
 }
 
 fn parseJobs(allocator: Allocator, array_tables: []const toml_parser.Document.ArrayTable) Error![]Job {
@@ -709,4 +716,24 @@ test "reject invalid classifier combinations" {
         \\config = "my_radii.toml"
     ;
     try std.testing.expectError(error.InvalidClassifierConfig, parse(std.testing.allocator, ccd_with_config));
+
+    const naccess_with_ccd =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[classifier]
+        \\type = "naccess"
+        \\ccd = "components.zsdc"
+    ;
+    try std.testing.expectError(error.InvalidClassifierConfig, parse(std.testing.allocator, naccess_with_ccd));
+
+    const naccess_with_sdf =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[classifier]
+        \\type = "naccess"
+        \\sdf = "ligand.sdf"
+    ;
+    try std.testing.expectError(error.InvalidClassifierConfig, parse(std.testing.allocator, naccess_with_sdf));
 }

@@ -2418,15 +2418,20 @@ fn parseWorkflowFile(allocator: Allocator, io: std.Io, path: []const u8) !workfl
     return workflow_manifest.parseFile(allocator, io, path);
 }
 
-fn resolveWorkflowCcdPath(args: BatchArgs, classifier_config: workflow_manifest.ClassifierConfig) ?[]const u8 {
+fn classifierUsesCcdResources(effective_classifier_type: ?ClassifierType) bool {
+    const classifier_type = effective_classifier_type orelse return false;
+    return classifier_type == .ccd or classifier_type == .protor;
+}
+
+fn resolveWorkflowCcdPath(args: BatchArgs, classifier_config: workflow_manifest.ClassifierConfig, effective_classifier_type: ?ClassifierType) ?[]const u8 {
+    if (!classifierUsesCcdResources(effective_classifier_type)) return null;
     if (args.ccd_explicit) return args.ccd_path;
-    if (args.classifier_explicit) return null;
     return classifier_config.ccd;
 }
 
-fn resolveWorkflowSdfPaths(args: BatchArgs, workflow_sdf_paths: []const []const u8) []const []const u8 {
+fn resolveWorkflowSdfPaths(args: BatchArgs, workflow_sdf_paths: []const []const u8, effective_classifier_type: ?ClassifierType) []const []const u8 {
+    if (!classifierUsesCcdResources(effective_classifier_type)) return &.{};
     if (args.sdf_explicit) return args.sdf_paths.constSlice();
-    if (args.classifier_explicit) return &.{};
     return workflow_sdf_paths;
 }
 
@@ -2503,7 +2508,12 @@ fn runWorkflow(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
 
     const load_quiet = if (args.quiet_explicit) args.quiet else (workflow.calculation.quiet orelse args.quiet);
 
-    const ccd_path = resolveWorkflowCcdPath(args, workflow.classifier);
+    var resource_config = BatchConfig{};
+    try applyWorkflowToBatchConfig(&resource_config, args, workflow.calculation, workflow.output, workflow.classifier);
+    applyCliOverrides(&resource_config, args);
+    const effective_classifier_type = resource_config.classifier_type;
+
+    const ccd_path = resolveWorkflowCcdPath(args, workflow.classifier, effective_classifier_type);
     var ext_ccd: ?ccd_parser.ComponentDict = null;
     if (ccd_path) |path| {
         ext_ccd = try loadExternalCcd(allocator, io, path, load_quiet);
@@ -2511,7 +2521,7 @@ fn runWorkflow(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     defer if (ext_ccd) |*d| d.deinit();
 
     const workflow_sdf_paths: []const []const u8 = workflow.classifier.sdf orelse &.{};
-    const sdf_paths = resolveWorkflowSdfPaths(args, workflow_sdf_paths);
+    const sdf_paths = resolveWorkflowSdfPaths(args, workflow_sdf_paths, effective_classifier_type);
     var sdf_ccd: ?ccd_parser.ComponentDict = null;
     if (sdf_paths.len > 0) {
         sdf_ccd = loadSdfComponents(allocator, io, sdf_paths, load_quiet) catch |err| {
@@ -2920,18 +2930,23 @@ test "workflow custom classifier config path resolves for batch" {
     try std.testing.expectEqualStrings("custom-radii.toml", config.custom_classifier_path.?);
 }
 
-test "explicit classifier ignores workflow ccd and sdf unless explicitly provided" {
+test "batch resource resolver only loads CCD resources for CCD classifiers" {
     const classifier_config = @import("workflow_manifest.zig").ClassifierConfig{
         .ccd = "workflow.zsdc",
     };
     const workflow_sdf_paths = [_][]const u8{"workflow.sdf"};
 
-    const classifier_only_args = BatchArgs{
-        .classifier_explicit = true,
-        .classifier_type = .naccess,
-    };
-    try std.testing.expect(resolveWorkflowCcdPath(classifier_only_args, classifier_config) == null);
-    try std.testing.expectEqual(@as(usize, 0), resolveWorkflowSdfPaths(classifier_only_args, workflow_sdf_paths[0..]).len);
+    const workflow_only_args = BatchArgs{};
+    try std.testing.expect(resolveWorkflowCcdPath(workflow_only_args, classifier_config, .naccess) == null);
+    try std.testing.expect(resolveWorkflowCcdPath(workflow_only_args, classifier_config, .oons) == null);
+    try std.testing.expect(resolveWorkflowCcdPath(workflow_only_args, classifier_config, null) == null);
+    try std.testing.expectEqual(@as(usize, 0), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], .naccess).len);
+    try std.testing.expectEqual(@as(usize, 0), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], .oons).len);
+    try std.testing.expectEqual(@as(usize, 0), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], null).len);
+    try std.testing.expectEqualStrings("workflow.zsdc", resolveWorkflowCcdPath(workflow_only_args, classifier_config, .ccd).?);
+    try std.testing.expectEqualStrings("workflow.zsdc", resolveWorkflowCcdPath(workflow_only_args, classifier_config, .protor).?);
+    try std.testing.expectEqual(@as(usize, 1), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], .ccd).len);
+    try std.testing.expectEqual(@as(usize, 1), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], .protor).len);
 
     var explicit_resource_args = BatchArgs{
         .classifier_explicit = true,
@@ -2942,8 +2957,12 @@ test "explicit classifier ignores workflow ccd and sdf unless explicitly provide
     };
     try explicit_resource_args.sdf_paths.append("cli.sdf");
 
-    try std.testing.expectEqualStrings("cli.zsdc", resolveWorkflowCcdPath(explicit_resource_args, classifier_config).?);
-    const resolved_sdf_paths = resolveWorkflowSdfPaths(explicit_resource_args, workflow_sdf_paths[0..]);
+    try std.testing.expect(resolveWorkflowCcdPath(explicit_resource_args, classifier_config, .naccess) == null);
+    try std.testing.expect(resolveWorkflowCcdPath(explicit_resource_args, classifier_config, null) == null);
+    try std.testing.expectEqual(@as(usize, 0), resolveWorkflowSdfPaths(explicit_resource_args, workflow_sdf_paths[0..], .naccess).len);
+    try std.testing.expectEqual(@as(usize, 0), resolveWorkflowSdfPaths(explicit_resource_args, workflow_sdf_paths[0..], null).len);
+    try std.testing.expectEqualStrings("cli.zsdc", resolveWorkflowCcdPath(explicit_resource_args, classifier_config, .ccd).?);
+    const resolved_sdf_paths = resolveWorkflowSdfPaths(explicit_resource_args, workflow_sdf_paths[0..], .ccd);
     try std.testing.expectEqual(@as(usize, 1), resolved_sdf_paths.len);
     try std.testing.expectEqualStrings("cli.sdf", resolved_sdf_paths[0]);
 }
