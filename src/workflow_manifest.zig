@@ -309,7 +309,8 @@ fn parseJob(allocator: Allocator, entries: []const toml_parser.Value.Entry, exis
 }
 
 fn validateKnownDocumentShape(doc: toml_parser.Document, is_legacy: bool) WorkflowError!void {
-    for (doc.tables) |table| {
+    for (doc.tables, 0..) |table, index| {
+        if (hasEarlierTableName(doc.tables[0..index], table.name)) return error.UnknownField;
         if (table.name.len == 0) continue;
         if (is_legacy) return error.UnknownField;
         if (std.mem.eql(u8, table.name, "input") or
@@ -329,9 +330,24 @@ fn validateKnownDocumentShape(doc: toml_parser.Document, is_legacy: bool) Workfl
 }
 
 fn rejectUnknownFields(entries: []const toml_parser.Value.Entry, allowed: []const []const u8) WorkflowError!void {
-    for (entries) |entry| {
+    for (entries, 0..) |entry, index| {
         if (!isAllowedField(entry.key, allowed)) return error.UnknownField;
+        if (hasEarlierKey(entries[0..index], entry.key)) return error.UnknownField;
     }
+}
+
+fn hasEarlierTableName(tables: []const toml_parser.Table, name: []const u8) bool {
+    for (tables) |table| {
+        if (std.mem.eql(u8, table.name, name)) return true;
+    }
+    return false;
+}
+
+fn hasEarlierKey(entries: []const toml_parser.Value.Entry, key: []const u8) bool {
+    for (entries) |entry| {
+        if (std.mem.eql(u8, entry.key, key)) return true;
+    }
+    return false;
 }
 
 fn isAllowedField(key: []const u8, allowed: []const []const u8) bool {
@@ -563,6 +579,34 @@ test "parse legacy flat batch manifest" {
     try std.testing.expectEqual(@as(usize, 1), workflow.jobs.len);
     try std.testing.expectEqualStrings("chain_A", workflow.jobs[0].name);
     try std.testing.expectEqualStrings("A", workflow.jobs[0].chains.?[0]);
+}
+
+test "reject duplicate section names" {
+    const input =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[calculation]
+        \\n_points = 128
+        \\
+        \\[calculation]
+        \\n_slices = 20
+    ;
+
+    try std.testing.expectError(error.UnknownField, parse(std.testing.allocator, input));
+}
+
+test "reject duplicate keys in section" {
+    const input =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\path = "first.cif"
+        \\path = "second.cif"
+    ;
+
+    try std.testing.expectError(error.UnknownField, parse(std.testing.allocator, input));
 }
 
 test "reject invalid classifier combinations" {
