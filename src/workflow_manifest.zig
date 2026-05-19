@@ -103,6 +103,8 @@ fn parseOwned(allocator: Allocator, owned_content: []const u8) Error!Workflow {
     var workflow_initialized = false;
     errdefer if (!workflow_initialized) allocator.free(owned_content);
 
+    try rejectDuplicateTableHeaders(owned_content);
+
     var doc = try toml_parser.parse(allocator, owned_content);
     defer doc.deinit();
 
@@ -306,6 +308,46 @@ fn parseJob(allocator: Allocator, entries: []const toml_parser.Value.Entry, exis
         .chains = chains,
         .auth_chain = auth_chain,
     };
+}
+
+fn rejectDuplicateTableHeaders(content: []const u8) WorkflowError!void {
+    var start: usize = 0;
+    while (start <= content.len) {
+        const end = std.mem.indexOfScalarPos(u8, content, start, '\n') orelse content.len;
+        const raw_line = content[start..end];
+        if (tableHeaderName(raw_line)) |name| {
+            if (hasEarlierTableHeader(content[0..start], name)) return error.UnknownField;
+        }
+        if (end == content.len) break;
+        start = end + 1;
+    }
+}
+
+fn hasEarlierTableHeader(content: []const u8, name: []const u8) bool {
+    var start: usize = 0;
+    while (start <= content.len) {
+        const end = std.mem.indexOfScalarPos(u8, content, start, '\n') orelse content.len;
+        const raw_line = content[start..end];
+        if (tableHeaderName(raw_line)) |earlier_name| {
+            if (std.mem.eql(u8, earlier_name, name)) return true;
+        }
+        if (end == content.len) break;
+        start = end + 1;
+    }
+    return false;
+}
+
+fn tableHeaderName(raw_line: []const u8) ?[]const u8 {
+    const line_without_comment = if (std.mem.indexOfScalar(u8, raw_line, '#')) |comment_start|
+        raw_line[0..comment_start]
+    else
+        raw_line;
+    const line = std.mem.trim(u8, line_without_comment, " \t\r");
+    if (line.len == 0 or !std.mem.startsWith(u8, line, "[") or std.mem.startsWith(u8, line, "[[")) return null;
+    const end = std.mem.indexOfScalar(u8, line, ']') orelse return null;
+    const after = std.mem.trim(u8, line[end + 1 ..], " \t\r");
+    if (after.len != 0) return null;
+    return std.mem.trim(u8, line[1..end], " \t");
 }
 
 fn validateKnownDocumentShape(doc: toml_parser.Document, is_legacy: bool) WorkflowError!void {
@@ -591,6 +633,34 @@ test "reject duplicate section names" {
         \\
         \\[calculation]
         \\n_slices = 20
+    ;
+
+    try std.testing.expectError(error.UnknownField, parse(std.testing.allocator, input));
+}
+
+test "reject trailing empty duplicate section" {
+    const input =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\path = "a.cif"
+        \\
+        \\[input]
+    ;
+
+    try std.testing.expectError(error.UnknownField, parse(std.testing.allocator, input));
+}
+
+test "reject leading empty duplicate section" {
+    const input =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\
+        \\[input]
+        \\path = "a.cif"
     ;
 
     try std.testing.expectError(error.UnknownField, parse(std.testing.allocator, input));
