@@ -4,6 +4,10 @@ sidebar_position: 1
 
 # zsasa
 
+<p align="center">
+  <img src="/zsasa/img/logo.svg" alt="zsasa logo" width="420" />
+</p>
+
 High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 **Up to 3x faster** than FreeSASA C with f64 precision.
 
@@ -45,11 +49,13 @@ zsasa calc structure.cif output.json
 
 | Section | Description |
 |---------|-------------|
-| [Getting Started](getting-started.md) | Installation and first calculation |
+| [Getting Started](getting-started.md) | Install zsasa and run first CLI/Python calculations |
+| [Choosing CLI or Python](guide/choosing-tool.md) | Pick the right interface for your data and workflow |
+| [Batch Processing](guide/batch.md) | Process directories, JSONL output, residue maps, and chain filters |
+| [Workflow Files](guide/workflows.md) | Reproducible TOML workflows for calc and batch jobs |
+| [Classifiers and CCD](guide/classifiers.mdx) | Atom radius assignment, CCD dictionaries, and custom classifiers |
+| [Trajectory Analysis](guide/trajectory.md) | MD trajectory SASA with CLI and Python integrations |
+| [CLI Reference](cli/commands.md) | Command syntax and option reference |
+| [Python API](python-api/) | Python bindings, core API, and integrations |
+| [Benchmarks](benchmarks/) | Performance and accuracy benchmarks |
 | [Comparison](comparison.md) | How zsasa compares to FreeSASA, RustSASA, and Lahuta |
-| [Algorithms](guide/algorithms.mdx) | SR vs LR algorithm comparison |
-| [Classifiers](guide/classifiers.mdx) | Atom radius assignment |
-| [Trajectory Analysis](guide/trajectory.md) | MD trajectory SASA |
-| [CLI Reference](cli/commands.md) | Full CLI options |
-| [Python API](python-api/) | Python bindings documentation |
-| [Benchmarks](benchmarks/single-file.md) | Performance and accuracy benchmarks |

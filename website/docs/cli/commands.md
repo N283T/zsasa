@@ -15,6 +15,17 @@ zsasa traj <trajectory> <topology> [output] [OPTIONS]
 zsasa compile-dict <input.cif[.gz|.zst]> -o <output.zsdc>
 ```
 
+## Workflow Files
+
+```bash
+zsasa calc --workflow <workflow.toml>
+zsasa batch --workflow <workflow.toml>
+```
+
+Workflow files are TOML files that keep input, output, calculation, classifier, and batch job settings together. In batch mode, `--manifest` remains a compatibility alias for `--workflow`.
+
+See [Workflow Files](../guide/workflows.md) for full examples, precedence rules, custom classifier config, and residue-map usage.
+
 ## Subcommands
 
 ### `calc` - Single File SASA Calculation
@@ -22,7 +33,7 @@ zsasa compile-dict <input.cif[.gz|.zst]> -o <output.zsdc>
 Calculate SASA for a single structure file.
 
 ```bash
-zsasa calc structure.cif output.json [OPTIONS]
+zsasa calc structure.cif output.json
 zsasa calc --workflow sasa.toml
 ```
 
@@ -31,7 +42,7 @@ zsasa calc --workflow sasa.toml
 Process all structure files in a directory.
 
 ```bash
-zsasa batch input_dir/ output_dir/ [OPTIONS]
+zsasa batch structures/ results/
 zsasa batch --workflow bsa.toml
 ```
 
@@ -39,91 +50,14 @@ Positional paths are required for ordinary batch mode, but can be supplied by th
 
 Batch mode uses file-level parallelism: multiple files are processed simultaneously, one thread per file. Use `--threads` to control the number of concurrent files.
 
-#### Workflow TOML files
-
-Use `--workflow` to keep input, output, calculation, and classifier settings in a TOML file. `batch` workflows must contain one or more named `[[jobs]]` entries. Explicit CLI options override workflow values.
-
-`--manifest` is a compatibility alias for `--workflow` in `batch`.
-
-```bash
-zsasa calc --workflow sasa.toml
-zsasa batch --workflow bsa.toml
-zsasa batch structures/ results/ --workflow bsa.toml --threads=8
-```
-
-Calc workflow example:
-
-```toml
-version = 1
-kind = "workflow"
-
-[input]
-path = "structure.cif"
-chain = "A"
-
-[output]
-path = "sasa.json"
-format = "json"
-
-[calculation]
-algorithm = "sr"
-threads = 4
-n_points = 200
-per_residue = true
-rsa = true
-
-[classifier]
-type = "ccd"
-ccd = "components.zsdc"
-```
-
-Batch workflow example with a custom TOML classifier config reference:
-
-```toml
-version = 1
-kind = "workflow"
-
-[input]
-dir = "structures"
-
-[output]
-dir = "results"
-format = "jsonl"
-
-[calculation]
-residue_map = true
-use_bitmask = true
-n_points = 128
-
-[classifier]
-type = "custom"
-config = "my_classifier.toml"
-
-[[jobs]]
-name = "chain_A"
-chains = ["A"]
-
-[[jobs]]
-name = "chain_B"
-chains = ["B"]
-
-[[jobs]]
-name = "complex_AB"
-chains = ["A", "B"]
-```
-
-For `format = "jsonl"`, each batch job writes one file such as `results/chain_A.jsonl`. For `json`, `compact`, and `csv`, each job writes a directory such as `results/chain_A/`.
-
-Precedence is: built-in defaults < workflow settings < job settings < explicit CLI options. `--chain` is for non-workflow single-job batch mode; workflow jobs should use `[[jobs]].chains`.
-
-Set `residue_map = true` in a workflow, or pass `--residue-map` with `--format=jsonl`, to add compact residue-level mapping arrays (`residue_chain`, `residue_name`, `residue_number`, `residue_insertion_code`, `residue_atom_start`, `residue_atom_count`, `residue_sasa`) to each JSONL row. The default JSONL schema remains unchanged unless this option is enabled.
+For task-oriented examples, see [Batch Processing](../guide/batch.md) and [Workflow Files](../guide/workflows.md).
 
 ### `traj` - Trajectory Analysis
 
 Calculate SASA for each frame in a trajectory file (XTC or DCD).
 
 ```bash
-zsasa traj trajectory.xtc topology.pdb [OPTIONS]
+zsasa traj trajectory.xtc topology.pdb --output=sasa.csv
 ```
 
 See [Trajectory Options](#trajectory-options) for traj-specific options and details.
@@ -167,13 +101,7 @@ The compiled ZSDC file can then be used with `--ccd=components.zsdc` for faster 
 zsasa calc --config=my_classifier.toml structure.cif output.json
 ```
 
-Batch custom classifiers are workflow-only; set the workflow classifier section instead of passing a CLI `--config` option:
-
-```toml
-[classifier]
-type = "custom"
-config = "my_classifier.toml"
-```
+For batch custom classifier configs, use a workflow `[classifier]` section. See [Workflow Files](../guide/workflows.md#custom-classifier-configs).
 
 ## Common Options
 
@@ -193,7 +121,7 @@ config = "my_classifier.toml"
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--classifier=TYPE` | Built-in classifier: `ccd`, `protor`, `naccess`, or `oons` | `ccd` for PDB/mmCIF, none for JSON |
+| `--classifier=TYPE` | Built-in classifier: `ccd`, `protor`, `naccess`, or `oons` | calc/batch: `ccd` for PDB/mmCIF, none for JSON; traj: `naccess` |
 | `--ccd=FILE` | External CCD dictionary (CIF text or ZSDC binary) | none |
 
 When `--classifier` is used, atom radii are assigned based on residue and atom names. For PDB/mmCIF input, `ccd` is used by default. When `--classifier=ccd` is used, HETATM records are included automatically without needing `--include-hetatm`.
@@ -255,7 +183,7 @@ The `traj` subcommand has additional options specific to trajectory processing.
 
 ### Options
 
-Most [common options](#common-options) apply, plus the trajectory-specific options below. `traj` has no custom config CLI option; use a built-in classifier.
+Most [common options](#common-options) apply, plus the trajectory-specific options below. For trajectory calculations, `--classifier` defaults to `naccess` (not `ccd`); `traj` has no custom config CLI option, so use a built-in classifier.
 
 | Option | Description | Default |
 |--------|-------------|---------|

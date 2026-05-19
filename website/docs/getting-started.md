@@ -140,7 +140,14 @@ zsasa calc --format=csv structure.cif output.csv
 
 ## What's Next?
 
-- [User Guide: Algorithms](guide/algorithms.mdx) - Choosing between Shrake-Rupley and Lee-Richards
-- [User Guide: Classifiers](guide/classifiers.mdx) - Atom radius assignment and its impact on results
-- [CLI Reference](cli/commands.md) - Full CLI options
-- [Python API](python-api/) - Complete Python API documentation
+Choose the path that matches your workflow:
+
+| Goal | Next page |
+|------|-----------|
+| Decide between CLI and Python | [Choosing CLI or Python](guide/choosing-tool.md) |
+| Process many structure files | [Batch Processing](guide/batch.md) |
+| Make reproducible TOML workflows | [Workflow Files](guide/workflows.md) |
+| Understand atom radius assignment | [Classifiers and CCD](guide/classifiers.mdx) |
+| Analyze MD trajectories | [Trajectory Analysis](guide/trajectory.md) |
+| Look up command syntax | [CLI Reference](cli/commands.md) |
+| Use Python bindings | [Python API](python-api/) |

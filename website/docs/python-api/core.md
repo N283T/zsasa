@@ -149,13 +149,13 @@ def process_directory(
     n_slices: int = 20,
     probe_radius: float = 1.4,
     n_threads: int = 0,
-    classifier: ClassifierType | None = ClassifierType.PROTOR,
+    classifier: ClassifierType | None = ClassifierType.CCD,
     include_hydrogens: bool = False,
     include_hetatm: bool = False,
 ) -> BatchDirResult
 ```
 
-Process all supported structure files (.pdb, .cif, .mmcif, .ent, .json, and .gz variants) in a directory.
+Process all supported structure files (.pdb, .cif, .mmcif, .ent, .json, .sdf, .mol, and .gz/.zst variants) in a directory.
 
 **Parameters:**
 
@@ -168,7 +168,7 @@ Process all supported structure files (.pdb, .cif, .mmcif, .ent, .json, and .gz 
 | `n_slices` | `int` | `20` | Slices per atom (LR only) |
 | `probe_radius` | `float` | `1.4` | Water probe radius in Å |
 | `n_threads` | `int` | `0` | Number of threads (0 = auto) |
-| `classifier` | `ClassifierType \| None` | `PROTOR` | Classifier for radii. `None` = use input radii |
+| `classifier` | `ClassifierType \| None` | `CCD` | Classifier for radii. `None` = use input radii |
 | `include_hydrogens` | `bool` | `False` | Include hydrogen atoms |
 | `include_hetatm` | `bool` | `False` | Include HETATM records |
 

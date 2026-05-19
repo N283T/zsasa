@@ -4,7 +4,7 @@ import type * as Preset from "@docusaurus/preset-classic";
 const config: Config = {
   title: "zsasa",
   tagline: "High-performance SASA calculation in Zig",
-  // favicon: "img/favicon.ico",
+  favicon: "img/icon.svg",
 
   url: "https://n283t.github.io",
   baseUrl: "/zsasa/",
@@ -44,6 +44,10 @@ const config: Config = {
   themeConfig: {
     navbar: {
       title: "zsasa",
+      logo: {
+        alt: "zsasa icon",
+        src: "img/icon.svg",
+      },
       items: [
         {
           type: "docSidebar",
@@ -52,8 +56,8 @@ const config: Config = {
           label: "Docs",
         },
         {
-          type: "docSidebar",
-          sidebarId: "pythonApi",
+          type: "doc",
+          docId: "python-api/index",
           position: "left",
           label: "Python API",
         },
@@ -64,8 +68,8 @@ const config: Config = {
           label: "Zig API",
         },
         {
-          type: "docSidebar",
-          sidebarId: "benchmarks",
+          type: "doc",
+          docId: "benchmarks/index",
           position: "left",
           label: "Benchmarks",
         },

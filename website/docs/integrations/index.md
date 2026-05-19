@@ -38,7 +38,7 @@ Biotite uses `atom_array` instead of `model`:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `classifier` | `ClassifierType` | `NACCESS` | Atom radius classifier |
+| `classifier` | `ClassifierType` | `CCD` | Atom radius classifier |
 | `algorithm` | `"sr"` or `"lr"` | `"sr"` | SASA algorithm |
 | `n_points` | `int` | `100` | Test points (SR) |
 | `n_slices` | `int` | `20` | Slices (LR) |
