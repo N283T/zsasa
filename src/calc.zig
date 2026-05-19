@@ -582,7 +582,13 @@ fn applyWorkflowToCalcArgs(args: *CalcArgs, workflow: workflow_manifest.Workflow
         if (workflow.input.chain) |chain| args.chain_filter = chain;
     }
     if (!args.model_explicit) {
-        if (workflow.input.model) |model| args.model_num = model;
+        if (workflow.input.model) |model| {
+            if (model == 0) {
+                std.debug.print("Error: workflow model must be >= 1\n", .{});
+                return error.InvalidArgument;
+            }
+            args.model_num = model;
+        }
     }
     if (!args.mol_explicit) {
         if (workflow.input.mol) |mol| args.mol_selector = mol;
@@ -1936,4 +1942,17 @@ test "calc CLI explicit classifier overrides workflow classifier" {
 
     try std.testing.expectEqual(ClassifierType.naccess, args.classifier_type.?);
     try std.testing.expectEqual(@as(?[]const u8, null), args.config_path);
+}
+
+test "calc workflow rejects zero model number" {
+    const workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .input = .{
+            .model = 0,
+        },
+    };
+    var args = CalcArgs{};
+
+    try std.testing.expectError(error.InvalidArgument, applyWorkflowToCalcArgs(&args, workflow));
 }
