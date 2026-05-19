@@ -8,7 +8,9 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
-_No unreleased changes documented._
+### Added
+
+- **Adaptive batch bitmask SR**: add experimental `zsasa batch --adaptive-sr` mode with coarse/fine point controls for two-stage bitmask Shrake-Rupley runs.
 
 ## [v0.4.0](https://github.com/N283T/zsasa/releases/tag/v0.4.0) — 2026-05-19
 

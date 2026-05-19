@@ -69,6 +69,11 @@ pub const BatchConfig = struct {
     include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
     include_hetatm: bool = false, // Include HETATM records (default: exclude)
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
+    adaptive_sr: bool = false, // Experimental two-stage bitmask SR for batch mode
+    coarse_points: u32 = 64,
+    fine_points: u32 = 256,
+    adaptive_low: f64 = 0.10,
+    adaptive_high: f64 = 0.90,
     store_atom_areas: bool = false, // When true, copy atom_areas to result_allocator for jsonl
     external_ccd: ?*const ccd_parser.ComponentDict = null, // External CCD dictionary
     sdf_ccd: ?*const ccd_parser.ComponentDict = null, // SDF bond topology dictionary
@@ -85,19 +90,46 @@ pub const BatchConfig = struct {
 const BatchLuts = struct {
     lut_f64: ?bitmask_lut.BitmaskLut = null,
     lut_f32: ?bitmask_lut.BitmaskLutGen(f32) = null,
+    coarse_lut_f64: ?bitmask_lut.BitmaskLut = null,
+    fine_lut_f64: ?bitmask_lut.BitmaskLut = null,
+    coarse_lut_f32: ?bitmask_lut.BitmaskLutGen(f32) = null,
+    fine_lut_f32: ?bitmask_lut.BitmaskLutGen(f32) = null,
 
     fn init(allocator: Allocator, config: BatchConfig) !BatchLuts {
         if (!config.use_bitmask) return .{};
         if (config.algorithm != .sr) return error.BitmaskRequiresSR;
-        return switch (config.precision) {
-            .f64 => .{ .lut_f64 = try bitmask_lut.BitmaskLut.init(allocator, config.n_points) },
-            .f32 => .{ .lut_f32 = try bitmask_lut.BitmaskLutGen(f32).init(allocator, config.n_points) },
-        };
+
+        var luts = BatchLuts{};
+        errdefer luts.deinit();
+
+        if (config.adaptive_sr) {
+            switch (config.precision) {
+                .f64 => {
+                    luts.coarse_lut_f64 = try bitmask_lut.BitmaskLut.init(allocator, config.coarse_points);
+                    luts.fine_lut_f64 = try bitmask_lut.BitmaskLut.init(allocator, config.fine_points);
+                },
+                .f32 => {
+                    luts.coarse_lut_f32 = try bitmask_lut.BitmaskLutGen(f32).init(allocator, config.coarse_points);
+                    luts.fine_lut_f32 = try bitmask_lut.BitmaskLutGen(f32).init(allocator, config.fine_points);
+                },
+            }
+            return luts;
+        }
+
+        switch (config.precision) {
+            .f64 => luts.lut_f64 = try bitmask_lut.BitmaskLut.init(allocator, config.n_points),
+            .f32 => luts.lut_f32 = try bitmask_lut.BitmaskLutGen(f32).init(allocator, config.n_points),
+        }
+        return luts;
     }
 
     fn deinit(self: *BatchLuts) void {
         if (self.lut_f64) |*lut| lut.deinit();
         if (self.lut_f32) |*lut| lut.deinit();
+        if (self.coarse_lut_f64) |*lut| lut.deinit();
+        if (self.fine_lut_f64) |*lut| lut.deinit();
+        if (self.coarse_lut_f32) |*lut| lut.deinit();
+        if (self.fine_lut_f32) |*lut| lut.deinit();
         self.* = .{};
     }
 
@@ -108,8 +140,23 @@ const BatchLuts = struct {
     fn f32Ptr(self: *const BatchLuts) ?*const bitmask_lut.BitmaskLutGen(f32) {
         return if (self.lut_f32 != null) &self.lut_f32.? else null;
     }
-};
 
+    fn coarseF64Ptr(self: *const BatchLuts) ?*const bitmask_lut.BitmaskLut {
+        return if (self.coarse_lut_f64 != null) &self.coarse_lut_f64.? else null;
+    }
+
+    fn fineF64Ptr(self: *const BatchLuts) ?*const bitmask_lut.BitmaskLut {
+        return if (self.fine_lut_f64 != null) &self.fine_lut_f64.? else null;
+    }
+
+    fn coarseF32Ptr(self: *const BatchLuts) ?*const bitmask_lut.BitmaskLutGen(f32) {
+        return if (self.coarse_lut_f32 != null) &self.coarse_lut_f32.? else null;
+    }
+
+    fn fineF32Ptr(self: *const BatchLuts) ?*const bitmask_lut.BitmaskLutGen(f32) {
+        return if (self.fine_lut_f32 != null) &self.fine_lut_f32.? else null;
+    }
+};
 /// Get output extension based on format
 fn getOutputExtension(format: OutputFormat) []const u8 {
     return switch (format) {
@@ -173,20 +220,50 @@ fn sdfMoleculeDisplayName(allocator: Allocator, filename: []const u8, mol_name: 
 }
 
 /// Generic SASA calculation dispatcher.
-/// When bitmask_lut_ptr is non-null, uses bitmask-optimized Shrake-Rupley
-/// (the algorithm parameter is ignored). Otherwise selects SR or LR.
+/// When bitmask_lut_ptr is non-null, uses bitmask-optimized Shrake-Rupley.
+/// When adaptive_sr is enabled, uses coarse/fine bitmask LUTs.
 fn calculateSasaDispatch(
     comptime T: type,
     allocator: Allocator,
     input: AtomInput,
-    algorithm: Algorithm,
-    n_points: u32,
-    n_slices: u32,
+    config: BatchConfig,
     probe_radius: T,
     n_threads: usize,
     bitmask_lut_ptr: ?*const bitmask_lut.BitmaskLutGen(T),
+    coarse_lut_ptr: ?*const bitmask_lut.BitmaskLutGen(T),
+    fine_lut_ptr: ?*const bitmask_lut.BitmaskLutGen(T),
 ) !SasaResultGen(T) {
-    const sr_config = ConfigGen(T){ .n_points = n_points, .probe_radius = probe_radius };
+    const sr_config = ConfigGen(T){ .n_points = config.n_points, .probe_radius = probe_radius };
+
+    if (config.adaptive_sr) {
+        const coarse_lut = coarse_lut_ptr orelse return error.MissingAdaptiveLut;
+        const fine_lut = fine_lut_ptr orelse return error.MissingAdaptiveLut;
+        const adaptive = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(T).AdaptiveConfig{
+            .coarse_points = config.coarse_points,
+            .fine_points = config.fine_points,
+            .low = @as(T, @floatCast(config.adaptive_low)),
+            .high = @as(T, @floatCast(config.adaptive_high)),
+        };
+        return if (n_threads > 1)
+            shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(T).calculateSasaAdaptiveParallelWithLuts(
+                allocator,
+                input,
+                sr_config,
+                adaptive,
+                n_threads,
+                coarse_lut,
+                fine_lut,
+            )
+        else
+            shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(T).calculateSasaAdaptiveWithLuts(
+                allocator,
+                input,
+                sr_config,
+                adaptive,
+                coarse_lut,
+                fine_lut,
+            );
+    }
 
     if (bitmask_lut_ptr) |lut| {
         return if (n_threads > 1)
@@ -206,19 +283,19 @@ fn calculateSasaDispatch(
             );
     }
 
-    return switch (algorithm) {
+    return switch (config.algorithm) {
         .sr => if (n_threads > 1)
             shrake_rupley.ShrakeRupleyGen(T).calculateSasaParallel(allocator, input, sr_config, n_threads)
         else
             shrake_rupley.ShrakeRupleyGen(T).calculateSasa(allocator, input, sr_config),
         .lr => if (n_threads > 1)
             lee_richards.LeeRichardsGen(T).calculateSasaParallel(allocator, input, .{
-                .n_slices = n_slices,
+                .n_slices = config.n_slices,
                 .probe_radius = probe_radius,
             }, n_threads)
         else
             lee_richards.LeeRichardsGen(T).calculateSasa(allocator, input, .{
-                .n_slices = n_slices,
+                .n_slices = config.n_slices,
                 .probe_radius = probe_radius,
             }),
     };
@@ -584,6 +661,10 @@ fn processOneFile(
     n_threads: usize,
     lut_f64: ?*const bitmask_lut.BitmaskLut,
     lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+    coarse_lut_f64: ?*const bitmask_lut.BitmaskLut,
+    fine_lut_f64: ?*const bitmask_lut.BitmaskLut,
+    coarse_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+    fine_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
 ) FileResult {
     var result = FileResult{
         .filename = filename,
@@ -641,12 +722,12 @@ fn processOneFile(
                 f64,
                 arena,
                 input,
-                config.algorithm,
-                config.n_points,
-                config.n_slices,
+                config,
                 config.probe_radius,
                 n_threads,
                 lut_f64,
+                coarse_lut_f64,
+                fine_lut_f64,
             ) catch |err| {
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "SASA calculation failed: {s}", .{@errorName(err)}) catch null;
@@ -683,12 +764,12 @@ fn processOneFile(
                 f32,
                 arena,
                 input,
-                config.algorithm,
-                config.n_points,
-                config.n_slices,
+                config,
                 @as(f32, @floatCast(config.probe_radius)),
                 n_threads,
                 lut_f32,
+                coarse_lut_f32,
+                fine_lut_f32,
             ) catch |err| {
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "SASA calculation failed: {s}", .{@errorName(err)}) catch null;
@@ -751,6 +832,10 @@ fn processOneSdfMolecule(
     n_threads: usize,
     lut_f64: ?*const bitmask_lut.BitmaskLut,
     lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+    coarse_lut_f64: ?*const bitmask_lut.BitmaskLut,
+    fine_lut_f64: ?*const bitmask_lut.BitmaskLut,
+    coarse_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+    fine_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
 ) FileResult {
     var result = FileResult{
         .filename = display_name,
@@ -786,7 +871,7 @@ fn processOneSdfMolecule(
                 dict.deinit();
                 sdf_dict = null;
                 // fall through to classifier without SDF dict
-                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, null);
+                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
             };
             dict.owned_keys.append(arena, dict_key) catch |err| {
                 logWarning("{s}: SDF component registration failed: {s}", .{ display_name, @errorName(err) });
@@ -794,14 +879,14 @@ fn processOneSdfMolecule(
                 var mut_s = s;
                 mut_s.deinit();
                 dict.deinit();
-                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, null);
+                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
             };
             dict.components.put(arena, dict_key, s) catch |err| {
                 logWarning("{s}: SDF component registration failed: {s}", .{ display_name, @errorName(err) });
                 var mut_s = s;
                 mut_s.deinit();
                 dict.deinit();
-                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, null);
+                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
             };
             sdf_dict = dict;
         }
@@ -809,7 +894,7 @@ fn processOneSdfMolecule(
     defer if (sdf_dict) |*d| d.deinit();
 
     const sdf_ccd_ptr: ?*const ccd_parser.ComponentDict = if (sdf_dict) |*d| d else null;
-    return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, sdf_ccd_ptr);
+    return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, sdf_ccd_ptr);
 }
 
 /// Inner helper: apply classifier, run SASA, write output for a single SDF molecule.
@@ -825,6 +910,10 @@ fn processOneSdfMoleculeInner(
     n_threads: usize,
     lut_f64: ?*const bitmask_lut.BitmaskLut,
     lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+    coarse_lut_f64: ?*const bitmask_lut.BitmaskLut,
+    fine_lut_f64: ?*const bitmask_lut.BitmaskLut,
+    coarse_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+    fine_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
     sdf_ccd: ?*const ccd_parser.ComponentDict,
 ) FileResult {
     var res = result.*;
@@ -862,12 +951,12 @@ fn processOneSdfMoleculeInner(
                 f64,
                 arena,
                 input.*,
-                config.algorithm,
-                config.n_points,
-                config.n_slices,
+                config,
                 config.probe_radius,
                 n_threads,
                 lut_f64,
+                coarse_lut_f64,
+                fine_lut_f64,
             ) catch |err| {
                 res.status = .err;
                 res.error_msg = std.fmt.allocPrint(result_allocator, "SASA calculation failed: {s}", .{@errorName(err)}) catch null;
@@ -904,12 +993,12 @@ fn processOneSdfMoleculeInner(
                 f32,
                 arena,
                 input.*,
-                config.algorithm,
-                config.n_points,
-                config.n_slices,
+                config,
                 @as(f32, @floatCast(config.probe_radius)),
                 n_threads,
                 lut_f32,
+                coarse_lut_f32,
+                fine_lut_f32,
             ) catch |err| {
                 res.status = .err;
                 res.error_msg = std.fmt.allocPrint(result_allocator, "SASA calculation failed: {s}", .{@errorName(err)}) catch null;
@@ -1224,6 +1313,10 @@ pub fn runBatchSequential(
                     1, // single-threaded
                     luts.f64Ptr(),
                     luts.f32Ptr(),
+                    luts.coarseF64Ptr(),
+                    luts.fineF64Ptr(),
+                    luts.coarseF32Ptr(),
+                    luts.fineF32Ptr(),
                 );
                 mol_result.filename = display_name;
 
@@ -1261,6 +1354,10 @@ pub fn runBatchSequential(
                 1, // single-threaded
                 luts.f64Ptr(),
                 luts.f32Ptr(),
+                luts.coarseF64Ptr(),
+                luts.fineF64Ptr(),
+                luts.coarseF32Ptr(),
+                luts.fineF32Ptr(),
             );
             result.filename = filename_copy;
 
@@ -1322,6 +1419,10 @@ const ParallelContext = struct {
     processed_count: std.atomic.Value(usize),
     lut_f64: ?*const bitmask_lut.BitmaskLut,
     lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+    coarse_lut_f64: ?*const bitmask_lut.BitmaskLut,
+    fine_lut_f64: ?*const bitmask_lut.BitmaskLut,
+    coarse_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+    fine_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
     jsonl_stream: ?*JsonlStreamWriter,
     io: std.Io,
     /// Pre-parsed SDF data: keyed by filename, each entry is the parsed source bytes.
@@ -1431,6 +1532,10 @@ fn parallelWorker(ctx: *ParallelContext) void {
                 1, // single-threaded SASA per molecule
                 ctx.lut_f64,
                 ctx.lut_f32,
+                ctx.coarse_lut_f64,
+                ctx.fine_lut_f64,
+                ctx.coarse_lut_f32,
+                ctx.fine_lut_f32,
             );
             result.filename = name_copy;
 
@@ -1456,6 +1561,10 @@ fn parallelWorker(ctx: *ParallelContext) void {
                 1, // single-threaded SASA per file
                 ctx.lut_f64,
                 ctx.lut_f32,
+                ctx.coarse_lut_f64,
+                ctx.fine_lut_f64,
+                ctx.coarse_lut_f32,
+                ctx.fine_lut_f32,
             );
             result.filename = name_copy;
 
@@ -1704,6 +1813,10 @@ pub fn runBatchParallel(
         .processed_count = std.atomic.Value(usize).init(0),
         .lut_f64 = luts.f64Ptr(),
         .lut_f32 = luts.f32Ptr(),
+        .coarse_lut_f64 = luts.coarseF64Ptr(),
+        .fine_lut_f64 = luts.fineF64Ptr(),
+        .coarse_lut_f32 = luts.coarseF32Ptr(),
+        .fine_lut_f32 = luts.fineF32Ptr(),
         .jsonl_stream = jsonl_stream_ptr,
         .io = io,
         .sdf_sources = build_result.sdf_sources,
@@ -1814,6 +1927,11 @@ pub const BatchArgs = struct {
     include_hydrogens: bool = false,
     include_hetatm: bool = false,
     use_bitmask: bool = false,
+    adaptive_sr: bool = false,
+    coarse_points: u32 = 64,
+    fine_points: u32 = 256,
+    adaptive_low: f64 = 0.10,
+    adaptive_high: f64 = 0.90,
     ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz|.zst])
     sdf_paths: SdfPathList = .{}, // --sdf=PATH (up to 16)
     quiet: bool = false,
@@ -1831,6 +1949,11 @@ pub const BatchArgs = struct {
     include_hydrogens_explicit: bool = false,
     include_hetatm_explicit: bool = false,
     use_bitmask_explicit: bool = false,
+    adaptive_sr_explicit: bool = false,
+    coarse_points_explicit: bool = false,
+    fine_points_explicit: bool = false,
+    adaptive_low_explicit: bool = false,
+    adaptive_high_explicit: bool = false,
     ccd_explicit: bool = false,
     sdf_explicit: bool = false,
     quiet_explicit: bool = false,
@@ -1888,6 +2011,30 @@ fn parseNPoints(value: []const u8) u32 {
         std.debug.print("Error: n-points must be between 1 and 10000: {d}\n", .{n});
         std.process.exit(1);
     };
+}
+
+fn parseBitmaskPoints(option_name: []const u8, value: []const u8) u32 {
+    const n = std.fmt.parseInt(u32, value, 10) catch {
+        std.debug.print("Error: Invalid {s}: {s}\n", .{ option_name, value });
+        std.process.exit(1);
+    };
+    if (!bitmask_lut.isSupportedNPoints(n)) {
+        std.debug.print("Error: {s} must be between 1 and 1024: {d}\n", .{ option_name, n });
+        std.process.exit(1);
+    }
+    return n;
+}
+
+fn parseAdaptiveThreshold(option_name: []const u8, value: []const u8) f64 {
+    const threshold = std.fmt.parseFloat(f64, value) catch {
+        std.debug.print("Error: Invalid {s}: {s}\n", .{ option_name, value });
+        std.process.exit(1);
+    };
+    if (!std.math.isFinite(threshold) or threshold < 0.0 or threshold > 1.0) {
+        std.debug.print("Error: {s} must be finite and between 0.0 and 1.0: {d}\n", .{ option_name, threshold });
+        std.process.exit(1);
+    }
+    return threshold;
 }
 
 /// Parse and validate n-slices value (for Lee-Richards)
@@ -2152,6 +2299,55 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
             result.use_bitmask = true;
             result.use_bitmask_explicit = true;
         }
+        // --adaptive-sr and adaptive bitmask controls
+        else if (std.mem.eql(u8, arg, "--adaptive-sr")) {
+            result.adaptive_sr = true;
+            result.adaptive_sr_explicit = true;
+        } else if (std.mem.startsWith(u8, arg, "--coarse-points=")) {
+            result.coarse_points_explicit = true;
+            result.coarse_points = parseBitmaskPoints("--coarse-points", arg["--coarse-points=".len..]);
+        } else if (std.mem.eql(u8, arg, "--coarse-points")) {
+            result.coarse_points_explicit = true;
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --coarse-points\n", .{});
+                std.process.exit(1);
+            }
+            result.coarse_points = parseBitmaskPoints("--coarse-points", args[i]);
+        } else if (std.mem.startsWith(u8, arg, "--fine-points=")) {
+            result.fine_points_explicit = true;
+            result.fine_points = parseBitmaskPoints("--fine-points", arg["--fine-points=".len..]);
+        } else if (std.mem.eql(u8, arg, "--fine-points")) {
+            result.fine_points_explicit = true;
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --fine-points\n", .{});
+                std.process.exit(1);
+            }
+            result.fine_points = parseBitmaskPoints("--fine-points", args[i]);
+        } else if (std.mem.startsWith(u8, arg, "--adaptive-low=")) {
+            result.adaptive_low_explicit = true;
+            result.adaptive_low = parseAdaptiveThreshold("--adaptive-low", arg["--adaptive-low=".len..]);
+        } else if (std.mem.eql(u8, arg, "--adaptive-low")) {
+            result.adaptive_low_explicit = true;
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --adaptive-low\n", .{});
+                std.process.exit(1);
+            }
+            result.adaptive_low = parseAdaptiveThreshold("--adaptive-low", args[i]);
+        } else if (std.mem.startsWith(u8, arg, "--adaptive-high=")) {
+            result.adaptive_high_explicit = true;
+            result.adaptive_high = parseAdaptiveThreshold("--adaptive-high", arg["--adaptive-high=".len..]);
+        } else if (std.mem.eql(u8, arg, "--adaptive-high")) {
+            result.adaptive_high_explicit = true;
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --adaptive-high\n", .{});
+                std.process.exit(1);
+            }
+            result.adaptive_high = parseAdaptiveThreshold("--adaptive-high", args[i]);
+        }
         // --ccd=PATH or --ccd PATH (external CCD dictionary)
         else if (std.mem.startsWith(u8, arg, "--ccd=")) {
             result.ccd_explicit = true;
@@ -2245,6 +2441,18 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         }
     }
 
+    if (result.adaptive_sr and result.n_points_explicit and !result.fine_points_explicit) {
+        if (!bitmask_lut.isSupportedNPoints(result.n_points)) {
+            std.debug.print("Error: adaptive --n-points must be 1..1024 when used as fine points: {d}\n", .{result.n_points});
+            std.process.exit(1);
+        }
+        result.fine_points = result.n_points;
+    }
+    if (result.adaptive_low > result.adaptive_high) {
+        std.debug.print("Error: --adaptive-low must be <= --adaptive-high\n", .{});
+        std.process.exit(1);
+    }
+
     return result;
 }
 
@@ -2285,6 +2493,11 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --include-hetatm    Include HETATM records (default: exclude)
         \\    --use-bitmask       Use bitmask LUT optimization for SR algorithm
         \\                        (n-points must be 1..1024)
+        \\    --adaptive-sr       Experimental adaptive two-stage bitmask SR
+        \\    --coarse-points=N   Coarse adaptive points (default: 64)
+        \\    --fine-points=N     Fine adaptive points (default: --n-points or 256)
+        \\    --adaptive-low=X    Coarse accept low exposed fraction (default: 0.10)
+        \\    --adaptive-high=X   Coarse accept high exposed fraction (default: 0.90)
         \\    --timing            Show timing breakdown for benchmarking
         \\    -o, --output=PATH   Output directory, or file path for --format=jsonl
         \\    -q, --quiet         Suppress progress output
@@ -2601,6 +2814,10 @@ fn runWorkflow(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
 /// Run batch processing from parsed CLI arguments
 pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     if (args.workflow_path != null) {
+        if (args.adaptive_sr_explicit or args.coarse_points_explicit or args.fine_points_explicit or args.adaptive_low_explicit or args.adaptive_high_explicit) {
+            std.debug.print("Error: adaptive SR options are not supported with --workflow yet\n", .{});
+            return error.InvalidArgument;
+        }
         return runWorkflow(allocator, io, args);
     }
 
@@ -2658,6 +2875,25 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         return error.InvalidArgument;
     };
 
+    if (args.adaptive_sr) {
+        if (!args.use_bitmask) {
+            std.debug.print("Error: --adaptive-sr requires --use-bitmask\n", .{});
+            return error.InvalidArgument;
+        }
+        if (args.algorithm != .sr) {
+            std.debug.print("Error: --adaptive-sr requires --algorithm=sr\n", .{});
+            return error.InvalidArgument;
+        }
+        if (!bitmask_lut.isSupportedNPoints(args.coarse_points) or !bitmask_lut.isSupportedNPoints(args.fine_points)) {
+            std.debug.print("Error: --adaptive-sr point counts must be 1..1024\n", .{});
+            return error.InvalidArgument;
+        }
+        if (args.adaptive_low > args.adaptive_high) {
+            std.debug.print("Error: --adaptive-low must be <= --adaptive-high\n", .{});
+            return error.InvalidArgument;
+        }
+    }
+
     // For jsonl, don't pass output_dir to runBatch (no per-file I/O during computation)
     const output_dir: ?[]const u8 = if (args.output_format == .jsonl) null else args.output_path;
 
@@ -2689,6 +2925,11 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .include_hydrogens = args.include_hydrogens,
         .include_hetatm = args.include_hetatm or (args.classifier_type == .ccd),
         .use_bitmask = args.use_bitmask,
+        .adaptive_sr = args.adaptive_sr,
+        .coarse_points = args.coarse_points,
+        .fine_points = args.fine_points,
+        .adaptive_low = args.adaptive_low,
+        .adaptive_high = args.adaptive_high,
         .store_atom_areas = (args.output_format == .jsonl),
         .external_ccd = if (ext_ccd != null) &ext_ccd.? else null,
         .sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null,
@@ -3097,6 +3338,31 @@ test "BatchArgs --include-hetatm" {
     const args = [_][]const u8{ "zsasa", "batch", "--include-hetatm", "input_dir/" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(true, parsed.include_hetatm);
+}
+
+test "BatchArgs adaptive bitmask options" {
+    const args = [_][]const u8{
+        "zsasa", "batch", "--use-bitmask", "--adaptive-sr", "--coarse-points=64", "--fine-points", "256", "--adaptive-low=0.10", "--adaptive-high", "0.90", "input_dir/",
+    };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.use_bitmask);
+    try std.testing.expectEqual(true, parsed.adaptive_sr);
+    try std.testing.expectEqual(@as(u32, 64), parsed.coarse_points);
+    try std.testing.expectEqual(@as(u32, 256), parsed.fine_points);
+    try std.testing.expectEqual(@as(f64, 0.10), parsed.adaptive_low);
+    try std.testing.expectEqual(@as(f64, 0.90), parsed.adaptive_high);
+    try std.testing.expectEqual(true, parsed.adaptive_sr_explicit);
+    try std.testing.expectEqual(true, parsed.coarse_points_explicit);
+    try std.testing.expectEqual(true, parsed.fine_points_explicit);
+}
+
+test "BatchArgs adaptive defaults use 64 and 256" {
+    const args = [_][]const u8{ "zsasa", "batch", "--use-bitmask", "--adaptive-sr", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(u32, 64), parsed.coarse_points);
+    try std.testing.expectEqual(@as(u32, 256), parsed.fine_points);
+    try std.testing.expectEqual(@as(f64, 0.10), parsed.adaptive_low);
+    try std.testing.expectEqual(@as(f64, 0.90), parsed.adaptive_high);
 }
 
 test "BatchArgs --use-bitmask" {
