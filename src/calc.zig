@@ -690,17 +690,32 @@ fn applyWorkflowClassifierToCalcArgs(args: *CalcArgs, classifier_config: workflo
         }
     }
 
-    if (!args.ccd_explicit) {
-        if (classifier_config.ccd) |ccd| args.ccd_path = ccd;
-    }
-    if (!args.sdf_explicit) {
-        if (classifier_config.sdf) |sdf_paths| {
-            args.sdf_paths = .{};
-            for (sdf_paths) |path| {
-                args.sdf_paths.append(path) catch return error.InvalidArgument;
+    if (calcArgsUseCcdResources(args.*)) {
+        if (!args.ccd_explicit) {
+            if (classifier_config.ccd) |ccd| args.ccd_path = ccd;
+        }
+        if (!args.sdf_explicit) {
+            if (classifier_config.sdf) |sdf_paths| {
+                args.sdf_paths = .{};
+                for (sdf_paths) |path| {
+                    args.sdf_paths.append(path) catch return error.InvalidArgument;
+                }
             }
         }
+    } else {
+        if (!args.ccd_explicit) args.ccd_path = null;
+        if (!args.sdf_explicit) args.sdf_paths = .{};
     }
+}
+
+fn classifierUsesCcdResources(effective_classifier_type: ?ClassifierType) bool {
+    const classifier_type = effective_classifier_type orelse return false;
+    return classifier_type == .ccd or classifier_type == .protor;
+}
+
+fn calcArgsUseCcdResources(args: CalcArgs) bool {
+    if (args.config_path != null) return false;
+    return classifierUsesCcdResources(args.classifier_type);
 }
 
 // =============================================================================
@@ -1302,44 +1317,50 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
             };
         } else if (effective_classifier) |ct| {
             // Use built-in classifier
-            const inline_ccd: ?*const ccd_parser.ComponentDict = if (read_result.mmcif) |*p| p.getInlineCcd() else null;
+            const use_ccd_resources = classifierUsesCcdResources(ct);
+            const inline_ccd: ?*const ccd_parser.ComponentDict = if (use_ccd_resources)
+                if (read_result.mmcif) |*p| p.getInlineCcd() else null
+            else
+                null;
 
             // Load external CCD dictionary if specified
             var ext_ccd: ?ccd_parser.ComponentDict = null;
-            if (effective_args.ccd_path) |ccd_path| {
-                const ccd_data = if (compressed.isCompressed(ccd_path))
-                    compressed.read(allocator, ccd_path) catch |err| {
-                        std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
-                        std.process.exit(1);
-                    }
-                else blk: {
-                    const f = std.Io.Dir.cwd().openFile(io, ccd_path, .{}) catch |err| {
-                        std.debug.print("Error opening CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
-                        std.process.exit(1);
+            if (use_ccd_resources) {
+                if (effective_args.ccd_path) |ccd_path| {
+                    const ccd_data = if (compressed.isCompressed(ccd_path))
+                        compressed.read(allocator, ccd_path) catch |err| {
+                            std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                            std.process.exit(1);
+                        }
+                    else blk: {
+                        const f = std.Io.Dir.cwd().openFile(io, ccd_path, .{}) catch |err| {
+                            std.debug.print("Error opening CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                            std.process.exit(1);
+                        };
+                        defer f.close(io);
+                        var read_buf: [65536]u8 = undefined;
+                        var file_r = f.reader(io, &read_buf);
+                        break :blk file_r.interface.allocRemaining(allocator, .unlimited) catch |err| {
+                            std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                            std.process.exit(1);
+                        };
                     };
-                    defer f.close(io);
-                    var read_buf: [65536]u8 = undefined;
-                    var file_r = f.reader(io, &read_buf);
-                    break :blk file_r.interface.allocRemaining(allocator, .unlimited) catch |err| {
-                        std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
-                        std.process.exit(1);
-                    };
-                };
-                defer allocator.free(ccd_data);
+                    defer allocator.free(ccd_data);
 
-                ext_ccd = ccd_binary.loadDict(allocator, ccd_data) catch |err| {
-                    std.debug.print("Error loading CCD dictionary '{s}': {s}\n", .{ ccd_path, @errorName(err) });
-                    std.process.exit(1);
-                };
-                if (!effective_args.quiet) {
-                    std.debug.print("External CCD: loaded {d} components from '{s}'\n", .{ ext_ccd.?.components.count(), ccd_path });
+                    ext_ccd = ccd_binary.loadDict(allocator, ccd_data) catch |err| {
+                        std.debug.print("Error loading CCD dictionary '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                        std.process.exit(1);
+                    };
+                    if (!effective_args.quiet) {
+                        std.debug.print("External CCD: loaded {d} components from '{s}'\n", .{ ext_ccd.?.components.count(), ccd_path });
+                    }
                 }
             }
             defer if (ext_ccd) |*d| d.deinit();
 
             // Load SDF components from --sdf option
             var sdf_ccd: ?ccd_parser.ComponentDict = null;
-            if (effective_args.sdf_paths.len > 0) {
+            if (use_ccd_resources and effective_args.sdf_paths.len > 0) {
                 sdf_ccd = loadSdfComponents(allocator, io, effective_args.sdf_paths.constSlice(), effective_args.quiet) catch |err| {
                     std.debug.print("Error loading SDF components: {s}\n", .{@errorName(err)});
                     std.process.exit(1);
@@ -1876,7 +1897,6 @@ test "ensureCalcOutputParentDir creates nested output parent directories" {
 }
 
 test "calc workflow applies fields when CLI did not override" {
-    const sdf_paths = [_][]const u8{ "ligand.sdf", "cofactor.sdf" };
     const workflow = workflow_manifest.Workflow{
         .allocator = std.testing.allocator,
         .content = "",
@@ -1911,8 +1931,6 @@ test "calc workflow applies fields when CLI did not override" {
         .classifier = .{
             .type = "custom",
             .config = "custom-radii.toml",
-            .ccd = "components.zsdc",
-            .sdf = sdf_paths[0..],
         },
     };
     var args = CalcArgs{};
@@ -1943,10 +1961,8 @@ test "calc workflow applies fields when CLI did not override" {
     try std.testing.expectEqual(true, args.validate_only);
     try std.testing.expectEqualStrings("custom-radii.toml", args.config_path.?);
     try std.testing.expectEqual(@as(?ClassifierType, null), args.classifier_type);
-    try std.testing.expectEqualStrings("components.zsdc", args.ccd_path.?);
-    try std.testing.expectEqual(@as(usize, 2), args.sdf_paths.len);
-    try std.testing.expectEqualStrings("ligand.sdf", args.sdf_paths.constSlice()[0]);
-    try std.testing.expectEqualStrings("cofactor.sdf", args.sdf_paths.constSlice()[1]);
+    try std.testing.expectEqual(@as(?[]const u8, null), args.ccd_path);
+    try std.testing.expectEqual(@as(usize, 0), args.sdf_paths.len);
 }
 
 test "calc CLI explicit classifier overrides workflow classifier" {
@@ -1967,6 +1983,111 @@ test "calc CLI explicit classifier overrides workflow classifier" {
 
     try std.testing.expectEqual(ClassifierType.naccess, args.classifier_type.?);
     try std.testing.expectEqual(@as(?[]const u8, null), args.config_path);
+}
+
+test "calc workflow applies CCD resources for CCD and ProtOr classifiers" {
+    const sdf_paths = [_][]const u8{ "workflow-ligand.sdf", "workflow-cofactor.sdf" };
+
+    inline for (.{ ClassifierType.ccd, ClassifierType.protor }) |expected_classifier| {
+        const classifier_type = switch (expected_classifier) {
+            .ccd => "ccd",
+            .protor => "protor",
+            else => unreachable,
+        };
+        const workflow = workflow_manifest.Workflow{
+            .allocator = std.testing.allocator,
+            .content = "",
+            .classifier = .{
+                .type = classifier_type,
+                .ccd = "workflow.zsdc",
+                .sdf = sdf_paths[0..],
+            },
+        };
+        var args = CalcArgs{};
+
+        try applyWorkflowToCalcArgs(&args, workflow);
+
+        try std.testing.expectEqual(expected_classifier, args.classifier_type.?);
+        try std.testing.expectEqualStrings("workflow.zsdc", args.ccd_path.?);
+        try std.testing.expectEqual(@as(usize, 2), args.sdf_paths.len);
+        try std.testing.expectEqualStrings("workflow-ligand.sdf", args.sdf_paths.constSlice()[0]);
+        try std.testing.expectEqualStrings("workflow-cofactor.sdf", args.sdf_paths.constSlice()[1]);
+    }
+}
+
+test "calc CLI explicit CCD resources are preserved for CCD workflow classifier" {
+    const workflow_sdf_paths = [_][]const u8{"workflow-ligand.sdf"};
+    const workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .classifier = .{
+            .type = "ccd",
+            .ccd = "workflow.zsdc",
+            .sdf = workflow_sdf_paths[0..],
+        },
+    };
+    var args = CalcArgs{
+        .ccd_explicit = true,
+        .ccd_path = "cli.zsdc",
+        .sdf_explicit = true,
+    };
+    try args.sdf_paths.append("cli.sdf");
+
+    try applyWorkflowToCalcArgs(&args, workflow);
+
+    try std.testing.expectEqual(ClassifierType.ccd, args.classifier_type.?);
+    try std.testing.expectEqualStrings("cli.zsdc", args.ccd_path.?);
+    try std.testing.expectEqual(@as(usize, 1), args.sdf_paths.len);
+    try std.testing.expectEqualStrings("cli.sdf", args.sdf_paths.constSlice()[0]);
+}
+
+test "calc CLI explicit naccess ignores workflow CCD resources" {
+    const sdf_paths = [_][]const u8{ "workflow-ligand.sdf", "workflow-cofactor.sdf" };
+    const workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .classifier = .{
+            .type = "ccd",
+            .ccd = "missing.zsdc",
+            .sdf = sdf_paths[0..],
+        },
+    };
+    var args = CalcArgs{
+        .classifier_type = ClassifierType.naccess,
+        .classifier_explicit = true,
+    };
+
+    try applyWorkflowToCalcArgs(&args, workflow);
+
+    try std.testing.expectEqual(ClassifierType.naccess, args.classifier_type.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), args.ccd_path);
+    try std.testing.expectEqual(@as(usize, 0), args.sdf_paths.len);
+}
+
+test "calc CLI explicit config ignores workflow CCD resources even with CCD classifier" {
+    const sdf_paths = [_][]const u8{"workflow-ligand.sdf"};
+    const workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .classifier = .{
+            .type = "ccd",
+            .ccd = "missing.zsdc",
+            .sdf = sdf_paths[0..],
+        },
+    };
+    var args = CalcArgs{
+        .classifier_type = ClassifierType.ccd,
+        .classifier_explicit = true,
+        .config_path = "custom-radii.toml",
+        .config_explicit = true,
+    };
+
+    try applyWorkflowToCalcArgs(&args, workflow);
+
+    try std.testing.expectEqual(ClassifierType.ccd, args.classifier_type.?);
+    try std.testing.expectEqualStrings("custom-radii.toml", args.config_path.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), args.ccd_path);
+    try std.testing.expectEqual(@as(usize, 0), args.sdf_paths.len);
 }
 
 test "calc workflow rejects zero model number" {
