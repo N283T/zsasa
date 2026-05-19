@@ -554,7 +554,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    {s} calc --probe-radius=1.5 --n-points=200 input.json
         \\    {s} calc --format=csv input.json output.csv
         \\    {s} calc --classifier=naccess input.json output.json
-        \\    {s} calc --config=custom.config input.json output.json
+        \\    {s} calc --config=custom.toml input.json output.json
         \\
     , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
