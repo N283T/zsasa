@@ -1163,6 +1163,12 @@ fn printPerChainResults(chain_ids: []const types.FixedString4, atom_areas: []con
     }
 }
 
+fn ensureCalcOutputParentDir(io: std.Io, output_path: []const u8) !void {
+    const parent = std.fs.path.dirname(output_path) orelse return;
+    if (parent.len == 0) return;
+    try std.Io.Dir.cwd().createDirPath(io, parent);
+}
+
 // =============================================================================
 // Run
 // =============================================================================
@@ -1468,6 +1474,10 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
 
     // Write output file
     timer = std.Io.Timestamp.now(io, .awake);
+    ensureCalcOutputParentDir(io, effective_args.output_path) catch |err| {
+        std.debug.print("Error creating output directory for '{s}': {s}\n", .{ effective_args.output_path, @errorName(err) });
+        std.process.exit(1);
+    };
     json_writer.writeSasaResultWithFormatAndInput(allocator, io, result, input, effective_args.output_path, effective_args.output_format) catch |err| {
         std.debug.print("Error writing output file '{s}': {s}\n", .{ effective_args.output_path, @errorName(err) });
         std.process.exit(1);
@@ -1849,6 +1859,20 @@ test "CalcArgs --workflow FILE" {
     const args = [_][]const u8{ "zsasa", "calc", "--workflow", "calc-workflow.toml" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqualStrings("calc-workflow.toml", parsed.workflow_path.?);
+}
+
+test "ensureCalcOutputParentDir creates nested output parent directories" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const output_path = try std.fs.path.join(allocator, &.{ root_buf[0..root_len], "nested", "deeper", "result.json" });
+    defer allocator.free(output_path);
+
+    try ensureCalcOutputParentDir(std.testing.io, output_path);
+    _ = try tmp_dir.dir.statFile(std.testing.io, "nested/deeper", .{});
 }
 
 test "calc workflow applies fields when CLI did not override" {
