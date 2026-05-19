@@ -1040,7 +1040,11 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
         if (args.config_path) |config_path| {
             // Load from custom config file
             var custom_classifier = classifier_parser.parseConfigFile(allocator, io, config_path) catch |err| {
-                std.debug.print("Error loading config file '{s}': {s}\n", .{ config_path, @errorName(err) });
+                switch (err) {
+                    error.UnsupportedConfigExtension => std.debug.print("Error loading config file '{s}': custom classifier configs are TOML-only; rename or convert the file to .toml\n", .{config_path}),
+                    error.UnsupportedLegacyFormat => std.debug.print("Error loading config file '{s}': FreeSASA-style custom classifier configs are no longer supported; convert to TOML [types] and [[atoms]]\n", .{config_path}),
+                    else => std.debug.print("Error loading config file '{s}': {s}\n", .{ config_path, @errorName(err) }),
+                }
                 std.process.exit(1);
             };
             defer custom_classifier.deinit();
