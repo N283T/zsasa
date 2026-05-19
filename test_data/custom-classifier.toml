@@ -1,0 +1,142 @@
+name = "smoke-custom"
+
+[types]
+C_ALI = { radius = 1.87, class = "apolar" }
+O     = { radius = 1.40, class = "polar" }
+N     = { radius = 1.65, class = "polar" }
+S     = { radius = 1.85, class = "apolar" }
+
+[[atoms]]
+residue = "ANY"
+atom = "CA"
+type = "C_ALI"
+
+[[atoms]]
+residue = "ANY"
+atom = "O"
+type = "O"
+
+[[atoms]]
+residue = "ANY"
+atom = "N"
+type = "N"
+
+[[atoms]]
+residue = "ANY"
+atom = "SG"
+type = "S"
+
+[[atoms]]
+residue = "ANY"
+atom = "C"
+type = "C_ALI"
+
+[[atoms]]
+residue = "ANY"
+atom = "CB"
+type = "C_ALI"
+
+[[atoms]]
+residue = "ANY"
+atom = "CG"
+type = "C_ALI"
+
+[[atoms]]
+residue = "ANY"
+atom = "CG1"
+type = "C_ALI"
+
+[[atoms]]
+residue = "ANY"
+atom = "CG2"
+type = "C_ALI"
+
+[[atoms]]
+residue = "ANY"
+atom = "CD"
+type = "C_ALI"
+
+[[atoms]]
+residue = "ANY"
+atom = "CD1"
+type = "C_ALI"
+
+[[atoms]]
+residue = "ANY"
+atom = "CD2"
+type = "C_ALI"
+
+[[atoms]]
+residue = "ANY"
+atom = "CE1"
+type = "C_ALI"
+
+[[atoms]]
+residue = "ANY"
+atom = "CE2"
+type = "C_ALI"
+
+[[atoms]]
+residue = "ANY"
+atom = "CZ"
+type = "C_ALI"
+
+[[atoms]]
+residue = "ANY"
+atom = "OXT"
+type = "O"
+
+[[atoms]]
+residue = "ANY"
+atom = "OD1"
+type = "O"
+
+[[atoms]]
+residue = "ANY"
+atom = "OD2"
+type = "O"
+
+[[atoms]]
+residue = "ANY"
+atom = "OE1"
+type = "O"
+
+[[atoms]]
+residue = "ANY"
+atom = "OE2"
+type = "O"
+
+[[atoms]]
+residue = "ANY"
+atom = "OG"
+type = "O"
+
+[[atoms]]
+residue = "ANY"
+atom = "OG1"
+type = "O"
+
+[[atoms]]
+residue = "ANY"
+atom = "OH"
+type = "O"
+
+[[atoms]]
+residue = "ANY"
+atom = "ND2"
+type = "N"
+
+[[atoms]]
+residue = "ANY"
+atom = "NE"
+type = "N"
+
+[[atoms]]
+residue = "ANY"
+atom = "NH1"
+type = "N"
+
+[[atoms]]
+residue = "ANY"
+atom = "NH2"
+type = "N"

@@ -1,0 +1,17 @@
+version = 1
+kind = "workflow"
+
+[input]
+path = "examples/1crn.pdb"
+
+[output]
+path = "zig-out/workflow-smoke/calc.json"
+format = "json"
+
+[calculation]
+n_points = 32
+quiet = true
+
+[classifier]
+type = "custom"
+config = "test_data/custom-classifier.toml"
