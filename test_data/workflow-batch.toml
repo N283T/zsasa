@@ -1,0 +1,20 @@
+version = 1
+kind = "workflow"
+
+[input]
+dir = "examples"
+
+[output]
+dir = "zig-out/workflow-smoke/batch"
+format = "jsonl"
+
+[calculation]
+n_points = 32
+quiet = true
+residue_map = true
+
+[classifier]
+type = "ccd"
+
+[[jobs]]
+name = "all"

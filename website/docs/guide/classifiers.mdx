@@ -134,7 +134,9 @@ result = calculate_sasa_from_structure(
 
 ## Custom Classifier
 
-You can define custom atom radii using a config file.
+Custom classifiers are an advanced feature for studies that require a specific radius table. For most structures, keep the default CCD classifier because it covers standard residues and uses CCD bond topology for ligands, cofactors, and modified residues.
+
+Custom classifier files must be TOML files with the `.toml` extension.
 
 ### TOML Format
 
@@ -159,22 +161,33 @@ atom = "CB"
 type = "C_ALI"
 ```
 
-### FreeSASA Format
+Use it from the CLI with:
 
+```bash
+zsasa calc --config=my_radii.toml structure.cif output.json
 ```
-name: my-classifier
 
-types:
+### Migrating from legacy FreeSASA-style text
+
+Older custom classifier text files are no longer supported as input. Convert type definitions and atom mappings to TOML:
+
+```text
+# Old FreeSASA-style text
 C_ALI 1.87 apolar
-C_CAR 1.76 apolar
-O     1.40 polar
-
-atoms:
-ANY CA  C_ALI
-ALA CB  C_ALI
+ANY CA C_ALI
 ```
 
-The format is auto-detected by file extension: `.toml` for TOML, all others for FreeSASA format.
+becomes:
+
+```toml
+[types]
+C_ALI = { radius = 1.87, class = "apolar" }
+
+[[atoms]]
+residue = "ANY"
+atom = "CA"
+type = "C_ALI"
+```
 
 ## CCD Classifier
 

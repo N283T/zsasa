@@ -1,8 +1,7 @@
 //! TOML-based classifier configuration parser.
 //!
 //! Converts parsed TOML documents into `classifier.Classifier` instances,
-//! using the same data structures and error types as the existing FreeSASA
-//! configuration parser.
+//! independent of the legacy FreeSASA-style custom classifier parser.
 //!
 //! ## TOML Format
 //!
@@ -42,9 +41,21 @@ const Classifier = classifier.Classifier;
 const AtomClass = classifier.AtomClass;
 const toml_parser = @import("toml_parser.zig");
 const Value = toml_parser.Value;
-const classifier_parser = @import("classifier_parser.zig");
 
-pub const ParseError = classifier_parser.ParseError;
+pub const ParseError = error{
+    /// Type definition is missing required fields or is not an inline table.
+    InvalidTypeDefinition,
+    /// Atom definition is missing residue, atom name, or type reference.
+    InvalidAtomDefinition,
+    /// Radius value is missing or not a valid number.
+    InvalidRadius,
+    /// Class value is not "polar" or "apolar".
+    InvalidClass,
+    /// Referenced type not defined in the [types] section.
+    UndefinedType,
+    /// Duplicate type definition.
+    DuplicateType,
+};
 pub const Error = ParseError || Allocator.Error || toml_parser.Error;
 
 /// Intermediate type definition from the [types] table.
@@ -315,102 +326,4 @@ test "parseConfig TOML multiple types and atoms" {
     try std.testing.expectEqual(@as(?f64, 1.65), result.getRadius("ARG", "NE"));
     try std.testing.expectEqual(AtomClass.apolar, result.getClass("ALA", "C"));
     try std.testing.expectEqual(AtomClass.polar, result.getClass("ALA", "O"));
-}
-
-test "TOML and FreeSASA configs produce identical classifier" {
-    const classifier_parser_mod = @import("classifier_parser.zig");
-
-    const freesasa_config =
-        \\name: roundtrip
-        \\
-        \\types:
-        \\C_ALI 1.87 apolar
-        \\C_CAR 1.76 apolar
-        \\N 1.65 polar
-        \\O 1.40 polar
-        \\S 1.85 apolar
-        \\
-        \\atoms:
-        \\ANY C   C_CAR
-        \\ANY O   O
-        \\ANY CA  C_ALI
-        \\ANY N   N
-        \\ALA CB  C_ALI
-        \\CYS SG  S
-    ;
-
-    const toml_config =
-        \\name = "roundtrip"
-        \\
-        \\[types]
-        \\C_ALI = { radius = 1.87, class = "apolar" }
-        \\C_CAR = { radius = 1.76, class = "apolar" }
-        \\N = { radius = 1.65, class = "polar" }
-        \\O = { radius = 1.40, class = "polar" }
-        \\S = { radius = 1.85, class = "apolar" }
-        \\
-        \\[[atoms]]
-        \\residue = "ANY"
-        \\atom = "C"
-        \\type = "C_CAR"
-        \\
-        \\[[atoms]]
-        \\residue = "ANY"
-        \\atom = "O"
-        \\type = "O"
-        \\
-        \\[[atoms]]
-        \\residue = "ANY"
-        \\atom = "CA"
-        \\type = "C_ALI"
-        \\
-        \\[[atoms]]
-        \\residue = "ANY"
-        \\atom = "N"
-        \\type = "N"
-        \\
-        \\[[atoms]]
-        \\residue = "ALA"
-        \\atom = "CB"
-        \\type = "C_ALI"
-        \\
-        \\[[atoms]]
-        \\residue = "CYS"
-        \\atom = "SG"
-        \\type = "S"
-    ;
-
-    const allocator = std.testing.allocator;
-    var fs_result = try classifier_parser_mod.parseConfig(allocator, freesasa_config);
-    defer fs_result.deinit();
-    var toml_result = try parseConfig(allocator, toml_config);
-    defer toml_result.deinit();
-
-    // Names must match
-    try std.testing.expectEqualStrings(fs_result.name, toml_result.name);
-
-    // Test same atoms produce same radii and classes
-    const test_cases = [_]struct { []const u8, []const u8 }{
-        .{ "ALA", "C" },
-        .{ "ALA", "O" },
-        .{ "ALA", "CA" },
-        .{ "ALA", "N" },
-        .{ "ALA", "CB" },
-        .{ "CYS", "SG" },
-        .{ "GLY", "C" },
-        .{ "GLY", "CA" },
-    };
-
-    for (test_cases) |tc| {
-        const residue = tc[0];
-        const atom = tc[1];
-        try std.testing.expectEqual(
-            fs_result.getRadius(residue, atom),
-            toml_result.getRadius(residue, atom),
-        );
-        try std.testing.expectEqual(
-            fs_result.getClass(residue, atom),
-            toml_result.getClass(residue, atom),
-        );
-    }
 }

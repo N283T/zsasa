@@ -1,0 +1,10 @@
+version = 1
+input_dir = "examples"
+output_dir = "zig-out/workflow-smoke/legacy"
+format = "jsonl"
+classifier = "ccd"
+n_points = 32
+quiet = true
+
+[[jobs]]
+name = "all"

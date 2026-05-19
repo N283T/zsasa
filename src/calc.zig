@@ -23,6 +23,7 @@ const ccd_parser = @import("ccd_parser.zig");
 const ccd_binary = @import("ccd_binary.zig");
 const sdf_parser = @import("sdf_parser.zig");
 const compressed = @import("compressed.zig");
+const workflow_manifest = @import("workflow_manifest.zig");
 
 const Config = types.Config;
 const Configf32 = types.Configf32;
@@ -43,8 +44,9 @@ const SdfPathList = sdf_parser.SdfPathList;
 /// Parsed command-line arguments for the calc subcommand
 pub const CalcArgs = struct {
     input_path: ?[]const u8 = null,
+    workflow_path: ?[]const u8 = null,
     output_path: []const u8 = "output.json",
-    output_path_explicit: bool = false, // Track if -o was explicitly set
+    output_path_explicit: bool = false, // Track if -o or positional output was explicitly set
     n_threads: usize = 0, // 0 = auto-detect
     probe_radius: f64 = 1.4,
     n_points: u32 = 100, // For Shrake-Rupley
@@ -70,11 +72,56 @@ pub const CalcArgs = struct {
     validate_only: bool = false,
     show_timing: bool = false, // Show timing breakdown for benchmarking
     show_help: bool = false,
+    threads_explicit: bool = false,
+    probe_radius_explicit: bool = false,
+    n_points_explicit: bool = false,
+    n_slices_explicit: bool = false,
+    algorithm_explicit: bool = false,
+    precision_explicit: bool = false,
+    format_explicit: bool = false,
+    classifier_explicit: bool = false,
+    config_explicit: bool = false,
+    chain_explicit: bool = false,
+    model_explicit: bool = false,
+    auth_chain_explicit: bool = false,
+    include_hydrogens_explicit: bool = false,
+    include_hetatm_explicit: bool = false,
+    per_residue_explicit: bool = false,
+    rsa_explicit: bool = false,
+    polar_explicit: bool = false,
+    use_bitmask_explicit: bool = false,
+    ccd_explicit: bool = false,
+    sdf_explicit: bool = false,
+    mol_explicit: bool = false,
+    quiet_explicit: bool = false,
+    validate_explicit: bool = false,
+    timing_explicit: bool = false,
 };
 
 // =============================================================================
 // Parse helper functions
 // =============================================================================
+
+fn validateWorkflowProbeRadius(radius: f64) !f64 {
+    if (radius <= 0 or radius > 10.0 or !std.math.isFinite(radius)) {
+        return error.InvalidArgument;
+    }
+    return radius;
+}
+
+fn validateWorkflowNPoints(n: u32) !u32 {
+    if (n == 0 or n > 10000) {
+        return error.InvalidArgument;
+    }
+    return n;
+}
+
+fn validateWorkflowNSlices(n: u32) !u32 {
+    if (n == 0 or n > 1000) {
+        return error.InvalidArgument;
+    }
+    return n;
+}
 
 /// Parse and validate probe radius value
 fn parseProbeRadius(value: []const u8) f64 {
@@ -82,11 +129,10 @@ fn parseProbeRadius(value: []const u8) f64 {
         std.debug.print("Error: Invalid probe radius: {s}\n", .{value});
         std.process.exit(1);
     };
-    if (radius <= 0 or radius > 10.0 or !std.math.isFinite(radius)) {
+    return validateWorkflowProbeRadius(radius) catch {
         std.debug.print("Error: Probe radius must be between 0 and 10 Angstroms: {d}\n", .{radius});
         std.process.exit(1);
-    }
-    return radius;
+    };
 }
 
 /// Parse and validate n-points value
@@ -95,11 +141,10 @@ fn parseNPoints(value: []const u8) u32 {
         std.debug.print("Error: Invalid n-points: {s}\n", .{value});
         std.process.exit(1);
     };
-    if (n == 0 or n > 10000) {
+    return validateWorkflowNPoints(n) catch {
         std.debug.print("Error: n-points must be between 1 and 10000: {d}\n", .{n});
         std.process.exit(1);
-    }
-    return n;
+    };
 }
 
 /// Parse and validate output format value
@@ -136,11 +181,10 @@ fn parseNSlices(value: []const u8) u32 {
         std.debug.print("Error: Invalid n-slices: {s}\n", .{value});
         std.process.exit(1);
     };
-    if (n == 0 or n > 1000) {
+    return validateWorkflowNSlices(n) catch {
         std.debug.print("Error: n-slices must be between 1 and 1000: {d}\n", .{n});
         std.process.exit(1);
-    }
-    return n;
+    };
 }
 
 /// Parse and validate classifier type value
@@ -193,13 +237,25 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
     while (i < args.len) : (i += 1) {
         const arg = args[i];
 
+        // --workflow=PATH or --workflow PATH
+        if (std.mem.startsWith(u8, arg, "--workflow=")) {
+            result.workflow_path = arg["--workflow=".len..];
+        } else if (std.mem.eql(u8, arg, "--workflow")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --workflow\n", .{});
+                std.process.exit(1);
+            }
+            result.workflow_path = args[i];
+        }
         // --threads=N or --threads N
-        if (std.mem.startsWith(u8, arg, "--threads=")) {
+        else if (std.mem.startsWith(u8, arg, "--threads=")) {
             const value = arg["--threads=".len..];
             result.n_threads = std.fmt.parseInt(usize, value, 10) catch {
                 std.debug.print("Error: Invalid thread count: {s}\n", .{value});
                 std.process.exit(1);
             };
+            result.threads_explicit = true;
         } else if (std.mem.eql(u8, arg, "--threads")) {
             i += 1;
             if (i >= args.len) {
@@ -210,11 +266,13 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
                 std.debug.print("Error: Invalid thread count: {s}\n", .{args[i]});
                 std.process.exit(1);
             };
+            result.threads_explicit = true;
         }
         // --probe-radius=R or --probe-radius R
         else if (std.mem.startsWith(u8, arg, "--probe-radius=")) {
             const value = arg["--probe-radius=".len..];
             result.probe_radius = parseProbeRadius(value);
+            result.probe_radius_explicit = true;
         } else if (std.mem.eql(u8, arg, "--probe-radius")) {
             i += 1;
             if (i >= args.len) {
@@ -222,11 +280,13 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
                 std.process.exit(1);
             }
             result.probe_radius = parseProbeRadius(args[i]);
+            result.probe_radius_explicit = true;
         }
         // --n-points=N or --n-points N
         else if (std.mem.startsWith(u8, arg, "--n-points=")) {
             const value = arg["--n-points=".len..];
             result.n_points = parseNPoints(value);
+            result.n_points_explicit = true;
         } else if (std.mem.eql(u8, arg, "--n-points")) {
             i += 1;
             if (i >= args.len) {
@@ -234,11 +294,13 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
                 std.process.exit(1);
             }
             result.n_points = parseNPoints(args[i]);
+            result.n_points_explicit = true;
         }
         // --format=FORMAT or --format FORMAT
         else if (std.mem.startsWith(u8, arg, "--format=")) {
             const value = arg["--format=".len..];
             result.output_format = parseOutputFormat(value);
+            result.format_explicit = true;
         } else if (std.mem.eql(u8, arg, "--format")) {
             i += 1;
             if (i >= args.len) {
@@ -246,11 +308,13 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
                 std.process.exit(1);
             }
             result.output_format = parseOutputFormat(args[i]);
+            result.format_explicit = true;
         }
         // --algorithm=ALGO or --algorithm ALGO
         else if (std.mem.startsWith(u8, arg, "--algorithm=")) {
             const value = arg["--algorithm=".len..];
             result.algorithm = parseAlgorithm(value);
+            result.algorithm_explicit = true;
         } else if (std.mem.eql(u8, arg, "--algorithm")) {
             i += 1;
             if (i >= args.len) {
@@ -258,11 +322,13 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
                 std.process.exit(1);
             }
             result.algorithm = parseAlgorithm(args[i]);
+            result.algorithm_explicit = true;
         }
         // --n-slices=N or --n-slices N (for Lee-Richards)
         else if (std.mem.startsWith(u8, arg, "--n-slices=")) {
             const value = arg["--n-slices=".len..];
             result.n_slices = parseNSlices(value);
+            result.n_slices_explicit = true;
         } else if (std.mem.eql(u8, arg, "--n-slices")) {
             i += 1;
             if (i >= args.len) {
@@ -270,11 +336,13 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
                 std.process.exit(1);
             }
             result.n_slices = parseNSlices(args[i]);
+            result.n_slices_explicit = true;
         }
         // --classifier=TYPE or --classifier TYPE
         else if (std.mem.startsWith(u8, arg, "--classifier=")) {
             const value = arg["--classifier=".len..];
             result.classifier_type = parseClassifierType(value);
+            result.classifier_explicit = true;
         } else if (std.mem.eql(u8, arg, "--classifier")) {
             i += 1;
             if (i >= args.len) {
@@ -282,11 +350,13 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
                 std.process.exit(1);
             }
             result.classifier_type = parseClassifierType(args[i]);
+            result.classifier_explicit = true;
         }
         // --precision=PREC or --precision PREC
         else if (std.mem.startsWith(u8, arg, "--precision=")) {
             const value = arg["--precision=".len..];
             result.precision = parsePrecision(value);
+            result.precision_explicit = true;
         } else if (std.mem.eql(u8, arg, "--precision")) {
             i += 1;
             if (i >= args.len) {
@@ -294,11 +364,13 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
                 std.process.exit(1);
             }
             result.precision = parsePrecision(args[i]);
+            result.precision_explicit = true;
         }
         // --config=FILE or --config FILE
         else if (std.mem.startsWith(u8, arg, "--config=")) {
             const value = arg["--config=".len..];
             result.config_path = value;
+            result.config_explicit = true;
         } else if (std.mem.eql(u8, arg, "--config")) {
             i += 1;
             if (i >= args.len) {
@@ -306,11 +378,13 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
                 std.process.exit(1);
             }
             result.config_path = args[i];
+            result.config_explicit = true;
         }
         // --chain=ID or --chain ID (e.g., --chain=A or --chain=A,B,C)
         else if (std.mem.startsWith(u8, arg, "--chain=")) {
             const value = arg["--chain=".len..];
             result.chain_filter = value;
+            result.chain_explicit = true;
         } else if (std.mem.eql(u8, arg, "--chain")) {
             i += 1;
             if (i >= args.len) {
@@ -318,6 +392,7 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
                 std.process.exit(1);
             }
             result.chain_filter = args[i];
+            result.chain_explicit = true;
         }
         // --model=N or --model N
         else if (std.mem.startsWith(u8, arg, "--model=")) {
@@ -331,6 +406,7 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
                 std.process.exit(1);
             }
             result.model_num = model;
+            result.model_explicit = true;
         } else if (std.mem.eql(u8, arg, "--model")) {
             i += 1;
             if (i >= args.len) {
@@ -346,49 +422,62 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
                 std.process.exit(1);
             }
             result.model_num = model;
+            result.model_explicit = true;
         }
         // --auth-chain (use auth_asym_id instead of label_asym_id)
         else if (std.mem.eql(u8, arg, "--auth-chain")) {
             result.use_auth_chain = true;
+            result.auth_chain_explicit = true;
         }
         // --include-hydrogens (include hydrogen atoms, default: exclude)
         else if (std.mem.eql(u8, arg, "--include-hydrogens")) {
             result.include_hydrogens = true;
+            result.include_hydrogens_explicit = true;
         }
         // --include-hetatm (include HETATM records, default: exclude)
         else if (std.mem.eql(u8, arg, "--include-hetatm")) {
             result.include_hetatm = true;
+            result.include_hetatm_explicit = true;
         }
         // --per-residue (show per-residue SASA)
         else if (std.mem.eql(u8, arg, "--per-residue")) {
             result.per_residue = true;
+            result.per_residue_explicit = true;
         }
         // --rsa (show RSA - Relative Solvent Accessibility)
         else if (std.mem.eql(u8, arg, "--rsa")) {
             result.rsa = true;
+            result.rsa_explicit = true;
             result.per_residue = true; // RSA implies per-residue
+            result.per_residue_explicit = true;
         }
         // --polar (show polar/nonpolar SASA summary)
         else if (std.mem.eql(u8, arg, "--polar")) {
             result.polar = true;
+            result.polar_explicit = true;
             result.per_residue = true; // Polar analysis requires per-residue
+            result.per_residue_explicit = true;
         }
         // --quiet or -q
         else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
             result.quiet = true;
+            result.quiet_explicit = true;
         }
         // --validate
         else if (std.mem.eql(u8, arg, "--validate")) {
             result.validate_only = true;
+            result.validate_explicit = true;
         }
         // --timing
         else if (std.mem.eql(u8, arg, "--timing")) {
             result.show_timing = true;
+            result.timing_explicit = true;
         }
         // --ccd=PATH or --ccd PATH (external CCD dictionary)
         else if (std.mem.startsWith(u8, arg, "--ccd=")) {
             const value = arg["--ccd=".len..];
             result.ccd_path = value;
+            result.ccd_explicit = true;
         } else if (std.mem.eql(u8, arg, "--ccd")) {
             i += 1;
             if (i >= args.len) {
@@ -396,6 +485,7 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
                 std.process.exit(1);
             }
             result.ccd_path = args[i];
+            result.ccd_explicit = true;
         }
         // --sdf=PATH or --sdf PATH (SDF file with bond topology for CCD classifier)
         else if (std.mem.startsWith(u8, arg, "--sdf=")) {
@@ -404,6 +494,7 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
                 std.debug.print("Error: Too many --sdf paths (max 16)\n", .{});
                 std.process.exit(1);
             };
+            result.sdf_explicit = true;
         } else if (std.mem.eql(u8, arg, "--sdf")) {
             i += 1;
             if (i >= args.len) {
@@ -414,11 +505,13 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
                 std.debug.print("Error: Too many --sdf paths (max 16)\n", .{});
                 std.process.exit(1);
             };
+            result.sdf_explicit = true;
         }
         // --mol=NAME|N or --mol NAME|N (select molecule from multi-molecule SDF)
         else if (std.mem.startsWith(u8, arg, "--mol=")) {
             const value = arg["--mol=".len..];
             result.mol_selector = value;
+            result.mol_explicit = true;
         } else if (std.mem.eql(u8, arg, "--mol")) {
             i += 1;
             if (i >= args.len) {
@@ -426,10 +519,12 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
                 std.process.exit(1);
             }
             result.mol_selector = args[i];
+            result.mol_explicit = true;
         }
         // --use-bitmask (bitmask LUT optimization for SR, n-points must be 1..1024)
         else if (std.mem.eql(u8, arg, "--use-bitmask")) {
             result.use_bitmask = true;
+            result.use_bitmask_explicit = true;
         }
         // --help or -h
         else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -476,6 +571,154 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
 }
 
 // =============================================================================
+// Workflow application
+// =============================================================================
+
+fn applyWorkflowToCalcArgs(args: *CalcArgs, workflow: workflow_manifest.Workflow) !void {
+    if (args.input_path == null) {
+        if (workflow.input.path) |path| args.input_path = path;
+    }
+    if (!args.chain_explicit) {
+        if (workflow.input.chain) |chain| args.chain_filter = chain;
+    }
+    if (!args.model_explicit) {
+        if (workflow.input.model) |model| {
+            if (model == 0) {
+                std.debug.print("Error: workflow model must be >= 1\n", .{});
+                return error.InvalidArgument;
+            }
+            args.model_num = model;
+        }
+    }
+    if (!args.mol_explicit) {
+        if (workflow.input.mol) |mol| args.mol_selector = mol;
+    }
+
+    if (!args.output_path_explicit) {
+        if (workflow.output.path) |path| args.output_path = path;
+    }
+    if (!args.format_explicit) {
+        if (workflow.output.format) |format| args.output_format = parseOutputFormat(format);
+    }
+
+    try applyWorkflowCalculationToCalcArgs(args, workflow.calculation);
+    try applyWorkflowClassifierToCalcArgs(args, workflow.classifier);
+}
+
+fn applyWorkflowCalculationToCalcArgs(args: *CalcArgs, calculation: workflow_manifest.Calculation) !void {
+    if (!args.threads_explicit) {
+        if (calculation.threads) |threads| args.n_threads = threads;
+    }
+    if (!args.probe_radius_explicit) {
+        if (calculation.probe_radius) |radius| {
+            args.probe_radius = validateWorkflowProbeRadius(radius) catch |err| {
+                std.debug.print("Error: workflow probe_radius must be finite and between 0 and 10 Angstroms: {d}\n", .{radius});
+                return err;
+            };
+        }
+    }
+    if (!args.n_points_explicit) {
+        if (calculation.n_points) |n_points| {
+            args.n_points = validateWorkflowNPoints(n_points) catch |err| {
+                std.debug.print("Error: workflow n_points must be between 1 and 10000: {d}\n", .{n_points});
+                return err;
+            };
+        }
+    }
+    if (!args.n_slices_explicit) {
+        if (calculation.n_slices) |n_slices| {
+            args.n_slices = validateWorkflowNSlices(n_slices) catch |err| {
+                std.debug.print("Error: workflow n_slices must be between 1 and 1000: {d}\n", .{n_slices});
+                return err;
+            };
+        }
+    }
+    if (!args.algorithm_explicit) {
+        if (calculation.algorithm) |algorithm| args.algorithm = parseAlgorithm(algorithm);
+    }
+    if (!args.precision_explicit) {
+        if (calculation.precision) |precision| args.precision = parsePrecision(precision);
+    }
+    if (!args.include_hydrogens_explicit) {
+        if (calculation.include_hydrogens) |include_hydrogens| args.include_hydrogens = include_hydrogens;
+    }
+    if (!args.include_hetatm_explicit) {
+        if (calculation.include_hetatm) |include_hetatm| args.include_hetatm = include_hetatm;
+    }
+    if (!args.use_bitmask_explicit) {
+        if (calculation.use_bitmask) |use_bitmask| args.use_bitmask = use_bitmask;
+    }
+    if (!args.timing_explicit) {
+        if (calculation.timing) |timing| args.show_timing = timing;
+    }
+    if (!args.quiet_explicit) {
+        if (calculation.quiet) |quiet| args.quiet = quiet;
+    }
+    if (!args.auth_chain_explicit) {
+        if (calculation.auth_chain) |auth_chain| args.use_auth_chain = auth_chain;
+    }
+    if (!args.per_residue_explicit) {
+        if (calculation.per_residue) |per_residue| args.per_residue = per_residue;
+    }
+    if (!args.rsa_explicit) {
+        if (calculation.rsa) |rsa| {
+            args.rsa = rsa;
+            if (rsa) args.per_residue = true;
+        }
+    }
+    if (!args.polar_explicit) {
+        if (calculation.polar) |polar| {
+            args.polar = polar;
+            if (polar) args.per_residue = true;
+        }
+    }
+    if (!args.validate_explicit) {
+        if (calculation.validate_only) |validate_only| args.validate_only = validate_only;
+    }
+}
+
+fn applyWorkflowClassifierToCalcArgs(args: *CalcArgs, classifier_config: workflow_manifest.ClassifierConfig) !void {
+    if (!args.classifier_explicit and !args.config_explicit) {
+        if (classifier_config.type) |classifier_type| {
+            if (std.mem.eql(u8, classifier_type, "custom")) {
+                args.config_path = classifier_config.config orelse return error.InvalidArgument;
+                args.classifier_type = null;
+            } else {
+                args.classifier_type = parseClassifierType(classifier_type);
+                args.config_path = null;
+            }
+        }
+    }
+
+    if (calcArgsUseCcdResources(args.*)) {
+        if (!args.ccd_explicit) {
+            if (classifier_config.ccd) |ccd| args.ccd_path = ccd;
+        }
+        if (!args.sdf_explicit) {
+            if (classifier_config.sdf) |sdf_paths| {
+                args.sdf_paths = .{};
+                for (sdf_paths) |path| {
+                    args.sdf_paths.append(path) catch return error.InvalidArgument;
+                }
+            }
+        }
+    } else {
+        if (!args.ccd_explicit) args.ccd_path = null;
+        if (!args.sdf_explicit) args.sdf_paths = .{};
+    }
+}
+
+fn classifierUsesCcdResources(effective_classifier_type: ?ClassifierType) bool {
+    const classifier_type = effective_classifier_type orelse return false;
+    return classifier_type == .ccd or classifier_type == .protor;
+}
+
+fn calcArgsUseCcdResources(args: CalcArgs) bool {
+    if (args.config_path != null) return false;
+    return classifierUsesCcdResources(args.classifier_type);
+}
+
+// =============================================================================
 // Help
 // =============================================================================
 
@@ -485,11 +728,12 @@ pub fn printHelp(program_name: []const u8) void {
         \\zsasa calc - Calculate SASA for a single structure file
         \\
         \\USAGE:
-        \\    {s} calc [OPTIONS] <input> [output.json]
+        \\    {s} calc [OPTIONS] [input] [output.json]
         \\
         \\ARGUMENTS:
-        \\    <input>          Input file (JSON, PDB, or mmCIF format, auto-detected)
+        \\    [input]          Input file (JSON, PDB, or mmCIF format, auto-detected)
         \\                     Supported: .json, .cif, .mmcif, .pdb, .ent
+        \\                     Optional when --workflow provides [input].path
         \\    [output.json]    Output file (default: output.json)
         \\
         \\OPTIONS:
@@ -504,7 +748,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\                       Can be specified multiple times for multiple ligands
         \\    --mol=NAME|N       Select molecule from multi-molecule SDF by name or
         \\                       1-based index (default: first molecule)
-        \\    --config=FILE      Custom classifier config file (FreeSASA format)
+        \\    --config=FILE      Custom classifier config file (TOML format; .toml only)
+        \\    --workflow=PATH    TOML workflow file for input, output, calculation, and classifier settings
         \\    --chain=ID         Filter by chain ID (e.g., --chain=A or --chain=A,B,C)
         \\                       Default: label_asym_id (mmCIF standard)
         \\    --auth-chain       Use auth_asym_id instead of label_asym_id
@@ -554,9 +799,10 @@ pub fn printHelp(program_name: []const u8) void {
         \\    {s} calc --probe-radius=1.5 --n-points=200 input.json
         \\    {s} calc --format=csv input.json output.csv
         \\    {s} calc --classifier=naccess input.json output.json
-        \\    {s} calc --config=custom.config input.json output.json
+        \\    {s} calc --config=custom.toml input.json output.json
+        \\    {s} calc --workflow sasa.toml
         \\
-    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
+    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 // =============================================================================
@@ -932,6 +1178,12 @@ fn printPerChainResults(chain_ids: []const types.FixedString4, atom_areas: []con
     }
 }
 
+fn ensureCalcOutputParentDir(io: std.Io, output_path: []const u8) !void {
+    const parent = std.fs.path.dirname(output_path) orelse return;
+    if (parent.len == 0) return;
+    try std.Io.Dir.cwd().createDirPath(io, parent);
+}
+
 // =============================================================================
 // Run
 // =============================================================================
@@ -945,15 +1197,25 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
     var time_sasa: u64 = 0;
     var time_write: u64 = 0;
 
+    var effective_args = args;
+    var workflow: ?workflow_manifest.Workflow = null;
+    defer if (workflow) |*loaded_workflow| loaded_workflow.deinit();
+    if (effective_args.workflow_path) |workflow_path| {
+        workflow = workflow_manifest.parseFile(allocator, io, workflow_path) catch |err| {
+            std.debug.print("Error reading workflow file '{s}': {s}\n", .{ workflow_path, @errorName(err) });
+            return err;
+        };
+        try applyWorkflowToCalcArgs(&effective_args, workflow.?);
+    }
+
     // Validate required arguments
-    const input_path = args.input_path orelse {
+    const input_path = effective_args.input_path orelse {
         std.debug.print("Error: Missing input file\n", .{});
-        std.debug.print("Usage: zsasa calc [OPTIONS] <input> [output.json]\n", .{});
+        std.debug.print("Usage: zsasa calc [OPTIONS] [input] [output.json]\n", .{});
         return error.MissingArgument;
     };
 
     // CCD classifier implies HETATM inclusion (the whole point is classifying non-standard residues)
-    var effective_args = args;
     if (effective_args.classifier_type) |ct| {
         if (ct == .ccd and !effective_args.include_hetatm) {
             effective_args.include_hetatm = true;
@@ -988,7 +1250,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
     }
 
     // Check for duplicate coordinates (warning only)
-    if (!args.quiet) {
+    if (!effective_args.quiet) {
         _ = json_parser.checkDuplicateCoordinates(allocator, input) catch |err| {
             std.debug.print("Warning: Could not check for duplicate coordinates: {s}\n", .{@errorName(err)});
         };
@@ -996,21 +1258,21 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
     time_parse = @intCast(timer.untilNow(io, .awake).nanoseconds);
 
     // Handle --validate (dry-run)
-    if (args.validate_only) {
-        if (!args.quiet) {
+    if (effective_args.validate_only) {
+        if (!effective_args.quiet) {
             std.debug.print("Input validation passed: {} atoms\n", .{input.atomCount()});
         }
         return;
     }
 
     // Validate --use-bitmask constraints
-    if (args.use_bitmask) {
-        if (args.algorithm != .sr) {
+    if (effective_args.use_bitmask) {
+        if (effective_args.algorithm != .sr) {
             std.debug.print("Error: --use-bitmask is only supported with the sr (shrake-rupley) algorithm\n", .{});
             std.process.exit(1);
         }
-        if (!bitmask_lut.isSupportedNPoints(args.n_points)) {
-            std.debug.print("Error: --use-bitmask requires --n-points to be 1..1024 (got {d})\n", .{args.n_points});
+        if (!bitmask_lut.isSupportedNPoints(effective_args.n_points)) {
+            std.debug.print("Error: --use-bitmask requires --n-points to be 1..1024 (got {d})\n", .{effective_args.n_points});
             std.process.exit(1);
         }
     }
@@ -1018,14 +1280,14 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
     // Apply classifier (--config takes precedence over --classifier)
     // Default: ccd for PDB/mmCIF input (ProtOr-compatible with CCD extension)
     timer = std.Io.Timestamp.now(io, .awake);
-    const input_format = format_detect.detectInputFormat(args.input_path.?);
-    const effective_classifier: ?ClassifierType = args.classifier_type orelse
-        if (args.config_path == null and input_format != .json) .ccd else null;
+    const input_format = format_detect.detectInputFormat(effective_args.input_path.?);
+    const effective_classifier: ?ClassifierType = effective_args.classifier_type orelse
+        if (effective_args.config_path == null and input_format != .json) .ccd else null;
 
-    if (args.config_path != null or effective_classifier != null) {
+    if (effective_args.config_path != null or effective_classifier != null) {
         // Warn if both are specified
-        if (args.config_path != null and args.classifier_type != null) {
-            if (!args.quiet) {
+        if (effective_args.config_path != null and effective_args.classifier_type != null) {
+            if (!effective_args.quiet) {
                 std.debug.print("Warning: Both --classifier and --config specified; using --config\n", .{});
             }
         }
@@ -1037,58 +1299,68 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
         }
 
         // Load classifier and apply radii
-        if (args.config_path) |config_path| {
+        if (effective_args.config_path) |config_path| {
             // Load from custom config file
             var custom_classifier = classifier_parser.parseConfigFile(allocator, io, config_path) catch |err| {
-                std.debug.print("Error loading config file '{s}': {s}\n", .{ config_path, @errorName(err) });
+                switch (err) {
+                    error.UnsupportedConfigExtension => std.debug.print("Error loading config file '{s}': custom classifier configs are TOML-only; rename or convert the file to .toml\n", .{config_path}),
+                    error.UnsupportedLegacyFormat => std.debug.print("Error loading config file '{s}': FreeSASA-style custom classifier configs are no longer supported; convert to TOML [types] and [[atoms]]\n", .{config_path}),
+                    else => std.debug.print("Error loading config file '{s}': {s}\n", .{ config_path, @errorName(err) }),
+                }
                 std.process.exit(1);
             };
             defer custom_classifier.deinit();
 
-            applyClassifier(&input, &custom_classifier, args.quiet) catch |err| {
+            applyClassifier(&input, &custom_classifier, effective_args.quiet) catch |err| {
                 std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
                 std.process.exit(1);
             };
         } else if (effective_classifier) |ct| {
             // Use built-in classifier
-            const inline_ccd: ?*const ccd_parser.ComponentDict = if (read_result.mmcif) |*p| p.getInlineCcd() else null;
+            const use_ccd_resources = classifierUsesCcdResources(ct);
+            const inline_ccd: ?*const ccd_parser.ComponentDict = if (use_ccd_resources)
+                if (read_result.mmcif) |*p| p.getInlineCcd() else null
+            else
+                null;
 
             // Load external CCD dictionary if specified
             var ext_ccd: ?ccd_parser.ComponentDict = null;
-            if (args.ccd_path) |ccd_path| {
-                const ccd_data = if (compressed.isCompressed(ccd_path))
-                    compressed.read(allocator, ccd_path) catch |err| {
-                        std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
-                        std.process.exit(1);
-                    }
-                else blk: {
-                    const f = std.Io.Dir.cwd().openFile(io, ccd_path, .{}) catch |err| {
-                        std.debug.print("Error opening CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
-                        std.process.exit(1);
+            if (use_ccd_resources) {
+                if (effective_args.ccd_path) |ccd_path| {
+                    const ccd_data = if (compressed.isCompressed(ccd_path))
+                        compressed.read(allocator, ccd_path) catch |err| {
+                            std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                            std.process.exit(1);
+                        }
+                    else blk: {
+                        const f = std.Io.Dir.cwd().openFile(io, ccd_path, .{}) catch |err| {
+                            std.debug.print("Error opening CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                            std.process.exit(1);
+                        };
+                        defer f.close(io);
+                        var read_buf: [65536]u8 = undefined;
+                        var file_r = f.reader(io, &read_buf);
+                        break :blk file_r.interface.allocRemaining(allocator, .unlimited) catch |err| {
+                            std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                            std.process.exit(1);
+                        };
                     };
-                    defer f.close(io);
-                    var read_buf: [65536]u8 = undefined;
-                    var file_r = f.reader(io, &read_buf);
-                    break :blk file_r.interface.allocRemaining(allocator, .unlimited) catch |err| {
-                        std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
-                        std.process.exit(1);
-                    };
-                };
-                defer allocator.free(ccd_data);
+                    defer allocator.free(ccd_data);
 
-                ext_ccd = ccd_binary.loadDict(allocator, ccd_data) catch |err| {
-                    std.debug.print("Error loading CCD dictionary '{s}': {s}\n", .{ ccd_path, @errorName(err) });
-                    std.process.exit(1);
-                };
-                if (!args.quiet) {
-                    std.debug.print("External CCD: loaded {d} components from '{s}'\n", .{ ext_ccd.?.components.count(), ccd_path });
+                    ext_ccd = ccd_binary.loadDict(allocator, ccd_data) catch |err| {
+                        std.debug.print("Error loading CCD dictionary '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                        std.process.exit(1);
+                    };
+                    if (!effective_args.quiet) {
+                        std.debug.print("External CCD: loaded {d} components from '{s}'\n", .{ ext_ccd.?.components.count(), ccd_path });
+                    }
                 }
             }
             defer if (ext_ccd) |*d| d.deinit();
 
             // Load SDF components from --sdf option
             var sdf_ccd: ?ccd_parser.ComponentDict = null;
-            if (effective_args.sdf_paths.len > 0) {
+            if (use_ccd_resources and effective_args.sdf_paths.len > 0) {
                 sdf_ccd = loadSdfComponents(allocator, io, effective_args.sdf_paths.constSlice(), effective_args.quiet) catch |err| {
                     std.debug.print("Error loading SDF components: {s}\n", .{@errorName(err)});
                     std.process.exit(1);
@@ -1103,7 +1375,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
             const sdf_ccd_ptr = sdf_explicit_ptr orelse sdf_auto_ptr;
 
             const ext_ccd_ptr: ?*const ccd_parser.ComponentDict = if (ext_ccd != null) &ext_ccd.? else null;
-            applyBuiltinClassifier(&input, ct, sdf_ccd_ptr, inline_ccd, ext_ccd_ptr, args.quiet) catch |err| {
+            applyBuiltinClassifier(&input, ct, sdf_ccd_ptr, inline_ccd, ext_ccd_ptr, effective_args.quiet) catch |err| {
                 std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
                 std.process.exit(1);
             };
@@ -1113,32 +1385,32 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
 
     // Calculate SASA with configured parameters
     timer = std.Io.Timestamp.now(io, .awake);
-    var result = switch (args.precision) {
-        .f64 => switch (args.algorithm) {
+    var result = switch (effective_args.precision) {
+        .f64 => switch (effective_args.algorithm) {
             .sr => blk: {
                 const config = Config{
-                    .n_points = args.n_points,
-                    .probe_radius = args.probe_radius,
+                    .n_points = effective_args.n_points,
+                    .probe_radius = effective_args.probe_radius,
                 };
-                break :blk if (args.use_bitmask) bitmask_blk: {
-                    break :bitmask_blk if (args.n_threads == 1)
+                break :blk if (effective_args.use_bitmask) bitmask_blk: {
+                    break :bitmask_blk if (effective_args.n_threads == 1)
                         shrake_rupley_bitmask.calculateSasa(allocator, input, config) catch |err| {
                             std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                             std.process.exit(1);
                         }
                     else
-                        shrake_rupley_bitmask.calculateSasaParallel(allocator, input, config, args.n_threads) catch |err| {
+                        shrake_rupley_bitmask.calculateSasaParallel(allocator, input, config, effective_args.n_threads) catch |err| {
                             std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                             std.process.exit(1);
                         };
                 } else standard_blk: {
-                    break :standard_blk if (args.n_threads == 1)
+                    break :standard_blk if (effective_args.n_threads == 1)
                         shrake_rupley.calculateSasa(allocator, input, config) catch |err| {
                             std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                             std.process.exit(1);
                         }
                     else
-                        shrake_rupley.calculateSasaParallel(allocator, input, config, args.n_threads) catch |err| {
+                        shrake_rupley.calculateSasaParallel(allocator, input, config, effective_args.n_threads) catch |err| {
                             std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                             std.process.exit(1);
                         };
@@ -1146,16 +1418,16 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
             },
             .lr => blk: {
                 const lr_config = LeeRichardsConfig{
-                    .n_slices = args.n_slices,
-                    .probe_radius = args.probe_radius,
+                    .n_slices = effective_args.n_slices,
+                    .probe_radius = effective_args.probe_radius,
                 };
-                break :blk if (args.n_threads == 1)
+                break :blk if (effective_args.n_threads == 1)
                     lee_richards.calculateSasa(allocator, input, lr_config) catch |err| {
                         std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                         std.process.exit(1);
                     }
                 else
-                    lee_richards.calculateSasaParallel(allocator, input, lr_config, args.n_threads) catch |err| {
+                    lee_richards.calculateSasaParallel(allocator, input, lr_config, effective_args.n_threads) catch |err| {
                         std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                         std.process.exit(1);
                     };
@@ -1163,31 +1435,31 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
         },
         .f32 => blk: {
             // Calculate in f32, convert to f64 for output
-            var result_f32 = switch (args.algorithm) {
+            var result_f32 = switch (effective_args.algorithm) {
                 .sr => inner: {
                     const config = Configf32{
-                        .n_points = args.n_points,
-                        .probe_radius = @floatCast(args.probe_radius),
+                        .n_points = effective_args.n_points,
+                        .probe_radius = @floatCast(effective_args.probe_radius),
                     };
-                    break :inner if (args.use_bitmask) bitmask_inner: {
-                        break :bitmask_inner if (args.n_threads == 1)
+                    break :inner if (effective_args.use_bitmask) bitmask_inner: {
+                        break :bitmask_inner if (effective_args.n_threads == 1)
                             shrake_rupley_bitmask.calculateSasaf32(allocator, input, config) catch |err| {
                                 std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                                 std.process.exit(1);
                             }
                         else
-                            shrake_rupley_bitmask.calculateSasaParallelf32(allocator, input, config, args.n_threads) catch |err| {
+                            shrake_rupley_bitmask.calculateSasaParallelf32(allocator, input, config, effective_args.n_threads) catch |err| {
                                 std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                                 std.process.exit(1);
                             };
                     } else standard_inner: {
-                        break :standard_inner if (args.n_threads == 1)
+                        break :standard_inner if (effective_args.n_threads == 1)
                             shrake_rupley.calculateSasaf32(allocator, input, config) catch |err| {
                                 std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                                 std.process.exit(1);
                             }
                         else
-                            shrake_rupley.calculateSasaParallelf32(allocator, input, config, args.n_threads) catch |err| {
+                            shrake_rupley.calculateSasaParallelf32(allocator, input, config, effective_args.n_threads) catch |err| {
                                 std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                                 std.process.exit(1);
                             };
@@ -1195,16 +1467,16 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
                 },
                 .lr => inner: {
                     const lr_config = LeeRichardsConfigf32{
-                        .n_slices = args.n_slices,
-                        .probe_radius = @floatCast(args.probe_radius),
+                        .n_slices = effective_args.n_slices,
+                        .probe_radius = @floatCast(effective_args.probe_radius),
                     };
-                    break :inner if (args.n_threads == 1)
+                    break :inner if (effective_args.n_threads == 1)
                         lee_richards.calculateSasaf32(allocator, input, lr_config) catch |err| {
                             std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                             std.process.exit(1);
                         }
                     else
-                        lee_richards.calculateSasaParallelf32(allocator, input, lr_config, args.n_threads) catch |err| {
+                        lee_richards.calculateSasaParallelf32(allocator, input, lr_config, effective_args.n_threads) catch |err| {
                             std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                             std.process.exit(1);
                         };
@@ -1223,8 +1495,12 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
 
     // Write output file
     timer = std.Io.Timestamp.now(io, .awake);
-    json_writer.writeSasaResultWithFormatAndInput(allocator, io, result, input, args.output_path, args.output_format) catch |err| {
-        std.debug.print("Error writing output file '{s}': {s}\n", .{ args.output_path, @errorName(err) });
+    ensureCalcOutputParentDir(io, effective_args.output_path) catch |err| {
+        std.debug.print("Error creating output directory for '{s}': {s}\n", .{ effective_args.output_path, @errorName(err) });
+        std.process.exit(1);
+    };
+    json_writer.writeSasaResultWithFormatAndInput(allocator, io, result, input, effective_args.output_path, effective_args.output_format) catch |err| {
+        std.debug.print("Error writing output file '{s}': {s}\n", .{ effective_args.output_path, @errorName(err) });
         std.process.exit(1);
     };
     time_write = @intCast(timer.untilNow(io, .awake).nanoseconds);
@@ -1233,7 +1509,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
     const time_total = time_parse + time_classify + time_sasa + time_write;
 
     // Print summary (unless quiet mode)
-    if (!args.quiet) {
+    if (!effective_args.quiet) {
         std.debug.print("Calculated SASA for {} atoms\n", .{input.atomCount()});
         std.debug.print("Total area: {d:.2} Å²\n", .{result.total_area});
 
@@ -1243,30 +1519,30 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
         }
 
         // Print per-residue results if requested
-        if (args.per_residue and input.hasResidueInfo()) {
+        if (effective_args.per_residue and input.hasResidueInfo()) {
             var residue_result = analysis.aggregateByResidue(allocator, input, result.atom_areas) catch |err| {
                 std.debug.print("Error calculating per-residue SASA: {s}\n", .{@errorName(err)});
                 std.process.exit(1);
             };
             defer residue_result.deinit();
-            if (args.rsa) {
+            if (effective_args.rsa) {
                 analysis.printResidueResultsWithRsa(residue_result.residues);
             } else {
                 analysis.printResidueResults(residue_result.residues);
             }
 
             // Print polar/nonpolar summary if requested
-            if (args.polar) {
+            if (effective_args.polar) {
                 const polar_summary = analysis.calculatePolarSummary(residue_result.residues);
                 analysis.printPolarSummary(polar_summary);
             }
         }
 
-        std.debug.print("Output written to {s}\n", .{args.output_path});
+        std.debug.print("Output written to {s}\n", .{effective_args.output_path});
     }
 
     // Print timing breakdown if requested
-    if (args.show_timing) {
+    if (effective_args.show_timing) {
         const ns_to_ms = 1_000_000.0;
         const parse_ms = @as(f64, @floatFromInt(time_parse)) / ns_to_ms;
         const classify_ms = @as(f64, @floatFromInt(time_classify)) / ns_to_ms;
@@ -1558,15 +1834,15 @@ test "CalcArgs --n-slices N (space-separated)" {
 }
 
 test "CalcArgs --config=FILE" {
-    const args = [_][]const u8{ "zsasa", "calc", "--config=my_classifier.conf", "input.json" };
+    const args = [_][]const u8{ "zsasa", "calc", "--config=my_classifier.toml", "input.json" };
     const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqualStrings("my_classifier.conf", parsed.config_path.?);
+    try std.testing.expectEqualStrings("my_classifier.toml", parsed.config_path.?);
 }
 
 test "CalcArgs --config FILE (space-separated)" {
-    const args = [_][]const u8{ "zsasa", "calc", "--config", "my_classifier.conf", "input.json" };
+    const args = [_][]const u8{ "zsasa", "calc", "--config", "my_classifier.toml", "input.json" };
     const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqualStrings("my_classifier.conf", parsed.config_path.?);
+    try std.testing.expectEqualStrings("my_classifier.toml", parsed.config_path.?);
 }
 
 test "CalcArgs --chain=A" {
@@ -1592,4 +1868,237 @@ test "CalcArgs --output FILE (space-separated)" {
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqualStrings("result.json", parsed.output_path);
     try std.testing.expectEqual(true, parsed.output_path_explicit);
+}
+
+test "CalcArgs --workflow=FILE" {
+    const args = [_][]const u8{ "zsasa", "calc", "--workflow=calc-workflow.toml" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("calc-workflow.toml", parsed.workflow_path.?);
+}
+
+test "CalcArgs --workflow FILE" {
+    const args = [_][]const u8{ "zsasa", "calc", "--workflow", "calc-workflow.toml" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("calc-workflow.toml", parsed.workflow_path.?);
+}
+
+test "ensureCalcOutputParentDir creates nested output parent directories" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const output_path = try std.fs.path.join(allocator, &.{ root_buf[0..root_len], "nested", "deeper", "result.json" });
+    defer allocator.free(output_path);
+
+    try ensureCalcOutputParentDir(std.testing.io, output_path);
+    _ = try tmp_dir.dir.statFile(std.testing.io, "nested/deeper", .{});
+}
+
+test "calc workflow applies fields when CLI did not override" {
+    const workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .input = .{
+            .path = "structure.cif",
+            .chain = "A,B",
+            .model = 2,
+            .mol = "LIG",
+        },
+        .output = .{
+            .path = "result.csv",
+            .format = "csv",
+        },
+        .calculation = .{
+            .algorithm = "lr",
+            .threads = 4,
+            .probe_radius = 1.6,
+            .n_points = 240,
+            .n_slices = 32,
+            .precision = "f32",
+            .include_hydrogens = true,
+            .include_hetatm = true,
+            .use_bitmask = true,
+            .timing = true,
+            .quiet = true,
+            .auth_chain = true,
+            .per_residue = true,
+            .rsa = true,
+            .polar = true,
+            .validate_only = true,
+        },
+        .classifier = .{
+            .type = "custom",
+            .config = "custom-radii.toml",
+        },
+    };
+    var args = CalcArgs{};
+
+    try applyWorkflowToCalcArgs(&args, workflow);
+
+    try std.testing.expectEqualStrings("structure.cif", args.input_path.?);
+    try std.testing.expectEqualStrings("A,B", args.chain_filter.?);
+    try std.testing.expectEqual(@as(u32, 2), args.model_num.?);
+    try std.testing.expectEqualStrings("LIG", args.mol_selector.?);
+    try std.testing.expectEqualStrings("result.csv", args.output_path);
+    try std.testing.expectEqual(OutputFormat.csv, args.output_format);
+    try std.testing.expectEqual(Algorithm.lr, args.algorithm);
+    try std.testing.expectEqual(@as(usize, 4), args.n_threads);
+    try std.testing.expectEqual(@as(f64, 1.6), args.probe_radius);
+    try std.testing.expectEqual(@as(u32, 240), args.n_points);
+    try std.testing.expectEqual(@as(u32, 32), args.n_slices);
+    try std.testing.expectEqual(Precision.f32, args.precision);
+    try std.testing.expectEqual(true, args.include_hydrogens);
+    try std.testing.expectEqual(true, args.include_hetatm);
+    try std.testing.expectEqual(true, args.use_bitmask);
+    try std.testing.expectEqual(true, args.show_timing);
+    try std.testing.expectEqual(true, args.quiet);
+    try std.testing.expectEqual(true, args.use_auth_chain);
+    try std.testing.expectEqual(true, args.per_residue);
+    try std.testing.expectEqual(true, args.rsa);
+    try std.testing.expectEqual(true, args.polar);
+    try std.testing.expectEqual(true, args.validate_only);
+    try std.testing.expectEqualStrings("custom-radii.toml", args.config_path.?);
+    try std.testing.expectEqual(@as(?ClassifierType, null), args.classifier_type);
+    try std.testing.expectEqual(@as(?[]const u8, null), args.ccd_path);
+    try std.testing.expectEqual(@as(usize, 0), args.sdf_paths.len);
+}
+
+test "calc CLI explicit classifier overrides workflow classifier" {
+    const workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .classifier = .{
+            .type = "custom",
+            .config = "custom-radii.toml",
+        },
+    };
+    var args = CalcArgs{
+        .classifier_type = ClassifierType.naccess,
+        .classifier_explicit = true,
+    };
+
+    try applyWorkflowToCalcArgs(&args, workflow);
+
+    try std.testing.expectEqual(ClassifierType.naccess, args.classifier_type.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), args.config_path);
+}
+
+test "calc workflow applies CCD resources for CCD and ProtOr classifiers" {
+    const sdf_paths = [_][]const u8{ "workflow-ligand.sdf", "workflow-cofactor.sdf" };
+
+    inline for (.{ ClassifierType.ccd, ClassifierType.protor }) |expected_classifier| {
+        const classifier_type = switch (expected_classifier) {
+            .ccd => "ccd",
+            .protor => "protor",
+            else => unreachable,
+        };
+        const workflow = workflow_manifest.Workflow{
+            .allocator = std.testing.allocator,
+            .content = "",
+            .classifier = .{
+                .type = classifier_type,
+                .ccd = "workflow.zsdc",
+                .sdf = sdf_paths[0..],
+            },
+        };
+        var args = CalcArgs{};
+
+        try applyWorkflowToCalcArgs(&args, workflow);
+
+        try std.testing.expectEqual(expected_classifier, args.classifier_type.?);
+        try std.testing.expectEqualStrings("workflow.zsdc", args.ccd_path.?);
+        try std.testing.expectEqual(@as(usize, 2), args.sdf_paths.len);
+        try std.testing.expectEqualStrings("workflow-ligand.sdf", args.sdf_paths.constSlice()[0]);
+        try std.testing.expectEqualStrings("workflow-cofactor.sdf", args.sdf_paths.constSlice()[1]);
+    }
+}
+
+test "calc CLI explicit CCD resources are preserved for CCD workflow classifier" {
+    const workflow_sdf_paths = [_][]const u8{"workflow-ligand.sdf"};
+    const workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .classifier = .{
+            .type = "ccd",
+            .ccd = "workflow.zsdc",
+            .sdf = workflow_sdf_paths[0..],
+        },
+    };
+    var args = CalcArgs{
+        .ccd_explicit = true,
+        .ccd_path = "cli.zsdc",
+        .sdf_explicit = true,
+    };
+    try args.sdf_paths.append("cli.sdf");
+
+    try applyWorkflowToCalcArgs(&args, workflow);
+
+    try std.testing.expectEqual(ClassifierType.ccd, args.classifier_type.?);
+    try std.testing.expectEqualStrings("cli.zsdc", args.ccd_path.?);
+    try std.testing.expectEqual(@as(usize, 1), args.sdf_paths.len);
+    try std.testing.expectEqualStrings("cli.sdf", args.sdf_paths.constSlice()[0]);
+}
+
+test "calc CLI explicit naccess ignores workflow CCD resources" {
+    const sdf_paths = [_][]const u8{ "workflow-ligand.sdf", "workflow-cofactor.sdf" };
+    const workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .classifier = .{
+            .type = "ccd",
+            .ccd = "missing.zsdc",
+            .sdf = sdf_paths[0..],
+        },
+    };
+    var args = CalcArgs{
+        .classifier_type = ClassifierType.naccess,
+        .classifier_explicit = true,
+    };
+
+    try applyWorkflowToCalcArgs(&args, workflow);
+
+    try std.testing.expectEqual(ClassifierType.naccess, args.classifier_type.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), args.ccd_path);
+    try std.testing.expectEqual(@as(usize, 0), args.sdf_paths.len);
+}
+
+test "calc CLI explicit config ignores workflow CCD resources even with CCD classifier" {
+    const sdf_paths = [_][]const u8{"workflow-ligand.sdf"};
+    const workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .classifier = .{
+            .type = "ccd",
+            .ccd = "missing.zsdc",
+            .sdf = sdf_paths[0..],
+        },
+    };
+    var args = CalcArgs{
+        .classifier_type = ClassifierType.ccd,
+        .classifier_explicit = true,
+        .config_path = "custom-radii.toml",
+        .config_explicit = true,
+    };
+
+    try applyWorkflowToCalcArgs(&args, workflow);
+
+    try std.testing.expectEqual(ClassifierType.ccd, args.classifier_type.?);
+    try std.testing.expectEqualStrings("custom-radii.toml", args.config_path.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), args.ccd_path);
+    try std.testing.expectEqual(@as(usize, 0), args.sdf_paths.len);
+}
+
+test "calc workflow rejects zero model number" {
+    const workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .input = .{
+            .model = 0,
+        },
+    };
+    var args = CalcArgs{};
+
+    try std.testing.expectError(error.InvalidArgument, applyWorkflowToCalcArgs(&args, workflow));
 }

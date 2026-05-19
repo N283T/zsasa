@@ -1,5 +1,5 @@
 const std = @import("std");
-const batch_manifest = @import("batch_manifest.zig");
+const workflow_manifest = @import("workflow_manifest.zig");
 const types = @import("types.zig");
 const format_detect = @import("format_detect.zig");
 const json_parser = @import("json_parser.zig");
@@ -11,6 +11,7 @@ const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
 const bitmask_lut = @import("bitmask_lut.zig");
 const lee_richards = @import("lee_richards.zig");
 const classifier = @import("classifier.zig");
+const classifier_parser = @import("classifier_parser.zig");
 // classifier_protor removed — ProtOr is now an alias for CCD
 const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_oons = @import("classifier_oons.zig");
@@ -71,6 +72,8 @@ pub const BatchConfig = struct {
     store_atom_areas: bool = false, // When true, copy atom_areas to result_allocator for jsonl
     external_ccd: ?*const ccd_parser.ComponentDict = null, // External CCD dictionary
     sdf_ccd: ?*const ccd_parser.ComponentDict = null, // SDF bond topology dictionary
+    custom_classifier: ?*const classifier.Classifier = null,
+    custom_classifier_path: ?[]const u8 = null,
     chain_filter: ?[]const []const u8 = null,
     use_auth_chain: bool = false,
     residue_map: bool = false,
@@ -116,13 +119,13 @@ fn getOutputExtension(format: OutputFormat) []const u8 {
     };
 }
 
-fn manifestJsonlOutputPath(allocator: Allocator, output_dir: []const u8, job_name: []const u8) ![]const u8 {
+fn workflowJsonlOutputPath(allocator: Allocator, output_dir: []const u8, job_name: []const u8) ![]const u8 {
     const filename = try std.fmt.allocPrint(allocator, "{s}.jsonl", .{job_name});
     defer allocator.free(filename);
     return std.fs.path.join(allocator, &.{ output_dir, filename });
 }
 
-fn manifestPerFileOutputDir(allocator: Allocator, output_dir: []const u8, job_name: []const u8) ![]const u8 {
+fn workflowPerFileOutputDir(allocator: Allocator, output_dir: []const u8, job_name: []const u8) ![]const u8 {
     return std.fs.path.join(allocator, &.{ output_dir, job_name });
 }
 
@@ -469,6 +472,49 @@ fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType, sdf_ccd: ?*cons
     input.r = new_radii;
 }
 
+/// Apply custom classifier to replace radii based on residue/atom names.
+fn applyCustomClassifier(input: *AtomInput, custom_classifier: *const classifier.Classifier, quiet: bool) !void {
+    const n = input.atomCount();
+    const residues = input.residue orelse return error.MissingClassificationInfo;
+    const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
+
+    const new_radii = try input.allocator.alloc(f64, n);
+    errdefer input.allocator.free(new_radii);
+
+    var classified_count: usize = 0;
+    var fallback_count: usize = 0;
+
+    for (0..n) |i| {
+        if (custom_classifier.getRadius(residues[i].slice(), atom_names[i].slice())) |r| {
+            new_radii[i] = r;
+            classified_count += 1;
+        } else if (input.element) |elements| {
+            if (classifier.guessRadiusFromAtomicNumber(elements[i])) |r| {
+                new_radii[i] = r;
+                fallback_count += 1;
+            } else {
+                new_radii[i] = input.r[i];
+            }
+        } else if (classifier.guessRadiusFromAtomName(atom_names[i].slice())) |r| {
+            new_radii[i] = r;
+            fallback_count += 1;
+        } else {
+            new_radii[i] = input.r[i];
+        }
+    }
+
+    input.allocator.free(input.r);
+    input.r = new_radii;
+
+    if (!quiet) {
+        std.debug.print("Classifier '{s}': {d} atoms classified, {d} fallback\n", .{
+            custom_classifier.name,
+            classified_count,
+            fallback_count,
+        });
+    }
+}
+
 fn attachResidueMap(
     arena: Allocator,
     result_allocator: Allocator,
@@ -562,8 +608,16 @@ fn processOneFile(
     };
     defer input.deinit();
 
-    // Apply classifier for PDB/mmCIF input (skip for JSON which has radii embedded)
-    if (config.classifier_type) |ct| {
+    // Apply classifier for PDB/mmCIF input (skip JSON unless classification info exists).
+    if (config.custom_classifier) |custom_classifier| {
+        if (input.hasClassificationInfo()) {
+            applyCustomClassifier(&input, custom_classifier, config.quiet) catch |err| {
+                result.status = .err;
+                result.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
+                return result;
+            };
+        }
+    } else if (config.classifier_type) |ct| {
         const format = format_detect.detectInputFormat(input_path);
         if (format != .json and input.hasClassificationInfo()) {
             applyBuiltinClassifier(&input, ct, config.sdf_ccd, config.external_ccd) catch |err| {
@@ -775,8 +829,16 @@ fn processOneSdfMoleculeInner(
 ) FileResult {
     var res = result.*;
 
-    // Apply classifier (SDF molecules always have classification info)
-    if (config.classifier_type) |ct| {
+    // Apply classifier (SDF molecules normally have classification info)
+    if (config.custom_classifier) |custom_classifier| {
+        if (input.hasClassificationInfo()) {
+            applyCustomClassifier(input, custom_classifier, config.quiet) catch |err| {
+                res.status = .err;
+                res.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
+                return res;
+            };
+        }
+    } else if (config.classifier_type) |ct| {
         if (input.hasClassificationInfo()) {
             // Merge SDF-derived dict with external CCD if available
             const effective_sdf_ccd = sdf_ccd orelse config.sdf_ccd;
@@ -1737,7 +1799,7 @@ pub const BatchArgs = struct {
     input_path: ?[]const u8 = null,
     output_path: ?[]const u8 = null, // Output directory; null means no file output
     output_path_explicit: bool = false, // Track if -o/--output was explicitly set
-    manifest_path: ?[]const u8 = null,
+    workflow_path: ?[]const u8 = null,
     chain_filter: ?[]const u8 = null,
     use_auth_chain: bool = false,
     residue_map: bool = false,
@@ -1777,21 +1839,21 @@ pub const BatchArgs = struct {
 
 // Parse helper functions (local to batch.zig)
 
-fn validateManifestProbeRadius(radius: f64) !f64 {
+fn validateWorkflowProbeRadius(radius: f64) !f64 {
     if (radius <= 0 or radius > 10.0 or !std.math.isFinite(radius)) {
         return error.InvalidArgument;
     }
     return radius;
 }
 
-fn validateManifestNPoints(n: u32) !u32 {
+fn validateWorkflowNPoints(n: u32) !u32 {
     if (n == 0 or n > 10000) {
         return error.InvalidArgument;
     }
     return n;
 }
 
-fn validateManifestNSlices(n: u32) !u32 {
+fn validateWorkflowNSlices(n: u32) !u32 {
     if (n == 0 or n > 1000) {
         return error.InvalidArgument;
     }
@@ -1810,7 +1872,7 @@ fn parseProbeRadius(value: []const u8) f64 {
         std.debug.print("Error: Invalid probe radius: {s}\n", .{value});
         std.process.exit(1);
     };
-    return validateManifestProbeRadius(radius) catch {
+    return validateWorkflowProbeRadius(radius) catch {
         std.debug.print("Error: Probe radius must be between 0 and 10 Angstroms: {d}\n", .{radius});
         std.process.exit(1);
     };
@@ -1822,7 +1884,7 @@ fn parseNPoints(value: []const u8) u32 {
         std.debug.print("Error: Invalid n-points: {s}\n", .{value});
         std.process.exit(1);
     };
-    return validateManifestNPoints(n) catch {
+    return validateWorkflowNPoints(n) catch {
         std.debug.print("Error: n-points must be between 1 and 10000: {d}\n", .{n});
         std.process.exit(1);
     };
@@ -1834,7 +1896,7 @@ fn parseNSlices(value: []const u8) u32 {
         std.debug.print("Error: Invalid n-slices: {s}\n", .{value});
         std.process.exit(1);
     };
-    return validateManifestNSlices(n) catch {
+    return validateWorkflowNSlices(n) catch {
         std.debug.print("Error: n-slices must be between 1 and 1000: {d}\n", .{n});
         std.process.exit(1);
     };
@@ -2034,16 +2096,27 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
             }
             result.precision = parsePrecision(args[i]);
         }
-        // --manifest=PATH or --manifest PATH
+        // --workflow=PATH or --workflow PATH
+        else if (std.mem.startsWith(u8, arg, "--workflow=")) {
+            result.workflow_path = arg["--workflow=".len..];
+        } else if (std.mem.eql(u8, arg, "--workflow")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --workflow\n", .{});
+                std.process.exit(1);
+            }
+            result.workflow_path = args[i];
+        }
+        // --manifest=PATH or --manifest PATH (compatibility alias)
         else if (std.mem.startsWith(u8, arg, "--manifest=")) {
-            result.manifest_path = arg["--manifest=".len..];
+            result.workflow_path = arg["--manifest=".len..];
         } else if (std.mem.eql(u8, arg, "--manifest")) {
             i += 1;
             if (i >= args.len) {
-                std.debug.print("Error: Missing value for --manifest\n", .{});
+                std.debug.print("Error: Missing value for --manifest (compatibility alias for --workflow)\n", .{});
                 std.process.exit(1);
             }
-            result.manifest_path = args[i];
+            result.workflow_path = args[i];
         }
         // --chain=ID or --chain ID
         else if (std.mem.startsWith(u8, arg, "--chain=")) {
@@ -2181,7 +2254,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\zsasa batch - Calculate SASA for all files in a directory
         \\
         \\USAGE:
-        \\    {s} batch --manifest <manifest.toml>
+        \\    {s} batch --workflow <workflow.toml>
         \\    {s} batch [OPTIONS] <input_dir> [output_dir]
         \\
         \\ARGUMENTS:
@@ -2198,8 +2271,9 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --sdf=PATH          SDF file with bond topology for CCD classifier
         \\                        Can be specified multiple times for multiple ligands
         \\    --threads=N         Number of threads (default: auto-detect)
-        \\    --manifest=PATH     TOML manifest with one or more named batch jobs
-        \\    --chain=ID          Filter by chain ID for non-manifest batch (e.g. A or A,B)
+        \\    --workflow=PATH     TOML workflow file with one or more named batch jobs
+        \\    --manifest=PATH     Compatibility alias for --workflow
+        \\    --chain=ID          Filter by chain ID for non-workflow batch (e.g. A or A,B)
         \\    --auth-chain        Use auth_asym_id instead of label_asym_id for mmCIF chain matching
         \\    --residue-map       Include compact residue map arrays in JSONL output
         \\    --probe-radius=R    Probe radius in Angstroms (default: 1.4)
@@ -2223,71 +2297,77 @@ pub fn printHelp(program_name: []const u8) void {
         \\    {s} batch structures/ --classifier=naccess --format=csv
         \\    {s} batch structures/ results/ --timing --quiet
         \\    {s} batch structures/ -o results.jsonl --format=jsonl
-        \\    {s} batch --manifest bsa.toml
-        \\    {s} batch structures/ results/ --manifest bsa.toml
+        \\    {s} batch --workflow bsa.toml
+        \\    {s} batch structures/ results/ --workflow bsa.toml
+        \\    {s} batch --manifest legacy-bsa.toml
         \\    {s} batch structures/ results_A.jsonl --chain=A --format=jsonl
         \\
-    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
+    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 /// Load SDF files and build a ComponentDict from their bond topology.
 /// Delegates to sdf_parser.loadSdfComponents.
 const loadSdfComponents = sdf_parser.loadSdfComponents;
 
-fn applyManifestGlobals(config: *BatchConfig, args: BatchArgs, globals: batch_manifest.Globals) !void {
+fn applyWorkflowToBatchConfig(
+    config: *BatchConfig,
+    args: BatchArgs,
+    calculation: workflow_manifest.Calculation,
+    output: workflow_manifest.Output,
+    classifier_config: workflow_manifest.ClassifierConfig,
+) !void {
     if (!args.threads_explicit) {
-        if (globals.threads) |v| config.n_threads = v;
+        if (calculation.threads) |v| config.n_threads = v;
     }
     if (!args.algorithm_explicit) {
-        if (globals.algorithm) |v| config.algorithm = parseAlgorithm(v);
+        if (calculation.algorithm) |v| config.algorithm = parseAlgorithm(v);
     }
     if (!args.n_points_explicit) {
-        if (globals.n_points) |v| config.n_points = validateManifestNPoints(v) catch |err| {
-            std.debug.print("Error: manifest n_points must be between 1 and 10000: {d}\n", .{v});
+        if (calculation.n_points) |v| config.n_points = validateWorkflowNPoints(v) catch |err| {
+            std.debug.print("Error: workflow n_points must be between 1 and 10000: {d}\n", .{v});
             return err;
         };
     }
     if (!args.n_slices_explicit) {
-        if (globals.n_slices) |v| config.n_slices = validateManifestNSlices(v) catch |err| {
-            std.debug.print("Error: manifest n_slices must be between 1 and 1000: {d}\n", .{v});
+        if (calculation.n_slices) |v| config.n_slices = validateWorkflowNSlices(v) catch |err| {
+            std.debug.print("Error: workflow n_slices must be between 1 and 1000: {d}\n", .{v});
             return err;
         };
     }
     if (!args.probe_radius_explicit) {
-        if (globals.probe_radius) |v| config.probe_radius = validateManifestProbeRadius(v) catch |err| {
-            std.debug.print("Error: manifest probe_radius must be finite and between 0 and 10 Angstroms: {d}\n", .{v});
+        if (calculation.probe_radius) |v| config.probe_radius = validateWorkflowProbeRadius(v) catch |err| {
+            std.debug.print("Error: workflow probe_radius must be finite and between 0 and 10 Angstroms: {d}\n", .{v});
             return err;
         };
     }
     if (!args.precision_explicit) {
-        if (globals.precision) |v| config.precision = parsePrecision(v);
+        if (calculation.precision) |v| config.precision = parsePrecision(v);
     }
     if (!args.format_explicit) {
-        if (globals.format) |v| config.output_format = parseOutputFormat(v);
+        if (output.format) |v| config.output_format = parseOutputFormat(v);
     }
     if (!args.timing_explicit) {
-        if (globals.timing) |v| config.show_timing = v;
+        if (calculation.timing) |v| config.show_timing = v;
     }
     if (!args.quiet_explicit) {
-        if (globals.quiet) |v| {
+        if (calculation.quiet) |v| {
             config.quiet = v;
             config.show_progress = !v;
         }
     }
-    if (!args.classifier_explicit) {
-        if (globals.classifier) |v| config.classifier_type = parseClassifierType(v);
-    }
     if (!args.include_hydrogens_explicit) {
-        if (globals.include_hydrogens) |v| config.include_hydrogens = v;
+        if (calculation.include_hydrogens) |v| config.include_hydrogens = v;
     }
     if (!args.include_hetatm_explicit) {
-        if (globals.include_hetatm) |v| config.include_hetatm = v;
+        if (calculation.include_hetatm) |v| config.include_hetatm = v;
     }
     if (!args.use_bitmask_explicit) {
-        if (globals.use_bitmask) |v| config.use_bitmask = v;
+        if (calculation.use_bitmask) |v| config.use_bitmask = v;
     }
-    if (globals.auth_chain) |v| config.use_auth_chain = v;
-    if (globals.residue_map) |v| config.residue_map = v;
+    if (calculation.auth_chain) |v| config.use_auth_chain = v;
+    if (calculation.residue_map) |v| config.residue_map = v;
+
+    try applyWorkflowClassifierToBatchConfig(config, args, classifier_config);
 }
 
 fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
@@ -2303,7 +2383,11 @@ fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
         config.quiet = args.quiet;
         config.show_progress = args.show_progress;
     }
-    if (args.classifier_explicit) config.classifier_type = args.classifier_type;
+    if (args.classifier_explicit) {
+        config.classifier_type = args.classifier_type;
+        config.custom_classifier = null;
+        config.custom_classifier_path = null;
+    }
     if (args.include_hydrogens_explicit) config.include_hydrogens = args.include_hydrogens;
     if (args.include_hetatm_explicit) config.include_hetatm = args.include_hetatm;
     if (args.use_bitmask_explicit) config.use_bitmask = args.use_bitmask;
@@ -2311,87 +2395,134 @@ fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
     if (args.residue_map) config.residue_map = true;
 }
 
-fn applyManifestJobOverrides(config: *BatchConfig, args: BatchArgs, job: batch_manifest.Job) void {
+fn applyWorkflowClassifierToBatchConfig(config: *BatchConfig, args: BatchArgs, classifier_config: workflow_manifest.ClassifierConfig) !void {
+    if (!args.classifier_explicit) {
+        if (classifier_config.type) |classifier_type| {
+            if (std.mem.eql(u8, classifier_type, "custom")) {
+                config.classifier_type = null;
+                config.custom_classifier_path = classifier_config.config orelse return error.InvalidArgument;
+            } else {
+                config.classifier_type = parseClassifierType(classifier_type);
+                config.custom_classifier_path = null;
+            }
+        }
+    }
+}
+
+fn applyWorkflowJobOverrides(config: *BatchConfig, args: BatchArgs, job: workflow_manifest.Job) void {
     if (job.auth_chain) |v| config.use_auth_chain = v;
     if (args.use_auth_chain) config.use_auth_chain = true;
     config.chain_filter = job.chains;
 }
 
-fn parseManifestFile(allocator: Allocator, io: std.Io, path: []const u8) !batch_manifest.Manifest {
-    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
-    defer file.close(io);
-
-    var read_buf: [65536]u8 = undefined;
-    var reader = file.reader(io, &read_buf);
-    const content = try reader.interface.allocRemaining(allocator, .unlimited);
-    errdefer allocator.free(content);
-
-    const manifest = try batch_manifest.parse(allocator, content);
-    allocator.free(content);
-    return manifest;
+fn parseWorkflowFile(allocator: Allocator, io: std.Io, path: []const u8) !workflow_manifest.Workflow {
+    return workflow_manifest.parseFile(allocator, io, path);
 }
 
-fn runManifest(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
-    if (args.chain_filter != null) {
-        std.debug.print("Error: --manifest cannot be combined with --chain; use [[jobs]].chains in the manifest\n", .{});
-        return error.InvalidArgument;
-    }
+fn classifierUsesCcdResources(effective_classifier_type: ?ClassifierType) bool {
+    const classifier_type = effective_classifier_type orelse return false;
+    return classifier_type == .ccd or classifier_type == .protor;
+}
 
-    const manifest_path = args.manifest_path.?;
-    var manifest = parseManifestFile(allocator, io, manifest_path) catch |err| {
-        std.debug.print("Error reading manifest '{s}': {s}\n", .{ manifest_path, @errorName(err) });
-        return err;
-    };
-    defer manifest.deinit();
+fn resolveWorkflowCcdPath(args: BatchArgs, classifier_config: workflow_manifest.ClassifierConfig, effective_classifier_type: ?ClassifierType) ?[]const u8 {
+    if (!classifierUsesCcdResources(effective_classifier_type)) return null;
+    if (args.ccd_explicit) return args.ccd_path;
+    return classifier_config.ccd;
+}
 
-    const input_dir = args.input_path orelse manifest.globals.input_dir orelse {
-        std.debug.print("Error: Missing input directory (provide positional input_dir or input_dir in manifest)\n", .{});
-        return error.MissingArgument;
-    };
-    const output_dir = args.output_path orelse manifest.globals.output_dir;
+fn resolveWorkflowSdfPaths(args: BatchArgs, workflow_sdf_paths: []const []const u8, effective_classifier_type: ?ClassifierType) []const []const u8 {
+    if (!classifierUsesCcdResources(effective_classifier_type)) return &.{};
+    if (args.sdf_explicit) return args.sdf_paths.constSlice();
+    return workflow_sdf_paths;
+}
 
-    if (manifest.jobs.len > 1 and output_dir == null) {
-        std.debug.print("Error: --manifest with multiple jobs requires an output directory\n", .{});
-        return error.InvalidArgument;
-    }
-
-    const load_quiet = if (args.quiet_explicit) args.quiet else (manifest.globals.quiet orelse args.quiet);
-
-    const ccd_path = if (args.ccd_explicit) args.ccd_path else manifest.globals.ccd;
-    var ext_ccd: ?ccd_parser.ComponentDict = null;
-    if (ccd_path) |path| {
-        const ccd_data = if (compressed.isCompressed(path))
-            compressed.read(allocator, path) catch |err| {
-                std.debug.print("Error reading CCD file '{s}': {s}\n", .{ path, @errorName(err) });
-                return err;
-            }
-        else blk: {
-            const f = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
-                std.debug.print("Error opening CCD file '{s}': {s}\n", .{ path, @errorName(err) });
-                return err;
-            };
-            defer f.close(io);
-            var read_buf_ccd: [65536]u8 = undefined;
-            var file_r_ccd = f.reader(io, &read_buf_ccd);
-            break :blk file_r_ccd.interface.allocRemaining(allocator, .unlimited) catch |err| {
-                std.debug.print("Error reading CCD file '{s}': {s}\n", .{ path, @errorName(err) });
-                return err;
-            };
-        };
-        defer allocator.free(ccd_data);
-
-        ext_ccd = ccd_binary.loadDict(allocator, ccd_data) catch |err| {
-            std.debug.print("Error loading CCD dictionary '{s}': {s}\n", .{ path, @errorName(err) });
+fn loadExternalCcd(allocator: Allocator, io: std.Io, path: []const u8, quiet: bool) !ccd_parser.ComponentDict {
+    const ccd_data = if (compressed.isCompressed(path))
+        compressed.read(allocator, path) catch |err| {
+            std.debug.print("Error reading CCD file '{s}': {s}\n", .{ path, @errorName(err) });
+            return err;
+        }
+    else blk: {
+        const f = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
+            std.debug.print("Error opening CCD file '{s}': {s}\n", .{ path, @errorName(err) });
             return err;
         };
-        if (!load_quiet) {
-            std.debug.print("External CCD: loaded {d} components from '{s}'\n", .{ ext_ccd.?.components.count(), path });
+        defer f.close(io);
+        var read_buf_ccd: [65536]u8 = undefined;
+        var file_r_ccd = f.reader(io, &read_buf_ccd);
+        break :blk file_r_ccd.interface.allocRemaining(allocator, .unlimited) catch |err| {
+            std.debug.print("Error reading CCD file '{s}': {s}\n", .{ path, @errorName(err) });
+            return err;
+        };
+    };
+    defer allocator.free(ccd_data);
+
+    const dict = ccd_binary.loadDict(allocator, ccd_data) catch |err| {
+        std.debug.print("Error loading CCD dictionary '{s}': {s}\n", .{ path, @errorName(err) });
+        return err;
+    };
+    if (!quiet) {
+        std.debug.print("External CCD: loaded {d} components from '{s}'\n", .{ dict.components.count(), path });
+    }
+    return dict;
+}
+
+fn loadCustomClassifier(allocator: Allocator, io: std.Io, path: []const u8) !classifier.Classifier {
+    return classifier_parser.parseConfigFile(allocator, io, path) catch |err| {
+        switch (err) {
+            error.UnsupportedConfigExtension => std.debug.print("Error loading config file '{s}': custom classifier configs are TOML-only; rename or convert the file to .toml\n", .{path}),
+            error.UnsupportedLegacyFormat => std.debug.print("Error loading config file '{s}': FreeSASA-style custom classifier configs are no longer supported; convert to TOML [types] and [[atoms]]\n", .{path}),
+            else => std.debug.print("Error loading config file '{s}': {s}\n", .{ path, @errorName(err) }),
         }
+        return err;
+    };
+}
+
+fn runWorkflow(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
+    if (args.chain_filter != null) {
+        std.debug.print("Error: --workflow cannot be combined with --chain; --manifest is a compatibility alias for --workflow; use [[jobs]].chains in the workflow\n", .{});
+        return error.InvalidArgument;
+    }
+
+    const workflow_path = args.workflow_path.?;
+    var workflow = parseWorkflowFile(allocator, io, workflow_path) catch |err| {
+        std.debug.print("Error reading workflow file '{s}': {s}\n", .{ workflow_path, @errorName(err) });
+        return err;
+    };
+    defer workflow.deinit();
+
+    if (workflow.jobs.len == 0) {
+        std.debug.print("Error: batch workflow requires at least one [[jobs]] entry\n", .{});
+        return error.NoJobs;
+    }
+
+    const input_dir = args.input_path orelse workflow.input.dir orelse {
+        std.debug.print("Error: Missing input directory (provide positional input_dir or [input].dir in workflow)\n", .{});
+        return error.MissingArgument;
+    };
+    const output_dir = args.output_path orelse workflow.output.dir;
+
+    if (workflow.jobs.len > 1 and output_dir == null) {
+        std.debug.print("Error: workflow with multiple jobs requires an output directory\n", .{});
+        return error.InvalidArgument;
+    }
+
+    const load_quiet = if (args.quiet_explicit) args.quiet else (workflow.calculation.quiet orelse args.quiet);
+
+    var resource_config = BatchConfig{};
+    try applyWorkflowToBatchConfig(&resource_config, args, workflow.calculation, workflow.output, workflow.classifier);
+    applyCliOverrides(&resource_config, args);
+    const effective_classifier_type = resource_config.classifier_type;
+
+    const ccd_path = resolveWorkflowCcdPath(args, workflow.classifier, effective_classifier_type);
+    var ext_ccd: ?ccd_parser.ComponentDict = null;
+    if (ccd_path) |path| {
+        ext_ccd = try loadExternalCcd(allocator, io, path, load_quiet);
     }
     defer if (ext_ccd) |*d| d.deinit();
 
-    const manifest_sdf_paths: []const []const u8 = manifest.globals.sdf orelse &.{};
-    const sdf_paths = if (args.sdf_explicit) args.sdf_paths.constSlice() else manifest_sdf_paths;
+    const workflow_sdf_paths: []const []const u8 = workflow.classifier.sdf orelse &.{};
+    const sdf_paths = resolveWorkflowSdfPaths(args, workflow_sdf_paths, effective_classifier_type);
     var sdf_ccd: ?ccd_parser.ComponentDict = null;
     if (sdf_paths.len > 0) {
         sdf_ccd = loadSdfComponents(allocator, io, sdf_paths, load_quiet) catch |err| {
@@ -2401,19 +2532,30 @@ fn runManifest(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     }
     defer if (sdf_ccd) |*d| d.deinit();
 
+    var custom_classifier: ?classifier.Classifier = null;
+    const custom_classifier_path: ?[]const u8 = if (!args.classifier_explicit and workflow.classifier.type != null and std.mem.eql(u8, workflow.classifier.type.?, "custom"))
+        workflow.classifier.config
+    else
+        null;
+    if (custom_classifier_path) |path| {
+        custom_classifier = try loadCustomClassifier(allocator, io, path);
+    }
+    defer if (custom_classifier) |*c| c.deinit();
+
     var successful: usize = 0;
     var failed: usize = 0;
 
-    for (manifest.jobs) |job| {
+    for (workflow.jobs) |job| {
         var config = BatchConfig{};
-        try applyManifestGlobals(&config, args, manifest.globals);
+        try applyWorkflowToBatchConfig(&config, args, workflow.calculation, workflow.output, workflow.classifier);
         applyCliOverrides(&config, args);
 
         config.include_hetatm = config.include_hetatm or (config.classifier_type == .ccd);
         config.store_atom_areas = (config.output_format == .jsonl);
         config.external_ccd = if (ext_ccd != null) &ext_ccd.? else null;
         config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
-        applyManifestJobOverrides(&config, args, job);
+        if (custom_classifier) |*c| config.custom_classifier = c;
+        applyWorkflowJobOverrides(&config, args, job);
         validateResidueMapFormat(config.output_format, config.residue_map) catch {
             std.debug.print("Error: residue_map is only supported with format = \"jsonl\"\n", .{});
             return error.InvalidArgument;
@@ -2432,18 +2574,18 @@ fn runManifest(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         if (config.output_format == .jsonl) {
             if (output_dir) |out| {
                 try std.Io.Dir.cwd().createDirPath(io, out);
-                jsonl_output_path = try manifestJsonlOutputPath(allocator, out, job.name);
+                jsonl_output_path = try workflowJsonlOutputPath(allocator, out, job.name);
             }
         } else if (output_dir) |out| {
-            job_output_dir = try manifestPerFileOutputDir(allocator, out, job.name);
+            job_output_dir = try workflowPerFileOutputDir(allocator, out, job.name);
         }
 
         if (!config.quiet) {
-            std.debug.print("Manifest job: {s}\n", .{job.name});
+            std.debug.print("Workflow job: {s}\n", .{job.name});
         }
 
         var result = runBatch(allocator, io, input_dir, job_output_dir, config, jsonl_output_path) catch |err| {
-            std.debug.print("Error running manifest job '{s}': {s}\n", .{ job.name, @errorName(err) });
+            std.debug.print("Error running workflow job '{s}': {s}\n", .{ job.name, @errorName(err) });
             failed += 1;
             continue;
         };
@@ -2453,13 +2595,13 @@ fn runManifest(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         failed += result.failed;
     }
 
-    std.debug.print("Manifest complete: {d} successful, {d} failed\n", .{ successful, failed });
+    std.debug.print("Workflow complete: {d} successful, {d} failed\n", .{ successful, failed });
 }
 
 /// Run batch processing from parsed CLI arguments
 pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
-    if (args.manifest_path != null) {
-        return runManifest(allocator, io, args);
+    if (args.workflow_path != null) {
+        return runWorkflow(allocator, io, args);
     }
 
     const input_dir = args.input_path orelse {
@@ -2673,10 +2815,22 @@ test "BatchArgs help flag" {
     try std.testing.expectEqual(true, parsed.show_help);
 }
 
-test "BatchArgs --manifest" {
+test "BatchArgs --manifest compatibility alias" {
     const args = [_][]const u8{ "zsasa", "batch", "--manifest", "bsa.toml" };
     const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqualStrings("bsa.toml", parsed.manifest_path.?);
+    try std.testing.expectEqualStrings("bsa.toml", parsed.workflow_path.?);
+}
+
+test "BatchArgs --workflow=FILE" {
+    const args = [_][]const u8{ "zsasa", "batch", "--workflow=batch-workflow.toml" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("batch-workflow.toml", parsed.workflow_path.?);
+}
+
+test "BatchArgs --workflow FILE" {
+    const args = [_][]const u8{ "zsasa", "batch", "--workflow", "batch-workflow.toml" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("batch-workflow.toml", parsed.workflow_path.?);
 }
 
 test "BatchArgs --chain=A" {
@@ -2708,21 +2862,21 @@ test "parseBatchChainFilter splits comma-separated chains" {
     try std.testing.expectEqualStrings("AB", chains[2]);
 }
 
-test "manifest numeric validators reject invalid values" {
-    try std.testing.expectEqual(@as(f64, 1.4), try validateManifestProbeRadius(1.4));
-    try std.testing.expectEqual(@as(u32, 1), try validateManifestNPoints(1));
-    try std.testing.expectEqual(@as(u32, 10000), try validateManifestNPoints(10000));
-    try std.testing.expectEqual(@as(u32, 1), try validateManifestNSlices(1));
-    try std.testing.expectEqual(@as(u32, 1000), try validateManifestNSlices(1000));
+test "workflow numeric validators reject invalid values" {
+    try std.testing.expectEqual(@as(f64, 1.4), try validateWorkflowProbeRadius(1.4));
+    try std.testing.expectEqual(@as(u32, 1), try validateWorkflowNPoints(1));
+    try std.testing.expectEqual(@as(u32, 10000), try validateWorkflowNPoints(10000));
+    try std.testing.expectEqual(@as(u32, 1), try validateWorkflowNSlices(1));
+    try std.testing.expectEqual(@as(u32, 1000), try validateWorkflowNSlices(1000));
 
-    try std.testing.expectError(error.InvalidArgument, validateManifestProbeRadius(0));
-    try std.testing.expectError(error.InvalidArgument, validateManifestProbeRadius(-1));
-    try std.testing.expectError(error.InvalidArgument, validateManifestProbeRadius(10.1));
-    try std.testing.expectError(error.InvalidArgument, validateManifestProbeRadius(std.math.nan(f64)));
-    try std.testing.expectError(error.InvalidArgument, validateManifestNPoints(0));
-    try std.testing.expectError(error.InvalidArgument, validateManifestNPoints(10001));
-    try std.testing.expectError(error.InvalidArgument, validateManifestNSlices(0));
-    try std.testing.expectError(error.InvalidArgument, validateManifestNSlices(1001));
+    try std.testing.expectError(error.InvalidArgument, validateWorkflowProbeRadius(0));
+    try std.testing.expectError(error.InvalidArgument, validateWorkflowProbeRadius(-1));
+    try std.testing.expectError(error.InvalidArgument, validateWorkflowProbeRadius(10.1));
+    try std.testing.expectError(error.InvalidArgument, validateWorkflowProbeRadius(std.math.nan(f64)));
+    try std.testing.expectError(error.InvalidArgument, validateWorkflowNPoints(0));
+    try std.testing.expectError(error.InvalidArgument, validateWorkflowNPoints(10001));
+    try std.testing.expectError(error.InvalidArgument, validateWorkflowNSlices(0));
+    try std.testing.expectError(error.InvalidArgument, validateWorkflowNSlices(1001));
 }
 
 test "validateResidueMapFormat accepts JSONL residue map" {
@@ -2737,38 +2891,91 @@ test "validateResidueMapFormat rejects non-JSONL residue map" {
     try std.testing.expectError(error.InvalidArgument, validateResidueMapFormat(.csv, true));
 }
 
-test "CLI auth-chain overrides manifest job auth_chain false" {
+test "CLI auth-chain overrides workflow job auth_chain false" {
     var config = BatchConfig{};
     const args = BatchArgs{ .use_auth_chain = true };
-    const job = batch_manifest.Job{
+    const job = @import("workflow_manifest.zig").Job{
         .name = "chain_A",
         .auth_chain = false,
     };
 
-    applyManifestJobOverrides(&config, args, job);
+    applyWorkflowJobOverrides(&config, args, job);
 
     try std.testing.expectEqual(true, config.use_auth_chain);
 }
 
-test "manifest residue_map applies when CLI does not override format" {
+test "workflow residue_map applies when CLI does not override format" {
     var config = BatchConfig{};
     const args = BatchArgs{};
-    const globals = batch_manifest.Globals{ .format = "jsonl", .residue_map = true };
+    const calculation = @import("workflow_manifest.zig").Calculation{ .residue_map = true };
+    const output = @import("workflow_manifest.zig").Output{ .format = "jsonl" };
+    const classifier_config = @import("workflow_manifest.zig").ClassifierConfig{};
 
-    try applyManifestGlobals(&config, args, globals);
+    try applyWorkflowToBatchConfig(&config, args, calculation, output, classifier_config);
 
     try std.testing.expectEqual(OutputFormat.jsonl, config.output_format);
     try std.testing.expectEqual(true, config.residue_map);
 }
 
-test "manifestJsonlOutputPath uses job file under output dir" {
-    const path = try manifestJsonlOutputPath(std.testing.allocator, "results", "chain_A");
+test "workflow custom classifier config path resolves for batch" {
+    var config = BatchConfig{};
+    const args = BatchArgs{};
+    const classifier_config = @import("workflow_manifest.zig").ClassifierConfig{
+        .type = "custom",
+        .config = "custom-radii.toml",
+    };
+
+    try applyWorkflowClassifierToBatchConfig(&config, args, classifier_config);
+
+    try std.testing.expect(config.classifier_type == null);
+    try std.testing.expectEqualStrings("custom-radii.toml", config.custom_classifier_path.?);
+}
+
+test "batch resource resolver only loads CCD resources for CCD classifiers" {
+    const classifier_config = @import("workflow_manifest.zig").ClassifierConfig{
+        .ccd = "workflow.zsdc",
+    };
+    const workflow_sdf_paths = [_][]const u8{"workflow.sdf"};
+
+    const workflow_only_args = BatchArgs{};
+    try std.testing.expect(resolveWorkflowCcdPath(workflow_only_args, classifier_config, .naccess) == null);
+    try std.testing.expect(resolveWorkflowCcdPath(workflow_only_args, classifier_config, .oons) == null);
+    try std.testing.expect(resolveWorkflowCcdPath(workflow_only_args, classifier_config, null) == null);
+    try std.testing.expectEqual(@as(usize, 0), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], .naccess).len);
+    try std.testing.expectEqual(@as(usize, 0), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], .oons).len);
+    try std.testing.expectEqual(@as(usize, 0), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], null).len);
+    try std.testing.expectEqualStrings("workflow.zsdc", resolveWorkflowCcdPath(workflow_only_args, classifier_config, .ccd).?);
+    try std.testing.expectEqualStrings("workflow.zsdc", resolveWorkflowCcdPath(workflow_only_args, classifier_config, .protor).?);
+    try std.testing.expectEqual(@as(usize, 1), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], .ccd).len);
+    try std.testing.expectEqual(@as(usize, 1), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], .protor).len);
+
+    var explicit_resource_args = BatchArgs{
+        .classifier_explicit = true,
+        .classifier_type = .naccess,
+        .ccd_explicit = true,
+        .ccd_path = "cli.zsdc",
+        .sdf_explicit = true,
+    };
+    try explicit_resource_args.sdf_paths.append("cli.sdf");
+
+    try std.testing.expect(resolveWorkflowCcdPath(explicit_resource_args, classifier_config, .naccess) == null);
+    try std.testing.expect(resolveWorkflowCcdPath(explicit_resource_args, classifier_config, null) == null);
+    try std.testing.expectEqual(@as(usize, 0), resolveWorkflowSdfPaths(explicit_resource_args, workflow_sdf_paths[0..], .naccess).len);
+    try std.testing.expectEqual(@as(usize, 0), resolveWorkflowSdfPaths(explicit_resource_args, workflow_sdf_paths[0..], null).len);
+    try std.testing.expectEqualStrings("cli.zsdc", resolveWorkflowCcdPath(explicit_resource_args, classifier_config, .ccd).?);
+    const resolved_sdf_paths = resolveWorkflowSdfPaths(explicit_resource_args, workflow_sdf_paths[0..], .ccd);
+    try std.testing.expectEqual(@as(usize, 1), resolved_sdf_paths.len);
+    try std.testing.expectEqualStrings("cli.sdf", resolved_sdf_paths[0]);
+}
+
+test "workflowJsonlOutputPath uses job file under output dir" {
+    const path = try workflowJsonlOutputPath(std.testing.allocator, "results", "chain_A");
     defer std.testing.allocator.free(path);
     try std.testing.expectEqualStrings("results/chain_A.jsonl", path);
 }
 
-test "manifestPerFileOutputDir uses job directory under output dir" {
-    const path = try manifestPerFileOutputDir(std.testing.allocator, "results", "complex_AB");
+test "workflowPerFileOutputDir uses job directory under output dir" {
+    const path = try workflowPerFileOutputDir(std.testing.allocator, "results", "complex_AB");
     defer std.testing.allocator.free(path);
     try std.testing.expectEqualStrings("results/complex_AB", path);
 }

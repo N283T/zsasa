@@ -6,10 +6,11 @@ sidebar_position: 1
 
 ## Synopsis
 
-```
+```bash
 zsasa calc <input> [output] [OPTIONS]
+zsasa calc --workflow <workflow.toml>
 zsasa batch <input_dir> [output_dir] [OPTIONS]
-zsasa batch --manifest <manifest.toml>
+zsasa batch --workflow <workflow.toml>
 zsasa traj <trajectory> <topology> [output] [OPTIONS]
 zsasa compile-dict <input.cif[.gz|.zst]> -o <output.zsdc>
 ```
@@ -22,6 +23,7 @@ Calculate SASA for a single structure file.
 
 ```bash
 zsasa calc structure.cif output.json [OPTIONS]
+zsasa calc --workflow sasa.toml
 ```
 
 ### `batch` - Directory Batch Processing
@@ -30,31 +32,72 @@ Process all structure files in a directory.
 
 ```bash
 zsasa batch input_dir/ output_dir/ [OPTIONS]
-zsasa batch --manifest manifest.toml
+zsasa batch --workflow bsa.toml
 ```
 
-Positional paths are required for ordinary batch mode, but can be supplied by the manifest when using `--manifest`.
+Positional paths are required for ordinary batch mode, but can be supplied by the workflow file when using `--workflow`.
 
 Batch mode uses file-level parallelism: multiple files are processed simultaneously, one thread per file. Use `--threads` to control the number of concurrent files.
 
-#### Batch TOML manifest
+#### Workflow TOML files
 
-Use `--manifest` to run several named batch jobs over the same input directory. CLI positional paths and explicit options override manifest values.
+Use `--workflow` to keep input, output, calculation, and classifier settings in a TOML file. `batch` workflows must contain one or more named `[[jobs]]` entries. Explicit CLI options override workflow values.
+
+`--manifest` is a compatibility alias for `--workflow` in `batch`.
 
 ```bash
-zsasa batch --manifest bsa.toml
-zsasa batch structures/ results/ --manifest bsa.toml --threads=8
+zsasa calc --workflow sasa.toml
+zsasa batch --workflow bsa.toml
+zsasa batch structures/ results/ --workflow bsa.toml --threads=8
 ```
+
+Calc workflow example:
 
 ```toml
 version = 1
-input_dir = "structures"
-output_dir = "results"
+kind = "workflow"
+
+[input]
+path = "structure.cif"
+chain = "A"
+
+[output]
+path = "sasa.json"
+format = "json"
+
+[calculation]
+algorithm = "sr"
+threads = 4
+n_points = 200
+per_residue = true
+rsa = true
+
+[classifier]
+type = "ccd"
+ccd = "components.zsdc"
+```
+
+Batch workflow example with a custom TOML classifier config reference:
+
+```toml
+version = 1
+kind = "workflow"
+
+[input]
+dir = "structures"
+
+[output]
+dir = "results"
 format = "jsonl"
+
+[calculation]
 residue_map = true
 use_bitmask = true
 n_points = 128
-classifier = "ccd"
+
+[classifier]
+type = "custom"
+config = "my_classifier.toml"
 
 [[jobs]]
 name = "chain_A"
@@ -69,11 +112,11 @@ name = "complex_AB"
 chains = ["A", "B"]
 ```
 
-For `format = "jsonl"`, each job writes one file such as `results/chain_A.jsonl`. For `json`, `compact`, and `csv`, each job writes a directory such as `results/chain_A/`.
+For `format = "jsonl"`, each batch job writes one file such as `results/chain_A.jsonl`. For `json`, `compact`, and `csv`, each job writes a directory such as `results/chain_A/`.
 
-Precedence is: built-in defaults < manifest globals < job settings < explicit CLI options. `--chain` is for non-manifest single-job batch mode; manifest jobs should use `[[jobs]].chains`.
+Precedence is: built-in defaults < workflow settings < job settings < explicit CLI options. `--chain` is for non-workflow single-job batch mode; workflow jobs should use `[[jobs]].chains`.
 
-Set `residue_map = true` in a manifest, or pass `--residue-map` with `--format=jsonl`, to add compact residue-level mapping arrays (`residue_chain`, `residue_name`, `residue_number`, `residue_insertion_code`, `residue_atom_start`, `residue_atom_count`, `residue_sasa`) to each JSONL row. The default JSONL schema remains unchanged unless this option is enabled.
+Set `residue_map = true` in a workflow, or pass `--residue-map` with `--format=jsonl`, to add compact residue-level mapping arrays (`residue_chain`, `residue_name`, `residue_number`, `residue_insertion_code`, `residue_atom_start`, `residue_atom_count`, `residue_sasa`) to each JSONL row. The default JSONL schema remains unchanged unless this option is enabled.
 
 ### `traj` - Trajectory Analysis
 
@@ -109,6 +152,27 @@ The compiled ZSDC file can then be used with `--ccd=components.zsdc` for faster 
 
 # With analysis features
 ./zig-out/bin/zsasa calc --rsa --polar structure.cif output.json
+
+# With workflow file
+./zig-out/bin/zsasa calc --workflow sasa.toml
+```
+
+## Calc-only Options
+
+### Custom classifier config
+
+`--config=FILE` is a `calc`-only option for advanced custom classifiers. Files must use TOML format and the `.toml` extension. If both `--classifier` and `--config` are specified for `calc`, `--config` takes precedence.
+
+```bash
+zsasa calc --config=my_classifier.toml structure.cif output.json
+```
+
+Batch custom classifiers are workflow-only; set the workflow classifier section instead of passing a CLI `--config` option:
+
+```toml
+[classifier]
+type = "custom"
+config = "my_classifier.toml"
 ```
 
 ## Common Options
@@ -129,13 +193,13 @@ The compiled ZSDC file can then be used with `--ccd=components.zsdc` for faster 
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--classifier=TYPE` | Built-in classifier: `naccess`, `protor`, `oons`, or `ccd` | `protor` for PDB/mmCIF, none for JSON |
-| `--config=FILE` | Custom classifier config file (TOML or FreeSASA format, auto-detected by extension) | none |
+| `--classifier=TYPE` | Built-in classifier: `ccd`, `protor`, `naccess`, or `oons` | `ccd` for PDB/mmCIF, none for JSON |
 | `--ccd=FILE` | External CCD dictionary (CIF text or ZSDC binary) | none |
 
-When `--classifier` is used, atom radii are assigned based on residue and atom names. For PDB/mmCIF input, `protor` is used by default (matching FreeSASA/RustSASA defaults). If both `--classifier` and `--config` are specified, `--config` takes precedence. When `--classifier=ccd` is used, HETATM records are included automatically without needing `--include-hetatm`.
+When `--classifier` is used, atom radii are assigned based on residue and atom names. For PDB/mmCIF input, `ccd` is used by default. When `--classifier=ccd` is used, HETATM records are included automatically without needing `--include-hetatm`.
 
 See [Classifiers](../guide/classifiers.mdx) for detailed classifier documentation.
+
 
 ### Structure Filtering
 
@@ -191,7 +255,7 @@ The `traj` subcommand has additional options specific to trajectory processing.
 
 ### Options
 
-All [common options](#common-options) apply, plus:
+Most [common options](#common-options) apply, plus the trajectory-specific options below. `traj` has no custom config CLI option; use a built-in classifier.
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -260,7 +324,7 @@ All [common options](#common-options) apply, plus:
 ./zig-out/bin/zsasa calc --classifier=naccess structure.cif output.json
 
 # Custom config
-./zig-out/bin/zsasa calc --config=custom.config structure.cif output.json
+./zig-out/bin/zsasa calc --config=custom.toml structure.cif output.json
 ```
 
 ### Chain/Model Filtering
@@ -302,6 +366,9 @@ By default, hydrogen atoms and HETATM records are excluded (matching FreeSASA/Ru
 
 # Multi-threaded (file-level parallelism)
 ./zig-out/bin/zsasa batch --threads=8 input_dir/ output_dir/
+
+# With workflow file
+./zig-out/bin/zsasa batch --workflow bsa.toml
 ```
 
 ### Trajectory Analysis
