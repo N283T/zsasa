@@ -32,6 +32,22 @@ zsasa batch structures/ results/ --format=jsonl --output=results.jsonl
 
 JSONL is especially useful when you want to concatenate, filter, or process results incrementally.
 
+## Experimental Adaptive Bitmask SR
+
+For large SR batch jobs that already use bitmask mode, `--adaptive-sr` runs a coarse bitmask pass for every atom and recomputes only intermediate-exposure atoms with a fine point count:
+
+```bash
+zsasa batch structures/ results/ \
+  --use-bitmask \
+  --adaptive-sr \
+  --coarse-points=64 \
+  --fine-points=256 \
+  --adaptive-low=0.10 \
+  --adaptive-high=0.90
+```
+
+Adaptive mode is currently available for `zsasa batch` only. It requires `--use-bitmask` and `--algorithm=sr`. The output schema is unchanged; compare against fixed fine-point bitmask runs when validating a new dataset.
+
 ## Residue Maps in JSONL
 
 Add `--residue-map` to include compact residue-level arrays in each JSONL row:

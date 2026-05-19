@@ -72,8 +72,8 @@ pub const BatchConfig = struct {
     adaptive_sr: bool = false, // Experimental two-stage bitmask SR for batch mode
     coarse_points: u32 = 64,
     fine_points: u32 = 256,
-    adaptive_low: f64 = 0.05,
-    adaptive_high: f64 = 0.95,
+    adaptive_low: f64 = 0.10,
+    adaptive_high: f64 = 0.90,
     store_atom_areas: bool = false, // When true, copy atom_areas to result_allocator for jsonl
     external_ccd: ?*const ccd_parser.ComponentDict = null, // External CCD dictionary
     sdf_ccd: ?*const ccd_parser.ComponentDict = null, // SDF bond topology dictionary
@@ -1930,8 +1930,8 @@ pub const BatchArgs = struct {
     adaptive_sr: bool = false,
     coarse_points: u32 = 64,
     fine_points: u32 = 256,
-    adaptive_low: f64 = 0.05,
-    adaptive_high: f64 = 0.95,
+    adaptive_low: f64 = 0.10,
+    adaptive_high: f64 = 0.90,
     ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz|.zst])
     sdf_paths: SdfPathList = .{}, // --sdf=PATH (up to 16)
     quiet: bool = false,
@@ -2496,8 +2496,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --adaptive-sr       Experimental adaptive two-stage bitmask SR
         \\    --coarse-points=N   Coarse adaptive points (default: 64)
         \\    --fine-points=N     Fine adaptive points (default: --n-points or 256)
-        \\    --adaptive-low=X    Coarse accept low exposed fraction (default: 0.05)
-        \\    --adaptive-high=X   Coarse accept high exposed fraction (default: 0.95)
+        \\    --adaptive-low=X    Coarse accept low exposed fraction (default: 0.10)
+        \\    --adaptive-high=X   Coarse accept high exposed fraction (default: 0.90)
         \\    --timing            Show timing breakdown for benchmarking
         \\    -o, --output=PATH   Output directory, or file path for --format=jsonl
         \\    -q, --quiet         Suppress progress output
@@ -3361,8 +3361,8 @@ test "BatchArgs adaptive defaults use 64 and 256" {
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(@as(u32, 64), parsed.coarse_points);
     try std.testing.expectEqual(@as(u32, 256), parsed.fine_points);
-    try std.testing.expectEqual(@as(f64, 0.05), parsed.adaptive_low);
-    try std.testing.expectEqual(@as(f64, 0.95), parsed.adaptive_high);
+    try std.testing.expectEqual(@as(f64, 0.10), parsed.adaptive_low);
+    try std.testing.expectEqual(@as(f64, 0.90), parsed.adaptive_high);
 }
 
 test "BatchArgs --use-bitmask" {
