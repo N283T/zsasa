@@ -71,7 +71,7 @@ pub const Workflow = struct {
     calculation: Calculation = .{},
     classifier: ClassifierConfig = .{},
     jobs: []Job = &.{},
-    is_legacy_batch_manifest: bool = false,
+    is_legacy_batch_workflow: bool = false,
 
     pub fn deinit(self: *Workflow) void {
         if (self.classifier.sdf) |items| self.allocator.free(items);
@@ -118,7 +118,7 @@ fn parseOwned(allocator: Allocator, owned_content: []const u8) Error!Workflow {
     var workflow = Workflow{
         .allocator = allocator,
         .content = owned_content,
-        .is_legacy_batch_manifest = is_legacy,
+        .is_legacy_batch_workflow = is_legacy,
     };
     workflow_initialized = true;
     errdefer workflow.deinit();
@@ -511,7 +511,7 @@ test "parse sectioned calc workflow" {
     var workflow = try parse(std.testing.allocator, input);
     defer workflow.deinit();
 
-    try std.testing.expectEqual(false, workflow.is_legacy_batch_manifest);
+    try std.testing.expectEqual(false, workflow.is_legacy_batch_workflow);
     try std.testing.expectEqualStrings("structure.cif", workflow.input.path.?);
     try std.testing.expectEqualStrings("A,B", workflow.input.chain.?);
     try std.testing.expectEqual(@as(u32, 1), workflow.input.model.?);
@@ -607,7 +607,7 @@ test "parse legacy flat batch manifest" {
     var workflow = try parse(std.testing.allocator, input);
     defer workflow.deinit();
 
-    try std.testing.expectEqual(true, workflow.is_legacy_batch_manifest);
+    try std.testing.expectEqual(true, workflow.is_legacy_batch_workflow);
     try std.testing.expectEqualStrings("structures", workflow.input.dir.?);
     try std.testing.expectEqualStrings("results", workflow.output.dir.?);
     try std.testing.expectEqualStrings("jsonl", workflow.output.format.?);
