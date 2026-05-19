@@ -63,6 +63,8 @@ cd zsasa && zig build -Doptimize=ReleaseFast
 
 ```bash
 zsasa calc structure.cif output.json
+zsasa calc --workflow sasa.toml
+zsasa batch --workflow bsa.toml
 ```
 
 ## Documentation

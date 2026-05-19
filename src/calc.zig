@@ -734,7 +734,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --mol=NAME|N       Select molecule from multi-molecule SDF by name or
         \\                       1-based index (default: first molecule)
         \\    --config=FILE      Custom classifier config file (TOML format; .toml only)
-        \\    --workflow=PATH    TOML workflow file with calc input/output/options
+        \\    --workflow=PATH    TOML workflow file for input, output, calculation, and classifier settings
         \\    --chain=ID         Filter by chain ID (e.g., --chain=A or --chain=A,B,C)
         \\                       Default: label_asym_id (mmCIF standard)
         \\    --auth-chain       Use auth_asym_id instead of label_asym_id
@@ -785,8 +785,9 @@ pub fn printHelp(program_name: []const u8) void {
         \\    {s} calc --format=csv input.json output.csv
         \\    {s} calc --classifier=naccess input.json output.json
         \\    {s} calc --config=custom.toml input.json output.json
+        \\    {s} calc --workflow sasa.toml
         \\
-    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
+    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 // =============================================================================
@@ -1802,15 +1803,15 @@ test "CalcArgs --n-slices N (space-separated)" {
 }
 
 test "CalcArgs --config=FILE" {
-    const args = [_][]const u8{ "zsasa", "calc", "--config=my_classifier.conf", "input.json" };
+    const args = [_][]const u8{ "zsasa", "calc", "--config=my_classifier.toml", "input.json" };
     const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqualStrings("my_classifier.conf", parsed.config_path.?);
+    try std.testing.expectEqualStrings("my_classifier.toml", parsed.config_path.?);
 }
 
 test "CalcArgs --config FILE (space-separated)" {
-    const args = [_][]const u8{ "zsasa", "calc", "--config", "my_classifier.conf", "input.json" };
+    const args = [_][]const u8{ "zsasa", "calc", "--config", "my_classifier.toml", "input.json" };
     const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqualStrings("my_classifier.conf", parsed.config_path.?);
+    try std.testing.expectEqualStrings("my_classifier.toml", parsed.config_path.?);
 }
 
 test "CalcArgs --chain=A" {

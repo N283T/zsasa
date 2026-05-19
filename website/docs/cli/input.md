@@ -94,15 +94,15 @@ Built-in classifiers assign atom radii based on residue and atom names. See [Cla
 | Classifier | Description |
 |------------|-------------|
 | `naccess` | NACCESS-compatible radii (Hubbard & Thornton 1993) |
-| `protor` | ProtOr radii (Tsai et al. 1999) — **default for PDB/mmCIF** |
+| `ccd` | CCD bond-topology radii — **default for calc/batch PDB/mmCIF** |
+| `protor` | Alias for CCD, accepted for compatibility |
 | `oons` | OONS radii (Ooi et al. 1987) |
 
 ### Custom Config (`--config=FILE`)
 
-Load a custom classifier from a config file. The format is auto-detected by extension:
+Custom classifiers are an advanced feature for studies that require a specific non-standard radius table. The CCD classifier remains the recommended default for most structures.
 
-- `.toml` files use TOML format
-- All other extensions use FreeSASA format
+Custom classifier files must use TOML and the `.toml` extension.
 
 #### TOML Format
 
@@ -131,17 +131,22 @@ type = "C_ALI"
 - `[types]` - Define atom types with radius (angstrom) and class (`"polar"` or `"apolar"`)
 - `[[atoms]]` - Map (residue, atom) pairs to defined types. Use `"ANY"` for fallback entries.
 
-#### FreeSASA Format
+#### Migrating from legacy FreeSASA-style text
 
-```
-name: my-classifier
+Older custom classifier text files are no longer loaded directly. Convert each type row and atom mapping to TOML:
 
-types:
+```text
+# Old FreeSASA-style text
 C_ALI 1.87 apolar
-C_CAR 1.76 apolar
-O     1.40 polar
+ANY CA C_ALI
+```
 
-atoms:
-ANY CA  C_ALI
-ALA CB  C_ALI
+```toml
+[types]
+C_ALI = { radius = 1.87, class = "apolar" }
+
+[[atoms]]
+residue = "ANY"
+atom = "CA"
+type = "C_ALI"
 ```

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- TOML workflow files via `zsasa calc --workflow` and `zsasa batch --workflow`; `batch --manifest` remains a compatibility alias.
+
+### Changed
+
+- **Breaking**: custom classifier configs are TOML-only; legacy FreeSASA-style custom classifier files are no longer supported.
+- **Breaking/API**: the public `batch_manifest` module was removed and replaced by `workflow_manifest`.
+
 ## [0.3.2] - 2026-05-17
 
 ### Added
@@ -17,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Batch TOML manifests**: add `zsasa batch --manifest` for named multi-job workflows such as chain A, chain B, and AB complex SASA; includes batch `--chain` / `--auth-chain` support, per-job JSONL and per-file output layout, and CLI/docs coverage. (#361)
+- **Batch TOML manifests**: add the original named multi-job workflow file support for chain A, chain B, and AB complex SASA; includes batch `--chain` / `--auth-chain` support, per-job JSONL and per-file output layout, and CLI/docs coverage. (#361)
 
 ## [0.3.0] - 2026-05-17
 
@@ -263,7 +272,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Zig package manager (zon) distribution: zsasa can now be used as a library dependency via `zig fetch` (#160)
 - Public library API in `root.zig`: `shrake_rupley`, `lee_richards`, `types`, `pdb_parser`, `mmcif_parser`, `json_parser`, `classifier`, `analysis`
 - Fuzz tests for CIF tokenizer, PDB parser, and mmCIF parser using Zig's built-in `std.testing.fuzz()` (#161)
-- TOML format support for custom classifier configs (`--config=file.toml`): human-friendly alternative to FreeSASA format with auto-detection by file extension (#158)
+- TOML format support for custom classifier configs (`--config=file.toml`): human-friendly alternative to the legacy classifier text syntax with auto-detection by file extension (#158)
 - **DCD trajectory reader** (native Zig): read NAMD/CHARMM DCD binary trajectories without external dependencies (#154)
   - Zig DCD reader (`src/dcd.zig`) with endianness auto-detection and CHARMM extension support
   - C API: `zsasa_dcd_open`, `zsasa_dcd_close`, `zsasa_dcd_read_frame`, `zsasa_dcd_get_natoms`
@@ -445,7 +454,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - ANY fallback for backbone atoms (NACCESS/OONS)
   - Element-based radius guessing from atom names
   - `--classifier=naccess|protor|oons` - Use built-in classifier
-  - `--config=FILE` - Use custom config file (FreeSASA format)
+  - `--config=FILE` - Use custom classifier config file
 
 - Extended input format with optional `residue` and `atom_name` fields
 

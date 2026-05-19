@@ -2113,7 +2113,7 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         } else if (std.mem.eql(u8, arg, "--manifest")) {
             i += 1;
             if (i >= args.len) {
-                std.debug.print("Error: Missing value for --manifest\n", .{});
+                std.debug.print("Error: Missing value for --manifest (compatibility alias for --workflow)\n", .{});
                 std.process.exit(1);
             }
             result.workflow_path = args[i];
@@ -2271,7 +2271,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --sdf=PATH          SDF file with bond topology for CCD classifier
         \\                        Can be specified multiple times for multiple ligands
         \\    --threads=N         Number of threads (default: auto-detect)
-        \\    --workflow=PATH     TOML workflow with one or more named batch jobs
+        \\    --workflow=PATH     TOML workflow file with one or more named batch jobs
         \\    --manifest=PATH     Compatibility alias for --workflow
         \\    --chain=ID          Filter by chain ID for non-workflow batch (e.g. A or A,B)
         \\    --auth-chain        Use auth_asym_id instead of label_asym_id for mmCIF chain matching
@@ -2299,9 +2299,10 @@ pub fn printHelp(program_name: []const u8) void {
         \\    {s} batch structures/ -o results.jsonl --format=jsonl
         \\    {s} batch --workflow bsa.toml
         \\    {s} batch structures/ results/ --workflow bsa.toml
+        \\    {s} batch --manifest legacy-bsa.toml
         \\    {s} batch structures/ results_A.jsonl --chain=A --format=jsonl
         \\
-    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
+    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 /// Load SDF files and build a ComponentDict from their bond topology.
@@ -2479,7 +2480,7 @@ fn loadCustomClassifier(allocator: Allocator, io: std.Io, path: []const u8) !cla
 
 fn runWorkflow(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     if (args.chain_filter != null) {
-        std.debug.print("Error: --workflow/--manifest cannot be combined with --chain; use [[jobs]].chains in the workflow\n", .{});
+        std.debug.print("Error: --workflow cannot be combined with --chain; --manifest is a compatibility alias for --workflow; use [[jobs]].chains in the workflow\n", .{});
         return error.InvalidArgument;
     }
 
@@ -2814,7 +2815,7 @@ test "BatchArgs help flag" {
     try std.testing.expectEqual(true, parsed.show_help);
 }
 
-test "BatchArgs --manifest" {
+test "BatchArgs --manifest compatibility alias" {
     const args = [_][]const u8{ "zsasa", "batch", "--manifest", "bsa.toml" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqualStrings("bsa.toml", parsed.workflow_path.?);
