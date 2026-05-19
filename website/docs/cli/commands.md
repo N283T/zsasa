@@ -41,7 +41,7 @@ Batch mode uses file-level parallelism: multiple files are processed simultaneou
 
 #### Workflow TOML files
 
-Use `--workflow` to keep input, output, calculation, and classifier settings in a TOML file. `batch` workflows can also contain one or more named `[[jobs]]`. Explicit CLI options override workflow values.
+Use `--workflow` to keep input, output, calculation, and classifier settings in a TOML file. `batch` workflows must contain one or more named `[[jobs]]` entries. Explicit CLI options override workflow values.
 
 `--manifest` is a compatibility alias for `--workflow` in `batch`.
 
@@ -157,6 +157,24 @@ The compiled ZSDC file can then be used with `--ccd=components.zsdc` for faster 
 ./zig-out/bin/zsasa calc --workflow sasa.toml
 ```
 
+## Calc-only Options
+
+### Custom classifier config
+
+`--config=FILE` is a `calc`-only option for advanced custom classifiers. Files must use TOML format and the `.toml` extension. If both `--classifier` and `--config` are specified for `calc`, `--config` takes precedence.
+
+```bash
+zsasa calc --config=my_classifier.toml structure.cif output.json
+```
+
+Batch custom classifiers are workflow-only; set the workflow classifier section instead of passing a CLI `--config` option:
+
+```toml
+[classifier]
+type = "custom"
+config = "my_classifier.toml"
+```
+
 ## Common Options
 
 ### Algorithm Options
@@ -176,12 +194,12 @@ The compiled ZSDC file can then be used with `--ccd=components.zsdc` for faster 
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--classifier=TYPE` | Built-in classifier: `ccd`, `protor`, `naccess`, or `oons` | `ccd` for PDB/mmCIF, none for JSON |
-| `--config=FILE` | Custom classifier config file (TOML format; `.toml` only) | none |
 | `--ccd=FILE` | External CCD dictionary (CIF text or ZSDC binary) | none |
 
-When `--classifier` is used, atom radii are assigned based on residue and atom names. For PDB/mmCIF input, `ccd` is used by default. If both `--classifier` and `--config` are specified, `--config` takes precedence. When `--classifier=ccd` is used, HETATM records are included automatically without needing `--include-hetatm`.
+When `--classifier` is used, atom radii are assigned based on residue and atom names. For PDB/mmCIF input, `ccd` is used by default. When `--classifier=ccd` is used, HETATM records are included automatically without needing `--include-hetatm`.
 
 See [Classifiers](../guide/classifiers.mdx) for detailed classifier documentation.
+
 
 ### Structure Filtering
 
@@ -237,7 +255,7 @@ The `traj` subcommand has additional options specific to trajectory processing.
 
 ### Options
 
-All [common options](#common-options) apply, plus:
+Most [common options](#common-options) apply, plus the trajectory-specific options below. `traj` has no custom config CLI option; use a built-in classifier.
 
 | Option | Description | Default |
 |--------|-------------|---------|
