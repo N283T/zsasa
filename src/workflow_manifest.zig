@@ -14,7 +14,7 @@ pub const WorkflowError = error{
     NoJobs,
 };
 
-pub const Error = WorkflowError || Allocator.Error || toml_parser.Error || std.Io.File.OpenError || std.Io.File.ReadStreamingError;
+pub const Error = WorkflowError || Allocator.Error || toml_parser.Error || std.Io.File.OpenError || std.Io.File.ReadStreamingError || error{ ReadFailed, StreamTooLong };
 
 pub const Input = struct {
     path: ?[]const u8 = null,
