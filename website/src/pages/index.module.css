@@ -5,6 +5,14 @@
   overflow: hidden;
 }
 
+
+.heroLogo {
+  width: min(420px, 88vw);
+  height: auto;
+  display: inline-block;
+  filter: drop-shadow(0 0.25rem 0.5rem rgba(0, 0, 0, 0.12));
+}
+
 @media screen and (max-width: 996px) {
   .heroBanner {
     padding: 2rem;

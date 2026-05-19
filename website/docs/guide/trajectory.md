@@ -49,7 +49,7 @@ zsasa traj trajectory.xtc topology.pdb -o sasa_results.csv
 | `--stride=N` | Process every Nth frame | `1` |
 | `--start=N` | Start from frame N | `0` |
 | `--end=N` | End at frame N | all |
-| `--classifier=TYPE` | `naccess`, `protor`, `oons` | none |
+| `--classifier=TYPE` | `ccd`, `naccess`, `protor`, `oons` | `naccess` |
 | `--threads=N` | Thread count (0 = auto) | `0` |
 | `--precision=P` | `f32` (fast) or `f64` (precise) | `f32` |
 | `--no-hydrogens` | Exclude hydrogen atoms | included |

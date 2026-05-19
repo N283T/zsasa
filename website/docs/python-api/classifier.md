@@ -6,9 +6,10 @@ Atom classification and RSA calculation.
 
 ```python
 class ClassifierType(IntEnum):
-    NACCESS = 0  # NACCESS-compatible radii (default)
-    PROTOR = 1   # ProtOr radii
+    NACCESS = 0  # NACCESS-compatible radii
+    PROTOR = 1   # Alias for CCD, kept for compatibility
     OONS = 2     # OONS radii
+    CCD = 3      # CCD-based radii (default)
 ```
 
 ## AtomClass
@@ -26,7 +27,7 @@ class AtomClass(IntEnum):
 def classify_atoms(
     residues: list[str],
     atoms: list[str],
-    classifier_type: ClassifierType = ClassifierType.NACCESS,
+    classifier_type: ClassifierType = ClassifierType.CCD,
     *,
     include_classes: bool = True,
 ) -> ClassificationResult
@@ -40,7 +41,7 @@ Classify multiple atoms at once (batch operation).
 |-----------|------|---------|-------------|
 | `residues` | `list[str]` | required | Residue names (e.g., ["ALA", "GLY"]) |
 | `atoms` | `list[str]` | required | Atom names (e.g., ["CA", "N"]) |
-| `classifier_type` | `ClassifierType` | `NACCESS` | Classifier to use |
+| `classifier_type` | `ClassifierType` | `CCD` | Classifier to use |
 | `include_classes` | `bool` | `True` | Whether to compute atom classes |
 
 **Returns:** `ClassificationResult`
@@ -53,7 +54,7 @@ from zsasa import classify_atoms, ClassifierType
 result = classify_atoms(
     ["ALA", "ALA", "GLY"],
     ["CA", "O", "N"],
-    ClassifierType.NACCESS
+    ClassifierType.CCD
 )
 print(result.radii)   # [1.87, 1.4, 1.65]
 print(result.classes) # [1, 0, 0] (APOLAR, POLAR, POLAR)

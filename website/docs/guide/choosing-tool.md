@@ -37,6 +37,8 @@ zsasa calc --classifier=naccess structure.cif output.json
 zsasa batch structures/ results/
 ```
 
+For repeated batch analyses with shared settings or named chain-complex jobs, prefer [Workflow Files](workflows.md). Workflow TOML files keep calculation, output, classifier, and per-job settings together so analyses are easier to rerun and review.
+
 The CLI supports basic filtering (`--chain`, `--model`, `--include-hetatm`, `--include-hydrogens`), but has limitations:
 - **Altloc** — uses the first conformer encountered (no manual selection)
 - **HETATM** — all-or-nothing (`--include-hetatm`), no granular control (e.g., keep ligands but remove waters)
