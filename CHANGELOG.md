@@ -7,14 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-19
+
 ### Added
 
-- TOML workflow files via `zsasa calc --workflow` and `zsasa batch --workflow`; `batch --manifest` remains a compatibility alias.
+- **Workflow files**: add TOML workflow support via `zsasa calc --workflow` and `zsasa batch --workflow`; `batch --manifest` remains a compatibility alias. (#366)
 
 ### Changed
 
-- **Breaking**: custom classifier configs are TOML-only; legacy FreeSASA-style custom classifier files are no longer supported.
-- **Breaking/API**: the public `batch_manifest` module was removed and replaced by `workflow_manifest`.
+- **Breaking**: custom classifier configs are TOML-only; legacy FreeSASA-style custom classifier files are no longer supported. (#366)
+- **Breaking/API**: the public `batch_manifest` module was removed and replaced by `workflow_manifest`. (#366)
+- **Repository automation**: add agent instructions and ignore local planning docs. (#367)
+
+### Fixed
+
+- **CI**: ignore gitignore-only changes in automation checks. (#368)
 
 ## [0.3.2] - 2026-05-17
 
