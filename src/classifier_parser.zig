@@ -70,9 +70,12 @@ fn isLegacyFreeSasaConfig(content: []const u8) bool {
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0) continue;
 
-        return std.mem.startsWith(u8, trimmed, "name:") or
+        if (std.mem.startsWith(u8, trimmed, "name:") or
             std.mem.eql(u8, trimmed, "types:") or
-            std.mem.eql(u8, trimmed, "atoms:");
+            std.mem.eql(u8, trimmed, "atoms:"))
+        {
+            return true;
+        }
     }
     return false;
 }
@@ -129,6 +132,19 @@ test "custom classifier parser rejects legacy FreeSASA content" {
     const config =
         \\# legacy FreeSASA-style config
         \\name: test
+        \\types:
+        \\C_ALI 1.87 apolar
+        \\atoms:
+        \\ALA CA C_ALI
+    ;
+
+    const result = parseConfig(std.testing.allocator, config);
+    try std.testing.expectError(error.UnsupportedLegacyFormat, result);
+}
+
+test "custom classifier parser rejects legacy marker after other content" {
+    const config =
+        \\legacy-header
         \\types:
         \\C_ALI 1.87 apolar
         \\atoms:

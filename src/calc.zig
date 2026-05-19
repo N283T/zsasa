@@ -504,7 +504,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\                       Can be specified multiple times for multiple ligands
         \\    --mol=NAME|N       Select molecule from multi-molecule SDF by name or
         \\                       1-based index (default: first molecule)
-        \\    --config=FILE      Custom classifier config file (FreeSASA format)
+        \\    --config=FILE      Custom classifier config file (TOML format; .toml only)
         \\    --chain=ID         Filter by chain ID (e.g., --chain=A or --chain=A,B,C)
         \\                       Default: label_asym_id (mmCIF standard)
         \\    --auth-chain       Use auth_asym_id instead of label_asym_id
