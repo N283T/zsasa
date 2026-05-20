@@ -180,7 +180,7 @@ Returns the library version string.
 
 ```python
 from zsasa import get_version
-print(get_version())  # e.g., "0.4.0"
+print(get_version())  # e.g., "0.5.0"
 ```
 
 ---

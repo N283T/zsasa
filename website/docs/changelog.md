@@ -8,10 +8,21 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+## [v0.5.0](https://github.com/N283T/zsasa/releases/tag/v0.5.0) — 2026-05-20
+
 ### Added
 
-- **BinaryCIF input support**: calc and batch now accept .bcif, .bcif.gz, and .bcif.zst files by decoding _atom_site directly in Zig. Inline CCD extraction from BinaryCIF remains out of scope for this release.
-- **Adaptive batch bitmask SR**: add experimental `zsasa batch --adaptive-sr` mode with coarse/fine point controls for two-stage bitmask Shrake-Rupley runs.
+- **BinaryCIF input support**: calc and batch now accept `.bcif`, `.bcif.gz`, and `.bcif.zst` files by decoding `_atom_site` directly in Zig. Inline CCD extraction from BinaryCIF remains out of scope for this release. (#372)
+- **Adaptive batch bitmask SR**: add experimental `zsasa batch --adaptive-sr` mode with coarse/fine point controls for two-stage bitmask Shrake-Rupley runs. (#371)
+
+### Changed
+
+- **Workflow batch execution**: reuse parsed/classified structures across eligible workflow jobs so named chain analyses such as chain A, chain B, and complex AB avoid repeated parsing while preserving output schemas and compatibility fallbacks. (#374)
+- **Website documentation**: restructure the documentation site around task-oriented guides, CLI references, Python APIs, and integrations. (#370)
+
+### Fixed
+
+- **BinaryCIF CCD classification**: use inline CCD components from BinaryCIF inputs when available. (#373)
 
 ## [v0.4.0](https://github.com/N283T/zsasa/releases/tag/v0.4.0) — 2026-05-19
 
