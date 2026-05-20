@@ -2826,24 +2826,53 @@ fn loadCustomClassifier(allocator: Allocator, io: std.Io, path: []const u8) !cla
 }
 
 fn runWorkflow(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
-    if (try workflowInputContainsSdf(allocator, io, args)) {
+    if (args.chain_filter != null) return runWorkflowJobFirst(allocator, io, args);
+
+    const workflow_path = args.workflow_path orelse return runWorkflowFileFirst(allocator, io, args, null);
+    var workflow = parseWorkflowFile(allocator, io, workflow_path) catch {
+        return runWorkflowFileFirst(allocator, io, args, null);
+    };
+    defer workflow.deinit();
+
+    if (workflow.jobs.len == 0) return runWorkflowFileFirst(allocator, io, args, null);
+    const input_dir = args.input_path orelse workflow.input.dir orelse return runWorkflowFileFirst(allocator, io, args, null);
+    const output_dir = args.output_path orelse workflow.output.dir;
+    if (workflow.jobs.len > 1 and output_dir == null) return runWorkflowFileFirst(allocator, io, args, null);
+
+    var resource_config = BatchConfig{};
+    try applyWorkflowToBatchConfig(&resource_config, args, workflow.calculation, workflow.output, workflow.classifier);
+    applyCliOverrides(&resource_config, args);
+    if (workflowRequiresJobFirstForAuthChain(args, workflow, resource_config)) {
         return runWorkflowJobFirst(allocator, io, args);
     }
-    return runWorkflowFileFirst(allocator, io, args);
+
+    const files = try scanDirectory(allocator, io, input_dir);
+    defer freeScannedFiles(allocator, files);
+
+    if (workflowFilesContainSdf(files)) {
+        return runWorkflowJobFirst(allocator, io, args);
+    }
+    return runWorkflowFileFirst(allocator, io, args, files);
 }
 
-fn workflowInputContainsSdf(allocator: Allocator, io: std.Io, args: BatchArgs) !bool {
-    const workflow_path = args.workflow_path orelse return false;
-    var workflow = try parseWorkflowFile(allocator, io, workflow_path);
-    defer workflow.deinit();
-    const input_dir = args.input_path orelse workflow.input.dir orelse return false;
-    const files = try scanDirectory(allocator, io, input_dir);
-    defer {
-        for (files) |f| allocator.free(f);
-        allocator.free(files);
-    }
+fn freeScannedFiles(allocator: Allocator, files: []const []const u8) void {
+    for (files) |f| allocator.free(f);
+    allocator.free(files);
+}
+
+fn workflowFilesContainSdf(files: []const []const u8) bool {
     for (files) |filename| {
         if (format_detect.detectInputFormat(filename) == .sdf) return true;
+    }
+    return false;
+}
+
+fn workflowRequiresJobFirstForAuthChain(args: BatchArgs, workflow: workflow_manifest.Workflow, shared_config: BatchConfig) bool {
+    for (workflow.jobs) |job| {
+        var job_use_auth_chain = shared_config.use_auth_chain;
+        if (job.auth_chain) |v| job_use_auth_chain = v;
+        if (args.use_auth_chain) job_use_auth_chain = true;
+        if (job_use_auth_chain != shared_config.use_auth_chain) return true;
     }
     return false;
 }
@@ -2968,7 +2997,7 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
     std.debug.print("Workflow complete: {d} successful, {d} failed\n", .{ successful, failed });
 }
 
-fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
+fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_scanned_files: ?[]const []const u8) !void {
     if (args.chain_filter != null) {
         std.debug.print("Error: --workflow cannot be combined with --chain; --manifest is a compatibility alias for --workflow; use [[jobs]].chains in the workflow\n", .{});
         return error.InvalidArgument;
@@ -3092,11 +3121,8 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void
         allocator.free(states);
     }
 
-    const files = try scanDirectory(allocator, io, input_dir);
-    defer {
-        for (files) |f| allocator.free(f);
-        allocator.free(files);
-    }
+    const files = pre_scanned_files orelse try scanDirectory(allocator, io, input_dir);
+    defer if (pre_scanned_files == null) freeScannedFiles(allocator, files);
 
     var luts = try BatchLuts.init(allocator, resource_config);
     defer luts.deinit();
@@ -3742,39 +3768,25 @@ test "workflowPerFileOutputDir uses job directory under output dir" {
     try std.testing.expectEqualStrings("results/complex_AB", path);
 }
 
-test "workflowInputContainsSdf detects SDF files in workflow input directory" {
-    const allocator = std.testing.allocator;
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+test "workflowFilesContainSdf detects SDF in pre-scanned files" {
+    const files = [_][]const u8{ "protein.pdb", "ligand.sdf", "other.cif" };
+    try std.testing.expect(workflowFilesContainSdf(files[0..]));
+}
 
-    try tmp_dir.dir.createDir(std.testing.io, "inputs", .default_dir);
-    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "inputs/protein.pdb", .data = "" });
-    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "inputs/ligand.sdf", .data = "" });
+test "workflowRequiresJobFirstForAuthChain detects job-level auth-chain mismatch" {
+    var jobs = [_]workflow_manifest.Job{
+        .{ .name = "label", .chains = &.{"A"}, .auth_chain = false },
+        .{ .name = "auth", .chains = &.{"A"}, .auth_chain = true },
+    };
+    const workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .calculation = .{ .auth_chain = false },
+        .jobs = jobs[0..],
+    };
 
-    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
-    const root = root_buf[0..root_len];
-    const input_path = try std.fs.path.join(allocator, &.{ root, "inputs" });
-    defer allocator.free(input_path);
-    const workflow_path = try std.fs.path.join(allocator, &.{ root, "workflow.toml" });
-    defer allocator.free(workflow_path);
-
-    const workflow_text = try std.fmt.allocPrint(allocator,
-        \\version = 1
-        \\kind = "workflow"
-        \\
-        \\[input]
-        \\dir = "{s}"
-        \\
-        \\[[jobs]]
-        \\name = "all"
-        \\
-    , .{input_path});
-    defer allocator.free(workflow_text);
-    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow_text });
-
-    const args = BatchArgs{ .workflow_path = workflow_path };
-    try std.testing.expect(try workflowInputContainsSdf(allocator, std.testing.io, args));
+    try std.testing.expect(workflowRequiresJobFirstForAuthChain(BatchArgs{}, workflow, BatchConfig{ .use_auth_chain = false }));
+    try std.testing.expect(!workflowRequiresJobFirstForAuthChain(BatchArgs{ .use_auth_chain = true }, workflow, BatchConfig{ .use_auth_chain = true }));
 }
 
 test "appendJsonlResultToFile appends without truncating existing JSONL content" {
