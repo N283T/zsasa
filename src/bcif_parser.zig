@@ -1,5 +1,10 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const elem = @import("element.zig");
+const mmap_reader = @import("mmap_reader.zig");
+const compressed = @import("compressed.zig");
+const types = @import("types.zig");
+const AtomInput = types.AtomInput;
 pub const ParseError = error{
     InvalidMessagePack,
     UnexpectedEof,
@@ -518,6 +523,854 @@ fn scalarToUsize(value: Scalar) ?usize {
 
 fn checkedAddI64(a: i64, b: i64) error{Overflow}!i64 {
     return std.math.add(i64, a, b) catch error.Overflow;
+}
+
+const AtomSiteColumns = struct {
+    cartn_x: ?usize = null,
+    cartn_y: ?usize = null,
+    cartn_z: ?usize = null,
+    type_symbol: ?usize = null,
+    label_atom_id: ?usize = null,
+    auth_atom_id: ?usize = null,
+    label_comp_id: ?usize = null,
+    auth_comp_id: ?usize = null,
+    label_asym_id: ?usize = null,
+    auth_asym_id: ?usize = null,
+    label_seq_id: ?usize = null,
+    auth_seq_id: ?usize = null,
+    pdbx_pdb_ins_code: ?usize = null,
+    group_pdb: ?usize = null,
+    label_alt_id: ?usize = null,
+    pdbx_pdb_model_num: ?usize = null,
+
+    fn hasRequiredFields(self: AtomSiteColumns) bool {
+        return self.cartn_x != null and self.cartn_y != null and self.cartn_z != null;
+    }
+
+    fn getAtomNameCol(self: AtomSiteColumns) ?usize {
+        return self.label_atom_id orelse self.auth_atom_id;
+    }
+
+    fn getResNameCol(self: AtomSiteColumns) ?usize {
+        return self.label_comp_id orelse self.auth_comp_id;
+    }
+
+    fn getChainCol(self: AtomSiteColumns, use_auth: bool) ?usize {
+        if (use_auth) return self.auth_asym_id orelse self.label_asym_id;
+        return self.label_asym_id orelse self.auth_asym_id;
+    }
+
+    fn getResSeqCol(self: AtomSiteColumns) ?usize {
+        return self.label_seq_id orelse self.auth_seq_id;
+    }
+
+    fn getInsCodeCol(self: AtomSiteColumns) ?usize {
+        return self.pdbx_pdb_ins_code;
+    }
+};
+
+pub const BcifParser = struct {
+    allocator: Allocator,
+    atom_only: bool = true,
+    skip_hydrogens: bool = true,
+    first_alt_loc_only: bool = true,
+    model_num: ?u32 = null,
+    chain_filter: ?[]const []const u8 = null,
+    use_auth_chain: bool = false,
+
+    pub fn init(allocator: Allocator) BcifParser {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn parse(self: *BcifParser, source: []const u8) !AtomInput {
+        var reader = MsgReader.init(self.allocator, source);
+        const root = try reader.readValue();
+        defer freeMsgValue(self.allocator, root);
+
+        const category = try findCategory(root, "atom_site");
+        const row_count = try categoryRowCount(category);
+        const raw_columns = try categoryColumns(category);
+
+        var columns = AtomSiteColumns{};
+        for (raw_columns, 0..) |column, idx| {
+            const name = try columnName(column);
+            mapAtomSiteColumn(&columns, name, idx);
+        }
+        if (!columns.hasRequiredFields()) return ParseError.MissingCoordinateField;
+
+        var decoded = try self.allocator.alloc(DecodedColumn, raw_columns.len);
+        var decoded_count: usize = 0;
+        errdefer {
+            for (decoded[0..decoded_count]) |*column| column.deinit(self.allocator);
+            self.allocator.free(decoded);
+        }
+        for (raw_columns) |column| {
+            decoded[decoded_count] = try decodeBcifColumn(self.allocator, column);
+            decoded_count += 1;
+            if (decoded[decoded_count - 1].values.len != row_count) return ParseError.ColumnLengthMismatch;
+        }
+        defer {
+            for (decoded[0..decoded_count]) |*column| column.deinit(self.allocator);
+            self.allocator.free(decoded);
+        }
+
+        var x_list = std.ArrayListUnmanaged(f64).empty;
+        defer x_list.deinit(self.allocator);
+        var y_list = std.ArrayListUnmanaged(f64).empty;
+        defer y_list.deinit(self.allocator);
+        var z_list = std.ArrayListUnmanaged(f64).empty;
+        defer z_list.deinit(self.allocator);
+        var r_list = std.ArrayListUnmanaged(f64).empty;
+        defer r_list.deinit(self.allocator);
+        var residue_list = std.ArrayListUnmanaged(types.FixedString5).empty;
+        defer residue_list.deinit(self.allocator);
+        var atom_name_list = std.ArrayListUnmanaged(types.FixedString4).empty;
+        defer atom_name_list.deinit(self.allocator);
+        var element_list = std.ArrayListUnmanaged(u8).empty;
+        defer element_list.deinit(self.allocator);
+        var chain_id_list = std.ArrayListUnmanaged(types.FixedString4).empty;
+        defer chain_id_list.deinit(self.allocator);
+        var residue_num_list = std.ArrayListUnmanaged(i32).empty;
+        defer residue_num_list.deinit(self.allocator);
+        var insertion_code_list = std.ArrayListUnmanaged(types.FixedString4).empty;
+        defer insertion_code_list.deinit(self.allocator);
+
+        var first_alt_loc: ?u8 = null;
+        var row: usize = 0;
+        while (row < row_count) : (row += 1) {
+            if (!self.shouldIncludeAtom(decoded, columns, row, &first_alt_loc)) continue;
+
+            const x = try scalarFloat(decoded[columns.cartn_x.?], row);
+            const y = try scalarFloat(decoded[columns.cartn_y.?], row);
+            const z = try scalarFloat(decoded[columns.cartn_z.?], row);
+            try x_list.append(self.allocator, x);
+            try y_list.append(self.allocator, y);
+            try z_list.append(self.allocator, z);
+
+            var element_enum = elem.Element.X;
+            if (columns.type_symbol) |type_col| {
+                if (scalarString(decoded[type_col], row)) |symbol| {
+                    element_enum = elem.fromSymbol(symbol);
+                }
+            }
+            try r_list.append(self.allocator, element_enum.vdwRadius());
+            try element_list.append(self.allocator, element_enum.atomicNumber());
+
+            if (columns.getResNameCol()) |res_col| {
+                try residue_list.append(self.allocator, types.FixedString5.fromSlice(scalarString(decoded[res_col], row) orelse "UNK"));
+            } else {
+                try residue_list.append(self.allocator, types.FixedString5.fromSlice("UNK"));
+            }
+
+            if (columns.getAtomNameCol()) |atom_col| {
+                try atom_name_list.append(self.allocator, types.FixedString4.fromSlice(scalarString(decoded[atom_col], row) orelse "X"));
+            } else {
+                try atom_name_list.append(self.allocator, types.FixedString4.fromSlice("X"));
+            }
+
+            if (columns.getChainCol(self.use_auth_chain)) |chain_col| {
+                try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(scalarString(decoded[chain_col], row) orelse ""));
+            } else {
+                try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(""));
+            }
+
+            if (columns.getResSeqCol()) |seq_col| {
+                const seq = scalarInt(decoded[seq_col], row) orelse 0;
+                try residue_num_list.append(self.allocator, std.math.cast(i32, seq) orelse 0);
+            } else {
+                try residue_num_list.append(self.allocator, 0);
+            }
+
+            if (columns.getInsCodeCol()) |ins_col| {
+                try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(scalarString(decoded[ins_col], row) orelse ""));
+            } else {
+                try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(""));
+            }
+        }
+
+        return AtomInput{
+            .x = try x_list.toOwnedSlice(self.allocator),
+            .y = try y_list.toOwnedSlice(self.allocator),
+            .z = try z_list.toOwnedSlice(self.allocator),
+            .r = try r_list.toOwnedSlice(self.allocator),
+            .residue = try residue_list.toOwnedSlice(self.allocator),
+            .atom_name = try atom_name_list.toOwnedSlice(self.allocator),
+            .element = try element_list.toOwnedSlice(self.allocator),
+            .chain_id = try chain_id_list.toOwnedSlice(self.allocator),
+            .residue_num = try residue_num_list.toOwnedSlice(self.allocator),
+            .insertion_code = try insertion_code_list.toOwnedSlice(self.allocator),
+            .allocator = self.allocator,
+        };
+    }
+
+    pub fn parseFile(self: *BcifParser, io: std.Io, path: []const u8) !AtomInput {
+        if (compressed.isCompressed(path)) {
+            const data = try compressed.read(self.allocator, path);
+            defer self.allocator.free(data);
+            return self.parse(data);
+        }
+        const mapped = try mmap_reader.mmapFile(self.allocator, io, path);
+        defer mapped.deinit();
+        return self.parse(mapped.data);
+    }
+
+    fn shouldIncludeAtom(self: *BcifParser, decoded: []const DecodedColumn, columns: AtomSiteColumns, row: usize, first_alt_loc: *?u8) bool {
+        if (self.atom_only) {
+            if (columns.group_pdb) |col| {
+                const group = scalarString(decoded[col], row) orelse return false;
+                if (!std.mem.eql(u8, group, "ATOM")) return false;
+            }
+        }
+
+        if (self.skip_hydrogens) {
+            if (columns.type_symbol) |col| {
+                if (scalarString(decoded[col], row)) |symbol| {
+                    if (std.mem.eql(u8, symbol, "H") or std.mem.eql(u8, symbol, "D")) return false;
+                }
+            }
+        }
+
+        if (self.first_alt_loc_only) {
+            if (columns.label_alt_id) |col| {
+                if (scalarString(decoded[col], row)) |alt_id| {
+                    if (alt_id.len > 0) {
+                        const alt_char = alt_id[0];
+                        if (first_alt_loc.*) |first| {
+                            if (alt_char != first) return false;
+                        } else {
+                            first_alt_loc.* = alt_char;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (self.model_num) |target_model| {
+            var model: i64 = 1;
+            if (columns.pdbx_pdb_model_num) |col| model = scalarInt(decoded[col], row) orelse 1;
+            if (model != target_model) return false;
+        }
+
+        if (self.chain_filter) |chains| {
+            if (columns.getChainCol(self.use_auth_chain)) |col| {
+                const chain = scalarString(decoded[col], row) orelse return false;
+                for (chains) |target_chain| {
+                    if (std.mem.eql(u8, chain, target_chain)) return true;
+                }
+                return false;
+            }
+            return false;
+        }
+
+        return true;
+    }
+};
+
+fn parseEncoding(allocator: Allocator, value: MsgValue) DecodeError!Encoding {
+    const map = switch (value) {
+        .map => |map| map,
+        else => return ParseError.InvalidColumnData,
+    };
+    const kind = try msgString(getMapValue(map, "kind") orelse return ParseError.InvalidColumnData);
+    if (std.mem.eql(u8, kind, "ByteArray")) {
+        const type_code = std.math.cast(u8, try msgInt(getMapValue(map, "type") orelse return ParseError.InvalidColumnData)) orelse return ParseError.InvalidColumnData;
+        return .{ .byte_array = .{ .type_code = type_code } };
+    }
+    if (std.mem.eql(u8, kind, "FixedPoint")) {
+        return .{ .fixed_point = .{ .factor = try msgFloat(getMapValue(map, "factor") orelse return ParseError.InvalidColumnData) } };
+    }
+    if (std.mem.eql(u8, kind, "IntervalQuantization")) {
+        return .{ .interval_quantization = .{
+            .min = try msgFloat(getMapValue(map, "min") orelse return ParseError.InvalidColumnData),
+            .max = try msgFloat(getMapValue(map, "max") orelse return ParseError.InvalidColumnData),
+            .num_steps = try msgInt(getMapValue(map, "numSteps") orelse return ParseError.InvalidColumnData),
+        } };
+    }
+    if (std.mem.eql(u8, kind, "RunLength")) {
+        const src_size = std.math.cast(usize, try msgInt(getMapValue(map, "srcSize") orelse return ParseError.InvalidColumnData)) orelse return ParseError.InvalidColumnData;
+        return .{ .run_length = .{ .src_size = src_size } };
+    }
+    if (std.mem.eql(u8, kind, "Delta")) {
+        return .{ .delta = .{ .origin = try msgInt(getMapValue(map, "origin") orelse return ParseError.InvalidColumnData) } };
+    }
+    if (std.mem.eql(u8, kind, "IntegerPacking")) {
+        const byte_count = std.math.cast(u8, try msgInt(getMapValue(map, "byteCount") orelse return ParseError.InvalidColumnData)) orelse return ParseError.InvalidColumnData;
+        const src_size = std.math.cast(usize, try msgInt(getMapValue(map, "srcSize") orelse return ParseError.InvalidColumnData)) orelse return ParseError.InvalidColumnData;
+        return .{ .integer_packing = .{
+            .byte_count = byte_count,
+            .is_unsigned = try msgBool(getMapValue(map, "isUnsigned") orelse return ParseError.InvalidColumnData),
+            .src_size = src_size,
+        } };
+    }
+    if (std.mem.eql(u8, kind, "StringArray")) {
+        const data_encoding = try parseEncodingList(allocator, getMapValue(map, "dataEncoding") orelse return ParseError.InvalidColumnData);
+        errdefer freeEncodingList(allocator, data_encoding);
+        const offset_encoding = try parseEncodingList(allocator, getMapValue(map, "offsetEncoding") orelse return ParseError.InvalidColumnData);
+        errdefer freeEncodingList(allocator, offset_encoding);
+        return .{ .string_array = .{
+            .string_data = try msgString(getMapValue(map, "stringData") orelse return ParseError.InvalidColumnData),
+            .offset_data = try msgBytes(getMapValue(map, "offsets") orelse return ParseError.InvalidColumnData),
+            .offset_encoding = offset_encoding,
+            .data_encoding = data_encoding,
+        } };
+    }
+    return ParseError.UnsupportedEncoding;
+}
+
+fn parseEncodingList(allocator: Allocator, value: MsgValue) DecodeError![]Encoding {
+    const array = switch (value) {
+        .array => |array| array,
+        else => return ParseError.InvalidColumnData,
+    };
+    const encodings = try allocator.alloc(Encoding, array.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (encodings[0..initialized]) |encoding| freeEncoding(allocator, encoding);
+        allocator.free(encodings);
+    }
+    for (array) |item| {
+        encodings[initialized] = try parseEncoding(allocator, item);
+        initialized += 1;
+    }
+    return encodings;
+}
+
+fn freeEncodingList(allocator: Allocator, encodings: []const Encoding) void {
+    for (encodings) |encoding| freeEncoding(allocator, encoding);
+    allocator.free(encodings);
+}
+
+fn freeEncoding(allocator: Allocator, encoding: Encoding) void {
+    switch (encoding) {
+        .string_array => |params| {
+            freeEncodingList(allocator, params.offset_encoding);
+            freeEncodingList(allocator, params.data_encoding);
+        },
+        else => {},
+    }
+}
+
+fn findCategory(root: MsgValue, name: []const u8) !MsgValue {
+    const root_map = switch (root) {
+        .map => |map| map,
+        else => return ParseError.InvalidMessagePack,
+    };
+    const blocks = switch (getMapValue(root_map, "dataBlocks") orelse return ParseError.MissingDataBlocks) {
+        .array => |array| array,
+        else => return ParseError.InvalidMessagePack,
+    };
+    for (blocks) |block| {
+        const block_map = switch (block) {
+            .map => |map| map,
+            else => continue,
+        };
+        const categories = switch (getMapValue(block_map, "categories") orelse continue) {
+            .array => |array| array,
+            else => continue,
+        };
+        for (categories) |category| {
+            const candidate = categoryRowName(category) catch continue;
+            if (categoryNameEql(candidate, name)) return category;
+        }
+    }
+    return ParseError.NoAtomSiteCategory;
+}
+
+fn categoryRowCount(category: MsgValue) !usize {
+    const map = switch (category) {
+        .map => |map| map,
+        else => return ParseError.InvalidMessagePack,
+    };
+    const row_count = try msgInt(getMapValue(map, "rowCount") orelse return ParseError.InvalidColumnData);
+    return std.math.cast(usize, row_count) orelse ParseError.InvalidColumnData;
+}
+
+fn categoryColumns(category: MsgValue) ![]const MsgValue {
+    const map = switch (category) {
+        .map => |map| map,
+        else => return ParseError.InvalidMessagePack,
+    };
+    return switch (getMapValue(map, "columns") orelse return ParseError.InvalidColumnData) {
+        .array => |array| array,
+        else => ParseError.InvalidColumnData,
+    };
+}
+
+fn columnName(column: MsgValue) ![]const u8 {
+    const map = switch (column) {
+        .map => |map| map,
+        else => return ParseError.InvalidColumnData,
+    };
+    return msgString(getMapValue(map, "name") orelse return ParseError.InvalidColumnData);
+}
+
+fn columnData(column: MsgValue) !MsgValue {
+    const map = switch (column) {
+        .map => |map| map,
+        else => return ParseError.InvalidColumnData,
+    };
+    return getMapValue(map, "data") orelse return ParseError.InvalidColumnData;
+}
+
+fn columnMask(column: MsgValue) ?MsgValue {
+    const map = switch (column) {
+        .map => |map| map,
+        else => return null,
+    };
+    return getMapValue(map, "mask");
+}
+
+fn decodeBcifColumn(allocator: Allocator, column: MsgValue) !DecodedColumn {
+    const data_obj = try columnData(column);
+    const data_map = switch (data_obj) {
+        .map => |map| map,
+        else => return ParseError.InvalidColumnData,
+    };
+    const data = try msgBytes(getMapValue(data_map, "data") orelse return ParseError.InvalidColumnData);
+    const encodings = try parseEncodingList(allocator, getMapValue(data_map, "encoding") orelse return ParseError.InvalidColumnData);
+    defer freeEncodingList(allocator, encodings);
+
+    if (columnMask(column)) |mask_obj| {
+        const mask_map = switch (mask_obj) {
+            .map => |map| map,
+            else => return ParseError.InvalidColumnData,
+        };
+        const mask_data = try msgBytes(getMapValue(mask_map, "data") orelse return ParseError.InvalidColumnData);
+        const mask_encodings = try parseEncodingList(allocator, getMapValue(mask_map, "encoding") orelse return ParseError.InvalidColumnData);
+        defer freeEncodingList(allocator, mask_encodings);
+        return decodeColumnWithMask(allocator, data, encodings, mask_data, mask_encodings);
+    }
+
+    return decodeColumn(allocator, data, encodings);
+}
+
+fn scalarString(column: DecodedColumn, row: usize) ?[]const u8 {
+    if (isNull(column, row)) return null;
+    if (row >= column.values.len) return null;
+    return switch (column.values[row]) {
+        .str => |value| if (isCifNullString(value)) null else value,
+        else => null,
+    };
+}
+
+fn scalarFloat(column: DecodedColumn, row: usize) !f64 {
+    if (isNull(column, row) or row >= column.values.len) return ParseError.InvalidCoordinate;
+    return switch (column.values[row]) {
+        .float => |value| value,
+        .int => |value| @floatFromInt(value),
+        .str => |value| if (isCifNullString(value)) ParseError.InvalidCoordinate else std.fmt.parseFloat(f64, value) catch ParseError.InvalidCoordinate,
+    };
+}
+
+fn scalarInt(column: DecodedColumn, row: usize) ?i64 {
+    if (isNull(column, row) or row >= column.values.len) return null;
+    return switch (column.values[row]) {
+        .int => |value| value,
+        .float => |value| @intFromFloat(value),
+        .str => |value| if (isCifNullString(value)) null else std.fmt.parseInt(i64, value, 10) catch null,
+    };
+}
+
+fn isNull(column: DecodedColumn, row: usize) bool {
+    const nulls = column.nulls orelse return false;
+    if (row >= nulls.len) return true;
+    return nulls[row] != .present;
+}
+
+fn mapAtomSiteColumn(columns: *AtomSiteColumns, name: []const u8, idx: usize) void {
+    if (eqlIgnoreCase(name, "Cartn_x")) {
+        columns.cartn_x = idx;
+    } else if (eqlIgnoreCase(name, "Cartn_y")) {
+        columns.cartn_y = idx;
+    } else if (eqlIgnoreCase(name, "Cartn_z")) {
+        columns.cartn_z = idx;
+    } else if (eqlIgnoreCase(name, "type_symbol")) {
+        columns.type_symbol = idx;
+    } else if (eqlIgnoreCase(name, "label_atom_id")) {
+        columns.label_atom_id = idx;
+    } else if (eqlIgnoreCase(name, "auth_atom_id")) {
+        columns.auth_atom_id = idx;
+    } else if (eqlIgnoreCase(name, "label_comp_id")) {
+        columns.label_comp_id = idx;
+    } else if (eqlIgnoreCase(name, "auth_comp_id")) {
+        columns.auth_comp_id = idx;
+    } else if (eqlIgnoreCase(name, "label_asym_id")) {
+        columns.label_asym_id = idx;
+    } else if (eqlIgnoreCase(name, "auth_asym_id")) {
+        columns.auth_asym_id = idx;
+    } else if (eqlIgnoreCase(name, "label_seq_id")) {
+        columns.label_seq_id = idx;
+    } else if (eqlIgnoreCase(name, "auth_seq_id")) {
+        columns.auth_seq_id = idx;
+    } else if (eqlIgnoreCase(name, "pdbx_PDB_ins_code")) {
+        columns.pdbx_pdb_ins_code = idx;
+    } else if (eqlIgnoreCase(name, "group_PDB")) {
+        columns.group_pdb = idx;
+    } else if (eqlIgnoreCase(name, "label_alt_id")) {
+        columns.label_alt_id = idx;
+    } else if (eqlIgnoreCase(name, "pdbx_PDB_model_num")) {
+        columns.pdbx_pdb_model_num = idx;
+    }
+}
+
+fn categoryRowName(category: MsgValue) ![]const u8 {
+    const map = switch (category) {
+        .map => |map| map,
+        else => return ParseError.InvalidMessagePack,
+    };
+    return msgString(getMapValue(map, "name") orelse return ParseError.InvalidColumnData);
+}
+
+fn categoryNameEql(a: []const u8, b: []const u8) bool {
+    return eqlIgnoreCase(stripLeadingUnderscore(a), stripLeadingUnderscore(b));
+}
+
+fn stripLeadingUnderscore(value: []const u8) []const u8 {
+    if (value.len > 0 and value[0] == '_') return value[1..];
+    return value;
+}
+
+fn msgString(value: MsgValue) ![]const u8 {
+    return switch (value) {
+        .str => |str| str,
+        else => ParseError.InvalidColumnData,
+    };
+}
+
+fn msgBytes(value: MsgValue) ![]const u8 {
+    return switch (value) {
+        .bin => |bin| bin,
+        .str => |str| str,
+        else => ParseError.InvalidColumnData,
+    };
+}
+
+fn msgInt(value: MsgValue) !i64 {
+    return switch (value) {
+        .int => |int| int,
+        .uint => |uint| std.math.cast(i64, uint) orelse ParseError.InvalidColumnData,
+        else => ParseError.InvalidColumnData,
+    };
+}
+
+fn msgFloat(value: MsgValue) !f64 {
+    return switch (value) {
+        .float => |float| float,
+        .int => |int| @floatFromInt(int),
+        .uint => |uint| @floatFromInt(uint),
+        else => ParseError.InvalidColumnData,
+    };
+}
+
+fn msgBool(value: MsgValue) !bool {
+    return switch (value) {
+        .bool => |boolean| boolean,
+        else => ParseError.InvalidColumnData,
+    };
+}
+
+fn isCifNullString(value: []const u8) bool {
+    return value.len == 1 and (value[0] == '.' or value[0] == '?');
+}
+
+fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |ca, cb| {
+        if (std.ascii.toLower(ca) != std.ascii.toLower(cb)) return false;
+    }
+    return true;
+}
+
+const BuildBcifOptions = struct {
+    include_hydrogen: bool = false,
+    include_hetatm: bool = false,
+    include_second_model: bool = false,
+    omit_z: bool = false,
+};
+
+fn buildMinimalBcif(options: BuildBcifOptions) ![]u8 {
+    const allocator = std.testing.allocator;
+    var rows = std.ArrayListUnmanaged(TestAtomRow).empty;
+    defer rows.deinit(allocator);
+
+    try rows.append(allocator, .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "A", .seq = 1, .x = 10.0, .y = 20.0, .z = 30.0, .model = 1 });
+    try rows.append(allocator, .{ .group = "ATOM", .element = "N", .atom = "N", .residue = "ALA", .chain = "A", .seq = 1, .x = 11.0, .y = 21.0, .z = 32.0, .model = 1 });
+    if (options.include_hydrogen) {
+        try rows.append(allocator, .{ .group = "ATOM", .element = "H", .atom = "H", .residue = "ALA", .chain = "A", .seq = 1, .x = 12.0, .y = 22.0, .z = 33.0, .model = 1 });
+    }
+    if (options.include_hetatm) {
+        try rows.append(allocator, .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "A", .seq = 2, .x = 13.0, .y = 23.0, .z = 34.0, .model = 1 });
+    }
+    if (options.include_second_model) {
+        try rows.append(allocator, .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "B", .seq = 1, .x = 14.0, .y = 24.0, .z = 35.0, .model = 2 });
+    }
+
+    var bytes = std.ArrayListUnmanaged(u8).empty;
+    errdefer bytes.deinit(allocator);
+
+    try packMapHeader(allocator, &bytes, 3);
+    try packStr(allocator, &bytes, "version");
+    try packStr(allocator, &bytes, "0.3.0");
+    try packStr(allocator, &bytes, "encoder");
+    try packStr(allocator, &bytes, "zsasa-test");
+    try packStr(allocator, &bytes, "dataBlocks");
+    try packArrayHeader(allocator, &bytes, 1);
+    try packMapHeader(allocator, &bytes, 2);
+    try packStr(allocator, &bytes, "header");
+    try packStr(allocator, &bytes, "TEST");
+    try packStr(allocator, &bytes, "categories");
+    try packArrayHeader(allocator, &bytes, 1);
+    try packMapHeader(allocator, &bytes, 3);
+    try packStr(allocator, &bytes, "name");
+    try packStr(allocator, &bytes, "_atom_site");
+    try packStr(allocator, &bytes, "rowCount");
+    try packInt(allocator, &bytes, @intCast(rows.items.len));
+    try packStr(allocator, &bytes, "columns");
+
+    const column_count: usize = if (options.omit_z) 12 else 13;
+    try packArrayHeader(allocator, &bytes, column_count);
+    try packStringColumn(allocator, &bytes, "group_PDB", rows.items, TestAtomRow.groupValue);
+    try packStringColumn(allocator, &bytes, "type_symbol", rows.items, TestAtomRow.elementValue);
+    try packStringColumn(allocator, &bytes, "label_atom_id", rows.items, TestAtomRow.atomValue);
+    try packStringColumn(allocator, &bytes, "label_comp_id", rows.items, TestAtomRow.residueValue);
+    try packStringColumn(allocator, &bytes, "label_asym_id", rows.items, TestAtomRow.chainValue);
+    try packIntColumn(allocator, &bytes, "label_seq_id", rows.items, TestAtomRow.seqValue);
+    try packStringColumn(allocator, &bytes, "pdbx_PDB_ins_code", rows.items, TestAtomRow.emptyValue);
+    try packStringColumn(allocator, &bytes, "label_alt_id", rows.items, TestAtomRow.emptyValue);
+    try packIntColumn(allocator, &bytes, "pdbx_PDB_model_num", rows.items, TestAtomRow.modelValue);
+    try packFloatColumn(allocator, &bytes, "Cartn_x", rows.items, TestAtomRow.xValue);
+    try packFloatColumn(allocator, &bytes, "Cartn_y", rows.items, TestAtomRow.yValue);
+    if (!options.omit_z) try packFloatColumn(allocator, &bytes, "Cartn_z", rows.items, TestAtomRow.zValue);
+    try packStringColumn(allocator, &bytes, "auth_asym_id", rows.items, TestAtomRow.chainValue);
+
+    return bytes.toOwnedSlice(allocator);
+}
+
+const TestAtomRow = struct {
+    group: []const u8,
+    element: []const u8,
+    atom: []const u8,
+    residue: []const u8,
+    chain: []const u8,
+    seq: i32,
+    x: f32,
+    y: f32,
+    z: f32,
+    model: i32,
+
+    fn groupValue(row: TestAtomRow) []const u8 {
+        return row.group;
+    }
+    fn elementValue(row: TestAtomRow) []const u8 {
+        return row.element;
+    }
+    fn atomValue(row: TestAtomRow) []const u8 {
+        return row.atom;
+    }
+    fn residueValue(row: TestAtomRow) []const u8 {
+        return row.residue;
+    }
+    fn chainValue(row: TestAtomRow) []const u8 {
+        return row.chain;
+    }
+    fn emptyValue(_: TestAtomRow) []const u8 {
+        return "";
+    }
+    fn seqValue(row: TestAtomRow) i32 {
+        return row.seq;
+    }
+    fn modelValue(row: TestAtomRow) i32 {
+        return row.model;
+    }
+    fn xValue(row: TestAtomRow) f32 {
+        return row.x;
+    }
+    fn yValue(row: TestAtomRow) f32 {
+        return row.y;
+    }
+    fn zValue(row: TestAtomRow) f32 {
+        return row.z;
+    }
+};
+
+fn packStringColumn(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), name: []const u8, rows: []const TestAtomRow, comptime get: fn (TestAtomRow) []const u8) !void {
+    var string_data = std.ArrayListUnmanaged(u8).empty;
+    defer string_data.deinit(allocator);
+    var offsets = std.ArrayListUnmanaged(u8).empty;
+    defer offsets.deinit(allocator);
+    var indices = std.ArrayListUnmanaged(u8).empty;
+    defer indices.deinit(allocator);
+
+    try offsets.append(allocator, 0);
+    for (rows, 0..) |row, idx| {
+        const value = get(row);
+        try string_data.appendSlice(allocator, value);
+        try offsets.append(allocator, @intCast(string_data.items.len));
+        try indices.append(allocator, @intCast(idx));
+    }
+
+    try packColumnHeader(allocator, bytes, name);
+    try packEncodedDataMapHeader(allocator, bytes);
+    try packBin(allocator, bytes, indices.items);
+    try packStr(allocator, bytes, "encoding");
+    try packStringArrayEncoding(allocator, bytes, string_data.items, offsets.items);
+}
+
+fn packIntColumn(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), name: []const u8, rows: []const TestAtomRow, comptime get: fn (TestAtomRow) i32) !void {
+    var data = std.ArrayListUnmanaged(u8).empty;
+    defer data.deinit(allocator);
+    for (rows) |row| {
+        const value = get(row);
+        var buf: [4]u8 = undefined;
+        std.mem.writeInt(i32, &buf, value, .little);
+        try data.appendSlice(allocator, &buf);
+    }
+    try packColumnHeader(allocator, bytes, name);
+    try packEncodedDataMapHeader(allocator, bytes);
+    try packBin(allocator, bytes, data.items);
+    try packStr(allocator, bytes, "encoding");
+    try packArrayHeader(allocator, bytes, 1);
+    try packByteArrayEncoding(allocator, bytes, 3);
+}
+
+fn packFloatColumn(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), name: []const u8, rows: []const TestAtomRow, comptime get: fn (TestAtomRow) f32) !void {
+    var data = std.ArrayListUnmanaged(u8).empty;
+    defer data.deinit(allocator);
+    for (rows) |row| {
+        const bits: u32 = @bitCast(get(row));
+        var buf: [4]u8 = undefined;
+        std.mem.writeInt(u32, &buf, bits, .little);
+        try data.appendSlice(allocator, &buf);
+    }
+    try packColumnHeader(allocator, bytes, name);
+    try packEncodedDataMapHeader(allocator, bytes);
+    try packBin(allocator, bytes, data.items);
+    try packStr(allocator, bytes, "encoding");
+    try packArrayHeader(allocator, bytes, 1);
+    try packByteArrayEncoding(allocator, bytes, 32);
+}
+
+fn packColumnHeader(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), name: []const u8) !void {
+    try packMapHeader(allocator, bytes, 2);
+    try packStr(allocator, bytes, "name");
+    try packStr(allocator, bytes, name);
+    try packStr(allocator, bytes, "data");
+}
+
+fn packEncodedDataMapHeader(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8)) !void {
+    try packMapHeader(allocator, bytes, 2);
+    try packStr(allocator, bytes, "data");
+}
+
+fn packByteArrayEncoding(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), type_code: u8) !void {
+    try packMapHeader(allocator, bytes, 2);
+    try packStr(allocator, bytes, "kind");
+    try packStr(allocator, bytes, "ByteArray");
+    try packStr(allocator, bytes, "type");
+    try packInt(allocator, bytes, type_code);
+}
+
+fn packStringArrayEncoding(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), string_data: []const u8, offsets: []const u8) !void {
+    try packArrayHeader(allocator, bytes, 1);
+    try packMapHeader(allocator, bytes, 5);
+    try packStr(allocator, bytes, "kind");
+    try packStr(allocator, bytes, "StringArray");
+    try packStr(allocator, bytes, "stringData");
+    try packStr(allocator, bytes, string_data);
+    try packStr(allocator, bytes, "offsets");
+    try packBin(allocator, bytes, offsets);
+    try packStr(allocator, bytes, "offsetEncoding");
+    try packArrayHeader(allocator, bytes, 1);
+    try packByteArrayEncoding(allocator, bytes, 4);
+    try packStr(allocator, bytes, "dataEncoding");
+    try packArrayHeader(allocator, bytes, 1);
+    try packByteArrayEncoding(allocator, bytes, 4);
+}
+
+fn packMapHeader(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), len: usize) !void {
+    if (len <= 15) return bytes.append(allocator, 0x80 | @as(u8, @intCast(len)));
+    try bytes.append(allocator, 0xde);
+    var buf: [2]u8 = undefined;
+    std.mem.writeInt(u16, &buf, @intCast(len), .big);
+    try bytes.appendSlice(allocator, &buf);
+}
+
+fn packArrayHeader(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), len: usize) !void {
+    if (len <= 15) return bytes.append(allocator, 0x90 | @as(u8, @intCast(len)));
+    try bytes.append(allocator, 0xdc);
+    var buf: [2]u8 = undefined;
+    std.mem.writeInt(u16, &buf, @intCast(len), .big);
+    try bytes.appendSlice(allocator, &buf);
+}
+
+fn packStr(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), value: []const u8) !void {
+    if (value.len <= 31) {
+        try bytes.append(allocator, 0xa0 | @as(u8, @intCast(value.len)));
+    } else {
+        try bytes.append(allocator, 0xd9);
+        try bytes.append(allocator, @intCast(value.len));
+    }
+    try bytes.appendSlice(allocator, value);
+}
+
+fn packBin(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), value: []const u8) !void {
+    try bytes.append(allocator, 0xc4);
+    try bytes.append(allocator, @intCast(value.len));
+    try bytes.appendSlice(allocator, value);
+}
+
+fn packInt(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), value: i64) !void {
+    if (value >= 0 and value <= 127) {
+        try bytes.append(allocator, @intCast(value));
+    } else {
+        try bytes.append(allocator, 0xd2);
+        var buf: [4]u8 = undefined;
+        std.mem.writeInt(i32, &buf, @intCast(value), .big);
+        try bytes.appendSlice(allocator, &buf);
+    }
+}
+
+test "parse minimal BinaryCIF atom_site" {
+    const source = try buildMinimalBcif(.{});
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 21.0), input.y[1], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 32.0), input.z[1], 0.001);
+    try std.testing.expectEqual(@as(u8, 6), input.element.?[0]);
+    try std.testing.expectEqualStrings("ALA", input.residue.?[0].slice());
+    try std.testing.expectEqualStrings("CA", input.atom_name.?[0].slice());
+    try std.testing.expectEqualStrings("A", input.chain_id.?[0].slice());
+    try std.testing.expectEqual(@as(i32, 1), input.residue_num.?[0]);
+}
+
+test "parse BinaryCIF applies filters" {
+    const source = try buildMinimalBcif(.{ .include_hydrogen = true, .include_hetatm = true, .include_second_model = true });
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.model_num = 1;
+    parser.chain_filter = &[_][]const u8{"A"};
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    for (input.chain_id.?) |chain| {
+        try std.testing.expectEqualStrings("A", chain.slice());
+    }
+}
+
+test "parse BinaryCIF reports missing coordinate field" {
+    const source = try buildMinimalBcif(.{ .omit_z = true });
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    try std.testing.expectError(ParseError.MissingCoordinateField, parser.parse(source));
 }
 
 test "msgpack reader decodes primitives" {
