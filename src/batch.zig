@@ -3767,6 +3767,18 @@ test "batch resource resolver only loads CCD resources for CCD classifiers" {
     try std.testing.expectEqualStrings("cli.sdf", resolved_sdf_paths[0]);
 }
 
+test "workflow job state keeps existing output layout" {
+    const allocator = std.testing.allocator;
+
+    const jsonl_path = try workflowJsonlOutputPath(allocator, "results", "chain_a");
+    defer allocator.free(jsonl_path);
+    try std.testing.expectEqualStrings("results/chain_a.jsonl", jsonl_path);
+
+    const per_file_dir = try workflowPerFileOutputDir(allocator, "results", "complex_ab");
+    defer allocator.free(per_file_dir);
+    try std.testing.expectEqualStrings("results/complex_ab", per_file_dir);
+}
+
 test "workflowJsonlOutputPath uses job file under output dir" {
     const path = try workflowJsonlOutputPath(std.testing.allocator, "results", "chain_A");
     defer std.testing.allocator.free(path);
