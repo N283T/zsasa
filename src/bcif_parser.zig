@@ -4,6 +4,8 @@ const elem = @import("element.zig");
 const mmap_reader = @import("mmap_reader.zig");
 const compressed = @import("compressed.zig");
 const types = @import("types.zig");
+const ccd_parser = @import("ccd_parser.zig");
+const hyb = @import("hybridization.zig");
 const AtomInput = types.AtomInput;
 pub const ParseError = error{
     InvalidMessagePack,
@@ -586,6 +588,44 @@ const AtomSiteColumns = struct {
     }
 };
 
+const CcdAtomColumns = struct {
+    comp_id: ?usize = null,
+    atom_id: ?usize = null,
+    type_symbol: ?usize = null,
+    pdbx_aromatic_flag: ?usize = null,
+    pdbx_leaving_atom_flag: ?usize = null,
+
+    fn hasRequiredFields(self: CcdAtomColumns) bool {
+        return self.comp_id != null and self.atom_id != null and self.type_symbol != null;
+    }
+};
+
+const CcdBondColumns = struct {
+    comp_id: ?usize = null,
+    atom_id_1: ?usize = null,
+    atom_id_2: ?usize = null,
+    value_order: ?usize = null,
+    pdbx_aromatic_flag: ?usize = null,
+
+    fn hasRequiredFields(self: CcdBondColumns) bool {
+        return self.comp_id != null and self.atom_id_1 != null and self.atom_id_2 != null;
+    }
+};
+
+const BcifCcdBuilder = struct {
+    atoms: std.ArrayListUnmanaged(hyb.CompAtom) = .empty,
+    bonds: std.ArrayListUnmanaged(hyb.CompBond) = .empty,
+    atom_name_map: std.StringHashMapUnmanaged(u16) = .empty,
+
+    fn deinit(self: *BcifCcdBuilder, allocator: Allocator) void {
+        self.atoms.deinit(allocator);
+        self.bonds.deinit(allocator);
+        var it = self.atom_name_map.iterator();
+        while (it.next()) |entry| allocator.free(entry.key_ptr.*);
+        self.atom_name_map.deinit(allocator);
+    }
+};
+
 pub const BcifParser = struct {
     allocator: Allocator,
     atom_only: bool = true,
@@ -594,15 +634,44 @@ pub const BcifParser = struct {
     model_num: ?u32 = null,
     chain_filter: ?[]const []const u8 = null,
     use_auth_chain: bool = false,
+    inline_ccd: ?ccd_parser.ComponentDict = null,
 
     pub fn init(allocator: Allocator) BcifParser {
         return .{ .allocator = allocator };
     }
 
+    /// Return a pointer to inline CCD data decoded from `_chem_comp_atom` and
+    /// `_chem_comp_bond` BinaryCIF categories, or null when no components were
+    /// present.
+    pub fn getInlineCcd(self: *BcifParser) ?*ccd_parser.ComponentDict {
+        if (self.inline_ccd != null) return &self.inline_ccd.?;
+        return null;
+    }
+
+    /// Clean up inline CCD data. Must be called before the parser goes out of
+    /// scope when `parse()` has been called and `getInlineCcd()` is non-null.
+    pub fn deinitCcd(self: *BcifParser) void {
+        if (self.inline_ccd) |*dict| {
+            dict.deinit();
+            self.inline_ccd = null;
+        }
+    }
+
     pub fn parse(self: *BcifParser, source: []const u8) !AtomInput {
+        self.deinitCcd();
+
         var reader = MsgReader.init(self.allocator, source);
         const root = try reader.readValue();
         defer freeMsgValue(self.allocator, root);
+
+        var inline_ccd = try parseInlineCcd(self.allocator, root);
+        if (inline_ccd.count() == 0) {
+            inline_ccd.deinit();
+            self.inline_ccd = null;
+        } else {
+            self.inline_ccd = inline_ccd;
+        }
+        errdefer self.deinitCcd();
 
         const category = try findCategory(root, "atom_site");
         const row_count = try categoryRowCount(category);
@@ -613,7 +682,10 @@ pub const BcifParser = struct {
             const name = try columnName(column);
             mapAtomSiteColumn(&columns, name, idx);
         }
-        if (!columns.hasRequiredFields()) return ParseError.MissingCoordinateField;
+        if (!columns.hasRequiredFields()) {
+            self.deinitCcd();
+            return ParseError.MissingCoordinateField;
+        }
 
         var decoded = try self.allocator.alloc(DecodedColumn, raw_columns.len);
         var decoded_count: usize = 0;
@@ -622,9 +694,15 @@ pub const BcifParser = struct {
             self.allocator.free(decoded);
         }
         for (raw_columns) |column| {
-            decoded[decoded_count] = try decodeBcifColumn(self.allocator, column);
+            decoded[decoded_count] = decodeBcifColumn(self.allocator, column) catch |err| {
+                self.deinitCcd();
+                return err;
+            };
             decoded_count += 1;
-            if (decoded[decoded_count - 1].values.len != row_count) return ParseError.ColumnLengthMismatch;
+            if (decoded[decoded_count - 1].values.len != row_count) {
+                self.deinitCcd();
+                return ParseError.ColumnLengthMismatch;
+            }
         }
         defer {
             for (decoded[0..decoded_count]) |*column| column.deinit(self.allocator);
@@ -890,6 +968,10 @@ fn freeEncoding(allocator: Allocator, encoding: Encoding) void {
 }
 
 fn findCategory(root: MsgValue, name: []const u8) !MsgValue {
+    return (try findCategoryOptional(root, name)) orelse ParseError.NoAtomSiteCategory;
+}
+
+fn findCategoryOptional(root: MsgValue, name: []const u8) !?MsgValue {
     const root_map = switch (root) {
         .map => |map| map,
         else => return ParseError.InvalidMessagePack,
@@ -912,7 +994,7 @@ fn findCategory(root: MsgValue, name: []const u8) !MsgValue {
             if (categoryNameEql(candidate, name)) return category;
         }
     }
-    return ParseError.NoAtomSiteCategory;
+    return null;
 }
 
 fn categoryRowCount(category: MsgValue) !usize {
@@ -985,6 +1067,223 @@ fn decodeBcifColumn(allocator: Allocator, column: MsgValue) !DecodedColumn {
     }
 
     return decodeColumn(allocator, data, encodings);
+}
+
+fn parseInlineCcd(allocator: Allocator, root: MsgValue) !ccd_parser.ComponentDict {
+    var dict = ccd_parser.ComponentDict.init(allocator);
+    errdefer dict.deinit();
+
+    var builders: std.StringHashMapUnmanaged(BcifCcdBuilder) = .empty;
+    defer {
+        var it = builders.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            entry.value_ptr.deinit(allocator);
+        }
+        builders.deinit(allocator);
+    }
+
+    if (try findCategoryOptional(root, "chem_comp_atom")) |atom_category| {
+        try parseInlineCcdAtoms(allocator, atom_category, &builders);
+    }
+
+    if (builders.count() == 0) return dict;
+
+    if (try findCategoryOptional(root, "chem_comp_bond")) |bond_category| {
+        try parseInlineCcdBonds(allocator, bond_category, &builders);
+    }
+
+    var it = builders.iterator();
+    while (it.next()) |entry| {
+        const comp_id = entry.key_ptr.*;
+        const builder = entry.value_ptr;
+
+        const atoms = try builder.atoms.toOwnedSlice(allocator);
+        var atoms_owned = true;
+        errdefer if (atoms_owned) allocator.free(atoms);
+        const bonds = try builder.bonds.toOwnedSlice(allocator);
+        var bonds_owned = true;
+        errdefer if (bonds_owned) allocator.free(bonds);
+
+        var stored = ccd_parser.StoredComponent{
+            .comp_id = .{ 0, 0, 0, 0, 0 },
+            .comp_id_len = @intCast(@min(comp_id.len, 5)),
+            .atoms = atoms,
+            .bonds = bonds,
+            .allocator = allocator,
+        };
+        atoms_owned = false;
+        bonds_owned = false;
+        var stored_owned = true;
+        errdefer if (stored_owned) stored.deinit();
+
+        for (comp_id[0..stored.comp_id_len], 0..) |c, idx| {
+            stored.comp_id[idx] = c;
+        }
+
+        const dict_key = try allocator.dupe(u8, comp_id);
+        var key_owned_by_dict = false;
+        errdefer if (!key_owned_by_dict) allocator.free(dict_key);
+        try dict.owned_keys.append(allocator, dict_key);
+        key_owned_by_dict = true;
+
+        try dict.components.put(allocator, dict_key, stored);
+        stored_owned = false;
+    }
+
+    return dict;
+}
+
+fn parseInlineCcdAtoms(
+    allocator: Allocator,
+    category: MsgValue,
+    builders: *std.StringHashMapUnmanaged(BcifCcdBuilder),
+) !void {
+    const row_count = try categoryRowCount(category);
+    const raw_columns = try categoryColumns(category);
+
+    var cols = CcdAtomColumns{};
+    for (raw_columns, 0..) |column, idx| {
+        mapCcdAtomColumn(&cols, try columnName(column), idx);
+    }
+    if (!cols.hasRequiredFields()) return;
+
+    var decoded = try allocator.alloc(DecodedColumn, raw_columns.len);
+    var decoded_count: usize = 0;
+    errdefer {
+        for (decoded[0..decoded_count]) |*column| column.deinit(allocator);
+        allocator.free(decoded);
+    }
+    for (raw_columns) |column| {
+        decoded[decoded_count] = try decodeBcifColumn(allocator, column);
+        decoded_count += 1;
+        if (decoded[decoded_count - 1].values.len != row_count) return ParseError.ColumnLengthMismatch;
+    }
+    defer {
+        for (decoded[0..decoded_count]) |*column| column.deinit(allocator);
+        allocator.free(decoded);
+    }
+
+    var row: usize = 0;
+    while (row < row_count) : (row += 1) {
+        const comp_id = scalarString(decoded[cols.comp_id.?], row) orelse continue;
+        const atom_id = scalarString(decoded[cols.atom_id.?], row) orelse continue;
+        const type_symbol = scalarString(decoded[cols.type_symbol.?], row) orelse continue;
+
+        const builder = try getOrCreateCcdBuilder(allocator, builders, comp_id);
+        var atom = hyb.CompAtom.init(atom_id, type_symbol);
+        if (cols.pdbx_aromatic_flag) |col| atom.aromatic = isYesFlag(scalarString(decoded[col], row));
+        if (cols.pdbx_leaving_atom_flag) |col| atom.leaving = isYesFlag(scalarString(decoded[col], row));
+
+        const atom_idx = std.math.cast(u16, builder.atoms.items.len) orelse return ParseError.InvalidColumnData;
+        try builder.atoms.append(allocator, atom);
+
+        const name_key = try allocator.dupe(u8, atom_id);
+        builder.atom_name_map.put(allocator, name_key, atom_idx) catch |err| {
+            allocator.free(name_key);
+            return err;
+        };
+    }
+}
+
+fn parseInlineCcdBonds(
+    allocator: Allocator,
+    category: MsgValue,
+    builders: *std.StringHashMapUnmanaged(BcifCcdBuilder),
+) !void {
+    const row_count = try categoryRowCount(category);
+    const raw_columns = try categoryColumns(category);
+
+    var cols = CcdBondColumns{};
+    for (raw_columns, 0..) |column, idx| {
+        mapCcdBondColumn(&cols, try columnName(column), idx);
+    }
+    if (!cols.hasRequiredFields()) return;
+
+    var decoded = try allocator.alloc(DecodedColumn, raw_columns.len);
+    var decoded_count: usize = 0;
+    errdefer {
+        for (decoded[0..decoded_count]) |*column| column.deinit(allocator);
+        allocator.free(decoded);
+    }
+    for (raw_columns) |column| {
+        decoded[decoded_count] = try decodeBcifColumn(allocator, column);
+        decoded_count += 1;
+        if (decoded[decoded_count - 1].values.len != row_count) return ParseError.ColumnLengthMismatch;
+    }
+    defer {
+        for (decoded[0..decoded_count]) |*column| column.deinit(allocator);
+        allocator.free(decoded);
+    }
+
+    var row: usize = 0;
+    while (row < row_count) : (row += 1) {
+        const comp_id = scalarString(decoded[cols.comp_id.?], row) orelse continue;
+        const atom_id_1 = scalarString(decoded[cols.atom_id_1.?], row) orelse continue;
+        const atom_id_2 = scalarString(decoded[cols.atom_id_2.?], row) orelse continue;
+
+        const builder = builders.getPtr(comp_id) orelse continue;
+        const idx1 = builder.atom_name_map.get(atom_id_1) orelse continue;
+        const idx2 = builder.atom_name_map.get(atom_id_2) orelse continue;
+        const order = if (cols.value_order) |col|
+            if (scalarString(decoded[col], row)) |value| hyb.BondOrder.fromString(value) else hyb.BondOrder.unknown
+        else
+            hyb.BondOrder.unknown;
+
+        try builder.bonds.append(allocator, .{
+            .atom_idx_1 = idx1,
+            .atom_idx_2 = idx2,
+            .order = order,
+            .aromatic = if (cols.pdbx_aromatic_flag) |col| isYesFlag(scalarString(decoded[col], row)) else false,
+        });
+    }
+}
+
+fn getOrCreateCcdBuilder(
+    allocator: Allocator,
+    builders: *std.StringHashMapUnmanaged(BcifCcdBuilder),
+    comp_id: []const u8,
+) !*BcifCcdBuilder {
+    const gop = try builders.getOrPut(allocator, comp_id);
+    if (!gop.found_existing) {
+        const key = try allocator.dupe(u8, comp_id);
+        gop.key_ptr.* = key;
+        gop.value_ptr.* = .{};
+    }
+    return gop.value_ptr;
+}
+
+fn mapCcdAtomColumn(columns: *CcdAtomColumns, name: []const u8, idx: usize) void {
+    if (eqlIgnoreCase(name, "comp_id")) {
+        columns.comp_id = idx;
+    } else if (eqlIgnoreCase(name, "atom_id")) {
+        columns.atom_id = idx;
+    } else if (eqlIgnoreCase(name, "type_symbol")) {
+        columns.type_symbol = idx;
+    } else if (eqlIgnoreCase(name, "pdbx_aromatic_flag")) {
+        columns.pdbx_aromatic_flag = idx;
+    } else if (eqlIgnoreCase(name, "pdbx_leaving_atom_flag")) {
+        columns.pdbx_leaving_atom_flag = idx;
+    }
+}
+
+fn mapCcdBondColumn(columns: *CcdBondColumns, name: []const u8, idx: usize) void {
+    if (eqlIgnoreCase(name, "comp_id")) {
+        columns.comp_id = idx;
+    } else if (eqlIgnoreCase(name, "atom_id_1")) {
+        columns.atom_id_1 = idx;
+    } else if (eqlIgnoreCase(name, "atom_id_2")) {
+        columns.atom_id_2 = idx;
+    } else if (eqlIgnoreCase(name, "value_order")) {
+        columns.value_order = idx;
+    } else if (eqlIgnoreCase(name, "pdbx_aromatic_flag")) {
+        columns.pdbx_aromatic_flag = idx;
+    }
+}
+
+fn isYesFlag(value: ?[]const u8) bool {
+    const flag = value orelse return false;
+    return flag.len == 1 and (flag[0] == 'Y' or flag[0] == 'y');
 }
 
 fn scalarString(column: DecodedColumn, row: usize) ?[]const u8 {
@@ -1193,6 +1492,150 @@ fn buildMinimalBcif(options: BuildBcifOptions) ![]u8 {
     if (!options.omit_chain) try packStringColumn(allocator, &bytes, "auth_asym_id", rows.items, TestAtomRow.chainValue);
 
     return bytes.toOwnedSlice(allocator);
+}
+
+fn buildMinimalBcifWithInlineCcd() ![]u8 {
+    const allocator = std.testing.allocator;
+
+    const atom_comp_ids = [_][]const u8{ "LIG", "LIG", "LIG" };
+    const atom_ids = [_][]const u8{ "C1", "O1", "H1" };
+    const atom_types = [_][]const u8{ "C", "O", "H" };
+    const atom_aromatic = [_][]const u8{ "N", "N", "N" };
+    const atom_leaving = [_][]const u8{ "N", "N", "N" };
+
+    const bond_comp_ids = [_][]const u8{ "LIG", "LIG" };
+    const bond_atom_1 = [_][]const u8{ "C1", "O1" };
+    const bond_atom_2 = [_][]const u8{ "O1", "H1" };
+    const bond_orders = [_][]const u8{ "DOUB", "SING" };
+    const bond_aromatic = [_][]const u8{ "N", "N" };
+
+    var bytes = std.ArrayListUnmanaged(u8).empty;
+    errdefer bytes.deinit(allocator);
+
+    try packMapHeader(allocator, &bytes, 3);
+    try packStr(allocator, &bytes, "version");
+    try packStr(allocator, &bytes, "0.3.0");
+    try packStr(allocator, &bytes, "encoder");
+    try packStr(allocator, &bytes, "zsasa-test");
+    try packStr(allocator, &bytes, "dataBlocks");
+    try packArrayHeader(allocator, &bytes, 1);
+    try packMapHeader(allocator, &bytes, 2);
+    try packStr(allocator, &bytes, "header");
+    try packStr(allocator, &bytes, "TEST");
+    try packStr(allocator, &bytes, "categories");
+    try packArrayHeader(allocator, &bytes, 3);
+
+    try packStringOnlyCategory(allocator, &bytes, "_chem_comp_atom", atom_comp_ids.len, &.{
+        .{ .name = "comp_id", .values = atom_comp_ids[0..] },
+        .{ .name = "atom_id", .values = atom_ids[0..] },
+        .{ .name = "type_symbol", .values = atom_types[0..] },
+        .{ .name = "pdbx_aromatic_flag", .values = atom_aromatic[0..] },
+        .{ .name = "pdbx_leaving_atom_flag", .values = atom_leaving[0..] },
+    });
+    try packStringOnlyCategory(allocator, &bytes, "_chem_comp_bond", bond_comp_ids.len, &.{
+        .{ .name = "comp_id", .values = bond_comp_ids[0..] },
+        .{ .name = "atom_id_1", .values = bond_atom_1[0..] },
+        .{ .name = "atom_id_2", .values = bond_atom_2[0..] },
+        .{ .name = "value_order", .values = bond_orders[0..] },
+        .{ .name = "pdbx_aromatic_flag", .values = bond_aromatic[0..] },
+    });
+
+    const atom_site = try buildMinimalBcif(.{ .include_hetatm = true });
+    defer allocator.free(atom_site);
+    try appendAtomSiteCategoryFromMinimalBcif(allocator, &bytes, atom_site);
+
+    return bytes.toOwnedSlice(allocator);
+}
+
+const TestStringColumn = struct {
+    name: []const u8,
+    values: []const []const u8,
+};
+
+fn packStringOnlyCategory(
+    allocator: Allocator,
+    bytes: *std.ArrayListUnmanaged(u8),
+    category_name: []const u8,
+    row_count: usize,
+    columns: []const TestStringColumn,
+) !void {
+    try packMapHeader(allocator, bytes, 3);
+    try packStr(allocator, bytes, "name");
+    try packStr(allocator, bytes, category_name);
+    try packStr(allocator, bytes, "rowCount");
+    try packInt(allocator, bytes, @intCast(row_count));
+    try packStr(allocator, bytes, "columns");
+    try packArrayHeader(allocator, bytes, columns.len);
+    for (columns) |column| {
+        try packStringValuesColumn(allocator, bytes, column.name, column.values);
+    }
+}
+
+fn packStringValuesColumn(
+    allocator: Allocator,
+    bytes: *std.ArrayListUnmanaged(u8),
+    name: []const u8,
+    values: []const []const u8,
+) !void {
+    var string_data = std.ArrayListUnmanaged(u8).empty;
+    defer string_data.deinit(allocator);
+    var offsets = std.ArrayListUnmanaged(u8).empty;
+    defer offsets.deinit(allocator);
+    var indices = std.ArrayListUnmanaged(u8).empty;
+    defer indices.deinit(allocator);
+
+    try offsets.append(allocator, 0);
+    for (values, 0..) |value, idx| {
+        try string_data.appendSlice(allocator, value);
+        try offsets.append(allocator, @intCast(string_data.items.len));
+        try indices.append(allocator, @intCast(idx));
+    }
+
+    try packColumnHeader(allocator, bytes, name);
+    try packEncodedDataMapHeader(allocator, bytes);
+    try packBin(allocator, bytes, indices.items);
+    try packStr(allocator, bytes, "encoding");
+    try packStringArrayEncoding(allocator, bytes, string_data.items, offsets.items);
+}
+
+fn appendAtomSiteCategoryFromMinimalBcif(
+    allocator: Allocator,
+    bytes: *std.ArrayListUnmanaged(u8),
+    source: []const u8,
+) !void {
+    var reader = MsgReader.init(allocator, source);
+    const root = try reader.readValue();
+    defer freeMsgValue(allocator, root);
+    const atom_site = try findCategory(root, "atom_site");
+    try packMsgValue(allocator, bytes, atom_site);
+}
+
+fn packMsgValue(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), value: MsgValue) !void {
+    switch (value) {
+        .nil => try bytes.append(allocator, 0xc0),
+        .bool => |b| try bytes.append(allocator, if (b) 0xc3 else 0xc2),
+        .int => |i| try packInt(allocator, bytes, i),
+        .uint => |u| try packInt(allocator, bytes, std.math.cast(i64, u) orelse return error.Overflow),
+        .float => |f| {
+            try bytes.append(allocator, 0xcb);
+            var buf: [8]u8 = undefined;
+            std.mem.writeInt(u64, &buf, @bitCast(f), .big);
+            try bytes.appendSlice(allocator, &buf);
+        },
+        .str => |s| try packStr(allocator, bytes, s),
+        .bin => |b| try packBin(allocator, bytes, b),
+        .array => |items| {
+            try packArrayHeader(allocator, bytes, items.len);
+            for (items) |item| try packMsgValue(allocator, bytes, item);
+        },
+        .map => |pairs| {
+            try packMapHeader(allocator, bytes, pairs.len);
+            for (pairs) |pair| {
+                try packMsgValue(allocator, bytes, pair.key);
+                try packMsgValue(allocator, bytes, pair.value);
+            }
+        },
+    }
 }
 
 const TestAtomRow = struct {
@@ -1416,6 +1859,36 @@ test "parse minimal BinaryCIF atom_site" {
     try std.testing.expectEqualStrings("CA", input.atom_name.?[0].slice());
     try std.testing.expectEqualStrings("A", input.chain_id.?[0].slice());
     try std.testing.expectEqual(@as(i32, 1), input.residue_num.?[0]);
+}
+
+test "parse BinaryCIF with inline CCD data" {
+    const source = try buildMinimalBcifWithInlineCcd();
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.atom_only = false;
+    var input = try parser.parse(source);
+    defer input.deinit();
+    defer parser.deinitCcd();
+
+    try std.testing.expectEqual(@as(usize, 3), input.atomCount());
+
+    const ccd = parser.getInlineCcd() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 1), ccd.count());
+
+    const comp = ccd.get("LIG") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("LIG", comp.compIdSlice());
+    try std.testing.expectEqual(@as(usize, 3), comp.atoms.len);
+    try std.testing.expectEqual(@as(usize, 2), comp.bonds.len);
+
+    try std.testing.expectEqualStrings("C1", comp.atoms[0].atomIdSlice());
+    try std.testing.expectEqualStrings("C", comp.atoms[0].typeSymbolSlice());
+    try std.testing.expectEqualStrings("O1", comp.atoms[1].atomIdSlice());
+    try std.testing.expectEqualStrings("O", comp.atoms[1].typeSymbolSlice());
+
+    try std.testing.expectEqual(@as(u16, 0), comp.bonds[0].atom_idx_1);
+    try std.testing.expectEqual(@as(u16, 1), comp.bonds[0].atom_idx_2);
+    try std.testing.expectEqual(.double, comp.bonds[0].order);
 }
 
 test "parse BinaryCIF applies filters" {

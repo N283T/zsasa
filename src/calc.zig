@@ -813,13 +813,16 @@ pub fn printHelp(program_name: []const u8) void {
 // Input reading and classification
 // =============================================================================
 
-/// Result from readInputFile — includes optional mmCIF parser for inline CCD access.
+/// Result from readInputFile — includes optional structure parsers for inline
+/// CCD access.
 const ReadResult = struct {
     input: types.AtomInput,
+    bcif: ?bcif_parser.BcifParser = null,
     mmcif: ?mmcif_parser.MmcifParser = null,
     sdf_ccd: ?ccd_parser.ComponentDict = null, // Auto-registered SDF bond topology
 
     fn deinitCcd(self: *ReadResult) void {
+        if (self.bcif) |*p| p.deinitCcd();
         if (self.mmcif) |*p| p.deinitCcd();
         if (self.sdf_ccd) |*d| d.deinit();
     }
@@ -881,7 +884,8 @@ fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, arg
             }
             defer if (chain_filter_slice) |s| allocator.free(s);
 
-            break :blk .{ .input = try parser.parseFile(io, path) };
+            const input = try parser.parseFile(io, path);
+            break :blk .{ .input = input, .bcif = parser };
         },
         .mmcif => blk: {
             var parser = mmcif_parser.MmcifParser.init(allocator);
@@ -1340,7 +1344,12 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
             // Use built-in classifier
             const use_ccd_resources = classifierUsesCcdResources(ct);
             const inline_ccd: ?*const ccd_parser.ComponentDict = if (use_ccd_resources)
-                if (read_result.mmcif) |*p| p.getInlineCcd() else null
+                if (read_result.mmcif) |*p|
+                    p.getInlineCcd()
+                else if (read_result.bcif) |*p|
+                    p.getInlineCcd()
+                else
+                    null
             else
                 null;
 
