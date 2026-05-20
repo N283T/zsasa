@@ -248,6 +248,8 @@ const Encoding = union(enum) {
     },
 };
 
+const PackingSentinel = struct { positive: i64, negative: i64 };
+
 fn decodeColumn(allocator: Allocator, data: []const u8, encodings: []const Encoding) DecodeError!DecodedColumn {
     var column = DecodedColumn{ .values = &.{} };
     var initialized = false;
@@ -260,7 +262,9 @@ fn decodeColumn(allocator: Allocator, data: []const u8, encodings: []const Encod
             column = try decodeInitialEncoding(allocator, data, encodings[i]);
             initialized = true;
         } else {
+            initialized = false;
             column = try applyEncoding(allocator, column, encodings[i]);
+            initialized = true;
         }
     }
 
@@ -316,7 +320,11 @@ fn applyEncoding(allocator: Allocator, column: DecodedColumn, encoding: Encoding
         .delta => |params| decodeDelta(allocator, column, params.origin),
         .fixed_point => |params| decodeFixedPoint(allocator, column, params.factor),
         .interval_quantization => |params| decodeIntervalQuantization(allocator, column, params.min, params.max, params.num_steps),
-        .byte_array, .string_array => ParseError.UnsupportedEncoding,
+        .byte_array, .string_array => {
+            var old = column;
+            old.deinit(allocator);
+            return ParseError.UnsupportedEncoding;
+        },
     };
 }
 
@@ -366,17 +374,27 @@ fn decodeIntegerPacking(allocator: Allocator, column: DecodedColumn, byte_count:
     var acc: i64 = 0;
     for (column.values) |value| {
         const part = scalarToI64(value) orelse return ParseError.InvalidColumnData;
-        acc += part;
-        if (part != sentinel.positive and part != sentinel.negative) {
-            try out.append(allocator, .{ .int = acc });
-            acc = 0;
-        }
+        try appendIntegerPackingPart(allocator, &out, &acc, part, sentinel);
     }
     if (out.items.len != src_size) return ParseError.InvalidColumnData;
     return .{ .values = try out.toOwnedSlice(allocator) };
 }
 
-fn packingSentinel(byte_count: u8, is_unsigned: bool) ?struct { positive: i64, negative: i64 } {
+fn appendIntegerPackingPart(
+    allocator: Allocator,
+    out: *std.ArrayListUnmanaged(Scalar),
+    acc: *i64,
+    part: i64,
+    sentinel: PackingSentinel,
+) DecodeError!void {
+    acc.* = checkedAddI64(acc.*, part) catch return ParseError.InvalidColumnData;
+    if (part != sentinel.positive and part != sentinel.negative) {
+        try out.append(allocator, .{ .int = acc.* });
+        acc.* = 0;
+    }
+}
+
+fn packingSentinel(byte_count: u8, is_unsigned: bool) ?PackingSentinel {
     return switch (byte_count) {
         1 => if (is_unsigned)
             .{ .positive = std.math.maxInt(u8), .negative = -1 }
@@ -426,7 +444,7 @@ fn decodeDelta(allocator: Allocator, column: DecodedColumn, origin: i64) DecodeE
 
     var current = origin;
     for (column.values, values) |value, *out| {
-        current += scalarToI64(value) orelse return ParseError.InvalidColumnData;
+        current = checkedAddI64(current, scalarToI64(value) orelse return ParseError.InvalidColumnData) catch return ParseError.InvalidColumnData;
         out.* = .{ .int = current };
     }
     return .{ .values = values };
@@ -496,6 +514,10 @@ fn scalarToI64(value: Scalar) ?i64 {
 fn scalarToUsize(value: Scalar) ?usize {
     const int = scalarToI64(value) orelse return null;
     return std.math.cast(usize, int);
+}
+
+fn checkedAddI64(a: i64, b: i64) error{Overflow}!i64 {
+    return std.math.add(i64, a, b) catch error.Overflow;
 }
 
 test "msgpack reader decodes primitives" {
@@ -660,4 +682,109 @@ test "bcif mask maps dot and question to null states" {
     try std.testing.expect(column.values[0] == .int);
     try std.testing.expectEqual(NullKind.not_present, column.nulls.?[1]);
     try std.testing.expectEqual(NullKind.unknown, column.nulls.?[2]);
+}
+
+test "bcif decoder chain frees intermediate column once on transform error" {
+    const allocator = std.testing.allocator;
+    const bytes = [_]u8{ 1, 0 };
+    try std.testing.expectError(
+        ParseError.InvalidColumnData,
+        decodeColumn(allocator, &bytes, &[_]Encoding{
+            .{ .fixed_point = .{ .factor = 0.0 } },
+            .{ .byte_array = .{ .type_code = 2 } },
+        }),
+    );
+}
+
+test "bcif integer packing accumulation rejects overflow" {
+    const allocator = std.testing.allocator;
+    var out = std.ArrayListUnmanaged(Scalar).empty;
+    defer out.deinit(allocator);
+    var acc: i64 = std.math.maxInt(i64);
+
+    try std.testing.expectError(
+        ParseError.InvalidColumnData,
+        appendIntegerPackingPart(
+            allocator,
+            &out,
+            &acc,
+            1,
+            .{ .positive = 127, .negative = -128 },
+        ),
+    );
+}
+
+test "bcif delta rejects accumulation overflow" {
+    const allocator = std.testing.allocator;
+    const values = try allocator.dupe(Scalar, &[_]Scalar{.{ .int = 1 }});
+    const column = DecodedColumn{ .values = values };
+
+    try std.testing.expectError(
+        ParseError.InvalidColumnData,
+        decodeDelta(allocator, column, std.math.maxInt(i64)),
+    );
+}
+
+test "bcif run length rejects malformed pairs" {
+    const allocator = std.testing.allocator;
+    const bytes = [_]u8{ 7, 2, 9 };
+
+    try std.testing.expectError(
+        ParseError.InvalidColumnData,
+        decodeColumn(allocator, &bytes, &[_]Encoding{
+            .{ .run_length = .{ .src_size = 2 } },
+            .{ .byte_array = .{ .type_code = 4 } },
+        }),
+    );
+}
+
+test "bcif mask rejects mismatched lengths" {
+    const allocator = std.testing.allocator;
+    const data = [_]u8{ 1, 2 };
+    const mask_data = [_]u8{0};
+
+    try std.testing.expectError(
+        ParseError.ColumnLengthMismatch,
+        decodeColumnWithMask(
+            allocator,
+            &data,
+            &[_]Encoding{.{ .byte_array = .{ .type_code = 4 } }},
+            &mask_data,
+            &[_]Encoding{.{ .byte_array = .{ .type_code = 4 } }},
+        ),
+    );
+}
+
+test "bcif mask rejects non-integer masks" {
+    const allocator = std.testing.allocator;
+    const data = [_]u8{1};
+    const mask_data = [_]u8{ 0, 0, 0, 0 };
+
+    try std.testing.expectError(
+        ParseError.InvalidColumnData,
+        decodeColumnWithMask(
+            allocator,
+            &data,
+            &[_]Encoding{.{ .byte_array = .{ .type_code = 4 } }},
+            &mask_data,
+            &[_]Encoding{.{ .byte_array = .{ .type_code = 32 } }},
+        ),
+    );
+}
+
+test "bcif string arrays reject bad offsets" {
+    const allocator = std.testing.allocator;
+    const index_bytes = [_]u8{0};
+    const offset_bytes = [_]u8{ 2, 1 };
+    const encoding = Encoding{ .string_array = .{
+        .string_data = "ABC",
+        .offset_data = &offset_bytes,
+        .offset_encoding = &[_]Encoding{.{ .byte_array = .{ .type_code = 4 } }},
+        .data_encoding = &[_]Encoding{.{ .byte_array = .{ .type_code = 4 } }},
+    } };
+
+    try std.testing.expectError(
+        ParseError.InvalidColumnData,
+        decodeColumn(allocator, &index_bytes, &[_]Encoding{encoding}),
+    );
 }
