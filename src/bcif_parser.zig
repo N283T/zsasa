@@ -746,9 +746,11 @@ pub const BcifParser = struct {
         }
 
         if (self.model_num) |target_model| {
-            var model: i64 = 1;
-            if (columns.pdbx_pdb_model_num) |col| model = scalarInt(decoded[col], row) orelse 1;
-            if (model != target_model) return false;
+            if (columns.pdbx_pdb_model_num) |col| {
+                if (scalarInt(decoded[col], row)) |model| {
+                    if (model != target_model) return false;
+                }
+            }
         }
 
         if (self.chain_filter) |chains| {
@@ -759,7 +761,6 @@ pub const BcifParser = struct {
                 }
                 return false;
             }
-            return false;
         }
 
         return true;
@@ -1086,6 +1087,9 @@ const BuildBcifOptions = struct {
     include_hetatm: bool = false,
     include_second_model: bool = false,
     omit_z: bool = false,
+    omit_model: bool = false,
+    omit_chain: bool = false,
+    null_first_model: bool = false,
 };
 
 fn buildMinimalBcif(options: BuildBcifOptions) ![]u8 {
@@ -1127,21 +1131,24 @@ fn buildMinimalBcif(options: BuildBcifOptions) ![]u8 {
     try packInt(allocator, &bytes, @intCast(rows.items.len));
     try packStr(allocator, &bytes, "columns");
 
-    const column_count: usize = if (options.omit_z) 12 else 13;
+    var column_count: usize = 9;
+    if (!options.omit_z) column_count += 1;
+    if (!options.omit_model) column_count += 1;
+    if (!options.omit_chain) column_count += 2;
     try packArrayHeader(allocator, &bytes, column_count);
     try packStringColumn(allocator, &bytes, "group_PDB", rows.items, TestAtomRow.groupValue);
     try packStringColumn(allocator, &bytes, "type_symbol", rows.items, TestAtomRow.elementValue);
     try packStringColumn(allocator, &bytes, "label_atom_id", rows.items, TestAtomRow.atomValue);
     try packStringColumn(allocator, &bytes, "label_comp_id", rows.items, TestAtomRow.residueValue);
-    try packStringColumn(allocator, &bytes, "label_asym_id", rows.items, TestAtomRow.chainValue);
-    try packIntColumn(allocator, &bytes, "label_seq_id", rows.items, TestAtomRow.seqValue);
+    if (!options.omit_chain) try packStringColumn(allocator, &bytes, "label_asym_id", rows.items, TestAtomRow.chainValue);
+    try packIntColumn(allocator, &bytes, "label_seq_id", rows.items, TestAtomRow.seqValue, false);
     try packStringColumn(allocator, &bytes, "pdbx_PDB_ins_code", rows.items, TestAtomRow.emptyValue);
     try packStringColumn(allocator, &bytes, "label_alt_id", rows.items, TestAtomRow.emptyValue);
-    try packIntColumn(allocator, &bytes, "pdbx_PDB_model_num", rows.items, TestAtomRow.modelValue);
+    if (!options.omit_model) try packIntColumn(allocator, &bytes, "pdbx_PDB_model_num", rows.items, TestAtomRow.modelValue, options.null_first_model);
     try packFloatColumn(allocator, &bytes, "Cartn_x", rows.items, TestAtomRow.xValue);
     try packFloatColumn(allocator, &bytes, "Cartn_y", rows.items, TestAtomRow.yValue);
     if (!options.omit_z) try packFloatColumn(allocator, &bytes, "Cartn_z", rows.items, TestAtomRow.zValue);
-    try packStringColumn(allocator, &bytes, "auth_asym_id", rows.items, TestAtomRow.chainValue);
+    if (!options.omit_chain) try packStringColumn(allocator, &bytes, "auth_asym_id", rows.items, TestAtomRow.chainValue);
 
     return bytes.toOwnedSlice(allocator);
 }
@@ -1216,7 +1223,7 @@ fn packStringColumn(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), na
     try packStringArrayEncoding(allocator, bytes, string_data.items, offsets.items);
 }
 
-fn packIntColumn(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), name: []const u8, rows: []const TestAtomRow, comptime get: fn (TestAtomRow) i32) !void {
+fn packIntColumn(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), name: []const u8, rows: []const TestAtomRow, comptime get: fn (TestAtomRow) i32, null_first: bool) !void {
     var data = std.ArrayListUnmanaged(u8).empty;
     defer data.deinit(allocator);
     for (rows) |row| {
@@ -1225,12 +1232,13 @@ fn packIntColumn(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), name:
         std.mem.writeInt(i32, &buf, value, .little);
         try data.appendSlice(allocator, &buf);
     }
-    try packColumnHeader(allocator, bytes, name);
+    try packColumnHeaderWithFieldCount(allocator, bytes, name, if (null_first) 3 else 2);
     try packEncodedDataMapHeader(allocator, bytes);
     try packBin(allocator, bytes, data.items);
     try packStr(allocator, bytes, "encoding");
     try packArrayHeader(allocator, bytes, 1);
     try packByteArrayEncoding(allocator, bytes, 3);
+    if (null_first) try packNullFirstMask(allocator, bytes, rows.len);
 }
 
 fn packFloatColumn(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), name: []const u8, rows: []const TestAtomRow, comptime get: fn (TestAtomRow) f32) !void {
@@ -1251,10 +1259,29 @@ fn packFloatColumn(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), nam
 }
 
 fn packColumnHeader(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), name: []const u8) !void {
-    try packMapHeader(allocator, bytes, 2);
+    try packColumnHeaderWithFieldCount(allocator, bytes, name, 2);
+}
+
+fn packColumnHeaderWithFieldCount(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), name: []const u8, field_count: usize) !void {
+    try packMapHeader(allocator, bytes, field_count);
     try packStr(allocator, bytes, "name");
     try packStr(allocator, bytes, name);
     try packStr(allocator, bytes, "data");
+}
+
+fn packNullFirstMask(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), row_count: usize) !void {
+    try packStr(allocator, bytes, "mask");
+    try packEncodedDataMapHeader(allocator, bytes);
+    var mask = std.ArrayListUnmanaged(u8).empty;
+    defer mask.deinit(allocator);
+    var row: usize = 0;
+    while (row < row_count) : (row += 1) {
+        try mask.append(allocator, if (row == 0) 1 else 0);
+    }
+    try packBin(allocator, bytes, mask.items);
+    try packStr(allocator, bytes, "encoding");
+    try packArrayHeader(allocator, bytes, 1);
+    try packByteArrayEncoding(allocator, bytes, 4);
 }
 
 fn packEncodedDataMapHeader(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8)) !void {
@@ -1371,6 +1398,44 @@ test "parse BinaryCIF reports missing coordinate field" {
 
     var parser = BcifParser.init(std.testing.allocator);
     try std.testing.expectError(ParseError.MissingCoordinateField, parser.parse(source));
+}
+
+test "parse BinaryCIF model filter ignores absent model column" {
+    const source = try buildMinimalBcif(.{ .include_second_model = true, .omit_model = true });
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.model_num = 2;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), input.atomCount());
+}
+
+test "parse BinaryCIF model filter ignores null model value" {
+    const source = try buildMinimalBcif(.{ .null_first_model = true });
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.model_num = 2;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), input.atomCount());
+    try std.testing.expectEqualStrings("CA", input.atom_name.?[0].slice());
+}
+
+test "parse BinaryCIF chain filter ignores absent chain column" {
+    const source = try buildMinimalBcif(.{ .omit_chain = true });
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.chain_filter = &[_][]const u8{"A"};
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expectEqualStrings("", input.chain_id.?[0].slice());
 }
 
 test "msgpack reader decodes primitives" {
