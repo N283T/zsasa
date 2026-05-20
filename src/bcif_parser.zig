@@ -1,18 +1,5 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const elem = @import("element.zig");
-const mmap_reader = @import("mmap_reader.zig");
-const compressed = @import("compressed.zig");
-const types = @import("types.zig");
-const AtomInput = types.AtomInput;
-
-comptime {
-    _ = elem;
-    _ = mmap_reader;
-    _ = compressed;
-    _ = AtomInput;
-}
-
 pub const ParseError = error{
     InvalidMessagePack,
     UnexpectedEof,

@@ -28,6 +28,7 @@ pub const lee_richards = @import("lee_richards.zig");
 pub const types = @import("types.zig");
 pub const pdb_parser = @import("pdb_parser.zig");
 pub const mmcif_parser = @import("mmcif_parser.zig");
+pub const bcif_parser = @import("bcif_parser.zig");
 pub const json_parser = @import("json_parser.zig");
 pub const classifier = @import("classifier.zig");
 pub const analysis = @import("analysis.zig");
@@ -53,6 +54,7 @@ test {
     _ = types;
     _ = pdb_parser;
     _ = mmcif_parser;
+    _ = bcif_parser;
     _ = json_parser;
     _ = classifier;
     _ = analysis;
