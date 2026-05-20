@@ -731,6 +731,95 @@ pub fn scanDirectory(allocator: Allocator, io: std.Io, dir_path: []const u8) ![]
     return files.toOwnedSlice(allocator);
 }
 
+/// Calculate SASA and optionally write output for an already prepared input.
+fn calculatePreparedInputResult(
+    comptime T: type,
+    arena: Allocator,
+    io: std.Io,
+    result_allocator: Allocator,
+    input: AtomInput,
+    output_dir: ?[]const u8,
+    filename: []const u8,
+    config: BatchConfig,
+    n_threads: usize,
+    lut: ?*const bitmask_lut.BitmaskLutGen(T),
+    coarse_lut: ?*const bitmask_lut.BitmaskLutGen(T),
+    fine_lut: ?*const bitmask_lut.BitmaskLutGen(T),
+) FileResult {
+    var result = FileResult{
+        .filename = filename,
+        .n_atoms = input.atomCount(),
+        .sasa_time_ns = 0,
+        .total_sasa = 0,
+        .status = .ok,
+    };
+
+    var sasa_timer = std.Io.Timestamp.now(io, .awake);
+    const probe_radius: T = if (T == f64) config.probe_radius else @as(T, @floatCast(config.probe_radius));
+    var sasa_result = calculateSasaDispatch(
+        T,
+        arena,
+        input,
+        config,
+        probe_radius,
+        n_threads,
+        lut,
+        coarse_lut,
+        fine_lut,
+    ) catch |err| {
+        result.status = .err;
+        result.error_msg = std.fmt.allocPrint(result_allocator, "SASA calculation failed: {s}", .{@errorName(err)}) catch null;
+        return result;
+    };
+    defer sasa_result.deinit();
+    result.sasa_time_ns = @intCast(sasa_timer.untilNow(io, .awake).nanoseconds);
+    result.total_sasa = if (T == f64) sasa_result.total_area else @as(f64, @floatCast(sasa_result.total_area));
+
+    if (config.store_atom_areas) {
+        if (T == f64) {
+            result.atom_areas = arena.dupe(f64, sasa_result.atom_areas) catch {
+                result.status = .err;
+                result.error_msg = std.fmt.allocPrint(result_allocator, "atom_areas allocation failed", .{}) catch null;
+                return result;
+            };
+        } else {
+            const areas_f64 = arena.alloc(f64, sasa_result.atom_areas.len) catch {
+                result.status = .err;
+                result.error_msg = std.fmt.allocPrint(result_allocator, "atom_areas allocation failed", .{}) catch null;
+                return result;
+            };
+            for (sasa_result.atom_areas, 0..) |v, j| areas_f64[j] = @floatCast(v);
+            result.atom_areas = areas_f64;
+        }
+    }
+
+    if (config.residue_map) {
+        const areas = result.atom_areas orelse blk: {
+            if (T == f64) break :blk sasa_result.atom_areas;
+            const areas_f64 = arena.alloc(f64, sasa_result.atom_areas.len) catch {
+                result.status = .err;
+                result.error_msg = std.fmt.allocPrint(result_allocator, "atom_areas allocation failed", .{}) catch null;
+                return result;
+            };
+            for (sasa_result.atom_areas, 0..) |v, j| areas_f64[j] = @floatCast(v);
+            break :blk areas_f64;
+        };
+        if (!attachResidueMap(arena, result_allocator, input, areas, &result)) return result;
+    }
+
+    if (output_dir) |out_dir| {
+        if (!config.store_atom_areas) {
+            writeSasaOutput(T, arena, io, &sasa_result, out_dir, filename, config.output_format) catch |err| {
+                result.status = .err;
+                result.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
+                return result;
+            };
+        }
+    }
+
+    return result;
+}
+
 /// Process a single file and return result
 /// Uses provided arena allocator for temporary allocations
 /// result_allocator: used for data that must outlive the arena (error messages)
@@ -796,113 +885,36 @@ fn processOneFile(
         }
     }
 
-    result.n_atoms = input.atomCount();
-
-    // Time SASA calculation only
-    var sasa_timer = std.Io.Timestamp.now(io, .awake);
-
-    // Calculate SASA using generic dispatcher
-    var total_area: f64 = 0;
-    switch (config.precision) {
-        .f64 => {
-            var sasa_result = calculateSasaDispatch(
-                f64,
-                arena,
-                input,
-                config,
-                config.probe_radius,
-                n_threads,
-                lut_f64,
-                coarse_lut_f64,
-                fine_lut_f64,
-            ) catch |err| {
-                result.status = .err;
-                result.error_msg = std.fmt.allocPrint(result_allocator, "SASA calculation failed: {s}", .{@errorName(err)}) catch null;
-                return result;
-            };
-            defer sasa_result.deinit();
-            result.sasa_time_ns = @intCast(sasa_timer.untilNow(io, .awake).nanoseconds);
-            total_area = sasa_result.total_area;
-
-            if (config.store_atom_areas) {
-                result.atom_areas = arena.dupe(f64, sasa_result.atom_areas) catch {
-                    result.status = .err;
-                    result.error_msg = std.fmt.allocPrint(result_allocator, "atom_areas allocation failed", .{}) catch null;
-                    return result;
-                };
-            }
-            if (config.residue_map) {
-                const areas = result.atom_areas orelse sasa_result.atom_areas;
-                if (!attachResidueMap(arena, result_allocator, input, areas, &result)) return result;
-            }
-
-            if (output_dir) |out_dir| {
-                if (!config.store_atom_areas) {
-                    writeSasaOutput(f64, arena, io, &sasa_result, out_dir, filename, config.output_format) catch |err| {
-                        result.status = .err;
-                        result.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
-                        return result;
-                    };
-                }
-            }
-        },
-        .f32 => {
-            var sasa_result = calculateSasaDispatch(
-                f32,
-                arena,
-                input,
-                config,
-                @as(f32, @floatCast(config.probe_radius)),
-                n_threads,
-                lut_f32,
-                coarse_lut_f32,
-                fine_lut_f32,
-            ) catch |err| {
-                result.status = .err;
-                result.error_msg = std.fmt.allocPrint(result_allocator, "SASA calculation failed: {s}", .{@errorName(err)}) catch null;
-                return result;
-            };
-            defer sasa_result.deinit();
-            result.sasa_time_ns = @intCast(sasa_timer.untilNow(io, .awake).nanoseconds);
-            total_area = @floatCast(sasa_result.total_area);
-
-            if (config.store_atom_areas) {
-                const areas_f32 = sasa_result.atom_areas;
-                const areas_f64 = arena.alloc(f64, areas_f32.len) catch {
-                    result.status = .err;
-                    result.error_msg = std.fmt.allocPrint(result_allocator, "atom_areas allocation failed", .{}) catch null;
-                    return result;
-                };
-                for (areas_f32, 0..) |v, j| areas_f64[j] = @floatCast(v);
-                result.atom_areas = areas_f64;
-            }
-            if (config.residue_map) {
-                const areas = result.atom_areas orelse blk: {
-                    const areas_f64 = arena.alloc(f64, sasa_result.atom_areas.len) catch {
-                        result.status = .err;
-                        result.error_msg = std.fmt.allocPrint(result_allocator, "atom_areas allocation failed", .{}) catch null;
-                        return result;
-                    };
-                    for (sasa_result.atom_areas, 0..) |v, j| areas_f64[j] = @floatCast(v);
-                    break :blk areas_f64;
-                };
-                if (!attachResidueMap(arena, result_allocator, input, areas, &result)) return result;
-            }
-
-            if (output_dir) |out_dir| {
-                if (!config.store_atom_areas) {
-                    writeSasaOutput(f32, arena, io, &sasa_result, out_dir, filename, config.output_format) catch |err| {
-                        result.status = .err;
-                        result.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
-                        return result;
-                    };
-                }
-            }
-        },
-    }
-
-    result.total_sasa = total_area;
-    return result;
+    return switch (config.precision) {
+        .f64 => calculatePreparedInputResult(
+            f64,
+            arena,
+            io,
+            result_allocator,
+            input,
+            output_dir,
+            filename,
+            config,
+            n_threads,
+            lut_f64,
+            coarse_lut_f64,
+            fine_lut_f64,
+        ),
+        .f32 => calculatePreparedInputResult(
+            f32,
+            arena,
+            io,
+            result_allocator,
+            input,
+            output_dir,
+            filename,
+            config,
+            n_threads,
+            lut_f32,
+            coarse_lut_f32,
+            fine_lut_f32,
+        ),
+    };
 }
 
 /// Process a single SDF molecule and return result.
@@ -3168,6 +3180,33 @@ test "copySelectedAtomInput no matching chains returns empty input" {
     try std.testing.expectEqual(@as(usize, 0), selected.atomCount());
     try std.testing.expect(selected.chain_id != null);
     try std.testing.expectEqual(@as(usize, 0), selected.chain_id.?.len);
+}
+
+test "calculatePreparedInputResult computes total for selected input" {
+    const allocator = std.testing.allocator;
+    var input = try makeTestAtomInput(allocator, &.{ "A", "A" });
+    defer input.deinit();
+
+    const result = calculatePreparedInputResult(
+        f64,
+        allocator,
+        std.testing.io,
+        allocator,
+        input,
+        null,
+        "prepared.pdb",
+        BatchConfig{ .n_points = 16, .quiet = true },
+        1,
+        null,
+        null,
+        null,
+    );
+    defer if (result.atom_areas) |areas| allocator.free(areas);
+    defer if (result.error_msg) |msg| allocator.free(msg);
+
+    try std.testing.expectEqual(.ok, result.status);
+    try std.testing.expectEqual(@as(usize, 2), result.n_atoms);
+    try std.testing.expect(result.total_sasa > 0.0);
 }
 
 test "BatchConfig default values" {
