@@ -2852,6 +2852,9 @@ fn runWorkflow(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     if (workflowFilesContainSdf(files)) {
         return runWorkflowJobFirst(allocator, io, args);
     }
+    if (workflowRequiresJobFirstForLongChainFormats(files, workflow)) {
+        return runWorkflowJobFirst(allocator, io, args);
+    }
     return runWorkflowFileFirst(allocator, io, args, files);
 }
 
@@ -2863,6 +2866,27 @@ fn freeScannedFiles(allocator: Allocator, files: []const []const u8) void {
 fn workflowFilesContainSdf(files: []const []const u8) bool {
     for (files) |filename| {
         if (format_detect.detectInputFormat(filename) == .sdf) return true;
+    }
+    return false;
+}
+
+fn workflowRequiresJobFirstForLongChainFormats(files: []const []const u8, workflow: workflow_manifest.Workflow) bool {
+    var has_chain_filter = false;
+    for (workflow.jobs) |job| {
+        if (job.chains) |chains| {
+            if (chains.len > 0) {
+                has_chain_filter = true;
+                break;
+            }
+        }
+    }
+    if (!has_chain_filter) return false;
+
+    for (files) |filename| {
+        switch (format_detect.detectInputFormat(filename)) {
+            .mmcif, .bcif => return true,
+            else => {},
+        }
     }
     return false;
 }
@@ -3880,6 +3904,92 @@ test "workflow file-first keeps existing output layout" {
     try std.testing.expect(std.mem.indexOf(u8, chain_a_json_content, "\"total_area\"") != null);
 }
 
+test "workflow mmCIF chain filters preserve long chain IDs" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root_path = root_buf[0..root_len];
+
+    const input_dir = try std.fs.path.join(allocator, &.{ root_path, "input" });
+    defer allocator.free(input_dir);
+    const output_dir = try std.fs.path.join(allocator, &.{ root_path, "output" });
+    defer allocator.free(output_dir);
+    const workflow_path = try std.fs.path.join(allocator, &.{ root_path, "workflow.toml" });
+    defer allocator.free(workflow_path);
+    const input_path = try std.fs.path.join(allocator, &.{ input_dir, "long-chain.cif" });
+    defer allocator.free(input_path);
+
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = input_path,
+        .data =
+        \\data_LONG_CHAIN
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\ATOM 1 N N ALA ABCDE 1 0.000 0.000 0.000
+        \\ATOM 2 C CA ALA ABCDE 1 1.500 0.000 0.000
+        \\#
+        \\
+        ,
+    });
+
+    const workflow = try std.fmt.allocPrint(allocator,
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "{s}"
+        \\
+        \\[output]
+        \\dir = "{s}"
+        \\format = "jsonl"
+        \\
+        \\[calculation]
+        \\n_points = 1
+        \\quiet = true
+        \\
+        \\[classifier]
+        \\type = "naccess"
+        \\
+        \\[[jobs]]
+        \\name = "long_chain"
+        \\chains = ["ABCDE"]
+        \\
+        \\[[jobs]]
+        \\name = "truncated_prefix"
+        \\chains = ["ABCD"]
+        \\
+    , .{ input_dir, output_dir });
+    defer allocator.free(workflow);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
+
+    try runWorkflow(allocator, std.testing.io, .{ .workflow_path = workflow_path });
+
+    const long_chain_jsonl = try std.fs.path.join(allocator, &.{ output_dir, "long_chain.jsonl" });
+    defer allocator.free(long_chain_jsonl);
+    const prefix_jsonl = try std.fs.path.join(allocator, &.{ output_dir, "truncated_prefix.jsonl" });
+    defer allocator.free(prefix_jsonl);
+    const long_chain_content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, long_chain_jsonl, allocator, .limited(4096));
+    defer allocator.free(long_chain_content);
+    const prefix_content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, prefix_jsonl, allocator, .limited(4096));
+    defer allocator.free(prefix_content);
+
+    try std.testing.expect(std.mem.indexOf(u8, long_chain_content, "\"filename\":\"long-chain.cif\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prefix_content, "\"filename\":\"long-chain.cif\"") == null);
+}
+
 test "workflowJsonlOutputPath uses job file under output dir" {
     const path = try workflowJsonlOutputPath(std.testing.allocator, "results", "chain_A");
     defer std.testing.allocator.free(path);
@@ -3895,6 +4005,46 @@ test "workflowPerFileOutputDir uses job directory under output dir" {
 test "workflowFilesContainSdf detects SDF in pre-scanned files" {
     const files = [_][]const u8{ "protein.pdb", "ligand.sdf", "other.cif" };
     try std.testing.expect(workflowFilesContainSdf(files[0..]));
+}
+
+test "workflowRequiresJobFirstForLongChainFormats detects chain-filtered mmCIF and BinaryCIF" {
+    const mmcif_files = [_][]const u8{"long-chain.cif"};
+    const bcif_files = [_][]const u8{"long-chain.bcif"};
+    const pdb_json_files = [_][]const u8{ "chain.pdb", "atoms.json" };
+
+    var long_chain_jobs = [_]workflow_manifest.Job{
+        .{ .name = "long", .chains = &.{"ABCDE"} },
+    };
+    const long_chain_workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .jobs = long_chain_jobs[0..],
+    };
+    try std.testing.expect(workflowRequiresJobFirstForLongChainFormats(mmcif_files[0..], long_chain_workflow));
+    try std.testing.expect(workflowRequiresJobFirstForLongChainFormats(bcif_files[0..], long_chain_workflow));
+    try std.testing.expect(!workflowRequiresJobFirstForLongChainFormats(pdb_json_files[0..], long_chain_workflow));
+
+    var prefix_chain_jobs = [_]workflow_manifest.Job{
+        .{ .name = "prefix", .chains = &.{"ABCD"} },
+    };
+    const prefix_chain_workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .jobs = prefix_chain_jobs[0..],
+    };
+    try std.testing.expect(workflowRequiresJobFirstForLongChainFormats(mmcif_files[0..], prefix_chain_workflow));
+    try std.testing.expect(workflowRequiresJobFirstForLongChainFormats(bcif_files[0..], prefix_chain_workflow));
+
+    var unfiltered_jobs = [_]workflow_manifest.Job{
+        .{ .name = "all" },
+    };
+    const unfiltered_workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .jobs = unfiltered_jobs[0..],
+    };
+    try std.testing.expect(!workflowRequiresJobFirstForLongChainFormats(mmcif_files[0..], unfiltered_workflow));
+    try std.testing.expect(!workflowRequiresJobFirstForLongChainFormats(bcif_files[0..], unfiltered_workflow));
 }
 
 test "workflowRequiresJobFirstForAuthChain detects job-level auth-chain mismatch" {
