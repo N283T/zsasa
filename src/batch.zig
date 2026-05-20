@@ -2877,6 +2877,13 @@ fn workflowRequiresJobFirstForAuthChain(args: BatchArgs, workflow: workflow_mani
     return false;
 }
 
+fn effectiveWorkflowSasaThreads(config: BatchConfig) usize {
+    return if (config.n_threads == 0)
+        std.Thread.getCpuCount() catch 1
+    else
+        config.n_threads;
+}
+
 fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     if (args.chain_filter != null) {
         std.debug.print("Error: --workflow cannot be combined with --chain; --manifest is a compatibility alias for --workflow; use [[jobs]].chains in the workflow\n", .{});
@@ -3121,6 +3128,10 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
         allocator.free(states);
     }
 
+    for (states) |state| {
+        if (!state.config.quiet) std.debug.print("Workflow job: {s}\n", .{state.name});
+    }
+
     const files = pre_scanned_files orelse try scanDirectory(allocator, io, input_dir);
     defer if (pre_scanned_files == null) freeScannedFiles(allocator, files);
 
@@ -3173,7 +3184,6 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
 
         for (workflow.jobs, 0..) |job, job_index| {
             var state = &states[job_index];
-            if (!state.config.quiet) std.debug.print("Workflow job: {s}\n", .{state.name});
 
             const selected_chains: ?[]const []const u8 = if (format_detect.detectInputFormat(input_path) == .json) null else job.chains;
             var selected_input = copySelectedAtomInput(arena.allocator(), source_input, selected_chains) catch |err| {
@@ -3183,9 +3193,10 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
             };
             defer selected_input.deinit();
 
+            const n_threads = effectiveWorkflowSasaThreads(state.config);
             var result = switch (state.config.precision) {
-                .f64 => calculatePreparedInputResult(f64, arena.allocator(), io, allocator, selected_input, state.output_dir, filename, state.config, 1, luts.f64Ptr(), luts.coarseF64Ptr(), luts.fineF64Ptr()),
-                .f32 => calculatePreparedInputResult(f32, arena.allocator(), io, allocator, selected_input, state.output_dir, filename, state.config, 1, luts.f32Ptr(), luts.coarseF32Ptr(), luts.fineF32Ptr()),
+                .f64 => calculatePreparedInputResult(f64, arena.allocator(), io, allocator, selected_input, state.output_dir, filename, state.config, n_threads, luts.f64Ptr(), luts.coarseF64Ptr(), luts.fineF64Ptr()),
+                .f32 => calculatePreparedInputResult(f32, arena.allocator(), io, allocator, selected_input, state.output_dir, filename, state.config, n_threads, luts.f32Ptr(), luts.coarseF32Ptr(), luts.fineF32Ptr()),
             };
             defer if (result.error_msg) |msg| allocator.free(msg);
 
@@ -3787,6 +3798,11 @@ test "workflowRequiresJobFirstForAuthChain detects job-level auth-chain mismatch
 
     try std.testing.expect(workflowRequiresJobFirstForAuthChain(BatchArgs{}, workflow, BatchConfig{ .use_auth_chain = false }));
     try std.testing.expect(!workflowRequiresJobFirstForAuthChain(BatchArgs{ .use_auth_chain = true }, workflow, BatchConfig{ .use_auth_chain = true }));
+}
+
+test "effectiveWorkflowSasaThreads honors explicit and auto thread counts" {
+    try std.testing.expectEqual(@as(usize, 7), effectiveWorkflowSasaThreads(BatchConfig{ .n_threads = 7 }));
+    try std.testing.expect(effectiveWorkflowSasaThreads(BatchConfig{ .n_threads = 0 }) >= 1);
 }
 
 test "appendJsonlResultToFile appends without truncating existing JSONL content" {
