@@ -121,10 +121,15 @@ pub fn isBinaryDict(data: []const u8) bool {
     return std.mem.eql(u8, data[0..4], &MAGIC);
 }
 
+fn componentIdLessThan(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
 /// Write a ComponentDict to binary ZSDC format.
 pub fn writeDict(writer: *std.Io.Writer, dict: *const ccd_parser.ComponentDict) !void {
     // Count components
-    const comp_count: u32 = @intCast(dict.components.count());
+    const comp_count_usize = dict.components.count();
+    const comp_count: u32 = @intCast(comp_count_usize);
 
     // Write header
     try writer.writeAll(&MAGIC);
@@ -132,11 +137,22 @@ pub fn writeDict(writer: *std.Io.Writer, dict: *const ccd_parser.ComponentDict) 
     try writer.writeAll(&[3]u8{ 0, 0, 0 }); // reserved
     try writer.writeAll(&std.mem.toBytes(std.mem.nativeToLittle(u32, comp_count)));
 
-    // Write each component
+    // Hash-map iteration order is intentionally not stable, but compiled ZSDC
+    // bytes are build artifacts and should be reproducible. Write components in
+    // component-ID order instead of raw map iteration order.
+    const comp_ids = try dict.allocator.alloc([]const u8, comp_count_usize);
+    defer dict.allocator.free(comp_ids);
+
+    var idx: usize = 0;
     var it = dict.components.iterator();
-    while (it.next()) |entry| {
-        const comp_id = entry.key_ptr.*;
-        const stored = entry.value_ptr;
+    while (it.next()) |entry| : (idx += 1) {
+        comp_ids[idx] = entry.key_ptr.*;
+    }
+    std.mem.sort([]const u8, comp_ids, {}, componentIdLessThan);
+
+    // Write each component
+    for (comp_ids) |comp_id| {
+        const stored = dict.components.getPtr(comp_id) orelse return error.InvalidDict;
 
         // Component ID
         const cid_len: u8 = @intCast(@min(comp_id.len, 255));
@@ -371,6 +387,110 @@ test "round-trip: empty dictionary" {
     defer read_dict.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), read_dict.components.count());
+}
+
+fn addTestComponent(allocator: Allocator, dict: *ccd_parser.ComponentDict, comp_id: []const u8) !void {
+    const atoms = try allocator.alloc(CompAtom, 1);
+    atoms[0] = CompAtom.init("C1", "C");
+
+    const bonds = try allocator.alloc(CompBond, 0);
+    const key = try allocator.dupe(u8, comp_id);
+    errdefer allocator.free(key);
+
+    var stored_id = [_]u8{ 0, 0, 0, 0, 0 };
+    const id_len = @min(comp_id.len, stored_id.len);
+    @memcpy(stored_id[0..id_len], comp_id[0..id_len]);
+
+    const stored = ccd_parser.StoredComponent{
+        .comp_id = stored_id,
+        .comp_id_len = @intCast(id_len),
+        .atoms = atoms,
+        .bonds = bonds,
+        .allocator = allocator,
+    };
+    try dict.components.put(allocator, key, stored);
+    try dict.owned_keys.append(allocator, key);
+}
+
+fn writeTestDictAlloc(allocator: Allocator, dict: *const ccd_parser.ComponentDict) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try writeDict(&out.writer, dict);
+    return out.toOwnedSlice();
+}
+
+test "writeDict emits deterministic bytes independent of insertion order" {
+    const allocator = std.testing.allocator;
+    const ids = [_][]const u8{ "ZZZ", "AAA", "MSE", "HOH", "ATP", "GLY" };
+
+    var forward = ccd_parser.ComponentDict.init(allocator);
+    defer forward.deinit();
+    for (ids) |id| try addTestComponent(allocator, &forward, id);
+
+    var reverse = ccd_parser.ComponentDict.init(allocator);
+    defer reverse.deinit();
+    var i = ids.len;
+    while (i > 0) {
+        i -= 1;
+        try addTestComponent(allocator, &reverse, ids[i]);
+    }
+
+    const forward_bytes = try writeTestDictAlloc(allocator, &forward);
+    defer allocator.free(forward_bytes);
+    const reverse_bytes = try writeTestDictAlloc(allocator, &reverse);
+    defer allocator.free(reverse_bytes);
+
+    try std.testing.expectEqualSlices(u8, forward_bytes, reverse_bytes);
+}
+
+test "writeDict emits components sorted by component ID" {
+    const allocator = std.testing.allocator;
+    const ids = [_][]const u8{ "ZZZ", "AAA", "MSE", "HOH", "ATP", "GLY" };
+
+    var dict = ccd_parser.ComponentDict.init(allocator);
+    defer dict.deinit();
+    for (ids) |id| try addTestComponent(allocator, &dict, id);
+
+    const bytes = try writeTestDictAlloc(allocator, &dict);
+    defer allocator.free(bytes);
+
+    var reader = std.Io.Reader.fixed(bytes);
+    var loaded = try readDict(allocator, &reader);
+    defer loaded.deinit();
+
+    const sorted_ids = [_][]const u8{ "AAA", "ATP", "GLY", "HOH", "MSE", "ZZZ" };
+    var offset: usize = HEADER_SIZE;
+    for (sorted_ids) |expected_id| {
+        const actual_len = bytes[offset];
+        offset += 1;
+        try std.testing.expectEqual(expected_id.len, actual_len);
+        try std.testing.expectEqualStrings(expected_id, bytes[offset .. offset + actual_len]);
+        offset += actual_len;
+        const atom_count = std.mem.littleToNative(u16, std.mem.bytesToValue(u16, bytes[offset .. offset + 2]));
+        offset += 2 + (@as(usize, atom_count) * @sizeOf(PackedAtom));
+        const bond_count = std.mem.littleToNative(u16, std.mem.bytesToValue(u16, bytes[offset .. offset + 2]));
+        offset += 2 + (@as(usize, bond_count) * @sizeOf(PackedBond));
+    }
+    try std.testing.expectEqual(bytes.len, offset);
+    try std.testing.expectEqual(@as(usize, sorted_ids.len), loaded.components.count());
+}
+
+test "writeDict synthetic fixture hash is stable" {
+    const allocator = std.testing.allocator;
+    const ids = [_][]const u8{ "ZZZ", "AAA", "MSE", "HOH", "ATP", "GLY" };
+
+    var dict = ccd_parser.ComponentDict.init(allocator);
+    defer dict.deinit();
+    for (ids) |id| try addTestComponent(allocator, &dict, id);
+
+    const bytes = try writeTestDictAlloc(allocator, &dict);
+    defer allocator.free(bytes);
+
+    const Sha256 = std.crypto.hash.sha2.Sha256;
+    var digest: [Sha256.digest_length]u8 = undefined;
+    Sha256.hash(bytes, &digest, .{});
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    try std.testing.expectEqualStrings("3f759a9f4de717c8d3232694cfaca01bddf48a2ca041591064c6b035e2e10913", &hex);
 }
 
 test "loadDict — auto-detect binary" {
