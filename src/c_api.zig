@@ -2368,8 +2368,8 @@ const BatchDirHandle = struct {
 
 /// Process all structure files in a directory.
 ///
-/// Scans the directory for supported files (.pdb, .cif, .mmcif, .json, .ent
-/// and compressed variants), calculates SASA for each, and returns results
+/// Scans the directory for supported files (.pdb, .cif, .mmcif, .bcif, .json,
+/// .ent and compressed variants), calculates SASA for each, and returns results
 /// via an opaque handle.
 ///
 /// Parameters:

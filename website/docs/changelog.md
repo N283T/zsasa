@@ -10,6 +10,7 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ### Added
 
+- **BinaryCIF input support**: calc and batch now accept .bcif, .bcif.gz, and .bcif.zst files by decoding _atom_site directly in Zig. Inline CCD extraction from BinaryCIF remains out of scope for this release.
 - **Adaptive batch bitmask SR**: add experimental `zsasa batch --adaptive-sr` mode with coarse/fine point controls for two-stage bitmask Shrake-Rupley runs.
 
 ## [v0.4.0](https://github.com/N283T/zsasa/releases/tag/v0.4.0) — 2026-05-19

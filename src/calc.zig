@@ -2,10 +2,12 @@
 // Calculates SASA for a single input file (JSON, PDB, or mmCIF)
 //
 const std = @import("std");
+const builtin = @import("builtin");
 const analysis = @import("analysis.zig");
 const format_detect = @import("format_detect.zig");
 const json_parser = @import("json_parser.zig");
 const json_writer = @import("json_writer.zig");
+const bcif_parser = @import("bcif_parser.zig");
 const mmcif_parser = @import("mmcif_parser.zig");
 const pdb_parser = @import("pdb_parser.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
@@ -584,7 +586,9 @@ fn applyWorkflowToCalcArgs(args: *CalcArgs, workflow: workflow_manifest.Workflow
     if (!args.model_explicit) {
         if (workflow.input.model) |model| {
             if (model == 0) {
-                std.debug.print("Error: workflow model must be >= 1\n", .{});
+                if (!builtin.is_test) {
+                    std.debug.print("Error: workflow model must be >= 1\n", .{});
+                }
                 return error.InvalidArgument;
             }
             args.model_num = model;
@@ -862,6 +866,23 @@ fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, arg
     const format = format_detect.detectInputFormat(path);
     return switch (format) {
         .json => .{ .input = try json_parser.readAtomInputFromFile(allocator, io, path) },
+        .bcif => blk: {
+            var parser = bcif_parser.BcifParser.init(allocator);
+            parser.model_num = args.model_num;
+            parser.use_auth_chain = args.use_auth_chain;
+            parser.skip_hydrogens = !args.include_hydrogens;
+            parser.atom_only = !args.include_hetatm;
+
+            // Parse chain filter if specified
+            var chain_filter_slice: ?[]const []const u8 = null;
+            if (args.chain_filter) |filter_str| {
+                chain_filter_slice = try parseChainFilter(allocator, filter_str);
+                parser.chain_filter = chain_filter_slice;
+            }
+            defer if (chain_filter_slice) |s| allocator.free(s);
+
+            break :blk .{ .input = try parser.parseFile(io, path) };
+        },
         .mmcif => blk: {
             var parser = mmcif_parser.MmcifParser.init(allocator);
             parser.model_num = args.model_num;

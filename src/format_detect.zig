@@ -2,6 +2,7 @@ const std = @import("std");
 
 /// Input file format
 pub const InputFormat = enum {
+    bcif,
     json,
     mmcif,
     pdb,
@@ -19,6 +20,9 @@ pub const supported_extensions = [_][]const u8{
     ".cif",
     ".cif.gz",
     ".cif.zst",
+    ".bcif",
+    ".bcif.gz",
+    ".bcif.zst",
     ".mmcif",
     ".mmcif.gz",
     ".mmcif.zst",
@@ -44,6 +48,7 @@ pub fn isSupportedFile(name: []const u8) bool {
     if (std.mem.endsWith(u8, name, ".CIF")) return true;
     if (std.mem.endsWith(u8, name, ".ENT")) return true;
     if (std.mem.endsWith(u8, name, ".JSON")) return true;
+    if (std.mem.endsWith(u8, name, ".BCIF")) return true;
     if (std.mem.endsWith(u8, name, ".MMCIF")) return true;
     if (std.mem.endsWith(u8, name, ".mmCIF")) return true;
     if (std.mem.endsWith(u8, name, ".SDF")) return true;
@@ -65,6 +70,10 @@ fn stripCompressionExt(path: []const u8) []const u8 {
 /// Detect input file format from extension (handles .gz/.zst compression)
 pub fn detectInputFormat(path: []const u8) InputFormat {
     const base = stripCompressionExt(path);
+
+    // BinaryCIF formats (detect before mmCIF)
+    if (std.mem.endsWith(u8, base, ".bcif")) return .bcif;
+    if (std.mem.endsWith(u8, base, ".BCIF")) return .bcif;
 
     // mmCIF formats
     if (std.mem.endsWith(u8, base, ".cif")) return .mmcif;
@@ -158,6 +167,13 @@ test "isSupportedFile accepts SDF/MOL files" {
     try std.testing.expect(isSupportedFile("molecule.MOL"));
 }
 
+test "isSupportedFile accepts BinaryCIF files" {
+    try std.testing.expect(isSupportedFile("structure.bcif"));
+    try std.testing.expect(isSupportedFile("structure.bcif.gz"));
+    try std.testing.expect(isSupportedFile("structure.bcif.zst"));
+    try std.testing.expect(isSupportedFile("structure.BCIF"));
+}
+
 test "detectInputFormat handles SDF/MOL files" {
     try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("file.sdf"));
     try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("file.SDF"));
@@ -167,4 +183,11 @@ test "detectInputFormat handles SDF/MOL files" {
     try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("file.sdf.zst"));
     try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("file.mol.gz"));
     try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("file.mol.zst"));
+}
+
+test "detectInputFormat handles BinaryCIF files" {
+    try std.testing.expectEqual(InputFormat.bcif, detectInputFormat("file.bcif"));
+    try std.testing.expectEqual(InputFormat.bcif, detectInputFormat("file.bcif.gz"));
+    try std.testing.expectEqual(InputFormat.bcif, detectInputFormat("file.bcif.zst"));
+    try std.testing.expectEqual(InputFormat.bcif, detectInputFormat("file.BCIF"));
 }

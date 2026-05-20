@@ -10,6 +10,7 @@ The input format is auto-detected from the file extension.
 |-----------|--------|
 | `.json`, `.json.gz`, `.json.zst` | JSON |
 | `.cif`, `.cif.gz`, `.cif.zst`, `.mmcif`, `.mmcif.gz`, `.mmcif.zst`, `.CIF`, `.mmCIF` | mmCIF |
+| `.bcif`, `.bcif.gz`, `.bcif.zst`, `.BCIF` | BinaryCIF (`_atom_site` support) |
 | `.pdb`, `.pdb.gz`, `.pdb.zst`, `.PDB`, `.ent`, `.ent.gz`, `.ent.zst`, `.ENT` | PDB |
 
 ## JSON Format
@@ -69,6 +70,10 @@ Standard mmCIF files are supported. The parser extracts:
 - `_atom_site.pdbx_PDB_ins_code` - Insertion code
 - `_atom_site.pdbx_PDB_model_num` - Model number
 - `_atom_site.label_alt_id` - Alternate location (first kept by default)
+
+## BinaryCIF Format
+
+BinaryCIF input currently decodes `_atom_site` for SASA calculation. Inline CCD data embedded in BinaryCIF is not used yet; provide external CCD or SDF topology when needed for non-standard compounds.
 
 ## PDB Format
 

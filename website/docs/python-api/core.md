@@ -155,7 +155,7 @@ def process_directory(
 ) -> BatchDirResult
 ```
 
-Process all supported structure files (.pdb, .cif, .mmcif, .ent, .json, .sdf, .mol, and .gz/.zst variants) in a directory.
+Process all supported structure files (.pdb, .cif, .mmcif, .bcif, .ent, .json, .sdf, .mol, and .gz/.zst variants including .bcif.gz and .bcif.zst) in a directory.
 
 **Parameters:**
 

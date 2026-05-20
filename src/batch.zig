@@ -4,6 +4,7 @@ const types = @import("types.zig");
 const format_detect = @import("format_detect.zig");
 const json_parser = @import("json_parser.zig");
 const json_writer = @import("json_writer.zig");
+const bcif_parser = @import("bcif_parser.zig");
 const mmcif_parser = @import("mmcif_parser.zig");
 const pdb_parser = @import("pdb_parser.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
@@ -447,6 +448,14 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
     const format = format_detect.detectInputFormat(path);
     return switch (format) {
         .json => json_parser.readAtomInputFromFile(allocator, io, path),
+        .bcif => blk: {
+            var parser = bcif_parser.BcifParser.init(allocator);
+            parser.skip_hydrogens = !config.include_hydrogens;
+            parser.atom_only = !config.include_hetatm;
+            parser.chain_filter = config.chain_filter;
+            parser.use_auth_chain = config.use_auth_chain;
+            break :blk parser.parseFile(io, path);
+        },
         .mmcif => blk: {
             var parser = mmcif_parser.MmcifParser.init(allocator);
             parser.skip_hydrogens = !config.include_hydrogens;
