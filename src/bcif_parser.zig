@@ -256,6 +256,15 @@ const Encoding = union(enum) {
 const PackingSentinel = struct { positive: i64, negative: i64 };
 
 fn decodeColumn(allocator: Allocator, data: []const u8, encodings: []const Encoding) DecodeError!DecodedColumn {
+    return decodeColumnWithNullHints(allocator, data, encodings, null);
+}
+
+fn decodeColumnWithNullHints(
+    allocator: Allocator,
+    data: []const u8,
+    encodings: []const Encoding,
+    null_hints: ?[]const NullKind,
+) DecodeError!DecodedColumn {
     var column = DecodedColumn{ .values = &.{} };
     var initialized = false;
     errdefer if (initialized) column.deinit(allocator);
@@ -264,7 +273,7 @@ fn decodeColumn(allocator: Allocator, data: []const u8, encodings: []const Encod
     while (i > 0) {
         i -= 1;
         if (!initialized) {
-            column = try decodeInitialEncoding(allocator, data, encodings[i]);
+            column = try decodeInitialEncoding(allocator, data, encodings[i], null_hints);
             initialized = true;
         } else {
             initialized = false;
@@ -288,14 +297,10 @@ fn decodeColumnWithMask(
     mask_data: []const u8,
     mask_encodings: []const Encoding,
 ) DecodeError!DecodedColumn {
-    var column = try decodeColumn(allocator, data, encodings);
-    errdefer column.deinit(allocator);
-
     var mask = try decodeColumn(allocator, mask_data, mask_encodings);
     defer mask.deinit(allocator);
-    if (mask.values.len != column.values.len) return ParseError.ColumnLengthMismatch;
 
-    const nulls = try allocator.alloc(NullKind, column.values.len);
+    const nulls = try allocator.alloc(NullKind, mask.values.len);
     errdefer allocator.free(nulls);
     for (mask.values, nulls) |mask_value, *null_kind| {
         const value = scalarToI64(mask_value) orelse return ParseError.InvalidColumnData;
@@ -306,14 +311,19 @@ fn decodeColumnWithMask(
             else => return ParseError.InvalidColumnData,
         };
     }
+
+    var column = try decodeColumnWithNullHints(allocator, data, encodings, nulls);
+    errdefer column.deinit(allocator);
+    if (mask.values.len != column.values.len) return ParseError.ColumnLengthMismatch;
+
     column.nulls = nulls;
     return column;
 }
 
-fn decodeInitialEncoding(allocator: Allocator, data: []const u8, encoding: Encoding) DecodeError!DecodedColumn {
+fn decodeInitialEncoding(allocator: Allocator, data: []const u8, encoding: Encoding, null_hints: ?[]const NullKind) DecodeError!DecodedColumn {
     return switch (encoding) {
         .byte_array => |params| decodeByteArray(allocator, data, params.type_code),
-        .string_array => |params| decodeStringArray(allocator, data, params),
+        .string_array => |params| decodeStringArray(allocator, data, params, null_hints),
         else => ParseError.UnsupportedEncoding,
     };
 }
@@ -488,7 +498,7 @@ fn decodeIntervalQuantization(allocator: Allocator, column: DecodedColumn, min: 
     return .{ .values = values };
 }
 
-fn decodeStringArray(allocator: Allocator, data: []const u8, params: @FieldType(Encoding, "string_array")) DecodeError!DecodedColumn {
+fn decodeStringArray(allocator: Allocator, data: []const u8, params: @FieldType(Encoding, "string_array"), null_hints: ?[]const NullKind) DecodeError!DecodedColumn {
     var indices = try decodeColumn(allocator, data, params.data_encoding);
     defer indices.deinit(allocator);
     var offsets = try decodeColumn(allocator, params.offset_data, params.offset_encoding);
@@ -497,8 +507,15 @@ fn decodeStringArray(allocator: Allocator, data: []const u8, params: @FieldType(
 
     const values = try allocator.alloc(Scalar, indices.values.len);
     errdefer allocator.free(values);
-    for (indices.values, values) |index_value, *out| {
-        const index = scalarToUsize(index_value) orelse return ParseError.InvalidColumnData;
+    for (indices.values, values, 0..) |index_value, *out, row| {
+        const index_int = scalarToI64(index_value) orelse return ParseError.InvalidColumnData;
+        if (index_int < 0) {
+            const hints = null_hints orelse return ParseError.InvalidColumnData;
+            if (row >= hints.len or hints[row] == .present) return ParseError.InvalidColumnData;
+            out.* = .{ .str = "" };
+            continue;
+        }
+        const index = std.math.cast(usize, index_int) orelse return ParseError.InvalidColumnData;
         if (index + 1 >= offsets.values.len) return ParseError.InvalidColumnData;
         const start = scalarToUsize(offsets.values[index]) orelse return ParseError.InvalidColumnData;
         var end = scalarToUsize(offsets.values[index + 1]) orelse return ParseError.InvalidColumnData;
@@ -939,7 +956,11 @@ fn columnMask(column: MsgValue) ?MsgValue {
         .map => |map| map,
         else => return null,
     };
-    return getMapValue(map, "mask");
+    const mask = getMapValue(map, "mask") orelse return null;
+    return switch (mask) {
+        .nil => null,
+        else => mask,
+    };
 }
 
 fn decodeBcifColumn(allocator: Allocator, column: MsgValue) !DecodedColumn {
@@ -1649,6 +1670,59 @@ test "bcif mask maps dot and question to null states" {
 
     try std.testing.expect(column.values[0] == .int);
     try std.testing.expectEqual(NullKind.not_present, column.nulls.?[1]);
+    try std.testing.expectEqual(NullKind.unknown, column.nulls.?[2]);
+}
+
+test "bcif column treats nil mask as absent mask" {
+    const allocator = std.testing.allocator;
+    const data = [_]u8{ 42, 7 };
+
+    var encoding_pairs = [_]MsgPair{
+        .{ .key = .{ .str = "kind" }, .value = .{ .str = "ByteArray" } },
+        .{ .key = .{ .str = "type" }, .value = .{ .int = 4 } },
+    };
+    var encodings = [_]MsgValue{.{ .map = &encoding_pairs }};
+    var data_pairs = [_]MsgPair{
+        .{ .key = .{ .str = "data" }, .value = .{ .bin = &data } },
+        .{ .key = .{ .str = "encoding" }, .value = .{ .array = &encodings } },
+    };
+    var column_pairs = [_]MsgPair{
+        .{ .key = .{ .str = "name" }, .value = .{ .str = "test" } },
+        .{ .key = .{ .str = "data" }, .value = .{ .map = &data_pairs } },
+        .{ .key = .{ .str = "mask" }, .value = .nil },
+    };
+
+    var column = try decodeBcifColumn(allocator, .{ .map = &column_pairs });
+    defer column.deinit(allocator);
+
+    try std.testing.expect(column.nulls == null);
+    try std.testing.expectEqual(@as(i64, 42), column.values[0].int);
+    try std.testing.expectEqual(@as(i64, 7), column.values[1].int);
+}
+
+test "bcif masked string arrays tolerate negative null sentinels" {
+    const allocator = std.testing.allocator;
+    const index_bytes = [_]u8{ 0xff, 1, 0xff };
+    const offset_bytes = [_]u8{ 0, 3, 6 };
+    const mask_data = [_]u8{ 1, 0, 2 };
+    const encoding = Encoding{ .string_array = .{
+        .string_data = "ABCDEF",
+        .offset_data = &offset_bytes,
+        .offset_encoding = &[_]Encoding{.{ .byte_array = .{ .type_code = 4 } }},
+        .data_encoding = &[_]Encoding{.{ .byte_array = .{ .type_code = 1 } }},
+    } };
+
+    var column = try decodeColumnWithMask(
+        allocator,
+        &index_bytes,
+        &[_]Encoding{encoding},
+        &mask_data,
+        &[_]Encoding{.{ .byte_array = .{ .type_code = 4 } }},
+    );
+    defer column.deinit(allocator);
+
+    try std.testing.expectEqual(NullKind.not_present, column.nulls.?[0]);
+    try std.testing.expectEqualStrings("DEF", column.values[1].str);
     try std.testing.expectEqual(NullKind.unknown, column.nulls.?[2]);
 }
 
