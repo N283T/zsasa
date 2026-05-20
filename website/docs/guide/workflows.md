@@ -98,6 +98,8 @@ Run it with:
 zsasa batch --workflow bsa.toml
 ```
 
+Workflow batch runs reuse parsed structures across jobs internally. For named chain analyses such as chain A, chain B, and complex AB, list only the jobs you want; zsasa will parse each input structure once and then compute each requested chain selection independently.
+
 ## Override Precedence
 
 When the same setting appears in multiple places, zsasa applies this order:
