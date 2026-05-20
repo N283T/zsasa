@@ -1459,6 +1459,29 @@ test "parse BinaryCIF chain filter ignores absent chain column" {
     try std.testing.expectEqualStrings("", input.chain_id.?[0].slice());
 }
 
+fn expectMinimalBcifFileParses(path: []const u8) !void {
+    var parser = BcifParser.init(std.testing.allocator);
+    var input = try parser.parseFile(std.testing.io, path);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 21.0), input.y[1], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 32.0), input.z[1], 0.001);
+}
+
+test "parseFile reads plain BinaryCIF fixture" {
+    try expectMinimalBcifFileParses("test_data/bcif/minimal.bcif");
+}
+
+test "parseFile reads gzip BinaryCIF fixture" {
+    try expectMinimalBcifFileParses("test_data/bcif/minimal.bcif.gz");
+}
+
+test "parseFile reads zstd BinaryCIF fixture" {
+    try expectMinimalBcifFileParses("test_data/bcif/minimal.bcif.zst");
+}
+
 test "bcif scalarInt rejects out-of-range float integer field" {
     var values = [_]Scalar{.{ .float = 1.0e100 }};
     const column = DecodedColumn{ .values = &values };
