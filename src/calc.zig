@@ -2,6 +2,7 @@
 // Calculates SASA for a single input file (JSON, PDB, or mmCIF)
 //
 const std = @import("std");
+const builtin = @import("builtin");
 const analysis = @import("analysis.zig");
 const format_detect = @import("format_detect.zig");
 const json_parser = @import("json_parser.zig");
@@ -585,7 +586,9 @@ fn applyWorkflowToCalcArgs(args: *CalcArgs, workflow: workflow_manifest.Workflow
     if (!args.model_explicit) {
         if (workflow.input.model) |model| {
             if (model == 0) {
-                std.debug.print("Error: workflow model must be >= 1\n", .{});
+                if (!builtin.is_test) {
+                    std.debug.print("Error: workflow model must be >= 1\n", .{});
+                }
                 return error.InvalidArgument;
             }
             args.model_num = model;
