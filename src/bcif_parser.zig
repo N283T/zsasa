@@ -688,17 +688,38 @@ pub const BcifParser = struct {
             }
         }
 
+        const x = try x_list.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(x);
+        const y = try y_list.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(y);
+        const z = try z_list.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(z);
+        const r = try r_list.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(r);
+        const residue = try residue_list.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(residue);
+        const atom_name = try atom_name_list.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(atom_name);
+        const element = try element_list.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(element);
+        const chain_id = try chain_id_list.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(chain_id);
+        const residue_num = try residue_num_list.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(residue_num);
+        const insertion_code = try insertion_code_list.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(insertion_code);
+
         return AtomInput{
-            .x = try x_list.toOwnedSlice(self.allocator),
-            .y = try y_list.toOwnedSlice(self.allocator),
-            .z = try z_list.toOwnedSlice(self.allocator),
-            .r = try r_list.toOwnedSlice(self.allocator),
-            .residue = try residue_list.toOwnedSlice(self.allocator),
-            .atom_name = try atom_name_list.toOwnedSlice(self.allocator),
-            .element = try element_list.toOwnedSlice(self.allocator),
-            .chain_id = try chain_id_list.toOwnedSlice(self.allocator),
-            .residue_num = try residue_num_list.toOwnedSlice(self.allocator),
-            .insertion_code = try insertion_code_list.toOwnedSlice(self.allocator),
+            .x = x,
+            .y = y,
+            .z = z,
+            .r = r,
+            .residue = residue,
+            .atom_name = atom_name,
+            .element = element,
+            .chain_id = chain_id,
+            .residue_num = residue_num,
+            .insertion_code = insertion_code,
             .allocator = self.allocator,
         };
     }
@@ -967,7 +988,7 @@ fn scalarInt(column: DecodedColumn, row: usize) ?i64 {
     if (isNull(column, row) or row >= column.values.len) return null;
     return switch (column.values[row]) {
         .int => |value| value,
-        .float => |value| @intFromFloat(value),
+        .float => null,
         .str => |value| if (isCifNullString(value)) null else std.fmt.parseInt(i64, value, 10) catch null,
     };
 }
@@ -1436,6 +1457,12 @@ test "parse BinaryCIF chain filter ignores absent chain column" {
 
     try std.testing.expectEqual(@as(usize, 2), input.atomCount());
     try std.testing.expectEqualStrings("", input.chain_id.?[0].slice());
+}
+
+test "bcif scalarInt rejects out-of-range float integer field" {
+    var values = [_]Scalar{.{ .float = 1.0e100 }};
+    const column = DecodedColumn{ .values = &values };
+    try std.testing.expectEqual(@as(?i64, null), scalarInt(column, 0));
 }
 
 test "msgpack reader decodes primitives" {
