@@ -443,6 +443,21 @@ pub const BatchResult = struct {
     }
 };
 
+const WorkflowJobState = struct {
+    name: []const u8,
+    config: BatchConfig,
+    output_dir: ?[]const u8 = null,
+    jsonl_output_path: ?[]const u8 = null,
+    successful: usize = 0,
+    failed: usize = 0,
+    total_sasa_time_ns: u64 = 0,
+
+    fn deinit(self: *WorkflowJobState, allocator: Allocator) void {
+        if (self.output_dir) |path| allocator.free(path);
+        if (self.jsonl_output_path) |path| allocator.free(path);
+    }
+};
+
 fn chainMatchesFilter(chain: types.FixedString4, chains: []const []const u8) bool {
     for (chains) |target| {
         if (chain.eqlSlice(target)) return true;
@@ -1231,6 +1246,26 @@ fn writeJsonlResult(
     jsonl_writer.interface.flush() catch |err| {
         logWarning("JSONL flush failed for {s}: {s}", .{ result.filename, @errorName(err) });
     };
+}
+
+fn truncateJsonlOutput(io: std.Io, path: []const u8) !void {
+    const file = try std.Io.Dir.cwd().createFile(io, path, .{});
+    file.close(io);
+}
+
+fn appendJsonlResultToFile(io: std.Io, file: std.Io.File, allocator: Allocator, result: *FileResult) !void {
+    if (result.status != .ok) return;
+
+    const line = try fileResultToJsonlLine(allocator, result);
+    defer allocator.free(line);
+
+    const file_len = try file.length(io);
+    var write_buf: [64 * 1024]u8 = undefined;
+    var writer = std.Io.File.Writer.init(file, io, &write_buf);
+    try writer.seekTo(file_len);
+    try writer.interface.writeAll(line);
+    try writer.interface.writeByte('\n');
+    try writer.interface.flush();
 }
 
 /// Run batch processing sequentially (single-threaded path, used when n_threads <= 1)
@@ -2791,6 +2826,29 @@ fn loadCustomClassifier(allocator: Allocator, io: std.Io, path: []const u8) !cla
 }
 
 fn runWorkflow(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
+    if (try workflowInputContainsSdf(allocator, io, args)) {
+        return runWorkflowJobFirst(allocator, io, args);
+    }
+    return runWorkflowFileFirst(allocator, io, args);
+}
+
+fn workflowInputContainsSdf(allocator: Allocator, io: std.Io, args: BatchArgs) !bool {
+    const workflow_path = args.workflow_path orelse return false;
+    var workflow = try parseWorkflowFile(allocator, io, workflow_path);
+    defer workflow.deinit();
+    const input_dir = args.input_path orelse workflow.input.dir orelse return false;
+    const files = try scanDirectory(allocator, io, input_dir);
+    defer {
+        for (files) |f| allocator.free(f);
+        allocator.free(files);
+    }
+    for (files) |filename| {
+        if (format_detect.detectInputFormat(filename) == .sdf) return true;
+    }
+    return false;
+}
+
+fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     if (args.chain_filter != null) {
         std.debug.print("Error: --workflow cannot be combined with --chain; --manifest is a compatibility alias for --workflow; use [[jobs]].chains in the workflow\n", .{});
         return error.InvalidArgument;
@@ -2907,6 +2965,237 @@ fn runWorkflow(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         failed += result.failed;
     }
 
+    std.debug.print("Workflow complete: {d} successful, {d} failed\n", .{ successful, failed });
+}
+
+fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
+    if (args.chain_filter != null) {
+        std.debug.print("Error: --workflow cannot be combined with --chain; --manifest is a compatibility alias for --workflow; use [[jobs]].chains in the workflow\n", .{});
+        return error.InvalidArgument;
+    }
+
+    const workflow_path = args.workflow_path.?;
+    var workflow = parseWorkflowFile(allocator, io, workflow_path) catch |err| {
+        std.debug.print("Error reading workflow file '{s}': {s}\n", .{ workflow_path, @errorName(err) });
+        return err;
+    };
+    defer workflow.deinit();
+
+    if (workflow.jobs.len == 0) {
+        std.debug.print("Error: batch workflow requires at least one [[jobs]] entry\n", .{});
+        return error.NoJobs;
+    }
+
+    const input_dir = args.input_path orelse workflow.input.dir orelse {
+        std.debug.print("Error: Missing input directory (provide positional input_dir or [input].dir in workflow)\n", .{});
+        return error.MissingArgument;
+    };
+    const output_dir = args.output_path orelse workflow.output.dir;
+
+    if (workflow.jobs.len > 1 and output_dir == null) {
+        std.debug.print("Error: workflow with multiple jobs requires an output directory\n", .{});
+        return error.InvalidArgument;
+    }
+
+    const load_quiet = if (args.quiet_explicit) args.quiet else (workflow.calculation.quiet orelse args.quiet);
+
+    var resource_config = BatchConfig{};
+    try applyWorkflowToBatchConfig(&resource_config, args, workflow.calculation, workflow.output, workflow.classifier);
+    applyCliOverrides(&resource_config, args);
+    resource_config.include_hetatm = resource_config.include_hetatm or (resource_config.classifier_type == .ccd);
+    const effective_classifier_type = resource_config.classifier_type;
+
+    const ccd_path = resolveWorkflowCcdPath(args, workflow.classifier, effective_classifier_type);
+    var ext_ccd: ?ccd_parser.ComponentDict = null;
+    if (ccd_path) |path| {
+        ext_ccd = try loadExternalCcd(allocator, io, path, load_quiet);
+    }
+    defer if (ext_ccd) |*d| d.deinit();
+
+    const workflow_sdf_paths: []const []const u8 = workflow.classifier.sdf orelse &.{};
+    const sdf_paths = resolveWorkflowSdfPaths(args, workflow_sdf_paths, effective_classifier_type);
+    var sdf_ccd: ?ccd_parser.ComponentDict = null;
+    if (sdf_paths.len > 0) {
+        sdf_ccd = loadSdfComponents(allocator, io, sdf_paths, load_quiet) catch |err| {
+            std.debug.print("Error loading SDF components: {s}\n", .{@errorName(err)});
+            return err;
+        };
+    }
+    defer if (sdf_ccd) |*d| d.deinit();
+
+    var custom_classifier: ?classifier.Classifier = null;
+    const custom_classifier_path: ?[]const u8 = if (!args.classifier_explicit and workflow.classifier.type != null and std.mem.eql(u8, workflow.classifier.type.?, "custom"))
+        workflow.classifier.config
+    else
+        null;
+    if (custom_classifier_path) |path| {
+        custom_classifier = try loadCustomClassifier(allocator, io, path);
+    }
+    defer if (custom_classifier) |*c| c.deinit();
+
+    resource_config.external_ccd = if (ext_ccd != null) &ext_ccd.? else null;
+    resource_config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
+    if (custom_classifier) |*c| resource_config.custom_classifier = c;
+
+    var states = try allocator.alloc(WorkflowJobState, workflow.jobs.len);
+    var states_initialized: usize = 0;
+    errdefer {
+        for (states[0..states_initialized]) |*state| state.deinit(allocator);
+        allocator.free(states);
+    }
+    for (workflow.jobs, 0..) |job, i| {
+        var config = BatchConfig{};
+        try applyWorkflowToBatchConfig(&config, args, workflow.calculation, workflow.output, workflow.classifier);
+        applyCliOverrides(&config, args);
+        config.include_hetatm = config.include_hetatm or (config.classifier_type == .ccd);
+        config.store_atom_areas = (config.output_format == .jsonl);
+        config.external_ccd = if (ext_ccd != null) &ext_ccd.? else null;
+        config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
+        if (custom_classifier) |*c| config.custom_classifier = c;
+        applyWorkflowJobOverrides(&config, args, job);
+        validateResidueMapFormat(config.output_format, config.residue_map) catch {
+            std.debug.print("Error: residue_map is only supported with format = \"jsonl\"\n", .{});
+            return error.InvalidArgument;
+        };
+
+        if ((config.classifier_type == .ccd or config.classifier_type == .protor) and config.include_hydrogens and !config.quiet) {
+            std.debug.print("Warning: --include-hydrogens with CCD classifier may give inaccurate results\n", .{});
+            std.debug.print("         CCD uses united-atom radii that already account for implicit hydrogens\n", .{});
+        }
+
+        var job_output_dir: ?[]const u8 = null;
+        var jsonl_output_path: ?[]const u8 = null;
+        errdefer if (job_output_dir) |path| allocator.free(path);
+        errdefer if (jsonl_output_path) |path| allocator.free(path);
+
+        if (config.output_format == .jsonl) {
+            if (output_dir) |out| {
+                try std.Io.Dir.cwd().createDirPath(io, out);
+                jsonl_output_path = try workflowJsonlOutputPath(allocator, out, job.name);
+                try truncateJsonlOutput(io, jsonl_output_path.?);
+            }
+        } else if (output_dir) |out| {
+            job_output_dir = try workflowPerFileOutputDir(allocator, out, job.name);
+            try std.Io.Dir.cwd().createDirPath(io, job_output_dir.?);
+        }
+
+        states[i] = .{
+            .name = job.name,
+            .config = config,
+            .output_dir = job_output_dir,
+            .jsonl_output_path = jsonl_output_path,
+        };
+        states_initialized += 1;
+    }
+    defer {
+        for (states) |*state| state.deinit(allocator);
+        allocator.free(states);
+    }
+
+    const files = try scanDirectory(allocator, io, input_dir);
+    defer {
+        for (files) |f| allocator.free(f);
+        allocator.free(files);
+    }
+
+    var luts = try BatchLuts.init(allocator, resource_config);
+    defer luts.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    for (files) |filename| {
+        const input_path = try std.fs.path.join(arena.allocator(), &.{ input_dir, filename });
+
+        var source_config = resource_config;
+        source_config.chain_filter = null;
+        var source_input = readInputFile(arena.allocator(), io, input_path, source_config) catch |err| {
+            for (states) |*state| {
+                state.failed += 1;
+                std.debug.print("Error running workflow job '{s}' on '{s}': read/parse failed: {s}\n", .{ state.name, filename, @errorName(err) });
+            }
+            _ = arena.reset(.retain_capacity);
+            continue;
+        };
+
+        if (source_config.custom_classifier) |custom| {
+            if (source_input.hasClassificationInfo()) {
+                applyCustomClassifier(&source_input, custom, source_config.quiet) catch |err| {
+                    for (states) |*state| {
+                        state.failed += 1;
+                        std.debug.print("Error running workflow job '{s}' on '{s}': classifier failed: {s}\n", .{ state.name, filename, @errorName(err) });
+                    }
+                    source_input.deinit();
+                    _ = arena.reset(.retain_capacity);
+                    continue;
+                };
+            }
+        } else if (source_config.classifier_type) |ct| {
+            const format = format_detect.detectInputFormat(input_path);
+            if (format != .json and source_input.hasClassificationInfo()) {
+                applyBuiltinClassifier(&source_input, ct, source_config.sdf_ccd, source_config.external_ccd) catch |err| {
+                    for (states) |*state| {
+                        state.failed += 1;
+                        std.debug.print("Error running workflow job '{s}' on '{s}': classifier failed: {s}\n", .{ state.name, filename, @errorName(err) });
+                    }
+                    source_input.deinit();
+                    _ = arena.reset(.retain_capacity);
+                    continue;
+                };
+            }
+        }
+
+        for (workflow.jobs, 0..) |job, job_index| {
+            var state = &states[job_index];
+            if (!state.config.quiet) std.debug.print("Workflow job: {s}\n", .{state.name});
+
+            const selected_chains: ?[]const []const u8 = if (format_detect.detectInputFormat(input_path) == .json) null else job.chains;
+            var selected_input = copySelectedAtomInput(arena.allocator(), source_input, selected_chains) catch |err| {
+                state.failed += 1;
+                std.debug.print("Error running workflow job '{s}' on '{s}': selection failed: {s}\n", .{ state.name, filename, @errorName(err) });
+                continue;
+            };
+            defer selected_input.deinit();
+
+            var result = switch (state.config.precision) {
+                .f64 => calculatePreparedInputResult(f64, arena.allocator(), io, allocator, selected_input, state.output_dir, filename, state.config, 1, luts.f64Ptr(), luts.coarseF64Ptr(), luts.fineF64Ptr()),
+                .f32 => calculatePreparedInputResult(f32, arena.allocator(), io, allocator, selected_input, state.output_dir, filename, state.config, 1, luts.f32Ptr(), luts.coarseF32Ptr(), luts.fineF32Ptr()),
+            };
+            defer if (result.error_msg) |msg| allocator.free(msg);
+
+            if (result.status == .ok) {
+                state.successful += 1;
+                state.total_sasa_time_ns += result.sasa_time_ns;
+            } else {
+                state.failed += 1;
+            }
+
+            if (state.config.output_format == .jsonl) {
+                if (state.jsonl_output_path) |path| {
+                    const file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .write_only });
+                    defer file.close(io);
+                    try appendJsonlResultToFile(io, file, arena.allocator(), &result);
+                } else {
+                    var stdout_write_buf: [64 * 1024]u8 = undefined;
+                    var stdout_writer = std.Io.File.Writer.initStreaming(std.Io.File.stdout(), io, &stdout_write_buf);
+                    writeJsonlResult(&stdout_writer, arena.allocator(), &result);
+                }
+            }
+
+            result.atom_areas = null;
+            result.residue_map = null;
+        }
+
+        source_input.deinit();
+        _ = arena.reset(.retain_capacity);
+    }
+
+    var successful: usize = 0;
+    var failed: usize = 0;
+    for (states) |state| {
+        successful += state.successful;
+        failed += state.failed;
+    }
     std.debug.print("Workflow complete: {d} successful, {d} failed\n", .{ successful, failed });
 }
 
@@ -3451,6 +3740,89 @@ test "workflowPerFileOutputDir uses job directory under output dir" {
     const path = try workflowPerFileOutputDir(std.testing.allocator, "results", "complex_AB");
     defer std.testing.allocator.free(path);
     try std.testing.expectEqualStrings("results/complex_AB", path);
+}
+
+test "workflowInputContainsSdf detects SDF files in workflow input directory" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDir(std.testing.io, "inputs", .default_dir);
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "inputs/protein.pdb", .data = "" });
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "inputs/ligand.sdf", .data = "" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root = root_buf[0..root_len];
+    const input_path = try std.fs.path.join(allocator, &.{ root, "inputs" });
+    defer allocator.free(input_path);
+    const workflow_path = try std.fs.path.join(allocator, &.{ root, "workflow.toml" });
+    defer allocator.free(workflow_path);
+
+    const workflow_text = try std.fmt.allocPrint(allocator,
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "{s}"
+        \\
+        \\[[jobs]]
+        \\name = "all"
+        \\
+    , .{input_path});
+    defer allocator.free(workflow_text);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow_text });
+
+    const args = BatchArgs{ .workflow_path = workflow_path };
+    try std.testing.expect(try workflowInputContainsSdf(allocator, std.testing.io, args));
+}
+
+test "appendJsonlResultToFile appends without truncating existing JSONL content" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const output_path = try std.fs.path.join(allocator, &.{ root_buf[0..root_len], "results.jsonl" });
+    defer allocator.free(output_path);
+
+    try truncateJsonlOutput(std.testing.io, output_path);
+
+    const areas = [_]f64{1.0};
+    var first = FileResult{
+        .filename = "first.pdb",
+        .n_atoms = 1,
+        .sasa_time_ns = 1,
+        .total_sasa = 1.0,
+        .status = .ok,
+        .atom_areas = areas[0..],
+    };
+    var second = FileResult{
+        .filename = "second.pdb",
+        .n_atoms = 1,
+        .sasa_time_ns = 1,
+        .total_sasa = 1.0,
+        .status = .ok,
+        .atom_areas = areas[0..],
+    };
+
+    {
+        const file = try std.Io.Dir.cwd().openFile(std.testing.io, output_path, .{ .mode = .write_only });
+        defer file.close(std.testing.io);
+        try appendJsonlResultToFile(std.testing.io, file, allocator, &first);
+    }
+    {
+        const file = try std.Io.Dir.cwd().openFile(std.testing.io, output_path, .{ .mode = .write_only });
+        defer file.close(std.testing.io);
+        try appendJsonlResultToFile(std.testing.io, file, allocator, &second);
+    }
+
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(4096));
+    defer allocator.free(content);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"filename\":\"first.pdb\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"filename\":\"second.pdb\"") != null);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, content, "\n"));
 }
 
 test "FileResult JSONL uses residue map serializer when present" {
