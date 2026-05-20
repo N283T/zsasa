@@ -3767,16 +3767,117 @@ test "batch resource resolver only loads CCD resources for CCD classifiers" {
     try std.testing.expectEqualStrings("cli.sdf", resolved_sdf_paths[0]);
 }
 
-test "workflow job state keeps existing output layout" {
+test "workflow file-first keeps existing output layout" {
     const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
 
-    const jsonl_path = try workflowJsonlOutputPath(allocator, "results", "chain_a");
-    defer allocator.free(jsonl_path);
-    try std.testing.expectEqualStrings("results/chain_a.jsonl", jsonl_path);
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root_path = root_buf[0..root_len];
 
-    const per_file_dir = try workflowPerFileOutputDir(allocator, "results", "complex_ab");
-    defer allocator.free(per_file_dir);
-    try std.testing.expectEqualStrings("results/complex_ab", per_file_dir);
+    const input_dir = try std.fs.path.join(allocator, &.{ root_path, "input" });
+    defer allocator.free(input_dir);
+    const jsonl_output_dir = try std.fs.path.join(allocator, &.{ root_path, "jsonl-output" });
+    defer allocator.free(jsonl_output_dir);
+    const json_output_dir = try std.fs.path.join(allocator, &.{ root_path, "json-output" });
+    defer allocator.free(json_output_dir);
+    const jsonl_workflow_path = try std.fs.path.join(allocator, &.{ root_path, "workflow-jsonl.toml" });
+    defer allocator.free(jsonl_workflow_path);
+    const json_workflow_path = try std.fs.path.join(allocator, &.{ root_path, "workflow-json.toml" });
+    defer allocator.free(json_workflow_path);
+    const input_path = try std.fs.path.join(allocator, &.{ input_dir, "tiny.pdb" });
+    defer allocator.free(input_path);
+
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = input_path,
+        .data =
+        \\ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N
+        \\ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C
+        \\ATOM      3  N   GLY B   1       5.000   0.000   0.000  1.00 20.00           N
+        \\ATOM      4  CA  GLY B   1       6.500   0.000   0.000  1.00 20.00           C
+        \\END
+        \\
+        ,
+    });
+
+    const jsonl_workflow = try std.fmt.allocPrint(allocator,
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "{s}"
+        \\
+        \\[output]
+        \\dir = "{s}"
+        \\format = "jsonl"
+        \\
+        \\[calculation]
+        \\n_points = 1
+        \\quiet = true
+        \\
+        \\[classifier]
+        \\type = "naccess"
+        \\
+        \\[[jobs]]
+        \\name = "chain_a"
+        \\chains = ["A"]
+        \\
+        \\[[jobs]]
+        \\name = "chain_b"
+        \\chains = ["B"]
+        \\
+    , .{ input_dir, jsonl_output_dir });
+    defer allocator.free(jsonl_workflow);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = jsonl_workflow_path, .data = jsonl_workflow });
+
+    try runWorkflow(allocator, std.testing.io, .{ .workflow_path = jsonl_workflow_path });
+
+    const chain_a_jsonl = try std.fs.path.join(allocator, &.{ jsonl_output_dir, "chain_a.jsonl" });
+    defer allocator.free(chain_a_jsonl);
+    const chain_b_jsonl = try std.fs.path.join(allocator, &.{ jsonl_output_dir, "chain_b.jsonl" });
+    defer allocator.free(chain_b_jsonl);
+    const chain_a_jsonl_content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, chain_a_jsonl, allocator, .limited(4096));
+    defer allocator.free(chain_a_jsonl_content);
+    const chain_b_jsonl_content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, chain_b_jsonl, allocator, .limited(4096));
+    defer allocator.free(chain_b_jsonl_content);
+    try std.testing.expect(std.mem.indexOf(u8, chain_a_jsonl_content, "\"filename\":\"tiny.pdb\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, chain_b_jsonl_content, "\"filename\":\"tiny.pdb\"") != null);
+
+    const json_workflow = try std.fmt.allocPrint(allocator,
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "{s}"
+        \\
+        \\[output]
+        \\dir = "{s}"
+        \\format = "json"
+        \\
+        \\[calculation]
+        \\n_points = 1
+        \\quiet = true
+        \\
+        \\[classifier]
+        \\type = "naccess"
+        \\
+        \\[[jobs]]
+        \\name = "chain_a"
+        \\chains = ["A"]
+        \\
+    , .{ input_dir, json_output_dir });
+    defer allocator.free(json_workflow);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = json_workflow_path, .data = json_workflow });
+
+    try runWorkflow(allocator, std.testing.io, .{ .workflow_path = json_workflow_path });
+
+    const chain_a_json = try std.fs.path.join(allocator, &.{ json_output_dir, "chain_a", "tiny.json" });
+    defer allocator.free(chain_a_json);
+    const chain_a_json_content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, chain_a_json, allocator, .limited(4096));
+    defer allocator.free(chain_a_json_content);
+    try std.testing.expect(std.mem.indexOf(u8, chain_a_json_content, "\"total_area\"") != null);
 }
 
 test "workflowJsonlOutputPath uses job file under output dir" {
