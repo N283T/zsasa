@@ -73,7 +73,7 @@ Standard mmCIF files are supported. The parser extracts:
 
 ## BinaryCIF Format
 
-BinaryCIF input currently decodes `_atom_site` for SASA calculation. Inline CCD data embedded in BinaryCIF is not used yet; provide external CCD or SDF topology when needed for non-standard compounds.
+BinaryCIF input decodes `_atom_site` for SASA calculation and uses embedded `_chem_comp_atom` / `_chem_comp_bond` inline CCD data when `--classifier=ccd` (or the `ccd` default) needs bond topology for non-standard compounds. You can still provide external CCD or SDF topology when the BinaryCIF file does not include component topology.
 
 ## PDB Format
 
