@@ -443,6 +443,84 @@ pub const BatchResult = struct {
     }
 };
 
+fn chainMatchesFilter(chain: types.FixedString4, chains: []const []const u8) bool {
+    for (chains) |target| {
+        if (chain.eqlSlice(target)) return true;
+    }
+    return false;
+}
+
+fn atomSelectedByChains(input: AtomInput, index: usize, chains: ?[]const []const u8) bool {
+    const filter = chains orelse return true;
+    if (filter.len == 0) return true;
+    const chain_ids = input.chain_id orelse return true;
+    return chainMatchesFilter(chain_ids[index], filter);
+}
+
+fn countSelectedAtoms(input: AtomInput, chains: ?[]const []const u8) usize {
+    var count: usize = 0;
+    for (0..input.atomCount()) |i| {
+        if (atomSelectedByChains(input, i, chains)) count += 1;
+    }
+    return count;
+}
+
+fn copySelectedAtomInput(allocator: Allocator, input: AtomInput, chains: ?[]const []const u8) !AtomInput {
+    const selected_count = countSelectedAtoms(input, chains);
+
+    const x = try allocator.alloc(f64, selected_count);
+    errdefer allocator.free(x);
+    const y = try allocator.alloc(f64, selected_count);
+    errdefer allocator.free(y);
+    const z = try allocator.alloc(f64, selected_count);
+    errdefer allocator.free(z);
+    const r = try allocator.alloc(f64, selected_count);
+    errdefer allocator.free(r);
+
+    const residue = if (input.residue != null) try allocator.alloc(types.FixedString5, selected_count) else null;
+    errdefer if (residue) |v| allocator.free(v);
+    const atom_name = if (input.atom_name != null) try allocator.alloc(types.FixedString4, selected_count) else null;
+    errdefer if (atom_name) |v| allocator.free(v);
+    const element = if (input.element != null) try allocator.alloc(u8, selected_count) else null;
+    errdefer if (element) |v| allocator.free(v);
+    const chain_id = if (input.chain_id != null) try allocator.alloc(types.FixedString4, selected_count) else null;
+    errdefer if (chain_id) |v| allocator.free(v);
+    const residue_num = if (input.residue_num != null) try allocator.alloc(i32, selected_count) else null;
+    errdefer if (residue_num) |v| allocator.free(v);
+    const insertion_code = if (input.insertion_code != null) try allocator.alloc(types.FixedString4, selected_count) else null;
+    errdefer if (insertion_code) |v| allocator.free(v);
+
+    var out_i: usize = 0;
+    for (0..input.atomCount()) |i| {
+        if (!atomSelectedByChains(input, i, chains)) continue;
+        x[out_i] = input.x[i];
+        y[out_i] = input.y[i];
+        z[out_i] = input.z[i];
+        r[out_i] = input.r[i];
+        if (residue) |v| v[out_i] = input.residue.?[i];
+        if (atom_name) |v| v[out_i] = input.atom_name.?[i];
+        if (element) |v| v[out_i] = input.element.?[i];
+        if (chain_id) |v| v[out_i] = input.chain_id.?[i];
+        if (residue_num) |v| v[out_i] = input.residue_num.?[i];
+        if (insertion_code) |v| v[out_i] = input.insertion_code.?[i];
+        out_i += 1;
+    }
+
+    return AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .residue = residue,
+        .atom_name = atom_name,
+        .element = element,
+        .chain_id = chain_id,
+        .residue_num = residue_num,
+        .insertion_code = insertion_code,
+        .allocator = allocator,
+    };
+}
+
 /// Read input file with auto-format detection
 fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: BatchConfig) !AtomInput {
     const format = format_detect.detectInputFormat(path);
@@ -2984,6 +3062,112 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
 test "scanDirectory finds json files" {
     // This test requires a test directory - skip in automated testing
     // Manual testing: create a directory with .json files and test
+}
+
+fn makeTestAtomInput(allocator: Allocator, chains: []const []const u8) !AtomInput {
+    const n = chains.len;
+    const x = try allocator.alloc(f64, n);
+    errdefer allocator.free(x);
+    const y = try allocator.alloc(f64, n);
+    errdefer allocator.free(y);
+    const z = try allocator.alloc(f64, n);
+    errdefer allocator.free(z);
+    const r = try allocator.alloc(f64, n);
+    errdefer allocator.free(r);
+    const residue = try allocator.alloc(types.FixedString5, n);
+    errdefer allocator.free(residue);
+    const atom_name = try allocator.alloc(types.FixedString4, n);
+    errdefer allocator.free(atom_name);
+    const element = try allocator.alloc(u8, n);
+    errdefer allocator.free(element);
+    const chain_id = try allocator.alloc(types.FixedString4, n);
+    errdefer allocator.free(chain_id);
+    const residue_num = try allocator.alloc(i32, n);
+    errdefer allocator.free(residue_num);
+    const insertion_code = try allocator.alloc(types.FixedString4, n);
+    errdefer allocator.free(insertion_code);
+
+    for (chains, 0..) |chain, i| {
+        x[i] = @floatFromInt(i);
+        y[i] = @floatFromInt(i + 10);
+        z[i] = @floatFromInt(i + 20);
+        r[i] = 1.5;
+        residue[i] = types.FixedString5.fromSlice("GLY");
+        atom_name[i] = types.FixedString4.fromSlice("CA");
+        element[i] = 6;
+        chain_id[i] = types.FixedString4.fromSlice(chain);
+        residue_num[i] = @intCast(i + 1);
+        insertion_code[i] = types.FixedString4.fromSlice("");
+    }
+
+    return AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .residue = residue,
+        .atom_name = atom_name,
+        .element = element,
+        .chain_id = chain_id,
+        .residue_num = residue_num,
+        .insertion_code = insertion_code,
+        .allocator = allocator,
+    };
+}
+
+test "copySelectedAtomInput filters one chain" {
+    const allocator = std.testing.allocator;
+    var input = try makeTestAtomInput(allocator, &.{ "A", "B", "A" });
+    defer input.deinit();
+
+    var selected = try copySelectedAtomInput(allocator, input, &.{"A"});
+    defer selected.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), selected.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), selected.x[0], 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), selected.x[1], 1e-12);
+    try std.testing.expectEqualStrings("A", selected.chain_id.?[0].slice());
+    try std.testing.expectEqualStrings("A", selected.chain_id.?[1].slice());
+}
+
+test "copySelectedAtomInput filters multiple chains in source order" {
+    const allocator = std.testing.allocator;
+    var input = try makeTestAtomInput(allocator, &.{ "A", "B", "C", "A" });
+    defer input.deinit();
+
+    var selected = try copySelectedAtomInput(allocator, input, &.{ "C", "A" });
+    defer selected.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), selected.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), selected.x[0], 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), selected.x[1], 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.0), selected.x[2], 1e-12);
+}
+
+test "copySelectedAtomInput null chains duplicates all atoms" {
+    const allocator = std.testing.allocator;
+    var input = try makeTestAtomInput(allocator, &.{ "A", "B" });
+    defer input.deinit();
+
+    var selected = try copySelectedAtomInput(allocator, input, null);
+    defer selected.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), selected.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), selected.x[0], 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), selected.x[1], 1e-12);
+}
+
+test "copySelectedAtomInput no matching chains returns empty input" {
+    const allocator = std.testing.allocator;
+    var input = try makeTestAtomInput(allocator, &.{ "A", "B" });
+    defer input.deinit();
+
+    var selected = try copySelectedAtomInput(allocator, input, &.{"Z"});
+    defer selected.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), selected.atomCount());
+    try std.testing.expect(selected.chain_id != null);
+    try std.testing.expectEqual(@as(usize, 0), selected.chain_id.?.len);
 }
 
 test "BatchConfig default values" {
