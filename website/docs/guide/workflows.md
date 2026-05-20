@@ -98,7 +98,7 @@ Run it with:
 zsasa batch --workflow bsa.toml
 ```
 
-Workflow batch runs reuse parsed structures across jobs internally. For named chain analyses such as chain A, chain B, and complex AB, list only the jobs you want; zsasa will parse each input structure once and then compute each requested chain selection independently.
+For ordinary PDB/mmCIF/BinaryCIF workflow batch runs with compatible chain-ID settings, zsasa reuses each parsed input structure across jobs internally. For named chain analyses such as chain A, chain B, and complex AB, list only the jobs you want; eligible runs parse each input structure once and then compute each requested chain selection independently. Some inputs or settings, such as SDF files or per-job `auth_chain` changes, use the compatibility job-first path instead.
 
 ## Override Precedence
 
