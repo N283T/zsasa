@@ -107,35 +107,21 @@ A drop-in replacement for `mdtraj.shrake_rupley()`.
 
 See [MDTraj Integration](../integrations/mdtraj.md) for full API details.
 
-## Python: Native XTC Reader
+## Python: Direct Trajectory I/O with pyztraj
 
-For simple XTC reading without MDTraj or MDAnalysis dependencies:
-
-```python
-from zsasa.xtc import XtcReader
-
-reader = XtcReader("trajectory.xtc")
-for frame in reader:
-    print(f"Step {frame.step}, Time {frame.time:.1f} ps")
-    coords = frame.coords  # numpy array (n_atoms, 3) in nm
-```
-
-See [Native XTC Reader](../python-api/xtc.md) for full API details.
-
-## Python: Native DCD Reader
-
-For DCD trajectories without external dependencies:
+For Python workflows that read trajectory files directly, use [pyztraj](https://github.com/N283T/ztraj). pyztraj centralizes trajectory I/O and trajectory-native analysis for XTC, TRR, DCD, and AMBER NetCDF. zsasa keeps `zsasa.xtc` and `zsasa.dcd` for compatibility, but new trajectory formats are handled in pyztraj.
 
 ```python
-from zsasa.dcd import DcdReader
+import pyztraj
 
-reader = DcdReader("trajectory.dcd")
-for frame in reader:
-    print(f"Step {frame.step}, Time {frame.time:.1f}")
-    coords = frame.coords  # numpy array (n_atoms, 3) in Å
+structure = pyztraj.load_pdb("topology.pdb")
+with pyztraj.open_trr("trajectory.trr", structure.n_atoms) as reader:
+    for frame in reader:
+        sasa = pyztraj.compute_sasa(structure, frame.coords)
+        print(frame.step, sasa.total_area)
 ```
 
-DCD coordinates are already in Angstroms (no unit conversion needed, unlike XTC).
+See [Legacy Native XTC Reader](../python-api/xtc.md) for the compatibility XTC API.
 
 ## Choosing an Approach
 
@@ -144,5 +130,5 @@ DCD coordinates are already in Angstroms (no unit conversion needed, unlike XTC)
 | CLI `traj` | Quick analysis, scripting | XTC, TRR, DCD, AMBER NetCDF | None (Zig binary) |
 | MDAnalysis | Complex selections, multi-format | XTC, DCD, + many more | `MDAnalysis` |
 | MDTraj | Drop-in replacement for `mdtraj.shrake_rupley` | XTC, DCD, + many more | `mdtraj` |
-| Native XTC | Simple XTC reading, no extra deps | XTC | None |
-| Native DCD | Simple DCD reading, no extra deps | DCD | None |
+| pyztraj | Direct trajectory-file I/O and trajectory-native analysis | XTC, TRR, DCD, AMBER NetCDF | `pyztraj` |
+| Legacy `zsasa.xtc`/`zsasa.dcd` | Existing compatibility code | XTC, DCD | None |

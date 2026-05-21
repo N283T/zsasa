@@ -48,7 +48,7 @@ print(f"Total: {result.total_area:.1f} Å²")
 - **Atom classification**: NACCESS, ProtOr, OONS classifiers
 - **Analysis**: Per-residue aggregation, RSA, polar/nonpolar classification
 - **Batch processing**: `process_directory()` for proteome-scale datasets
-- **MD trajectory**: Native XTC/DCD readers, [MDTraj](https://github.com/mdtraj/mdtraj) and [MDAnalysis](https://github.com/MDAnalysis/mdanalysis) integration
+- **MD trajectory**: [MDTraj](https://github.com/mdtraj/mdtraj) and [MDAnalysis](https://github.com/MDAnalysis/mdanalysis) integrations; use [pyztraj](https://github.com/N283T/ztraj) for direct trajectory-file I/O
 - **Integrations**: Gemmi, BioPython, Biotite
 
 See the [full API reference](https://n283t.github.io/zsasa/docs/python-api) for details.
