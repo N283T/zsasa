@@ -19,7 +19,7 @@ High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 ## Features
 
 - **Two algorithms**: Shrake-Rupley and Lee-Richards, with bitmask LUT optimization
-- **Multiple input formats**: mmCIF, BinaryCIF (`.bcif`), PDB, SDF/MOL, JSON, XTC, DCD
+- **Multiple input formats**: mmCIF, BinaryCIF (`.bcif`), PDB, SDF/MOL, JSON, XTC, TRR, DCD, AMBER NetCDF
 - **Batch & trajectory**: Proteome-scale directory processing, MD trajectory analysis
 - **Python bindings**: NumPy, Gemmi, BioPython, Biotite, MDTraj, MDAnalysis
 - **Four classifiers**: ProtOr, NACCESS, OONS, and CCD (bond-topology-based radii for any chemical component)

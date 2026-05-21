@@ -1,5 +1,5 @@
 // Trajectory analysis mode
-// Calculates SASA for each frame in an XTC or DCD trajectory
+// Calculates SASA for each frame in a molecular dynamics trajectory
 //
 // Supports two parallelism strategies:
 //   - Sequential (1 thread): processes frames one at a time
@@ -9,6 +9,8 @@ const std = @import("std");
 const ztraj = @import("ztraj");
 const xtc = ztraj.io.xtc;
 const dcd = ztraj.io.dcd;
+const trr = ztraj.io.trr;
+const nc = ztraj.io.nc;
 const shrake_rupley = @import("shrake_rupley.zig");
 const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
 const bitmask_lut = @import("bitmask_lut.zig");
@@ -41,8 +43,10 @@ pub const Algorithm = enum {
 
 /// Trajectory file format
 pub const TrajectoryFormat = enum {
-    xtc, // GROMACS XTC (compressed, coordinates in nm)
-    dcd, // NAMD/CHARMM DCD (uncompressed, coordinates in Angstroms)
+    xtc, // GROMACS XTC
+    dcd, // NAMD/CHARMM DCD
+    trr, // GROMACS TRR
+    nc, // AMBER NetCDF
 };
 
 /// Detect trajectory format from file extension
@@ -51,6 +55,10 @@ pub fn detectTrajectoryFormat(path: []const u8) ?TrajectoryFormat {
         return .xtc;
     } else if (std.mem.endsWith(u8, path, ".dcd")) {
         return .dcd;
+    } else if (std.mem.endsWith(u8, path, ".trr")) {
+        return .trr;
+    } else if (std.mem.endsWith(u8, path, ".nc") or std.mem.endsWith(u8, path, ".ncdf")) {
+        return .nc;
     }
     return null;
 }
@@ -66,10 +74,12 @@ const TrajectoryFrame = struct {
     }
 };
 
-/// Unified trajectory reader wrapping either XTC or DCD readers
+/// Unified trajectory reader wrapping ztraj trajectory readers
 const TrajectoryReader = struct {
     xtc_reader: ?*xtc.XtcReader = null,
     dcd_reader: ?*dcd.DcdReader = null,
+    trr_reader: ?*trr.TrrReader = null,
+    nc_reader: ?*nc.NcReader = null,
     format: TrajectoryFormat,
 
     /// Coordinate scale factor. ztraj readers yield coordinates in Å.
@@ -83,6 +93,8 @@ const TrajectoryReader = struct {
         const frame = switch (self.format) {
             .xtc => try self.xtc_reader.?.next() orelse return error.EndOfFile,
             .dcd => try self.dcd_reader.?.next() orelse return error.EndOfFile,
+            .trr => try self.trr_reader.?.next() orelse return error.EndOfFile,
+            .nc => try self.nc_reader.?.next() orelse return error.EndOfFile,
         };
 
         const natoms = frame.x.len;
@@ -330,11 +342,11 @@ pub fn printHelp(program_name: []const u8) void {
         \\Usage: {s} traj <trajectory> <topology> [options]
         \\
         \\Calculate SASA for each frame in a trajectory.
-        \\Supported formats: XTC (GROMACS), DCD (NAMD/CHARMM).
+        \\Supported formats: XTC, TRR (GROMACS), DCD (NAMD/CHARMM), AMBER NetCDF.
         \\Format is auto-detected from file extension.
         \\
         \\ARGUMENTS:
-        \\    <trajectory> Trajectory file (.xtc or .dcd)
+        \\    <trajectory> Trajectory file (.xtc, .trr, .dcd, .nc, or .ncdf)
         \\    <topology>   Topology file (PDB or mmCIF) for atom names and radii
         \\
         \\OPTIONS:
@@ -374,13 +386,15 @@ pub fn printHelp(program_name: []const u8) void {
         \\EXAMPLES:
         \\    {s} traj trajectory.xtc topology.pdb
         \\    {s} traj trajectory.dcd topology.pdb
+        \\    {s} traj trajectory.trr topology.pdb
+        \\    {s} traj trajectory.nc topology.pdb
         \\    {s} traj trajectory.xtc topology.pdb -o sasa.csv
         \\    {s} traj trajectory.xtc topology.pdb --stride=10
         \\    {s} traj trajectory.xtc topology.pdb --classifier=naccess
         \\    {s} traj trajectory.xtc topology.pdb --algorithm=lr --n-slices=50
         \\    {s} traj trajectory.xtc topology.pdb --threads=8
         \\
-    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
+    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 /// Detect topology file format
@@ -666,7 +680,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
 
     // Detect trajectory format
     const traj_format = detectTrajectoryFormat(traj_path) orelse {
-        std.debug.print("Error: Unknown trajectory format. Supported: .xtc, .dcd\n", .{});
+        std.debug.print("Error: Unknown trajectory format. Supported: .xtc, .trr, .dcd, .nc, .ncdf\n", .{});
         return error.UnsupportedFormat;
     };
 
@@ -743,13 +757,17 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
         const format_name: []const u8 = switch (traj_format) {
             .xtc => "XTC",
             .dcd => "DCD",
+            .trr => "TRR",
+            .nc => "AMBER NetCDF",
         };
         std.debug.print("Opening trajectory ({s}): {s}\n", .{ format_name, traj_path });
     }
 
-    // Open XTC or DCD reader and verify atom count
+    // Open trajectory reader and verify atom count
     var xtc_reader: ?xtc.XtcReader = null;
     var dcd_reader: ?dcd.DcdReader = null;
+    var trr_reader: ?trr.TrrReader = null;
+    var nc_reader: ?nc.NcReader = null;
     const traj_natoms: i32 = switch (traj_format) {
         .xtc => blk: {
             xtc_reader = try xtc.XtcReader.open(io, allocator, traj_path);
@@ -759,10 +777,20 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
             dcd_reader = try dcd.DcdReader.open(io, allocator, traj_path);
             break :blk @intCast(dcd_reader.?.nAtoms());
         },
+        .trr => blk: {
+            trr_reader = try trr.TrrReader.open(io, allocator, traj_path);
+            break :blk @intCast(trr_reader.?.nAtoms());
+        },
+        .nc => blk: {
+            nc_reader = try nc.NcReader.open(io, allocator, traj_path);
+            break :blk @intCast(nc_reader.?.nAtoms());
+        },
     };
     defer {
         if (xtc_reader) |*r| r.deinit();
         if (dcd_reader) |*r| r.deinit();
+        if (trr_reader) |*r| r.deinit();
+        if (nc_reader) |*r| r.deinit();
     }
 
     // Verify atom count matches
@@ -831,6 +859,8 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
     var traj_reader = TrajectoryReader{
         .xtc_reader = if (xtc_reader) |*r| r else null,
         .dcd_reader = if (dcd_reader) |*r| r else null,
+        .trr_reader = if (trr_reader) |*r| r else null,
+        .nc_reader = if (nc_reader) |*r| r else null,
         .format = traj_format,
     };
 
@@ -1215,6 +1245,19 @@ test "TrajArgs quiet suppresses progress even when show_progress defaults true" 
 test "TrajectoryReader uses angstrom coordinates from ztraj readers" {
     const xtc_reader = TrajectoryReader{ .format = .xtc };
     const dcd_reader = TrajectoryReader{ .format = .dcd };
+    const trr_reader = TrajectoryReader{ .format = .trr };
+    const nc_reader = TrajectoryReader{ .format = .nc };
     try std.testing.expectEqual(@as(f64, 1.0), xtc_reader.coordScale());
     try std.testing.expectEqual(@as(f64, 1.0), dcd_reader.coordScale());
+    try std.testing.expectEqual(@as(f64, 1.0), trr_reader.coordScale());
+    try std.testing.expectEqual(@as(f64, 1.0), nc_reader.coordScale());
+}
+
+test "detectTrajectoryFormat recognizes ztraj-backed formats" {
+    try std.testing.expectEqual(TrajectoryFormat.xtc, detectTrajectoryFormat("traj.xtc").?);
+    try std.testing.expectEqual(TrajectoryFormat.dcd, detectTrajectoryFormat("traj.dcd").?);
+    try std.testing.expectEqual(TrajectoryFormat.trr, detectTrajectoryFormat("traj.trr").?);
+    try std.testing.expectEqual(TrajectoryFormat.nc, detectTrajectoryFormat("traj.nc").?);
+    try std.testing.expectEqual(TrajectoryFormat.nc, detectTrajectoryFormat("traj.ncdf").?);
+    try std.testing.expectEqual(@as(?TrajectoryFormat, null), detectTrajectoryFormat("traj.gro"));
 }
