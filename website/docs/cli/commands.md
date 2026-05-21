@@ -54,7 +54,7 @@ For task-oriented examples, see [Batch Processing](../guide/batch.md) and [Workf
 
 ### `traj` - Trajectory Analysis
 
-Calculate SASA for each frame in a trajectory file (XTC or DCD).
+Calculate SASA for each frame in a trajectory file (XTC, TRR, DCD, or AMBER NetCDF).
 
 ```bash
 zsasa traj trajectory.xtc topology.pdb --output=sasa.csv
@@ -183,7 +183,7 @@ The `traj` subcommand has additional options specific to trajectory processing.
 
 | Argument | Description |
 |----------|-------------|
-| `<trajectory>` | Trajectory file (`.xtc` for GROMACS, `.dcd` for NAMD/CHARMM) |
+| `<trajectory>` | Trajectory file (`.xtc`/`.trr` for GROMACS, `.dcd` for NAMD/CHARMM, `.nc`/`.ncdf` for AMBER NetCDF) |
 | `<topology>` | Topology file (PDB or mmCIF) for atom names and radii |
 
 ### Options
@@ -203,11 +203,11 @@ Most [common options](#common-options) apply, plus the trajectory-specific optio
 
 ### Notes
 
-- Supported trajectory formats: **XTC** (GROMACS) and **DCD** (NAMD/CHARMM), auto-detected from extension
-- XTC coordinates are in nm; automatically converted to Å. DCD coordinates are already in Å.
+- Supported trajectory formats: **XTC** and **TRR** (GROMACS), **DCD** (NAMD/CHARMM), and **AMBER NetCDF** (`.nc`, `.ncdf`), auto-detected from extension
+- Coordinates are normalized to Å internally by the ztraj readers before SASA calculation.
 - Hydrogen atoms are **included** by default in trajectory mode; use `--no-hydrogens` to exclude them
 - Topology file provides atom names for radius classification
-- The number of atoms in XTC must match the topology
+- The number of atoms in the trajectory must match the topology
 - Default precision is `f32` (faster for trajectory processing)
 
 ---

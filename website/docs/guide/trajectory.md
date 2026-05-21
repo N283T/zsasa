@@ -7,8 +7,12 @@ sidebar_position: 4
 zsasa supports SASA calculation over MD trajectory frames using the CLI or Python bindings.
 
 Supported trajectory formats:
-- **XTC** (GROMACS) — compressed, coordinates in nm (auto-converted to Å)
-- **DCD** (NAMD/CHARMM) — uncompressed, coordinates in Å
+- **XTC** (GROMACS) — compressed trajectory
+- **TRR** (GROMACS) — full-precision trajectory with coordinates
+- **DCD** (NAMD/CHARMM) — uncompressed trajectory
+- **AMBER NetCDF** (`.nc`, `.ncdf`) — AMBER convention NetCDF trajectory
+
+Coordinates are normalized to Å internally by the ztraj readers before SASA calculation.
 
 Format is auto-detected from file extension.
 
@@ -28,6 +32,12 @@ zsasa traj trajectory.xtc topology.pdb
 
 # DCD trajectory (NAMD/CHARMM)
 zsasa traj trajectory.dcd topology.pdb
+
+# TRR trajectory (GROMACS)
+zsasa traj trajectory.trr topology.pdb
+
+# AMBER NetCDF trajectory
+zsasa traj trajectory.nc topology.pdb
 
 # With classifier and frame selection
 zsasa traj trajectory.xtc topology.pdb \
@@ -131,7 +141,7 @@ DCD coordinates are already in Angstroms (no unit conversion needed, unlike XTC)
 
 | Approach | Best For | Formats | Dependencies |
 |----------|----------|---------|-------------|
-| CLI `traj` | Quick analysis, scripting | XTC, DCD | None (Zig binary) |
+| CLI `traj` | Quick analysis, scripting | XTC, TRR, DCD, AMBER NetCDF | None (Zig binary) |
 | MDAnalysis | Complex selections, multi-format | XTC, DCD, + many more | `MDAnalysis` |
 | MDTraj | Drop-in replacement for `mdtraj.shrake_rupley` | XTC, DCD, + many more | `mdtraj` |
 | Native XTC | Simple XTC reading, no extra deps | XTC | None |

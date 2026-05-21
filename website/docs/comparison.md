@@ -16,7 +16,7 @@ For performance numbers, see [Benchmarks](benchmarks/single-file.md).
 | Language | Zig | C | Rust | C++ |
 | Algorithms | SR + LR | SR + LR | SR only | SR only |
 | Input formats | mmCIF, PDB, JSON | PDB, mmCIF | PDB (via pdbtbx) | AF2 model (CIF/PDB) |
-| MD trajectory | Native (XTC, DCD) | — | △ (mdsasa-bolt) | — |
+| MD trajectory | Native (XTC, TRR, DCD, AMBER NetCDF) | — | △ (mdsasa-bolt) | — |
 | Python API | ✅ (multi-threaded) | ✅ (single-threaded) | △ (separate package) | ❌ |
 | Bitmask range | 1–1024 | — | — | 64/128/256 |
 | External deps | None | None | pdbtbx, pulp, mimalloc | 13+ (Boost, Eigen, gemmi, Highway, RDKit, lmdb, ...) |
