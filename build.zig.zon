@@ -32,9 +32,9 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        .zxdrfile = .{
-            .url = "git+https://github.com/N283T/zxdrfile.git?ref=v0.4.0#47d8c42cff9b098febd1990cc50438c26987f85c",
-            .hash = "zxdrfile-0.4.0-JIaQ9mIfAgAHB9bW-_p9g6_gfd0tyG3-MmA0LYJKB8rb",
+        .ztraj = .{
+            .url = "git+https://github.com/N283T/ztraj.git?ref=main#b18c4e3ddf8f07ae348a1f0ce0aaaa36c98e227f",
+            .hash = "ztraj-0.8.0-gW3cDGFrDwD-nnp9izIfabX81qKC4bCm0uW0dOTZMGRs",
         },
     },
     .paths = .{

@@ -15,8 +15,9 @@ const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
 const analysis = @import("analysis.zig");
-const xtc = @import("zxdrfile").xtc;
-const dcd = @import("dcd.zig");
+const ztraj = @import("ztraj");
+const xtc = ztraj.io.xtc;
+const dcd = ztraj.io.dcd;
 const batch = @import("batch.zig");
 
 const AtomInput = types.AtomInput;
@@ -1469,15 +1470,15 @@ export fn zsasa_xtc_open(
     handle.reader = xtc.XtcReader.open(cIo(), c_allocator, path_slice) catch |err| {
         c_allocator.destroy(handle);
         error_code.* = switch (err) {
-            xtc.XtcError.FileNotFound => ZSASA_ERROR_INVALID_INPUT,
-            xtc.XtcError.InvalidMagic => ZSASA_ERROR_INVALID_INPUT,
-            xtc.XtcError.OutOfMemory => ZSASA_ERROR_OUT_OF_MEMORY,
+            error.FileNotFound => ZSASA_ERROR_INVALID_INPUT,
+            error.InvalidMagic => ZSASA_ERROR_INVALID_INPUT,
+            error.OutOfMemory => ZSASA_ERROR_OUT_OF_MEMORY,
             else => ZSASA_ERROR_CALCULATION,
         };
         return null;
     };
 
-    natoms_out.* = handle.reader.getNumAtoms();
+    natoms_out.* = @intCast(handle.reader.nAtoms());
     error_code.* = ZSASA_OK;
     return handle;
 }
@@ -1491,7 +1492,7 @@ export fn zsasa_xtc_close(
 ) callconv(.c) void {
     if (handle) |h| {
         const xtc_handle: *XtcHandle = @ptrCast(@alignCast(h));
-        xtc_handle.reader.close();
+        xtc_handle.reader.deinit();
         c_allocator.destroy(xtc_handle);
     }
 }
@@ -1524,31 +1525,41 @@ export fn zsasa_xtc_read_frame(
 
     const xtc_handle: *XtcHandle = @ptrCast(@alignCast(handle.?));
 
-    var frame = xtc_handle.reader.readFrame() catch |err| {
+    const frame = (xtc_handle.reader.next() catch |err| {
         return switch (err) {
-            xtc.XtcError.EndOfFile => ZSASA_XTC_END_OF_FILE,
-            xtc.XtcError.InvalidMagic => ZSASA_ERROR_INVALID_INPUT,
-            xtc.XtcError.DecompressionError => ZSASA_ERROR_CALCULATION,
+            error.InvalidMagic => ZSASA_ERROR_INVALID_INPUT,
+            error.DecompressionError => ZSASA_ERROR_CALCULATION,
             else => ZSASA_ERROR_CALCULATION,
         };
-    };
-    defer frame.deinit(c_allocator);
+    }) orelse return ZSASA_XTC_END_OF_FILE;
 
-    // Copy step, time, precision
+    // Copy step, time, precision. ztraj's high-level XTC reader normalizes to Å
+    // and does not expose per-frame precision, so preserve the historical C ABI
+    // contract with the default XTC precision.
     step_out.* = frame.step;
     time_out.* = frame.time;
-    precision_out.* = frame.precision;
+    precision_out.* = 1000.0;
 
-    // Copy box (3x3 matrix, row-major)
-    for (0..3) |i| {
-        for (0..3) |j| {
-            box_out[i * 3 + j] = frame.box[i][j];
+    // Copy box (3x3 matrix, row-major) in nm for the public XTC C/Python API.
+    if (frame.box_vectors) |box| {
+        for (0..3) |i| {
+            for (0..3) |j| {
+                box_out[i * 3 + j] = box[i][j] / 10.0;
+            }
+        }
+    } else {
+        for (0..9) |i| {
+            box_out[i] = 0.0;
         }
     }
 
-    // Copy coordinates
-    const natoms: usize = @intCast(xtc_handle.reader.getNumAtoms());
-    @memcpy(coords_out[0 .. natoms * 3], frame.coords);
+    // Copy coordinates in nm for the public XTC C/Python API.
+    const natoms: usize = @intCast(xtc_handle.reader.nAtoms());
+    for (0..natoms) |i| {
+        coords_out[i * 3 + 0] = frame.x[i] / 10.0;
+        coords_out[i * 3 + 1] = frame.y[i] / 10.0;
+        coords_out[i * 3 + 2] = frame.z[i] / 10.0;
+    }
 
     return ZSASA_OK;
 }
@@ -1567,7 +1578,7 @@ export fn zsasa_xtc_get_natoms(
         return -1;
     }
     const xtc_handle: *XtcHandle = @ptrCast(@alignCast(handle.?));
-    return xtc_handle.reader.getNumAtoms();
+    return @intCast(xtc_handle.reader.nAtoms());
 }
 
 // Tests
@@ -2144,18 +2155,18 @@ export fn zsasa_dcd_open(
         return null;
     };
 
-    handle.reader = dcd.DcdReader.open(c_allocator, cIo(), path_slice) catch |err| {
+    handle.reader = dcd.DcdReader.open(cIo(), c_allocator, path_slice) catch |err| {
         c_allocator.destroy(handle);
         error_code.* = switch (err) {
-            dcd.DcdError.FileNotFound => ZSASA_ERROR_INVALID_INPUT,
-            dcd.DcdError.InvalidMagic => ZSASA_ERROR_INVALID_INPUT,
-            dcd.DcdError.OutOfMemory => ZSASA_ERROR_OUT_OF_MEMORY,
+            error.FileNotFound => ZSASA_ERROR_INVALID_INPUT,
+            error.InvalidMagic => ZSASA_ERROR_INVALID_INPUT,
+            error.OutOfMemory => ZSASA_ERROR_OUT_OF_MEMORY,
             else => ZSASA_ERROR_CALCULATION,
         };
         return null;
     };
 
-    natoms_out.* = handle.reader.getNumAtoms();
+    natoms_out.* = @intCast(handle.reader.nAtoms());
     error_code.* = ZSASA_OK;
     return handle;
 }
@@ -2169,7 +2180,7 @@ export fn zsasa_dcd_close(
 ) callconv(.c) void {
     if (handle) |h| {
         const dcd_handle: *DcdHandle = @ptrCast(@alignCast(h));
-        dcd_handle.reader.close();
+        dcd_handle.reader.deinit();
         c_allocator.destroy(dcd_handle);
     }
 }
@@ -2200,14 +2211,12 @@ export fn zsasa_dcd_read_frame(
 
     const dcd_handle: *DcdHandle = @ptrCast(@alignCast(handle.?));
 
-    var frame = dcd_handle.reader.readFrame() catch |err| {
+    const frame = (dcd_handle.reader.next() catch |err| {
         return switch (err) {
-            dcd.DcdError.EndOfFile => ZSASA_DCD_END_OF_FILE,
-            dcd.DcdError.InvalidMagic => ZSASA_ERROR_INVALID_INPUT,
+            error.InvalidMagic => ZSASA_ERROR_INVALID_INPUT,
             else => ZSASA_ERROR_CALCULATION,
         };
-    };
-    defer frame.deinit(c_allocator);
+    }) orelse return ZSASA_DCD_END_OF_FILE;
 
     // Copy step, time
     step_out.* = frame.step;
@@ -2215,10 +2224,13 @@ export fn zsasa_dcd_read_frame(
 
     // Copy unitcell if present and output buffer provided
     if (unitcell_out) |uc_out| {
-        if (frame.unitcell) |uc| {
-            for (0..6) |i| {
-                uc_out[i] = uc[i];
-            }
+        if (frame.box_vectors) |box| {
+            uc_out[0] = box[0][0];
+            uc_out[1] = 90.0;
+            uc_out[2] = box[1][1];
+            uc_out[3] = 90.0;
+            uc_out[4] = 90.0;
+            uc_out[5] = box[2][2];
         } else {
             for (0..6) |i| {
                 uc_out[i] = 0.0;
@@ -2227,8 +2239,12 @@ export fn zsasa_dcd_read_frame(
     }
 
     // Copy coordinates
-    const natoms: usize = @intCast(dcd_handle.reader.getNumAtoms());
-    @memcpy(coords_out[0 .. natoms * 3], frame.coords);
+    const natoms: usize = @intCast(dcd_handle.reader.nAtoms());
+    for (0..natoms) |i| {
+        coords_out[i * 3 + 0] = frame.x[i];
+        coords_out[i * 3 + 1] = frame.y[i];
+        coords_out[i * 3 + 2] = frame.z[i];
+    }
 
     return ZSASA_OK;
 }
@@ -2247,7 +2263,7 @@ export fn zsasa_dcd_get_natoms(
         return -1;
     }
     const dcd_handle: *DcdHandle = @ptrCast(@alignCast(handle.?));
-    return dcd_handle.reader.getNumAtoms();
+    return @intCast(dcd_handle.reader.nAtoms());
 }
 
 // =============================================================================

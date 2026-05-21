@@ -4,7 +4,7 @@ zsasa includes code derived from the following projects.
 
 ## libxdrfile (via chemfiles/xdrfile)
 
-- **Used in**: `zxdrfile` dependency (https://github.com/N283T/zxdrfile) — Zig port of XTC trajectory reader
+- **Used in**: `ztraj` dependency (https://github.com/N283T/ztraj) — Zig molecular trajectory toolkit used by zsasa trajectory mode
 - **Source**: https://github.com/chemfiles/xdrfile
 - **Original**: GROMACS libxdrfile 1.1.4
 - **License**: BSD-2-Clause

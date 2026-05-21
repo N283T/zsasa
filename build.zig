@@ -12,11 +12,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
-    const zxdrfile_dep = b.dependency("zxdrfile", .{
+    const ztraj_dep = b.dependency("ztraj", .{
         .target = target,
         .optimize = optimize,
     });
-    const zxdrfile_mod = zxdrfile_dep.module("zxdrfile");
+    const ztraj_mod = ztraj_dep.module("ztraj");
 
     // CLI executable
     const options = b.addOptions();
@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "zsasa", .module = mod },
             .{ .name = "build_options", .module = options_mod },
-            .{ .name = "zxdrfile", .module = zxdrfile_mod },
+            .{ .name = "ztraj", .module = ztraj_mod },
         },
     });
 
@@ -52,7 +52,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
-            .{ .name = "zxdrfile", .module = zxdrfile_mod },
+            .{ .name = "ztraj", .module = ztraj_mod },
         },
     });
 

@@ -6,8 +6,9 @@
 //   - Batch parallel (N threads): reads batches of frames, distributes across threads
 //
 const std = @import("std");
-const xtc = @import("zxdrfile").xtc;
-const dcd = @import("dcd.zig");
+const ztraj = @import("ztraj");
+const xtc = ztraj.io.xtc;
+const dcd = ztraj.io.dcd;
 const shrake_rupley = @import("shrake_rupley.zig");
 const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
 const bitmask_lut = @import("bitmask_lut.zig");
@@ -60,14 +61,8 @@ const TrajectoryFrame = struct {
     time: f32,
     coords: []f32, // flat array of x,y,z coordinates (length = natoms * 3)
 
-    /// The underlying frame owns the coords allocation.
-    /// Track which reader type produced it so we can free correctly.
-    _xtc_frame: ?xtc.XtcFrame = null,
-    _dcd_frame: ?dcd.DcdFrame = null,
-
     fn deinit(self: *TrajectoryFrame, allocator: Allocator) void {
-        if (self._xtc_frame) |*f| f.deinit(allocator);
-        if (self._dcd_frame) |*f| f.deinit(allocator);
+        allocator.free(self.coords);
     }
 };
 
@@ -77,44 +72,40 @@ const TrajectoryReader = struct {
     dcd_reader: ?*dcd.DcdReader = null,
     format: TrajectoryFormat,
 
-    /// Coordinate scale factor: 10.0 for XTC (nm→Å), 1.0 for DCD (already Å)
+    /// Coordinate scale factor. ztraj readers yield coordinates in Å.
     fn coordScale(self: *const TrajectoryReader) f64 {
-        return switch (self.format) {
-            .xtc => 10.0,
-            .dcd => 1.0,
-        };
+        _ = self;
+        return 1.0;
     }
 
     /// Read next frame, returning null-like via EndOfFile error
-    fn readFrame(self: *TrajectoryReader) !TrajectoryFrame {
-        switch (self.format) {
-            .xtc => {
-                const frame = try self.xtc_reader.?.readFrame();
-                return TrajectoryFrame{
-                    .step = frame.step,
-                    .time = frame.time,
-                    .coords = frame.coords,
-                    ._xtc_frame = frame,
-                };
-            },
-            .dcd => {
-                const frame = try self.dcd_reader.?.readFrame();
-                return TrajectoryFrame{
-                    .step = frame.step,
-                    .time = frame.time,
-                    .coords = frame.coords,
-                    ._dcd_frame = frame,
-                };
-            },
+    fn readFrame(self: *TrajectoryReader, allocator: Allocator) !TrajectoryFrame {
+        const frame = switch (self.format) {
+            .xtc => try self.xtc_reader.?.next() orelse return error.EndOfFile,
+            .dcd => try self.dcd_reader.?.next() orelse return error.EndOfFile,
+        };
+
+        const natoms = frame.x.len;
+        const coords = try allocator.alloc(f32, natoms * 3);
+        errdefer allocator.free(coords);
+
+        for (0..natoms) |i| {
+            coords[i * 3 + 0] = frame.x[i];
+            coords[i * 3 + 1] = frame.y[i];
+            coords[i * 3 + 2] = frame.z[i];
         }
+
+        return .{
+            .step = frame.step,
+            .time = frame.time,
+            .coords = coords,
+        };
     }
 
     /// Check if a read error is an EOF condition
     fn isEof(self: *const TrajectoryReader, err: anyerror) bool {
-        return switch (self.format) {
-            .xtc => err == xtc.XtcError.EndOfFile,
-            .dcd => err == dcd.DcdError.EndOfFile,
-        };
+        _ = self;
+        return err == error.EndOfFile;
     }
 };
 
@@ -472,7 +463,7 @@ const BatchWorkerArgs = struct {
     probe_radius: f64,
     n_points: u32,
     n_slices: u32,
-    coord_scale: f64, // 10.0 for XTC (nm→Å), 1.0 for DCD (already Å)
+    coord_scale: f64, // ztraj readers already yield Å; kept for reader abstraction
     bitmask_lut_f64: ?*const bitmask_lut.BitmaskLut = null,
     bitmask_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32) = null,
 };
@@ -518,7 +509,7 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
 
         const coord_offset = batch_idx * args.natoms * 3;
 
-        // Convert f32 coordinates to f64 with unit scaling (nm→Å for XTC, no-op for DCD)
+        // Convert f32 coordinates to f64. ztraj readers already yield Å.
         const scale = args.coord_scale;
         for (0..args.natoms) |i| {
             x[i] = @as(f64, args.coord_pool[coord_offset + i * 3 + 0]) * scale;
@@ -620,7 +611,7 @@ fn readBatch(
     var batch_count: usize = 0;
 
     while (batch_count < batch_size) {
-        var frame = reader.readFrame() catch |err| {
+        var frame = reader.readFrame(allocator) catch |err| {
             if (reader.isEof(err)) return .{ .count = batch_count, .eof = true };
             return err;
         };
@@ -762,16 +753,16 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
     const traj_natoms: i32 = switch (traj_format) {
         .xtc => blk: {
             xtc_reader = try xtc.XtcReader.open(io, allocator, traj_path);
-            break :blk xtc_reader.?.getNumAtoms();
+            break :blk @intCast(xtc_reader.?.nAtoms());
         },
         .dcd => blk: {
-            dcd_reader = try dcd.DcdReader.open(allocator, io, traj_path);
-            break :blk dcd_reader.?.natoms;
+            dcd_reader = try dcd.DcdReader.open(io, allocator, traj_path);
+            break :blk @intCast(dcd_reader.?.nAtoms());
         },
     };
     defer {
-        if (xtc_reader) |*r| r.close();
-        if (dcd_reader) |*r| r.close();
+        if (xtc_reader) |*r| r.deinit();
+        if (dcd_reader) |*r| r.deinit();
     }
 
     // Verify atom count matches
@@ -914,7 +905,7 @@ fn runSequential(
     const scale = reader.coordScale();
 
     while (true) {
-        var frame = reader.readFrame() catch |err| {
+        var frame = reader.readFrame(allocator) catch |err| {
             if (reader.isEof(err)) break;
             return err;
         };
@@ -935,7 +926,7 @@ fn runSequential(
             continue;
         }
 
-        // Update frame coordinates with unit scaling (nm→Å for XTC, no-op for DCD)
+        // Update frame coordinates. ztraj readers already yield Å.
         for (0..natoms) |i| {
             frame_x[i] = @as(f64, frame.coords[i * 3 + 0]) * scale;
             frame_y[i] = @as(f64, frame.coords[i * 3 + 1]) * scale;
@@ -1220,4 +1211,10 @@ test "TrajArgs quiet disables progress" {
 test "TrajArgs quiet suppresses progress even when show_progress defaults true" {
     const args = TrajArgs{ .quiet = true };
     try std.testing.expectEqual(false, shouldShowProgress(args));
+}
+test "TrajectoryReader uses angstrom coordinates from ztraj readers" {
+    const xtc_reader = TrajectoryReader{ .format = .xtc };
+    const dcd_reader = TrajectoryReader{ .format = .dcd };
+    try std.testing.expectEqual(@as(f64, 1.0), xtc_reader.coordScale());
+    try std.testing.expectEqual(@as(f64, 1.0), dcd_reader.coordScale());
 }
