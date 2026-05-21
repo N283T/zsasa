@@ -1,14 +1,18 @@
-# Native XTC Reader
+# Legacy Native XTC Reader
 
-The `zsasa.xtc` module provides a standalone XTC trajectory reader using zsasa's high-performance Zig implementation. This module doesn't require MDTraj or MDAnalysis, potentially offering better performance for simple XTC reading workflows.
+The `zsasa.xtc` module provides a standalone XTC trajectory reader kept for compatibility with existing zsasa users. For new Python workflows that read trajectory files directly, prefer [pyztraj](https://github.com/N283T/ztraj), which centralizes trajectory I/O and trajectory-native analysis across XTC, TRR, DCD, and AMBER NetCDF.
 
 ## When to Use
 
 | Use Case | Recommended Module |
 |----------|-------------------|
-| Simple XTC reading, no dependencies | `zsasa.xtc` |
-| Need topology parsing, selections | `zsasa.mdanalysis` or `zsasa.mdtraj` |
-| Complex analysis, multiple formats | `zsasa.mdanalysis` or `zsasa.mdtraj` |
+| Direct trajectory-file I/O or trajectory-native analysis | `pyztraj` |
+| Existing code already using `zsasa.xtc` | `zsasa.xtc` |
+| Need MDTraj/MDAnalysis ecosystem objects | `zsasa.mdtraj` or `zsasa.mdanalysis` |
+
+## Compatibility Status
+
+`zsasa.xtc` remains supported for existing users, but new trajectory formats are not planned for zsasa Python modules. Use pyztraj for new direct trajectory-file workflows.
 
 ## XtcReader
 
@@ -235,24 +239,26 @@ Result container for trajectory SASA calculation.
 
 ## Comparison with MDTraj/MDAnalysis Integration
 
-| Feature | zsasa.xtc | zsasa.mdtraj | zsasa.mdanalysis |
-|---------|-----------|--------------|------------------|
-| Dependencies | None (only NumPy) | mdtraj | MDAnalysis |
-| Trajectory formats | XTC only | Many (XTC, TRR, DCD, ...) | Many |
-| Topology support | Manual radii | From topology | From topology |
-| Atom selection | No | Yes | Yes |
-| Performance | Potentially faster | Good | Good |
+| Feature | pyztraj | zsasa.xtc | zsasa.mdtraj | zsasa.mdanalysis |
+|---------|---------|-----------|--------------|------------------|
+| Dependencies | pyztraj | None (only NumPy) | mdtraj | MDAnalysis |
+| Trajectory formats | XTC, TRR, DCD, AMBER NetCDF | XTC only | Many (XTC, TRR, DCD, ...) | Many |
+| Topology support | From ztraj loaders | Manual radii | From topology | From topology |
+| Atom selection | Yes | No | Yes | Yes |
+| Status | Preferred for direct trajectory files | Legacy compatibility | Ecosystem integration | Ecosystem integration |
+
+### When to Use pyztraj
+
+- You need direct trajectory-file I/O in Python
+- You work with TRR, DCD, AMBER NetCDF, or multiple trajectory formats
+- You want trajectory-native analysis such as SASA near the I/O layer
 
 ### When to Use zsasa.xtc
 
-- You only have XTC files
-- You want minimal dependencies
-- You have radii from another source
-- Performance is critical
+- You are maintaining existing code that already imports `zsasa.xtc`
+- You only need the legacy XTC compatibility API
 
 ### When to Use MDTraj/MDAnalysis
 
-- You need topology parsing
-- You need atom selection
-- You work with multiple trajectory formats
-- You need additional analysis tools
+- You need MDTraj or MDAnalysis topology/selection objects
+- You already use those ecosystems for upstream trajectory handling

@@ -58,29 +58,19 @@ MDAnalysis Integration:
     >>> sasa.run()
     >>> print(sasa.results.total_area)  # Returns per-frame SASA in Å²
 
-Native XTC Reader:
-    For standalone XTC reading without MDTraj/MDAnalysis dependencies:
+Trajectory File I/O:
+    For direct trajectory-file I/O and trajectory-native analysis in Python,
+    prefer pyztraj (the Python bindings for ztraj). zsasa keeps the legacy
+    zsasa.xtc and zsasa.dcd modules for compatibility, but new trajectory
+    formats are centralized in pyztraj.
 
-    >>> from zsasa.xtc import XtcReader, compute_sasa_trajectory
-    >>> # Low-level reader API
-    >>> with XtcReader("trajectory.xtc") as reader:
+    >>> # pip install pyztraj
+    >>> import pyztraj
+    >>> structure = pyztraj.load_pdb("topology.pdb")
+    >>> with pyztraj.open_trr("trajectory.trr", structure.n_atoms) as reader:
     ...     for frame in reader:
-    ...         print(f"Step {frame.step}")
-    >>>
-    >>> # High-level SASA calculation (radii from topology)
-    >>> result = compute_sasa_trajectory("trajectory.xtc", radii)
-    >>> print(result.total_areas)  # Per-frame SASA in Å²
-
-Native DCD Reader:
-    For standalone DCD reading (NAMD/CHARMM format):
-
-    >>> from zsasa.dcd import DcdReader, compute_sasa_trajectory
-    >>> with DcdReader("trajectory.dcd") as reader:
-    ...     for frame in reader:
-    ...         print(f"Step {frame.step}, {frame.natoms} atoms")
-    >>>
-    >>> result = compute_sasa_trajectory("trajectory.dcd", radii)
-    >>> print(result.total_areas)  # Per-frame SASA in Å²
+    ...         sasa = pyztraj.compute_sasa(structure, frame.coords)
+    ...         print(sasa.total_area)
 """
 
 from zsasa._ffi import get_version

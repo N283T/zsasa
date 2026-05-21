@@ -21,6 +21,7 @@ The Python bindings provide:
 - **Per-residue aggregation**: Aggregate atom SASA to residue level
 - **Directory batch processing**: Process entire directories of structure files
 - **Library integrations**: gemmi, BioPython, Biotite, MDTraj, MDAnalysis (see [Integrations](../integrations/))
+- **Trajectory-file guidance**: use [pyztraj](https://github.com/N283T/ztraj) for direct Python trajectory I/O and trajectory-native analysis; `zsasa.xtc` is retained for legacy compatibility
 
 ## Contents
 
@@ -29,7 +30,7 @@ The Python bindings provide:
 | [Core API](core.md) | `calculate_sasa`, batch API, directory processing |
 | [Classifier](classifier.md) | Atom classification, RSA calculation |
 | [Analysis](analysis.md) | Per-residue aggregation, examples |
-| [Native XTC Reader](xtc.md) | Standalone XTC reading, no dependencies |
+| [Legacy Native XTC Reader](xtc.md) | Compatibility XTC reader; prefer pyztraj for new trajectory-file workflows |
 
 For structure file parsing and MD trajectory integrations, see [Integrations](../integrations/).
 
@@ -66,8 +67,9 @@ pip install zsasa[biopython] # BioPython
 pip install zsasa[biotite]   # Biotite (also works with AtomWorks)
 
 # For MD trajectory analysis
-pip install mdtraj                   # MDTraj
-pip install MDAnalysis               # MDAnalysis
+pip install mdtraj                   # MDTraj integration
+pip install MDAnalysis               # MDAnalysis integration
+pip install pyztraj                  # Direct trajectory-file I/O (XTC/TRR/DCD/NC)
 
 # All integrations
 pip install zsasa[all]
