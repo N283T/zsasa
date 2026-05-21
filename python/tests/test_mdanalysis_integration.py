@@ -169,12 +169,8 @@ class TestSASAAnalysis:
             res0_atoms = analysis.results.atom_area[frame, :5].sum()
             res1_atoms = analysis.results.atom_area[frame, 5:].sum()
 
-            assert analysis.results.residue_area[frame, 0] == pytest.approx(
-                res0_atoms, rel=0.01
-            )
-            assert analysis.results.residue_area[frame, 1] == pytest.approx(
-                res1_atoms, rel=0.01
-            )
+            assert analysis.results.residue_area[frame, 0] == pytest.approx(res0_atoms, rel=0.01)
+            assert analysis.results.residue_area[frame, 1] == pytest.approx(res1_atoms, rel=0.01)
 
     def test_total_matches_sum(self, universe: mda.Universe) -> None:
         """Test that total SASA matches atom SASA sum."""
@@ -183,9 +179,7 @@ class TestSASAAnalysis:
 
         for frame in range(analysis.n_frames):
             expected = analysis.results.atom_area[frame].sum()
-            assert analysis.results.total_area[frame] == pytest.approx(
-                expected, rel=0.01
-            )
+            assert analysis.results.total_area[frame] == pytest.approx(expected, rel=0.01)
 
     def test_method_chaining(self, universe: mda.Universe) -> None:
         """Test that run() returns self for chaining."""

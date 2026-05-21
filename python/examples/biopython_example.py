@@ -24,7 +24,6 @@ Examples:
 """
 
 from pathlib import Path
-from typing import Optional
 
 from zsasa import aggregate_from_result
 from zsasa.integrations.biopython import (
@@ -37,7 +36,7 @@ from zsasa.integrations.biopython import (
 EXAMPLES_DIR = Path(__file__).parent.parent.parent / "examples"
 
 
-def get_structure_file() -> Optional[Path]:
+def get_structure_file() -> Path | None:
     """Find an available example structure file."""
     pdb_file = EXAMPLES_DIR / "1ubq.pdb"
     cif_file = EXAMPLES_DIR / "1ubq.cif"
@@ -163,7 +162,7 @@ def per_residue_analysis() -> None:
 
     # Categorize residues by exposure
     exposed = []  # RSA > 50%
-    buried = []   # RSA < 10%
+    buried = []  # RSA < 10%
 
     for res in residue_results:
         if res.rsa is not None:
@@ -272,8 +271,10 @@ def filter_comparison() -> None:
         include_hetatm=False,
     )
 
-    print(f"With HETATM:    {len(result_with.atom_areas):4d} atoms, {result_with.total_area:.1f} Å²")
-    print(f"Without HETATM: {len(result_without.atom_areas):4d} atoms, {result_without.total_area:.1f} Å²")
+    with_atoms = len(result_with.atom_areas)
+    without_atoms = len(result_without.atom_areas)
+    print(f"With HETATM:    {with_atoms:4d} atoms, {result_with.total_area:.1f} Å²")
+    print(f"Without HETATM: {without_atoms:4d} atoms, {result_without.total_area:.1f} Å²")
     print()
     print("Tip: Exclude HETATM for protein-only analysis")
 

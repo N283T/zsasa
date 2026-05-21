@@ -29,7 +29,6 @@ Examples:
 """
 
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -37,7 +36,7 @@ import numpy as np
 EXAMPLES_DIR = Path(__file__).parent.parent.parent / "examples"
 
 
-def get_structure_file() -> Optional[Path]:
+def get_structure_file() -> Path | None:
     """Find an available example structure file."""
     pdb_file = EXAMPLES_DIR / "1ubq.pdb"
     if pdb_file.exists():
@@ -191,7 +190,7 @@ def per_residue_sasa() -> None:
 
     for i in range(min(10, n_residues)):
         res = topology.residue(i)
-        print(f"{res.name}{res.resSeq:<8} {residue_sasa[i]:>12.6f} {residue_sasa[i]*100:>12.2f}")
+        print(f"{res.name}{res.resSeq:<8} {residue_sasa[i]:>12.6f} {residue_sasa[i] * 100:>12.2f}")
 
 
 def selection() -> None:

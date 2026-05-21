@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-21
+
+### Added
+
+- **ztraj-backed trajectory formats**: support TRR and AMBER NetCDF in `zsasa traj` alongside XTC and DCD, with ztraj readers normalizing coordinates to Å before SASA calculation. (#378)
+
+### Changed
+
+- **Trajectory reader backend**: use `ztraj` for trajectory readers, centralizing XTC/DCD handling and dependency notices. (#377)
+- **Python trajectory guidance**: recommend `pyztraj` for direct Python trajectory-file I/O while keeping `zsasa.xtc` and `zsasa.dcd` as compatibility APIs. (#379)
+
+### Fixed
+
+- **Batch JSONL and FFI concurrency coverage**: add regression coverage for batch JSONL output and concurrent FFI calls. (#376)
+
 ## [0.5.0] - 2026-05-20
 
 ### Added
@@ -565,7 +580,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `calc_reference_sasa.py` - Generate reference SASA
   - `benchmark.py` - Performance benchmarking
 
-[Unreleased]: https://github.com/N283T/zsasa/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/N283T/zsasa/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/N283T/zsasa/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/N283T/zsasa/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/N283T/zsasa/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/N283T/zsasa/compare/v0.3.1...v0.3.2

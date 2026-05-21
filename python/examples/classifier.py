@@ -195,7 +195,7 @@ def batch_classification() -> None:
 
     class_names = {0: "POLAR", 1: "APOLAR", 2: "UNKNOWN"}
 
-    for i, (res, atom) in enumerate(zip(residues, atoms)):
+    for i, (res, atom) in enumerate(zip(residues, atoms, strict=True)):
         radius = result.radii[i]
         cls = result.classes[i]
         print(f"{res:<10} {atom:<8} {radius:>10.2f} {class_names[cls]:<10}")
@@ -273,7 +273,6 @@ def rsa_calculation() -> None:
 
     for observed, description in test_cases:
         rsa = calculate_rsa(observed, "ALA")
-        state = "Exposed" if rsa > 0.25 else "Buried"
         print(f"{observed:>15.1f} {rsa:>10.1%} {description}")
 
 
@@ -291,14 +290,32 @@ def complete_workflow() -> None:
 
     # Small peptide: Ala-Gly-Ser backbone + sidechains
     residues = [
-        "ALA", "ALA", "ALA", "ALA",  # Ala backbone + CB
-        "GLY", "GLY", "GLY",          # Gly backbone (no sidechain)
-        "SER", "SER", "SER", "SER", "SER",  # Ser backbone + OG
+        "ALA",
+        "ALA",
+        "ALA",
+        "ALA",  # Ala backbone + CB
+        "GLY",
+        "GLY",
+        "GLY",  # Gly backbone (no sidechain)
+        "SER",
+        "SER",
+        "SER",
+        "SER",
+        "SER",  # Ser backbone + OG
     ]
     atoms = [
-        "N", "CA", "C", "O",     # Ala
-        "N", "CA", "C",          # Gly
-        "N", "CA", "C", "O", "OG",  # Ser
+        "N",
+        "CA",
+        "C",
+        "O",  # Ala
+        "N",
+        "CA",
+        "C",  # Gly
+        "N",
+        "CA",
+        "C",
+        "O",
+        "OG",  # Ser
     ]
 
     # Step 1: Classify atoms to get radii
@@ -332,8 +349,8 @@ def complete_workflow() -> None:
     print()
     print("Results:")
     print(f"  Total SASA:  {total:>8.1f} Å² (100%)")
-    print(f"  Polar SASA:  {polar_sasa:>8.1f} Å² ({polar_sasa/total:>5.1%})")
-    print(f"  Apolar SASA: {apolar_sasa:>8.1f} Å² ({apolar_sasa/total:>5.1%})")
+    print(f"  Polar SASA:  {polar_sasa:>8.1f} Å² ({polar_sasa / total:>5.1%})")
+    print(f"  Apolar SASA: {apolar_sasa:>8.1f} Å² ({apolar_sasa / total:>5.1%})")
 
 
 def main() -> None:

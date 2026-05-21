@@ -38,7 +38,8 @@ zig build test
 zig build -Doptimize=ReleaseFast
 ./zig-out/bin/zsasa --help
 ./zig-out/bin/zsasa --version
-./zig-out/bin/zsasa calc examples/1ubq.pdb /tmp/zsasa-output.json
+mkdir -p /tmp/zsasa-check
+./zig-out/bin/zsasa calc examples/1ubq.pdb /tmp/zsasa-check/output.json
 ```
 
 Python package checks, when touching `python/` or the C ABI:
@@ -81,6 +82,7 @@ Use the narrowest checks that cover the changed surface area. If a check is skip
 - Keep the Python API aligned with the C ABI in `src/c_api.zig`.
 - Prefer focused tests in `python/tests/` for binding/API changes.
 - Use Ruff formatting/linting for Python changes.
+- Treat Ruff and pytest as the default Python release gates. Run `ty` only for focused typing work or after configuring/installing the relevant optional integration dependencies, because the current tree includes optional BioPython/Biotite/Gemmi/MDAnalysis/MDTraj imports and dynamic CFFI attributes that make an unconstrained full-tree `ty check` noisy.
 
 ## Documentation Guidelines
 
@@ -100,3 +102,52 @@ Use the narrowest checks that cover the changed surface area. If a check is skip
 - `CHANGELOG.md`, `build.zig.zon`, `python/pyproject.toml`, packaging metadata, and install scripts may need coordinated updates for releases.
 - Do not publish packages, create tags, or merge PRs without explicit user approval.
 - For Nix changes, verify the flake path touched and mention any follow-up commands the user should run.
+
+### Release Checklist
+
+Before opening a release PR:
+
+- Work from an up-to-date `main` branch with a clean working tree, then create a `release/vX.Y.Z` branch.
+- Normalize release versions as `vX.Y.Z` for git tags and PR titles, and as `X.Y.Z` in files.
+- Grep for the current version before editing so stale references are not missed:
+
+  ```bash
+  git grep -n '<current-version>' -- \
+    ':(exclude)CHANGELOG.md' \
+    ':(exclude)*.lock' \
+    ':(exclude)website/package-lock.json' \
+    ':(exclude)zig-out/'
+  ```
+
+- Bump every active package/runtime version reference:
+  - `build.zig`
+  - `build.zig.zon`
+  - `flake.nix`
+  - `python/pyproject.toml`
+  - `python/uv.lock` (regenerate or verify after `python/pyproject.toml` changes)
+  - `packaging/conda-forge/meta.yaml`
+  - `src/c_api.zig` (`VERSION`, used by `zsasa_version()` and Python `get_version()`)
+- Check release-adjacent files for required updates even when grep does not find the old version:
+  - `install.sh`
+  - `Dockerfile`
+  - `.github/workflows/publish.yml`
+  - `packaging/aur/PKGBUILD`
+  - `CITATION.cff`
+- Update changelogs and release links:
+  - Add a dated `CHANGELOG.md` section for `X.Y.Z`.
+  - Update the `[Unreleased]` compare link and add the new `X.Y.Z` compare link at the bottom of `CHANGELOG.md`.
+  - Update `website/docs/changelog.md` when the website changelog mirrors release notes.
+- Run focused release checks:
+
+  ```bash
+  zig fmt --check src/
+  zig build test
+  zig build -Doptimize=ReleaseFast
+  ./zig-out/bin/zsasa --version
+  mkdir -p /tmp/zsasa-check
+  ./zig-out/bin/zsasa calc examples/1ubq.pdb /tmp/zsasa-check/output.json
+  ```
+
+- When `python/` or the C ABI changed, also run the Python package checks from this file.
+- When `website/` or documentation build plumbing changed, also run the documentation site checks from this file.
+- Tag only after the release PR is merged. A pushed `vX.Y.Z` tag triggers the publish workflow, so confirm `CHANGELOG.md` and generated release notes first.

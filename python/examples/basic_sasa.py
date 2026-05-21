@@ -51,9 +51,9 @@ def single_atom() -> None:
     # Display results
     print(f"Coordinates: {coords[0]}")
     print(f"van der Waals radius: {radii[0]} Å")
-    print(f"Probe radius: 1.4 Å")
+    print("Probe radius: 1.4 Å")
     print(f"Total SASA: {result.total_area:.2f} Å²")
-    print(f"(Expected: ~105.68 Å² for isolated sphere)")
+    print("(Expected: ~105.68 Å² for isolated sphere)")
 
     # Verify the calculation
     expected = 4 * np.pi * (1.5 + 1.4) ** 2
@@ -89,13 +89,13 @@ def two_atoms() -> None:
     # With overlap, total SASA is reduced
     print(f"Atom 1: {coords[0]}, radius={radii[0]} Å")
     print(f"Atom 2: {coords[1]}, radius={radii[1]} Å")
-    print(f"Distance: 3.0 Å")
+    print("Distance: 3.0 Å")
     print()
-    print(f"Per-atom SASA:")
+    print("Per-atom SASA:")
     print(f"  Atom 1: {result.atom_areas[0]:.2f} Å²")
     print(f"  Atom 2: {result.atom_areas[1]:.2f} Å²")
     print(f"Total SASA: {result.total_area:.2f} Å²")
-    print(f"(Two isolated atoms would be ~211.4 Å²)")
+    print("(Two isolated atoms would be ~211.4 Å²)")
     print(f"Buried area: {211.4 - result.total_area:.2f} Å²")
 
 

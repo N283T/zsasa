@@ -7,8 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from zsasa.xtc import XtcReader, TrajectorySasaResult, compute_sasa_trajectory
-
+from zsasa.xtc import TrajectorySasaResult, XtcReader, compute_sasa_trajectory
 
 # Path to test data
 TEST_DATA_DIR = Path(__file__).parent.parent.parent / "test_data"
