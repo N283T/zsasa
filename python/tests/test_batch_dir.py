@@ -101,9 +101,7 @@ class TestProcessDirectory:
 
     def test_process_directory_naccess_classifier(self) -> None:
         """Process with NACCESS classifier."""
-        result = process_directory(
-            TEST_DATA_DIR, classifier=ClassifierType.NACCESS
-        )
+        result = process_directory(TEST_DATA_DIR, classifier=ClassifierType.NACCESS)
 
         assert result.successful > 0
 
@@ -133,6 +131,43 @@ class TestProcessDirectory:
         result = process_directory(TEST_DATA_DIR, n_threads=1)
 
         assert result.successful > 0
+
+    def test_process_directory_parallel_matches_single_thread(self) -> None:
+        """Parallel directory processing should match single-thread results."""
+        result_1 = process_directory(TEST_DATA_DIR, n_threads=1)
+        result_4 = process_directory(TEST_DATA_DIR, n_threads=4)
+
+        assert result_4.total_files == result_1.total_files
+        assert result_4.successful == result_1.successful
+        assert result_4.failed == result_1.failed
+
+        by_name_1 = {
+            filename: (n_atoms, total_sasa, status)
+            for filename, n_atoms, total_sasa, status in zip(
+                result_1.filenames,
+                result_1.n_atoms,
+                result_1.total_sasa,
+                result_1.status,
+                strict=True,
+            )
+        }
+        by_name_4 = {
+            filename: (n_atoms, total_sasa, status)
+            for filename, n_atoms, total_sasa, status in zip(
+                result_4.filenames,
+                result_4.n_atoms,
+                result_4.total_sasa,
+                result_4.status,
+                strict=True,
+            )
+        }
+        assert by_name_4.keys() == by_name_1.keys()
+        for filename, (n_atoms_1, total_sasa_1, status_1) in by_name_1.items():
+            n_atoms_4, total_sasa_4, status_4 = by_name_4[filename]
+            assert n_atoms_4 == n_atoms_1
+            assert status_4 == status_1
+            if status_1 == 1:
+                assert total_sasa_4 == pytest.approx(total_sasa_1)
 
     def test_process_directory_repr(self) -> None:
         """BatchDirResult repr shows summary counts."""

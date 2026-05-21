@@ -4155,6 +4155,121 @@ test "FileResult JSONL uses residue map serializer when present" {
     try std.testing.expect(std.mem.indexOf(u8, line, "\"residue_sasa\":[3]") != null);
 }
 
+test "JsonlStreamWriter writes many parseable JSONL lines" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const output_path = try std.fs.path.join(allocator, &.{ root_buf[0..root_len], "stream.jsonl" });
+    defer allocator.free(output_path);
+
+    const file = try std.Io.Dir.cwd().createFile(std.testing.io, output_path, .{});
+    var stream = JsonlStreamWriter{ .file = file, .io = std.testing.io };
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const atom_areas = [_]f64{ 1.0, 2.0, 3.0 };
+    var name_buf: [32]u8 = undefined;
+    for (0..50) |i| {
+        _ = arena.reset(.retain_capacity);
+        const name = try std.fmt.bufPrint(&name_buf, "file-{d}.pdb", .{i});
+        var result = FileResult{
+            .filename = name,
+            .n_atoms = atom_areas.len,
+            .sasa_time_ns = 1,
+            .total_sasa = 6.0,
+            .status = .ok,
+            .atom_areas = atom_areas[0..],
+        };
+        stream.writeResult(arena.allocator(), &result);
+        try std.testing.expect(!stream.hasError());
+    }
+    file.close(std.testing.io);
+
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(64 * 1024));
+    defer allocator.free(content);
+    try std.testing.expectEqual(@as(usize, 50), std.mem.count(u8, content, "\n"));
+
+    var lines = std.mem.tokenizeScalar(u8, content, '\n');
+    var count: usize = 0;
+    while (lines.next()) |line| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer parsed.deinit();
+        const object = parsed.value.object;
+        try std.testing.expect(object.get("filename") != null);
+        try std.testing.expect(object.get("atom_areas") != null);
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 50), count);
+}
+
+test "runBatchParallel writes parseable JSONL with multiple threads" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root_path = root_buf[0..root_len];
+
+    const input_dir = try std.fs.path.join(allocator, &.{ root_path, "input" });
+    defer allocator.free(input_dir);
+    const output_path = try std.fs.path.join(allocator, &.{ root_path, "results.jsonl" });
+    defer allocator.free(output_path);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+
+    const pdb_data =
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N\n" ++
+        "ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C\n" ++
+        "ATOM      3  C   ALA A   1       3.000   0.000   0.000  1.00 20.00           C\n" ++
+        "END\n";
+
+    var name_buf: [32]u8 = undefined;
+    for (0..10) |i| {
+        const filename = try std.fmt.bufPrint(&name_buf, "tiny-{d}.pdb", .{i});
+        const path = try std.fs.path.join(allocator, &.{ input_dir, filename });
+        defer allocator.free(path);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = pdb_data });
+    }
+
+    var result = try runBatchParallel(allocator, std.testing.io, input_dir, null, .{
+        .n_threads = 4,
+        .algorithm = .sr,
+        .n_points = 8,
+        .quiet = true,
+        .show_progress = false,
+        .output_format = .jsonl,
+        .store_atom_areas = true,
+        .classifier_type = .naccess,
+    }, output_path);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 10), result.total_files);
+    try std.testing.expectEqual(@as(usize, 10), result.successful);
+    try std.testing.expectEqual(@as(usize, 0), result.failed);
+
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(64 * 1024));
+    defer allocator.free(content);
+    try std.testing.expectEqual(@as(usize, 10), std.mem.count(u8, content, "\n"));
+
+    var lines = std.mem.tokenizeScalar(u8, content, '\n');
+    var count: usize = 0;
+    while (lines.next()) |line| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer parsed.deinit();
+        const object = parsed.value.object;
+        try std.testing.expect(object.get("filename") != null);
+        try std.testing.expect(object.get("total_area") != null);
+        try std.testing.expect(object.get("atom_areas") != null);
+        try std.testing.expectEqual(@as(usize, 3), object.get("atom_areas").?.array.items.len);
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 10), count);
+}
+
 test "BatchArgs explicit option flags" {
     const args = [_][]const u8{
         "zsasa", "batch", "--threads=8", "--n-points=128", "--format=jsonl", "--use-bitmask", "input_dir/",
