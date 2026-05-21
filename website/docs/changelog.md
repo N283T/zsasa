@@ -8,6 +8,21 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+## [v0.6.0](https://github.com/N283T/zsasa/releases/tag/v0.6.0) — 2026-05-21
+
+### Added
+
+- **ztraj-backed trajectory formats**: `zsasa traj` now supports TRR and AMBER NetCDF alongside XTC and DCD, with coordinates normalized to Å before SASA calculation. (#378)
+
+### Changed
+
+- **Trajectory reader backend**: use `ztraj` for trajectory readers and dependency notices. (#377)
+- **Python trajectory guidance**: recommend `pyztraj` for direct Python trajectory-file I/O while keeping `zsasa.xtc` and `zsasa.dcd` as compatibility APIs. (#379)
+
+### Fixed
+
+- **Batch JSONL and FFI concurrency coverage**: add regression coverage for batch JSONL output and concurrent FFI calls. (#376)
+
 ## [v0.5.0](https://github.com/N283T/zsasa/releases/tag/v0.5.0) — 2026-05-20
 
 ### Added

@@ -30,15 +30,12 @@ Examples:
 """
 
 from pathlib import Path
-from typing import Optional
-
-import numpy as np
 
 # Find example structure files
 EXAMPLES_DIR = Path(__file__).parent.parent.parent / "examples"
 
 
-def get_structure_file() -> Optional[Path]:
+def get_structure_file() -> Path | None:
     """Find an available example structure file."""
     pdb_file = EXAMPLES_DIR / "1ubq.pdb"
     if pdb_file.exists():
@@ -145,7 +142,7 @@ def per_residue_sasa() -> None:
 
     # Aggregate to residues
     residue_sasa: dict[tuple[str, int, str], float] = {}
-    for atom, area in zip(protein.atoms, sasa.results.atom_area[0]):
+    for atom, area in zip(protein.atoms, sasa.results.atom_area[0], strict=True):
         res_key = (atom.resname, atom.resid, atom.segid)
         if res_key not in residue_sasa:
             residue_sasa[res_key] = 0.0
@@ -155,7 +152,7 @@ def per_residue_sasa() -> None:
     print(f"{'Residue':<12} {'SASA (Å²)':>12}")
     print("-" * 26)
 
-    for i, ((resname, resid, segid), sasa_val) in enumerate(residue_sasa.items()):
+    for i, ((resname, resid, _segid), sasa_val) in enumerate(residue_sasa.items()):
         if i >= 10:
             break
         print(f"{resname}{resid:<8} {sasa_val:>12.2f}")

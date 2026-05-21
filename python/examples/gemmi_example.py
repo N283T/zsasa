@@ -24,7 +24,6 @@ Examples:
 """
 
 from pathlib import Path
-from typing import Optional
 
 from zsasa import ClassifierType, aggregate_from_result
 from zsasa.integrations.gemmi import (
@@ -37,7 +36,7 @@ from zsasa.integrations.gemmi import (
 EXAMPLES_DIR = Path(__file__).parent.parent.parent / "examples"
 
 
-def get_structure_file() -> Optional[Path]:
+def get_structure_file() -> Path | None:
     """Find an available example structure file.
 
     Returns mmCIF file preferentially over PDB (more complete metadata).
@@ -212,8 +211,8 @@ def per_residue_analysis() -> None:
     exposed = len([r for r in residue_results if r.rsa is not None and r.rsa > 0.25])
     print()
     print(f"Total residues: {total}")
-    print(f"Exposed (RSA > 25%): {exposed} ({exposed/total:.1%})")
-    print(f"Buried (RSA < 25%): {total - exposed} ({(total-exposed)/total:.1%})")
+    print(f"Exposed (RSA > 25%): {exposed} ({exposed / total:.1%})")
+    print(f"Buried (RSA < 25%): {total - exposed} ({(total - exposed) / total:.1%})")
 
 
 def algorithm_comparison() -> None:
@@ -234,16 +233,16 @@ def algorithm_comparison() -> None:
     # More points = more accurate but slower
     result_sr = calculate_sasa_from_structure(
         structure_file,
-        algorithm="sr",   # Shrake-Rupley
-        n_points=100,     # Test points per atom
+        algorithm="sr",  # Shrake-Rupley
+        n_points=100,  # Test points per atom
     )
 
     # Lee-Richards: slice-based method
     # More slices = more accurate but slower
     result_lr = calculate_sasa_from_structure(
         structure_file,
-        algorithm="lr",   # Lee-Richards
-        n_slices=20,      # Slices per atom
+        algorithm="lr",  # Lee-Richards
+        n_slices=20,  # Slices per atom
     )
 
     print(f"Shrake-Rupley (100 points): {result_sr.total_area:.1f} Å²")
@@ -284,8 +283,10 @@ def filter_options() -> None:
         include_hetatm=False,
     )
 
-    print(f"With HETATM:    {len(result_with_het.atom_areas):4d} atoms, {result_with_het.total_area:.1f} Å²")
-    print(f"Without HETATM: {len(result_no_het.atom_areas):4d} atoms, {result_no_het.total_area:.1f} Å²")
+    with_atoms = len(result_with_het.atom_areas)
+    without_atoms = len(result_no_het.atom_areas)
+    print(f"With HETATM:    {with_atoms:4d} atoms, {result_with_het.total_area:.1f} Å²")
+    print(f"Without HETATM: {without_atoms:4d} atoms, {result_no_het.total_area:.1f} Å²")
     print()
     print("Note: HETATM includes water, ligands, and ions")
     print("For most analyses, exclude HETATM to focus on protein surface")

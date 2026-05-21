@@ -26,7 +26,6 @@ Examples:
 """
 
 from pathlib import Path
-from typing import Optional
 
 from zsasa import aggregate_from_result
 from zsasa.integrations.biotite import (
@@ -39,7 +38,7 @@ from zsasa.integrations.biotite import (
 EXAMPLES_DIR = Path(__file__).parent.parent.parent / "examples"
 
 
-def get_structure_file() -> Optional[Path]:
+def get_structure_file() -> Path | None:
     """Find an available example structure file.
 
     Prefers mmCIF over PDB for better metadata handling.
@@ -258,12 +257,10 @@ def hetatm_comparison() -> None:
     result_with = calculate_sasa_from_structure(structure_file, include_hetatm=True)
     result_without = calculate_sasa_from_structure(structure_file, include_hetatm=False)
 
-    print(
-        f"With HETATM:    {len(result_with.atom_areas):4d} atoms, {result_with.total_area:.1f} Å²"
-    )
-    print(
-        f"Without HETATM: {len(result_without.atom_areas):4d} atoms, {result_without.total_area:.1f} Å²"
-    )
+    with_atoms = len(result_with.atom_areas)
+    without_atoms = len(result_without.atom_areas)
+    print(f"With HETATM:    {with_atoms:4d} atoms, {result_with.total_area:.1f} Å²")
+    print(f"Without HETATM: {without_atoms:4d} atoms, {result_without.total_area:.1f} Å²")
 
 
 def main() -> None:
