@@ -117,9 +117,9 @@ Bitmask mode provides the largest benefit on large structures and long trajector
 
 | Use Case | Speedup vs Standard | Details |
 |----------|-------------------:|---------|
-| Single file (100k+ atoms) | ~1.2x | [Single-file benchmarks](../benchmarks/single-file.md#bitmask-variants) |
+| Single file (100k+ atoms) | ~1.2x | [Single-file benchmarks](../benchmarks/single-file.md#runtime-and-memory) |
 | Batch proteome processing | ~1.5–2x | [Batch benchmarks](../benchmarks/batch.md) |
-| MD trajectory (33k atoms, 1k frames) | ~2.1x | [MD benchmarks](../benchmarks/md.md#6sup_a_analysis-large-33377-atoms-1001-frames) |
+| MD trajectory (33k atoms, 1k frames) | ~2.3x | [MD benchmarks](../benchmarks/md.md#throughput-summary) |
 
 Memory usage is minimal — the LUT adds only ~2 MB overhead for CLI mode.
 

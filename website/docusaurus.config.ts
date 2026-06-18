@@ -95,7 +95,7 @@ const config: Config = {
           items: [
             { label: "Python API", to: "/docs/python-api" },
             { label: "Zig API", to: "/docs/zig-api/autodoc" },
-            { label: "Benchmarks", to: "/docs/benchmarks/single-file" },
+            { label: "Benchmarks", to: "/docs/benchmarks" },
           ],
         },
         {

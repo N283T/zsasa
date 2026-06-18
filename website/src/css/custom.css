@@ -20,3 +20,49 @@
   --ifm-color-primary-lightest: #fbc76f;
   --docusaurus-highlighted-code-line-bg: rgba(247, 164, 29, 0.15);
 }
+
+/* Benchmark figure layouts */
+.benchmarkFigureGrid {
+  display: grid;
+  gap: 1rem;
+  margin: 1rem 0 0.5rem;
+}
+
+.benchmarkFigureGrid--2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.benchmarkFigureGrid a,
+.benchmarkFigureFull a {
+  display: block;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 8px;
+  background: var(--ifm-background-surface-color);
+  padding: 0.5rem;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.benchmarkFigureGrid a:hover,
+.benchmarkFigureFull a:hover {
+  border-color: var(--ifm-color-primary);
+  transform: translateY(-1px);
+}
+
+.benchmarkFigureGrid img,
+.benchmarkFigureFull img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.benchmarkFigureCaption {
+  margin-top: 0.35rem;
+  color: var(--ifm-color-emphasis-700);
+  font-size: 0.9rem;
+}
+
+@media (max-width: 996px) {
+  .benchmarkFigureGrid--2 {
+    grid-template-columns: 1fr;
+  }
+}
