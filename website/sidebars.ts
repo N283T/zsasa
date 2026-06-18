@@ -58,10 +58,10 @@ const sidebars: SidebarsConfig = {
       label: "Benchmarks",
       items: [
         "benchmarks/index",
-        "benchmarks/single-file",
+        "benchmarks/validation",
         "benchmarks/batch",
         "benchmarks/md",
-        "benchmarks/validation",
+        "benchmarks/single-file",
       ],
     },
     {

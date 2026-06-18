@@ -1,6 +1,6 @@
 # Single-File Stress Benchmarks
 
-Single-file benchmarks focus on large structures and parser-heavy cases that are hidden by directory-level averages. The pinned paper-era suite uses eight protein-only PDB inputs, 100 sphere points, and 10 threads for the headline results.
+Single-file benchmarks focus on large structures and parser-heavy cases that are hidden by directory-level averages. The pinned current pinned suite uses eight protein-only PDB inputs, 100 sphere points, and 10 threads for the headline results.
 
 ## Dataset
 
@@ -21,9 +21,13 @@ Lahuta is excluded from this suite because the benchmarked SASA command targets 
 
 ## Runtime and memory
 
-![Single-file runtime and peak RSS](pathname:///zsasa/assets/benchmarks/paper/fig5_single_runtime_rss.png)
+![Single-file runtime bars](pathname:///zsasa/assets/benchmarks/paper/single/single_t10_runtime_bar_grid.png)
 
-**Figure 1. Single-structure runtime and peak memory versus atom count.** `zsasa` remains faster than FreeSASA and RustSASA across the curated subset while using less memory.
+**Figure 1. Single-file runtime bars.** Absolute wall-clock time across the eight curated structures at 10 threads.
+
+![Single-file peak RSS bars](pathname:///zsasa/assets/benchmarks/paper/single/single_t10_peak_rss_bar_grid.png)
+
+**Figure 2. Single-file peak RSS bars.** Peak memory remains lower for `zsasa` across the large-structure and parser-stress cases.
 
 Selected 10-thread results:
 
@@ -42,9 +46,9 @@ Selected 10-thread results:
 
 `zsasa` records component timings with its native `--timing` path. The benchmark harness also used timing-enabled comparator builds so parse and kernel effects could be separated.
 
-![Single-file parse and SASA timing](pathname:///zsasa/assets/benchmarks/paper/fig6_single_parse_sasa.png)
+![Single-file parse and SASA timing](pathname:///zsasa/assets/benchmarks/paper/single/single_t10_parse_sasa_breakdown_grid.png)
 
-**Figure 2. Parse time versus SASA-kernel time.** On the largest assembly, `zsasa` f64 spent about 708 ms parsing and 3,754 ms in SASA calculation; bitmask reduced the SASA component to about 2,861 ms.
+**Figure 3. Parse time versus SASA-kernel time.** On the largest assembly, `zsasa` f64 spent about 708 ms parsing and 3,754 ms in SASA calculation; bitmask reduced the SASA component to about 2,861 ms.
 
 Selected component timings:
 
@@ -62,7 +66,7 @@ Selected component timings:
 
 ![Single-file thread scaling](pathname:///zsasa/assets/benchmarks/paper/details/single_runtime_vs_threads_grid.png)
 
-**Figure 3. Runtime versus thread count across the curated single-file subset.** Thread scaling depends on structure size and parser behavior; the largest structures benefit most from parallel SASA calculation.
+**Figure 4. Runtime versus thread count across the curated single-file subset.** Thread scaling depends on structure size and parser behavior; the largest structures benefit most from parallel SASA calculation.
 
 ## Caveats
 

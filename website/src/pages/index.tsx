@@ -45,7 +45,7 @@ function HomepageHeader() {
           </Link>
           <Link
             className="button button--secondary button--lg"
-            to="/docs/benchmarks/single-file"
+            to="/docs/benchmarks"
           >
             Benchmarks
           </Link>
@@ -66,12 +66,12 @@ export default function Home(): ReactNode {
           <div className="container">
             <div className="row">
               <div className="col col--6">
-                <Heading as="h2">Paper-Era Benchmarks</Heading>
+                <Heading as="h2">Current Benchmarks</Heading>
                 <p>
                   Process 4,370 E. coli AFDB structures in 1.48s and 23,586
                   Human AFDB structures in 13.81s with bitmask f32 mode. The
-                  pinned v0.6.0 benchmark suite also covers FreeSASA agreement,
-                  large single structures, and low-memory MD trajectories.
+                  pinned v0.6.0 suite covers FreeSASA agreement, throughput,
+                  peak RSS, large structures, and MD trajectories.
                 </p>
                 <Link to="/docs/benchmarks/batch">
                   See batch benchmarks →

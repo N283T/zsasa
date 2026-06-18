@@ -1,6 +1,6 @@
 # Batch Processing Benchmarks
 
-Batch benchmarks measure complete directory processing: parsing, SASA calculation, output writing, and worker scheduling. The current paper-era results use `zsasa` v0.6.0, pinned comparator builds, 128 sphere points, and 10 threads unless noted.
+Batch benchmarks measure complete directory processing: parsing, SASA calculation, output writing, and worker scheduling. The current current pinned results use `zsasa` v0.6.0, pinned comparator builds, 128 sphere points, and 10 threads unless noted.
 
 ## TL;DR
 
@@ -25,9 +25,13 @@ The *E. coli* AFDB collection contains 4,370 structures and is used for both com
 | RustSASA | 5.769 s | 757 | 170.5 MiB | 2.25× | baseline | 0.35× |
 | Lahuta bitmask | 2.034 s | 2,148 | 180.7 MiB | 6.38× | 2.84× | baseline |
 
-![E. coli batch performance](pathname:///zsasa/assets/benchmarks/paper/fig3_batch_ecoli.png)
+![E. coli throughput vs peak RSS](pathname:///zsasa/assets/benchmarks/paper/batch/ecoli_t10_throughput_vs_peak_rss.png)
 
-**Figure 1. E. coli batch performance.** `zsasa` occupies the high-throughput, low-memory region; bitmask f32 is fastest at 10 threads.
+**Figure 1. E. coli throughput versus peak RSS.** This map shows the practical trade-off directly: higher throughput and lower RSS are better.
+
+![E. coli throughput and RSS bars](pathname:///zsasa/assets/benchmarks/paper/batch/ecoli_throughput_rss_bar_2grid.png)
+
+**Figure 2. E. coli absolute throughput and peak RSS.** The bar view complements the map by showing the absolute values for each tool and mode.
 
 ### Thread scaling
 
@@ -41,7 +45,7 @@ The *E. coli* AFDB collection contains 4,370 structures and is used for both com
 
 ![E. coli throughput by thread count](pathname:///zsasa/assets/benchmarks/paper/details/ecoli_throughput_vs_threads.png)
 
-**Figure 2. E. coli throughput by thread count.** `zsasa` exact and bitmask modes scale strongly up to 10 threads on the M4 benchmark machine.
+**Figure 3. E. coli throughput by thread count.** `zsasa` exact and bitmask modes scale strongly up to 10 threads on the M4 benchmark machine.
 
 ## Human AFDB batch
 
@@ -57,13 +61,17 @@ The Human AFDB collection contains 23,586 structures, 5.4× more than the *E. co
 | RustSASA | 67.531 s | 349 | 330.0 MiB | 1.98× | baseline | 0.29× |
 | Lahuta bitmask | 19.566 s | 1,205 | 326.9 MiB | 6.85× | 3.45× | baseline |
 
-![Human batch performance](pathname:///zsasa/assets/benchmarks/paper/fig4_batch_human.png)
+![Human throughput vs peak RSS](pathname:///zsasa/assets/benchmarks/paper/batch/human_t10_throughput_vs_peak_rss.png)
 
-**Figure 3. Human AFDB batch performance.** The same low-memory/high-throughput pattern holds on the larger Human AFDB collection.
+**Figure 4. Human throughput versus peak RSS.** `zsasa` keeps the same low-memory/high-throughput position on the larger Human AFDB collection.
+
+![Human throughput and RSS bars](pathname:///zsasa/assets/benchmarks/paper/batch/human_throughput_rss_bar_2grid.png)
+
+**Figure 5. Human absolute throughput and peak RSS.** The absolute bars make the memory difference visible without relying on speedup ratios.
 
 ## Legacy SwissProt benchmark (pre-pinned)
 
-The SwissProt result below is retained only as historical context from the earlier website benchmark set. It was collected before the current `zsasa-benchmarks` pinned v0.6.0 harness and should not be mixed with the paper-era headline claims above.
+The SwissProt result below is retained only as historical context from the earlier website benchmark set. It was collected before the current `zsasa-benchmarks` pinned v0.6.0 harness and should not be mixed with the current pinned headline claims above.
 
 Dataset: SwissProt PDB v6, 550,122 structures, PDB format. Benchmark settings: warmup=3, runs=3, threads=10.
 
@@ -91,4 +99,4 @@ On the 32 GB M4 system, the dataset exceeded available RAM and the run became I/
 
 ## Reproducing the current batch results
 
-The paper-era benchmark data is exported from `zsasa-benchmarks/results/tables/batch_t10_summary.csv` and `batch_thread_scaling.csv`. The corresponding full harness is in [`N283T/zsasa-benchmarks`](https://github.com/N283T/zsasa-benchmarks).
+The current pinned benchmark data is exported from `zsasa-benchmarks/results/tables/batch_t10_summary.csv` and `batch_thread_scaling.csv`. The corresponding full harness is in [`N283T/zsasa-benchmarks`](https://github.com/N283T/zsasa-benchmarks).

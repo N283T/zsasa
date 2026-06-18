@@ -1,6 +1,6 @@
 # MD Trajectory Benchmarks
 
-Trajectory benchmarks measure frame-wise SASA calculation under streaming, low-memory conditions. The paper-era throughput suite uses 100 sphere points, 10 threads, stride 1, the NACCESS classifier, and explicit hydrogens.
+Trajectory benchmarks measure frame-wise SASA calculation under streaming, low-memory conditions. The current pinned throughput suite uses 100 sphere points, 10 threads, stride 1, the NACCESS classifier, and explicit hydrogens.
 
 ## Workloads
 
@@ -18,9 +18,9 @@ Trajectory benchmarks measure frame-wise SASA calculation under streaming, low-m
 | 6sup_A | CLI bitmask f32 | 6.949 s | 144 | 115.9 MiB | 132× vs MDTraj |
 | 5vz0_A | CLI bitmask f32 | 38.056 s | 263 | 64.6 MiB | 86.5× vs mdsasa-bolt |
 
-![Trajectory throughput and speedup](pathname:///zsasa/assets/benchmarks/paper/fig7_md_throughput_rss.png)
+![MD throughput vs peak RSS](pathname:///zsasa/assets/benchmarks/paper/md/md_throughput_vs_peak_rss_logx_grid.png)
 
-**Figure 1. Trajectory throughput and speedup.** The `zsasa` CLI paths occupy the high-throughput, low-memory region across the three workloads.
+**Figure 1. MD throughput versus peak RSS.** The `zsasa` CLI paths occupy the high-throughput, low-memory region across the three workloads.
 
 ## Per-dataset comparison
 
@@ -38,9 +38,13 @@ Trajectory benchmarks measure frame-wise SASA calculation under streaming, low-m
 | 5vz0_A | `zsasa` CLI bitmask f32 | 38.056 s | 263 | 64.6 MiB | 86.5× faster than mdsasa-bolt |
 | 5vz0_A | mdsasa-bolt (Rust) | 3,293.112 s | 3.0 | 24,082 MiB | MDTraj not run for this long trajectory |
 
-![MD frames per second](pathname:///zsasa/assets/benchmarks/paper/details/md_frames_per_sec_bar_grid.png)
+![MD frames per second](pathname:///zsasa/assets/benchmarks/paper/md/md_frames_per_sec_bar_grid.png)
 
 **Figure 2. Frames per second across trajectory workloads.** `zsasa` CLI exact and bitmask modes are the fastest low-memory paths in the benchmarked workloads.
+
+![MD peak RSS](pathname:///zsasa/assets/benchmarks/paper/md/md_peak_rss_bar_grid.png)
+
+**Figure 3. Peak RSS across trajectory workloads.** The absolute-memory bars show why streaming trajectory processing matters for large or long trajectories.
 
 ## Memory interpretation
 

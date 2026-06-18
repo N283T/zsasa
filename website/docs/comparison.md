@@ -4,7 +4,7 @@ sidebar_position: 3
 
 # Comparison with Other Tools
 
-How `zsasa` compares with FreeSASA, RustSASA, and Lahuta for SASA-focused workflows. This page emphasizes factual feature differences and points to the benchmark pages for paper-era performance numbers.
+How `zsasa` compares with FreeSASA, RustSASA, and Lahuta for SASA-focused workflows. This page emphasizes factual feature differences and points to the benchmark pages for current pinned performance numbers.
 
 ## Overview
 
@@ -30,7 +30,7 @@ How `zsasa` compares with FreeSASA, RustSASA, and Lahuta for SASA-focused workfl
 
 ## Bitmask LUT mode
 
-`zsasa` includes a bitmask lookup-table mode for high-throughput SR calculations. It is an approximation, not a numerically identical replacement for exact SR mode. In the paper-era static validation set, bitmask f64 at 128 points reached R² = 0.999811, mean relative difference = 0.662%, and max relative difference = 2.02% versus FreeSASA.
+`zsasa` includes a bitmask lookup-table mode for high-throughput SR calculations. It is an approximation, not a numerically identical replacement for exact SR mode. In the current pinned static validation set, bitmask f64 at 128 points reached R² = 0.999811, mean relative difference = 0.662%, and max relative difference = 2.02% versus FreeSASA.
 
 | Tool | Bitmask support | Point-count support |
 | --- | --- | --- |
@@ -49,7 +49,7 @@ RustSASA relies on `pdbtbx`; the benchmark input preparation had to normalize la
 
 ## Batch processing
 
-FreeSASA has no native directory mode. The paper-era batch benchmarks therefore use `freesasa_batch`, a thin wrapper around the pinned FreeSASA C API, so that comparisons are multi-file workloads rather than shell loops.
+FreeSASA has no native directory mode. The current pinned batch benchmarks therefore use `freesasa_batch`, a thin wrapper around the pinned FreeSASA C API, so that comparisons are multi-file workloads rather than shell loops.
 
 Representative 10-thread batch results at 128 points:
 
@@ -64,7 +64,7 @@ See [Batch Processing Benchmarks](benchmarks/batch.md) for full tables and the l
 
 ## Single-file stress behavior
 
-The paper-era single-file suite uses eight curated structures up to 4,506,416 atoms. On the largest assembly, `zsasa` completed in 4.696 s in f64 mode and 3.788 s in bitmask f64 mode at 100 points and 10 threads. The same normalized input took 191.876 s with FreeSASA and 8.731 s with RustSASA.
+The current pinned single-file suite uses eight curated structures up to 4,506,416 atoms. On the largest assembly, `zsasa` completed in 4.696 s in f64 mode and 3.788 s in bitmask f64 mode at 100 points and 10 threads. The same normalized input took 191.876 s with FreeSASA and 8.731 s with RustSASA.
 
 | Workload | Mode | Runtime | RSS | Speedup vs FreeSASA |
 | --- | --- | ---: | ---: | ---: |
@@ -104,7 +104,7 @@ Zig has not yet reached version 1.0. The language may introduce breaking changes
 
 ### Benchmark scope
 
-The current paper-era benchmark claims come from one consumer laptop and pinned comparator versions. Absolute runtimes will vary across hardware. Use the relative comparisons and the documented benchmark settings when interpreting the results.
+The current current pinned benchmark claims come from one consumer laptop and pinned comparator versions. Absolute runtimes will vary across hardware. Use the relative comparisons and the documented benchmark settings when interpreting the results.
 
 ## Links
 
