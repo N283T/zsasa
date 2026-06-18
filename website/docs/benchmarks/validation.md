@@ -20,7 +20,16 @@ The bitmask path is intentionally different: it trades exact numerical identity 
 
 [![Static validation mean relative error](pathname:///zsasa/assets/benchmarks/paper/details/static_sr_mean_relative_error.png)](/assets/benchmarks/paper/details/static_sr_mean_relative_error.png)
 
-**Figure 1. Static validation error across point counts.** This summary view is easier to scan than the full scatter-grid output. Exact `zsasa` modes remain nearly identical to FreeSASA; bitmask mode has a visible but quantified approximation envelope.
+**Figure 1. Static validation error across point counts.** This summary view is the primary static-validation readout. Exact `zsasa` modes remain nearly identical to FreeSASA; bitmask mode has a visible but quantified approximation envelope.
+
+<details>
+<summary>Show static-validation scatter grid</summary>
+
+[![Static validation scatter grid](pathname:///zsasa/assets/benchmarks/paper/details/static_sr_scatter_grid.png)](/assets/benchmarks/paper/details/static_sr_scatter_grid.png)
+
+The scatter grid is retained as supporting evidence. Click the image to inspect the full-size grid.
+
+</details>
 
 ## Trajectory validation against MDTraj
 
@@ -36,7 +45,16 @@ Trajectory validation uses the 5wvo_C ATLAS trajectory with 1,001 frames. Agreem
 
 [![MD validation R2](pathname:///zsasa/assets/benchmarks/paper/details/md_r2.png)](/assets/benchmarks/paper/details/md_r2.png)
 
-**Figure 2. MD validation R² across point counts.** Higher point counts reduce the implementation-specific sampling difference against MDTraj. The full scatter grids are available from the benchmark repository outputs, but the website keeps the validation page focused on summary readouts.
+**Figure 2. MD validation R² across point counts.** Higher point counts reduce the implementation-specific sampling difference against MDTraj. This summary is easier to scan than the full scatter-grid output.
+
+<details>
+<summary>Show MD-validation scatter grid</summary>
+
+[![MD validation scatter grid](pathname:///zsasa/assets/benchmarks/paper/details/md_scatter_grid.png)](/assets/benchmarks/paper/details/md_scatter_grid.png)
+
+The scatter grid is retained as supporting evidence. Click the image to inspect the full-size grid.
+
+</details>
 
 ## Reproducibility notes
 
