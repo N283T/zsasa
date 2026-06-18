@@ -2,16 +2,6 @@
 
 Validation is a consistency check rather than a comparison to an external ground truth. As in the paper, SASA is defined operationally by the chosen algorithm, radii, probe radius, sampling convention, hydrogen policy, and parser decisions, so there is no single implementation-independent reference value for these inputs. Close agreement under matched settings shows that `zsasa` stays in line with established tools, not that any one tool is uniquely correct.
 
-## Summary
-
-| Comparison | Workload | Mode | Points | R² | Mean relative difference | Max relative difference |
-| --- | --- | --- | ---: | ---: | ---: | ---: |
-| FreeSASA | 4,370 *E. coli* AFDB structures | f64 | 100 | 1.000000 | 0.0000206% | 0.000205% |
-| FreeSASA | 4,370 *E. coli* AFDB structures | f32 | 100 | 1.000000 | 0.000140% | 0.0150% |
-| FreeSASA | 4,370 *E. coli* AFDB structures | bitmask f64 | 128 | 0.999811 | 0.662% | 2.02% |
-| MDTraj | 5wvo_C, 1,001 frames | `zsasa` + MDTraj f64 | 500 | 0.9938 | 0.198% | 0.531% |
-| MDTraj | 5wvo_C, 1,001 frames | `zsasa` + MDTraj f64 | 1000 | 0.9983 | 0.0998% | 0.288% |
-
 ## Static structure validation against FreeSASA
 
 The exact Shrake--Rupley path closely reproduces FreeSASA total SASA on the *E. coli* AlphaFold Database validation set. At 100 sphere points, f64 has a mean relative difference of `2.06e-5%`; f32 remains very close, with a mean relative difference of `0.000140%`. This near-identity is expected because exact `zsasa` follows FreeSASA's golden-spiral sphere-point convention.
@@ -48,14 +38,6 @@ The scatter grid is retained as supporting evidence. Click the image to inspect 
 
 Trajectory validation uses the 5wvo_C ATLAS trajectory with 1,001 frames. Agreement improves as sphere-point count increases because MDTraj and `zsasa` use different sphere-point conventions at low point counts but converge toward the same surface area.
 
-| Path | Points | R² | Mean relative difference | Max relative difference |
-| --- | ---: | ---: | ---: | ---: |
-| `zsasa` + MDTraj f64 | 100 | 0.872 | 0.946% | 1.90% |
-| `zsasa` + MDTraj f64 | 500 | 0.9938 | 0.198% | 0.531% |
-| `zsasa` + MDTraj f64 | 1000 | 0.9983 | 0.0998% | 0.288% |
-| CLI f64 | 100 | 0.7725 | 1.27% | 2.66% |
-| CLI f64 | 1000 | 0.9722 | 0.416% | 1.03% |
-
 [![MD validation R2](pathname:///zsasa/assets/benchmarks/paper/details/md_r2.png)](/assets/benchmarks/paper/details/md_r2.png)
 
 **Figure 4. MD validation R² across point counts.** Higher point counts reduce the implementation-specific sampling difference against MDTraj. This summary is easier to scan than the full scatter-grid output.
@@ -68,6 +50,26 @@ Trajectory validation uses the 5wvo_C ATLAS trajectory with 1,001 frames. Agreem
 The scatter grid is retained as supporting evidence. Click the image to inspect the full-size grid.
 
 </details>
+
+Trajectory validation values:
+
+| Path | Points | R² | Mean relative difference | Max relative difference |
+| --- | ---: | ---: | ---: | ---: |
+| `zsasa` + MDTraj f64 | 100 | 0.872 | 0.946% | 1.90% |
+| `zsasa` + MDTraj f64 | 500 | 0.9938 | 0.198% | 0.531% |
+| `zsasa` + MDTraj f64 | 1000 | 0.9983 | 0.0998% | 0.288% |
+| CLI f64 | 100 | 0.7725 | 1.27% | 2.66% |
+| CLI f64 | 1000 | 0.9722 | 0.416% | 1.03% |
+
+## Summary table
+
+| Comparison | Workload | Mode | Points | R² | Mean relative difference | Max relative difference |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| FreeSASA | 4,370 *E. coli* AFDB structures | f64 | 100 | 1.000000 | 0.0000206% | 0.000205% |
+| FreeSASA | 4,370 *E. coli* AFDB structures | f32 | 100 | 1.000000 | 0.000140% | 0.0150% |
+| FreeSASA | 4,370 *E. coli* AFDB structures | bitmask f64 | 128 | 0.999811 | 0.662% | 2.02% |
+| MDTraj | 5wvo_C, 1,001 frames | `zsasa` + MDTraj f64 | 500 | 0.9938 | 0.198% | 0.531% |
+| MDTraj | 5wvo_C, 1,001 frames | `zsasa` + MDTraj f64 | 1000 | 0.9983 | 0.0998% | 0.288% |
 
 ## Reproducibility notes
 

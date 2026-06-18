@@ -2,23 +2,6 @@
 
 Single-file benchmarks focus on large structures and parser-heavy cases that are hidden by directory-level averages. The pinned current benchmark suite uses eight protein-only PDB inputs, 100 sphere points, and 10 threads for the headline results.
 
-## Dataset
-
-Inputs were normalized to protein-only PDB files for fair comparator runs: hydrogens, alternate conformations, ligands, waters, and non-L-peptide chains were removed; atom and residue identifiers were wrapped into PDB field limits when needed.
-
-| Structure | Role | Atoms | Chains | Note |
-| --- | --- | ---: | ---: | --- |
-| AF-P49792-F10 | single-medium | 10,919 | 1 | AFDB single-chain case |
-| AF-Q6ZS30-F1 | single-large | 21,611 | 1 | AFDB large single-chain case |
-| AF-0000000066638622 | multi-medium | 14,618 | 2 | AFDB-derived two-chain case |
-| AF-0000000065781219 | multi-large | 24,140 | 2 | AFDB-derived two-chain case |
-| 3jc8 | 100k-atom | 107,500 | 3 | PDB assembly |
-| 5vyc | RustSASA stress | 249,168 | 4 | Parser-heavy RustSASA case |
-| 8rbs | FreeSASA stress | 164,605 | 5 | PDB coordinate-overflow parser case |
-| 9fqr | maximum-size | 4,506,416 | 57 | Largest assembly in this subset |
-
-Lahuta is excluded from this suite because the benchmarked SASA command targets AlphaFold-style chain-A inputs and cannot process this mixed multi-chain subset.
-
 ## Runtime and memory
 
 [![Single-file runtime bars](pathname:///zsasa/assets/benchmarks/paper/single/single_t10_runtime_bar_grid.png)](/assets/benchmarks/paper/single/single_t10_runtime_bar_grid.png)
@@ -49,6 +32,23 @@ Selected 10-thread results:
 | 8rbs, 164,605 atoms | `zsasa` bitmask f64 | 0.104 s | 51.9 MiB | 136.5× | 2.25× |
 | 9fqr, 4,506,416 atoms | `zsasa` f64 | 4.696 s | 1,615 MiB | 40.9× | 1.86× |
 | 9fqr, 4,506,416 atoms | `zsasa` bitmask f64 | 3.788 s | 1,616 MiB | 50.6× | 2.30× |
+
+## Dataset
+
+Inputs were normalized to protein-only PDB files for fair comparator runs: hydrogens, alternate conformations, ligands, waters, and non-L-peptide chains were removed; atom and residue identifiers were wrapped into PDB field limits when needed.
+
+| Structure | Role | Atoms | Chains | Note |
+| --- | --- | ---: | ---: | --- |
+| AF-P49792-F10 | single-medium | 10,919 | 1 | AFDB single-chain case |
+| AF-Q6ZS30-F1 | single-large | 21,611 | 1 | AFDB large single-chain case |
+| AF-0000000066638622 | multi-medium | 14,618 | 2 | AFDB-derived two-chain case |
+| AF-0000000065781219 | multi-large | 24,140 | 2 | AFDB-derived two-chain case |
+| 3jc8 | 100k-atom | 107,500 | 3 | PDB assembly |
+| 5vyc | RustSASA stress | 249,168 | 4 | Parser-heavy RustSASA case |
+| 8rbs | FreeSASA stress | 164,605 | 5 | PDB coordinate-overflow parser case |
+| 9fqr | maximum-size | 4,506,416 | 57 | Largest assembly in this subset |
+
+Lahuta is excluded from this suite because the benchmarked SASA command targets AlphaFold-style chain-A inputs and cannot process this mixed multi-chain subset.
 
 ## Parse versus SASA timing
 

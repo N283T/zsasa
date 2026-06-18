@@ -2,15 +2,13 @@
 
 Trajectory benchmarks measure frame-wise SASA calculation under streaming, low-memory conditions. The current pinned throughput suite uses 100 sphere points, 10 threads, stride 1, the NACCESS classifier, and explicit hydrogens.
 
-## Workloads
-
-| Dataset | Frames | Atoms | Source | Use |
-| --- | ---: | ---: | --- | --- |
-| 5wvo_C | 1,001 | 3,858 | ATLAS | validation and throughput |
-| 6sup_A | 1,001 | 33,377 | ATLAS | large-system throughput |
-| 5vz0_A | 10,001 | 17,910 | ATLAS | long-trajectory throughput |
-
 ## Throughput summary
+
+[![MD throughput vs peak RSS](pathname:///zsasa/assets/benchmarks/paper/md/md_throughput_vs_peak_rss_logx_grid.png)](/assets/benchmarks/paper/md/md_throughput_vs_peak_rss_logx_grid.png)
+
+**Figure 1. MD throughput versus peak RSS.** The `zsasa` CLI paths occupy the high-throughput, low-memory region across the three workloads.
+
+Headline values:
 
 | Dataset | Best `zsasa` mode | Runtime | Frames/s | RSS | Speedup |
 | --- | --- | ---: | ---: | ---: | --- |
@@ -18,25 +16,7 @@ Trajectory benchmarks measure frame-wise SASA calculation under streaming, low-m
 | 6sup_A | CLI bitmask f32 | 6.949 s | 144 | 115.9 MiB | 132× vs MDTraj |
 | 5vz0_A | CLI bitmask f32 | 38.056 s | 263 | 64.6 MiB | 86.5× vs mdsasa-bolt |
 
-[![MD throughput vs peak RSS](pathname:///zsasa/assets/benchmarks/paper/md/md_throughput_vs_peak_rss_logx_grid.png)](/assets/benchmarks/paper/md/md_throughput_vs_peak_rss_logx_grid.png)
-
-**Figure 1. MD throughput versus peak RSS.** The `zsasa` CLI paths occupy the high-throughput, low-memory region across the three workloads.
-
 ## Per-dataset comparison
-
-| Dataset | Tool/mode | Runtime | Frames/s | RSS | Notes |
-| --- | --- | ---: | ---: | ---: | --- |
-| 5wvo_C | `zsasa` CLI f64 | 1.850 s | 541 | 22.5 MiB | 12.6× faster than MDTraj |
-| 5wvo_C | `zsasa` CLI bitmask f32 | 0.839 s | 1,194 | 22.6 MiB | 27.8× faster than MDTraj |
-| 5wvo_C | MDTraj | 23.285 s | 43.0 | 158.0 MiB | Native reference comparator |
-| 5wvo_C | mdsasa-bolt (Rust) | 4.477 s | 223.6 | 1,409 MiB | Higher memory via MDAnalysis front-end |
-| 6sup_A | `zsasa` CLI f64 | 15.671 s | 63.9 | 119.2 MiB | 58.6× faster than MDTraj |
-| 6sup_A | `zsasa` CLI bitmask f32 | 6.949 s | 144 | 115.9 MiB | 132× faster than MDTraj |
-| 6sup_A | MDTraj | 917.892 s | 1.1 | 1,001 MiB | Native reference comparator |
-| 6sup_A | mdsasa-bolt (Rust) | 58.596 s | 17.1 | 11,621 MiB | High peak RSS |
-| 5vz0_A | `zsasa` CLI f64 | 84.670 s | 118 | 65.6 MiB | 38.9× faster than mdsasa-bolt |
-| 5vz0_A | `zsasa` CLI bitmask f32 | 38.056 s | 263 | 64.6 MiB | 86.5× faster than mdsasa-bolt |
-| 5vz0_A | mdsasa-bolt (Rust) | 3,293.112 s | 3.0 | 24,082 MiB | MDTraj not run for this long trajectory |
 
 [![MD frames per second](pathname:///zsasa/assets/benchmarks/paper/md/md_frames_per_sec_bar_grid.png)](/assets/benchmarks/paper/md/md_frames_per_sec_bar_grid.png)
 
@@ -53,6 +33,30 @@ Trajectory benchmarks measure frame-wise SASA calculation under streaming, low-m
 [![MD RSS reduction](pathname:///zsasa/assets/benchmarks/paper/md/md_rss_reduction_vs_comparators_grid.png)](/assets/benchmarks/paper/md/md_rss_reduction_vs_comparators_grid.png)
 
 **Figure 5. MD RSS reduction ratios.** This view shows the memory advantage of streaming trajectory processing.
+
+Per-dataset values:
+
+| Dataset | Tool/mode | Runtime | Frames/s | RSS | Notes |
+| --- | --- | ---: | ---: | ---: | --- |
+| 5wvo_C | `zsasa` CLI f64 | 1.850 s | 541 | 22.5 MiB | 12.6× faster than MDTraj |
+| 5wvo_C | `zsasa` CLI bitmask f32 | 0.839 s | 1,194 | 22.6 MiB | 27.8× faster than MDTraj |
+| 5wvo_C | MDTraj | 23.285 s | 43.0 | 158.0 MiB | Native reference comparator |
+| 5wvo_C | mdsasa-bolt (Rust) | 4.477 s | 223.6 | 1,409 MiB | Higher memory via MDAnalysis front-end |
+| 6sup_A | `zsasa` CLI f64 | 15.671 s | 63.9 | 119.2 MiB | 58.6× faster than MDTraj |
+| 6sup_A | `zsasa` CLI bitmask f32 | 6.949 s | 144 | 115.9 MiB | 132× faster than MDTraj |
+| 6sup_A | MDTraj | 917.892 s | 1.1 | 1,001 MiB | Native reference comparator |
+| 6sup_A | mdsasa-bolt (Rust) | 58.596 s | 17.1 | 11,621 MiB | High peak RSS |
+| 5vz0_A | `zsasa` CLI f64 | 84.670 s | 118 | 65.6 MiB | 38.9× faster than mdsasa-bolt |
+| 5vz0_A | `zsasa` CLI bitmask f32 | 38.056 s | 263 | 64.6 MiB | 86.5× faster than mdsasa-bolt |
+| 5vz0_A | mdsasa-bolt (Rust) | 3,293.112 s | 3.0 | 24,082 MiB | MDTraj not run for this long trajectory |
+
+## Workloads
+
+| Dataset | Frames | Atoms | Source | Use |
+| --- | ---: | ---: | --- | --- |
+| 5wvo_C | 1,001 | 3,858 | ATLAS | validation and throughput |
+| 6sup_A | 1,001 | 33,377 | ATLAS | large-system throughput |
+| 5vz0_A | 10,001 | 17,910 | ATLAS | long-trajectory throughput |
 
 ## Memory interpretation
 
