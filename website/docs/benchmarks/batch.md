@@ -1,269 +1,94 @@
 # Batch Processing Benchmarks
 
-Throughput benchmarks for processing complete proteome datasets using [hyperfine](https://github.com/sharkdp/hyperfine) timing.
-
-> **Note**: Measures total wall-clock time for batch processing a directory of PDB files. All tools use native multi-threading. Test points: **128** (required for Lahuta bitmask support).
+Batch benchmarks measure complete directory processing: parsing, SASA calculation, output writing, and worker scheduling. The current paper-era results use `zsasa` v0.6.0, pinned comparator builds, 128 sphere points, and 10 threads unless noted.
 
 ## TL;DR
 
-| Dataset | Structures | zsasa_bitmask (f32) | vs FreeSASA | vs RustSASA | vs Lahuta BM | RSS |
-|---------|----------:|--------------------:|------------:|------------:|-------------:|----:|
-| E. coli | 4,370 | **1.42s** | 8.9x faster | 3.7x faster | 1.4x faster | 43 MB |
-| Human | 23,586 | **14.04s** | 9.9x faster | 3.9x faster | 1.6x faster | 73 MB |
-| SwissProt | 550,122 | **4m 02s** | 8.0x faster | 2.7x faster | 1.3x faster | 157 MB |
+| Dataset | Structures | Best `zsasa` mode | Runtime | Throughput | RSS | Speedup vs FreeSASA batch |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| *E. coli* AFDB | 4,370 | bitmask f32 | 1.481 s | 2,951 str/s | 45.1 MiB | 8.77× |
+| Human AFDB | 23,586 | bitmask f32 | 13.814 s | 1,707 str/s | 79.5 MiB | 9.70× |
 
-- **zsasa_bitmask** (LUT bitmask) is the fastest tool across all datasets, using **3.7–7.2x less memory** than RustSASA
-- Memory stays flat (~157 MB) even at 550K structures, while RustSASA scales to 1.1 GB and Lahuta BM to 2.2 GB
+FreeSASA has no native directory-batch command, so the FreeSASA batch rows use a thin `freesasa_batch` wrapper around the pinned FreeSASA C API.
 
-## Test Environment
+## *E. coli* AFDB batch
 
-| Item | Value |
-|------|-------|
-| Machine | MacBook Pro |
-| Chip | Apple M4 (10 cores: 4P + 6E) |
-| Memory | 32 GB |
-| OS | macOS 15.3.2 (Darwin 24.6.0) |
+The *E. coli* AFDB collection contains 4,370 structures and is used for both comparator benchmarking and thread scaling.
 
-> SwissProt additionally tested on M2 Max (96 GB) — see [SwissProt section](#swissprot-550122-structures).
+| Tool | Runtime | Structures/s | RSS | Speedup vs FreeSASA | Speedup vs RustSASA | Speedup vs Lahuta bitmask |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `zsasa` f64 | 4.411 s | 991 | 45.5 MiB | 2.94× | 1.31× | 0.46× |
+| `zsasa` f32 | 4.246 s | 1,029 | 43.5 MiB | 3.06× | 1.36× | 0.48× |
+| `zsasa` bitmask f64 | 1.504 s | 2,905 | 48.5 MiB | 8.63× | 3.84× | 1.35× |
+| `zsasa` bitmask f32 | **1.481 s** | **2,951** | **45.1 MiB** | **8.77×** | **3.90×** | **1.37×** |
+| FreeSASA batch | 12.982 s | 337 | 212.6 MiB | baseline | 0.44× | 0.16× |
+| RustSASA | 5.769 s | 757 | 170.5 MiB | 2.25× | baseline | 0.35× |
+| Lahuta bitmask | 2.034 s | 2,148 | 180.7 MiB | 6.38× | 2.84× | baseline |
 
-## Tools Compared
+![E. coli batch performance](pathname:///zsasa/assets/benchmarks/paper/fig3_batch_ecoli.png)
 
-| Tool | Language | Description |
-|------|----------|-------------|
-| zsasa | Zig | f64/f32 precision, standard neighbor lists |
-| zsasa_bitmask | Zig | f64/f32 precision, [LUT bitmask](../guide/algorithms.mdx#bitmask-lut-optimization) neighbor lists |
-| [Lahuta](https://github.com/bisejdiu/lahuta) | C++ | Standard neighbor lists |
-| Lahuta Bitmask | C++ | LUT bitmask neighbor lists |
-| [RustSASA](https://github.com/maxall41/RustSASA) | Rust | Native multi-threading |
-| [FreeSASA](https://github.com/mittinatten/freesasa) | C | No native batch mode — custom wrapper ([`freesasa_batch.cc`](https://github.com/N283T/zsasa/tree/main/benchmarks/external/freesasa_batch)) |
+**Figure 1. E. coli batch performance.** `zsasa` occupies the high-throughput, low-memory region; bitmask f32 is fastest at 10 threads.
 
-## E. coli Proteome (4,370 structures)
+### Thread scaling
 
-Dataset: AlphaFold E. coli K-12 proteome (UP000000625_83333_ECOLI_v6), PDB format.
+| Mode | 1 thread | 4 threads | 8 threads | 10 threads | 10-thread speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `zsasa` f64 | 147 str/s | 563 str/s | 871 str/s | 991 str/s | 6.72× |
+| `zsasa` bitmask f32 | 435 str/s | 1,688 str/s | 2,623 str/s | 2,951 str/s | 6.78× |
+| FreeSASA batch | 105 str/s | 366 str/s | 352 str/s | 337 str/s | 3.21× |
+| RustSASA | 142 str/s | 538 str/s | 697 str/s | 757 str/s | 5.34× |
+| Lahuta bitmask | 325 str/s | 1,300 str/s | 1,917 str/s | 2,148 str/s | 6.61× |
 
-### 10-Thread Comparison
+![E. coli throughput by thread count](pathname:///zsasa/assets/benchmarks/paper/details/ecoli_throughput_vs_threads.png)
 
-Benchmark: warmup=3, runs=10, threads=10.
+**Figure 2. E. coli throughput by thread count.** `zsasa` exact and bitmask modes scale strongly up to 10 threads on the M4 benchmark machine.
 
-| Tool | Time (s) | Std Dev | files/sec | vs FreeSASA | vs RustSASA | vs Lahuta BM | RSS (MB) |
-|------|--------:|--------:|----------:|------------:|------------:|-------------:|---------:|
-| **zsasa_bitmask (f32)** | **1.42** | **±0.013** | **3,085** | **8.9x** | **3.7x** | **1.4x** | **43** |
-| zsasa_bitmask (f64) | 1.42 | ±0.008 | 3,072 | 8.9x | 3.7x | 1.4x | 45 |
-| Lahuta Bitmask | 2.01 | ±0.004 | 2,172 | 6.3x | 2.6x | baseline | 291 |
-| zsasa (f32) | 4.09 | ±0.346 | 1,069 | 3.1x | 1.3x | 0.5x | 40 |
-| zsasa (f64) | 4.08 | ±0.034 | 1,071 | 3.1x | 1.3x | 0.5x | 43 |
-| RustSASA | 5.24 | ±0.035 | 834 | 2.4x | baseline | 0.4x | 169 |
-| Lahuta | 6.70 | ±0.032 | 652 | 1.9x | 0.8x | 0.3x | 315 |
-| FreeSASA | 12.60 | ±0.049 | 347 | baseline | 0.4x | 0.2x | 467 |
+## Human AFDB batch
 
-**Key findings:**
+The Human AFDB collection contains 23,586 structures, 5.4× more than the *E. coli* AFDB collection. `zsasa` retains low peak memory because batch mode streams structures instead of holding the full collection in memory.
 
-- **zsasa_bitmask (f32)** processes 4,370 structures in **1.42s** — **3.7x faster** than RustSASA, **1.4x faster** than Lahuta Bitmask
-- Memory: zsasa uses **40–45 MB** vs RustSASA 169 MB (3.8x less), Lahuta BM 291 MB (6.5x less)
+| Tool | Runtime | Structures/s | RSS | Speedup vs FreeSASA | Speedup vs RustSASA | Speedup vs Lahuta bitmask |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `zsasa` f64 | 45.508 s | 518 | 82.3 MiB | 2.94× | 1.48× | 0.43× |
+| `zsasa` f32 | 44.352 s | 532 | 76.4 MiB | 3.02× | 1.52× | 0.44× |
+| `zsasa` bitmask f64 | 14.150 s | 1,667 | 83.7 MiB | 9.47× | 4.77× | 1.38× |
+| `zsasa` bitmask f32 | **13.814 s** | **1,707** | **79.5 MiB** | **9.70×** | **4.89×** | **1.42×** |
+| FreeSASA batch | 133.960 s | 176 | 627.5 MiB | baseline | 0.50× | 0.15× |
+| RustSASA | 67.531 s | 349 | 330.0 MiB | 1.98× | baseline | 0.29× |
+| Lahuta bitmask | 19.566 s | 1,205 | 326.9 MiB | 6.85× | 3.45× | baseline |
 
-### Thread Scaling
+![Human batch performance](pathname:///zsasa/assets/benchmarks/paper/fig4_batch_human.png)
 
-Benchmark: warmup=3, runs=3, threads=1,8,10.
+**Figure 3. Human AFDB batch performance.** The same low-memory/high-throughput pattern holds on the larger Human AFDB collection.
 
-| 1 thread | 8 threads | 10 threads |
-|:--------:|:---------:|:----------:|
-| ![1t](pathname:///zsasa/assets/benchmarks/batch/ecoli_time_1t.png) | ![8t](pathname:///zsasa/assets/benchmarks/batch/ecoli_time_8t.png) | ![10t](pathname:///zsasa/assets/benchmarks/batch/ecoli_time_10t.png) |
+## Legacy SwissProt benchmark (pre-pinned)
 
-| Memory (1t) | Memory (8t) | Memory (10t) |
-|:-----------:|:-----------:|:------------:|
-| ![1t](pathname:///zsasa/assets/benchmarks/batch/ecoli_memory_1t.png) | ![8t](pathname:///zsasa/assets/benchmarks/batch/ecoli_memory_8t.png) | ![10t](pathname:///zsasa/assets/benchmarks/batch/ecoli_memory_10t.png) |
+The SwissProt result below is retained only as historical context from the earlier website benchmark set. It was collected before the current `zsasa-benchmarks` pinned v0.6.0 harness and should not be mixed with the paper-era headline claims above.
 
-## Human Proteome (23,586 structures)
+Dataset: SwissProt PDB v6, 550,122 structures, PDB format. Benchmark settings: warmup=3, runs=3, threads=10.
 
-Dataset: AlphaFold Human proteome (UP000005640_9606_HUMAN_v6), PDB format.
+### M2 Max, 96 GB
 
-Benchmark: warmup=3, runs=10, threads=10.
+| Tool | Time | files/s | RSS |
+| --- | ---: | ---: | ---: |
+| `zsasa` bitmask f32 | **4m 02s** | **2,269** | **157 MB** |
+| `zsasa` bitmask f64 | 4m 07s | 2,229 | 162 MB |
+| Lahuta bitmask | 5m 12s | 1,761 | 2,187 MB |
+| RustSASA | 10m 58s | 835 | 1,131 MB |
+| FreeSASA | 32m 21s | 283 | 2,875 MB |
 
-| Tool | Time (s) | Std Dev | files/sec | vs FreeSASA | vs RustSASA | vs Lahuta BM | RSS (MB) |
-|------|--------:|--------:|----------:|------------:|------------:|-------------:|---------:|
-| **zsasa_bitmask (f32)** | **14.04** | **±0.073** | **1,680** | **9.9x** | **3.9x** | **1.6x** | **73** |
-| zsasa_bitmask (f64) | 14.85 | ±0.579 | 1,589 | 9.3x | 3.6x | 1.5x | 77 |
-| Lahuta Bitmask | 22.67 | ±0.250 | 1,040 | 6.1x | 2.4x | baseline | 1,415 |
-| zsasa (f32) | 39.82 | ±0.997 | 592 | 3.5x | 1.4x | 0.6x | 70 |
-| zsasa (f64) | 42.33 | ±1.483 | 557 | 3.3x | 1.3x | 0.5x | 75 |
-| RustSASA | 54.16 | ±0.307 | 435 | 2.6x | baseline | 0.4x | 334 |
-| Lahuta | 78.64 | ±0.674 | 300 | 1.8x | 0.7x | 0.3x | 1,077 |
-| FreeSASA | 138.77 | ±0.664 | 170 | baseline | 0.4x | 0.2x | 1,913 |
+### M4, 32 GB
 
-**Key findings:**
+| Tool | Time | files/s | RSS |
+| --- | ---: | ---: | ---: |
+| `zsasa` bitmask f32 | 11m 05s | 828 | 157 MB |
+| `zsasa` bitmask f64 | 11m 07s | 824 | 161 MB |
+| Lahuta bitmask | 11m 08s | 823 | 2,152 MB |
+| RustSASA | 26m 16s | 349 | 1,131 MB |
+| FreeSASA | 31m 42s | 289 | 2,440 MB |
 
-- **zsasa_bitmask (f32)** processes 23,586 structures in **14.04s** — **3.9x faster** than RustSASA, **1.6x faster** than Lahuta Bitmask
-- Memory: zsasa uses **70–77 MB** vs RustSASA 334 MB (4.5x less), Lahuta BM 1,415 MB (19x less)
+On the 32 GB M4 system, the dataset exceeded available RAM and the run became I/O-bound; `zsasa` and Lahuta bitmask converged in wall-clock time, while `zsasa` retained much lower peak RSS.
 
-| Time (10t) | Memory (10t) |
-|:----------:|:------------:|
-| ![time](pathname:///zsasa/assets/benchmarks/batch/human_t10_time_10t.png) | ![memory](pathname:///zsasa/assets/benchmarks/batch/human_t10_memory_10t.png) |
+## Reproducing the current batch results
 
-## SwissProt (550,122 structures)
-
-Dataset: SwissProt PDB v6, PDB format. The largest benchmark at 550K structures.
-
-### M2 Max (96 GB) — Compute Bound
-
-| Item | Value |
-|------|-------|
-| Chip | Apple M2 Max (12 cores) |
-| Memory | 96 GB |
-
-With sufficient RAM, all file data stays in the OS page cache and performance is purely compute-bound.
-
-Benchmark: warmup=3, runs=3, threads=10.
-
-| Tool | Time | Std Dev | files/sec | vs FreeSASA | vs RustSASA | vs Lahuta BM | RSS (MB) |
-|------|-----:|--------:|----------:|------------:|------------:|-------------:|---------:|
-| **zsasa_bitmask (f32)** | **4m 02s** | **±1.86** | **2,269** | **8.0x** | **2.7x** | **1.3x** | **157** |
-| zsasa_bitmask (f64) | 4m 07s | ±1.49 | 2,229 | 7.9x | 2.7x | 1.3x | 162 |
-| Lahuta Bitmask | 5m 12s | ±3.32 | 1,761 | 6.2x | 2.1x | baseline | 2,187 |
-| zsasa (f32) | 10m 39s | ±0.57 | 861 | 3.0x | 1.03x | 0.5x | 154 |
-| zsasa (f64) | 10m 41s | ±1.43 | 858 | 3.0x | 1.03x | 0.5x | 159 |
-| RustSASA | 10m 58s | ±1.30 | 835 | 2.9x | baseline | 0.5x | 1,131 |
-| Lahuta | 16m 34s | ±2.51 | 553 | 2.0x | 0.66x | 0.3x | 1,873 |
-| FreeSASA | 32m 21s | ±8.95 | 283 | baseline | 0.34x | 0.2x | 2,875 |
-
-| Time (10t) | Memory (10t) |
-|:----------:|:------------:|
-| ![time](pathname:///zsasa/assets/benchmarks/batch/swissprot_M2_96_time_10t.png) | ![memory](pathname:///zsasa/assets/benchmarks/batch/swissprot_M2_96_memory_10t.png) |
-
-### M4 (32 GB) — I/O Bound (mmap)
-
-When the dataset exceeds available RAM, mmap page faults become the bottleneck and performance converges across tools.
-
-Benchmark: warmup=3, runs=3, threads=10.
-
-| Tool | Time | Std Dev | files/sec | vs FreeSASA | vs RustSASA | vs Lahuta BM | RSS (MB) |
-|------|-----:|--------:|----------:|------------:|------------:|-------------:|---------:|
-| zsasa_bitmask (f32) | 11m 05s | ±6.48 | 828 | 2.9x | 2.4x | 1.0x | 157 |
-| zsasa_bitmask (f64) | 11m 07s | ±2.14 | 824 | 2.9x | 2.4x | 1.0x | 161 |
-| Lahuta Bitmask | 11m 08s | ±9.91 | 823 | 2.8x | 2.4x | baseline | 2,152 |
-| zsasa (f32) | 16m 02s | ±11.87 | 572 | 2.0x | 1.6x | 0.7x | 154 |
-| zsasa (f64) | 16m 11s | ±3.65 | 567 | 2.0x | 1.6x | 0.7x | 159 |
-| Lahuta | 22m 11s | ±5.21 | 413 | 1.4x | 1.2x | 0.5x | 1,820 |
-| RustSASA | 26m 16s | ±8.05 | 349 | 1.2x | baseline | 0.4x | 1,131 |
-| FreeSASA | 31m 42s | ±7.67 | 289 | baseline | 0.8x | 0.4x | 2,440 |
-
-| Time (10t) | Memory (10t) |
-|:----------:|:------------:|
-| ![time](pathname:///zsasa/assets/benchmarks/batch/swissprot_time_10t.png) | ![memory](pathname:///zsasa/assets/benchmarks/batch/swissprot_memory_10t.png) |
-
-**Key findings:**
-
-- **M2 Max (96 GB)**: zsasa_bitmask completes 550K structures in **4 minutes** — **2.7x faster** than RustSASA, **1.3x faster** than Lahuta BM
-- **M4 (32 GB)**: I/O-bound — zsasa_bitmask and Lahuta Bitmask converge at ~11 min (both **2.4x faster** than RustSASA)
-- **Memory**: zsasa uses **~157 MB** regardless of dataset size, vs RustSASA 1.1 GB (7.2x less), Lahuta BM 2.2 GB (14x less)
-
-## Summary
-
-### Performance (10 threads)
-
-| Dataset | Structures | zsasa_bitmask (f32) | vs RustSASA | vs Lahuta BM | RSS |
-|---------|----------:|--------------------:|------------:|-------------:|----:|
-| E. coli | 4,370 | 1.42s | 3.7x | 1.4x | 43 MB |
-| Human | 23,586 | 14.04s | 3.9x | 1.6x | 73 MB |
-| SwissProt (96 GB) | 550,122 | 4m 02s | 2.7x | 1.3x | 157 MB |
-| SwissProt (32 GB) | 550,122 | 11m 05s | 2.4x | 1.0x | 157 MB |
-
-### Memory Efficiency (10 threads)
-
-| Dataset | zsasa | RustSASA | Lahuta BM | zsasa ratio |
-|---------|------:|---------:|----------:|------------:|
-| E. coli | 43 MB | 169 MB | 291 MB | 3.9x less than RustSASA |
-| Human | 73 MB | 334 MB | 1,415 MB | 4.6x less than RustSASA |
-| SwissProt | 157 MB | 1,131 MB | 2,187 MB | 7.2x less than RustSASA |
-
-Memory advantage increases with dataset size. zsasa_bitmask has virtually no memory overhead compared to standard zsasa, while Lahuta Bitmask uses 5–14x more memory than zsasa_bitmask.
-
-### Bitmask Variants
-
-The `_bitmask` variants use LUT (look-up table) bitmask neighbor lists instead of per-atom arrays:
-
-- **zsasa_bitmask**: ~2.5–3x faster than regular zsasa, minimal memory overhead (~3 MB)
-- **Lahuta Bitmask**: ~2.5–3x faster than regular Lahuta, but with significant memory overhead
-- zsasa_bitmask is **1.3–1.6x faster** than Lahuta Bitmask across all datasets
-- Requires n_points ≥ 128
-
-## Datasets Larger Than Available RAM
-
-zsasa uses **mmap** for file I/O. When the dataset fits in RAM, all file data stays in the OS page cache and performance depends purely on compute speed. When the dataset exceeds available RAM, mmap page faults must read from storage, and performance becomes **storage I/O-bound** regardless of compute efficiency.
-
-In this regime, multiple worker threads fault pages in random order, so effective read throughput drops well below the SSD's sequential maximum. This is not specific to zsasa — any mmap-based tool (including Lahuta and RustSASA) hits the same bottleneck, and bitmask variants converge to similar wall-clock times (as seen in the M4 32 GB results).
-
-zsasa's low memory footprint helps here: less RSS means more RAM is available for the OS page cache, which can reduce page fault frequency.
-
-## Methodology
-
-Uses [hyperfine](https://github.com/sharkdp/hyperfine) for timing:
-
-1. Warmup runs (default 3) to eliminate cold-start effects
-2. Multiple timed runs for statistical reliability (3–10 runs)
-3. IQR outlier filtering applied when ≥5 runs
-4. Reports mean and stddev after filtering
-
-### Tool Configurations
-
-| Tool | Configurations |
-|------|----------------|
-| zsasa (Zig) | f64/f32 precision, standard and bitmask variants |
-| Lahuta (Zig) | Standard and bitmask variants |
-| FreeSASA (C) | Sequential batch wrapper (`sasa_batch.cpp`) |
-| RustSASA (Rust) | Native multi-threading |
-
-### Notes
-
-1. **Test points**: All benchmarks use 128 test points (required for Lahuta bitmask support).
-2. **Input format**: All tools use PDB input for fair comparison. zsasa supports JSON input which would be faster.
-3. **FreeSASA**: The CLI only supports single-threaded batch processing. A custom wrapper processes files sequentially.
-4. **SwissProt (M4)**: I/O-bound due to mmap on 32 GB RAM — bitmask tools converge at ~11 min.
-
-## Running Benchmarks
-
-```bash
-# E. coli proteome (10 threads, 10 runs)
-./benchmarks/scripts/bench_batch.py \
-  -i benchmarks/UP000000625_83333_ECOLI_v6/pdb \
-  -n ecoli --runs 10 --threads 10 -N 128
-
-# Human proteome (10 threads, 10 runs)
-./benchmarks/scripts/bench_batch.py \
-  -i benchmarks/UP000005640_9606_HUMAN_v6/pdb \
-  -n human --runs 10 --threads 10 -N 128
-
-# SwissProt (large dataset, 3 runs)
-./benchmarks/scripts/bench_batch.py \
-  -i /path/to/swissprot_pdb_v6 \
-  -n swissprot --runs 3 --threads 10 -N 128
-```
-
-### Options
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--input`, `-i` | Input directory (PDB files) | (required) |
-| `--name`, `-n` | Benchmark name | (required) |
-| `--threads`, `-T` | Thread counts: `1,8,10` or `1-10` | `1,8` |
-| `--runs`, `-r` | Number of benchmark runs | 3 |
-| `--warmup`, `-w` | Number of warmup runs | 3 |
-| `--n-points`, `-N` | Number of sphere test points | 100 |
-| `--tool`, `-t` | Tool: zig, zig\_bitmask, freesasa, rustsasa, lahuta, lahuta\_bitmask (repeatable) | all |
-| `--output`, `-o` | Output directory | results/batch/\<N\>/\<name\> |
-| `--dry-run` | Show commands without running | false |
-
-### Analysis
-
-```bash
-./benchmarks/scripts/analyze_batch.py summary -N 128           # Summary table
-./benchmarks/scripts/analyze_batch.py summary -N 128 -n ecoli  # Specific benchmark
-./benchmarks/scripts/analyze_batch.py plot -N 128 -n ecoli     # Time charts
-./benchmarks/scripts/analyze_batch.py memory -N 128 -n ecoli   # Memory charts
-./benchmarks/scripts/analyze_batch.py all -N 128               # Everything
-```
-
-## Related Documents
-
-- [Single-File Benchmarks](single-file.md) — Per-structure performance across 2,013 structures
-- [MD Trajectory Benchmarks](md.md) — Molecular dynamics trajectory analysis
-- [SASA Validation](validation.md) — Accuracy validation against FreeSASA
+The paper-era benchmark data is exported from `zsasa-benchmarks/results/tables/batch_t10_summary.csv` and `batch_thread_scaling.csv`. The corresponding full harness is in [`N283T/zsasa-benchmarks`](https://github.com/N283T/zsasa-benchmarks).

@@ -12,7 +12,7 @@
 [![Nix](https://img.shields.io/badge/Nix-flake-5277C3?logo=nixos&logoColor=white)](https://nixos.org/)
 
 High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
-**Up to 3x faster** than FreeSASA C with f64 precision.
+Paper-era benchmarks cover FreeSASA agreement, proteome-scale batch throughput, large single structures, and low-memory MD trajectory analysis.
 
 **[Documentation](https://n283t.github.io/zsasa/)** · **[Benchmarks](https://n283t.github.io/zsasa/docs/benchmarks)** · **[Comparison](https://n283t.github.io/zsasa/docs/comparison)**
 

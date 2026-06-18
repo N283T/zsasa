@@ -4,233 +4,113 @@ sidebar_position: 3
 
 # Comparison with Other Tools
 
-How zsasa compares to other modern SASA calculation tools.
-
-This page focuses on **factual, verifiable differences** with source code references.
-For performance numbers, see [Benchmarks](benchmarks/single-file.md).
+How `zsasa` compares with FreeSASA, RustSASA, and Lahuta for SASA-focused workflows. This page emphasizes factual feature differences and points to the benchmark pages for paper-era performance numbers.
 
 ## Overview
 
 | Feature | zsasa | FreeSASA | RustSASA | Lahuta |
-|---------|-------|----------|----------|--------|
-| Language | Zig | C | Rust | C++ |
-| Algorithms | SR + LR | SR + LR | SR only | SR only |
-| Input formats | mmCIF, PDB, JSON | PDB, mmCIF | PDB (via pdbtbx) | AF2 model (CIF/PDB) |
-| MD trajectory | Native (XTC, TRR, DCD, AMBER NetCDF) | — | △ (mdsasa-bolt) | — |
-| Python API | ✅ (multi-threaded) | ✅ (single-threaded) | △ (separate package) | ❌ |
-| Bitmask range | 1–1024 | — | — | 64/128/256 |
-| External deps | None | None | pdbtbx, pulp, mimalloc | 13+ (Boost, Eigen, gemmi, Highway, RDKit, lmdb, ...) |
-| Batch processing | ✅ Native | ❌ | ✅ | ✅ |
-| Multi-chain | ✅ | ✅ | ✅ | ❌ (chain "A" hardcoded) |
-| Precision | f64/f32 (selectable) | f64 | f32 only | f64 |
-| Build system | `zig build` | autotools/CMake | Cargo | CMake + vcpkg |
+| --- | --- | --- | --- | --- |
+| Language | Zig | C/C++ | Rust | C++ |
+| Algorithms | Shrake-Rupley + Lee-Richards | Shrake-Rupley + Lee-Richards | Shrake-Rupley | Shrake-Rupley |
+| Precision | f64/f32 selectable | f64 | f32 | f64 |
+| Bitmask/LUT mode | ✅ 1-1024 points | — | — | ✅ 64/128/256 only |
+| Structure input for SASA | PDB, mmCIF, BinaryCIF, SDF/MOL, JSON | PDB, mmCIF | PDB, mmCIF | AF2 model CIF/PDB |
+| Directory / batch mode | ✅ native workflow/batch | ❌ single file only | ✅ native | ✅ native |
+| Multi-chain SASA | ✅ | ✅ | ✅ | ❌ chain `A` hardcoded in SASA kernel |
+| MD trajectory SASA | ✅ CLI + Python | — | △ via mdsasa-bolt | — |
+| Trajectory formats | XTC, TRR, DCD, AMBER NetCDF | — | via MDAnalysis bridge | — |
+| Python SASA API | ✅ multi-threaded | ✅ single-threaded | △ separate package | ❌ no SASA API |
+| External dependencies | Zig + first-party `ztraj` module | none | several Rust crates | 13+ C++ libraries |
 
-## Algorithms
+## Algorithms and precision
 
-zsasa and FreeSASA support both Shrake-Rupley (SR) and Lee-Richards (LR) algorithms. RustSASA and Lahuta support SR only.
+`zsasa` and FreeSASA support both Shrake-Rupley (SR) and Lee-Richards (LR). RustSASA and Lahuta support SR only for the SASA paths evaluated here.
 
-- RustSASA: [lib.rs](https://github.com/maxall41/RustSASA/blob/main/src/lib.rs) — "Shrake-Rupley algorithm"
-- Lahuta: [sasa.hpp](https://github.com/bisejdiu/lahuta/blob/main/core/src/analysis/sasa/sasa.hpp) — SR computation only
+`zsasa` exposes f64 and f32 modes. f64 is the default continuity path for matched FreeSASA-style SR output; f32 is useful when users want lower memory bandwidth and compatibility with f32-oriented tools. RustSASA uses f32 throughout its computation pipeline.
 
-## Input & Parsing
+## Bitmask LUT mode
 
-### zsasa: Native parser, zero external dependencies
+`zsasa` includes a bitmask lookup-table mode for high-throughput SR calculations. It is an approximation, not a numerically identical replacement for exact SR mode. In the paper-era static validation set, bitmask f64 at 128 points reached R² = 0.999811, mean relative difference = 0.662%, and max relative difference = 2.02% versus FreeSASA.
 
-zsasa includes a native mmCIF/PDB parser written in Zig. It extracts only the fields needed for SASA calculation (coordinates, element, residue name, atom name), avoiding errors from irrelevant data fields. JSON input is also supported for maximum flexibility.
+| Tool | Bitmask support | Point-count support |
+| --- | --- | --- |
+| zsasa | ✅ | 1-1024 |
+| Lahuta | ✅ | 64, 128, 256 |
+| RustSASA | — | — |
+| FreeSASA | — | — |
 
-### RustSASA: pdbtbx dependency causes parse errors
+See [SASA Validation](benchmarks/validation.md) and [Algorithms](guide/algorithms.mdx#bitmask-lut-optimization) for details.
 
-RustSASA uses [pdbtbx](https://github.com/maxall41/RustSASA/blob/main/Cargo.toml) for PDB parsing. This external parser attempts to validate the entire PDB structure, causing failures on:
+## Input and parser behavior
 
-- **Multi-character chain IDs** (common in large complexes from mmCIF → PDB conversion)
-- **Hybrid-36 residue/serial numbers** (structures with >9999 residues or >99999 atoms)
-- **Missing CRYST1 Z values** (common in EM/NMR structures)
+`zsasa` uses native parsers that extract the fields needed for SASA calculation. This avoids rejecting structures because of unrelated fields and helps with very large assemblies.
 
-Our benchmarking required a [dedicated preprocessing script](https://github.com/N283T/zsasa/blob/main/benchmarks/scripts/generate_pdb.py) to work around these pdbtbx limitations — reassigning chain IDs, wrapping serial/residue numbers, and fixing CRYST1 records.
+RustSASA relies on `pdbtbx`; the benchmark input preparation had to normalize large PDB records and other parser-sensitive cases for comparator compatibility. Lahuta's evaluated SASA command is intended for AlphaFold2-model inputs and treats the SASA structure as chain `A`, which excludes it from the multi-chain single-file stress suite.
 
-### Lahuta: AlphaFold2 model input required
+## Batch processing
 
-Lahuta's `sasa-sr` command requires AlphaFold2 model inputs. File-based sources must pass the `--is_af2_model` flag, otherwise an error is thrown:
+FreeSASA has no native directory mode. The paper-era batch benchmarks therefore use `freesasa_batch`, a thin wrapper around the pinned FreeSASA C API, so that comparisons are multi-file workloads rather than shell loops.
 
-> *"sasa-sr expects AlphaFold2 model inputs. For file-based sources, pass --is_af2_model"*
+Representative 10-thread batch results at 128 points:
 
-Source: [sasa_sr_spec.cpp L211–214](https://github.com/bisejdiu/lahuta/blob/main/cli/specs/sasa_sr_spec.cpp#L211-L214)
+| Workload | zsasa mode | Runtime | Throughput | RSS | Speedup vs FreeSASA batch |
+| --- | --- | ---: | ---: | ---: | ---: |
+| *E. coli* AFDB, 4,370 structures | f64 | 4.411 s | 991 str/s | 45.5 MiB | 2.94× |
+| *E. coli* AFDB, 4,370 structures | bitmask f32 | 1.481 s | 2,951 str/s | 45.1 MiB | 8.77× |
+| Human AFDB, 23,586 structures | f64 | 45.508 s | 518 str/s | 82.3 MiB | 2.94× |
+| Human AFDB, 23,586 structures | bitmask f32 | 13.814 s | 1,707 str/s | 79.5 MiB | 9.70× |
 
-## Chain Support
+See [Batch Processing Benchmarks](benchmarks/batch.md) for full tables and the legacy SwissProt note.
 
-Lahuta's SASA kernel hardcodes `chain_id = "A"`:
+## Single-file stress behavior
 
-```cpp
-constexpr std::string_view chain_id = "A";
-```
+The paper-era single-file suite uses eight curated structures up to 4,506,416 atoms. On the largest assembly, `zsasa` completed in 4.696 s in f64 mode and 3.788 s in bitmask f64 mode at 100 points and 10 threads. The same normalized input took 191.876 s with FreeSASA and 8.731 s with RustSASA.
 
-Source: [kernel.hpp L164, L192](https://github.com/bisejdiu/lahuta/blob/main/core/src/analysis/sasa/kernel.hpp#L164)
+| Workload | Mode | Runtime | RSS | Speedup vs FreeSASA |
+| --- | --- | ---: | ---: | ---: |
+| 9fqr, 4.5M atoms | zsasa f64 | 4.696 s | 1,615 MiB | 40.9× |
+| 9fqr, 4.5M atoms | zsasa bitmask f64 | 3.788 s | 1,616 MiB | 50.6× |
 
-This means multi-chain structures are treated as single-chain. zsasa, FreeSASA, and RustSASA all support multi-chain structures natively.
+See [Single-File Stress Benchmarks](benchmarks/single-file.md).
 
-## MD Trajectory Support
+## MD trajectory support
 
-| Tool | XTC | DCD | Integration |
-|------|-----|-----|-------------|
-| zsasa | ✅ Native CLI + Python | ✅ Native CLI + Python | MDTraj, MDAnalysis |
-| FreeSASA | — | — | — |
-| RustSASA | △ via mdsasa-bolt | — | MDAnalysis (Python bridge) |
-| Lahuta | — | — | — |
+`zsasa` provides native CLI trajectory processing and Python integrations. The benchmarked CLI path streams frames, keeping peak memory close to the current-frame working set. RustSASA trajectory support is represented by mdsasa-bolt, which uses an MDAnalysis front-end and can materialize much more trajectory data in memory.
 
-Lahuta's `sasa-sr` has no trajectory options — grep for "trajectory", "xtc", or "dcd" in [sasa_sr_spec.cpp](https://github.com/bisejdiu/lahuta/blob/main/cli/specs/sasa_sr_spec.cpp) returns no matches.
+Representative 10-thread trajectory results at 100 points:
 
-### mdsasa-bolt (RustSASA) memory issues
+| Workload | zsasa mode | Runtime | Frames/s | RSS | Speedup |
+| --- | --- | ---: | ---: | ---: | --- |
+| 5wvo_C, 1,001 frames | CLI bitmask f32 | 0.839 s | 1,194 | 22.6 MiB | 27.8× vs MDTraj |
+| 6sup_A, 1,001 frames | CLI bitmask f32 | 6.949 s | 144 | 115.9 MiB | 132× vs MDTraj |
+| 5vz0_A, 10,001 frames | CLI bitmask f32 | 38.056 s | 263 | 64.6 MiB | 86.5× vs mdsasa-bolt |
 
-RustSASA's trajectory support is via [mdsasa-bolt](https://github.com/maxall41/RustSASA#mdsasa-bolt), a separate Python package that bridges MDAnalysis to RustSASA. It has significant memory overhead:
+See [MD Trajectory Benchmarks](benchmarks/md.md).
 
-| Dataset | mdsasa-bolt RSS | zsasa CLI RSS | Ratio |
-|---------|----------------|---------------|-------|
-| 5vz0 (1K frames, 28K atoms) | 1.4 GB | 17 MB | **82x** |
-| 5wvo (1K frames, 97K atoms) | 10.9 GB | 113 MB | **96x** |
-
-On 10K-frame datasets, mdsasa-bolt **timed out** (>2 hours) where zsasa completed in 38 seconds.
-
-See [MD Trajectory Benchmarks](benchmarks/md.md) for full results.
-
-## Bitmask LUT Optimization
-
-| Tool | Bitmask support | Supported n_points | Range |
-|------|----------------|--------------------|-------|
-| zsasa | ✅ | 1–1024 (any value) | Continuous |
-| Lahuta | ✅ | 64, 128, 256 | 3 discrete values |
-| RustSASA | — | — | — |
-| FreeSASA | — | — | — |
-
-zsasa's bitmask supports any `n_points` from 1 to 1024 ([bitmask_lut.zig](https://github.com/N283T/zsasa/blob/main/src/bitmask_lut.zig#L8)), while Lahuta is limited to 64/128/256 ([sasa_sr_spec.cpp L172–173](https://github.com/bisejdiu/lahuta/blob/main/cli/specs/sasa_sr_spec.cpp#L172-L173)).
-
-See [Bitmask LUT Algorithm](guide/algorithms.mdx#bitmask-lut-optimization) for how it works.
-
-## Python Bindings
-
-| Tool | Python SASA API | How |
-|------|----------------|-----|
-| zsasa | ✅ `from zsasa import calculate_sasa` | Native C extension via Zig, multi-threaded |
-| FreeSASA | ✅ `import freesasa` | Native C extension, **single-threaded only** |
-| RustSASA | △ `rust-sasa-python` (separate package) | PyO3 bridge |
-| Lahuta | ❌ | pybind11 bindings exist but expose pipeline framework only — no SASA API |
-
-Lahuta has pybind11 bindings, but they expose the pipeline framework — not SASA calculation. The Python code contains no reference to "sasa" at all.
-
-Source: [interop/python/](https://github.com/bisejdiu/lahuta/tree/main/interop/python)
-
-## Precision
-
-| Tool | Precision | Selectable |
-|------|-----------|------------|
-| zsasa | f64 or f32 | ✅ `--precision=f32/f64` |
-| FreeSASA | f64 | — |
-| RustSASA | f32 | — |
-| Lahuta | f64 | — |
-
-RustSASA uses f32 throughout its entire computation pipeline — coordinates, sphere points, and SASA output are all single-precision.
-
-Source: [lib.rs](https://github.com/maxall41/RustSASA/blob/main/src/lib.rs) — `Vec<f32>` for coordinates, `f32` for all SIMD operations
-
-zsasa defaults to f64 for maximum accuracy, with f32 available as an option for trajectory processing or when comparing with f32-based tools.
-
-Validation against FreeSASA reference (E. coli K-12 proteome, 4,370 structures):
-- **zsasa f64**: mean error <0.001%
-- **zsasa f32**: mean error <0.05%
-- **RustSASA f32**: mean error <0.05% (expected, same precision)
-
-See [Validation Benchmarks](benchmarks/validation.md) for full convergence analysis.
-
-## Batch Processing
-
-| Tool | Directory batch | Parallelism |
-|------|----------------|-------------|
-| zsasa | ✅ Native `zsasa batch` | File-level multi-threading |
-| FreeSASA | ❌ Single file only | Single file at a time |
-| RustSASA | ✅ `rust-sasa dir/ out/` | File-level multi-threading |
-| Lahuta | ✅ `--directory` / `--files` | Pipeline-based |
-
-FreeSASA processes one file at a time and has no built-in batch/directory mode. Processing a proteome-scale dataset requires external scripting with sequential invocations.
-
-See [Batch Benchmarks](benchmarks/batch.md) for performance comparison across proteome-scale datasets.
-
-## Build Complexity
+## Build complexity
 
 | Tool | Build command | Dependencies |
-|------|--------------|--------------|
-| zsasa | `zig build -Doptimize=ReleaseFast` | None (Zig only) |
-| FreeSASA | `./configure && make` | None (C only) |
-| RustSASA | `cargo build --release` | pdbtbx, pulp, mimalloc, rayon |
-| Lahuta | CMake | Boost, Eigen, gemmi, Google Highway (via distopia), RDKit, lmdb, mimalloc, spdlog, libdivide, simde, ZLIB, ... |
+| --- | --- | --- |
+| zsasa | `zig build -Doptimize=ReleaseFast` | Zig and first-party `ztraj` module |
+| FreeSASA | `./configure && make` or CMake | none |
+| RustSASA | `cargo build --release` | pdbtbx, pulp, mimalloc, rayon, and other crates |
+| Lahuta | CMake/vcpkg | Boost, Eigen, gemmi, Highway, RDKit, lmdb, and more |
 
-zsasa and FreeSASA have zero external dependencies. RustSASA pulls in several crates. Lahuta bundles [13+ external libraries](https://github.com/bisejdiu/lahuta/tree/main/core/external) — building from source requires resolving all of them.
-
-### SIMD Architecture
-
-| Tool | SIMD approach | Architecture independence |
-|------|--------------|--------------------------|
-| zsasa | Zig `@Vector` | ✅ Compiler auto-targets native ISA (x86 SSE/AVX, ARM NEON, etc.) |
-| RustSASA | `pulp` crate | ✅ Runtime dispatch via `ARCH.dispatch` ([lib.rs](https://github.com/maxall41/RustSASA/blob/main/src/lib.rs)) |
-| Lahuta | SIMDe (AVX2 API) | △ Written against AVX2 intrinsics — SIMDe emulates on non-x86 |
-| FreeSASA | None | — |
-
-zsasa uses Zig's built-in `@Vector` primitives — the compiler maps them directly to the target architecture's SIMD instructions without any abstraction layer.
-
-RustSASA uses [pulp](https://crates.io/crates/pulp) for runtime SIMD dispatch — it detects available instruction sets at runtime and selects the best implementation.
-
-Lahuta uses [SIMDe](https://github.com/simd-everywhere/simde) but with explicit AVX2 API calls (`#include <simde/x86/avx2.h>`). All SIMD functions are named with `_avx2` suffix (e.g., `fast_rsqrt_avx2`, `octa_encode_avx2`). SIMDe can **emulate** AVX2 on non-x86 platforms, but the code is fundamentally written against the x86 AVX2 instruction set.
-
-Source: [bitmask_simd.hpp](https://github.com/bisejdiu/lahuta/blob/main/core/src/analysis/sasa/methods/bitmask_simd.hpp)
-
-## Performance Summary
-
-### Single-file (100 test points, median across 128 structures)
-
-| Metric | zsasa f64 (t=10) | vs FreeSASA | vs RustSASA |
-|--------|-----------------|-------------|-------------|
-| Median speedup | — | **1.88x** | **1.84x** |
-| Thread scaling (t=1→10) | **2.71x** | 1.99x | 1.39x |
-
-RustSASA shows [pathological slowdowns](benchmarks/single-file.md#rustsasa-pathological-cases) on certain structures (up to **280x slower** than zsasa).
-
-See [Single-file Benchmarks](benchmarks/single-file.md) for full results.
-
-### Batch (128 test points, E. coli K-12 proteome, 4,370 structures)
-
-| Tool | Time | RSS | vs zsasa |
-|------|------|-----|----------|
-| zsasa bitmask (f32) | **1.42s** | 43 MB | baseline |
-| Lahuta bitmask | 2.01s | 291 MB | 1.4x slower, 6.8x more memory |
-| RustSASA | 5.24s | 169 MB | 3.7x slower, 3.9x more memory |
-
-At SwissProt scale (550K structures), zsasa uses **157 MB** vs RustSASA **1.1 GB** (7.2x less) and Lahuta bitmask **2.2 GB** (14x less).
-
-See [Batch Benchmarks](benchmarks/batch.md) for full results including memory scaling charts.
-
-## Known Limitations of zsasa
+## Known limitations of zsasa
 
 ### Zig language maturity
 
-Zig has not yet reached version 1.0. The language may introduce breaking changes between releases, which could require updates to the zsasa codebase. Unreported compiler bugs are also possible in pre-1.0 software.
+Zig has not yet reached version 1.0. The language may introduce breaking changes between releases. The Python package communicates with the Zig core through a C ABI, which helps insulate Python users from Zig-internal changes as long as the C ABI is maintained.
 
-**Mitigation:** The Python package (`zsasa`) communicates with the Zig core through the C ABI, which is stable and standardized. This means Python users are insulated from Zig-specific changes — even if the Zig internals are updated, the Python API remains unaffected as long as the C ABI interface is maintained.
+### Benchmark scope
 
-### Early-stage API
-
-zsasa is a young project and its CLI options, Python API, and output formats may change between releases. Established tools like FreeSASA have stable APIs refined over many years of use.
+The current paper-era benchmark claims come from one consumer laptop and pinned comparator versions. Absolute runtimes will vary across hardware. Use the relative comparisons and the documented benchmark settings when interpreting the results.
 
 ## Links
 
 | Tool | Repository |
-|------|-----------|
+| --- | --- |
 | zsasa | [github.com/N283T/zsasa](https://github.com/N283T/zsasa) |
 | FreeSASA | [github.com/mittinatten/freesasa](https://github.com/mittinatten/freesasa) |
 | RustSASA | [github.com/maxall41/RustSASA](https://github.com/maxall41/RustSASA) |
 | Lahuta | [github.com/bisejdiu/lahuta](https://github.com/bisejdiu/lahuta) |
-
-## Acknowledgments
-
-zsasa builds on ideas and methods from these excellent projects. We are grateful to their authors for advancing open-source SASA calculation:
-
-- **FreeSASA** by Simon Mitternacht — the foundational C library that established open-source SASA calculation. zsasa uses FreeSASA as the accuracy reference for validation.
-- **RustSASA** by Max Campbell — a modern Rust implementation that demonstrated SIMD-accelerated SASA calculation.
-- **Lahuta** by Besian I. Sejdiu — a C++ toolkit that pioneered bitmask LUT optimization for SASA.

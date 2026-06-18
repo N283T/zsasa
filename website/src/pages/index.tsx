@@ -66,12 +66,12 @@ export default function Home(): ReactNode {
           <div className="container">
             <div className="row">
               <div className="col col--6">
-                <Heading as="h2">Up to 10x Faster than FreeSASA C</Heading>
+                <Heading as="h2">Paper-Era Benchmarks</Heading>
                 <p>
-                  Process 4,370 E. coli structures in 1.4s, 23,586 human
-                  proteome structures in 14s. SIMD-optimized with bitmask LUT
-                  neighbor lists and multi-threading. 3.7x faster than RustSASA,
-                  7x less memory.
+                  Process 4,370 E. coli AFDB structures in 1.48s and 23,586
+                  Human AFDB structures in 13.81s with bitmask f32 mode. The
+                  pinned v0.6.0 benchmark suite also covers FreeSASA agreement,
+                  large single structures, and low-memory MD trajectories.
                 </p>
                 <Link to="/docs/benchmarks/batch">
                   See batch benchmarks →

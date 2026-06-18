@@ -9,7 +9,7 @@ sidebar_position: 1
 </p>
 
 High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
-**Up to 3x faster** than FreeSASA C with f64 precision.
+The current benchmark suite covers FreeSASA agreement, proteome-scale batch throughput, large single structures, and low-memory MD trajectory analysis.
 
 ## Quick Start
 
