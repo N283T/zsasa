@@ -66,12 +66,12 @@ export default function Home(): ReactNode {
           <div className="container">
             <div className="row">
               <div className="col col--6">
-                <Heading as="h2">Current Benchmarks</Heading>
+                <Heading as="h2">Benchmark Results</Heading>
                 <p>
-                  Process 4,370 E. coli AFDB structures in 1.48s and 23,586
-                  Human AFDB structures in 13.81s with bitmask f32 mode. The
-                  pinned v0.6.0 suite covers FreeSASA agreement, throughput,
-                  peak RSS, large structures, and MD trajectories.
+                  8.77× faster than FreeSASA batch on E. coli AFDB and 9.70×
+                  faster on Human AFDB with bitmask f32 mode, while keeping peak
+                  RSS under 80 MiB. The pinned v0.6.0 suite also covers
+                  FreeSASA agreement, large structures, and MD trajectories.
                 </p>
                 <Link to="/docs/benchmarks/batch">
                   See batch benchmarks →

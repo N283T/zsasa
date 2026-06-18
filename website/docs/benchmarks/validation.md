@@ -16,15 +16,11 @@ Validation checks whether `zsasa` agrees with established tools under matched se
 
 The exact Shrake--Rupley path closely reproduces FreeSASA total SASA on the *E. coli* AlphaFold Database validation set. At 100 sphere points, f64 has a mean relative difference of `2.06e-5%`; f32 remains very close, with a mean relative difference of `0.000140%`.
 
-[![Static validation scatter grid](pathname:///zsasa/assets/benchmarks/paper/details/static_sr_scatter_grid.png)](/assets/benchmarks/paper/details/static_sr_scatter_grid.png)
-
-**Figure 1. Numerical agreement with FreeSASA.** Scatter panels compare total SASA from each mode against FreeSASA across point counts.
-
 The bitmask path is intentionally different: it trades exact numerical identity for throughput and bounded approximation error. At 128 points, bitmask f64 and f32 both show mean relative differences of about `0.662%` versus FreeSASA.
 
 [![Static validation mean relative error](pathname:///zsasa/assets/benchmarks/paper/details/static_sr_mean_relative_error.png)](/assets/benchmarks/paper/details/static_sr_mean_relative_error.png)
 
-**Figure 2. Static validation error across point counts.** Exact `zsasa` modes remain nearly identical to FreeSASA; bitmask mode has a visible but quantified approximation envelope.
+**Figure 1. Static validation error across point counts.** This summary view is easier to scan than the full scatter-grid output. Exact `zsasa` modes remain nearly identical to FreeSASA; bitmask mode has a visible but quantified approximation envelope.
 
 ## Trajectory validation against MDTraj
 
@@ -38,13 +34,9 @@ Trajectory validation uses the 5wvo_C ATLAS trajectory with 1,001 frames. Agreem
 | CLI f64 | 100 | 0.7725 | 1.27% | 2.66% |
 | CLI f64 | 1000 | 0.9722 | 0.416% | 1.03% |
 
-[![MD validation scatter grid](pathname:///zsasa/assets/benchmarks/paper/details/md_scatter_grid.png)](/assets/benchmarks/paper/details/md_scatter_grid.png)
-
-**Figure 3. MD validation scatter grid.** Per-frame total SASA compared with MDTraj across trajectory validation modes.
-
 [![MD validation R2](pathname:///zsasa/assets/benchmarks/paper/details/md_r2.png)](/assets/benchmarks/paper/details/md_r2.png)
 
-**Figure 4. MD validation R² across point counts.** Higher point counts reduce the implementation-specific sampling difference against MDTraj.
+**Figure 2. MD validation R² across point counts.** Higher point counts reduce the implementation-specific sampling difference against MDTraj. The full scatter grids are available from the benchmark repository outputs, but the website keeps the validation page focused on summary readouts.
 
 ## Reproducibility notes
 
