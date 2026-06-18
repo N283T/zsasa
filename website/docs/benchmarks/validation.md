@@ -1,6 +1,6 @@
 # SASA Validation
 
-Validation checks whether `zsasa` agrees with established tools under matched settings. It is not an implementation-independent ground truth: SASA depends on the algorithm, radii, probe radius, sampling convention, hydrogens, and parser policy.
+Validation is a consistency check rather than a comparison to an external ground truth. As in the paper, SASA is defined operationally by the chosen algorithm, radii, probe radius, sampling convention, hydrogen policy, and parser decisions, so there is no single implementation-independent reference value for these inputs. Close agreement under matched settings shows that `zsasa` stays in line with established tools, not that any one tool is uniquely correct.
 
 ## Summary
 
@@ -14,9 +14,9 @@ Validation checks whether `zsasa` agrees with established tools under matched se
 
 ## Static structure validation against FreeSASA
 
-The exact Shrake--Rupley path closely reproduces FreeSASA total SASA on the *E. coli* AlphaFold Database validation set. At 100 sphere points, f64 has a mean relative difference of `2.06e-5%`; f32 remains very close, with a mean relative difference of `0.000140%`.
+The exact Shrake--Rupley path closely reproduces FreeSASA total SASA on the *E. coli* AlphaFold Database validation set. At 100 sphere points, f64 has a mean relative difference of `2.06e-5%`; f32 remains very close, with a mean relative difference of `0.000140%`. This near-identity is expected because exact `zsasa` follows FreeSASA's golden-spiral sphere-point convention.
 
-The bitmask path is intentionally different: it trades exact numerical identity for throughput and bounded approximation error. At 128 points, bitmask f64 and f32 both show mean relative differences of about `0.662%` versus FreeSASA.
+The bitmask path is intentionally different: it trades exact numerical identity for throughput and bounded approximation error. At 128 points, bitmask f64 and f32 both show mean relative differences of about `0.662%` versus FreeSASA. These rows should be read as measurements of a lookup-table approximation, not as a simple sampling-density convergence curve: fixed direction and angle quantization introduces quantization error and a systematic offset, while finite sphere-point sampling error can either cancel or reinforce that offset. Increasing the requested point count can reduce worst-case deviations, but it does not guarantee a monotonic decrease in mean relative difference.
 
 The two visible scatter plots below match the two validation panels used in paper Figure 2: an exact f64 row that demonstrates near numerical identity with FreeSASA, and the bitmask f32 row used for the throughput-oriented approximation claim. The full scatter grid is still available below as supporting detail.
 
@@ -33,7 +33,7 @@ The two visible scatter plots below match the two validation panels used in pape
 
 [![Static validation mean relative error](pathname:///zsasa/assets/benchmarks/paper/details/static_sr_mean_relative_error.png)](/assets/benchmarks/paper/details/static_sr_mean_relative_error.png)
 
-**Figure 3. Static validation error across point counts.** This summary view shows how agreement changes across the point-count sweep. Exact `zsasa` modes remain nearly identical to FreeSASA; bitmask mode has a visible but quantified approximation envelope.
+**Figure 3. Static validation error across point counts.** This summary view shows how agreement changes across the point-count sweep. Exact `zsasa` modes remain nearly identical to FreeSASA because they share the same golden-spiral sphere-point convention. `zsasa` bitmask mode has a visible but quantified approximation envelope from lookup-table quantization error. RustSASA and Lahuta use the same point-placement convention in this sweep, so their curves are nearly overlapping. In the paper-aligned comparison, Lahuta bitmask is applied only at the 128-point, Lahuta-compatible setting used for the paper/batch comparison rather than as the main point-count trend.
 
 <details>
 <summary>Show static-validation scatter grid</summary>
