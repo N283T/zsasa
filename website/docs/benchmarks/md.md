@@ -18,7 +18,7 @@ Trajectory benchmarks measure frame-wise SASA calculation under streaming, low-m
 | 6sup_A | CLI bitmask f32 | 6.949 s | 144 | 115.9 MiB | 132× vs MDTraj |
 | 5vz0_A | CLI bitmask f32 | 38.056 s | 263 | 64.6 MiB | 86.5× vs mdsasa-bolt |
 
-![MD throughput vs peak RSS](pathname:///zsasa/assets/benchmarks/paper/md/md_throughput_vs_peak_rss_logx_grid.png)
+[![MD throughput vs peak RSS](pathname:///zsasa/assets/benchmarks/paper/md/md_throughput_vs_peak_rss_logx_grid.png)](/assets/benchmarks/paper/md/md_throughput_vs_peak_rss_logx_grid.png)
 
 **Figure 1. MD throughput versus peak RSS.** The `zsasa` CLI paths occupy the high-throughput, low-memory region across the three workloads.
 
@@ -38,13 +38,21 @@ Trajectory benchmarks measure frame-wise SASA calculation under streaming, low-m
 | 5vz0_A | `zsasa` CLI bitmask f32 | 38.056 s | 263 | 64.6 MiB | 86.5× faster than mdsasa-bolt |
 | 5vz0_A | mdsasa-bolt (Rust) | 3,293.112 s | 3.0 | 24,082 MiB | MDTraj not run for this long trajectory |
 
-![MD frames per second](pathname:///zsasa/assets/benchmarks/paper/md/md_frames_per_sec_bar_grid.png)
+[![MD frames per second](pathname:///zsasa/assets/benchmarks/paper/md/md_frames_per_sec_bar_grid.png)](/assets/benchmarks/paper/md/md_frames_per_sec_bar_grid.png)
 
 **Figure 2. Frames per second across trajectory workloads.** `zsasa` CLI exact and bitmask modes are the fastest low-memory paths in the benchmarked workloads.
 
-![MD peak RSS](pathname:///zsasa/assets/benchmarks/paper/md/md_peak_rss_bar_grid.png)
+[![MD peak RSS](pathname:///zsasa/assets/benchmarks/paper/md/md_peak_rss_bar_grid.png)](/assets/benchmarks/paper/md/md_peak_rss_bar_grid.png)
 
 **Figure 3. Peak RSS across trajectory workloads.** The absolute-memory bars show why streaming trajectory processing matters for large or long trajectories.
+
+[![MD runtime speedup](pathname:///zsasa/assets/benchmarks/paper/md/md_runtime_speedup_vs_comparators_grid.png)](/assets/benchmarks/paper/md/md_runtime_speedup_vs_comparators_grid.png)
+
+**Figure 4. MD runtime speedup ratios.** The n× speedup view is retained for direct comparator comparisons.
+
+[![MD RSS reduction](pathname:///zsasa/assets/benchmarks/paper/md/md_rss_reduction_vs_comparators_grid.png)](/assets/benchmarks/paper/md/md_rss_reduction_vs_comparators_grid.png)
+
+**Figure 5. MD RSS reduction ratios.** This view shows the memory advantage of streaming trajectory processing.
 
 ## Memory interpretation
 

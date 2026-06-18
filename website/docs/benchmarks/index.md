@@ -7,7 +7,7 @@ sidebar_label: "Overview"
 
 This section summarizes the benchmark evidence used by the `zsasa` manuscript. The current headline results come from the pinned `zsasa` v0.6.0 benchmark harness in [`zsasa-benchmarks`](https://github.com/N283T/zsasa-benchmarks), with figures copied from the paper and benchmark repositories.
 
-The older exploratory benchmark pages have been replaced with the current pinned suite layout. The only pre-pinned result retained here is the SwissProt-scale batch benchmark, labeled as legacy context on the [Batch](batch.md#legacy-swissprot-benchmark-pre-pinned) page.
+The older exploratory benchmark pages have been replaced with the current benchmark suite layout. The only pre-pinned result retained here is the SwissProt-scale batch benchmark, labeled as legacy context on the [Batch](batch.md#legacy-swissprot-benchmark-pre-pinned) page.
 
 ## Benchmark suites
 
@@ -18,13 +18,6 @@ The older exploratory benchmark pages have been replaced with the current pinned
 | [Single-file stress tests](single-file.md) | Large structures and parser-heavy cases | 8 curated structures up to 4.5M atoms | Runtime, RSS, parse/SASA timing |
 | [MD trajectories](md.md) | Streaming frame-wise trajectory SASA | 5wvo_C, 6sup_A, 5vz0_A | Frames/s, RSS, comparator speedup |
 
-## TL;DR
-
-The clearest batch-performance view is throughput versus peak RSS: points in the upper-left are faster and more memory-efficient.
-
-![Batch throughput vs peak RSS](pathname:///zsasa/assets/benchmarks/paper/batch/batch_tldr_throughput_vs_rss_2grid.png)
-
-**Figure 1. Batch throughput vs peak memory.** The `zsasa` bitmask modes sit in the high-throughput, low-RSS region for both E. coli and Human AFDB.
 
 ## Test environment
 

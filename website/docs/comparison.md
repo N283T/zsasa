@@ -104,7 +104,7 @@ Zig has not yet reached version 1.0. The language may introduce breaking changes
 
 ### Benchmark scope
 
-The current current pinned benchmark claims come from one consumer laptop and pinned comparator versions. Absolute runtimes will vary across hardware. Use the relative comparisons and the documented benchmark settings when interpreting the results.
+The current benchmark benchmark claims come from one consumer laptop and pinned comparator versions. Absolute runtimes will vary across hardware. Use the relative comparisons and the documented benchmark settings when interpreting the results.
 
 ## Links
 
