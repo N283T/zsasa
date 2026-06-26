@@ -1,9 +1,40 @@
 const std = @import("std");
+const analysis = @import("analysis.zig");
 const types = @import("types.zig");
 
 const Allocator = std.mem.Allocator;
 const SasaResult = types.SasaResult;
 const AtomInput = types.AtomInput;
+
+pub const TextOutputOptions = struct {
+    input_name: []const u8 = "input",
+    classifier_name: []const u8 = "unknown",
+    algorithm_name: []const u8 = "unknown",
+    probe_radius: f64 = 1.4,
+    detail_count: u32 = 0,
+    detail_label: []const u8 = "Detail",
+};
+
+const AreaBreakdown = struct {
+    total: f64 = 0,
+    side_chain: f64 = 0,
+    main_chain: f64 = 0,
+    apolar: f64 = 0,
+    polar: f64 = 0,
+};
+
+const ResidueArea = struct {
+    chain: types.FixedString4,
+    residue: types.FixedString5,
+    residue_number: i32,
+    insertion_code: types.FixedString4,
+    area: AreaBreakdown,
+};
+
+const ChainArea = struct {
+    chain: types.FixedString4,
+    area: AreaBreakdown,
+};
 
 /// Output format options
 pub const OutputFormat = enum {
@@ -11,6 +42,8 @@ pub const OutputFormat = enum {
     compact, // Single-line JSON
     csv, // CSV format
     jsonl, // JSON Lines (one JSON object per line, for batch)
+    freesasa, // FreeSASA-compatible human-readable text (single calc only)
+    rsa, // FreeSASA/NACCESS-compatible residue RSA text (single calc only)
 };
 
 /// JSON structure for output
@@ -61,6 +94,239 @@ pub fn sasaResultToCsv(allocator: Allocator, result: SasaResult) ![]u8 {
 
     // Total
     try writer.print("total,{d:.6}\n", .{result.total_area});
+
+    return aw.toOwnedSlice();
+}
+
+pub fn sasaResultToFreesasa(allocator: Allocator, result: SasaResult, options: TextOutputOptions) ![]u8 {
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    errdefer aw.deinit();
+    const writer = &aw.writer;
+
+    try writer.writeAll("## zsasa FreeSASA-compatible output ##\n\n");
+    try writer.writeAll("PARAMETERS\n");
+    try writer.print("algorithm    : {s}\n", .{options.algorithm_name});
+    try writer.print("classifier   : {s}\n", .{options.classifier_name});
+    try writer.print("probe-radius : {d:.2}\n", .{options.probe_radius});
+    if (options.detail_count > 0) {
+        try writer.print("{s:<13}: {d}\n", .{ options.detail_label, options.detail_count });
+    }
+    try writer.print("input        : {s}\n\n", .{options.input_name});
+    try writer.writeAll("RESULTS (A^2)\n");
+    try writer.print("Total   : {d:10.2}\n", .{result.total_area});
+
+    return aw.toOwnedSlice();
+}
+
+fn isMainChainAtom(atom_name: []const u8) bool {
+    return std.mem.eql(u8, atom_name, "N") or
+        std.mem.eql(u8, atom_name, "CA") or
+        std.mem.eql(u8, atom_name, "C") or
+        std.mem.eql(u8, atom_name, "O") or
+        std.mem.eql(u8, atom_name, "OXT");
+}
+
+fn isPolarAtom(atom_name: []const u8, element: ?u8) bool {
+    if (element) |atomic_number| {
+        return atomic_number == 7 or atomic_number == 8 or atomic_number == 15 or atomic_number == 16;
+    }
+    const trimmed = std.mem.trim(u8, atom_name, " ");
+    if (trimmed.len == 0) return false;
+    const c = std.ascii.toUpper(trimmed[0]);
+    return c == 'N' or c == 'O' or c == 'P' or c == 'S';
+}
+
+fn addAtomArea(area: *AreaBreakdown, atom_area: f64, atom_name: ?[]const u8, element: ?u8) void {
+    area.total += atom_area;
+    if (atom_name) |name| {
+        if (isMainChainAtom(name)) {
+            area.main_chain += atom_area;
+        } else {
+            area.side_chain += atom_area;
+        }
+        if (isPolarAtom(name, element)) {
+            area.polar += atom_area;
+        } else {
+            area.apolar += atom_area;
+        }
+    } else {
+        area.side_chain += atom_area;
+        area.apolar += atom_area;
+    }
+}
+
+fn sameResidueKey(
+    area: ResidueArea,
+    chain: types.FixedString4,
+    residue: types.FixedString5,
+    residue_number: i32,
+    insertion_code: types.FixedString4,
+) bool {
+    return area.residue_number == residue_number and
+        std.mem.eql(u8, area.chain.slice(), chain.slice()) and
+        std.mem.eql(u8, area.residue.slice(), residue.slice()) and
+        std.mem.eql(u8, area.insertion_code.slice(), insertion_code.slice());
+}
+
+fn collectResidueAreas(allocator: Allocator, input: AtomInput, atom_areas: []const f64) ![]ResidueArea {
+    if (!input.hasResidueInfo()) return error.MissingResidueInfo;
+    if (atom_areas.len != input.atomCount()) return error.LengthMismatch;
+
+    var residues = std.ArrayListUnmanaged(ResidueArea).empty;
+    errdefer residues.deinit(allocator);
+
+    const chains = input.chain_id.?;
+    const residue_names = input.residue.?;
+    const residue_nums = input.residue_num.?;
+    const insertions = input.insertion_code.?;
+    const atom_names = input.atom_name;
+    const elements = input.element;
+
+    for (0..input.atomCount()) |i| {
+        const chain = chains[i];
+        const residue = residue_names[i];
+        const residue_num = residue_nums[i];
+        const insertion = insertions[i];
+
+        var found_idx: ?usize = null;
+        for (residues.items, 0..) |residue_area, j| {
+            if (sameResidueKey(residue_area, chain, residue, residue_num, insertion)) {
+                found_idx = j;
+                break;
+            }
+        }
+
+        const idx = found_idx orelse blk: {
+            try residues.append(allocator, .{
+                .chain = chain,
+                .residue = residue,
+                .residue_number = residue_num,
+                .insertion_code = insertion,
+                .area = .{},
+            });
+            break :blk residues.items.len - 1;
+        };
+
+        addAtomArea(
+            &residues.items[idx].area,
+            atom_areas[i],
+            if (atom_names) |names| names[i].slice() else null,
+            if (elements) |elem| elem[i] else null,
+        );
+    }
+
+    return residues.toOwnedSlice(allocator);
+}
+
+fn collectChainAreas(allocator: Allocator, residues: []const ResidueArea) ![]ChainArea {
+    var chains = std.ArrayListUnmanaged(ChainArea).empty;
+    errdefer chains.deinit(allocator);
+
+    for (residues) |residue| {
+        var found_idx: ?usize = null;
+        for (chains.items, 0..) |*chain, i| {
+            if (std.mem.eql(u8, chain.chain.slice(), residue.chain.slice())) {
+                found_idx = i;
+                break;
+            }
+        }
+
+        const idx = found_idx orelse blk: {
+            try chains.append(allocator, .{ .chain = residue.chain, .area = .{} });
+            break :blk chains.items.len - 1;
+        };
+        chains.items[idx].area.total += residue.area.total;
+        chains.items[idx].area.side_chain += residue.area.side_chain;
+        chains.items[idx].area.main_chain += residue.area.main_chain;
+        chains.items[idx].area.apolar += residue.area.apolar;
+        chains.items[idx].area.polar += residue.area.polar;
+    }
+
+    return chains.toOwnedSlice(allocator);
+}
+
+fn writeAbsRel(writer: *std.Io.Writer, abs: f64, rel: ?f64) !void {
+    try writer.print("{d:7.2}", .{abs});
+    if (rel) |value| {
+        try writer.print("{d:6.1}", .{value});
+    } else {
+        try writer.writeAll("   N/A");
+    }
+}
+
+fn residueNumberString(buf: []u8, number: i32, insertion_code: types.FixedString4) []const u8 {
+    if (insertion_code.len > 0) {
+        return std.fmt.bufPrint(buf, "{d}{s}", .{ number, insertion_code.slice() }) catch "?";
+    }
+    return std.fmt.bufPrint(buf, "{d}", .{number}) catch "?";
+}
+
+pub fn sasaResultToRsa(allocator: Allocator, result: SasaResult, input: AtomInput, options: TextOutputOptions) ![]u8 {
+    const residues = try collectResidueAreas(allocator, input, result.atom_areas);
+    defer allocator.free(residues);
+    const chains = try collectChainAreas(allocator, residues);
+    defer allocator.free(chains);
+
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    errdefer aw.deinit();
+    const writer = &aw.writer;
+
+    try writer.writeAll("REM  zsasa FreeSASA/NACCESS-compatible RSA\n");
+    try writer.print("REM  Absolute and relative SASAs for {s}\n", .{options.input_name});
+    try writer.print("REM  Atomic radii and reference values for relative SASA: {s}\n", .{options.classifier_name});
+    try writer.print("REM  Algorithm: {s}\n", .{options.algorithm_name});
+    try writer.print("REM  Probe-radius: {d:.2}\n", .{options.probe_radius});
+    if (options.detail_count > 0) {
+        try writer.print("REM  {s}: {d}\n", .{ options.detail_label, options.detail_count });
+    }
+    try writer.writeAll("REM RES _ NUM      All-atoms   Total-Side   Main-Chain    Non-polar    All polar\n");
+    try writer.writeAll("REM                ABS   REL    ABS   REL    ABS   REL    ABS   REL    ABS   REL\n");
+
+    var total = AreaBreakdown{};
+    for (residues) |residue| {
+        var num_buf: [32]u8 = undefined;
+        const num = residueNumberString(&num_buf, residue.residue_number, residue.insertion_code);
+        const rel_total: ?f64 = if (analysis.MaxSASA.get(residue.residue.slice())) |max_sasa|
+            if (max_sasa > 0) residue.area.total * 100.0 / max_sasa else null
+        else
+            null;
+
+        try writer.print("RES {s:>3} {s:>3} {s:<4} ", .{ residue.residue.slice(), residue.chain.slice(), num });
+        try writeAbsRel(writer, residue.area.total, rel_total);
+        try writeAbsRel(writer, residue.area.side_chain, null);
+        try writeAbsRel(writer, residue.area.main_chain, null);
+        try writeAbsRel(writer, residue.area.apolar, null);
+        try writeAbsRel(writer, residue.area.polar, null);
+        try writer.writeAll("\n");
+
+        total.total += residue.area.total;
+        total.side_chain += residue.area.side_chain;
+        total.main_chain += residue.area.main_chain;
+        total.apolar += residue.area.apolar;
+        total.polar += residue.area.polar;
+    }
+
+    try writer.writeAll("END  Absolute sums over single chains surface\n");
+    for (chains, 0..) |chain, i| {
+        try writer.print("CHAIN{d:3} {s:>3} {d:10.1}   {d:10.1}   {d:10.1}   {d:10.1}   {d:10.1}\n", .{
+            i + 1,
+            chain.chain.slice(),
+            chain.area.total,
+            chain.area.side_chain,
+            chain.area.main_chain,
+            chain.area.apolar,
+            chain.area.polar,
+        });
+    }
+
+    try writer.writeAll("END  Absolute sums over all chains\n");
+    try writer.print("TOTAL        {d:10.1}   {d:10.1}   {d:10.1}   {d:10.1}   {d:10.1}\n", .{
+        total.total,
+        total.side_chain,
+        total.main_chain,
+        total.apolar,
+        total.polar,
+    });
 
     return aw.toOwnedSlice();
 }
@@ -143,6 +409,8 @@ pub fn writeSasaResultWithFormat(
         .json => try sasaResultToJsonPretty(allocator, result),
         .compact => try sasaResultToJson(allocator, result),
         .csv => try sasaResultToCsv(allocator, result),
+        .freesasa => try sasaResultToFreesasa(allocator, result, .{}),
+        .rsa => return error.MissingResidueInfo,
         .jsonl => unreachable, // JSONL is handled at batch level, not per-file
     };
     defer allocator.free(output_str);
@@ -162,6 +430,19 @@ pub fn writeSasaResultWithFormatAndInput(
     path: []const u8,
     format: OutputFormat,
 ) !void {
+    return writeSasaResultWithFormatAndInputOptions(allocator, io, result, input, path, format, .{});
+}
+
+/// Write SasaResult to file with specified format, using caller-provided metadata for text formats.
+pub fn writeSasaResultWithFormatAndInputOptions(
+    allocator: Allocator,
+    io: std.Io,
+    result: SasaResult,
+    input: AtomInput,
+    path: []const u8,
+    format: OutputFormat,
+    options: TextOutputOptions,
+) !void {
     const output_str = switch (format) {
         .json => try sasaResultToJsonPretty(allocator, result),
         .compact => try sasaResultToJson(allocator, result),
@@ -169,6 +450,8 @@ pub fn writeSasaResultWithFormatAndInput(
             try sasaResultToRichCsv(allocator, input, result.atom_areas)
         else
             try sasaResultToCsv(allocator, result),
+        .freesasa => try sasaResultToFreesasa(allocator, result, options),
+        .rsa => try sasaResultToRsa(allocator, result, input, options),
         .jsonl => unreachable, // JSONL is handled at batch level, not per-file
     };
     defer allocator.free(output_str);
@@ -637,6 +920,180 @@ test "sasaResultToCsv basic" {
     ;
 
     try std.testing.expectEqualStrings(expected, csv);
+}
+
+test "sasaResultToFreesasa writes FreeSASA-compatible text summary" {
+    const allocator = std.testing.allocator;
+
+    var atom_areas = [_]f64{ 10.0, 20.0, 30.0 };
+    const result = SasaResult{
+        .total_area = 60.0,
+        .atom_areas = atom_areas[0..],
+        .allocator = allocator,
+    };
+
+    const output = try sasaResultToFreesasa(allocator, result, .{
+        .input_name = "mini.pdb",
+        .classifier_name = "naccess",
+        .algorithm_name = "Shrake & Rupley",
+        .probe_radius = 1.4,
+        .detail_count = 100,
+        .detail_label = "Points",
+    });
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings(
+        \\## zsasa FreeSASA-compatible output ##
+        \\
+        \\PARAMETERS
+        \\algorithm    : Shrake & Rupley
+        \\classifier   : naccess
+        \\probe-radius : 1.40
+        \\Points       : 100
+        \\input        : mini.pdb
+        \\
+        \\RESULTS (A^2)
+        \\Total   :      60.00
+        \\
+    , output);
+}
+
+test "sasaResultToRsa writes residue, chain, and total rows" {
+    const allocator = std.testing.allocator;
+
+    const x = [_]f64{ 0, 1, 2 };
+    const y = [_]f64{ 0, 0, 0 };
+    const z = [_]f64{ 0, 0, 0 };
+    var r = [_]f64{ 1, 1, 1 };
+    const chain = [_]types.FixedString4{
+        types.FixedString4.fromSlice("A"),
+        types.FixedString4.fromSlice("A"),
+        types.FixedString4.fromSlice("B"),
+    };
+    const residue = [_]types.FixedString5{
+        types.FixedString5.fromSlice("ALA"),
+        types.FixedString5.fromSlice("ALA"),
+        types.FixedString5.fromSlice("UNK"),
+    };
+    const residue_num = [_]i32{ 1, 1, 2 };
+    const insertion = [_]types.FixedString4{
+        types.FixedString4.fromSlice(""),
+        types.FixedString4.fromSlice(""),
+        types.FixedString4.fromSlice("A"),
+    };
+    const atom_names = [_]types.FixedString4{
+        types.FixedString4.fromSlice("N"),
+        types.FixedString4.fromSlice("CB"),
+        types.FixedString4.fromSlice("C1"),
+    };
+    var atom_areas = [_]f64{ 10.0, 20.0, 30.0 };
+    const result = SasaResult{
+        .total_area = 60.0,
+        .atom_areas = atom_areas[0..],
+        .allocator = allocator,
+    };
+    const input = AtomInput{
+        .x = x[0..],
+        .y = y[0..],
+        .z = z[0..],
+        .r = r[0..],
+        .chain_id = chain[0..],
+        .residue = residue[0..],
+        .residue_num = residue_num[0..],
+        .insertion_code = insertion[0..],
+        .atom_name = atom_names[0..],
+        .allocator = allocator,
+    };
+
+    const output = try sasaResultToRsa(allocator, result, input, .{
+        .input_name = "mini.pdb",
+        .classifier_name = "naccess",
+        .algorithm_name = "Shrake & Rupley",
+        .probe_radius = 1.4,
+        .detail_count = 100,
+        .detail_label = "Test-points",
+    });
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings(
+        \\REM  zsasa FreeSASA/NACCESS-compatible RSA
+        \\REM  Absolute and relative SASAs for mini.pdb
+        \\REM  Atomic radii and reference values for relative SASA: naccess
+        \\REM  Algorithm: Shrake & Rupley
+        \\REM  Probe-radius: 1.40
+        \\REM  Test-points: 100
+        \\REM RES _ NUM      All-atoms   Total-Side   Main-Chain    Non-polar    All polar
+        \\REM                ABS   REL    ABS   REL    ABS   REL    ABS   REL    ABS   REL
+        \\RES ALA   A 1      30.00  23.3  20.00   N/A  10.00   N/A  20.00   N/A  10.00   N/A
+        \\RES UNK   B 2A     30.00   N/A  30.00   N/A   0.00   N/A  30.00   N/A   0.00   N/A
+        \\END  Absolute sums over single chains surface
+        \\CHAIN  1   A       30.0         20.0         10.0         20.0         10.0
+        \\CHAIN  2   B       30.0         30.0          0.0         30.0          0.0
+        \\END  Absolute sums over all chains
+        \\TOTAL              60.0         50.0         10.0         50.0         10.0
+        \\
+    , output);
+}
+
+test "sasaResultToRsa aggregates non-contiguous atoms from the same residue" {
+    const allocator = std.testing.allocator;
+
+    const x = [_]f64{ 0, 1, 2 };
+    const y = [_]f64{ 0, 0, 0 };
+    const z = [_]f64{ 0, 0, 0 };
+    var r = [_]f64{ 1, 1, 1 };
+    const chain = [_]types.FixedString4{
+        types.FixedString4.fromSlice("A"),
+        types.FixedString4.fromSlice("B"),
+        types.FixedString4.fromSlice("A"),
+    };
+    const residue = [_]types.FixedString5{
+        types.FixedString5.fromSlice("ALA"),
+        types.FixedString5.fromSlice("UNK"),
+        types.FixedString5.fromSlice("ALA"),
+    };
+    const residue_num = [_]i32{ 1, 2, 1 };
+    const insertion = [_]types.FixedString4{
+        types.FixedString4.fromSlice(""),
+        types.FixedString4.fromSlice(""),
+        types.FixedString4.fromSlice(""),
+    };
+    const atom_names = [_]types.FixedString4{
+        types.FixedString4.fromSlice("N"),
+        types.FixedString4.fromSlice("C1"),
+        types.FixedString4.fromSlice("CB"),
+    };
+    var atom_areas = [_]f64{ 10.0, 30.0, 20.0 };
+    const result = SasaResult{
+        .total_area = 60.0,
+        .atom_areas = atom_areas[0..],
+        .allocator = allocator,
+    };
+    const input = AtomInput{
+        .x = x[0..],
+        .y = y[0..],
+        .z = z[0..],
+        .r = r[0..],
+        .chain_id = chain[0..],
+        .residue = residue[0..],
+        .residue_num = residue_num[0..],
+        .insertion_code = insertion[0..],
+        .atom_name = atom_names[0..],
+        .allocator = allocator,
+    };
+
+    const output = try sasaResultToRsa(allocator, result, input, .{
+        .input_name = "mini.pdb",
+        .classifier_name = "naccess",
+        .algorithm_name = "Shrake & Rupley",
+        .probe_radius = 1.4,
+        .detail_count = 100,
+        .detail_label = "Test-points",
+    });
+    defer allocator.free(output);
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "RES ALA   A 1      30.00  23.3") != null);
+    try std.testing.expectEqual(@as(?usize, null), std.mem.indexOf(u8, output, "RES ALA   A 1      10.00"));
 }
 
 test "sasaResultToCsv empty atoms" {

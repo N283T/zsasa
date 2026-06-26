@@ -164,6 +164,7 @@ fn getOutputExtension(format: OutputFormat) []const u8 {
         .json, .compact => ".json",
         .jsonl => ".jsonl",
         .csv => ".csv",
+        .freesasa, .rsa => unreachable,
     };
 }
 
@@ -313,6 +314,8 @@ fn writeSasaOutput(
     filename: []const u8,
     format: OutputFormat,
 ) !void {
+    try validateBatchOutputFormat(format);
+
     const output_filename = try replaceExtension(allocator, filename, getOutputExtension(format));
     defer allocator.free(output_filename);
     const output_path = try std.fs.path.join(allocator, &.{ output_dir, output_filename });
@@ -1277,6 +1280,8 @@ pub fn runBatchSequential(
     config: BatchConfig,
     jsonl_output_path: ?[]const u8,
 ) !BatchResult {
+    try validateBatchOutputFormat(config.output_format);
+
     // Start total timer
     var total_timer = std.Io.Timestamp.now(io, .awake);
 
@@ -1847,6 +1852,8 @@ pub fn runBatchParallel(
     config: BatchConfig,
     jsonl_output_path: ?[]const u8,
 ) !BatchResult {
+    try validateBatchOutputFormat(config.output_format);
+
     // Start total timer
     var total_timer = std.Io.Timestamp.now(io, .awake);
 
@@ -2023,6 +2030,8 @@ pub fn runBatch(
     config: BatchConfig,
     jsonl_output_path: ?[]const u8,
 ) !BatchResult {
+    try validateBatchOutputFormat(config.output_format);
+
     const cpu_count = std.Thread.getCpuCount() catch 1;
     const n_threads = if (config.n_threads == 0)
         cpu_count
@@ -2120,6 +2129,13 @@ fn validateWorkflowNSlices(n: u32) !u32 {
 fn validateResidueMapFormat(output_format: OutputFormat, residue_map: bool) !void {
     if (residue_map and output_format != .jsonl) {
         return error.InvalidArgument;
+    }
+}
+
+fn validateBatchOutputFormat(output_format: OutputFormat) !void {
+    switch (output_format) {
+        .json, .compact, .csv, .jsonl => {},
+        .freesasa, .rsa => return error.InvalidArgument,
     }
 }
 
@@ -2986,6 +3002,10 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
         config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
         if (custom_classifier) |*c| config.custom_classifier = c;
         applyWorkflowJobOverrides(&config, args, job);
+        validateBatchOutputFormat(config.output_format) catch {
+            std.debug.print("Error: freesasa and rsa output formats are only supported by the calc command\n", .{});
+            return error.InvalidArgument;
+        };
         validateResidueMapFormat(config.output_format, config.residue_map) catch {
             std.debug.print("Error: residue_map is only supported with format = \"jsonl\"\n", .{});
             return error.InvalidArgument;
@@ -3113,6 +3133,10 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
         config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
         if (custom_classifier) |*c| config.custom_classifier = c;
         applyWorkflowJobOverrides(&config, args, job);
+        validateBatchOutputFormat(config.output_format) catch {
+            std.debug.print("Error: freesasa and rsa output formats are only supported by the calc command\n", .{});
+            return error.InvalidArgument;
+        };
         validateResidueMapFormat(config.output_format, config.residue_map) catch {
             std.debug.print("Error: residue_map is only supported with format = \"jsonl\"\n", .{});
             return error.InvalidArgument;
@@ -3319,6 +3343,10 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     }
     defer if (sdf_ccd) |*d| d.deinit();
 
+    validateBatchOutputFormat(args.output_format) catch {
+        std.debug.print("Error: freesasa and rsa output formats are only supported by the calc command\n", .{});
+        return error.InvalidArgument;
+    };
     validateResidueMapFormat(args.output_format, args.residue_map) catch {
         std.debug.print("Error: --residue-map is only supported with --format=jsonl\n", .{});
         return error.InvalidArgument;
@@ -3712,6 +3740,42 @@ test "validateResidueMapFormat rejects non-JSONL residue map" {
     try std.testing.expectError(error.InvalidArgument, validateResidueMapFormat(.json, true));
     try std.testing.expectError(error.InvalidArgument, validateResidueMapFormat(.compact, true));
     try std.testing.expectError(error.InvalidArgument, validateResidueMapFormat(.csv, true));
+}
+
+test "validateBatchOutputFormat rejects single-calc compatibility formats" {
+    try validateBatchOutputFormat(.json);
+    try validateBatchOutputFormat(.compact);
+    try validateBatchOutputFormat(.csv);
+    try validateBatchOutputFormat(.jsonl);
+    try std.testing.expectError(error.InvalidArgument, validateBatchOutputFormat(.freesasa));
+    try std.testing.expectError(error.InvalidArgument, validateBatchOutputFormat(.rsa));
+}
+
+test "public batch runners reject single-calc compatibility formats before scanning" {
+    try std.testing.expectError(error.InvalidArgument, runBatch(
+        std.testing.allocator,
+        std.testing.io,
+        "/definitely/missing/zsasa/input",
+        null,
+        .{ .output_format = .freesasa },
+        null,
+    ));
+    try std.testing.expectError(error.InvalidArgument, runBatchSequential(
+        std.testing.allocator,
+        std.testing.io,
+        "/definitely/missing/zsasa/input",
+        null,
+        .{ .output_format = .rsa },
+        null,
+    ));
+    try std.testing.expectError(error.InvalidArgument, runBatchParallel(
+        std.testing.allocator,
+        std.testing.io,
+        "/definitely/missing/zsasa/input",
+        null,
+        .{ .output_format = .freesasa },
+        null,
+    ));
 }
 
 test "CLI auth-chain overrides workflow job auth_chain false" {

@@ -160,7 +160,7 @@ See [Output & Analysis](output.md#analysis-features) for detailed output descrip
 | Option | Description | Default |
 |--------|-------------|---------|
 | `-o, --output=FILE` | Output file path | `output.json` |
-| `--format=FMT` | Output format: `json`, `compact`, `csv`, `jsonl` | `json` |
+| `--format=FMT` | Output format. `calc`: `json`, `compact`, `csv`, `freesasa`, `rsa`; `batch`: `json`, `compact`, `csv`, `jsonl` | `json` |
 | `--residue-map` | Add compact residue map arrays to batch JSONL output (`--format=jsonl` only) | off |
 | `--timing` | Show timing breakdown (for benchmarking) | off |
 | `-q, --quiet` | Suppress progress output, including standard progress bars shown by `batch` and `traj` | off |
