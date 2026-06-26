@@ -75,6 +75,7 @@ pub const BatchConfig = struct {
     fine_points: u32 = 256,
     adaptive_low: f64 = 0.10,
     adaptive_high: f64 = 0.90,
+    adaptive_workers: bool = false, // Experimental worker-count calibration for I/O-bound batch runs
     store_atom_areas: bool = false, // When true, copy atom_areas to result_allocator for jsonl
     external_ccd: ?*const ccd_parser.ComponentDict = null, // External CCD dictionary
     sdf_ccd: ?*const ccd_parser.ComponentDict = null, // SDF bond topology dictionary
@@ -2139,6 +2140,7 @@ pub const BatchArgs = struct {
     fine_points: u32 = 256,
     adaptive_low: f64 = 0.10,
     adaptive_high: f64 = 0.90,
+    adaptive_workers: bool = false,
     ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz|.zst])
     sdf_paths: SdfPathList = .{}, // --sdf=PATH (up to 16)
     quiet: bool = false,
@@ -2161,6 +2163,7 @@ pub const BatchArgs = struct {
     fine_points_explicit: bool = false,
     adaptive_low_explicit: bool = false,
     adaptive_high_explicit: bool = false,
+    adaptive_workers_explicit: bool = false,
     ccd_explicit: bool = false,
     sdf_explicit: bool = false,
     quiet_explicit: bool = false,
@@ -2517,6 +2520,9 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         else if (std.mem.eql(u8, arg, "--adaptive-sr")) {
             result.adaptive_sr = true;
             result.adaptive_sr_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--adaptive-workers")) {
+            result.adaptive_workers = true;
+            result.adaptive_workers_explicit = true;
         } else if (std.mem.startsWith(u8, arg, "--coarse-points=")) {
             result.coarse_points_explicit = true;
             result.coarse_points = parseBitmaskPoints("--coarse-points", arg["--coarse-points=".len..]);
@@ -2693,6 +2699,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --sdf=PATH          SDF file with bond topology for CCD classifier
         \\                        Can be specified multiple times for multiple ligands
         \\    --threads=N         Number of threads (default: auto-detect)
+        \\    --adaptive-workers  Experimental: calibrate file-worker count for I/O-bound large batch runs
         \\    --workflow=PATH     TOML workflow file with one or more named batch jobs
         \\    --manifest=PATH     Compatibility alias for --workflow
         \\    --chain=ID          Filter by chain ID for non-workflow batch (e.g. A or A,B)
@@ -3355,6 +3362,10 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
             std.debug.print("Error: adaptive SR options are not supported with --workflow yet\n", .{});
             return error.InvalidArgument;
         }
+        if (args.adaptive_workers_explicit) {
+            std.debug.print("Error: --adaptive-workers is not supported with --workflow yet\n", .{});
+            return error.InvalidArgument;
+        }
         return runWorkflow(allocator, io, args);
     }
 
@@ -3471,6 +3482,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .fine_points = args.fine_points,
         .adaptive_low = args.adaptive_low,
         .adaptive_high = args.adaptive_high,
+        .adaptive_workers = args.adaptive_workers,
         .store_atom_areas = (args.output_format == .jsonl),
         .external_ccd = if (ext_ccd != null) &ext_ccd.? else null,
         .sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null,
@@ -4545,6 +4557,13 @@ test "BatchArgs adaptive defaults use 64 and 256" {
     try std.testing.expectEqual(@as(u32, 256), parsed.fine_points);
     try std.testing.expectEqual(@as(f64, 0.10), parsed.adaptive_low);
     try std.testing.expectEqual(@as(f64, 0.90), parsed.adaptive_high);
+}
+
+test "BatchArgs --adaptive-workers" {
+    const args = [_][]const u8{ "zsasa", "batch", "--adaptive-workers", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.adaptive_workers);
+    try std.testing.expectEqual(true, parsed.adaptive_workers_explicit);
 }
 
 test "BatchArgs --use-bitmask" {
