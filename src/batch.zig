@@ -4627,6 +4627,20 @@ test "runBatchParallel adaptive workers writes parseable JSONL" {
     const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(64 * 1024));
     defer allocator.free(content);
     try std.testing.expectEqual(@as(usize, 10), std.mem.count(u8, content, "\n"));
+
+    var lines = std.mem.tokenizeScalar(u8, content, '\n');
+    var count: usize = 0;
+    while (lines.next()) |line| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer parsed.deinit();
+        const object = parsed.value.object;
+        try std.testing.expect(object.get("filename") != null);
+        try std.testing.expect(object.get("total_area") != null);
+        try std.testing.expect(object.get("atom_areas") != null);
+        try std.testing.expectEqual(@as(usize, 3), object.get("atom_areas").?.array.items.len);
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 10), count);
 }
 
 test "BatchArgs explicit option flags" {
