@@ -1929,6 +1929,7 @@ fn runWorkItemRangeParallel(
     expected_processed: usize,
     progress_node: ?*std.Progress.Node,
 ) !void {
+    std.debug.assert(file_results.len == work_items.len);
     if (work_items.len == 0) return;
 
     var ctx = ParallelContext{
@@ -1955,8 +1956,16 @@ fn runWorkItemRangeParallel(
     const threads = try allocator.alloc(std.Thread, actual_workers);
     defer allocator.free(threads);
 
+    var spawned_count: usize = 0;
+    errdefer {
+        for (threads[0..spawned_count]) |thread| {
+            thread.join();
+        }
+    }
+
     for (threads) |*thread| {
         thread.* = try std.Thread.spawn(.{}, parallelWorker, .{&ctx});
+        spawned_count += 1;
     }
 
     if (progress_node) |node| {
