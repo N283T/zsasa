@@ -32,6 +32,19 @@ zsasa batch structures/ results/ --format=jsonl --output=results.jsonl
 
 JSONL is especially useful when you want to concatenate, filter, or process results incrementally.
 
+## Experimental Adaptive Workers
+
+For very large single-machine runs, storage can become the bottleneck before CPU. `--adaptive-workers` runs a short calibration pass and then uses the smallest file-worker count that is close to the best observed throughput:
+
+```bash
+zsasa batch structures/ results.jsonl \
+  --format=jsonl \
+  --threads=10 \
+  --adaptive-workers
+```
+
+`--threads` remains the maximum worker count. This mode is intended for I/O-bound large directory runs on laptops and workstations; it does not distribute work across machines and does not change the output schema. If the input set is too small to calibrate meaningfully, `zsasa` falls back to the requested worker count.
+
 ## Experimental Adaptive Bitmask SR
 
 For large SR batch jobs that already use bitmask mode, `--adaptive-sr` runs a coarse bitmask pass for every atom and recomputes only intermediate-exposure atoms with a fine point count:

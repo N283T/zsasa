@@ -121,6 +121,7 @@ For batch custom classifier configs, use a workflow `[classifier]` section. See 
 | `--adaptive-low=X` | Accept coarse result when exposed fraction is ≤ X | `0.10` |
 | `--adaptive-high=X` | Accept coarse result when exposed fraction is ≥ X | `0.90` |
 | `--threads=N` | Number of threads (0 = auto-detect) | `0` |
+| `--adaptive-workers` | Experimental batch mode: calibrate file-worker count for I/O-bound large directory runs | off |
 
 ### Classifier Options
 
