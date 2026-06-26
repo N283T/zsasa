@@ -158,6 +158,63 @@ const BatchLuts = struct {
         return if (self.fine_lut_f32 != null) &self.fine_lut_f32.? else null;
     }
 };
+
+const adaptive_worker_min_items: usize = 64;
+const adaptive_worker_max_items: usize = 256;
+const adaptive_worker_near_best_ratio: f64 = 0.95;
+
+const AdaptiveWorkerSample = struct {
+    workers: usize,
+    items: usize,
+    elapsed_ns: u64,
+
+    fn throughput(self: AdaptiveWorkerSample) f64 {
+        if (self.items == 0 or self.elapsed_ns == 0) return 0.0;
+        const seconds = @as(f64, @floatFromInt(self.elapsed_ns)) / 1_000_000_000.0;
+        return @as(f64, @floatFromInt(self.items)) / seconds;
+    }
+};
+
+fn adaptiveWorkerCandidates(allocator: Allocator, max_workers: usize) ![]usize {
+    const capped_max = @max(max_workers, 1);
+    var candidates = std.ArrayListUnmanaged(usize).empty;
+    errdefer candidates.deinit(allocator);
+
+    var workers: usize = 1;
+    while (workers < capped_max) : (workers *= 2) {
+        try candidates.append(allocator, workers);
+    }
+    if (candidates.items.len == 0 or candidates.items[candidates.items.len - 1] != capped_max) {
+        try candidates.append(allocator, capped_max);
+    }
+
+    return candidates.toOwnedSlice(allocator);
+}
+
+fn adaptiveCalibrationWindowSize(total_items: usize, candidate_count: usize) ?usize {
+    if (candidate_count == 0) return null;
+    const required = candidate_count * adaptive_worker_min_items + adaptive_worker_min_items;
+    if (total_items < required) return null;
+
+    const per_candidate = total_items / (candidate_count * 2);
+    return @min(adaptive_worker_max_items, @max(adaptive_worker_min_items, per_candidate));
+}
+
+fn chooseAdaptiveWorkerCount(samples: []const AdaptiveWorkerSample) usize {
+    if (samples.len == 0) return 1;
+
+    var best_throughput: f64 = 0.0;
+    for (samples) |sample| {
+        best_throughput = @max(best_throughput, sample.throughput());
+    }
+
+    const threshold = best_throughput * adaptive_worker_near_best_ratio;
+    for (samples) |sample| {
+        if (sample.throughput() >= threshold) return sample.workers;
+    }
+
+    return samples[samples.len - 1].workers;
+}
 /// Get output extension based on format
 fn getOutputExtension(format: OutputFormat) []const u8 {
     return switch (format) {
@@ -3594,6 +3651,38 @@ test "BatchConfig default values" {
     try std.testing.expectEqual(Algorithm.sr, config.algorithm);
     try std.testing.expectEqual(@as(u32, 100), config.n_points);
     try std.testing.expectEqual(@as(f64, 1.4), config.probe_radius);
+}
+
+test "adaptive worker candidates include powers of two and max" {
+    const allocator = std.testing.allocator;
+
+    const one = try adaptiveWorkerCandidates(allocator, 1);
+    defer allocator.free(one);
+    try std.testing.expectEqualSlices(usize, &.{1}, one);
+
+    const two = try adaptiveWorkerCandidates(allocator, 2);
+    defer allocator.free(two);
+    try std.testing.expectEqualSlices(usize, &.{ 1, 2 }, two);
+
+    const ten = try adaptiveWorkerCandidates(allocator, 10);
+    defer allocator.free(ten);
+    try std.testing.expectEqualSlices(usize, &.{ 1, 2, 4, 8, 10 }, ten);
+}
+
+test "adaptive worker selection chooses smallest near best throughput" {
+    const samples = [_]AdaptiveWorkerSample{
+        .{ .workers = 1, .items = 100, .elapsed_ns = 100_000_000 },
+        .{ .workers = 2, .items = 100, .elapsed_ns = 60_000_000 },
+        .{ .workers = 4, .items = 100, .elapsed_ns = 40_000_000 },
+        .{ .workers = 8, .items = 100, .elapsed_ns = 39_000_000 },
+    };
+    try std.testing.expectEqual(@as(usize, 4), chooseAdaptiveWorkerCount(&samples));
+}
+
+test "adaptive calibration plan falls back for small datasets" {
+    const candidates_len: usize = 5;
+    try std.testing.expectEqual(@as(?usize, null), adaptiveCalibrationWindowSize(100, candidates_len));
+    try std.testing.expectEqual(@as(?usize, 64), adaptiveCalibrationWindowSize(640, candidates_len));
 }
 
 test "BatchResult deinit" {
