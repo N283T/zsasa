@@ -411,6 +411,20 @@ pub const FileResult = struct {
     };
 };
 
+fn deinitFileResultFields(allocator: Allocator, result: *FileResult) void {
+    allocator.free(result.filename);
+    if (result.error_msg) |msg| allocator.free(msg);
+    if (result.atom_areas) |areas| allocator.free(areas);
+    if (result.residue_map) |*map| map.deinit();
+    result.* = .{
+        .filename = "",
+        .n_atoms = 0,
+        .sasa_time_ns = 0,
+        .total_sasa = 0,
+        .status = .err,
+    };
+}
+
 /// Aggregate result for batch processing
 pub const BatchResult = struct {
     total_files: usize,
@@ -423,16 +437,7 @@ pub const BatchResult = struct {
 
     pub fn deinit(self: *BatchResult) void {
         for (self.file_results) |*result| {
-            self.allocator.free(result.filename);
-            if (result.error_msg) |msg| {
-                self.allocator.free(msg);
-            }
-            if (result.atom_areas) |areas| {
-                self.allocator.free(areas);
-            }
-            if (result.residue_map) |*map| {
-                map.deinit();
-            }
+            deinitFileResultFields(self.allocator, result);
         }
         self.allocator.free(self.file_results);
     }
@@ -2008,6 +2013,13 @@ fn runAdaptiveWorkItemsParallel(
 
     var processed_count = std.atomic.Value(usize).init(0);
     var offset: usize = 0;
+    errdefer {
+        const initialized_count = @min(file_results.len, @max(offset, processed_count.load(.acquire)));
+        for (file_results[0..initialized_count]) |*result| {
+            deinitFileResultFields(allocator, result);
+        }
+    }
+
     var samples = try allocator.alloc(AdaptiveWorkerSample, candidates.len);
     defer allocator.free(samples);
 
@@ -3865,6 +3877,31 @@ test "BatchResult deinit" {
     batch_result.deinit();
 }
 
+test "deinitFileResultFields frees owned fields and resets result" {
+    const allocator = std.testing.allocator;
+
+    var result = FileResult{
+        .filename = try allocator.dupe(u8, "owned.pdb"),
+        .n_atoms = 3,
+        .sasa_time_ns = 1000000,
+        .total_sasa = 42.0,
+        .status = .ok,
+        .error_msg = try allocator.dupe(u8, "owned error"),
+        .atom_areas = try allocator.dupe(f64, &.{ 1.0, 2.0, 3.0 }),
+    };
+
+    deinitFileResultFields(allocator, &result);
+
+    try std.testing.expectEqualStrings("", result.filename);
+    try std.testing.expectEqual(@as(usize, 0), result.n_atoms);
+    try std.testing.expectEqual(@as(u64, 0), result.sasa_time_ns);
+    try std.testing.expectEqual(@as(f64, 0), result.total_sasa);
+    try std.testing.expectEqual(FileResult.Status.err, result.status);
+    try std.testing.expectEqual(@as(?[]const u8, null), result.error_msg);
+    try std.testing.expectEqual(@as(?[]const f64, null), result.atom_areas);
+    try std.testing.expectEqual(@as(?json_writer.ResidueMap, null), result.residue_map);
+}
+
 test "BatchArgs defaults" {
     const args = [_][]const u8{ "zsasa", "batch", "input_dir/" };
     const parsed = parseArgs(&args, 2);
@@ -4583,6 +4620,11 @@ test "runBatchParallel adaptive workers writes parseable JSONL" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
+    const candidates = try adaptiveWorkerCandidates(allocator, 4);
+    defer allocator.free(candidates);
+    const n_files = candidates.len * adaptive_worker_min_items + adaptive_worker_min_items;
+    try std.testing.expect(adaptiveCalibrationWindowSize(n_files, candidates.len) != null);
+
     var root_buf: [std.fs.max_path_bytes]u8 = undefined;
     const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
     const root_path = root_buf[0..root_len];
@@ -4600,7 +4642,7 @@ test "runBatchParallel adaptive workers writes parseable JSONL" {
         "END\n";
 
     var name_buf: [32]u8 = undefined;
-    for (0..10) |i| {
+    for (0..n_files) |i| {
         const filename = try std.fmt.bufPrint(&name_buf, "tiny-{d}.pdb", .{i});
         const path = try std.fs.path.join(allocator, &.{ input_dir, filename });
         defer allocator.free(path);
@@ -4620,13 +4662,13 @@ test "runBatchParallel adaptive workers writes parseable JSONL" {
     }, output_path);
     defer result.deinit();
 
-    try std.testing.expectEqual(@as(usize, 10), result.total_files);
-    try std.testing.expectEqual(@as(usize, 10), result.successful);
+    try std.testing.expectEqual(n_files, result.total_files);
+    try std.testing.expectEqual(n_files, result.successful);
     try std.testing.expectEqual(@as(usize, 0), result.failed);
 
     const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(64 * 1024));
     defer allocator.free(content);
-    try std.testing.expectEqual(@as(usize, 10), std.mem.count(u8, content, "\n"));
+    try std.testing.expectEqual(n_files, std.mem.count(u8, content, "\n"));
 
     var lines = std.mem.tokenizeScalar(u8, content, '\n');
     var count: usize = 0;
@@ -4640,7 +4682,7 @@ test "runBatchParallel adaptive workers writes parseable JSONL" {
         try std.testing.expectEqual(@as(usize, 3), object.get("atom_areas").?.array.items.len);
         count += 1;
     }
-    try std.testing.expectEqual(@as(usize, 10), count);
+    try std.testing.expectEqual(n_files, count);
 }
 
 test "BatchArgs explicit option flags" {
