@@ -67,6 +67,8 @@ zsasa calc --workflow sasa.toml
 zsasa batch --workflow bsa.toml
 ```
 
+For large I/O-bound directory batches, `zsasa batch --adaptive-workers` can sample early files at several worker counts and continue with the fastest near-best count. Calibration adds overhead on small datasets; use explicit `--threads N` for pinned or reproducible runs.
+
 ## Documentation
 
 | | |

@@ -170,6 +170,8 @@ Dataset: SwissProt PDB v6, 550,122 structures, PDB format. Benchmark settings: w
 
 On the 32 GB M4 system, the dataset exceeded available RAM and the run became I/O-bound; `zsasa` and Lahuta bitmask converged in wall-clock time, while `zsasa` retained much lower peak RSS.
 
+For similar large, cold-cache directory runs, `zsasa batch --adaptive-workers --threads=N` can sample early windows at candidate worker counts and finish with the fastest near-best count. This can reduce unnecessary I/O pressure, but calibration adds overhead; prefer explicit `--threads N` for small datasets and pinned benchmark reproduction.
+
 ## Reproducing the current batch results
 
 The current pinned benchmark data is exported from `zsasa-benchmarks/results/tables/batch_t10_summary.csv` and `batch_thread_scaling.csv`. The corresponding full harness is in [`N283T/zsasa-benchmarks`](https://github.com/N283T/zsasa-benchmarks).

@@ -50,6 +50,8 @@ Positional paths are required for ordinary batch mode, but can be supplied by th
 
 Batch mode uses file-level parallelism: multiple files are processed simultaneously, one thread per file. Use `--threads` to control the number of concurrent files.
 
+For very large directory runs that may be I/O-bound, `--adaptive-workers` can tune that file-worker count automatically. It samples early batch windows at candidate worker counts up to the `--threads` maximum, then uses the fastest near-best count for the remaining files. Calibration itself costs extra work at startup, so fixed `--threads N` is still usually better for small datasets and remains preferable for pinned or reproducible benchmark runs.
+
 For task-oriented examples, see [Batch Processing](../guide/batch.md) and [Workflow Files](../guide/workflows.md).
 
 ### `traj` - Trajectory Analysis
