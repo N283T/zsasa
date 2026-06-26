@@ -100,3 +100,7 @@ site/
 # Draft documents
 docs/seminar-draft.md
 docs/examples/
+
+# Local git worktrees
+.worktrees/
+worktrees/
