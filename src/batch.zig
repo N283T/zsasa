@@ -1957,14 +1957,12 @@ fn runWorkItemRangeParallel(
     defer allocator.free(threads);
 
     var spawned_count: usize = 0;
-    errdefer {
-        for (threads[0..spawned_count]) |thread| {
-            thread.join();
-        }
-    }
-
     for (threads) |*thread| {
-        thread.* = try std.Thread.spawn(.{}, parallelWorker, .{&ctx});
+        thread.* = std.Thread.spawn(.{}, parallelWorker, .{&ctx}) catch |err| {
+            if (spawned_count == 0) return err;
+            logWarning("worker spawn failed after {d} workers; continuing with fewer workers: {s}", .{ spawned_count, @errorName(err) });
+            break;
+        };
         spawned_count += 1;
     }
 
@@ -1976,7 +1974,7 @@ fn runWorkItemRangeParallel(
         node.setCompletedItems(expected_processed);
     }
 
-    for (threads) |thread| {
+    for (threads[0..spawned_count]) |thread| {
         thread.join();
     }
 }
