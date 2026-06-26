@@ -181,8 +181,13 @@ fn adaptiveWorkerCandidates(allocator: Allocator, max_workers: usize) ![]usize {
     errdefer candidates.deinit(allocator);
 
     var workers: usize = 1;
-    while (workers < capped_max) : (workers *= 2) {
+    while (workers < capped_max) {
         try candidates.append(allocator, workers);
+        if (workers > capped_max / 2) {
+            workers = capped_max;
+        } else {
+            workers *= 2;
+        }
     }
     if (candidates.items.len == 0 or candidates.items[candidates.items.len - 1] != capped_max) {
         try candidates.append(allocator, capped_max);
@@ -193,10 +198,12 @@ fn adaptiveWorkerCandidates(allocator: Allocator, max_workers: usize) ![]usize {
 
 fn adaptiveCalibrationWindowSize(total_items: usize, candidate_count: usize) ?usize {
     if (candidate_count == 0) return null;
-    const required = candidate_count * adaptive_worker_min_items + adaptive_worker_min_items;
+    const required_base = std.math.mul(usize, candidate_count, adaptive_worker_min_items) catch return null;
+    const required = std.math.add(usize, required_base, adaptive_worker_min_items) catch return null;
     if (total_items < required) return null;
 
-    const per_candidate = total_items / (candidate_count * 2);
+    const divisor = std.math.mul(usize, candidate_count, 2) catch return null;
+    const per_candidate = total_items / divisor;
     return @min(adaptive_worker_max_items, @max(adaptive_worker_min_items, per_candidate));
 }
 
@@ -3669,6 +3676,17 @@ test "adaptive worker candidates include powers of two and max" {
     try std.testing.expectEqualSlices(usize, &.{ 1, 2, 4, 8, 10 }, ten);
 }
 
+test "adaptive worker candidates handle maximum worker count" {
+    const allocator = std.testing.allocator;
+
+    const candidates = try adaptiveWorkerCandidates(allocator, std.math.maxInt(usize));
+    defer allocator.free(candidates);
+
+    try std.testing.expect(candidates.len > 0);
+    try std.testing.expectEqual(@as(usize, 1), candidates[0]);
+    try std.testing.expectEqual(std.math.maxInt(usize), candidates[candidates.len - 1]);
+}
+
 test "adaptive worker selection chooses smallest near best throughput" {
     const samples = [_]AdaptiveWorkerSample{
         .{ .workers = 1, .items = 100, .elapsed_ns = 100_000_000 },
@@ -3683,6 +3701,7 @@ test "adaptive calibration plan falls back for small datasets" {
     const candidates_len: usize = 5;
     try std.testing.expectEqual(@as(?usize, null), adaptiveCalibrationWindowSize(100, candidates_len));
     try std.testing.expectEqual(@as(?usize, 64), adaptiveCalibrationWindowSize(640, candidates_len));
+    try std.testing.expectEqual(@as(?usize, null), adaptiveCalibrationWindowSize(std.math.maxInt(usize), std.math.maxInt(usize)));
 }
 
 test "BatchResult deinit" {
