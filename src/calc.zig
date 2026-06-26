@@ -157,9 +157,13 @@ fn parseOutputFormat(value: []const u8) OutputFormat {
         return .compact;
     } else if (std.mem.eql(u8, value, "csv")) {
         return .csv;
+    } else if (std.mem.eql(u8, value, "freesasa")) {
+        return .freesasa;
+    } else if (std.mem.eql(u8, value, "rsa")) {
+        return .rsa;
     } else {
         std.debug.print("Error: Invalid format: {s}\n", .{value});
-        std.debug.print("Valid formats: json, compact, csv\n", .{});
+        std.debug.print("Valid formats: json, compact, csv, freesasa, rsa\n", .{});
         std.process.exit(1);
     }
 }
@@ -768,7 +772,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --probe-radius=R   Probe radius in Angstroms (default: 1.4)
         \\    --n-points=N       Test points per atom (default: 100, for sr)
         \\    --n-slices=N       Slices per atom diameter (default: 20, for lr)
-        \\    --format=FORMAT    Output format: json, compact, csv (default: json)
+        \\    --format=FORMAT    Output format: json, compact, csv, freesasa, rsa
+        \\                       (default: json; freesasa/rsa are single-calc text formats)
         \\    --precision=PREC   Floating-point precision: f32, f64 (default: f64)
         \\                       f32 is faster but less accurate
         \\    -o, --output=FILE  Output file (alternative to positional argument)
@@ -793,6 +798,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\    json     Pretty-printed JSON with indentation
         \\    compact  Single-line JSON (no whitespace)
         \\    csv      CSV with atom_index,area columns
+        \\    freesasa FreeSASA-compatible text summary
+        \\    rsa      FreeSASA/NACCESS-compatible RSA residue table
         \\
         \\EXAMPLES:
         \\    {s} calc input.json output.json
@@ -1209,6 +1216,33 @@ fn ensureCalcOutputParentDir(io: std.Io, output_path: []const u8) !void {
     try std.Io.Dir.cwd().createDirPath(io, parent);
 }
 
+fn algorithmName(algorithm: Algorithm) []const u8 {
+    return switch (algorithm) {
+        .sr => "Shrake & Rupley",
+        .lr => "Lee & Richards",
+    };
+}
+
+fn detailLabel(algorithm: Algorithm) []const u8 {
+    return switch (algorithm) {
+        .sr => "Test-points",
+        .lr => "Slices",
+    };
+}
+
+fn detailCount(args: CalcArgs) u32 {
+    return switch (args.algorithm) {
+        .sr => args.n_points,
+        .lr => args.n_slices,
+    };
+}
+
+fn classifierName(effective_classifier: ?ClassifierType, config_path: ?[]const u8) []const u8 {
+    if (config_path != null) return "custom";
+    if (effective_classifier) |ct| return ct.name();
+    return "none";
+}
+
 // =============================================================================
 // Run
 // =============================================================================
@@ -1529,8 +1563,19 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
         std.debug.print("Error creating output directory for '{s}': {s}\n", .{ effective_args.output_path, @errorName(err) });
         std.process.exit(1);
     };
-    json_writer.writeSasaResultWithFormatAndInput(allocator, io, result, input, effective_args.output_path, effective_args.output_format) catch |err| {
-        std.debug.print("Error writing output file '{s}': {s}\n", .{ effective_args.output_path, @errorName(err) });
+    json_writer.writeSasaResultWithFormatAndInputOptions(allocator, io, result, input, effective_args.output_path, effective_args.output_format, .{
+        .input_name = input_path,
+        .classifier_name = classifierName(effective_classifier, effective_args.config_path),
+        .algorithm_name = algorithmName(effective_args.algorithm),
+        .probe_radius = effective_args.probe_radius,
+        .detail_count = detailCount(effective_args),
+        .detail_label = detailLabel(effective_args.algorithm),
+    }) catch |err| {
+        if (effective_args.output_format == .rsa and err == error.MissingResidueInfo) {
+            std.debug.print("Error: --format=rsa requires chain, residue name, residue number, and insertion code metadata; use PDB/mmCIF input or another structural input with residue metadata\n", .{});
+        } else {
+            std.debug.print("Error writing output file '{s}': {s}\n", .{ effective_args.output_path, @errorName(err) });
+        }
         std.process.exit(1);
     };
     time_write = @intCast(timer.untilNow(io, .awake).nanoseconds);
@@ -1716,6 +1761,18 @@ test "CalcArgs --format=csv" {
     const args = [_][]const u8{ "zsasa", "calc", "--format=csv", "input.json" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(OutputFormat.csv, parsed.output_format);
+}
+
+test "CalcArgs --format=freesasa" {
+    const args = [_][]const u8{ "zsasa", "calc", "--format=freesasa", "input.pdb" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(OutputFormat.freesasa, parsed.output_format);
+}
+
+test "CalcArgs --format=rsa" {
+    const args = [_][]const u8{ "zsasa", "calc", "--format=rsa", "input.pdb" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(OutputFormat.rsa, parsed.output_format);
 }
 
 test "CalcArgs --format csv (space-separated)" {

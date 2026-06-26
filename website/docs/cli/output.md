@@ -50,6 +50,56 @@ A,ALA,1,CA,2.000,4.000,6.000,1.700,0.250000
 ,,,,,,,,18923.280000
 ```
 
+### FreeSASA-Compatible Text (`calc --format=freesasa`)
+
+The single-structure `calc` command can write a FreeSASA-style text summary:
+
+```text
+## zsasa FreeSASA-compatible output ##
+
+PARAMETERS
+algorithm    : Shrake & Rupley
+classifier   : naccess
+probe-radius : 1.40
+Test-points  : 100
+input        : structure.pdb
+
+RESULTS (A^2)
+Total   :   18923.28
+```
+
+This format is intended for interoperability with workflows that expect a
+FreeSASA-like human-readable report.
+
+### RSA Text (`calc --format=rsa`)
+
+The single-structure `calc` command can also write a FreeSASA/NACCESS-style
+RSA table:
+
+```text
+REM  zsasa FreeSASA/NACCESS-compatible RSA
+REM  Absolute and relative SASAs for structure.pdb
+REM  Atomic radii and reference values for relative SASA: naccess
+REM  Algorithm: Shrake & Rupley
+REM  Probe-radius: 1.40
+REM  Test-points: 100
+REM RES _ NUM      All-atoms   Total-Side   Main-Chain    Non-polar    All polar
+REM                ABS   REL    ABS   REL    ABS   REL    ABS   REL    ABS   REL
+RES ALA   A 1      30.00  23.3  20.00   N/A  10.00   N/A  20.00   N/A  10.00   N/A
+END  Absolute sums over single chains surface
+CHAIN  1   A       30.0         20.0         10.0         20.0         10.0
+END  Absolute sums over all chains
+TOTAL              30.0         20.0         10.0         20.0         10.0
+```
+
+`rsa` requires residue metadata, so use PDB/mmCIF input or another input format
+that provides chain, residue name, residue number, and insertion code fields.
+Relative all-atom RSA values are reported for standard amino acids; unavailable
+relative values are printed as `N/A`, matching FreeSASA's convention.
+
+The `freesasa` and `rsa` formats are available for single `calc` runs only.
+Batch output remains `json`, `compact`, `csv`, or `jsonl`.
+
 ### Trajectory Output (CSV)
 
 The `traj` subcommand outputs CSV with per-frame total SASA:
