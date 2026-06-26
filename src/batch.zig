@@ -1979,6 +1979,63 @@ fn runWorkItemRangeParallel(
     }
 }
 
+fn runAdaptiveWorkItemsParallel(
+    allocator: Allocator,
+    io: std.Io,
+    input_dir: []const u8,
+    output_dir: ?[]const u8,
+    config: BatchConfig,
+    work_items: []const WorkItem,
+    file_results: []FileResult,
+    build_result: *const BuildWorkItemsResult,
+    luts: *const BatchLuts,
+    jsonl_stream_ptr: ?*JsonlStreamWriter,
+    max_workers: usize,
+    progress_node: ?*std.Progress.Node,
+) !void {
+    const candidates = try adaptiveWorkerCandidates(allocator, max_workers);
+    defer allocator.free(candidates);
+
+    const maybe_window = adaptiveCalibrationWindowSize(work_items.len, candidates.len);
+    if (maybe_window == null) {
+        if (!config.quiet) {
+            std.debug.print("Adaptive workers: dataset too small for calibration; using {d} workers\n", .{max_workers});
+        }
+        var processed_count = std.atomic.Value(usize).init(0);
+        return runWorkItemRangeParallel(allocator, io, input_dir, output_dir, config, work_items, file_results, build_result, luts, jsonl_stream_ptr, max_workers, &processed_count, work_items.len, progress_node);
+    }
+    const window_size = maybe_window.?;
+
+    var processed_count = std.atomic.Value(usize).init(0);
+    var offset: usize = 0;
+    var samples = try allocator.alloc(AdaptiveWorkerSample, candidates.len);
+    defer allocator.free(samples);
+
+    for (candidates, 0..) |workers, i| {
+        const end = @min(offset + window_size, work_items.len);
+        var timer = std.Io.Timestamp.now(io, .awake);
+        try runWorkItemRangeParallel(allocator, io, input_dir, output_dir, config, work_items[offset..end], file_results[offset..end], build_result, luts, jsonl_stream_ptr, workers, &processed_count, end, progress_node);
+        samples[i] = .{
+            .workers = workers,
+            .items = end - offset,
+            .elapsed_ns = @intCast(timer.untilNow(io, .awake).nanoseconds),
+        };
+        offset = end;
+    }
+
+    const selected_workers = chooseAdaptiveWorkerCount(samples);
+    if (!config.quiet) {
+        std.debug.print("Adaptive workers: selected {d} of {d} workers\n", .{ selected_workers, max_workers });
+        for (samples) |sample| {
+            std.debug.print("  {d} workers: {d:.1} files/sec over {d} items\n", .{ sample.workers, sample.throughput(), sample.items });
+        }
+    }
+
+    if (offset < work_items.len) {
+        try runWorkItemRangeParallel(allocator, io, input_dir, output_dir, config, work_items[offset..], file_results[offset..], build_result, luts, jsonl_stream_ptr, selected_workers, &processed_count, work_items.len, progress_node);
+    }
+}
+
 /// Run batch processing in parallel
 pub fn runBatchParallel(
     allocator: Allocator,
@@ -2079,7 +2136,6 @@ pub fn runBatchParallel(
     const jsonl_stream_ptr: ?*JsonlStreamWriter = if (jsonl_file != null) &jsonl_stream_storage else null;
 
     const actual_threads = @min(n_threads, work_items.len);
-    var processed_count = std.atomic.Value(usize).init(0);
 
     var progress_root: std.Progress.Node = if (shouldShowProgress(config))
         std.Progress.start(io, .{ .root_name = "Processing items", .estimated_total_items = work_items.len })
@@ -2087,22 +2143,40 @@ pub fn runBatchParallel(
         .none;
     defer progress_root.end();
 
-    try runWorkItemRangeParallel(
-        allocator,
-        io,
-        input_dir,
-        output_dir,
-        config,
-        work_items,
-        file_results,
-        &build_result,
-        &luts,
-        jsonl_stream_ptr,
-        actual_threads,
-        &processed_count,
-        work_items.len,
-        if (shouldShowProgress(config)) &progress_root else null,
-    );
+    if (config.adaptive_workers) {
+        try runAdaptiveWorkItemsParallel(
+            allocator,
+            io,
+            input_dir,
+            output_dir,
+            config,
+            work_items,
+            file_results,
+            &build_result,
+            &luts,
+            jsonl_stream_ptr,
+            actual_threads,
+            if (shouldShowProgress(config)) &progress_root else null,
+        );
+    } else {
+        var processed_count = std.atomic.Value(usize).init(0);
+        try runWorkItemRangeParallel(
+            allocator,
+            io,
+            input_dir,
+            output_dir,
+            config,
+            work_items,
+            file_results,
+            &build_result,
+            &luts,
+            jsonl_stream_ptr,
+            actual_threads,
+            &processed_count,
+            work_items.len,
+            if (shouldShowProgress(config)) &progress_root else null,
+        );
+    }
 
     if (shouldShowProgress(config)) {
         progress_root.setCompletedItems(work_items.len);
@@ -4502,6 +4576,57 @@ test "runBatchParallel writes parseable JSONL with multiple threads" {
         count += 1;
     }
     try std.testing.expectEqual(@as(usize, 10), count);
+}
+
+test "runBatchParallel adaptive workers writes parseable JSONL" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root_path = root_buf[0..root_len];
+
+    const input_dir = try std.fs.path.join(allocator, &.{ root_path, "input" });
+    defer allocator.free(input_dir);
+    const output_path = try std.fs.path.join(allocator, &.{ root_path, "adaptive-results.jsonl" });
+    defer allocator.free(output_path);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+
+    const pdb_data =
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N\n" ++
+        "ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C\n" ++
+        "ATOM      3  C   ALA A   1       3.000   0.000   0.000  1.00 20.00           C\n" ++
+        "END\n";
+
+    var name_buf: [32]u8 = undefined;
+    for (0..10) |i| {
+        const filename = try std.fmt.bufPrint(&name_buf, "tiny-{d}.pdb", .{i});
+        const path = try std.fs.path.join(allocator, &.{ input_dir, filename });
+        defer allocator.free(path);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = pdb_data });
+    }
+
+    var result = try runBatchParallel(allocator, std.testing.io, input_dir, null, .{
+        .n_threads = 4,
+        .adaptive_workers = true,
+        .algorithm = .sr,
+        .n_points = 8,
+        .quiet = true,
+        .show_progress = false,
+        .output_format = .jsonl,
+        .store_atom_areas = true,
+        .classifier_type = .naccess,
+    }, output_path);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 10), result.total_files);
+    try std.testing.expectEqual(@as(usize, 10), result.successful);
+    try std.testing.expectEqual(@as(usize, 0), result.failed);
+
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(64 * 1024));
+    defer allocator.free(content);
+    try std.testing.expectEqual(@as(usize, 10), std.mem.count(u8, content, "\n"));
 }
 
 test "BatchArgs explicit option flags" {
