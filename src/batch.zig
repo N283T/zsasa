@@ -1620,7 +1620,7 @@ const ParallelContext = struct {
     results: []FileResult,
     result_allocator: Allocator,
     next_item: std.atomic.Value(usize),
-    processed_count: std.atomic.Value(usize),
+    processed_count: *std.atomic.Value(usize),
     lut_f64: ?*const bitmask_lut.BitmaskLut,
     lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
     coarse_lut_f64: ?*const bitmask_lut.BitmaskLut,
@@ -1796,12 +1796,17 @@ fn parallelWorker(ctx: *ParallelContext) void {
 
 /// Build work items from file list, expanding SDF files into per-molecule items.
 /// Returns the work items and a map of SDF sources (caller must free both).
+const BuildWorkItemsResult = struct {
+    items: []WorkItem,
+    sdf_sources: std.StringHashMapUnmanaged([]const u8),
+};
+
 fn buildWorkItems(
     allocator: Allocator,
     io: std.Io,
     files: []const []const u8,
     input_dir: []const u8,
-) !struct { items: []WorkItem, sdf_sources: std.StringHashMapUnmanaged([]const u8) } {
+) !BuildWorkItemsResult {
     var items = std.ArrayListUnmanaged(WorkItem).empty;
     errdefer {
         for (items.items) |item| {
@@ -1908,6 +1913,65 @@ fn buildWorkItems(
     };
 }
 
+fn runWorkItemRangeParallel(
+    allocator: Allocator,
+    io: std.Io,
+    input_dir: []const u8,
+    output_dir: ?[]const u8,
+    config: BatchConfig,
+    work_items: []const WorkItem,
+    file_results: []FileResult,
+    build_result: *const BuildWorkItemsResult,
+    luts: *const BatchLuts,
+    jsonl_stream_ptr: ?*JsonlStreamWriter,
+    n_workers: usize,
+    processed_count: *std.atomic.Value(usize),
+    expected_processed: usize,
+    progress_node: ?*std.Progress.Node,
+) !void {
+    if (work_items.len == 0) return;
+
+    var ctx = ParallelContext{
+        .work_items = work_items,
+        .input_dir = input_dir,
+        .output_dir = output_dir,
+        .config = config,
+        .results = file_results,
+        .result_allocator = allocator,
+        .next_item = std.atomic.Value(usize).init(0),
+        .processed_count = processed_count,
+        .lut_f64 = luts.f64Ptr(),
+        .lut_f32 = luts.f32Ptr(),
+        .coarse_lut_f64 = luts.coarseF64Ptr(),
+        .fine_lut_f64 = luts.fineF64Ptr(),
+        .coarse_lut_f32 = luts.coarseF32Ptr(),
+        .fine_lut_f32 = luts.fineF32Ptr(),
+        .jsonl_stream = jsonl_stream_ptr,
+        .io = io,
+        .sdf_sources = build_result.sdf_sources,
+    };
+
+    const actual_workers = @min(@max(n_workers, 1), work_items.len);
+    const threads = try allocator.alloc(std.Thread, actual_workers);
+    defer allocator.free(threads);
+
+    for (threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, parallelWorker, .{&ctx});
+    }
+
+    if (progress_node) |node| {
+        while (processed_count.load(.acquire) < expected_processed) {
+            node.setCompletedItems(processed_count.load(.acquire));
+            std.Io.sleep(io, .fromMilliseconds(50), .awake) catch {};
+        }
+        node.setCompletedItems(expected_processed);
+    }
+
+    for (threads) |thread| {
+        thread.join();
+    }
+}
+
 /// Run batch processing in parallel
 pub fn runBatchParallel(
     allocator: Allocator,
@@ -2007,35 +2071,8 @@ pub fn runBatchParallel(
         undefined;
     const jsonl_stream_ptr: ?*JsonlStreamWriter = if (jsonl_file != null) &jsonl_stream_storage else null;
 
-    // Create shared context
-    var ctx = ParallelContext{
-        .work_items = work_items,
-        .input_dir = input_dir,
-        .output_dir = output_dir,
-        .config = config,
-        .results = file_results,
-        .result_allocator = allocator,
-        .next_item = std.atomic.Value(usize).init(0),
-        .processed_count = std.atomic.Value(usize).init(0),
-        .lut_f64 = luts.f64Ptr(),
-        .lut_f32 = luts.f32Ptr(),
-        .coarse_lut_f64 = luts.coarseF64Ptr(),
-        .fine_lut_f64 = luts.fineF64Ptr(),
-        .coarse_lut_f32 = luts.coarseF32Ptr(),
-        .fine_lut_f32 = luts.fineF32Ptr(),
-        .jsonl_stream = jsonl_stream_ptr,
-        .io = io,
-        .sdf_sources = build_result.sdf_sources,
-    };
-
-    // Spawn worker threads
     const actual_threads = @min(n_threads, work_items.len);
-    const threads = try allocator.alloc(std.Thread, actual_threads);
-    defer allocator.free(threads);
-
-    for (threads) |*thread| {
-        thread.* = try std.Thread.spawn(.{}, parallelWorker, .{&ctx});
-    }
+    var processed_count = std.atomic.Value(usize).init(0);
 
     var progress_root: std.Progress.Node = if (shouldShowProgress(config))
         std.Progress.start(io, .{ .root_name = "Processing items", .estimated_total_items = work_items.len })
@@ -2043,19 +2080,25 @@ pub fn runBatchParallel(
         .none;
     defer progress_root.end();
 
-    // Progress monitoring (optional)
-    if (shouldShowProgress(config)) {
-        while (ctx.processed_count.load(.acquire) < work_items.len) {
-            const processed = ctx.processed_count.load(.acquire);
-            progress_root.setCompletedItems(processed);
-            std.Io.sleep(io, .fromMilliseconds(50), .awake) catch {}; // 50ms update interval
-        }
-        progress_root.setCompletedItems(work_items.len);
-    }
+    try runWorkItemRangeParallel(
+        allocator,
+        io,
+        input_dir,
+        output_dir,
+        config,
+        work_items,
+        file_results,
+        &build_result,
+        &luts,
+        jsonl_stream_ptr,
+        actual_threads,
+        &processed_count,
+        work_items.len,
+        if (shouldShowProgress(config)) &progress_root else null,
+    );
 
-    // Wait for all threads to complete
-    for (threads) |thread| {
-        thread.join();
+    if (shouldShowProgress(config)) {
+        progress_root.setCompletedItems(work_items.len);
     }
 
     // Aggregate results
