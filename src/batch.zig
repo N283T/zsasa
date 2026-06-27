@@ -1802,6 +1802,38 @@ fn parallelWorker(ctx: *ParallelContext) void {
     }
 }
 
+fn runParallelWorkers(
+    allocator: Allocator,
+    io: std.Io,
+    ctx: *ParallelContext,
+    n_threads: usize,
+    progress_node: ?*std.Progress.Node,
+    progress_offset: usize,
+) !void {
+    if (ctx.work_items.len == 0) return;
+
+    const actual_threads = @min(n_threads, ctx.work_items.len);
+    const threads = try allocator.alloc(std.Thread, actual_threads);
+    defer allocator.free(threads);
+
+    for (threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, parallelWorker, .{ctx});
+    }
+
+    if (progress_node) |node| {
+        while (ctx.processed_count.load(.acquire) < ctx.work_items.len) {
+            const processed = ctx.processed_count.load(.acquire);
+            node.setCompletedItems(progress_offset + processed);
+            std.Io.sleep(io, .fromMilliseconds(50), .awake) catch {};
+        }
+        node.setCompletedItems(progress_offset + ctx.work_items.len);
+    }
+
+    for (threads) |thread| {
+        thread.join();
+    }
+}
+
 /// Build work items from file list, expanding SDF files into per-molecule items.
 /// Returns the work items and a map of SDF sources (caller must free both).
 fn buildWorkItems(
@@ -1984,8 +2016,8 @@ pub fn runBatchParallel(
     else
         @min(config.n_threads, cpu_count);
 
-    // For single item or single thread, use sequential
-    if (work_items.len == 1 or n_threads <= 1) {
+    // For single item or single thread, use sequential unless macro sharding is requested.
+    if (config.shard_size == null and (work_items.len == 1 or n_threads <= 1)) {
         allocator.free(file_results);
         return runBatchSequential(allocator, io, input_dir, output_dir, config, jsonl_output_path);
     }
@@ -1993,6 +2025,77 @@ pub fn runBatchParallel(
     // Build bitmask LUT once (if enabled)
     var luts = try BatchLuts.init(allocator, config);
     defer luts.deinit();
+
+    if (config.shard_size) |shard_size| {
+        const base_path = jsonl_output_path orelse return error.InvalidArgument;
+        var progress_root: std.Progress.Node = if (shouldShowProgress(config))
+            std.Progress.start(io, .{ .root_name = "Processing items", .estimated_total_items = work_items.len })
+        else
+            .none;
+        defer progress_root.end();
+
+        var offset: usize = 0;
+        var shard_index: usize = 0;
+        while (offset < work_items.len) : (shard_index += 1) {
+            const end = @min(offset + shard_size, work_items.len);
+            const shard_path = try makeShardJsonlPath(allocator, base_path, shard_index);
+            defer allocator.free(shard_path);
+
+            const shard_file = try std.Io.Dir.cwd().createFile(io, shard_path, .{});
+            var shard_stream = JsonlStreamWriter{ .file = shard_file, .io = io };
+
+            var shard_ctx = ParallelContext{
+                .work_items = work_items[offset..end],
+                .input_dir = input_dir,
+                .output_dir = output_dir,
+                .config = config,
+                .results = file_results[offset..end],
+                .result_allocator = allocator,
+                .chunk_size = config.chunk_size,
+                .next_item = std.atomic.Value(usize).init(0),
+                .processed_count = std.atomic.Value(usize).init(0),
+                .lut_f64 = luts.f64Ptr(),
+                .lut_f32 = luts.f32Ptr(),
+                .coarse_lut_f64 = luts.coarseF64Ptr(),
+                .fine_lut_f64 = luts.fineF64Ptr(),
+                .coarse_lut_f32 = luts.coarseF32Ptr(),
+                .fine_lut_f32 = luts.fineF32Ptr(),
+                .jsonl_stream = &shard_stream,
+                .io = io,
+                .sdf_sources = build_result.sdf_sources,
+            };
+
+            try runParallelWorkers(allocator, io, &shard_ctx, n_threads, if (shouldShowProgress(config)) &progress_root else null, offset);
+            shard_file.close(io);
+            offset = end;
+        }
+
+        if (shouldShowProgress(config)) {
+            progress_root.setCompletedItems(work_items.len);
+        }
+
+        var total_sasa_time_ns: u64 = 0;
+        var successful: usize = 0;
+        var failed: usize = 0;
+        for (file_results) |result| {
+            if (result.status == .ok) {
+                successful += 1;
+                total_sasa_time_ns += result.sasa_time_ns;
+            } else {
+                failed += 1;
+            }
+        }
+
+        return BatchResult{
+            .total_files = work_items.len,
+            .successful = successful,
+            .failed = failed,
+            .total_sasa_time_ns = total_sasa_time_ns,
+            .total_time_ns = @intCast(total_timer.untilNow(io, .awake).nanoseconds),
+            .file_results = file_results,
+            .allocator = allocator,
+        };
+    }
 
     // Open JSONL output file (or stdout) when streaming is requested
     var jsonl_file: ?std.Io.File = null;
@@ -2038,34 +2141,15 @@ pub fn runBatchParallel(
         .sdf_sources = build_result.sdf_sources,
     };
 
-    // Spawn worker threads
-    const actual_threads = @min(n_threads, work_items.len);
-    const threads = try allocator.alloc(std.Thread, actual_threads);
-    defer allocator.free(threads);
-
-    for (threads) |*thread| {
-        thread.* = try std.Thread.spawn(.{}, parallelWorker, .{&ctx});
-    }
-
     var progress_root: std.Progress.Node = if (shouldShowProgress(config))
         std.Progress.start(io, .{ .root_name = "Processing items", .estimated_total_items = work_items.len })
     else
         .none;
     defer progress_root.end();
 
-    // Progress monitoring (optional)
+    try runParallelWorkers(allocator, io, &ctx, n_threads, if (shouldShowProgress(config)) &progress_root else null, 0);
     if (shouldShowProgress(config)) {
-        while (ctx.processed_count.load(.acquire) < work_items.len) {
-            const processed = ctx.processed_count.load(.acquire);
-            progress_root.setCompletedItems(processed);
-            std.Io.sleep(io, .fromMilliseconds(50), .awake) catch {}; // 50ms update interval
-        }
         progress_root.setCompletedItems(work_items.len);
-    }
-
-    // Wait for all threads to complete
-    for (threads) |thread| {
-        thread.join();
     }
 
     // Aggregate results
@@ -4716,6 +4800,73 @@ test "runBatchParallel chunked jsonl writes parseable JSONL" {
         count += 1;
     }
     try std.testing.expectEqual(@as(usize, 12), count);
+}
+
+test "runBatchParallel shard size writes multiple parseable JSONL shards" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root_path = root_buf[0..root_len];
+
+    const input_dir = try std.fs.path.join(allocator, &.{ root_path, "input" });
+    defer allocator.free(input_dir);
+    const output_path = try std.fs.path.join(allocator, &.{ root_path, "sharded-results.jsonl" });
+    defer allocator.free(output_path);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+
+    const pdb_data =
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N\n" ++
+        "ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C\n" ++
+        "ATOM      3  C   ALA A   1       3.000   0.000   0.000  1.00 20.00           C\n" ++
+        "END\n";
+
+    var name_buf: [32]u8 = undefined;
+    for (0..12) |i| {
+        const filename = try std.fmt.bufPrint(&name_buf, "tiny-{d}.pdb", .{i});
+        const path = try std.fs.path.join(allocator, &.{ input_dir, filename });
+        defer allocator.free(path);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = pdb_data });
+    }
+
+    var result = try runBatchParallel(allocator, std.testing.io, input_dir, null, .{
+        .n_threads = 4,
+        .shard_size = 5,
+        .algorithm = .sr,
+        .n_points = 8,
+        .quiet = true,
+        .show_progress = false,
+        .output_format = .jsonl,
+        .store_atom_areas = true,
+        .classifier_type = .naccess,
+    }, output_path);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 12), result.total_files);
+    try std.testing.expectEqual(@as(usize, 12), result.successful);
+    try std.testing.expectEqual(@as(usize, 0), result.failed);
+
+    var total_rows: usize = 0;
+    for (0..3) |shard_index| {
+        const shard_path = try makeShardJsonlPath(allocator, output_path, shard_index);
+        defer allocator.free(shard_path);
+        const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, shard_path, allocator, .limited(64 * 1024));
+        defer allocator.free(content);
+
+        var lines = std.mem.tokenizeScalar(u8, content, '\n');
+        while (lines.next()) |line| {
+            const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+            defer parsed.deinit();
+            const object = parsed.value.object;
+            try std.testing.expect(object.get("filename") != null);
+            try std.testing.expect(object.get("total_area") != null);
+            try std.testing.expect(object.get("atom_areas") != null);
+            total_rows += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 12), total_rows);
 }
 
 test "BatchArgs explicit option flags" {
