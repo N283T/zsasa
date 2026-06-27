@@ -1214,11 +1214,42 @@ const JsonlStreamWriter = struct {
         };
     }
 
+    pub fn writeBytes(self: *JsonlStreamWriter, bytes: []const u8) void {
+        if (bytes.len == 0) return;
+
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        var buf: [64 * 1024]u8 = undefined;
+        var w = std.Io.File.Writer.initStreaming(self.file, self.io, &buf);
+        w.interface.writeAll(bytes) catch |err| {
+            logWarning("JSONL chunk write failed: {s}", .{@errorName(err)});
+            self.write_failed = true;
+            return;
+        };
+        w.interface.flush() catch |err| {
+            logWarning("JSONL chunk flush failed: {s}", .{@errorName(err)});
+            self.write_failed = true;
+        };
+    }
+
     /// Returns true if any write to the JSONL file failed.
     pub fn hasError(self: *const JsonlStreamWriter) bool {
         return self.write_failed;
     }
 };
+
+fn appendJsonlResultToBuffer(
+    buffer: *std.ArrayListUnmanaged(u8),
+    buffer_allocator: Allocator,
+    arena_alloc: Allocator,
+    result: *FileResult,
+) !void {
+    if (result.status != .ok) return;
+    const line = try fileResultToJsonlLine(arena_alloc, result);
+    try buffer.appendSlice(buffer_allocator, line);
+    try buffer.append(buffer_allocator, '\n');
+}
 
 /// Write a JSONL line for a result via the buffered writer.
 /// atom_areas live on the arena and are invalidated after arena reset.
@@ -1596,6 +1627,9 @@ fn parallelWorker(ctx: *ParallelContext) void {
     var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
     defer arena.deinit();
 
+    var chunk_jsonl_buffer = std.ArrayListUnmanaged(u8).empty;
+    defer chunk_jsonl_buffer.deinit(std.heap.smp_allocator);
+
     const worker_chunk_size = ctx.chunk_size orelse 1;
     while (true) {
         // Atomically grab the next contiguous work range.
@@ -1699,7 +1733,13 @@ fn parallelWorker(ctx: *ParallelContext) void {
 
                 if (ctx.jsonl_stream) |stream| {
                     if (result.status == .ok) {
-                        stream.writeResult(arena.allocator(), &result);
+                        if (ctx.config.chunked_jsonl) {
+                            appendJsonlResultToBuffer(&chunk_jsonl_buffer, std.heap.smp_allocator, arena.allocator(), &result) catch |err| {
+                                logWarning("failed to buffer {s}: {s}", .{ result.filename, @errorName(err) });
+                            };
+                        } else {
+                            stream.writeResult(arena.allocator(), &result);
+                        }
                     }
                 }
                 ctx.results[item_idx].atom_areas = null;
@@ -1730,7 +1770,13 @@ fn parallelWorker(ctx: *ParallelContext) void {
                 // Stream JSONL output (atom_areas on arena, valid until reset)
                 if (ctx.jsonl_stream) |stream| {
                     if (result.status == .ok) {
-                        stream.writeResult(arena.allocator(), &result);
+                        if (ctx.config.chunked_jsonl) {
+                            appendJsonlResultToBuffer(&chunk_jsonl_buffer, std.heap.smp_allocator, arena.allocator(), &result) catch |err| {
+                                logWarning("failed to buffer {s}: {s}", .{ result.filename, @errorName(err) });
+                            };
+                        } else {
+                            stream.writeResult(arena.allocator(), &result);
+                        }
                     }
                 }
                 // Clear atom_areas since arena will free them
@@ -1743,6 +1789,13 @@ fn parallelWorker(ctx: *ParallelContext) void {
 
             // Reset arena for next work item
             _ = arena.reset(.retain_capacity);
+        }
+
+        if (ctx.config.chunked_jsonl) {
+            if (ctx.jsonl_stream) |stream| {
+                stream.writeBytes(chunk_jsonl_buffer.items);
+            }
+            chunk_jsonl_buffer.clearRetainingCapacity();
         }
     }
 }
@@ -4379,6 +4432,27 @@ test "JsonlStreamWriter writes many parseable JSONL lines" {
     try std.testing.expectEqual(@as(usize, 50), count);
 }
 
+test "JsonlStreamWriter writeBytes writes one buffered chunk" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const output_path = try std.fs.path.join(allocator, &.{ root_buf[0..root_len], "chunk-stream.jsonl" });
+    defer allocator.free(output_path);
+
+    const file = try std.Io.Dir.cwd().createFile(std.testing.io, output_path, .{});
+    var stream = JsonlStreamWriter{ .file = file, .io = std.testing.io };
+    stream.writeBytes("{\"filename\":\"a.pdb\",\"total_area\":1,\"atom_areas\":[1]}\n{\"filename\":\"b.pdb\",\"total_area\":2,\"atom_areas\":[2]}\n");
+    try std.testing.expect(!stream.hasError());
+    file.close(std.testing.io);
+
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(4096));
+    defer allocator.free(content);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, content, "\n"));
+}
+
 test "runBatchParallel writes parseable JSONL with multiple threads" {
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -4505,6 +4579,72 @@ test "runBatchParallel chunk size writes parseable JSONL" {
         count += 1;
     }
     try std.testing.expectEqual(@as(usize, 10), count);
+}
+
+test "runBatchParallel chunked jsonl writes parseable JSONL" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root_path = root_buf[0..root_len];
+
+    const input_dir = try std.fs.path.join(allocator, &.{ root_path, "input" });
+    defer allocator.free(input_dir);
+    const output_path = try std.fs.path.join(allocator, &.{ root_path, "chunked-results.jsonl" });
+    defer allocator.free(output_path);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+
+    const pdb_data =
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N\n" ++
+        "ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C\n" ++
+        "ATOM      3  C   ALA A   1       3.000   0.000   0.000  1.00 20.00           C\n" ++
+        "END\n";
+
+    var name_buf: [32]u8 = undefined;
+    for (0..12) |i| {
+        const filename = try std.fmt.bufPrint(&name_buf, "tiny-{d}.pdb", .{i});
+        const path = try std.fs.path.join(allocator, &.{ input_dir, filename });
+        defer allocator.free(path);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = pdb_data });
+    }
+
+    var result = try runBatchParallel(allocator, std.testing.io, input_dir, null, .{
+        .n_threads = 4,
+        .chunk_size = 4,
+        .chunked_jsonl = true,
+        .algorithm = .sr,
+        .n_points = 8,
+        .quiet = true,
+        .show_progress = false,
+        .output_format = .jsonl,
+        .store_atom_areas = true,
+        .classifier_type = .naccess,
+    }, output_path);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 12), result.total_files);
+    try std.testing.expectEqual(@as(usize, 12), result.successful);
+    try std.testing.expectEqual(@as(usize, 0), result.failed);
+
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(64 * 1024));
+    defer allocator.free(content);
+    try std.testing.expectEqual(@as(usize, 12), std.mem.count(u8, content, "\n"));
+
+    var lines = std.mem.tokenizeScalar(u8, content, '\n');
+    var count: usize = 0;
+    while (lines.next()) |line| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer parsed.deinit();
+        const object = parsed.value.object;
+        try std.testing.expect(object.get("filename") != null);
+        try std.testing.expect(object.get("total_area") != null);
+        try std.testing.expect(object.get("atom_areas") != null);
+        try std.testing.expectEqual(@as(usize, 3), object.get("atom_areas").?.array.items.len);
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 12), count);
 }
 
 test "BatchArgs explicit option flags" {
