@@ -1549,6 +1549,21 @@ const WorkItem = struct {
     mol_idx: ?usize, // If non-null, SDF molecule index (0-based) within pre-parsed molecules
 };
 
+const ChunkRange = struct {
+    start: usize,
+    end: usize,
+};
+
+fn claimChunkRange(next_index: *std.atomic.Value(usize), total: usize, chunk_size: usize) ?ChunkRange {
+    std.debug.assert(chunk_size > 0);
+    const start = next_index.fetchAdd(chunk_size, .monotonic);
+    if (start >= total) return null;
+    return .{
+        .start = start,
+        .end = @min(start + chunk_size, total),
+    };
+}
+
 /// Shared context for parallel workers
 const ParallelContext = struct {
     work_items: []const WorkItem,
@@ -1557,6 +1572,7 @@ const ParallelContext = struct {
     config: BatchConfig,
     results: []FileResult,
     result_allocator: Allocator,
+    chunk_size: ?usize,
     next_item: std.atomic.Value(usize),
     processed_count: std.atomic.Value(usize),
     lut_f64: ?*const bitmask_lut.BitmaskLut,
@@ -1580,155 +1596,154 @@ fn parallelWorker(ctx: *ParallelContext) void {
     var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
     defer arena.deinit();
 
+    const worker_chunk_size = ctx.chunk_size orelse 1;
     while (true) {
-        // Atomically grab the next work item index.
+        // Atomically grab the next contiguous work range.
         // .monotonic suffices: we only need atomic increment, no ordering
         // between unrelated memory accesses across threads.
-        const item_idx = ctx.next_item.fetchAdd(1, .monotonic);
+        const range = claimChunkRange(&ctx.next_item, ctx.work_items.len, worker_chunk_size) orelse break;
 
-        if (item_idx >= ctx.work_items.len) {
-            break; // No more work items
-        }
+        for (range.start..range.end) |item_idx| {
+            const work = ctx.work_items[item_idx];
 
-        const work = ctx.work_items[item_idx];
-
-        // Copy display name to result allocator (thread-safe: each index is unique)
-        const name_copy = ctx.result_allocator.dupe(u8, work.display_name) catch {
-            const empty = ctx.result_allocator.alloc(u8, 0) catch {
+            // Copy display name to result allocator (thread-safe: each index is unique)
+            const name_copy = ctx.result_allocator.dupe(u8, work.display_name) catch {
+                const empty = ctx.result_allocator.alloc(u8, 0) catch {
+                    ctx.results[item_idx] = FileResult{
+                        .filename = "",
+                        .n_atoms = 0,
+                        .sasa_time_ns = 0,
+                        .total_sasa = 0,
+                        .status = .err,
+                        .error_msg = null,
+                    };
+                    _ = ctx.processed_count.fetchAdd(1, .release);
+                    _ = arena.reset(.retain_capacity);
+                    continue;
+                };
                 ctx.results[item_idx] = FileResult{
-                    .filename = "",
+                    .filename = empty,
                     .n_atoms = 0,
                     .sasa_time_ns = 0,
                     .total_sasa = 0,
                     .status = .err,
-                    .error_msg = null,
                 };
                 _ = ctx.processed_count.fetchAdd(1, .release);
                 _ = arena.reset(.retain_capacity);
                 continue;
             };
-            ctx.results[item_idx] = FileResult{
-                .filename = empty,
-                .n_atoms = 0,
-                .sasa_time_ns = 0,
-                .total_sasa = 0,
-                .status = .err,
-            };
+
+            if (work.mol_idx) |mol_idx| {
+                // SDF molecule: re-parse from pre-loaded source on thread-local arena
+                const source = ctx.sdf_sources.get(work.filename) orelse {
+                    ctx.results[item_idx] = FileResult{
+                        .filename = name_copy,
+                        .n_atoms = 0,
+                        .sasa_time_ns = 0,
+                        .total_sasa = 0,
+                        .status = .err,
+                        .error_msg = ctx.result_allocator.dupe(u8, "SDF source not found") catch null,
+                    };
+                    _ = ctx.processed_count.fetchAdd(1, .release);
+                    _ = arena.reset(.retain_capacity);
+                    continue;
+                };
+
+                const molecules = sdf_parser.parse(arena.allocator(), source) catch {
+                    ctx.results[item_idx] = FileResult{
+                        .filename = name_copy,
+                        .n_atoms = 0,
+                        .sasa_time_ns = 0,
+                        .total_sasa = 0,
+                        .status = .err,
+                        .error_msg = ctx.result_allocator.dupe(u8, "SDF re-parse failed") catch null,
+                    };
+                    _ = ctx.processed_count.fetchAdd(1, .release);
+                    _ = arena.reset(.retain_capacity);
+                    continue;
+                };
+
+                if (mol_idx >= molecules.len) {
+                    ctx.results[item_idx] = FileResult{
+                        .filename = name_copy,
+                        .n_atoms = 0,
+                        .sasa_time_ns = 0,
+                        .total_sasa = 0,
+                        .status = .err,
+                        .error_msg = ctx.result_allocator.dupe(u8, "SDF molecule index out of range") catch null,
+                    };
+                    _ = ctx.processed_count.fetchAdd(1, .release);
+                    _ = arena.reset(.retain_capacity);
+                    continue;
+                }
+
+                var result = processOneSdfMolecule(
+                    arena.allocator(),
+                    ctx.io,
+                    ctx.result_allocator,
+                    name_copy,
+                    &molecules[mol_idx],
+                    ctx.output_dir,
+                    ctx.config,
+                    1, // single-threaded SASA per molecule
+                    ctx.lut_f64,
+                    ctx.lut_f32,
+                    ctx.coarse_lut_f64,
+                    ctx.fine_lut_f64,
+                    ctx.coarse_lut_f32,
+                    ctx.fine_lut_f32,
+                );
+                result.filename = name_copy;
+
+                ctx.results[item_idx] = result;
+
+                if (ctx.jsonl_stream) |stream| {
+                    if (result.status == .ok) {
+                        stream.writeResult(arena.allocator(), &result);
+                    }
+                }
+                ctx.results[item_idx].atom_areas = null;
+                ctx.results[item_idx].residue_map = null;
+            } else {
+                // Non-SDF file: existing logic
+                var result = processOneFile(
+                    arena.allocator(),
+                    ctx.io,
+                    ctx.result_allocator,
+                    ctx.input_dir,
+                    ctx.output_dir,
+                    work.filename,
+                    ctx.config,
+                    1, // single-threaded SASA per file
+                    ctx.lut_f64,
+                    ctx.lut_f32,
+                    ctx.coarse_lut_f64,
+                    ctx.fine_lut_f64,
+                    ctx.coarse_lut_f32,
+                    ctx.fine_lut_f32,
+                );
+                result.filename = name_copy;
+
+                // Store result (thread-safe: each index is unique)
+                ctx.results[item_idx] = result;
+
+                // Stream JSONL output (atom_areas on arena, valid until reset)
+                if (ctx.jsonl_stream) |stream| {
+                    if (result.status == .ok) {
+                        stream.writeResult(arena.allocator(), &result);
+                    }
+                }
+                // Clear atom_areas since arena will free them
+                ctx.results[item_idx].atom_areas = null;
+                ctx.results[item_idx].residue_map = null;
+            }
+
+            // Update progress counter (.release pairs with .acquire in progress monitor)
             _ = ctx.processed_count.fetchAdd(1, .release);
+
+            // Reset arena for next work item
             _ = arena.reset(.retain_capacity);
-            continue;
-        };
-
-        if (work.mol_idx) |mol_idx| {
-            // SDF molecule: re-parse from pre-loaded source on thread-local arena
-            const source = ctx.sdf_sources.get(work.filename) orelse {
-                ctx.results[item_idx] = FileResult{
-                    .filename = name_copy,
-                    .n_atoms = 0,
-                    .sasa_time_ns = 0,
-                    .total_sasa = 0,
-                    .status = .err,
-                    .error_msg = ctx.result_allocator.dupe(u8, "SDF source not found") catch null,
-                };
-                _ = ctx.processed_count.fetchAdd(1, .release);
-                _ = arena.reset(.retain_capacity);
-                continue;
-            };
-
-            const molecules = sdf_parser.parse(arena.allocator(), source) catch {
-                ctx.results[item_idx] = FileResult{
-                    .filename = name_copy,
-                    .n_atoms = 0,
-                    .sasa_time_ns = 0,
-                    .total_sasa = 0,
-                    .status = .err,
-                    .error_msg = ctx.result_allocator.dupe(u8, "SDF re-parse failed") catch null,
-                };
-                _ = ctx.processed_count.fetchAdd(1, .release);
-                _ = arena.reset(.retain_capacity);
-                continue;
-            };
-
-            if (mol_idx >= molecules.len) {
-                ctx.results[item_idx] = FileResult{
-                    .filename = name_copy,
-                    .n_atoms = 0,
-                    .sasa_time_ns = 0,
-                    .total_sasa = 0,
-                    .status = .err,
-                    .error_msg = ctx.result_allocator.dupe(u8, "SDF molecule index out of range") catch null,
-                };
-                _ = ctx.processed_count.fetchAdd(1, .release);
-                _ = arena.reset(.retain_capacity);
-                continue;
-            }
-
-            var result = processOneSdfMolecule(
-                arena.allocator(),
-                ctx.io,
-                ctx.result_allocator,
-                name_copy,
-                &molecules[mol_idx],
-                ctx.output_dir,
-                ctx.config,
-                1, // single-threaded SASA per molecule
-                ctx.lut_f64,
-                ctx.lut_f32,
-                ctx.coarse_lut_f64,
-                ctx.fine_lut_f64,
-                ctx.coarse_lut_f32,
-                ctx.fine_lut_f32,
-            );
-            result.filename = name_copy;
-
-            ctx.results[item_idx] = result;
-
-            if (ctx.jsonl_stream) |stream| {
-                if (result.status == .ok) {
-                    stream.writeResult(arena.allocator(), &result);
-                }
-            }
-            ctx.results[item_idx].atom_areas = null;
-            ctx.results[item_idx].residue_map = null;
-        } else {
-            // Non-SDF file: existing logic
-            var result = processOneFile(
-                arena.allocator(),
-                ctx.io,
-                ctx.result_allocator,
-                ctx.input_dir,
-                ctx.output_dir,
-                work.filename,
-                ctx.config,
-                1, // single-threaded SASA per file
-                ctx.lut_f64,
-                ctx.lut_f32,
-                ctx.coarse_lut_f64,
-                ctx.fine_lut_f64,
-                ctx.coarse_lut_f32,
-                ctx.fine_lut_f32,
-            );
-            result.filename = name_copy;
-
-            // Store result (thread-safe: each index is unique)
-            ctx.results[item_idx] = result;
-
-            // Stream JSONL output (atom_areas on arena, valid until reset)
-            if (ctx.jsonl_stream) |stream| {
-                if (result.status == .ok) {
-                    stream.writeResult(arena.allocator(), &result);
-                }
-            }
-            // Clear atom_areas since arena will free them
-            ctx.results[item_idx].atom_areas = null;
-            ctx.results[item_idx].residue_map = null;
         }
-
-        // Update progress counter (.release pairs with .acquire in progress monitor)
-        _ = ctx.processed_count.fetchAdd(1, .release);
-
-        // Reset arena for next work item
-        _ = arena.reset(.retain_capacity);
     }
 }
 
@@ -1954,6 +1969,7 @@ pub fn runBatchParallel(
         .config = config,
         .results = file_results,
         .result_allocator = allocator,
+        .chunk_size = config.chunk_size,
         .next_item = std.atomic.Value(usize).init(0),
         .processed_count = std.atomic.Value(usize).init(0),
         .lut_f64 = luts.f64Ptr(),
@@ -3822,6 +3838,28 @@ test "validateChunkOptions accepts chunked jsonl with jsonl and chunk size" {
     try validateChunkOptions(.{ .chunk_size = 256, .chunked_jsonl = true, .output_format = .jsonl });
 }
 
+test "claimChunkRange claims contiguous chunks until exhausted" {
+    var next_index = std.atomic.Value(usize).init(0);
+
+    const first = claimChunkRange(&next_index, 10, 3).?;
+    try std.testing.expectEqual(@as(usize, 0), first.start);
+    try std.testing.expectEqual(@as(usize, 3), first.end);
+
+    const second = claimChunkRange(&next_index, 10, 3).?;
+    try std.testing.expectEqual(@as(usize, 3), second.start);
+    try std.testing.expectEqual(@as(usize, 6), second.end);
+
+    const third = claimChunkRange(&next_index, 10, 3).?;
+    try std.testing.expectEqual(@as(usize, 6), third.start);
+    try std.testing.expectEqual(@as(usize, 9), third.end);
+
+    const fourth = claimChunkRange(&next_index, 10, 3).?;
+    try std.testing.expectEqual(@as(usize, 9), fourth.start);
+    try std.testing.expectEqual(@as(usize, 10), fourth.end);
+
+    try std.testing.expectEqual(@as(?ChunkRange, null), claimChunkRange(&next_index, 10, 3));
+}
+
 test "public batch runners reject single-calc compatibility formats before scanning" {
     try std.testing.expectError(error.InvalidArgument, runBatch(
         std.testing.allocator,
@@ -4400,6 +4438,70 @@ test "runBatchParallel writes parseable JSONL with multiple threads" {
         try std.testing.expect(object.get("total_area") != null);
         try std.testing.expect(object.get("atom_areas") != null);
         try std.testing.expectEqual(@as(usize, 3), object.get("atom_areas").?.array.items.len);
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 10), count);
+}
+
+test "runBatchParallel chunk size writes parseable JSONL" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root_path = root_buf[0..root_len];
+
+    const input_dir = try std.fs.path.join(allocator, &.{ root_path, "input" });
+    defer allocator.free(input_dir);
+    const output_path = try std.fs.path.join(allocator, &.{ root_path, "chunk-results.jsonl" });
+    defer allocator.free(output_path);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+
+    const pdb_data =
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N\n" ++
+        "ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C\n" ++
+        "ATOM      3  C   ALA A   1       3.000   0.000   0.000  1.00 20.00           C\n" ++
+        "END\n";
+
+    var name_buf: [32]u8 = undefined;
+    for (0..10) |i| {
+        const filename = try std.fmt.bufPrint(&name_buf, "tiny-{d}.pdb", .{i});
+        const path = try std.fs.path.join(allocator, &.{ input_dir, filename });
+        defer allocator.free(path);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = pdb_data });
+    }
+
+    var result = try runBatchParallel(allocator, std.testing.io, input_dir, null, .{
+        .n_threads = 4,
+        .chunk_size = 3,
+        .algorithm = .sr,
+        .n_points = 8,
+        .quiet = true,
+        .show_progress = false,
+        .output_format = .jsonl,
+        .store_atom_areas = true,
+        .classifier_type = .naccess,
+    }, output_path);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 10), result.total_files);
+    try std.testing.expectEqual(@as(usize, 10), result.successful);
+    try std.testing.expectEqual(@as(usize, 0), result.failed);
+
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(64 * 1024));
+    defer allocator.free(content);
+    try std.testing.expectEqual(@as(usize, 10), std.mem.count(u8, content, "\n"));
+
+    var lines = std.mem.tokenizeScalar(u8, content, '\n');
+    var count: usize = 0;
+    while (lines.next()) |line| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer parsed.deinit();
+        const object = parsed.value.object;
+        try std.testing.expect(object.get("filename") != null);
+        try std.testing.expect(object.get("total_area") != null);
+        try std.testing.expect(object.get("atom_areas") != null);
         count += 1;
     }
     try std.testing.expectEqual(@as(usize, 10), count);
