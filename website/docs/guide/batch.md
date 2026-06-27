@@ -32,6 +32,20 @@ zsasa batch structures/ results/ --format=jsonl --output=results.jsonl
 
 JSONL is especially useful when you want to concatenate, filter, or process results incrementally.
 
+## Thread Count for Large File Sets
+
+By default, `zsasa batch` uses the detected CPU count. For large directories with many small structure files, the workload can spend significant time waiting on file open/read/parse operations. In those I/O-bound cases, you can explicitly set `--threads=N` above the CPU count to keep more files in flight:
+
+```bash
+zsasa batch structures/ results.jsonl \
+  --format=jsonl \
+  --threads=40 \
+  --precision=f32 \
+  --use-bitmask
+```
+
+This can improve throughput on fast local SSDs, but the best value is machine- and dataset-dependent. Higher thread counts increase memory use and may stop helping once storage or CPU scheduling becomes saturated.
+
 ## Experimental Adaptive Bitmask SR
 
 For large SR batch jobs that already use bitmask mode, `--adaptive-sr` runs a coarse bitmask pass for every atom and recomputes only intermediate-exposure atoms with a fine point count:

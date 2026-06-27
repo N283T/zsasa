@@ -353,6 +353,9 @@ pub const BatchResult = struct {
     failed: usize,
     total_sasa_time_ns: u64, // SASA calculation only
     total_time_ns: u64, // Including I/O
+    scan_time_ns: u64 = 0,
+    build_items_time_ns: u64 = 0,
+    process_time_ns: u64 = 0,
     file_results: []FileResult,
     allocator: Allocator,
 
@@ -438,9 +441,15 @@ pub const BatchResult = struct {
         const ns_to_ms = 1_000_000.0;
         const total_sasa_ms = @as(f64, @floatFromInt(self.total_sasa_time_ns)) / ns_to_ms;
         const total_ms = @as(f64, @floatFromInt(self.total_time_ns)) / ns_to_ms;
+        const scan_ms = @as(f64, @floatFromInt(self.scan_time_ns)) / ns_to_ms;
+        const build_ms = @as(f64, @floatFromInt(self.build_items_time_ns)) / ns_to_ms;
+        const process_ms = @as(f64, @floatFromInt(self.process_time_ns)) / ns_to_ms;
 
         std.debug.print("BATCH_SASA_TIME_MS:{d:.2}\n", .{total_sasa_ms});
         std.debug.print("BATCH_TOTAL_TIME_MS:{d:.2}\n", .{total_ms});
+        std.debug.print("BATCH_SCAN_TIME_MS:{d:.2}\n", .{scan_ms});
+        std.debug.print("BATCH_BUILD_ITEMS_TIME_MS:{d:.2}\n", .{build_ms});
+        std.debug.print("BATCH_PROCESS_TIME_MS:{d:.2}\n", .{process_ms});
         std.debug.print("BATCH_FILES:{d}\n", .{self.total_files});
         std.debug.print("BATCH_SUCCESS:{d}\n", .{self.successful});
     }
@@ -1286,7 +1295,9 @@ pub fn runBatchSequential(
     var total_timer = std.Io.Timestamp.now(io, .awake);
 
     // Scan directory for files
+    var scan_timer = std.Io.Timestamp.now(io, .awake);
     const files = try scanDirectory(allocator, io, input_dir);
+    const scan_time_ns: u64 = @intCast(scan_timer.untilNow(io, .awake).nanoseconds);
     defer {
         for (files) |f| allocator.free(f);
         allocator.free(files);
@@ -1344,6 +1355,7 @@ pub fn runBatchSequential(
 
     var total_items: usize = 0;
 
+    var process_timer = std.Io.Timestamp.now(io, .awake);
     for (files) |filename| {
         const format = format_detect.detectInputFormat(filename);
 
@@ -1525,6 +1537,7 @@ pub fn runBatchSequential(
         }
     }
 
+    const process_time_ns: u64 = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
     const total_time_ns: u64 = @intCast(total_timer.untilNow(io, .awake).nanoseconds);
 
     return BatchResult{
@@ -1533,6 +1546,8 @@ pub fn runBatchSequential(
         .failed = failed,
         .total_sasa_time_ns = total_sasa_time_ns,
         .total_time_ns = total_time_ns,
+        .scan_time_ns = scan_time_ns,
+        .process_time_ns = process_time_ns,
         .file_results = try results_list.toOwnedSlice(allocator),
         .allocator = allocator,
     };
@@ -1545,6 +1560,18 @@ const WorkItem = struct {
     display_name: []const u8, // Display name for results (e.g., "file.sdf:water")
     mol_idx: ?usize, // If non-null, SDF molecule index (0-based) within pre-parsed molecules
 };
+
+fn resolveBatchThreadCount(config_threads: usize, cpu_count: usize) usize {
+    const auto_threads = @max(cpu_count, 1);
+    return if (config_threads == 0) auto_threads else config_threads;
+}
+
+fn joinSpawnedThreads(threads: []std.Thread, spawned_count: usize) void {
+    const count = @min(spawned_count, threads.len);
+    for (threads[0..count]) |thread| {
+        thread.join();
+    }
+}
 
 /// Shared context for parallel workers
 const ParallelContext = struct {
@@ -1858,7 +1885,9 @@ pub fn runBatchParallel(
     var total_timer = std.Io.Timestamp.now(io, .awake);
 
     // Scan directory for files
+    var scan_timer = std.Io.Timestamp.now(io, .awake);
     const files = try scanDirectory(allocator, io, input_dir);
+    const scan_time_ns: u64 = @intCast(scan_timer.untilNow(io, .awake).nanoseconds);
     defer {
         for (files) |f| allocator.free(f);
         allocator.free(files);
@@ -1871,6 +1900,7 @@ pub fn runBatchParallel(
             .failed = 0,
             .total_sasa_time_ns = 0,
             .total_time_ns = @intCast(total_timer.untilNow(io, .awake).nanoseconds),
+            .scan_time_ns = scan_time_ns,
             .file_results = try allocator.alloc(FileResult, 0),
             .allocator = allocator,
         };
@@ -1882,7 +1912,9 @@ pub fn runBatchParallel(
     }
 
     // Build work items (expanding SDF files into per-molecule items)
+    var build_timer = std.Io.Timestamp.now(io, .awake);
     var build_result = try buildWorkItems(allocator, io, files, input_dir);
+    const build_items_time_ns: u64 = @intCast(build_timer.untilNow(io, .awake).nanoseconds);
     const work_items = build_result.items;
     defer {
         for (work_items) |item| {
@@ -1905,10 +1937,7 @@ pub fn runBatchParallel(
 
     // Determine thread count
     const cpu_count = std.Thread.getCpuCount() catch 1;
-    const n_threads = if (config.n_threads == 0)
-        cpu_count
-    else
-        @min(config.n_threads, cpu_count);
+    const n_threads = resolveBatchThreadCount(config.n_threads, cpu_count);
 
     // For single item or single thread, use sequential
     if (work_items.len == 1 or n_threads <= 1) {
@@ -1968,8 +1997,12 @@ pub fn runBatchParallel(
     const threads = try allocator.alloc(std.Thread, actual_threads);
     defer allocator.free(threads);
 
+    var process_timer = std.Io.Timestamp.now(io, .awake);
+    var spawned_count: usize = 0;
+    errdefer joinSpawnedThreads(threads, spawned_count);
     for (threads) |*thread| {
         thread.* = try std.Thread.spawn(.{}, parallelWorker, .{&ctx});
+        spawned_count += 1;
     }
 
     var progress_root: std.Progress.Node = if (shouldShowProgress(config))
@@ -1989,9 +2022,8 @@ pub fn runBatchParallel(
     }
 
     // Wait for all threads to complete
-    for (threads) |thread| {
-        thread.join();
-    }
+    joinSpawnedThreads(threads, spawned_count);
+    const process_time_ns: u64 = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
 
     // Aggregate results
     var total_sasa_time_ns: u64 = 0;
@@ -2015,6 +2047,9 @@ pub fn runBatchParallel(
         .failed = failed,
         .total_sasa_time_ns = total_sasa_time_ns,
         .total_time_ns = total_time_ns,
+        .scan_time_ns = scan_time_ns,
+        .build_items_time_ns = build_items_time_ns,
+        .process_time_ns = process_time_ns,
         .file_results = file_results,
         .allocator = allocator,
     };
@@ -2033,10 +2068,7 @@ pub fn runBatch(
     try validateBatchOutputFormat(config.output_format);
 
     const cpu_count = std.Thread.getCpuCount() catch 1;
-    const n_threads = if (config.n_threads == 0)
-        cpu_count
-    else
-        config.n_threads;
+    const n_threads = resolveBatchThreadCount(config.n_threads, cpu_count);
 
     if (n_threads <= 1) {
         return runBatchSequential(allocator, io, input_dir, output_dir, config, jsonl_output_path);
@@ -2628,7 +2660,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\                        Used with --classifier=ccd for non-standard residues
         \\    --sdf=PATH          SDF file with bond topology for CCD classifier
         \\                        Can be specified multiple times for multiple ligands
-        \\    --threads=N         Number of threads (default: auto-detect)
+        \\    --threads=N         Number of batch workers (default: auto-detect)
+        \\                        Explicit values may exceed CPU count for I/O-bound inputs
         \\    --workflow=PATH     TOML workflow file with one or more named batch jobs
         \\    --manifest=PATH     Compatibility alias for --workflow
         \\    --chain=ID          Filter by chain ID for non-workflow batch (e.g. A or A,B)
@@ -3621,6 +3654,22 @@ test "BatchResult deinit" {
     batch_result.deinit();
 }
 
+test "BatchResult phase timing fields default to zero" {
+    const result = BatchResult{
+        .total_files = 0,
+        .successful = 0,
+        .failed = 0,
+        .total_sasa_time_ns = 0,
+        .total_time_ns = 0,
+        .file_results = &.{},
+        .allocator = std.testing.allocator,
+    };
+
+    try std.testing.expectEqual(@as(u64, 0), result.scan_time_ns);
+    try std.testing.expectEqual(@as(u64, 0), result.build_items_time_ns);
+    try std.testing.expectEqual(@as(u64, 0), result.process_time_ns);
+}
+
 test "BatchArgs defaults" {
     const args = [_][]const u8{ "zsasa", "batch", "input_dir/" };
     const parsed = parseArgs(&args, 2);
@@ -3853,6 +3902,20 @@ test "batch resource resolver only loads CCD resources for CCD classifiers" {
     const resolved_sdf_paths = resolveWorkflowSdfPaths(explicit_resource_args, workflow_sdf_paths[0..], .ccd);
     try std.testing.expectEqual(@as(usize, 1), resolved_sdf_paths.len);
     try std.testing.expectEqualStrings("cli.sdf", resolved_sdf_paths[0]);
+}
+
+test "resolveBatchThreadCount allows explicit overcommit for IO-bound runs" {
+    try std.testing.expectEqual(@as(usize, 10), resolveBatchThreadCount(0, 10));
+    try std.testing.expectEqual(@as(usize, 20), resolveBatchThreadCount(20, 10));
+}
+
+fn testNoopThread() void {}
+
+test "joinSpawnedThreads joins only initialized thread slots" {
+    var threads: [2]std.Thread = undefined;
+    threads[0] = try std.Thread.spawn(.{}, testNoopThread, .{});
+    threads[1] = try std.Thread.spawn(.{}, testNoopThread, .{});
+    joinSpawnedThreads(threads[0..], 2);
 }
 
 test "workflow file-first keeps existing output layout" {
