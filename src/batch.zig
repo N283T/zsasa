@@ -1589,9 +1589,10 @@ fn claimChunkRange(next_index: *std.atomic.Value(usize), total: usize, chunk_siz
     std.debug.assert(chunk_size > 0);
     const start = next_index.fetchAdd(chunk_size, .monotonic);
     if (start >= total) return null;
+    const remaining = total - start;
     return .{
         .start = start,
-        .end = @min(start + chunk_size, total),
+        .end = if (chunk_size >= remaining) total else start + chunk_size,
     };
 }
 
@@ -3914,6 +3915,14 @@ test "claimChunkRange claims contiguous chunks until exhausted" {
     try std.testing.expectEqual(@as(usize, 10), fourth.end);
 
     try std.testing.expectEqual(@as(?ChunkRange, null), claimChunkRange(&next_index, 10, 3));
+}
+
+test "claimChunkRange saturates end without overflowing" {
+    var next_index = std.atomic.Value(usize).init(std.math.maxInt(usize) - 1);
+
+    const range = claimChunkRange(&next_index, std.math.maxInt(usize), 10).?;
+    try std.testing.expectEqual(std.math.maxInt(usize) - 1, range.start);
+    try std.testing.expectEqual(std.math.maxInt(usize), range.end);
 }
 
 test "public batch runners reject single-calc compatibility formats before scanning" {
