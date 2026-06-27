@@ -53,6 +53,17 @@ zsasa batch structures/ results.jsonl \
 
 `--chunk-size=N` changes only how parallel workers claim work ranges. `--chunked-jsonl` additionally buffers JSONL output per chunk and requires `--format=jsonl`. These options are experimental and intended for comparing SwissProt-scale runs before choosing a stable large-batch interface.
 
+To test macro-sharding separately, `--shard-size=N` splits a JSONL batch into large output shards:
+
+```bash
+zsasa batch structures/ results.jsonl \
+  --format=jsonl \
+  --threads=10 \
+  --shard-size=50000
+```
+
+This writes `results.part-0.jsonl`, `results.part-1.jsonl`, and so on. The JSONL row schema is unchanged; concatenate the shard files if a single stream is needed.
+
 ## Experimental Adaptive Bitmask SR
 
 For large SR batch jobs that already use bitmask mode, `--adaptive-sr` runs a coarse bitmask pass for every atom and recomputes only intermediate-exposure atoms with a fine point count:

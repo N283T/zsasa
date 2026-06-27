@@ -2877,6 +2877,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --chunk-size=N      Experimental: process parallel batch work in N-item chunks
         \\    --chunked-jsonl     Experimental: buffer JSONL writes by chunk
         \\                        Requires --chunk-size and --format=jsonl
+        \\    --shard-size=N      Experimental: split JSONL batch output into N-item macro shards
         \\    --timing            Show timing breakdown for benchmarking
         \\    -o, --output=PATH   Output directory, or file path for --format=jsonl
         \\    -q, --quiet         Suppress progress output
