@@ -470,7 +470,34 @@ const WorkflowJobState = struct {
     }
 };
 
+const WorkflowJobCounter = struct {
+    successful: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    failed: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    total_sasa_time_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+};
+
+const WorkflowJobRuntime = struct {
+    state: *WorkflowJobState,
+    jsonl_stream: ?JsonlStreamWriter = null,
+    jsonl_file: ?std.Io.File = null,
+    jsonl_file_needs_close: bool = false,
+    counter: WorkflowJobCounter = .{},
+
+    fn close(self: *WorkflowJobRuntime, io: std.Io) void {
+        if (self.jsonl_file_needs_close) {
+            if (self.jsonl_file) |file| file.close(io);
+        }
+    }
+};
+
 fn chainMatchesFilter(chain: types.FixedString4, chains: []const []const u8) bool {
+    for (chains) |target| {
+        if (chain.eqlSlice(target)) return true;
+    }
+    return false;
+}
+
+fn chainFullMatchesFilter(chain: types.FixedString32, chains: []const []const u8) bool {
     for (chains) |target| {
         if (chain.eqlSlice(target)) return true;
     }
@@ -480,6 +507,9 @@ fn chainMatchesFilter(chain: types.FixedString4, chains: []const []const u8) boo
 fn atomSelectedByChains(input: AtomInput, index: usize, chains: ?[]const []const u8) bool {
     const filter = chains orelse return true;
     if (filter.len == 0) return true;
+    if (input.chain_id_full) |chain_ids_full| {
+        return chainFullMatchesFilter(chain_ids_full[index], filter);
+    }
     const chain_ids = input.chain_id orelse return true;
     return chainMatchesFilter(chain_ids[index], filter);
 }
@@ -512,6 +542,8 @@ fn copySelectedAtomInput(allocator: Allocator, input: AtomInput, chains: ?[]cons
     errdefer if (element) |v| allocator.free(v);
     const chain_id = if (input.chain_id != null) try allocator.alloc(types.FixedString4, selected_count) else null;
     errdefer if (chain_id) |v| allocator.free(v);
+    const chain_id_full = if (input.chain_id_full != null) try allocator.alloc(types.FixedString32, selected_count) else null;
+    errdefer if (chain_id_full) |v| allocator.free(v);
     const residue_num = if (input.residue_num != null) try allocator.alloc(i32, selected_count) else null;
     errdefer if (residue_num) |v| allocator.free(v);
     const insertion_code = if (input.insertion_code != null) try allocator.alloc(types.FixedString4, selected_count) else null;
@@ -528,6 +560,7 @@ fn copySelectedAtomInput(allocator: Allocator, input: AtomInput, chains: ?[]cons
         if (atom_name) |v| v[out_i] = input.atom_name.?[i];
         if (element) |v| v[out_i] = input.element.?[i];
         if (chain_id) |v| v[out_i] = input.chain_id.?[i];
+        if (chain_id_full) |v| v[out_i] = input.chain_id_full.?[i];
         if (residue_num) |v| v[out_i] = input.residue_num.?[i];
         if (insertion_code) |v| v[out_i] = input.insertion_code.?[i];
         out_i += 1;
@@ -542,6 +575,7 @@ fn copySelectedAtomInput(allocator: Allocator, input: AtomInput, chains: ?[]cons
         .atom_name = atom_name,
         .element = element,
         .chain_id = chain_id,
+        .chain_id_full = chain_id_full,
         .residue_num = residue_num,
         .insertion_code = insertion_code,
         .allocator = allocator,
@@ -2920,23 +2954,8 @@ fn workflowFilesContainSdf(files: []const []const u8) bool {
 }
 
 fn workflowRequiresJobFirstForLongChainFormats(files: []const []const u8, workflow: workflow_manifest.Workflow) bool {
-    var has_chain_filter = false;
-    for (workflow.jobs) |job| {
-        if (job.chains) |chains| {
-            if (chains.len > 0) {
-                has_chain_filter = true;
-                break;
-            }
-        }
-    }
-    if (!has_chain_filter) return false;
-
-    for (files) |filename| {
-        switch (format_detect.detectInputFormat(filename)) {
-            .mmcif, .bcif => return true,
-            else => {},
-        }
-    }
+    _ = files;
+    _ = workflow;
     return false;
 }
 
@@ -2955,6 +2974,131 @@ fn effectiveWorkflowSasaThreads(config: BatchConfig) usize {
         std.Thread.getCpuCount() catch 1
     else
         config.n_threads;
+}
+
+fn effectiveWorkflowFileThreads(config: BatchConfig, file_count: usize) usize {
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    return @min(resolveBatchThreadCount(config.n_threads, cpu_count), file_count);
+}
+
+const WorkflowParallelContext = struct {
+    files: []const []const u8,
+    input_dir: []const u8,
+    jobs: []const workflow_manifest.Job,
+    runtimes: []WorkflowJobRuntime,
+    resource_config: BatchConfig,
+    result_allocator: Allocator,
+    next_file: std.atomic.Value(usize),
+    processed_count: std.atomic.Value(usize),
+    lut_f64: ?*const bitmask_lut.BitmaskLut,
+    lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+    coarse_lut_f64: ?*const bitmask_lut.BitmaskLut,
+    fine_lut_f64: ?*const bitmask_lut.BitmaskLut,
+    coarse_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+    fine_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+    io: std.Io,
+};
+
+fn workflowMarkAllJobsFailed(ctx: *WorkflowParallelContext) void {
+    for (ctx.runtimes) |*runtime| {
+        _ = runtime.counter.failed.fetchAdd(1, .monotonic);
+    }
+}
+
+fn workflowClassifySourceInput(
+    input: *AtomInput,
+    input_path: []const u8,
+    config: BatchConfig,
+) !void {
+    if (config.custom_classifier) |custom| {
+        if (input.hasClassificationInfo()) {
+            try applyCustomClassifier(input, custom, config.quiet);
+        }
+    } else if (config.classifier_type) |ct| {
+        const format = format_detect.detectInputFormat(input_path);
+        if (format != .json and input.hasClassificationInfo()) {
+            try applyBuiltinClassifier(input, ct, config.sdf_ccd, config.external_ccd);
+        }
+    }
+}
+
+fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer arena.deinit();
+
+    while (true) {
+        const file_index = ctx.next_file.fetchAdd(1, .monotonic);
+        if (file_index >= ctx.files.len) break;
+
+        const filename = ctx.files[file_index];
+        const input_path = std.fs.path.join(arena.allocator(), &.{ ctx.input_dir, filename }) catch |err| {
+            workflowMarkAllJobsFailed(ctx);
+            std.debug.print("Error running workflow on '{s}': path join failed: {s}\n", .{ filename, @errorName(err) });
+            _ = ctx.processed_count.fetchAdd(1, .release);
+            _ = arena.reset(.retain_capacity);
+            continue;
+        };
+
+        var source_config = ctx.resource_config;
+        source_config.chain_filter = null;
+        var source_input = readInputFile(arena.allocator(), ctx.io, input_path, source_config) catch |err| {
+            workflowMarkAllJobsFailed(ctx);
+            for (ctx.runtimes) |runtime| {
+                std.debug.print("Error running workflow job '{s}' on '{s}': read/parse failed: {s}\n", .{ runtime.state.name, filename, @errorName(err) });
+            }
+            _ = ctx.processed_count.fetchAdd(1, .release);
+            _ = arena.reset(.retain_capacity);
+            continue;
+        };
+
+        workflowClassifySourceInput(&source_input, input_path, source_config) catch |err| {
+            workflowMarkAllJobsFailed(ctx);
+            for (ctx.runtimes) |runtime| {
+                std.debug.print("Error running workflow job '{s}' on '{s}': classifier failed: {s}\n", .{ runtime.state.name, filename, @errorName(err) });
+            }
+            source_input.deinit();
+            _ = ctx.processed_count.fetchAdd(1, .release);
+            _ = arena.reset(.retain_capacity);
+            continue;
+        };
+
+        const format = format_detect.detectInputFormat(input_path);
+        for (ctx.jobs, 0..) |job, job_index| {
+            var runtime = &ctx.runtimes[job_index];
+            const selected_chains: ?[]const []const u8 = if (format == .json) null else job.chains;
+            var selected_input = copySelectedAtomInput(arena.allocator(), source_input, selected_chains) catch |err| {
+                _ = runtime.counter.failed.fetchAdd(1, .monotonic);
+                std.debug.print("Error running workflow job '{s}' on '{s}': selection failed: {s}\n", .{ runtime.state.name, filename, @errorName(err) });
+                continue;
+            };
+            defer selected_input.deinit();
+
+            const sasa_threads: usize = 1;
+            var result = switch (runtime.state.config.precision) {
+                .f64 => calculatePreparedInputResult(f64, arena.allocator(), ctx.io, ctx.result_allocator, selected_input, runtime.state.output_dir, filename, runtime.state.config, sasa_threads, ctx.lut_f64, ctx.coarse_lut_f64, ctx.fine_lut_f64),
+                .f32 => calculatePreparedInputResult(f32, arena.allocator(), ctx.io, ctx.result_allocator, selected_input, runtime.state.output_dir, filename, runtime.state.config, sasa_threads, ctx.lut_f32, ctx.coarse_lut_f32, ctx.fine_lut_f32),
+            };
+            defer if (result.error_msg) |msg| ctx.result_allocator.free(msg);
+
+            if (result.status == .ok) {
+                _ = runtime.counter.successful.fetchAdd(1, .monotonic);
+                _ = runtime.counter.total_sasa_time_ns.fetchAdd(result.sasa_time_ns, .monotonic);
+            } else {
+                _ = runtime.counter.failed.fetchAdd(1, .monotonic);
+            }
+
+            if (runtime.jsonl_stream) |*stream| {
+                if (result.status == .ok) stream.writeResult(arena.allocator(), &result);
+            }
+
+            result.atom_areas = null;
+            result.residue_map = null;
+        }
+
+        source_input.deinit();
+        _ = ctx.processed_count.fetchAdd(1, .release);
+        _ = arena.reset(.retain_capacity);
+    }
 }
 
 fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
@@ -3218,6 +3362,76 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
 
     var luts = try BatchLuts.init(allocator, resource_config);
     defer luts.deinit();
+
+    const file_threads = effectiveWorkflowFileThreads(resource_config, files.len);
+    if (file_threads > 1 and files.len > 1) {
+        var runtimes = try allocator.alloc(WorkflowJobRuntime, states.len);
+        var runtimes_initialized: usize = 0;
+        errdefer {
+            for (runtimes[0..runtimes_initialized]) |*runtime| runtime.close(io);
+            allocator.free(runtimes);
+        }
+        for (states, 0..) |*state, i| {
+            runtimes[i] = .{ .state = state };
+            if (state.config.output_format == .jsonl) {
+                if (state.jsonl_output_path) |path| {
+                    const file = try std.Io.Dir.cwd().createFile(io, path, .{});
+                    runtimes[i].jsonl_file = file;
+                    runtimes[i].jsonl_file_needs_close = true;
+                    runtimes[i].jsonl_stream = JsonlStreamWriter{ .file = file, .io = io };
+                } else {
+                    const file = std.Io.File.stdout();
+                    runtimes[i].jsonl_file = file;
+                    runtimes[i].jsonl_stream = JsonlStreamWriter{ .file = file, .io = io };
+                }
+            }
+            runtimes_initialized += 1;
+        }
+        defer {
+            for (runtimes) |*runtime| runtime.close(io);
+            allocator.free(runtimes);
+        }
+
+        var ctx = WorkflowParallelContext{
+            .files = files,
+            .input_dir = input_dir,
+            .jobs = workflow.jobs,
+            .runtimes = runtimes,
+            .resource_config = resource_config,
+            .result_allocator = allocator,
+            .next_file = std.atomic.Value(usize).init(0),
+            .processed_count = std.atomic.Value(usize).init(0),
+            .lut_f64 = luts.f64Ptr(),
+            .lut_f32 = luts.f32Ptr(),
+            .coarse_lut_f64 = luts.coarseF64Ptr(),
+            .fine_lut_f64 = luts.fineF64Ptr(),
+            .coarse_lut_f32 = luts.coarseF32Ptr(),
+            .fine_lut_f32 = luts.fineF32Ptr(),
+            .io = io,
+        };
+
+        const threads = try allocator.alloc(std.Thread, file_threads);
+        defer allocator.free(threads);
+        var spawned_count: usize = 0;
+        errdefer joinSpawnedThreads(threads, spawned_count);
+        for (threads) |*thread| {
+            thread.* = try std.Thread.spawn(.{}, workflowParallelWorker, .{&ctx});
+            spawned_count += 1;
+        }
+        joinSpawnedThreads(threads, spawned_count);
+
+        var successful: usize = 0;
+        var failed: usize = 0;
+        for (runtimes) |*runtime| {
+            runtime.state.successful = runtime.counter.successful.load(.monotonic);
+            runtime.state.failed = runtime.counter.failed.load(.monotonic);
+            runtime.state.total_sasa_time_ns = runtime.counter.total_sasa_time_ns.load(.monotonic);
+            successful += runtime.state.successful;
+            failed += runtime.state.failed;
+        }
+        std.debug.print("Workflow complete: {d} successful, {d} failed\n", .{ successful, failed });
+        return;
+    }
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -3593,6 +3807,28 @@ test "copySelectedAtomInput no matching chains returns empty input" {
     try std.testing.expectEqual(@as(usize, 0), selected.chain_id.?.len);
 }
 
+test "copySelectedAtomInput prefers extended chain IDs over truncated chain IDs" {
+    const allocator = std.testing.allocator;
+    var input = try makeTestAtomInput(allocator, &.{ "ABCD", "ABCD" });
+    defer input.deinit();
+    const chain_id_full = try allocator.alloc(types.FixedString32, 2);
+    chain_id_full[0] = types.FixedString32.fromSlice("ABCDE");
+    chain_id_full[1] = types.FixedString32.fromSlice("ABCD");
+    input.chain_id_full = chain_id_full;
+
+    var selected_long = try copySelectedAtomInput(allocator, input, &.{"ABCDE"});
+    defer selected_long.deinit();
+    try std.testing.expectEqual(@as(usize, 1), selected_long.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), selected_long.x[0], 1e-12);
+    try std.testing.expectEqualStrings("ABCDE", selected_long.chain_id_full.?[0].slice());
+
+    var selected_prefix = try copySelectedAtomInput(allocator, input, &.{"ABCD"});
+    defer selected_prefix.deinit();
+    try std.testing.expectEqual(@as(usize, 1), selected_prefix.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), selected_prefix.x[0], 1e-12);
+    try std.testing.expectEqualStrings("ABCD", selected_prefix.chain_id_full.?[0].slice());
+}
+
 test "calculatePreparedInputResult computes total for selected input" {
     const allocator = std.testing.allocator;
     var input = try makeTestAtomInput(allocator, &.{ "A", "A" });
@@ -3939,6 +4175,8 @@ test "workflow file-first keeps existing output layout" {
     defer allocator.free(json_workflow_path);
     const input_path = try std.fs.path.join(allocator, &.{ input_dir, "tiny.pdb" });
     defer allocator.free(input_path);
+    const input_path_2 = try std.fs.path.join(allocator, &.{ input_dir, "tiny2.pdb" });
+    defer allocator.free(input_path_2);
 
     try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{
@@ -3948,6 +4186,17 @@ test "workflow file-first keeps existing output layout" {
         \\ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C
         \\ATOM      3  N   GLY B   1       5.000   0.000   0.000  1.00 20.00           N
         \\ATOM      4  CA  GLY B   1       6.500   0.000   0.000  1.00 20.00           C
+        \\END
+        \\
+        ,
+    });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = input_path_2,
+        .data =
+        \\ATOM      1  N   ALA A   1       0.000   1.000   0.000  1.00 20.00           N
+        \\ATOM      2  CA  ALA A   1       1.500   1.000   0.000  1.00 20.00           C
+        \\ATOM      3  N   GLY B   1       5.000   1.000   0.000  1.00 20.00           N
+        \\ATOM      4  CA  GLY B   1       6.500   1.000   0.000  1.00 20.00           C
         \\END
         \\
         ,
@@ -3994,7 +4243,9 @@ test "workflow file-first keeps existing output layout" {
     const chain_b_jsonl_content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, chain_b_jsonl, allocator, .limited(4096));
     defer allocator.free(chain_b_jsonl_content);
     try std.testing.expect(std.mem.indexOf(u8, chain_a_jsonl_content, "\"filename\":\"tiny.pdb\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, chain_a_jsonl_content, "\"filename\":\"tiny2.pdb\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, chain_b_jsonl_content, "\"filename\":\"tiny.pdb\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, chain_b_jsonl_content, "\"filename\":\"tiny2.pdb\"") != null);
 
     const json_workflow = try std.fmt.allocPrint(allocator,
         \\version = 1
@@ -4026,9 +4277,14 @@ test "workflow file-first keeps existing output layout" {
 
     const chain_a_json = try std.fs.path.join(allocator, &.{ json_output_dir, "chain_a", "tiny.json" });
     defer allocator.free(chain_a_json);
+    const chain_a_json_2 = try std.fs.path.join(allocator, &.{ json_output_dir, "chain_a", "tiny2.json" });
+    defer allocator.free(chain_a_json_2);
     const chain_a_json_content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, chain_a_json, allocator, .limited(4096));
     defer allocator.free(chain_a_json_content);
+    const chain_a_json_content_2 = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, chain_a_json_2, allocator, .limited(4096));
+    defer allocator.free(chain_a_json_content_2);
     try std.testing.expect(std.mem.indexOf(u8, chain_a_json_content, "\"total_area\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, chain_a_json_content_2, "\"total_area\"") != null);
 }
 
 test "workflow mmCIF chain filters preserve long chain IDs" {
@@ -4134,7 +4390,7 @@ test "workflowFilesContainSdf detects SDF in pre-scanned files" {
     try std.testing.expect(workflowFilesContainSdf(files[0..]));
 }
 
-test "workflowRequiresJobFirstForLongChainFormats detects chain-filtered mmCIF and BinaryCIF" {
+test "workflowRequiresJobFirstForLongChainFormats allows chain-filtered mmCIF and BinaryCIF" {
     const mmcif_files = [_][]const u8{"long-chain.cif"};
     const bcif_files = [_][]const u8{"long-chain.bcif"};
     const pdb_json_files = [_][]const u8{ "chain.pdb", "atoms.json" };
@@ -4147,8 +4403,8 @@ test "workflowRequiresJobFirstForLongChainFormats detects chain-filtered mmCIF a
         .content = "",
         .jobs = long_chain_jobs[0..],
     };
-    try std.testing.expect(workflowRequiresJobFirstForLongChainFormats(mmcif_files[0..], long_chain_workflow));
-    try std.testing.expect(workflowRequiresJobFirstForLongChainFormats(bcif_files[0..], long_chain_workflow));
+    try std.testing.expect(!workflowRequiresJobFirstForLongChainFormats(mmcif_files[0..], long_chain_workflow));
+    try std.testing.expect(!workflowRequiresJobFirstForLongChainFormats(bcif_files[0..], long_chain_workflow));
     try std.testing.expect(!workflowRequiresJobFirstForLongChainFormats(pdb_json_files[0..], long_chain_workflow));
 
     var prefix_chain_jobs = [_]workflow_manifest.Job{
@@ -4159,8 +4415,8 @@ test "workflowRequiresJobFirstForLongChainFormats detects chain-filtered mmCIF a
         .content = "",
         .jobs = prefix_chain_jobs[0..],
     };
-    try std.testing.expect(workflowRequiresJobFirstForLongChainFormats(mmcif_files[0..], prefix_chain_workflow));
-    try std.testing.expect(workflowRequiresJobFirstForLongChainFormats(bcif_files[0..], prefix_chain_workflow));
+    try std.testing.expect(!workflowRequiresJobFirstForLongChainFormats(mmcif_files[0..], prefix_chain_workflow));
+    try std.testing.expect(!workflowRequiresJobFirstForLongChainFormats(bcif_files[0..], prefix_chain_workflow));
 
     var unfiltered_jobs = [_]workflow_manifest.Job{
         .{ .name = "all" },

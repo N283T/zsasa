@@ -316,6 +316,9 @@ pub const MmcifParser = struct {
         defer element_list.deinit(self.allocator);
         var chain_id_list = std.ArrayListUnmanaged(types.FixedString4).empty;
         defer chain_id_list.deinit(self.allocator);
+        var chain_id_full_list = std.ArrayListUnmanaged(types.FixedString32).empty;
+        defer chain_id_full_list.deinit(self.allocator);
+        var has_extended_chain = false;
         var residue_num_list = std.ArrayListUnmanaged(i32).empty;
         defer residue_num_list.deinit(self.allocator);
         var insertion_code_list = std.ArrayListUnmanaged(types.FixedString4).empty;
@@ -401,11 +404,15 @@ pub const MmcifParser = struct {
                                 const chain = row_values[chain_col];
                                 if (cif.isNull(chain)) {
                                     try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(""));
+                                    try chain_id_full_list.append(self.allocator, types.FixedString32.fromSlice(""));
                                 } else {
                                     try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(chain));
+                                    try chain_id_full_list.append(self.allocator, types.FixedString32.fromSlice(chain));
+                                    has_extended_chain = has_extended_chain or chain.len > 4;
                                 }
                             } else {
                                 try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(""));
+                                try chain_id_full_list.append(self.allocator, types.FixedString32.fromSlice(""));
                             }
 
                             // Get residue sequence number
@@ -455,6 +462,12 @@ pub const MmcifParser = struct {
             return ParseError.NoAtomSiteLoop;
         }
 
+        const chain_id_full_owned = try chain_id_full_list.toOwnedSlice(self.allocator);
+        const chain_id_full: ?[]const types.FixedString32 = if (has_extended_chain) chain_id_full_owned else blk: {
+            self.allocator.free(chain_id_full_owned);
+            break :blk null;
+        };
+
         return AtomInput{
             .x = try x_list.toOwnedSlice(self.allocator),
             .y = try y_list.toOwnedSlice(self.allocator),
@@ -464,6 +477,7 @@ pub const MmcifParser = struct {
             .atom_name = try atom_name_list.toOwnedSlice(self.allocator),
             .element = try element_list.toOwnedSlice(self.allocator),
             .chain_id = try chain_id_list.toOwnedSlice(self.allocator),
+            .chain_id_full = chain_id_full,
             .residue_num = try residue_num_list.toOwnedSlice(self.allocator),
             .insertion_code = try insertion_code_list.toOwnedSlice(self.allocator),
             .allocator = self.allocator,
@@ -643,6 +657,34 @@ test "parse simple mmCIF" {
     try std.testing.expectEqual(@as(u8, 6), input.element.?[0]); // C
     try std.testing.expectEqual(@as(u8, 7), input.element.?[1]); // N
     try std.testing.expectEqual(@as(u8, 8), input.element.?[2]); // O
+}
+
+test "parse mmCIF keeps extended chain IDs when label_asym_id exceeds four characters" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C CA ALA ABCDE 10.000 20.000 30.000
+        \\2 N N  ALA ABCD  11.000 21.000 31.000
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expect(input.chain_id_full != null);
+    try std.testing.expectEqualStrings("ABCD", input.chain_id.?[0].slice());
+    try std.testing.expectEqualStrings("ABCDE", input.chain_id_full.?[0].slice());
+    try std.testing.expectEqualStrings("ABCD", input.chain_id_full.?[1].slice());
 }
 
 test "parse with alternate locations" {
