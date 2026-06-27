@@ -32,49 +32,19 @@ zsasa batch structures/ results/ --format=jsonl --output=results.jsonl
 
 JSONL is especially useful when you want to concatenate, filter, or process results incrementally.
 
-## Experimental Large-Directory Chunking
+## Thread Count for Large File Sets
 
-For very large directories where per-file scheduling or JSONL write overhead may dominate, `zsasa batch` exposes experimental chunk options for benchmarking:
-
-```bash
-# Simple chunk scheduling baseline: output path and schema stay the same
-zsasa batch structures/ results.jsonl \
-  --format=jsonl \
-  --threads=10 \
-  --chunk-size=256
-
-# Chunked JSONL writer: serialize rows normally, but write/flush once per chunk
-zsasa batch structures/ results.jsonl \
-  --format=jsonl \
-  --threads=10 \
-  --chunk-size=256 \
-  --chunked-jsonl
-```
-
-`--chunk-size=N` changes only how parallel workers claim work ranges. `--chunked-jsonl` additionally buffers JSONL output per chunk and requires `--format=jsonl`. These options are experimental and intended for comparing SwissProt-scale runs before choosing a stable large-batch interface.
-
-To test macro-sharding separately, `--shard-size=N` splits a JSONL batch into large output shards:
+By default, `zsasa batch` uses the detected CPU count. For large directories with many small structure files, the workload can spend significant time waiting on file open/read/parse operations. In those I/O-bound cases, you can explicitly set `--threads=N` above the CPU count to keep more files in flight:
 
 ```bash
 zsasa batch structures/ results.jsonl \
   --format=jsonl \
-  --threads=10 \
-  --shard-size=50000
+  --threads=40 \
+  --precision=f32 \
+  --use-bitmask
 ```
 
-This writes `results.part-0.jsonl`, `results.part-1.jsonl`, and so on. The JSONL row schema is unchanged; concatenate the shard files if a single stream is needed.
-
-To benchmark macro batches without changing the output layout, `--batch-size=N` processes the parallel work list in N-item waves:
-
-```bash
-zsasa batch structures/ \
-  --threads=10 \
-  --batch-size=50000
-```
-
-For example, a 550k-file SwissProt-scale directory with `--batch-size=50000` runs as roughly eleven 50k-item waves. This option is independent of JSONL output sharding and is intended as an experimental baseline.
-
-When benchmarking I/O-bound datasets, explicit `--threads=N` values may exceed the CPU count to test whether worker overcommit hides file open/read latency. The default thread count remains the detected CPU count.
+This can improve throughput on fast local SSDs, but the best value is machine- and dataset-dependent. Higher thread counts increase memory use and may stop helping once storage or CPU scheduling becomes saturated.
 
 ## Experimental Adaptive Bitmask SR
 

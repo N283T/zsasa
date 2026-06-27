@@ -120,11 +120,7 @@ For batch custom classifier configs, use a workflow `[classifier]` section. See 
 | `--fine-points=N` | Fine adaptive SR test points; defaults to explicit `--n-points`, otherwise 256 | `256` |
 | `--adaptive-low=X` | Accept coarse result when exposed fraction is ≤ X | `0.10` |
 | `--adaptive-high=X` | Accept coarse result when exposed fraction is ≥ X | `0.90` |
-| `--threads=N` | Number of threads (0 = auto-detect) | `0` |
-| `--chunk-size=N` | Experimental batch mode: claim parallel work in N-item chunks for large-directory benchmarking | off |
-| `--chunked-jsonl` | Experimental batch mode: buffer JSONL writes by chunk; requires `--chunk-size=N` and `--format=jsonl` | off |
-| `--shard-size=N` | Experimental batch mode: split JSONL output into N-item macro shards (`output.part-0.jsonl`, etc.) | off |
-| `--batch-size=N` | Experimental batch mode: process parallel work in N-item macro batches without changing output layout | off |
+| `--threads=N` | Number of batch worker threads; explicit values may exceed CPU count for I/O-bound file sets (0 = auto-detect) | `0` |
 
 ### Classifier Options
 

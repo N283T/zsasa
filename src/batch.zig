@@ -75,10 +75,6 @@ pub const BatchConfig = struct {
     fine_points: u32 = 256,
     adaptive_low: f64 = 0.10,
     adaptive_high: f64 = 0.90,
-    chunk_size: ?usize = null, // Experimental batch chunk size for large directory runs
-    chunked_jsonl: bool = false, // Experimental JSONL write buffering by chunk
-    shard_size: ?usize = null, // Experimental macro-shard size for large JSONL batch runs
-    batch_size: ?usize = null, // Experimental macro-batch size for large directory runs
     store_atom_areas: bool = false, // When true, copy atom_areas to result_allocator for jsonl
     external_ccd: ?*const ccd_parser.ComponentDict = null, // External CCD dictionary
     sdf_ccd: ?*const ccd_parser.ComponentDict = null, // SDF bond topology dictionary
@@ -338,7 +334,6 @@ pub const FileResult = struct {
     filename: []const u8,
     n_atoms: usize,
     sasa_time_ns: u64,
-    process_time_ns: u64 = 0,
     total_sasa: f64,
     status: Status,
     error_msg: ?[]const u8 = null,
@@ -361,7 +356,6 @@ pub const BatchResult = struct {
     scan_time_ns: u64 = 0,
     build_items_time_ns: u64 = 0,
     process_time_ns: u64 = 0,
-    total_file_process_time_ns: u64 = 0,
     file_results: []FileResult,
     allocator: Allocator,
 
@@ -450,16 +444,12 @@ pub const BatchResult = struct {
         const scan_ms = @as(f64, @floatFromInt(self.scan_time_ns)) / ns_to_ms;
         const build_ms = @as(f64, @floatFromInt(self.build_items_time_ns)) / ns_to_ms;
         const process_ms = @as(f64, @floatFromInt(self.process_time_ns)) / ns_to_ms;
-        const file_process_ms = @as(f64, @floatFromInt(self.total_file_process_time_ns)) / ns_to_ms;
-        const file_non_sasa_ms = @as(f64, @floatFromInt(self.total_file_process_time_ns -| self.total_sasa_time_ns)) / ns_to_ms;
 
         std.debug.print("BATCH_SASA_TIME_MS:{d:.2}\n", .{total_sasa_ms});
         std.debug.print("BATCH_TOTAL_TIME_MS:{d:.2}\n", .{total_ms});
         std.debug.print("BATCH_SCAN_TIME_MS:{d:.2}\n", .{scan_ms});
         std.debug.print("BATCH_BUILD_ITEMS_TIME_MS:{d:.2}\n", .{build_ms});
         std.debug.print("BATCH_PROCESS_TIME_MS:{d:.2}\n", .{process_ms});
-        std.debug.print("BATCH_FILE_PROCESS_TIME_MS:{d:.2}\n", .{file_process_ms});
-        std.debug.print("BATCH_FILE_NON_SASA_TIME_MS:{d:.2}\n", .{file_non_sasa_ms});
         std.debug.print("BATCH_FILES:{d}\n", .{self.total_files});
         std.debug.print("BATCH_SUCCESS:{d}\n", .{self.successful});
     }
@@ -879,7 +869,6 @@ fn processOneFile(
     coarse_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
     fine_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
 ) FileResult {
-    var process_timer = std.Io.Timestamp.now(io, .awake);
     var result = FileResult{
         .filename = filename,
         .n_atoms = 0,
@@ -892,7 +881,6 @@ fn processOneFile(
     const input_path = std.fs.path.join(arena, &.{ input_dir, filename }) catch |err| {
         result.status = .err;
         result.error_msg = std.fmt.allocPrint(result_allocator, "path join failed: {s}", .{@errorName(err)}) catch null;
-        result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
         return result;
     };
 
@@ -900,7 +888,6 @@ fn processOneFile(
     var input = readInputFile(arena, io, input_path, config) catch |err| {
         result.status = .err;
         result.error_msg = std.fmt.allocPrint(result_allocator, "read/parse failed: {s}", .{@errorName(err)}) catch null;
-        result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
         return result;
     };
     defer input.deinit();
@@ -911,7 +898,6 @@ fn processOneFile(
             applyCustomClassifier(&input, custom_classifier, config.quiet) catch |err| {
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
-                result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
                 return result;
             };
         }
@@ -921,13 +907,12 @@ fn processOneFile(
             applyBuiltinClassifier(&input, ct, config.sdf_ccd, config.external_ccd) catch |err| {
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
-                result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
                 return result;
             };
         }
     }
 
-    result = switch (config.precision) {
+    return switch (config.precision) {
         .f64 => calculatePreparedInputResult(
             f64,
             arena,
@@ -957,8 +942,6 @@ fn processOneFile(
             fine_lut_f32,
         ),
     };
-    result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
-    return result;
 }
 
 /// Process a single SDF molecule and return result.
@@ -980,7 +963,6 @@ fn processOneSdfMolecule(
     coarse_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
     fine_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
 ) FileResult {
-    var process_timer = std.Io.Timestamp.now(io, .awake);
     var result = FileResult{
         .filename = display_name,
         .n_atoms = 0,
@@ -994,7 +976,6 @@ fn processOneSdfMolecule(
     var input = sdf_parser.toAtomInput(arena, mol_slice, !config.include_hydrogens) catch |err| {
         result.status = .err;
         result.error_msg = std.fmt.allocPrint(result_allocator, "SDF toAtomInput failed: {s}", .{@errorName(err)}) catch null;
-        result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
         return result;
     };
     defer input.deinit();
@@ -1016,9 +997,7 @@ fn processOneSdfMolecule(
                 dict.deinit();
                 sdf_dict = null;
                 // fall through to classifier without SDF dict
-                result = processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
-                result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
-                return result;
+                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
             };
             dict.owned_keys.append(arena, dict_key) catch |err| {
                 logWarning("{s}: SDF component registration failed: {s}", .{ display_name, @errorName(err) });
@@ -1026,18 +1005,14 @@ fn processOneSdfMolecule(
                 var mut_s = s;
                 mut_s.deinit();
                 dict.deinit();
-                result = processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
-                result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
-                return result;
+                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
             };
             dict.components.put(arena, dict_key, s) catch |err| {
                 logWarning("{s}: SDF component registration failed: {s}", .{ display_name, @errorName(err) });
                 var mut_s = s;
                 mut_s.deinit();
                 dict.deinit();
-                result = processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
-                result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
-                return result;
+                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
             };
             sdf_dict = dict;
         }
@@ -1045,9 +1020,7 @@ fn processOneSdfMolecule(
     defer if (sdf_dict) |*d| d.deinit();
 
     const sdf_ccd_ptr: ?*const ccd_parser.ComponentDict = if (sdf_dict) |*d| d else null;
-    result = processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, sdf_ccd_ptr);
-    result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
-    return result;
+    return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, sdf_ccd_ptr);
 }
 
 /// Inner helper: apply classifier, run SASA, write output for a single SDF molecule.
@@ -1248,42 +1221,11 @@ const JsonlStreamWriter = struct {
         };
     }
 
-    pub fn writeBytes(self: *JsonlStreamWriter, bytes: []const u8) void {
-        if (bytes.len == 0) return;
-
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-
-        var buf: [64 * 1024]u8 = undefined;
-        var w = std.Io.File.Writer.initStreaming(self.file, self.io, &buf);
-        w.interface.writeAll(bytes) catch |err| {
-            logWarning("JSONL chunk write failed: {s}", .{@errorName(err)});
-            self.write_failed = true;
-            return;
-        };
-        w.interface.flush() catch |err| {
-            logWarning("JSONL chunk flush failed: {s}", .{@errorName(err)});
-            self.write_failed = true;
-        };
-    }
-
     /// Returns true if any write to the JSONL file failed.
     pub fn hasError(self: *const JsonlStreamWriter) bool {
         return self.write_failed;
     }
 };
-
-fn appendJsonlResultToBuffer(
-    buffer: *std.ArrayListUnmanaged(u8),
-    buffer_allocator: Allocator,
-    arena_alloc: Allocator,
-    result: *FileResult,
-) !void {
-    if (result.status != .ok) return;
-    const line = try fileResultToJsonlLine(arena_alloc, result);
-    try buffer.appendSlice(buffer_allocator, line);
-    try buffer.append(buffer_allocator, '\n');
-}
 
 /// Write a JSONL line for a result via the buffered writer.
 /// atom_areas live on the arena and are invalidated after arena reset.
@@ -1348,7 +1290,6 @@ pub fn runBatchSequential(
     jsonl_output_path: ?[]const u8,
 ) !BatchResult {
     try validateBatchOutputFormat(config.output_format);
-    try validateChunkOptions(config);
 
     // Start total timer
     var total_timer = std.Io.Timestamp.now(io, .awake);
@@ -1393,7 +1334,6 @@ pub fn runBatchSequential(
 
     // Process each file
     var total_sasa_time_ns: u64 = 0;
-    var total_file_process_time_ns: u64 = 0;
     var successful: usize = 0;
     var failed: usize = 0;
 
@@ -1534,7 +1474,6 @@ pub fn runBatchSequential(
                 if (mol_result.status == .ok) {
                     successful += 1;
                     total_sasa_time_ns += mol_result.sasa_time_ns;
-                    total_file_process_time_ns += mol_result.process_time_ns;
                 } else {
                     failed += 1;
                 }
@@ -1576,7 +1515,6 @@ pub fn runBatchSequential(
             if (result.status == .ok) {
                 successful += 1;
                 total_sasa_time_ns += result.sasa_time_ns;
-                total_file_process_time_ns += result.process_time_ns;
             } else {
                 failed += 1;
             }
@@ -1610,7 +1548,6 @@ pub fn runBatchSequential(
         .total_time_ns = total_time_ns,
         .scan_time_ns = scan_time_ns,
         .process_time_ns = process_time_ns,
-        .total_file_process_time_ns = total_file_process_time_ns,
         .file_results = try results_list.toOwnedSlice(allocator),
         .allocator = allocator,
     };
@@ -1623,22 +1560,6 @@ const WorkItem = struct {
     display_name: []const u8, // Display name for results (e.g., "file.sdf:water")
     mol_idx: ?usize, // If non-null, SDF molecule index (0-based) within pre-parsed molecules
 };
-
-const ChunkRange = struct {
-    start: usize,
-    end: usize,
-};
-
-fn claimChunkRange(next_index: *std.atomic.Value(usize), total: usize, chunk_size: usize) ?ChunkRange {
-    std.debug.assert(chunk_size > 0);
-    const start = next_index.fetchAdd(chunk_size, .monotonic);
-    if (start >= total) return null;
-    const remaining = total - start;
-    return .{
-        .start = start,
-        .end = if (chunk_size >= remaining) total else start + chunk_size,
-    };
-}
 
 fn resolveBatchThreadCount(config_threads: usize, cpu_count: usize) usize {
     const auto_threads = @max(cpu_count, 1);
@@ -1653,7 +1574,6 @@ const ParallelContext = struct {
     config: BatchConfig,
     results: []FileResult,
     result_allocator: Allocator,
-    chunk_size: ?usize,
     next_item: std.atomic.Value(usize),
     processed_count: std.atomic.Value(usize),
     lut_f64: ?*const bitmask_lut.BitmaskLut,
@@ -1677,208 +1597,155 @@ fn parallelWorker(ctx: *ParallelContext) void {
     var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
     defer arena.deinit();
 
-    var chunk_jsonl_buffer = std.ArrayListUnmanaged(u8).empty;
-    defer chunk_jsonl_buffer.deinit(std.heap.smp_allocator);
-
-    const worker_chunk_size = ctx.chunk_size orelse 1;
     while (true) {
-        // Atomically grab the next contiguous work range.
+        // Atomically grab the next work item index.
         // .monotonic suffices: we only need atomic increment, no ordering
         // between unrelated memory accesses across threads.
-        const range = claimChunkRange(&ctx.next_item, ctx.work_items.len, worker_chunk_size) orelse break;
+        const item_idx = ctx.next_item.fetchAdd(1, .monotonic);
 
-        for (range.start..range.end) |item_idx| {
-            const work = ctx.work_items[item_idx];
+        if (item_idx >= ctx.work_items.len) {
+            break; // No more work items
+        }
 
-            // Copy display name to result allocator (thread-safe: each index is unique)
-            const name_copy = ctx.result_allocator.dupe(u8, work.display_name) catch {
-                const empty = ctx.result_allocator.alloc(u8, 0) catch {
-                    ctx.results[item_idx] = FileResult{
-                        .filename = "",
-                        .n_atoms = 0,
-                        .sasa_time_ns = 0,
-                        .total_sasa = 0,
-                        .status = .err,
-                        .error_msg = null,
-                    };
-                    _ = ctx.processed_count.fetchAdd(1, .release);
-                    _ = arena.reset(.retain_capacity);
-                    continue;
-                };
+        const work = ctx.work_items[item_idx];
+
+        // Copy display name to result allocator (thread-safe: each index is unique)
+        const name_copy = ctx.result_allocator.dupe(u8, work.display_name) catch {
+            const empty = ctx.result_allocator.alloc(u8, 0) catch {
                 ctx.results[item_idx] = FileResult{
-                    .filename = empty,
+                    .filename = "",
                     .n_atoms = 0,
                     .sasa_time_ns = 0,
                     .total_sasa = 0,
                     .status = .err,
+                    .error_msg = null,
+                };
+                _ = ctx.processed_count.fetchAdd(1, .release);
+                _ = arena.reset(.retain_capacity);
+                continue;
+            };
+            ctx.results[item_idx] = FileResult{
+                .filename = empty,
+                .n_atoms = 0,
+                .sasa_time_ns = 0,
+                .total_sasa = 0,
+                .status = .err,
+            };
+            _ = ctx.processed_count.fetchAdd(1, .release);
+            _ = arena.reset(.retain_capacity);
+            continue;
+        };
+
+        if (work.mol_idx) |mol_idx| {
+            // SDF molecule: re-parse from pre-loaded source on thread-local arena
+            const source = ctx.sdf_sources.get(work.filename) orelse {
+                ctx.results[item_idx] = FileResult{
+                    .filename = name_copy,
+                    .n_atoms = 0,
+                    .sasa_time_ns = 0,
+                    .total_sasa = 0,
+                    .status = .err,
+                    .error_msg = ctx.result_allocator.dupe(u8, "SDF source not found") catch null,
                 };
                 _ = ctx.processed_count.fetchAdd(1, .release);
                 _ = arena.reset(.retain_capacity);
                 continue;
             };
 
-            if (work.mol_idx) |mol_idx| {
-                // SDF molecule: re-parse from pre-loaded source on thread-local arena
-                const source = ctx.sdf_sources.get(work.filename) orelse {
-                    ctx.results[item_idx] = FileResult{
-                        .filename = name_copy,
-                        .n_atoms = 0,
-                        .sasa_time_ns = 0,
-                        .total_sasa = 0,
-                        .status = .err,
-                        .error_msg = ctx.result_allocator.dupe(u8, "SDF source not found") catch null,
-                    };
-                    _ = ctx.processed_count.fetchAdd(1, .release);
-                    _ = arena.reset(.retain_capacity);
-                    continue;
+            const molecules = sdf_parser.parse(arena.allocator(), source) catch {
+                ctx.results[item_idx] = FileResult{
+                    .filename = name_copy,
+                    .n_atoms = 0,
+                    .sasa_time_ns = 0,
+                    .total_sasa = 0,
+                    .status = .err,
+                    .error_msg = ctx.result_allocator.dupe(u8, "SDF re-parse failed") catch null,
                 };
+                _ = ctx.processed_count.fetchAdd(1, .release);
+                _ = arena.reset(.retain_capacity);
+                continue;
+            };
 
-                const molecules = sdf_parser.parse(arena.allocator(), source) catch {
-                    ctx.results[item_idx] = FileResult{
-                        .filename = name_copy,
-                        .n_atoms = 0,
-                        .sasa_time_ns = 0,
-                        .total_sasa = 0,
-                        .status = .err,
-                        .error_msg = ctx.result_allocator.dupe(u8, "SDF re-parse failed") catch null,
-                    };
-                    _ = ctx.processed_count.fetchAdd(1, .release);
-                    _ = arena.reset(.retain_capacity);
-                    continue;
+            if (mol_idx >= molecules.len) {
+                ctx.results[item_idx] = FileResult{
+                    .filename = name_copy,
+                    .n_atoms = 0,
+                    .sasa_time_ns = 0,
+                    .total_sasa = 0,
+                    .status = .err,
+                    .error_msg = ctx.result_allocator.dupe(u8, "SDF molecule index out of range") catch null,
                 };
-
-                if (mol_idx >= molecules.len) {
-                    ctx.results[item_idx] = FileResult{
-                        .filename = name_copy,
-                        .n_atoms = 0,
-                        .sasa_time_ns = 0,
-                        .total_sasa = 0,
-                        .status = .err,
-                        .error_msg = ctx.result_allocator.dupe(u8, "SDF molecule index out of range") catch null,
-                    };
-                    _ = ctx.processed_count.fetchAdd(1, .release);
-                    _ = arena.reset(.retain_capacity);
-                    continue;
-                }
-
-                var result = processOneSdfMolecule(
-                    arena.allocator(),
-                    ctx.io,
-                    ctx.result_allocator,
-                    name_copy,
-                    &molecules[mol_idx],
-                    ctx.output_dir,
-                    ctx.config,
-                    1, // single-threaded SASA per molecule
-                    ctx.lut_f64,
-                    ctx.lut_f32,
-                    ctx.coarse_lut_f64,
-                    ctx.fine_lut_f64,
-                    ctx.coarse_lut_f32,
-                    ctx.fine_lut_f32,
-                );
-                result.filename = name_copy;
-
-                ctx.results[item_idx] = result;
-
-                if (ctx.jsonl_stream) |stream| {
-                    if (result.status == .ok) {
-                        if (ctx.config.chunked_jsonl) {
-                            appendJsonlResultToBuffer(&chunk_jsonl_buffer, std.heap.smp_allocator, arena.allocator(), &result) catch |err| {
-                                logWarning("failed to buffer {s}: {s}", .{ result.filename, @errorName(err) });
-                            };
-                        } else {
-                            stream.writeResult(arena.allocator(), &result);
-                        }
-                    }
-                }
-                ctx.results[item_idx].atom_areas = null;
-                ctx.results[item_idx].residue_map = null;
-            } else {
-                // Non-SDF file: existing logic
-                var result = processOneFile(
-                    arena.allocator(),
-                    ctx.io,
-                    ctx.result_allocator,
-                    ctx.input_dir,
-                    ctx.output_dir,
-                    work.filename,
-                    ctx.config,
-                    1, // single-threaded SASA per file
-                    ctx.lut_f64,
-                    ctx.lut_f32,
-                    ctx.coarse_lut_f64,
-                    ctx.fine_lut_f64,
-                    ctx.coarse_lut_f32,
-                    ctx.fine_lut_f32,
-                );
-                result.filename = name_copy;
-
-                // Store result (thread-safe: each index is unique)
-                ctx.results[item_idx] = result;
-
-                // Stream JSONL output (atom_areas on arena, valid until reset)
-                if (ctx.jsonl_stream) |stream| {
-                    if (result.status == .ok) {
-                        if (ctx.config.chunked_jsonl) {
-                            appendJsonlResultToBuffer(&chunk_jsonl_buffer, std.heap.smp_allocator, arena.allocator(), &result) catch |err| {
-                                logWarning("failed to buffer {s}: {s}", .{ result.filename, @errorName(err) });
-                            };
-                        } else {
-                            stream.writeResult(arena.allocator(), &result);
-                        }
-                    }
-                }
-                // Clear atom_areas since arena will free them
-                ctx.results[item_idx].atom_areas = null;
-                ctx.results[item_idx].residue_map = null;
+                _ = ctx.processed_count.fetchAdd(1, .release);
+                _ = arena.reset(.retain_capacity);
+                continue;
             }
 
-            // Update progress counter (.release pairs with .acquire in progress monitor)
-            _ = ctx.processed_count.fetchAdd(1, .release);
+            var result = processOneSdfMolecule(
+                arena.allocator(),
+                ctx.io,
+                ctx.result_allocator,
+                name_copy,
+                &molecules[mol_idx],
+                ctx.output_dir,
+                ctx.config,
+                1, // single-threaded SASA per molecule
+                ctx.lut_f64,
+                ctx.lut_f32,
+                ctx.coarse_lut_f64,
+                ctx.fine_lut_f64,
+                ctx.coarse_lut_f32,
+                ctx.fine_lut_f32,
+            );
+            result.filename = name_copy;
 
-            // Reset arena for next work item
-            _ = arena.reset(.retain_capacity);
-        }
+            ctx.results[item_idx] = result;
 
-        if (ctx.config.chunked_jsonl) {
             if (ctx.jsonl_stream) |stream| {
-                stream.writeBytes(chunk_jsonl_buffer.items);
+                if (result.status == .ok) {
+                    stream.writeResult(arena.allocator(), &result);
+                }
             }
-            chunk_jsonl_buffer.clearRetainingCapacity();
+            ctx.results[item_idx].atom_areas = null;
+            ctx.results[item_idx].residue_map = null;
+        } else {
+            // Non-SDF file: existing logic
+            var result = processOneFile(
+                arena.allocator(),
+                ctx.io,
+                ctx.result_allocator,
+                ctx.input_dir,
+                ctx.output_dir,
+                work.filename,
+                ctx.config,
+                1, // single-threaded SASA per file
+                ctx.lut_f64,
+                ctx.lut_f32,
+                ctx.coarse_lut_f64,
+                ctx.fine_lut_f64,
+                ctx.coarse_lut_f32,
+                ctx.fine_lut_f32,
+            );
+            result.filename = name_copy;
+
+            // Store result (thread-safe: each index is unique)
+            ctx.results[item_idx] = result;
+
+            // Stream JSONL output (atom_areas on arena, valid until reset)
+            if (ctx.jsonl_stream) |stream| {
+                if (result.status == .ok) {
+                    stream.writeResult(arena.allocator(), &result);
+                }
+            }
+            // Clear atom_areas since arena will free them
+            ctx.results[item_idx].atom_areas = null;
+            ctx.results[item_idx].residue_map = null;
         }
-    }
-}
 
-fn runParallelWorkers(
-    allocator: Allocator,
-    io: std.Io,
-    ctx: *ParallelContext,
-    n_threads: usize,
-    progress_node: ?*std.Progress.Node,
-    progress_offset: usize,
-) !void {
-    if (ctx.work_items.len == 0) return;
+        // Update progress counter (.release pairs with .acquire in progress monitor)
+        _ = ctx.processed_count.fetchAdd(1, .release);
 
-    const actual_threads = @min(n_threads, ctx.work_items.len);
-    const threads = try allocator.alloc(std.Thread, actual_threads);
-    defer allocator.free(threads);
-
-    for (threads) |*thread| {
-        thread.* = try std.Thread.spawn(.{}, parallelWorker, .{ctx});
-    }
-
-    if (progress_node) |node| {
-        while (ctx.processed_count.load(.acquire) < ctx.work_items.len) {
-            const processed = ctx.processed_count.load(.acquire);
-            node.setCompletedItems(progress_offset + processed);
-            std.Io.sleep(io, .fromMilliseconds(50), .awake) catch {};
-        }
-        node.setCompletedItems(progress_offset + ctx.work_items.len);
-    }
-
-    for (threads) |thread| {
-        thread.join();
+        // Reset arena for next work item
+        _ = arena.reset(.retain_capacity);
     }
 }
 
@@ -2006,7 +1873,6 @@ pub fn runBatchParallel(
     jsonl_output_path: ?[]const u8,
 ) !BatchResult {
     try validateBatchOutputFormat(config.output_format);
-    try validateChunkOptions(config);
 
     // Start total timer
     var total_timer = std.Io.Timestamp.now(io, .awake);
@@ -2066,8 +1932,8 @@ pub fn runBatchParallel(
     const cpu_count = std.Thread.getCpuCount() catch 1;
     const n_threads = resolveBatchThreadCount(config.n_threads, cpu_count);
 
-    // For single item or single thread, use sequential unless macro sharding is requested.
-    if (config.shard_size == null and (work_items.len == 1 or n_threads <= 1)) {
+    // For single item or single thread, use sequential
+    if (work_items.len == 1 or n_threads <= 1) {
         allocator.free(file_results);
         return runBatchSequential(allocator, io, input_dir, output_dir, config, jsonl_output_path);
     }
@@ -2075,85 +1941,6 @@ pub fn runBatchParallel(
     // Build bitmask LUT once (if enabled)
     var luts = try BatchLuts.init(allocator, config);
     defer luts.deinit();
-
-    if (config.shard_size) |shard_size| {
-        const base_path = jsonl_output_path orelse return error.InvalidArgument;
-        var process_timer = std.Io.Timestamp.now(io, .awake);
-        var progress_root: std.Progress.Node = if (shouldShowProgress(config))
-            std.Progress.start(io, .{ .root_name = "Processing items", .estimated_total_items = work_items.len })
-        else
-            .none;
-        defer progress_root.end();
-
-        var offset: usize = 0;
-        var shard_index: usize = 0;
-        while (offset < work_items.len) : (shard_index += 1) {
-            const end = @min(offset + shard_size, work_items.len);
-            const shard_path = try makeShardJsonlPath(allocator, base_path, shard_index);
-            defer allocator.free(shard_path);
-
-            const shard_file = try std.Io.Dir.cwd().createFile(io, shard_path, .{});
-            var shard_stream = JsonlStreamWriter{ .file = shard_file, .io = io };
-
-            var shard_ctx = ParallelContext{
-                .work_items = work_items[offset..end],
-                .input_dir = input_dir,
-                .output_dir = output_dir,
-                .config = config,
-                .results = file_results[offset..end],
-                .result_allocator = allocator,
-                .chunk_size = config.chunk_size,
-                .next_item = std.atomic.Value(usize).init(0),
-                .processed_count = std.atomic.Value(usize).init(0),
-                .lut_f64 = luts.f64Ptr(),
-                .lut_f32 = luts.f32Ptr(),
-                .coarse_lut_f64 = luts.coarseF64Ptr(),
-                .fine_lut_f64 = luts.fineF64Ptr(),
-                .coarse_lut_f32 = luts.coarseF32Ptr(),
-                .fine_lut_f32 = luts.fineF32Ptr(),
-                .jsonl_stream = &shard_stream,
-                .io = io,
-                .sdf_sources = build_result.sdf_sources,
-            };
-
-            try runParallelWorkers(allocator, io, &shard_ctx, n_threads, if (shouldShowProgress(config)) &progress_root else null, offset);
-            shard_file.close(io);
-            offset = end;
-        }
-
-        if (shouldShowProgress(config)) {
-            progress_root.setCompletedItems(work_items.len);
-        }
-        const process_time_ns: u64 = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
-
-        var total_sasa_time_ns: u64 = 0;
-        var total_file_process_time_ns: u64 = 0;
-        var successful: usize = 0;
-        var failed: usize = 0;
-        for (file_results) |result| {
-            if (result.status == .ok) {
-                successful += 1;
-                total_sasa_time_ns += result.sasa_time_ns;
-                total_file_process_time_ns += result.process_time_ns;
-            } else {
-                failed += 1;
-            }
-        }
-
-        return BatchResult{
-            .total_files = work_items.len,
-            .successful = successful,
-            .failed = failed,
-            .total_sasa_time_ns = total_sasa_time_ns,
-            .total_time_ns = @intCast(total_timer.untilNow(io, .awake).nanoseconds),
-            .scan_time_ns = scan_time_ns,
-            .build_items_time_ns = build_items_time_ns,
-            .process_time_ns = process_time_ns,
-            .total_file_process_time_ns = total_file_process_time_ns,
-            .file_results = file_results,
-            .allocator = allocator,
-        };
-    }
 
     // Open JSONL output file (or stdout) when streaming is requested
     var jsonl_file: ?std.Io.File = null;
@@ -2185,7 +1972,6 @@ pub fn runBatchParallel(
         .config = config,
         .results = file_results,
         .result_allocator = allocator,
-        .chunk_size = config.chunk_size,
         .next_item = std.atomic.Value(usize).init(0),
         .processed_count = std.atomic.Value(usize).init(0),
         .lut_f64 = luts.f64Ptr(),
@@ -2199,52 +1985,40 @@ pub fn runBatchParallel(
         .sdf_sources = build_result.sdf_sources,
     };
 
+    // Spawn worker threads
+    const actual_threads = @min(n_threads, work_items.len);
+    const threads = try allocator.alloc(std.Thread, actual_threads);
+    defer allocator.free(threads);
+
+    var process_timer = std.Io.Timestamp.now(io, .awake);
+    for (threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, parallelWorker, .{&ctx});
+    }
+
     var progress_root: std.Progress.Node = if (shouldShowProgress(config))
         std.Progress.start(io, .{ .root_name = "Processing items", .estimated_total_items = work_items.len })
     else
         .none;
     defer progress_root.end();
 
-    var process_timer = std.Io.Timestamp.now(io, .awake);
-    if (config.batch_size) |batch_size| {
-        var offset: usize = 0;
-        while (offset < work_items.len) {
-            const remaining = work_items.len - offset;
-            const end = offset + @min(batch_size, remaining);
-            var batch_ctx = ParallelContext{
-                .work_items = work_items[offset..end],
-                .input_dir = input_dir,
-                .output_dir = output_dir,
-                .config = config,
-                .results = file_results[offset..end],
-                .result_allocator = allocator,
-                .chunk_size = config.chunk_size,
-                .next_item = std.atomic.Value(usize).init(0),
-                .processed_count = std.atomic.Value(usize).init(0),
-                .lut_f64 = luts.f64Ptr(),
-                .lut_f32 = luts.f32Ptr(),
-                .coarse_lut_f64 = luts.coarseF64Ptr(),
-                .fine_lut_f64 = luts.fineF64Ptr(),
-                .coarse_lut_f32 = luts.coarseF32Ptr(),
-                .fine_lut_f32 = luts.fineF32Ptr(),
-                .jsonl_stream = jsonl_stream_ptr,
-                .io = io,
-                .sdf_sources = build_result.sdf_sources,
-            };
-            try runParallelWorkers(allocator, io, &batch_ctx, n_threads, if (shouldShowProgress(config)) &progress_root else null, offset);
-            offset = end;
-        }
-    } else {
-        try runParallelWorkers(allocator, io, &ctx, n_threads, if (shouldShowProgress(config)) &progress_root else null, 0);
-    }
-    const process_time_ns: u64 = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
+    // Progress monitoring (optional)
     if (shouldShowProgress(config)) {
+        while (ctx.processed_count.load(.acquire) < work_items.len) {
+            const processed = ctx.processed_count.load(.acquire);
+            progress_root.setCompletedItems(processed);
+            std.Io.sleep(io, .fromMilliseconds(50), .awake) catch {}; // 50ms update interval
+        }
         progress_root.setCompletedItems(work_items.len);
     }
 
+    // Wait for all threads to complete
+    for (threads) |thread| {
+        thread.join();
+    }
+    const process_time_ns: u64 = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
+
     // Aggregate results
     var total_sasa_time_ns: u64 = 0;
-    var total_file_process_time_ns: u64 = 0;
     var successful: usize = 0;
     var failed: usize = 0;
 
@@ -2252,7 +2026,6 @@ pub fn runBatchParallel(
         if (result.status == .ok) {
             successful += 1;
             total_sasa_time_ns += result.sasa_time_ns;
-            total_file_process_time_ns += result.process_time_ns;
         } else {
             failed += 1;
         }
@@ -2269,7 +2042,6 @@ pub fn runBatchParallel(
         .scan_time_ns = scan_time_ns,
         .build_items_time_ns = build_items_time_ns,
         .process_time_ns = process_time_ns,
-        .total_file_process_time_ns = total_file_process_time_ns,
         .file_results = file_results,
         .allocator = allocator,
     };
@@ -2286,13 +2058,9 @@ pub fn runBatch(
     jsonl_output_path: ?[]const u8,
 ) !BatchResult {
     try validateBatchOutputFormat(config.output_format);
-    try validateChunkOptions(config);
 
     const cpu_count = std.Thread.getCpuCount() catch 1;
-    const n_threads = if (config.n_threads == 0)
-        cpu_count
-    else
-        config.n_threads;
+    const n_threads = resolveBatchThreadCount(config.n_threads, cpu_count);
 
     if (n_threads <= 1) {
         return runBatchSequential(allocator, io, input_dir, output_dir, config, jsonl_output_path);
@@ -2331,10 +2099,6 @@ pub const BatchArgs = struct {
     fine_points: u32 = 256,
     adaptive_low: f64 = 0.10,
     adaptive_high: f64 = 0.90,
-    chunk_size: ?usize = null,
-    chunked_jsonl: bool = false,
-    shard_size: ?usize = null,
-    batch_size: ?usize = null,
     ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz|.zst])
     sdf_paths: SdfPathList = .{}, // --sdf=PATH (up to 16)
     quiet: bool = false,
@@ -2357,10 +2121,6 @@ pub const BatchArgs = struct {
     fine_points_explicit: bool = false,
     adaptive_low_explicit: bool = false,
     adaptive_high_explicit: bool = false,
-    chunk_size_explicit: bool = false,
-    chunked_jsonl_explicit: bool = false,
-    shard_size_explicit: bool = false,
-    batch_size_explicit: bool = false,
     ccd_explicit: bool = false,
     sdf_explicit: bool = false,
     quiet_explicit: bool = false,
@@ -2401,33 +2161,6 @@ fn validateBatchOutputFormat(output_format: OutputFormat) !void {
         .json, .compact, .csv, .jsonl => {},
         .freesasa, .rsa => return error.InvalidArgument,
     }
-}
-
-fn validateChunkOptions(config: BatchConfig) !void {
-    if (config.chunk_size) |size| {
-        if (size == 0) return error.InvalidArgument;
-    }
-    if (config.chunked_jsonl) {
-        if (config.chunk_size == null) return error.InvalidArgument;
-        if (config.output_format != .jsonl) return error.InvalidArgument;
-    }
-    if (config.shard_size) |size| {
-        if (size == 0) return error.InvalidArgument;
-        if (config.output_format != .jsonl) return error.InvalidArgument;
-    }
-    if (config.batch_size) |size| {
-        if (size == 0) return error.InvalidArgument;
-    }
-    if (config.batch_size != null and config.shard_size != null) {
-        return error.InvalidArgument;
-    }
-}
-
-fn makeShardJsonlPath(allocator: Allocator, base_path: []const u8, shard_index: usize) ![]u8 {
-    if (std.mem.endsWith(u8, base_path, ".jsonl")) {
-        return std.fmt.allocPrint(allocator, "{s}.part-{d}.jsonl", .{ base_path[0 .. base_path.len - ".jsonl".len], shard_index });
-    }
-    return std.fmt.allocPrint(allocator, "{s}.part-{d}.jsonl", .{ base_path, shard_index });
 }
 
 /// Parse and validate probe radius value
@@ -2788,63 +2521,6 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
                 std.process.exit(1);
             }
             result.adaptive_high = parseAdaptiveThreshold("--adaptive-high", args[i]);
-        } else if (std.mem.startsWith(u8, arg, "--chunk-size=")) {
-            result.chunk_size_explicit = true;
-            const value = arg["--chunk-size=".len..];
-            result.chunk_size = std.fmt.parseInt(usize, value, 10) catch {
-                std.debug.print("Error: Invalid --chunk-size value: {s}\n", .{value});
-                std.process.exit(1);
-            };
-        } else if (std.mem.eql(u8, arg, "--chunk-size")) {
-            result.chunk_size_explicit = true;
-            i += 1;
-            if (i >= args.len) {
-                std.debug.print("Error: Missing value for --chunk-size\n", .{});
-                std.process.exit(1);
-            }
-            result.chunk_size = std.fmt.parseInt(usize, args[i], 10) catch {
-                std.debug.print("Error: Invalid --chunk-size value: {s}\n", .{args[i]});
-                std.process.exit(1);
-            };
-        } else if (std.mem.eql(u8, arg, "--chunked-jsonl")) {
-            result.chunked_jsonl = true;
-            result.chunked_jsonl_explicit = true;
-        } else if (std.mem.startsWith(u8, arg, "--shard-size=")) {
-            result.shard_size_explicit = true;
-            const value = arg["--shard-size=".len..];
-            result.shard_size = std.fmt.parseInt(usize, value, 10) catch {
-                std.debug.print("Error: Invalid --shard-size value: {s}\n", .{value});
-                std.process.exit(1);
-            };
-        } else if (std.mem.eql(u8, arg, "--shard-size")) {
-            result.shard_size_explicit = true;
-            i += 1;
-            if (i >= args.len) {
-                std.debug.print("Error: Missing value for --shard-size\n", .{});
-                std.process.exit(1);
-            }
-            result.shard_size = std.fmt.parseInt(usize, args[i], 10) catch {
-                std.debug.print("Error: Invalid --shard-size value: {s}\n", .{args[i]});
-                std.process.exit(1);
-            };
-        } else if (std.mem.startsWith(u8, arg, "--batch-size=")) {
-            result.batch_size_explicit = true;
-            const value = arg["--batch-size=".len..];
-            result.batch_size = std.fmt.parseInt(usize, value, 10) catch {
-                std.debug.print("Error: Invalid --batch-size value: {s}\n", .{value});
-                std.process.exit(1);
-            };
-        } else if (std.mem.eql(u8, arg, "--batch-size")) {
-            result.batch_size_explicit = true;
-            i += 1;
-            if (i >= args.len) {
-                std.debug.print("Error: Missing value for --batch-size\n", .{});
-                std.process.exit(1);
-            }
-            result.batch_size = std.fmt.parseInt(usize, args[i], 10) catch {
-                std.debug.print("Error: Invalid --batch-size value: {s}\n", .{args[i]});
-                std.process.exit(1);
-            };
         }
         // --ccd=PATH or --ccd PATH (external CCD dictionary)
         else if (std.mem.startsWith(u8, arg, "--ccd=")) {
@@ -2996,11 +2672,6 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --fine-points=N     Fine adaptive points (default: --n-points or 256)
         \\    --adaptive-low=X    Coarse accept low exposed fraction (default: 0.10)
         \\    --adaptive-high=X   Coarse accept high exposed fraction (default: 0.90)
-        \\    --chunk-size=N      Experimental: process parallel batch work in N-item chunks
-        \\    --chunked-jsonl     Experimental: buffer JSONL writes by chunk
-        \\                        Requires --chunk-size and --format=jsonl
-        \\    --shard-size=N      Experimental: split JSONL batch output into N-item macro shards
-        \\    --batch-size=N      Experimental: process parallel work in N-item macro batches
         \\    --timing            Show timing breakdown for benchmarking
         \\    -o, --output=PATH   Output directory, or file path for --format=jsonl
         \\    -q, --quiet         Suppress progress output
@@ -3107,10 +2778,6 @@ fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
     if (args.include_hydrogens_explicit) config.include_hydrogens = args.include_hydrogens;
     if (args.include_hetatm_explicit) config.include_hetatm = args.include_hetatm;
     if (args.use_bitmask_explicit) config.use_bitmask = args.use_bitmask;
-    if (args.chunk_size_explicit) config.chunk_size = args.chunk_size;
-    if (args.chunked_jsonl_explicit) config.chunked_jsonl = args.chunked_jsonl;
-    if (args.shard_size_explicit) config.shard_size = args.shard_size;
-    if (args.batch_size_explicit) config.batch_size = args.batch_size;
     if (args.use_auth_chain) config.use_auth_chain = true;
     if (args.residue_map) config.residue_map = true;
 }
@@ -3730,8 +3397,6 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
 
     // For jsonl, don't pass output_dir to runBatch (no per-file I/O during computation)
     const output_dir: ?[]const u8 = if (args.output_format == .jsonl) null else args.output_path;
-    // Determine JSONL output path: stream during computation instead of accumulating in memory
-    const jsonl_output_path: ?[]const u8 = if (args.output_format == .jsonl) args.output_path else null;
 
     var chain_filter_slice: ?[]const []const u8 = null;
     if (args.chain_filter) |filter_str| {
@@ -3766,10 +3431,6 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .fine_points = args.fine_points,
         .adaptive_low = args.adaptive_low,
         .adaptive_high = args.adaptive_high,
-        .chunk_size = args.chunk_size,
-        .chunked_jsonl = args.chunked_jsonl,
-        .shard_size = args.shard_size,
-        .batch_size = args.batch_size,
         .store_atom_areas = (args.output_format == .jsonl),
         .external_ccd = if (ext_ccd != null) &ext_ccd.? else null,
         .sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null,
@@ -3777,35 +3438,6 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .use_auth_chain = args.use_auth_chain,
         .residue_map = args.residue_map,
     };
-
-    if (config.chunk_size != null and config.chunk_size.? == 0) {
-        std.debug.print("Error: --chunk-size must be greater than zero\n", .{});
-        return error.InvalidArgument;
-    }
-    if (config.chunked_jsonl and config.chunk_size == null) {
-        std.debug.print("Error: --chunked-jsonl requires --chunk-size=N\n", .{});
-        return error.InvalidArgument;
-    }
-    if (config.chunked_jsonl and config.output_format != .jsonl) {
-        std.debug.print("Error: --chunked-jsonl requires --format=jsonl\n", .{});
-        return error.InvalidArgument;
-    }
-    if (config.shard_size != null and config.shard_size.? == 0) {
-        std.debug.print("Error: --shard-size must be greater than zero\n", .{});
-        return error.InvalidArgument;
-    }
-    if (config.shard_size != null and config.output_format != .jsonl) {
-        std.debug.print("Error: --shard-size requires --format=jsonl\n", .{});
-        return error.InvalidArgument;
-    }
-    if (config.shard_size != null and jsonl_output_path == null) {
-        std.debug.print("Error: --shard-size requires a JSONL output path\n", .{});
-        return error.InvalidArgument;
-    }
-    if (config.batch_size != null and config.batch_size.? == 0) {
-        std.debug.print("Error: --batch-size must be greater than zero\n", .{});
-        return error.InvalidArgument;
-    }
 
     if (!args.quiet) {
         std.debug.print("Batch mode: processing directory '{s}'\n", .{input_dir});
@@ -3818,6 +3450,9 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         }
         std.debug.print("\n", .{});
     }
+
+    // Determine JSONL output path: stream during computation instead of accumulating in memory
+    const jsonl_output_path: ?[]const u8 = if (args.output_format == .jsonl) args.output_path else null;
 
     var result = try runBatch(allocator, io, input_dir, output_dir, config, jsonl_output_path);
     defer result.deinit();
@@ -4024,19 +3659,6 @@ test "BatchResult phase timing fields default to zero" {
     try std.testing.expectEqual(@as(u64, 0), result.scan_time_ns);
     try std.testing.expectEqual(@as(u64, 0), result.build_items_time_ns);
     try std.testing.expectEqual(@as(u64, 0), result.process_time_ns);
-    try std.testing.expectEqual(@as(u64, 0), result.total_file_process_time_ns);
-}
-
-test "FileResult process timing field defaults to zero" {
-    const result = FileResult{
-        .filename = "example.pdb",
-        .n_atoms = 0,
-        .sasa_time_ns = 0,
-        .total_sasa = 0,
-        .status = .ok,
-    };
-
-    try std.testing.expectEqual(@as(u64, 0), result.process_time_ns);
 }
 
 test "BatchArgs defaults" {
@@ -4169,80 +3791,6 @@ test "validateBatchOutputFormat rejects single-calc compatibility formats" {
     try std.testing.expectError(error.InvalidArgument, validateBatchOutputFormat(.rsa));
 }
 
-test "validateChunkOptions rejects zero chunk size" {
-    try std.testing.expectError(error.InvalidArgument, validateChunkOptions(.{ .chunk_size = 0 }));
-}
-
-test "validateChunkOptions rejects chunked jsonl without chunk size" {
-    try std.testing.expectError(error.InvalidArgument, validateChunkOptions(.{ .chunked_jsonl = true, .output_format = .jsonl }));
-}
-
-test "validateChunkOptions rejects chunked jsonl for non-jsonl output" {
-    try std.testing.expectError(error.InvalidArgument, validateChunkOptions(.{ .chunk_size = 256, .chunked_jsonl = true, .output_format = .json }));
-}
-
-test "validateChunkOptions accepts chunked jsonl with jsonl and chunk size" {
-    try validateChunkOptions(.{ .chunk_size = 256, .chunked_jsonl = true, .output_format = .jsonl });
-}
-
-test "validateChunkOptions rejects zero shard size" {
-    try std.testing.expectError(error.InvalidArgument, validateChunkOptions(.{ .shard_size = 0, .output_format = .jsonl }));
-}
-
-test "validateChunkOptions rejects zero batch size" {
-    try std.testing.expectError(error.InvalidArgument, validateChunkOptions(.{ .batch_size = 0 }));
-}
-
-test "validateChunkOptions rejects shard size for non-jsonl output" {
-    try std.testing.expectError(error.InvalidArgument, validateChunkOptions(.{ .shard_size = 50_000, .output_format = .json }));
-}
-
-test "validateChunkOptions rejects batch size combined with shard size" {
-    try std.testing.expectError(error.InvalidArgument, validateChunkOptions(.{ .batch_size = 50_000, .shard_size = 50_000, .output_format = .jsonl }));
-}
-
-test "makeShardJsonlPath inserts part before jsonl extension" {
-    const allocator = std.testing.allocator;
-    const path = try makeShardJsonlPath(allocator, "results.jsonl", 3);
-    defer allocator.free(path);
-    try std.testing.expectEqualStrings("results.part-3.jsonl", path);
-}
-
-test "claimChunkRange claims contiguous chunks until exhausted" {
-    var next_index = std.atomic.Value(usize).init(0);
-
-    const first = claimChunkRange(&next_index, 10, 3).?;
-    try std.testing.expectEqual(@as(usize, 0), first.start);
-    try std.testing.expectEqual(@as(usize, 3), first.end);
-
-    const second = claimChunkRange(&next_index, 10, 3).?;
-    try std.testing.expectEqual(@as(usize, 3), second.start);
-    try std.testing.expectEqual(@as(usize, 6), second.end);
-
-    const third = claimChunkRange(&next_index, 10, 3).?;
-    try std.testing.expectEqual(@as(usize, 6), third.start);
-    try std.testing.expectEqual(@as(usize, 9), third.end);
-
-    const fourth = claimChunkRange(&next_index, 10, 3).?;
-    try std.testing.expectEqual(@as(usize, 9), fourth.start);
-    try std.testing.expectEqual(@as(usize, 10), fourth.end);
-
-    try std.testing.expectEqual(@as(?ChunkRange, null), claimChunkRange(&next_index, 10, 3));
-}
-
-test "claimChunkRange saturates end without overflowing" {
-    var next_index = std.atomic.Value(usize).init(std.math.maxInt(usize) - 1);
-
-    const range = claimChunkRange(&next_index, std.math.maxInt(usize), 10).?;
-    try std.testing.expectEqual(std.math.maxInt(usize) - 1, range.start);
-    try std.testing.expectEqual(std.math.maxInt(usize), range.end);
-}
-
-test "resolveBatchThreadCount allows explicit overcommit for IO-bound runs" {
-    try std.testing.expectEqual(@as(usize, 10), resolveBatchThreadCount(0, 10));
-    try std.testing.expectEqual(@as(usize, 20), resolveBatchThreadCount(20, 10));
-}
-
 test "public batch runners reject single-calc compatibility formats before scanning" {
     try std.testing.expectError(error.InvalidArgument, runBatch(
         std.testing.allocator,
@@ -4345,6 +3893,11 @@ test "batch resource resolver only loads CCD resources for CCD classifiers" {
     const resolved_sdf_paths = resolveWorkflowSdfPaths(explicit_resource_args, workflow_sdf_paths[0..], .ccd);
     try std.testing.expectEqual(@as(usize, 1), resolved_sdf_paths.len);
     try std.testing.expectEqualStrings("cli.sdf", resolved_sdf_paths[0]);
+}
+
+test "resolveBatchThreadCount allows explicit overcommit for IO-bound runs" {
+    try std.testing.expectEqual(@as(usize, 10), resolveBatchThreadCount(0, 10));
+    try std.testing.expectEqual(@as(usize, 20), resolveBatchThreadCount(20, 10));
 }
 
 test "workflow file-first keeps existing output layout" {
@@ -4762,27 +4315,6 @@ test "JsonlStreamWriter writes many parseable JSONL lines" {
     try std.testing.expectEqual(@as(usize, 50), count);
 }
 
-test "JsonlStreamWriter writeBytes writes one buffered chunk" {
-    const allocator = std.testing.allocator;
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
-    const output_path = try std.fs.path.join(allocator, &.{ root_buf[0..root_len], "chunk-stream.jsonl" });
-    defer allocator.free(output_path);
-
-    const file = try std.Io.Dir.cwd().createFile(std.testing.io, output_path, .{});
-    var stream = JsonlStreamWriter{ .file = file, .io = std.testing.io };
-    stream.writeBytes("{\"filename\":\"a.pdb\",\"total_area\":1,\"atom_areas\":[1]}\n{\"filename\":\"b.pdb\",\"total_area\":2,\"atom_areas\":[2]}\n");
-    try std.testing.expect(!stream.hasError());
-    file.close(std.testing.io);
-
-    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(4096));
-    defer allocator.free(content);
-    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, content, "\n"));
-}
-
 test "runBatchParallel writes parseable JSONL with multiple threads" {
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -4847,203 +4379,6 @@ test "runBatchParallel writes parseable JSONL with multiple threads" {
     try std.testing.expectEqual(@as(usize, 10), count);
 }
 
-test "runBatchParallel chunk size writes parseable JSONL" {
-    const allocator = std.testing.allocator;
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
-    const root_path = root_buf[0..root_len];
-
-    const input_dir = try std.fs.path.join(allocator, &.{ root_path, "input" });
-    defer allocator.free(input_dir);
-    const output_path = try std.fs.path.join(allocator, &.{ root_path, "chunk-results.jsonl" });
-    defer allocator.free(output_path);
-    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
-
-    const pdb_data =
-        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N\n" ++
-        "ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C\n" ++
-        "ATOM      3  C   ALA A   1       3.000   0.000   0.000  1.00 20.00           C\n" ++
-        "END\n";
-
-    var name_buf: [32]u8 = undefined;
-    for (0..10) |i| {
-        const filename = try std.fmt.bufPrint(&name_buf, "tiny-{d}.pdb", .{i});
-        const path = try std.fs.path.join(allocator, &.{ input_dir, filename });
-        defer allocator.free(path);
-        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = pdb_data });
-    }
-
-    var result = try runBatchParallel(allocator, std.testing.io, input_dir, null, .{
-        .n_threads = 4,
-        .chunk_size = 3,
-        .algorithm = .sr,
-        .n_points = 8,
-        .quiet = true,
-        .show_progress = false,
-        .output_format = .jsonl,
-        .store_atom_areas = true,
-        .classifier_type = .naccess,
-    }, output_path);
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(usize, 10), result.total_files);
-    try std.testing.expectEqual(@as(usize, 10), result.successful);
-    try std.testing.expectEqual(@as(usize, 0), result.failed);
-
-    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(64 * 1024));
-    defer allocator.free(content);
-    try std.testing.expectEqual(@as(usize, 10), std.mem.count(u8, content, "\n"));
-
-    var lines = std.mem.tokenizeScalar(u8, content, '\n');
-    var count: usize = 0;
-    while (lines.next()) |line| {
-        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
-        defer parsed.deinit();
-        const object = parsed.value.object;
-        try std.testing.expect(object.get("filename") != null);
-        try std.testing.expect(object.get("total_area") != null);
-        try std.testing.expect(object.get("atom_areas") != null);
-        count += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 10), count);
-}
-
-test "runBatchParallel chunked jsonl writes parseable JSONL" {
-    const allocator = std.testing.allocator;
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
-    const root_path = root_buf[0..root_len];
-
-    const input_dir = try std.fs.path.join(allocator, &.{ root_path, "input" });
-    defer allocator.free(input_dir);
-    const output_path = try std.fs.path.join(allocator, &.{ root_path, "chunked-results.jsonl" });
-    defer allocator.free(output_path);
-    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
-
-    const pdb_data =
-        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N\n" ++
-        "ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C\n" ++
-        "ATOM      3  C   ALA A   1       3.000   0.000   0.000  1.00 20.00           C\n" ++
-        "END\n";
-
-    var name_buf: [32]u8 = undefined;
-    for (0..12) |i| {
-        const filename = try std.fmt.bufPrint(&name_buf, "tiny-{d}.pdb", .{i});
-        const path = try std.fs.path.join(allocator, &.{ input_dir, filename });
-        defer allocator.free(path);
-        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = pdb_data });
-    }
-
-    var result = try runBatchParallel(allocator, std.testing.io, input_dir, null, .{
-        .n_threads = 4,
-        .chunk_size = 4,
-        .chunked_jsonl = true,
-        .algorithm = .sr,
-        .n_points = 8,
-        .quiet = true,
-        .show_progress = false,
-        .output_format = .jsonl,
-        .store_atom_areas = true,
-        .classifier_type = .naccess,
-    }, output_path);
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(usize, 12), result.total_files);
-    try std.testing.expectEqual(@as(usize, 12), result.successful);
-    try std.testing.expectEqual(@as(usize, 0), result.failed);
-
-    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(64 * 1024));
-    defer allocator.free(content);
-    try std.testing.expectEqual(@as(usize, 12), std.mem.count(u8, content, "\n"));
-
-    var lines = std.mem.tokenizeScalar(u8, content, '\n');
-    var count: usize = 0;
-    while (lines.next()) |line| {
-        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
-        defer parsed.deinit();
-        const object = parsed.value.object;
-        try std.testing.expect(object.get("filename") != null);
-        try std.testing.expect(object.get("total_area") != null);
-        try std.testing.expect(object.get("atom_areas") != null);
-        try std.testing.expectEqual(@as(usize, 3), object.get("atom_areas").?.array.items.len);
-        count += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 12), count);
-}
-
-test "runBatchParallel shard size writes multiple parseable JSONL shards" {
-    const allocator = std.testing.allocator;
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
-    const root_path = root_buf[0..root_len];
-
-    const input_dir = try std.fs.path.join(allocator, &.{ root_path, "input" });
-    defer allocator.free(input_dir);
-    const output_path = try std.fs.path.join(allocator, &.{ root_path, "sharded-results.jsonl" });
-    defer allocator.free(output_path);
-    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
-
-    const pdb_data =
-        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N\n" ++
-        "ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C\n" ++
-        "ATOM      3  C   ALA A   1       3.000   0.000   0.000  1.00 20.00           C\n" ++
-        "END\n";
-
-    var name_buf: [32]u8 = undefined;
-    for (0..12) |i| {
-        const filename = try std.fmt.bufPrint(&name_buf, "tiny-{d}.pdb", .{i});
-        const path = try std.fs.path.join(allocator, &.{ input_dir, filename });
-        defer allocator.free(path);
-        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = pdb_data });
-    }
-
-    var result = try runBatchParallel(allocator, std.testing.io, input_dir, null, .{
-        .n_threads = 4,
-        .shard_size = 5,
-        .algorithm = .sr,
-        .n_points = 8,
-        .quiet = true,
-        .show_progress = false,
-        .output_format = .jsonl,
-        .store_atom_areas = true,
-        .classifier_type = .naccess,
-    }, output_path);
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(usize, 12), result.total_files);
-    try std.testing.expectEqual(@as(usize, 12), result.successful);
-    try std.testing.expectEqual(@as(usize, 0), result.failed);
-
-    var total_rows: usize = 0;
-    for (0..3) |shard_index| {
-        const shard_path = try makeShardJsonlPath(allocator, output_path, shard_index);
-        defer allocator.free(shard_path);
-        const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, shard_path, allocator, .limited(64 * 1024));
-        defer allocator.free(content);
-
-        var lines = std.mem.tokenizeScalar(u8, content, '\n');
-        while (lines.next()) |line| {
-            const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
-            defer parsed.deinit();
-            const object = parsed.value.object;
-            try std.testing.expect(object.get("filename") != null);
-            try std.testing.expect(object.get("total_area") != null);
-            try std.testing.expect(object.get("atom_areas") != null);
-            total_rows += 1;
-        }
-    }
-    try std.testing.expectEqual(@as(usize, 12), total_rows);
-}
-
 test "BatchArgs explicit option flags" {
     const args = [_][]const u8{
         "zsasa", "batch", "--threads=8", "--n-points=128", "--format=jsonl", "--use-bitmask", "input_dir/",
@@ -5098,34 +4433,6 @@ test "BatchArgs --format=jsonl" {
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(OutputFormat.jsonl, parsed.output_format);
     try std.testing.expectEqualStrings("out.jsonl", parsed.output_path.?);
-}
-
-test "BatchArgs --chunk-size" {
-    const args = [_][]const u8{ "zsasa", "batch", "--chunk-size=256", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(@as(usize, 256), parsed.chunk_size.?);
-    try std.testing.expectEqual(true, parsed.chunk_size_explicit);
-}
-
-test "BatchArgs --shard-size" {
-    const args = [_][]const u8{ "zsasa", "batch", "--shard-size=50000", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(@as(usize, 50_000), parsed.shard_size.?);
-    try std.testing.expectEqual(true, parsed.shard_size_explicit);
-}
-
-test "BatchArgs --batch-size" {
-    const args = [_][]const u8{ "zsasa", "batch", "--batch-size=50000", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(@as(usize, 50_000), parsed.batch_size.?);
-    try std.testing.expectEqual(true, parsed.batch_size_explicit);
-}
-
-test "BatchArgs --chunked-jsonl" {
-    const args = [_][]const u8{ "zsasa", "batch", "--chunked-jsonl", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(true, parsed.chunked_jsonl);
-    try std.testing.expectEqual(true, parsed.chunked_jsonl_explicit);
 }
 
 test "BatchArgs --classifier=naccess" {
