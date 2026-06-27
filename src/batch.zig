@@ -1566,6 +1566,13 @@ fn resolveBatchThreadCount(config_threads: usize, cpu_count: usize) usize {
     return if (config_threads == 0) auto_threads else config_threads;
 }
 
+fn joinSpawnedThreads(threads: []std.Thread, spawned_count: usize) void {
+    const count = @min(spawned_count, threads.len);
+    for (threads[0..count]) |thread| {
+        thread.join();
+    }
+}
+
 /// Shared context for parallel workers
 const ParallelContext = struct {
     work_items: []const WorkItem,
@@ -1991,8 +1998,11 @@ pub fn runBatchParallel(
     defer allocator.free(threads);
 
     var process_timer = std.Io.Timestamp.now(io, .awake);
+    var spawned_count: usize = 0;
+    errdefer joinSpawnedThreads(threads, spawned_count);
     for (threads) |*thread| {
         thread.* = try std.Thread.spawn(.{}, parallelWorker, .{&ctx});
+        spawned_count += 1;
     }
 
     var progress_root: std.Progress.Node = if (shouldShowProgress(config))
@@ -2012,9 +2022,7 @@ pub fn runBatchParallel(
     }
 
     // Wait for all threads to complete
-    for (threads) |thread| {
-        thread.join();
-    }
+    joinSpawnedThreads(threads, spawned_count);
     const process_time_ns: u64 = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
 
     // Aggregate results
@@ -2652,7 +2660,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\                        Used with --classifier=ccd for non-standard residues
         \\    --sdf=PATH          SDF file with bond topology for CCD classifier
         \\                        Can be specified multiple times for multiple ligands
-        \\    --threads=N         Number of threads (default: auto-detect)
+        \\    --threads=N         Number of batch workers (default: auto-detect)
+        \\                        Explicit values may exceed CPU count for I/O-bound inputs
         \\    --workflow=PATH     TOML workflow file with one or more named batch jobs
         \\    --manifest=PATH     Compatibility alias for --workflow
         \\    --chain=ID          Filter by chain ID for non-workflow batch (e.g. A or A,B)
@@ -3898,6 +3907,15 @@ test "batch resource resolver only loads CCD resources for CCD classifiers" {
 test "resolveBatchThreadCount allows explicit overcommit for IO-bound runs" {
     try std.testing.expectEqual(@as(usize, 10), resolveBatchThreadCount(0, 10));
     try std.testing.expectEqual(@as(usize, 20), resolveBatchThreadCount(20, 10));
+}
+
+fn testNoopThread() void {}
+
+test "joinSpawnedThreads joins only initialized thread slots" {
+    var threads: [2]std.Thread = undefined;
+    threads[0] = try std.Thread.spawn(.{}, testNoopThread, .{});
+    threads[1] = try std.Thread.spawn(.{}, testNoopThread, .{});
+    joinSpawnedThreads(threads[0..], 2);
 }
 
 test "workflow file-first keeps existing output layout" {
