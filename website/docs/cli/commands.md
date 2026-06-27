@@ -121,6 +121,8 @@ For batch custom classifier configs, use a workflow `[classifier]` section. See 
 | `--adaptive-low=X` | Accept coarse result when exposed fraction is ≤ X | `0.10` |
 | `--adaptive-high=X` | Accept coarse result when exposed fraction is ≥ X | `0.90` |
 | `--threads=N` | Number of threads (0 = auto-detect) | `0` |
+| `--chunk-size=N` | Experimental batch mode: claim parallel work in N-item chunks for large-directory benchmarking | off |
+| `--chunked-jsonl` | Experimental batch mode: buffer JSONL writes by chunk; requires `--chunk-size=N` and `--format=jsonl` | off |
 
 ### Classifier Options
 

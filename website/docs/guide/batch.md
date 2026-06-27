@@ -32,6 +32,27 @@ zsasa batch structures/ results/ --format=jsonl --output=results.jsonl
 
 JSONL is especially useful when you want to concatenate, filter, or process results incrementally.
 
+## Experimental Large-Directory Chunking
+
+For very large directories where per-file scheduling or JSONL write overhead may dominate, `zsasa batch` exposes experimental chunk options for benchmarking:
+
+```bash
+# Simple chunk scheduling baseline: output path and schema stay the same
+zsasa batch structures/ results.jsonl \
+  --format=jsonl \
+  --threads=10 \
+  --chunk-size=256
+
+# Chunked JSONL writer: serialize rows normally, but write/flush once per chunk
+zsasa batch structures/ results.jsonl \
+  --format=jsonl \
+  --threads=10 \
+  --chunk-size=256 \
+  --chunked-jsonl
+```
+
+`--chunk-size=N` changes only how parallel workers claim work ranges. `--chunked-jsonl` additionally buffers JSONL output per chunk and requires `--format=jsonl`. These options are experimental and intended for comparing SwissProt-scale runs before choosing a stable large-batch interface.
+
 ## Experimental Adaptive Bitmask SR
 
 For large SR batch jobs that already use bitmask mode, `--adaptive-sr` runs a coarse bitmask pass for every atom and recomputes only intermediate-exposure atoms with a fine point count:

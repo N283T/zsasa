@@ -2757,6 +2757,9 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --fine-points=N     Fine adaptive points (default: --n-points or 256)
         \\    --adaptive-low=X    Coarse accept low exposed fraction (default: 0.10)
         \\    --adaptive-high=X   Coarse accept high exposed fraction (default: 0.90)
+        \\    --chunk-size=N      Experimental: process parallel batch work in N-item chunks
+        \\    --chunked-jsonl     Experimental: buffer JSONL writes by chunk
+        \\                        Requires --chunk-size and --format=jsonl
         \\    --timing            Show timing breakdown for benchmarking
         \\    -o, --output=PATH   Output directory, or file path for --format=jsonl
         \\    -q, --quiet         Suppress progress output
