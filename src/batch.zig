@@ -1283,6 +1283,7 @@ pub fn runBatchSequential(
     jsonl_output_path: ?[]const u8,
 ) !BatchResult {
     try validateBatchOutputFormat(config.output_format);
+    try validateChunkOptions(config);
 
     // Start total timer
     var total_timer = std.Io.Timestamp.now(io, .awake);
@@ -1855,6 +1856,7 @@ pub fn runBatchParallel(
     jsonl_output_path: ?[]const u8,
 ) !BatchResult {
     try validateBatchOutputFormat(config.output_format);
+    try validateChunkOptions(config);
 
     // Start total timer
     var total_timer = std.Io.Timestamp.now(io, .awake);
@@ -2033,6 +2035,7 @@ pub fn runBatch(
     jsonl_output_path: ?[]const u8,
 ) !BatchResult {
     try validateBatchOutputFormat(config.output_format);
+    try validateChunkOptions(config);
 
     const cpu_count = std.Thread.getCpuCount() catch 1;
     const n_threads = if (config.n_threads == 0)
@@ -2142,6 +2145,16 @@ fn validateBatchOutputFormat(output_format: OutputFormat) !void {
     switch (output_format) {
         .json, .compact, .csv, .jsonl => {},
         .freesasa, .rsa => return error.InvalidArgument,
+    }
+}
+
+fn validateChunkOptions(config: BatchConfig) !void {
+    if (config.chunk_size) |size| {
+        if (size == 0) return error.InvalidArgument;
+    }
+    if (config.chunked_jsonl) {
+        if (config.chunk_size == null) return error.InvalidArgument;
+        if (config.output_format != .jsonl) return error.InvalidArgument;
     }
 }
 
@@ -3444,6 +3457,19 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .residue_map = args.residue_map,
     };
 
+    if (config.chunk_size != null and config.chunk_size.? == 0) {
+        std.debug.print("Error: --chunk-size must be greater than zero\n", .{});
+        return error.InvalidArgument;
+    }
+    if (config.chunked_jsonl and config.chunk_size == null) {
+        std.debug.print("Error: --chunked-jsonl requires --chunk-size=N\n", .{});
+        return error.InvalidArgument;
+    }
+    if (config.chunked_jsonl and config.output_format != .jsonl) {
+        std.debug.print("Error: --chunked-jsonl requires --format=jsonl\n", .{});
+        return error.InvalidArgument;
+    }
+
     if (!args.quiet) {
         std.debug.print("Batch mode: processing directory '{s}'\n", .{input_dir});
         std.debug.print("Algorithm: {s}, Threads: {d}\n", .{
@@ -3778,6 +3804,22 @@ test "validateBatchOutputFormat rejects single-calc compatibility formats" {
     try validateBatchOutputFormat(.jsonl);
     try std.testing.expectError(error.InvalidArgument, validateBatchOutputFormat(.freesasa));
     try std.testing.expectError(error.InvalidArgument, validateBatchOutputFormat(.rsa));
+}
+
+test "validateChunkOptions rejects zero chunk size" {
+    try std.testing.expectError(error.InvalidArgument, validateChunkOptions(.{ .chunk_size = 0 }));
+}
+
+test "validateChunkOptions rejects chunked jsonl without chunk size" {
+    try std.testing.expectError(error.InvalidArgument, validateChunkOptions(.{ .chunked_jsonl = true, .output_format = .jsonl }));
+}
+
+test "validateChunkOptions rejects chunked jsonl for non-jsonl output" {
+    try std.testing.expectError(error.InvalidArgument, validateChunkOptions(.{ .chunk_size = 256, .chunked_jsonl = true, .output_format = .json }));
+}
+
+test "validateChunkOptions accepts chunked jsonl with jsonl and chunk size" {
+    try validateChunkOptions(.{ .chunk_size = 256, .chunked_jsonl = true, .output_format = .jsonl });
 }
 
 test "public batch runners reject single-calc compatibility formats before scanning" {
