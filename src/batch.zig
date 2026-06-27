@@ -78,6 +78,7 @@ pub const BatchConfig = struct {
     chunk_size: ?usize = null, // Experimental batch chunk size for large directory runs
     chunked_jsonl: bool = false, // Experimental JSONL write buffering by chunk
     shard_size: ?usize = null, // Experimental macro-shard size for large JSONL batch runs
+    batch_size: ?usize = null, // Experimental macro-batch size for large directory runs
     store_atom_areas: bool = false, // When true, copy atom_areas to result_allocator for jsonl
     external_ccd: ?*const ccd_parser.ComponentDict = null, // External CCD dictionary
     sdf_ccd: ?*const ccd_parser.ComponentDict = null, // SDF bond topology dictionary
@@ -337,6 +338,7 @@ pub const FileResult = struct {
     filename: []const u8,
     n_atoms: usize,
     sasa_time_ns: u64,
+    process_time_ns: u64 = 0,
     total_sasa: f64,
     status: Status,
     error_msg: ?[]const u8 = null,
@@ -356,6 +358,10 @@ pub const BatchResult = struct {
     failed: usize,
     total_sasa_time_ns: u64, // SASA calculation only
     total_time_ns: u64, // Including I/O
+    scan_time_ns: u64 = 0,
+    build_items_time_ns: u64 = 0,
+    process_time_ns: u64 = 0,
+    total_file_process_time_ns: u64 = 0,
     file_results: []FileResult,
     allocator: Allocator,
 
@@ -441,9 +447,19 @@ pub const BatchResult = struct {
         const ns_to_ms = 1_000_000.0;
         const total_sasa_ms = @as(f64, @floatFromInt(self.total_sasa_time_ns)) / ns_to_ms;
         const total_ms = @as(f64, @floatFromInt(self.total_time_ns)) / ns_to_ms;
+        const scan_ms = @as(f64, @floatFromInt(self.scan_time_ns)) / ns_to_ms;
+        const build_ms = @as(f64, @floatFromInt(self.build_items_time_ns)) / ns_to_ms;
+        const process_ms = @as(f64, @floatFromInt(self.process_time_ns)) / ns_to_ms;
+        const file_process_ms = @as(f64, @floatFromInt(self.total_file_process_time_ns)) / ns_to_ms;
+        const file_non_sasa_ms = @as(f64, @floatFromInt(self.total_file_process_time_ns -| self.total_sasa_time_ns)) / ns_to_ms;
 
         std.debug.print("BATCH_SASA_TIME_MS:{d:.2}\n", .{total_sasa_ms});
         std.debug.print("BATCH_TOTAL_TIME_MS:{d:.2}\n", .{total_ms});
+        std.debug.print("BATCH_SCAN_TIME_MS:{d:.2}\n", .{scan_ms});
+        std.debug.print("BATCH_BUILD_ITEMS_TIME_MS:{d:.2}\n", .{build_ms});
+        std.debug.print("BATCH_PROCESS_TIME_MS:{d:.2}\n", .{process_ms});
+        std.debug.print("BATCH_FILE_PROCESS_TIME_MS:{d:.2}\n", .{file_process_ms});
+        std.debug.print("BATCH_FILE_NON_SASA_TIME_MS:{d:.2}\n", .{file_non_sasa_ms});
         std.debug.print("BATCH_FILES:{d}\n", .{self.total_files});
         std.debug.print("BATCH_SUCCESS:{d}\n", .{self.successful});
     }
@@ -863,6 +879,7 @@ fn processOneFile(
     coarse_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
     fine_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
 ) FileResult {
+    var process_timer = std.Io.Timestamp.now(io, .awake);
     var result = FileResult{
         .filename = filename,
         .n_atoms = 0,
@@ -875,6 +892,7 @@ fn processOneFile(
     const input_path = std.fs.path.join(arena, &.{ input_dir, filename }) catch |err| {
         result.status = .err;
         result.error_msg = std.fmt.allocPrint(result_allocator, "path join failed: {s}", .{@errorName(err)}) catch null;
+        result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
         return result;
     };
 
@@ -882,6 +900,7 @@ fn processOneFile(
     var input = readInputFile(arena, io, input_path, config) catch |err| {
         result.status = .err;
         result.error_msg = std.fmt.allocPrint(result_allocator, "read/parse failed: {s}", .{@errorName(err)}) catch null;
+        result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
         return result;
     };
     defer input.deinit();
@@ -892,6 +911,7 @@ fn processOneFile(
             applyCustomClassifier(&input, custom_classifier, config.quiet) catch |err| {
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
+                result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
                 return result;
             };
         }
@@ -901,12 +921,13 @@ fn processOneFile(
             applyBuiltinClassifier(&input, ct, config.sdf_ccd, config.external_ccd) catch |err| {
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
+                result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
                 return result;
             };
         }
     }
 
-    return switch (config.precision) {
+    result = switch (config.precision) {
         .f64 => calculatePreparedInputResult(
             f64,
             arena,
@@ -936,6 +957,8 @@ fn processOneFile(
             fine_lut_f32,
         ),
     };
+    result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
+    return result;
 }
 
 /// Process a single SDF molecule and return result.
@@ -957,6 +980,7 @@ fn processOneSdfMolecule(
     coarse_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
     fine_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
 ) FileResult {
+    var process_timer = std.Io.Timestamp.now(io, .awake);
     var result = FileResult{
         .filename = display_name,
         .n_atoms = 0,
@@ -970,6 +994,7 @@ fn processOneSdfMolecule(
     var input = sdf_parser.toAtomInput(arena, mol_slice, !config.include_hydrogens) catch |err| {
         result.status = .err;
         result.error_msg = std.fmt.allocPrint(result_allocator, "SDF toAtomInput failed: {s}", .{@errorName(err)}) catch null;
+        result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
         return result;
     };
     defer input.deinit();
@@ -991,7 +1016,9 @@ fn processOneSdfMolecule(
                 dict.deinit();
                 sdf_dict = null;
                 // fall through to classifier without SDF dict
-                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
+                result = processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
+                result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
+                return result;
             };
             dict.owned_keys.append(arena, dict_key) catch |err| {
                 logWarning("{s}: SDF component registration failed: {s}", .{ display_name, @errorName(err) });
@@ -999,14 +1026,18 @@ fn processOneSdfMolecule(
                 var mut_s = s;
                 mut_s.deinit();
                 dict.deinit();
-                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
+                result = processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
+                result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
+                return result;
             };
             dict.components.put(arena, dict_key, s) catch |err| {
                 logWarning("{s}: SDF component registration failed: {s}", .{ display_name, @errorName(err) });
                 var mut_s = s;
                 mut_s.deinit();
                 dict.deinit();
-                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
+                result = processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
+                result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
+                return result;
             };
             sdf_dict = dict;
         }
@@ -1014,7 +1045,9 @@ fn processOneSdfMolecule(
     defer if (sdf_dict) |*d| d.deinit();
 
     const sdf_ccd_ptr: ?*const ccd_parser.ComponentDict = if (sdf_dict) |*d| d else null;
-    return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, sdf_ccd_ptr);
+    result = processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, sdf_ccd_ptr);
+    result.process_time_ns = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
+    return result;
 }
 
 /// Inner helper: apply classifier, run SASA, write output for a single SDF molecule.
@@ -1321,7 +1354,9 @@ pub fn runBatchSequential(
     var total_timer = std.Io.Timestamp.now(io, .awake);
 
     // Scan directory for files
+    var scan_timer = std.Io.Timestamp.now(io, .awake);
     const files = try scanDirectory(allocator, io, input_dir);
+    const scan_time_ns: u64 = @intCast(scan_timer.untilNow(io, .awake).nanoseconds);
     defer {
         for (files) |f| allocator.free(f);
         allocator.free(files);
@@ -1358,6 +1393,7 @@ pub fn runBatchSequential(
 
     // Process each file
     var total_sasa_time_ns: u64 = 0;
+    var total_file_process_time_ns: u64 = 0;
     var successful: usize = 0;
     var failed: usize = 0;
 
@@ -1379,6 +1415,7 @@ pub fn runBatchSequential(
 
     var total_items: usize = 0;
 
+    var process_timer = std.Io.Timestamp.now(io, .awake);
     for (files) |filename| {
         const format = format_detect.detectInputFormat(filename);
 
@@ -1497,6 +1534,7 @@ pub fn runBatchSequential(
                 if (mol_result.status == .ok) {
                     successful += 1;
                     total_sasa_time_ns += mol_result.sasa_time_ns;
+                    total_file_process_time_ns += mol_result.process_time_ns;
                 } else {
                     failed += 1;
                 }
@@ -1538,6 +1576,7 @@ pub fn runBatchSequential(
             if (result.status == .ok) {
                 successful += 1;
                 total_sasa_time_ns += result.sasa_time_ns;
+                total_file_process_time_ns += result.process_time_ns;
             } else {
                 failed += 1;
             }
@@ -1560,6 +1599,7 @@ pub fn runBatchSequential(
         }
     }
 
+    const process_time_ns: u64 = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
     const total_time_ns: u64 = @intCast(total_timer.untilNow(io, .awake).nanoseconds);
 
     return BatchResult{
@@ -1568,6 +1608,9 @@ pub fn runBatchSequential(
         .failed = failed,
         .total_sasa_time_ns = total_sasa_time_ns,
         .total_time_ns = total_time_ns,
+        .scan_time_ns = scan_time_ns,
+        .process_time_ns = process_time_ns,
+        .total_file_process_time_ns = total_file_process_time_ns,
         .file_results = try results_list.toOwnedSlice(allocator),
         .allocator = allocator,
     };
@@ -1595,6 +1638,11 @@ fn claimChunkRange(next_index: *std.atomic.Value(usize), total: usize, chunk_siz
         .start = start,
         .end = if (chunk_size >= remaining) total else start + chunk_size,
     };
+}
+
+fn resolveBatchThreadCount(config_threads: usize, cpu_count: usize) usize {
+    const auto_threads = @max(cpu_count, 1);
+    return if (config_threads == 0) auto_threads else config_threads;
 }
 
 /// Shared context for parallel workers
@@ -1964,7 +2012,9 @@ pub fn runBatchParallel(
     var total_timer = std.Io.Timestamp.now(io, .awake);
 
     // Scan directory for files
+    var scan_timer = std.Io.Timestamp.now(io, .awake);
     const files = try scanDirectory(allocator, io, input_dir);
+    const scan_time_ns: u64 = @intCast(scan_timer.untilNow(io, .awake).nanoseconds);
     defer {
         for (files) |f| allocator.free(f);
         allocator.free(files);
@@ -1977,6 +2027,7 @@ pub fn runBatchParallel(
             .failed = 0,
             .total_sasa_time_ns = 0,
             .total_time_ns = @intCast(total_timer.untilNow(io, .awake).nanoseconds),
+            .scan_time_ns = scan_time_ns,
             .file_results = try allocator.alloc(FileResult, 0),
             .allocator = allocator,
         };
@@ -1988,7 +2039,9 @@ pub fn runBatchParallel(
     }
 
     // Build work items (expanding SDF files into per-molecule items)
+    var build_timer = std.Io.Timestamp.now(io, .awake);
     var build_result = try buildWorkItems(allocator, io, files, input_dir);
+    const build_items_time_ns: u64 = @intCast(build_timer.untilNow(io, .awake).nanoseconds);
     const work_items = build_result.items;
     defer {
         for (work_items) |item| {
@@ -2011,10 +2064,7 @@ pub fn runBatchParallel(
 
     // Determine thread count
     const cpu_count = std.Thread.getCpuCount() catch 1;
-    const n_threads = if (config.n_threads == 0)
-        cpu_count
-    else
-        @min(config.n_threads, cpu_count);
+    const n_threads = resolveBatchThreadCount(config.n_threads, cpu_count);
 
     // For single item or single thread, use sequential unless macro sharding is requested.
     if (config.shard_size == null and (work_items.len == 1 or n_threads <= 1)) {
@@ -2028,6 +2078,7 @@ pub fn runBatchParallel(
 
     if (config.shard_size) |shard_size| {
         const base_path = jsonl_output_path orelse return error.InvalidArgument;
+        var process_timer = std.Io.Timestamp.now(io, .awake);
         var progress_root: std.Progress.Node = if (shouldShowProgress(config))
             std.Progress.start(io, .{ .root_name = "Processing items", .estimated_total_items = work_items.len })
         else
@@ -2073,14 +2124,17 @@ pub fn runBatchParallel(
         if (shouldShowProgress(config)) {
             progress_root.setCompletedItems(work_items.len);
         }
+        const process_time_ns: u64 = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
 
         var total_sasa_time_ns: u64 = 0;
+        var total_file_process_time_ns: u64 = 0;
         var successful: usize = 0;
         var failed: usize = 0;
         for (file_results) |result| {
             if (result.status == .ok) {
                 successful += 1;
                 total_sasa_time_ns += result.sasa_time_ns;
+                total_file_process_time_ns += result.process_time_ns;
             } else {
                 failed += 1;
             }
@@ -2092,6 +2146,10 @@ pub fn runBatchParallel(
             .failed = failed,
             .total_sasa_time_ns = total_sasa_time_ns,
             .total_time_ns = @intCast(total_timer.untilNow(io, .awake).nanoseconds),
+            .scan_time_ns = scan_time_ns,
+            .build_items_time_ns = build_items_time_ns,
+            .process_time_ns = process_time_ns,
+            .total_file_process_time_ns = total_file_process_time_ns,
             .file_results = file_results,
             .allocator = allocator,
         };
@@ -2147,13 +2205,46 @@ pub fn runBatchParallel(
         .none;
     defer progress_root.end();
 
-    try runParallelWorkers(allocator, io, &ctx, n_threads, if (shouldShowProgress(config)) &progress_root else null, 0);
+    var process_timer = std.Io.Timestamp.now(io, .awake);
+    if (config.batch_size) |batch_size| {
+        var offset: usize = 0;
+        while (offset < work_items.len) {
+            const remaining = work_items.len - offset;
+            const end = offset + @min(batch_size, remaining);
+            var batch_ctx = ParallelContext{
+                .work_items = work_items[offset..end],
+                .input_dir = input_dir,
+                .output_dir = output_dir,
+                .config = config,
+                .results = file_results[offset..end],
+                .result_allocator = allocator,
+                .chunk_size = config.chunk_size,
+                .next_item = std.atomic.Value(usize).init(0),
+                .processed_count = std.atomic.Value(usize).init(0),
+                .lut_f64 = luts.f64Ptr(),
+                .lut_f32 = luts.f32Ptr(),
+                .coarse_lut_f64 = luts.coarseF64Ptr(),
+                .fine_lut_f64 = luts.fineF64Ptr(),
+                .coarse_lut_f32 = luts.coarseF32Ptr(),
+                .fine_lut_f32 = luts.fineF32Ptr(),
+                .jsonl_stream = jsonl_stream_ptr,
+                .io = io,
+                .sdf_sources = build_result.sdf_sources,
+            };
+            try runParallelWorkers(allocator, io, &batch_ctx, n_threads, if (shouldShowProgress(config)) &progress_root else null, offset);
+            offset = end;
+        }
+    } else {
+        try runParallelWorkers(allocator, io, &ctx, n_threads, if (shouldShowProgress(config)) &progress_root else null, 0);
+    }
+    const process_time_ns: u64 = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
     if (shouldShowProgress(config)) {
         progress_root.setCompletedItems(work_items.len);
     }
 
     // Aggregate results
     var total_sasa_time_ns: u64 = 0;
+    var total_file_process_time_ns: u64 = 0;
     var successful: usize = 0;
     var failed: usize = 0;
 
@@ -2161,6 +2252,7 @@ pub fn runBatchParallel(
         if (result.status == .ok) {
             successful += 1;
             total_sasa_time_ns += result.sasa_time_ns;
+            total_file_process_time_ns += result.process_time_ns;
         } else {
             failed += 1;
         }
@@ -2174,6 +2266,10 @@ pub fn runBatchParallel(
         .failed = failed,
         .total_sasa_time_ns = total_sasa_time_ns,
         .total_time_ns = total_time_ns,
+        .scan_time_ns = scan_time_ns,
+        .build_items_time_ns = build_items_time_ns,
+        .process_time_ns = process_time_ns,
+        .total_file_process_time_ns = total_file_process_time_ns,
         .file_results = file_results,
         .allocator = allocator,
     };
@@ -2238,6 +2334,7 @@ pub const BatchArgs = struct {
     chunk_size: ?usize = null,
     chunked_jsonl: bool = false,
     shard_size: ?usize = null,
+    batch_size: ?usize = null,
     ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz|.zst])
     sdf_paths: SdfPathList = .{}, // --sdf=PATH (up to 16)
     quiet: bool = false,
@@ -2263,6 +2360,7 @@ pub const BatchArgs = struct {
     chunk_size_explicit: bool = false,
     chunked_jsonl_explicit: bool = false,
     shard_size_explicit: bool = false,
+    batch_size_explicit: bool = false,
     ccd_explicit: bool = false,
     sdf_explicit: bool = false,
     quiet_explicit: bool = false,
@@ -2316,6 +2414,12 @@ fn validateChunkOptions(config: BatchConfig) !void {
     if (config.shard_size) |size| {
         if (size == 0) return error.InvalidArgument;
         if (config.output_format != .jsonl) return error.InvalidArgument;
+    }
+    if (config.batch_size) |size| {
+        if (size == 0) return error.InvalidArgument;
+    }
+    if (config.batch_size != null and config.shard_size != null) {
+        return error.InvalidArgument;
     }
 }
 
@@ -2723,6 +2827,24 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
                 std.debug.print("Error: Invalid --shard-size value: {s}\n", .{args[i]});
                 std.process.exit(1);
             };
+        } else if (std.mem.startsWith(u8, arg, "--batch-size=")) {
+            result.batch_size_explicit = true;
+            const value = arg["--batch-size=".len..];
+            result.batch_size = std.fmt.parseInt(usize, value, 10) catch {
+                std.debug.print("Error: Invalid --batch-size value: {s}\n", .{value});
+                std.process.exit(1);
+            };
+        } else if (std.mem.eql(u8, arg, "--batch-size")) {
+            result.batch_size_explicit = true;
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --batch-size\n", .{});
+                std.process.exit(1);
+            }
+            result.batch_size = std.fmt.parseInt(usize, args[i], 10) catch {
+                std.debug.print("Error: Invalid --batch-size value: {s}\n", .{args[i]});
+                std.process.exit(1);
+            };
         }
         // --ccd=PATH or --ccd PATH (external CCD dictionary)
         else if (std.mem.startsWith(u8, arg, "--ccd=")) {
@@ -2878,6 +3000,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --chunked-jsonl     Experimental: buffer JSONL writes by chunk
         \\                        Requires --chunk-size and --format=jsonl
         \\    --shard-size=N      Experimental: split JSONL batch output into N-item macro shards
+        \\    --batch-size=N      Experimental: process parallel work in N-item macro batches
         \\    --timing            Show timing breakdown for benchmarking
         \\    -o, --output=PATH   Output directory, or file path for --format=jsonl
         \\    -q, --quiet         Suppress progress output
@@ -2984,6 +3107,10 @@ fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
     if (args.include_hydrogens_explicit) config.include_hydrogens = args.include_hydrogens;
     if (args.include_hetatm_explicit) config.include_hetatm = args.include_hetatm;
     if (args.use_bitmask_explicit) config.use_bitmask = args.use_bitmask;
+    if (args.chunk_size_explicit) config.chunk_size = args.chunk_size;
+    if (args.chunked_jsonl_explicit) config.chunked_jsonl = args.chunked_jsonl;
+    if (args.shard_size_explicit) config.shard_size = args.shard_size;
+    if (args.batch_size_explicit) config.batch_size = args.batch_size;
     if (args.use_auth_chain) config.use_auth_chain = true;
     if (args.residue_map) config.residue_map = true;
 }
@@ -3642,6 +3769,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .chunk_size = args.chunk_size,
         .chunked_jsonl = args.chunked_jsonl,
         .shard_size = args.shard_size,
+        .batch_size = args.batch_size,
         .store_atom_areas = (args.output_format == .jsonl),
         .external_ccd = if (ext_ccd != null) &ext_ccd.? else null,
         .sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null,
@@ -3672,6 +3800,10 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     }
     if (config.shard_size != null and jsonl_output_path == null) {
         std.debug.print("Error: --shard-size requires a JSONL output path\n", .{});
+        return error.InvalidArgument;
+    }
+    if (config.batch_size != null and config.batch_size.? == 0) {
+        std.debug.print("Error: --batch-size must be greater than zero\n", .{});
         return error.InvalidArgument;
     }
 
@@ -3878,6 +4010,35 @@ test "BatchResult deinit" {
     batch_result.deinit();
 }
 
+test "BatchResult phase timing fields default to zero" {
+    const result = BatchResult{
+        .total_files = 0,
+        .successful = 0,
+        .failed = 0,
+        .total_sasa_time_ns = 0,
+        .total_time_ns = 0,
+        .file_results = &.{},
+        .allocator = std.testing.allocator,
+    };
+
+    try std.testing.expectEqual(@as(u64, 0), result.scan_time_ns);
+    try std.testing.expectEqual(@as(u64, 0), result.build_items_time_ns);
+    try std.testing.expectEqual(@as(u64, 0), result.process_time_ns);
+    try std.testing.expectEqual(@as(u64, 0), result.total_file_process_time_ns);
+}
+
+test "FileResult process timing field defaults to zero" {
+    const result = FileResult{
+        .filename = "example.pdb",
+        .n_atoms = 0,
+        .sasa_time_ns = 0,
+        .total_sasa = 0,
+        .status = .ok,
+    };
+
+    try std.testing.expectEqual(@as(u64, 0), result.process_time_ns);
+}
+
 test "BatchArgs defaults" {
     const args = [_][]const u8{ "zsasa", "batch", "input_dir/" };
     const parsed = parseArgs(&args, 2);
@@ -4028,8 +4189,16 @@ test "validateChunkOptions rejects zero shard size" {
     try std.testing.expectError(error.InvalidArgument, validateChunkOptions(.{ .shard_size = 0, .output_format = .jsonl }));
 }
 
+test "validateChunkOptions rejects zero batch size" {
+    try std.testing.expectError(error.InvalidArgument, validateChunkOptions(.{ .batch_size = 0 }));
+}
+
 test "validateChunkOptions rejects shard size for non-jsonl output" {
     try std.testing.expectError(error.InvalidArgument, validateChunkOptions(.{ .shard_size = 50_000, .output_format = .json }));
+}
+
+test "validateChunkOptions rejects batch size combined with shard size" {
+    try std.testing.expectError(error.InvalidArgument, validateChunkOptions(.{ .batch_size = 50_000, .shard_size = 50_000, .output_format = .jsonl }));
 }
 
 test "makeShardJsonlPath inserts part before jsonl extension" {
@@ -4067,6 +4236,11 @@ test "claimChunkRange saturates end without overflowing" {
     const range = claimChunkRange(&next_index, std.math.maxInt(usize), 10).?;
     try std.testing.expectEqual(std.math.maxInt(usize) - 1, range.start);
     try std.testing.expectEqual(std.math.maxInt(usize), range.end);
+}
+
+test "resolveBatchThreadCount allows explicit overcommit for IO-bound runs" {
+    try std.testing.expectEqual(@as(usize, 10), resolveBatchThreadCount(0, 10));
+    try std.testing.expectEqual(@as(usize, 20), resolveBatchThreadCount(20, 10));
 }
 
 test "public batch runners reject single-calc compatibility formats before scanning" {
@@ -4938,6 +5112,13 @@ test "BatchArgs --shard-size" {
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(@as(usize, 50_000), parsed.shard_size.?);
     try std.testing.expectEqual(true, parsed.shard_size_explicit);
+}
+
+test "BatchArgs --batch-size" {
+    const args = [_][]const u8{ "zsasa", "batch", "--batch-size=50000", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(usize, 50_000), parsed.batch_size.?);
+    try std.testing.expectEqual(true, parsed.batch_size_explicit);
 }
 
 test "BatchArgs --chunked-jsonl" {

@@ -124,6 +124,7 @@ For batch custom classifier configs, use a workflow `[classifier]` section. See 
 | `--chunk-size=N` | Experimental batch mode: claim parallel work in N-item chunks for large-directory benchmarking | off |
 | `--chunked-jsonl` | Experimental batch mode: buffer JSONL writes by chunk; requires `--chunk-size=N` and `--format=jsonl` | off |
 | `--shard-size=N` | Experimental batch mode: split JSONL output into N-item macro shards (`output.part-0.jsonl`, etc.) | off |
+| `--batch-size=N` | Experimental batch mode: process parallel work in N-item macro batches without changing output layout | off |
 
 ### Classifier Options
 

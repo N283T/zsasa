@@ -64,6 +64,18 @@ zsasa batch structures/ results.jsonl \
 
 This writes `results.part-0.jsonl`, `results.part-1.jsonl`, and so on. The JSONL row schema is unchanged; concatenate the shard files if a single stream is needed.
 
+To benchmark macro batches without changing the output layout, `--batch-size=N` processes the parallel work list in N-item waves:
+
+```bash
+zsasa batch structures/ \
+  --threads=10 \
+  --batch-size=50000
+```
+
+For example, a 550k-file SwissProt-scale directory with `--batch-size=50000` runs as roughly eleven 50k-item waves. This option is independent of JSONL output sharding and is intended as an experimental baseline.
+
+When benchmarking I/O-bound datasets, explicit `--threads=N` values may exceed the CPU count to test whether worker overcommit hides file open/read latency. The default thread count remains the detected CPU count.
+
 ## Experimental Adaptive Bitmask SR
 
 For large SR batch jobs that already use bitmask mode, `--adaptive-sr` runs a coarse bitmask pass for every atom and recomputes only intermediate-exposure atoms with a fine point count:
