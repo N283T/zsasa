@@ -77,6 +77,7 @@ pub const BatchConfig = struct {
     adaptive_high: f64 = 0.90,
     chunk_size: ?usize = null, // Experimental batch chunk size for large directory runs
     chunked_jsonl: bool = false, // Experimental JSONL write buffering by chunk
+    shard_size: ?usize = null, // Experimental macro-shard size for large JSONL batch runs
     store_atom_areas: bool = false, // When true, copy atom_areas to result_allocator for jsonl
     external_ccd: ?*const ccd_parser.ComponentDict = null, // External CCD dictionary
     sdf_ccd: ?*const ccd_parser.ComponentDict = null, // SDF bond topology dictionary
@@ -2152,6 +2153,7 @@ pub const BatchArgs = struct {
     adaptive_high: f64 = 0.90,
     chunk_size: ?usize = null,
     chunked_jsonl: bool = false,
+    shard_size: ?usize = null,
     ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz|.zst])
     sdf_paths: SdfPathList = .{}, // --sdf=PATH (up to 16)
     quiet: bool = false,
@@ -2176,6 +2178,7 @@ pub const BatchArgs = struct {
     adaptive_high_explicit: bool = false,
     chunk_size_explicit: bool = false,
     chunked_jsonl_explicit: bool = false,
+    shard_size_explicit: bool = false,
     ccd_explicit: bool = false,
     sdf_explicit: bool = false,
     quiet_explicit: bool = false,
@@ -2226,6 +2229,17 @@ fn validateChunkOptions(config: BatchConfig) !void {
         if (config.chunk_size == null) return error.InvalidArgument;
         if (config.output_format != .jsonl) return error.InvalidArgument;
     }
+    if (config.shard_size) |size| {
+        if (size == 0) return error.InvalidArgument;
+        if (config.output_format != .jsonl) return error.InvalidArgument;
+    }
+}
+
+fn makeShardJsonlPath(allocator: Allocator, base_path: []const u8, shard_index: usize) ![]u8 {
+    if (std.mem.endsWith(u8, base_path, ".jsonl")) {
+        return std.fmt.allocPrint(allocator, "{s}.part-{d}.jsonl", .{ base_path[0 .. base_path.len - ".jsonl".len], shard_index });
+    }
+    return std.fmt.allocPrint(allocator, "{s}.part-{d}.jsonl", .{ base_path, shard_index });
 }
 
 /// Parse and validate probe radius value
@@ -2607,6 +2621,24 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         } else if (std.mem.eql(u8, arg, "--chunked-jsonl")) {
             result.chunked_jsonl = true;
             result.chunked_jsonl_explicit = true;
+        } else if (std.mem.startsWith(u8, arg, "--shard-size=")) {
+            result.shard_size_explicit = true;
+            const value = arg["--shard-size=".len..];
+            result.shard_size = std.fmt.parseInt(usize, value, 10) catch {
+                std.debug.print("Error: Invalid --shard-size value: {s}\n", .{value});
+                std.process.exit(1);
+            };
+        } else if (std.mem.eql(u8, arg, "--shard-size")) {
+            result.shard_size_explicit = true;
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --shard-size\n", .{});
+                std.process.exit(1);
+            }
+            result.shard_size = std.fmt.parseInt(usize, args[i], 10) catch {
+                std.debug.print("Error: Invalid --shard-size value: {s}\n", .{args[i]});
+                std.process.exit(1);
+            };
         }
         // --ccd=PATH or --ccd PATH (external CCD dictionary)
         else if (std.mem.startsWith(u8, arg, "--ccd=")) {
@@ -3486,6 +3518,8 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
 
     // For jsonl, don't pass output_dir to runBatch (no per-file I/O during computation)
     const output_dir: ?[]const u8 = if (args.output_format == .jsonl) null else args.output_path;
+    // Determine JSONL output path: stream during computation instead of accumulating in memory
+    const jsonl_output_path: ?[]const u8 = if (args.output_format == .jsonl) args.output_path else null;
 
     var chain_filter_slice: ?[]const []const u8 = null;
     if (args.chain_filter) |filter_str| {
@@ -3522,6 +3556,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .adaptive_high = args.adaptive_high,
         .chunk_size = args.chunk_size,
         .chunked_jsonl = args.chunked_jsonl,
+        .shard_size = args.shard_size,
         .store_atom_areas = (args.output_format == .jsonl),
         .external_ccd = if (ext_ccd != null) &ext_ccd.? else null,
         .sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null,
@@ -3542,6 +3577,18 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         std.debug.print("Error: --chunked-jsonl requires --format=jsonl\n", .{});
         return error.InvalidArgument;
     }
+    if (config.shard_size != null and config.shard_size.? == 0) {
+        std.debug.print("Error: --shard-size must be greater than zero\n", .{});
+        return error.InvalidArgument;
+    }
+    if (config.shard_size != null and config.output_format != .jsonl) {
+        std.debug.print("Error: --shard-size requires --format=jsonl\n", .{});
+        return error.InvalidArgument;
+    }
+    if (config.shard_size != null and jsonl_output_path == null) {
+        std.debug.print("Error: --shard-size requires a JSONL output path\n", .{});
+        return error.InvalidArgument;
+    }
 
     if (!args.quiet) {
         std.debug.print("Batch mode: processing directory '{s}'\n", .{input_dir});
@@ -3554,9 +3601,6 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         }
         std.debug.print("\n", .{});
     }
-
-    // Determine JSONL output path: stream during computation instead of accumulating in memory
-    const jsonl_output_path: ?[]const u8 = if (args.output_format == .jsonl) args.output_path else null;
 
     var result = try runBatch(allocator, io, input_dir, output_dir, config, jsonl_output_path);
     defer result.deinit();
@@ -3893,6 +3937,21 @@ test "validateChunkOptions rejects chunked jsonl for non-jsonl output" {
 
 test "validateChunkOptions accepts chunked jsonl with jsonl and chunk size" {
     try validateChunkOptions(.{ .chunk_size = 256, .chunked_jsonl = true, .output_format = .jsonl });
+}
+
+test "validateChunkOptions rejects zero shard size" {
+    try std.testing.expectError(error.InvalidArgument, validateChunkOptions(.{ .shard_size = 0, .output_format = .jsonl }));
+}
+
+test "validateChunkOptions rejects shard size for non-jsonl output" {
+    try std.testing.expectError(error.InvalidArgument, validateChunkOptions(.{ .shard_size = 50_000, .output_format = .json }));
+}
+
+test "makeShardJsonlPath inserts part before jsonl extension" {
+    const allocator = std.testing.allocator;
+    const path = try makeShardJsonlPath(allocator, "results.jsonl", 3);
+    defer allocator.free(path);
+    try std.testing.expectEqualStrings("results.part-3.jsonl", path);
 }
 
 test "claimChunkRange claims contiguous chunks until exhausted" {
@@ -4720,6 +4779,13 @@ test "BatchArgs --chunk-size" {
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(@as(usize, 256), parsed.chunk_size.?);
     try std.testing.expectEqual(true, parsed.chunk_size_explicit);
+}
+
+test "BatchArgs --shard-size" {
+    const args = [_][]const u8{ "zsasa", "batch", "--shard-size=50000", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(usize, 50_000), parsed.shard_size.?);
+    try std.testing.expectEqual(true, parsed.shard_size_explicit);
 }
 
 test "BatchArgs --chunked-jsonl" {
