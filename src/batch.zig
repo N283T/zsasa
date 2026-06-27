@@ -75,6 +75,8 @@ pub const BatchConfig = struct {
     fine_points: u32 = 256,
     adaptive_low: f64 = 0.10,
     adaptive_high: f64 = 0.90,
+    chunk_size: ?usize = null, // Experimental batch chunk size for large directory runs
+    chunked_jsonl: bool = false, // Experimental JSONL write buffering by chunk
     store_atom_areas: bool = false, // When true, copy atom_areas to result_allocator for jsonl
     external_ccd: ?*const ccd_parser.ComponentDict = null, // External CCD dictionary
     sdf_ccd: ?*const ccd_parser.ComponentDict = null, // SDF bond topology dictionary
@@ -2075,6 +2077,8 @@ pub const BatchArgs = struct {
     fine_points: u32 = 256,
     adaptive_low: f64 = 0.10,
     adaptive_high: f64 = 0.90,
+    chunk_size: ?usize = null,
+    chunked_jsonl: bool = false,
     ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz|.zst])
     sdf_paths: SdfPathList = .{}, // --sdf=PATH (up to 16)
     quiet: bool = false,
@@ -2097,6 +2101,8 @@ pub const BatchArgs = struct {
     fine_points_explicit: bool = false,
     adaptive_low_explicit: bool = false,
     adaptive_high_explicit: bool = false,
+    chunk_size_explicit: bool = false,
+    chunked_jsonl_explicit: bool = false,
     ccd_explicit: bool = false,
     sdf_explicit: bool = false,
     quiet_explicit: bool = false,
@@ -2497,6 +2503,27 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
                 std.process.exit(1);
             }
             result.adaptive_high = parseAdaptiveThreshold("--adaptive-high", args[i]);
+        } else if (std.mem.startsWith(u8, arg, "--chunk-size=")) {
+            result.chunk_size_explicit = true;
+            const value = arg["--chunk-size=".len..];
+            result.chunk_size = std.fmt.parseInt(usize, value, 10) catch {
+                std.debug.print("Error: Invalid --chunk-size value: {s}\n", .{value});
+                std.process.exit(1);
+            };
+        } else if (std.mem.eql(u8, arg, "--chunk-size")) {
+            result.chunk_size_explicit = true;
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --chunk-size\n", .{});
+                std.process.exit(1);
+            }
+            result.chunk_size = std.fmt.parseInt(usize, args[i], 10) catch {
+                std.debug.print("Error: Invalid --chunk-size value: {s}\n", .{args[i]});
+                std.process.exit(1);
+            };
+        } else if (std.mem.eql(u8, arg, "--chunked-jsonl")) {
+            result.chunked_jsonl = true;
+            result.chunked_jsonl_explicit = true;
         }
         // --ccd=PATH or --ccd PATH (external CCD dictionary)
         else if (std.mem.startsWith(u8, arg, "--ccd=")) {
@@ -3407,6 +3434,8 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .fine_points = args.fine_points,
         .adaptive_low = args.adaptive_low,
         .adaptive_high = args.adaptive_high,
+        .chunk_size = args.chunk_size,
+        .chunked_jsonl = args.chunked_jsonl,
         .store_atom_areas = (args.output_format == .jsonl),
         .external_ccd = if (ext_ccd != null) &ext_ccd.? else null,
         .sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null,
@@ -4388,6 +4417,20 @@ test "BatchArgs --format=jsonl" {
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(OutputFormat.jsonl, parsed.output_format);
     try std.testing.expectEqualStrings("out.jsonl", parsed.output_path.?);
+}
+
+test "BatchArgs --chunk-size" {
+    const args = [_][]const u8{ "zsasa", "batch", "--chunk-size=256", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(usize, 256), parsed.chunk_size.?);
+    try std.testing.expectEqual(true, parsed.chunk_size_explicit);
+}
+
+test "BatchArgs --chunked-jsonl" {
+    const args = [_][]const u8{ "zsasa", "batch", "--chunked-jsonl", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.chunked_jsonl);
+    try std.testing.expectEqual(true, parsed.chunked_jsonl_explicit);
 }
 
 test "BatchArgs --classifier=naccess" {
