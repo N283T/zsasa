@@ -725,8 +725,9 @@ pub const BcifParser = struct {
         defer element_list.deinit(self.allocator);
         var chain_id_list = std.ArrayListUnmanaged(types.FixedString4).empty;
         defer chain_id_list.deinit(self.allocator);
-        var chain_id_full_list = std.ArrayListUnmanaged(types.FixedString32).empty;
+        var chain_id_full_list = std.ArrayListUnmanaged([]const u8).empty;
         defer chain_id_full_list.deinit(self.allocator);
+        errdefer freeStringItems(self.allocator, chain_id_full_list.items);
         var has_extended_chain = false;
         var residue_num_list = std.ArrayListUnmanaged(i32).empty;
         defer residue_num_list.deinit(self.allocator);
@@ -769,11 +770,11 @@ pub const BcifParser = struct {
             if (columns.getChainCol(self.use_auth_chain)) |chain_col| {
                 const chain = scalarString(decoded[chain_col], row) orelse "";
                 try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(chain));
-                try chain_id_full_list.append(self.allocator, types.FixedString32.fromSlice(chain));
+                try chain_id_full_list.append(self.allocator, try self.allocator.dupe(u8, chain));
                 has_extended_chain = has_extended_chain or chain.len > 4;
             } else {
                 try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(""));
-                try chain_id_full_list.append(self.allocator, types.FixedString32.fromSlice(""));
+                try chain_id_full_list.append(self.allocator, try self.allocator.dupe(u8, ""));
             }
 
             if (columns.getResSeqCol()) |seq_col| {
@@ -807,11 +808,15 @@ pub const BcifParser = struct {
         const chain_id = try chain_id_list.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(chain_id);
         const chain_id_full_owned = try chain_id_full_list.toOwnedSlice(self.allocator);
-        const chain_id_full: ?[]const types.FixedString32 = if (has_extended_chain) chain_id_full_owned else blk: {
+        const chain_id_full: ?[]const []const u8 = if (has_extended_chain) chain_id_full_owned else blk: {
+            freeStringItems(self.allocator, chain_id_full_owned);
             self.allocator.free(chain_id_full_owned);
             break :blk null;
         };
-        errdefer if (chain_id_full) |chains| self.allocator.free(chains);
+        errdefer if (chain_id_full) |chains| {
+            freeStringItems(self.allocator, chains);
+            self.allocator.free(chains);
+        };
         const residue_num = try residue_num_list.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(residue_num);
         const insertion_code = try insertion_code_list.toOwnedSlice(self.allocator);
@@ -896,6 +901,10 @@ pub const BcifParser = struct {
         return true;
     }
 };
+
+fn freeStringItems(allocator: Allocator, items: []const []const u8) void {
+    for (items) |item| allocator.free(item);
+}
 
 fn parseEncoding(allocator: Allocator, value: MsgValue) DecodeError!Encoding {
     const map = switch (value) {
@@ -1446,6 +1455,7 @@ const BuildBcifOptions = struct {
     omit_chain: bool = false,
     null_first_model: bool = false,
     include_long_chain: bool = false,
+    include_very_long_chain: bool = false,
 };
 
 fn buildMinimalBcif(options: BuildBcifOptions) ![]u8 {
@@ -1453,8 +1463,18 @@ fn buildMinimalBcif(options: BuildBcifOptions) ![]u8 {
     var rows = std.ArrayListUnmanaged(TestAtomRow).empty;
     defer rows.deinit(allocator);
 
-    const first_chain = if (options.include_long_chain) "ABCDE" else "A";
-    const second_chain = if (options.include_long_chain) "ABCD" else "A";
+    const first_chain = if (options.include_very_long_chain)
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg"
+    else if (options.include_long_chain)
+        "ABCDE"
+    else
+        "A";
+    const second_chain = if (options.include_very_long_chain)
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
+    else if (options.include_long_chain)
+        "ABCD"
+    else
+        "A";
     try rows.append(allocator, .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = first_chain, .seq = 1, .x = 10.0, .y = 20.0, .z = 30.0, .model = 1 });
     try rows.append(allocator, .{ .group = "ATOM", .element = "N", .atom = "N", .residue = "ALA", .chain = second_chain, .seq = 1, .x = 11.0, .y = 21.0, .z = 32.0, .model = 1 });
     if (options.include_hydrogen) {
@@ -1878,8 +1898,8 @@ test "parse minimal BinaryCIF atom_site" {
     try std.testing.expectEqual(@as(i32, 1), input.residue_num.?[0]);
 }
 
-test "parse BinaryCIF keeps extended chain IDs when asym_id exceeds four characters" {
-    const source = try buildMinimalBcif(.{ .include_long_chain = true });
+test "parse BinaryCIF keeps extended chain IDs lossless beyond fixed buffers" {
+    const source = try buildMinimalBcif(.{ .include_very_long_chain = true });
     defer std.testing.allocator.free(source);
 
     var parser = BcifParser.init(std.testing.allocator);
@@ -1889,8 +1909,8 @@ test "parse BinaryCIF keeps extended chain IDs when asym_id exceeds four charact
     try std.testing.expectEqual(@as(usize, 2), input.atomCount());
     try std.testing.expect(input.chain_id_full != null);
     try std.testing.expectEqualStrings("ABCD", input.chain_id.?[0].slice());
-    try std.testing.expectEqualStrings("ABCDE", input.chain_id_full.?[0].slice());
-    try std.testing.expectEqualStrings("ABCD", input.chain_id_full.?[1].slice());
+    try std.testing.expectEqualStrings("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg", input.chain_id_full.?[0]);
+    try std.testing.expectEqualStrings("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", input.chain_id_full.?[1]);
 }
 
 test "parse BinaryCIF with inline CCD data" {

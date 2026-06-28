@@ -497,9 +497,9 @@ fn chainMatchesFilter(chain: types.FixedString4, chains: []const []const u8) boo
     return false;
 }
 
-fn chainFullMatchesFilter(chain: types.FixedString32, chains: []const []const u8) bool {
+fn chainFullMatchesFilter(chain: []const u8, chains: []const []const u8) bool {
     for (chains) |target| {
-        if (chain.eqlSlice(target)) return true;
+        if (std.mem.eql(u8, chain, target)) return true;
     }
     return false;
 }
@@ -542,8 +542,12 @@ fn copySelectedAtomInput(allocator: Allocator, input: AtomInput, chains: ?[]cons
     errdefer if (element) |v| allocator.free(v);
     const chain_id = if (input.chain_id != null) try allocator.alloc(types.FixedString4, selected_count) else null;
     errdefer if (chain_id) |v| allocator.free(v);
-    const chain_id_full = if (input.chain_id_full != null) try allocator.alloc(types.FixedString32, selected_count) else null;
-    errdefer if (chain_id_full) |v| allocator.free(v);
+    const chain_id_full = if (input.chain_id_full != null) try allocator.alloc([]const u8, selected_count) else null;
+    var chain_id_full_copied: usize = 0;
+    errdefer if (chain_id_full) |v| {
+        for (v[0..chain_id_full_copied]) |chain| allocator.free(chain);
+        allocator.free(v);
+    };
     const residue_num = if (input.residue_num != null) try allocator.alloc(i32, selected_count) else null;
     errdefer if (residue_num) |v| allocator.free(v);
     const insertion_code = if (input.insertion_code != null) try allocator.alloc(types.FixedString4, selected_count) else null;
@@ -560,7 +564,10 @@ fn copySelectedAtomInput(allocator: Allocator, input: AtomInput, chains: ?[]cons
         if (atom_name) |v| v[out_i] = input.atom_name.?[i];
         if (element) |v| v[out_i] = input.element.?[i];
         if (chain_id) |v| v[out_i] = input.chain_id.?[i];
-        if (chain_id_full) |v| v[out_i] = input.chain_id_full.?[i];
+        if (chain_id_full) |v| {
+            v[out_i] = try allocator.dupe(u8, input.chain_id_full.?[i]);
+            chain_id_full_copied += 1;
+        }
         if (residue_num) |v| v[out_i] = input.residue_num.?[i];
         if (insertion_code) |v| v[out_i] = input.insertion_code.?[i];
         out_i += 1;
@@ -3811,22 +3818,44 @@ test "copySelectedAtomInput prefers extended chain IDs over truncated chain IDs"
     const allocator = std.testing.allocator;
     var input = try makeTestAtomInput(allocator, &.{ "ABCD", "ABCD" });
     defer input.deinit();
-    const chain_id_full = try allocator.alloc(types.FixedString32, 2);
-    chain_id_full[0] = types.FixedString32.fromSlice("ABCDE");
-    chain_id_full[1] = types.FixedString32.fromSlice("ABCD");
+    const chain_id_full = try allocator.alloc([]const u8, 2);
+    chain_id_full[0] = try allocator.dupe(u8, "ABCDE");
+    chain_id_full[1] = try allocator.dupe(u8, "ABCD");
     input.chain_id_full = chain_id_full;
 
     var selected_long = try copySelectedAtomInput(allocator, input, &.{"ABCDE"});
     defer selected_long.deinit();
     try std.testing.expectEqual(@as(usize, 1), selected_long.atomCount());
     try std.testing.expectApproxEqAbs(@as(f64, 0.0), selected_long.x[0], 1e-12);
-    try std.testing.expectEqualStrings("ABCDE", selected_long.chain_id_full.?[0].slice());
+    try std.testing.expectEqualStrings("ABCDE", selected_long.chain_id_full.?[0]);
 
     var selected_prefix = try copySelectedAtomInput(allocator, input, &.{"ABCD"});
     defer selected_prefix.deinit();
     try std.testing.expectEqual(@as(usize, 1), selected_prefix.atomCount());
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), selected_prefix.x[0], 1e-12);
-    try std.testing.expectEqualStrings("ABCD", selected_prefix.chain_id_full.?[0].slice());
+    try std.testing.expectEqualStrings("ABCD", selected_prefix.chain_id_full.?[0]);
+}
+
+test "copySelectedAtomInput keeps extended chain IDs lossless beyond fixed buffers" {
+    const allocator = std.testing.allocator;
+    var input = try makeTestAtomInput(allocator, &.{ "ABCD", "ABCD" });
+    defer input.deinit();
+    const chain_id_full = try allocator.alloc([]const u8, 2);
+    chain_id_full[0] = try allocator.dupe(u8, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg");
+    chain_id_full[1] = try allocator.dupe(u8, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef");
+    input.chain_id_full = chain_id_full;
+
+    var selected_long = try copySelectedAtomInput(allocator, input, &.{"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg"});
+    defer selected_long.deinit();
+    try std.testing.expectEqual(@as(usize, 1), selected_long.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), selected_long.x[0], 1e-12);
+    try std.testing.expectEqualStrings("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg", selected_long.chain_id_full.?[0]);
+
+    var selected_prefix = try copySelectedAtomInput(allocator, input, &.{"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"});
+    defer selected_prefix.deinit();
+    try std.testing.expectEqual(@as(usize, 1), selected_prefix.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), selected_prefix.x[0], 1e-12);
+    try std.testing.expectEqualStrings("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", selected_prefix.chain_id_full.?[0]);
 }
 
 test "calculatePreparedInputResult computes total for selected input" {
@@ -4304,6 +4333,8 @@ test "workflow mmCIF chain filters preserve long chain IDs" {
     defer allocator.free(workflow_path);
     const input_path = try std.fs.path.join(allocator, &.{ input_dir, "long-chain.cif" });
     defer allocator.free(input_path);
+    const input_path_2 = try std.fs.path.join(allocator, &.{ input_dir, "long-chain-2.cif" });
+    defer allocator.free(input_path_2);
 
     try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{
@@ -4321,8 +4352,29 @@ test "workflow mmCIF chain filters preserve long chain IDs" {
         \\_atom_site.Cartn_x
         \\_atom_site.Cartn_y
         \\_atom_site.Cartn_z
-        \\ATOM 1 N N ALA ABCDE 1 0.000 0.000 0.000
-        \\ATOM 2 C CA ALA ABCDE 1 1.500 0.000 0.000
+        \\ATOM 1 N N ALA ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg 1 0.000 0.000 0.000
+        \\ATOM 2 C CA ALA ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg 1 1.500 0.000 0.000
+        \\#
+        \\
+        ,
+    });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = input_path_2,
+        .data =
+        \\data_LONG_CHAIN_2
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\ATOM 1 N N ALA ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef 1 0.000 1.000 0.000
+        \\ATOM 2 C CA ALA ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef 1 1.500 1.000 0.000
         \\#
         \\
         ,
@@ -4348,11 +4400,11 @@ test "workflow mmCIF chain filters preserve long chain IDs" {
         \\
         \\[[jobs]]
         \\name = "long_chain"
-        \\chains = ["ABCDE"]
+        \\chains = ["ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg"]
         \\
         \\[[jobs]]
-        \\name = "truncated_prefix"
-        \\chains = ["ABCD"]
+        \\name = "prefix_chain"
+        \\chains = ["ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"]
         \\
     , .{ input_dir, output_dir });
     defer allocator.free(workflow);
@@ -4362,7 +4414,7 @@ test "workflow mmCIF chain filters preserve long chain IDs" {
 
     const long_chain_jsonl = try std.fs.path.join(allocator, &.{ output_dir, "long_chain.jsonl" });
     defer allocator.free(long_chain_jsonl);
-    const prefix_jsonl = try std.fs.path.join(allocator, &.{ output_dir, "truncated_prefix.jsonl" });
+    const prefix_jsonl = try std.fs.path.join(allocator, &.{ output_dir, "prefix_chain.jsonl" });
     defer allocator.free(prefix_jsonl);
     const long_chain_content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, long_chain_jsonl, allocator, .limited(4096));
     defer allocator.free(long_chain_content);
@@ -4370,7 +4422,9 @@ test "workflow mmCIF chain filters preserve long chain IDs" {
     defer allocator.free(prefix_content);
 
     try std.testing.expect(std.mem.indexOf(u8, long_chain_content, "\"filename\":\"long-chain.cif\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, long_chain_content, "\"filename\":\"long-chain-2.cif\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, prefix_content, "\"filename\":\"long-chain.cif\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prefix_content, "\"filename\":\"long-chain-2.cif\"") != null);
 }
 
 test "workflowJsonlOutputPath uses job file under output dir" {

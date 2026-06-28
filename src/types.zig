@@ -168,32 +168,6 @@ pub const FixedString5 = struct {
     }
 };
 
-/// Fixed-size string for extended chain identifiers (max 32 characters).
-/// Used only when a format can carry chain IDs that do not fit FixedString4.
-pub const FixedString32 = struct {
-    data: [32]u8 = [_]u8{0} ** 32,
-    len: u8 = 0,
-
-    /// Create from a slice (truncates if > 32 chars)
-    pub fn fromSlice(s: []const u8) FixedString32 {
-        var result = FixedString32{};
-        const copy_len: u8 = @intCast(@min(s.len, 32));
-        @memcpy(result.data[0..copy_len], s[0..copy_len]);
-        result.len = copy_len;
-        return result;
-    }
-
-    /// Get as slice
-    pub fn slice(self: *const FixedString32) []const u8 {
-        return self.data[0..self.len];
-    }
-
-    /// Check equality with a slice
-    pub fn eqlSlice(self: *const FixedString32, s: []const u8) bool {
-        return self.len == s.len and std.mem.eql(u8, self.slice(), s);
-    }
-};
-
 /// Input data structure for SASA calculation
 pub const AtomInput = struct {
     x: []const f64,
@@ -211,10 +185,10 @@ pub const AtomInput = struct {
     /// Chain IDs (e.g., "A", "B") - optional, for per-chain analysis
     chain_id: ?[]const FixedString4 = null,
     /// Extended chain IDs for formats that can exceed four characters (e.g. mmCIF).
-    /// When present, this mirrors `chain_id` length.
+    /// When present, this mirrors `chain_id` length and owns each string.
     /// Existing output paths keep using `chain_id` for compatibility; chain
     /// filtering should prefer this field when it is available.
-    chain_id_full: ?[]const FixedString32 = null,
+    chain_id_full: ?[]const []const u8 = null,
     /// Residue sequence numbers - optional, for per-residue analysis
     residue_num: ?[]const i32 = null,
     /// Insertion codes (e.g., "", "A", "B") - optional, for per-residue analysis
@@ -262,6 +236,9 @@ pub const AtomInput = struct {
             self.allocator.free(chains);
         }
         if (self.chain_id_full) |chains| {
+            for (chains) |chain| {
+                self.allocator.free(chain);
+            }
             self.allocator.free(chains);
         }
         if (self.residue_num) |nums| {
