@@ -100,6 +100,54 @@ zsasa batch --workflow bsa.toml
 
 For ordinary PDB, JSON, and unfiltered mmCIF/BinaryCIF workflow batch runs with compatible chain-ID settings, zsasa reuses each parsed input structure across jobs internally. For named chain analyses such as chain A, chain B, and complex AB, list only the jobs you want; eligible runs parse each input structure once and then compute each requested chain selection independently. Some inputs or settings, such as SDF files, per-job `auth_chain` changes, or mmCIF/BinaryCIF workflows with chain filters, use the compatibility job-first path instead so full chain-ID selection matches parser behavior.
 
+## BSA / ΔSASA Analysis
+
+Batch workflows can also write an analysis JSONL file for a two-partner interface:
+
+```toml
+version = 1
+kind = "workflow"
+
+[input]
+dir = "structures"
+
+[output]
+dir = "results"
+format = "jsonl"
+
+[calculation]
+algorithm = "sr"
+n_points = 100
+threads = 8
+
+[classifier]
+type = "ccd"
+
+[analysis]
+type = "bsa"
+name = "interface_ab"
+partner_a = ["A"]
+partner_b = ["B"]
+level = "residue"
+```
+
+Run it with:
+
+```bash
+zsasa batch --workflow bsa.toml
+```
+
+This writes `results/interface_ab.jsonl`, with one row per input structure. The initial implementation computes partner A, partner B, and the AB complex internally, then reports:
+
+```text
+delta_sasa_total = sasa_partner_a + sasa_partner_b - sasa_complex
+bsa = delta_sasa_total / 2
+```
+
+`ΔSASA` and `BSA` are deliberately separate fields. `delta_sasa_total` and `residue_delta_sasa` are not halved; `bsa` is the two-partner buried surface area after the `1/2` factor.
+
+BSA analysis JSONL uses analysis-specific fields such as `sasa_partner_a`, `sasa_partner_b`, `sasa_complex`, `delta_sasa_total`, `bsa`, and `residue_delta_sasa`. It does not use the normal SASA JSONL `total_area` and `atom_areas` fields, because those names are ambiguous for interface analysis.
+
 ## Override Precedence
 
 When the same setting appears in multiple places, zsasa applies this order:

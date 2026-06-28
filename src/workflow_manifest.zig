@@ -10,6 +10,7 @@ pub const WorkflowError = error{
     UnsafeJobName,
     InvalidFieldType,
     InvalidClassifierConfig,
+    InvalidAnalysisConfig,
     UnknownField,
     NoJobs,
 };
@@ -57,6 +58,14 @@ pub const ClassifierConfig = struct {
     sdf: ?[]const []const u8 = null,
 };
 
+pub const Analysis = struct {
+    type: ?[]const u8 = null,
+    name: ?[]const u8 = null,
+    partner_a: ?[]const []const u8 = null,
+    partner_b: ?[]const []const u8 = null,
+    level: ?[]const u8 = null,
+};
+
 pub const Job = struct {
     name: []const u8,
     chains: ?[]const []const u8 = null,
@@ -70,11 +79,16 @@ pub const Workflow = struct {
     output: Output = .{},
     calculation: Calculation = .{},
     classifier: ClassifierConfig = .{},
+    analysis: ?Analysis = null,
     jobs: []Job = &.{},
     is_legacy_batch_workflow: bool = false,
 
     pub fn deinit(self: *Workflow) void {
         if (self.classifier.sdf) |items| self.allocator.free(items);
+        if (self.analysis) |analysis| {
+            if (analysis.partner_a) |items| self.allocator.free(items);
+            if (analysis.partner_b) |items| self.allocator.free(items);
+        }
         for (self.jobs) |job| {
             if (job.chains) |chains| self.allocator.free(chains);
         }
@@ -130,6 +144,7 @@ fn parseOwned(allocator: Allocator, owned_content: []const u8) Error!Workflow {
         if (doc.getTable("output")) |table| workflow.output = try parseOutput(table);
         if (doc.getTable("calculation")) |table| workflow.calculation = try parseCalculation(table);
         if (doc.getTable("classifier")) |table| workflow.classifier = try parseClassifier(allocator, table);
+        if (doc.getTable("analysis")) |table| workflow.analysis = try parseAnalysis(allocator, table);
     }
 
     workflow.jobs = try parseJobs(allocator, doc.array_tables);
@@ -258,6 +273,23 @@ fn parseClassifier(allocator: Allocator, table: toml_parser.Table) Error!Classif
     };
 }
 
+fn parseAnalysis(allocator: Allocator, table: toml_parser.Table) Error!Analysis {
+    try rejectUnknownFields(table.entries, &.{ "type", "name", "partner_a", "partner_b", "level" });
+    const analysis = Analysis{
+        .type = try optionalString(table.entries, "type"),
+        .name = try optionalString(table.entries, "name"),
+        .partner_a = try optionalStringArray(allocator, table.entries, "partner_a"),
+        .partner_b = try optionalStringArray(allocator, table.entries, "partner_b"),
+        .level = try optionalString(table.entries, "level"),
+    };
+    errdefer {
+        if (analysis.partner_a) |items| allocator.free(items);
+        if (analysis.partner_b) |items| allocator.free(items);
+    }
+    try validateAnalysis(analysis);
+    return analysis;
+}
+
 fn validateClassifier(config: ClassifierConfig) WorkflowError!void {
     const classifier_type = config.type orelse return;
     if (std.mem.eql(u8, classifier_type, "custom")) {
@@ -273,6 +305,28 @@ fn validateClassifier(config: ClassifierConfig) WorkflowError!void {
 
 fn classifierAllowsCcdResources(classifier_type: []const u8) bool {
     return std.mem.eql(u8, classifier_type, "ccd") or std.mem.eql(u8, classifier_type, "protor");
+}
+
+fn validateAnalysis(analysis: Analysis) WorkflowError!void {
+    const analysis_type = analysis.type orelse return error.InvalidAnalysisConfig;
+    if (!std.mem.eql(u8, analysis_type, "bsa")) return error.InvalidAnalysisConfig;
+    if (analysis.name) |name| {
+        if (name.len == 0 or !isSafeJobName(name)) return error.InvalidAnalysisConfig;
+    }
+    const partner_a = analysis.partner_a orelse return error.InvalidAnalysisConfig;
+    const partner_b = analysis.partner_b orelse return error.InvalidAnalysisConfig;
+    if (partner_a.len == 0 or partner_b.len == 0) return error.InvalidAnalysisConfig;
+    for (partner_a) |chain| {
+        if (chain.len == 0) return error.InvalidAnalysisConfig;
+    }
+    for (partner_b) |chain| {
+        if (chain.len == 0) return error.InvalidAnalysisConfig;
+    }
+    if (analysis.level) |level| {
+        if (!std.mem.eql(u8, level, "total") and !std.mem.eql(u8, level, "residue")) {
+            return error.InvalidAnalysisConfig;
+        }
+    }
 }
 
 fn parseJobs(allocator: Allocator, array_tables: []const toml_parser.Document.ArrayTable) Error![]Job {
@@ -365,7 +419,8 @@ fn validateKnownDocumentShape(doc: toml_parser.Document, is_legacy: bool) Workfl
         if (std.mem.eql(u8, table.name, "input") or
             std.mem.eql(u8, table.name, "output") or
             std.mem.eql(u8, table.name, "calculation") or
-            std.mem.eql(u8, table.name, "classifier"))
+            std.mem.eql(u8, table.name, "classifier") or
+            std.mem.eql(u8, table.name, "analysis"))
         {
             continue;
         }
@@ -592,6 +647,63 @@ test "parse sectioned batch workflow with jobs" {
     try std.testing.expectEqualStrings("complex_AB", workflow.jobs[1].name);
     try std.testing.expectEqualStrings("B", workflow.jobs[1].chains.?[1]);
     try std.testing.expectEqual(true, workflow.jobs[1].auth_chain.?);
+}
+
+test "parse BSA analysis workflow" {
+    const input =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "structures"
+        \\
+        \\[output]
+        \\dir = "results"
+        \\format = "jsonl"
+        \\
+        \\[analysis]
+        \\type = "bsa"
+        \\name = "interface_ab"
+        \\partner_a = ["A"]
+        \\partner_b = ["B"]
+        \\level = "residue"
+    ;
+    var workflow = try parse(std.testing.allocator, input);
+    defer workflow.deinit();
+
+    try std.testing.expectEqualStrings("bsa", workflow.analysis.?.type.?);
+    try std.testing.expectEqualStrings("interface_ab", workflow.analysis.?.name.?);
+    try std.testing.expectEqual(@as(usize, 1), workflow.analysis.?.partner_a.?.len);
+    try std.testing.expectEqualStrings("A", workflow.analysis.?.partner_a.?[0]);
+    try std.testing.expectEqual(@as(usize, 1), workflow.analysis.?.partner_b.?.len);
+    try std.testing.expectEqualStrings("B", workflow.analysis.?.partner_b.?[0]);
+    try std.testing.expectEqualStrings("residue", workflow.analysis.?.level.?);
+}
+
+test "reject BSA analysis without both partners" {
+    const input =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[analysis]
+        \\type = "bsa"
+        \\partner_a = ["A"]
+    ;
+    try std.testing.expectError(error.InvalidAnalysisConfig, parse(std.testing.allocator, input));
+}
+
+test "reject BSA analysis invalid level" {
+    const input =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[analysis]
+        \\type = "bsa"
+        \\partner_a = ["A"]
+        \\partner_b = ["B"]
+        \\level = "chain"
+    ;
+    try std.testing.expectError(error.InvalidAnalysisConfig, parse(std.testing.allocator, input));
 }
 
 test "parse legacy flat batch manifest" {

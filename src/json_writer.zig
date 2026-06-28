@@ -637,6 +637,92 @@ pub fn fileResultWithResidueMapToJsonlLine(
     return std.json.Stringify.valueAlloc(allocator, entry, .{});
 }
 
+pub const BsaAnalysisJsonl = struct {
+    filename: []const u8,
+    name: []const u8,
+    partner_a: []const []const u8,
+    partner_b: []const []const u8,
+    sasa_partner_a: f64,
+    sasa_partner_b: f64,
+    sasa_complex: f64,
+    delta_sasa_total: f64,
+    bsa: f64,
+    delta_sasa_level: []const u8,
+    residue_chain: []const []const u8 = &.{},
+    residue_name: []const []const u8 = &.{},
+    residue_number: []const i32 = &.{},
+    residue_insertion_code: []const []const u8 = &.{},
+    residue_delta_sasa: []const f64 = &.{},
+};
+
+pub fn bsaAnalysisToJsonlLine(allocator: Allocator, row: BsaAnalysisJsonl) ![]u8 {
+    if (std.mem.eql(u8, row.delta_sasa_level, "residue")) {
+        const Entry = struct {
+            filename: []const u8,
+            analysis: []const u8,
+            name: []const u8,
+            partner_a: []const []const u8,
+            partner_b: []const []const u8,
+            sasa_partner_a: f64,
+            sasa_partner_b: f64,
+            sasa_complex: f64,
+            delta_sasa_total: f64,
+            bsa: f64,
+            delta_sasa_level: []const u8,
+            residue_chain: []const []const u8,
+            residue_name: []const []const u8,
+            residue_number: []const i32,
+            residue_insertion_code: []const []const u8,
+            residue_delta_sasa: []const f64,
+        };
+        return std.json.Stringify.valueAlloc(allocator, Entry{
+            .filename = row.filename,
+            .analysis = "bsa",
+            .name = row.name,
+            .partner_a = row.partner_a,
+            .partner_b = row.partner_b,
+            .sasa_partner_a = row.sasa_partner_a,
+            .sasa_partner_b = row.sasa_partner_b,
+            .sasa_complex = row.sasa_complex,
+            .delta_sasa_total = row.delta_sasa_total,
+            .bsa = row.bsa,
+            .delta_sasa_level = row.delta_sasa_level,
+            .residue_chain = row.residue_chain,
+            .residue_name = row.residue_name,
+            .residue_number = row.residue_number,
+            .residue_insertion_code = row.residue_insertion_code,
+            .residue_delta_sasa = row.residue_delta_sasa,
+        }, .{});
+    }
+
+    const Entry = struct {
+        filename: []const u8,
+        analysis: []const u8,
+        name: []const u8,
+        partner_a: []const []const u8,
+        partner_b: []const []const u8,
+        sasa_partner_a: f64,
+        sasa_partner_b: f64,
+        sasa_complex: f64,
+        delta_sasa_total: f64,
+        bsa: f64,
+        delta_sasa_level: []const u8,
+    };
+    return std.json.Stringify.valueAlloc(allocator, Entry{
+        .filename = row.filename,
+        .analysis = "bsa",
+        .name = row.name,
+        .partner_a = row.partner_a,
+        .partner_b = row.partner_b,
+        .sasa_partner_a = row.sasa_partner_a,
+        .sasa_partner_b = row.sasa_partner_b,
+        .sasa_complex = row.sasa_complex,
+        .delta_sasa_total = row.delta_sasa_total,
+        .bsa = row.bsa,
+        .delta_sasa_level = row.delta_sasa_level,
+    }, .{});
+}
+
 // Tests
 test "buildResidueMap groups consecutive atoms" {
     const allocator = std.testing.allocator;
@@ -790,6 +876,41 @@ test "fileResultWithResidueMapToJsonlLine serializes columnar residue arrays" {
         "{\"filename\":\"example.cif\",\"total_area\":13.75,\"atom_areas\":[10,2.5,1.25],\"residue_chain\":[\"A\",\"B\"],\"residue_name\":[\"MET\",\"ALA\"],\"residue_number\":[1,7],\"residue_insertion_code\":[\"\",\"\"],\"residue_atom_start\":[0,2],\"residue_atom_count\":[2,1],\"residue_sasa\":[12.5,1.25]}",
         line,
     );
+}
+
+test "BSA analysis JSONL includes total and residue delta fields" {
+    const allocator = std.testing.allocator;
+    const partner_a = [_][]const u8{"A"};
+    const partner_b = [_][]const u8{"B"};
+    const residue_chain = [_][]const u8{ "A", "B" };
+    const residue_name = [_][]const u8{ "GLY", "ALA" };
+    const residue_number = [_]i32{ 1, 2 };
+    const residue_insertion_code = [_][]const u8{ "", "" };
+    const residue_delta_sasa = [_]f64{ 3.0, 5.0 };
+
+    const line = try bsaAnalysisToJsonlLine(allocator, .{
+        .filename = "tiny.pdb",
+        .name = "interface_ab",
+        .partner_a = partner_a[0..],
+        .partner_b = partner_b[0..],
+        .sasa_partner_a = 10.0,
+        .sasa_partner_b = 20.0,
+        .sasa_complex = 14.0,
+        .delta_sasa_total = 16.0,
+        .bsa = 8.0,
+        .delta_sasa_level = "residue",
+        .residue_chain = residue_chain[0..],
+        .residue_name = residue_name[0..],
+        .residue_number = residue_number[0..],
+        .residue_insertion_code = residue_insertion_code[0..],
+        .residue_delta_sasa = residue_delta_sasa[0..],
+    });
+    defer allocator.free(line);
+
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"analysis\":\"bsa\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"delta_sasa_total\":16") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"bsa\":8") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"residue_delta_sasa\":[3,5]") != null);
 }
 
 test "sasaResultToJson basic" {
