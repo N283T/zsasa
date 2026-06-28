@@ -22,9 +22,12 @@ class ZigBuildHook(BuildHookInterface):
         # Mark as platform-specific wheel (required for .so/.dylib bundling)
         build_data["infer_tag"] = True
 
-        # Determine paths
-        root_dir = Path(self.root).parent  # Go up from python/ to project root
+        # Determine paths. In a repository checkout, pyproject.toml lives in
+        # python/ and Zig sources live one level up. In an sdist, the required
+        # Zig files are included next to pyproject.toml so source installs do
+        # not depend on files outside the extracted archive.
         python_dir = Path(self.root)
+        root_dir = self._find_zig_root(python_dir)
         package_dir = python_dir / "zsasa"
 
         # Platform-specific names
@@ -65,6 +68,17 @@ class ZigBuildHook(BuildHookInterface):
         # Include both artifacts in the wheel
         build_data["force_include"][str(lib_dst)] = f"zsasa/{lib_name}"
         build_data["force_include"][str(exe_dst)] = f"zsasa/{exe_name}"
+
+    def _find_zig_root(self, python_dir: Path) -> Path:
+        """Find the directory that contains the Zig build files."""
+        for candidate in (python_dir.parent, python_dir):
+            if candidate.joinpath("build.zig").is_file() and candidate.joinpath("src").is_dir():
+                return candidate
+        msg = (
+            "Zig source files were not found. Source installs require build.zig "
+            "and src/ to be present in the source distribution."
+        )
+        raise FileNotFoundError(msg)
 
     def _needs_build(self, src: Path, dst: Path) -> bool:
         """Check if a build is needed based on file existence and timestamps."""

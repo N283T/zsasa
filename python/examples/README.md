@@ -69,7 +69,7 @@ from zsasa import classify_atoms, ClassifierType
 residues = ["ALA", "ALA", "GLY"]
 atoms = ["CA", "O", "N"]
 
-result = classify_atoms(residues, atoms, ClassifierType.NACCESS)
+result = classify_atoms(residues, atoms, ClassifierType.CCD)
 print(result.radii)    # Per-atom radii
 print(result.classes)  # Polar/apolar classification
 ```
@@ -161,10 +161,10 @@ print(sasa.results.total_area)  # Per-frame total SASA in A^2
 | `n_slices` | `20` | Slices per atom (LR algorithm) |
 | `probe_radius` | `1.4` | Water probe radius in Angstroms |
 | `n_threads` | `0` | Number of threads (0 = auto-detect) |
-| `classifier` | `NACCESS` | Atom radius classifier |
+| `classifier` | `CCD` | Atom radius classifier for structure/Python classification APIs (`traj` defaults to NACCESS) |
 
 ## See Also
 
 - [Python API Documentation](../../website/docs/python-api/)
-- [CLI Documentation](../../docs/cli.md)
-- [Algorithm Details](../../docs/algorithm.md)
+- [CLI Documentation](../../website/docs/cli/commands.md)
+- [Algorithm Details](../../website/docs/guide/algorithms.mdx)

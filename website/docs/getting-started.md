@@ -47,7 +47,7 @@ cd zsasa
 zig build -Doptimize=ReleaseFast
 ```
 
-The binary is at `./zig-out/bin/zsasa` (source build) or `~/.local/bin/zsasa` (install.sh).
+The binary is at `./zig-out/bin/zsasa` (source build) or `~/.local/bin/zsasa` (install.sh). The installer supports Linux and macOS. It downloads the latest release by default, or `VERSION=X.Y.Z` when pinned. If Zig 0.16.0 and `git` are available, it builds the tagged source release locally; otherwise it downloads the matching pre-built binary and verifies `SHA256SUMS` when available.
 
 :::note
 If you have both the standalone binary and the Python package installed, the one that appears first in your `PATH` will be used. To avoid confusion, use only one installation method for the CLI.
