@@ -134,6 +134,8 @@ def compute_sasa_trajectory(
     stop: int | None = None,
     step: int = 1,
     use_bitmask: bool = False,
+    bitmask_correction: bool = False,
+    bitmask_correction_coeff: float | None = None,
 ) -> TrajectorySasaResult
 ```
 
@@ -152,6 +154,8 @@ def compute_sasa_trajectory(
 | `stop` | `int \| None` | `None` | Stop before this frame (None = all) |
 | `step` | `int` | `1` | Process every Nth frame |
 | `use_bitmask` | `bool` | `False` | Use [bitmask LUT optimization](../guide/algorithms.mdx#bitmask-lut-optimization) (SR only, n_points must be 1..1024) |
+| `bitmask_correction` | `bool` | `False` | Experimental exposed-fraction correction for bitmask quantization bias; requires `use_bitmask=True` |
+| `bitmask_correction_coeff` | `float \| None` | `None` | Override the experimental correction coefficient (`None` uses library default) |
 
 **Returns:** `TrajectorySasaResult`
 

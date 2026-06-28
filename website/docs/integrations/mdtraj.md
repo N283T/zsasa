@@ -35,6 +35,8 @@ def compute_sasa(
     n_threads: int = 0,
     mode: Literal["atom", "residue", "total"] = "atom",
     use_bitmask: bool = False,
+    bitmask_correction: bool = False,
+    bitmask_correction_coeff: float | None = None,
 ) -> NDArray[np.float32]
 ```
 
@@ -50,6 +52,8 @@ def compute_sasa(
 | `n_threads` | `int` | `0` | Threads (0 = auto) |
 | `mode` | `"atom"`, `"residue"`, `"total"` | `"atom"` | Output mode |
 | `use_bitmask` | `bool` | `False` | Use [bitmask LUT optimization](../guide/algorithms.mdx#bitmask-lut-optimization) (SR only, n_points must be 1..1024) |
+| `bitmask_correction` | `bool` | `False` | Experimental exposed-fraction correction for bitmask quantization bias; requires `use_bitmask=True` |
+| `bitmask_correction_coeff` | `float \| None` | `None` | Override the experimental correction coefficient (`None` uses library default) |
 
 **Returns:** SASA values in nm² (matching MDTraj's output units).
 

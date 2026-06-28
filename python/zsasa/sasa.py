@@ -44,6 +44,8 @@ def calculate_sasa(
     probe_radius: float = 1.4,
     n_threads: int = 0,
     use_bitmask: bool = False,
+    bitmask_correction: bool = False,
+    bitmask_correction_coeff: float | None = None,
 ) -> SasaResult:
     """Calculate Solvent Accessible Surface Area (SASA).
 
@@ -57,6 +59,10 @@ def calculate_sasa(
         n_threads: Number of threads to use. 0 = auto-detect. Default: 0.
         use_bitmask: Use bitmask LUT optimization for SR algorithm.
             Supports n_points 1..1024. Default: False.
+        bitmask_correction: Apply experimental bitmask exposed-fraction
+            correction. Requires use_bitmask=True. Default: False.
+        bitmask_correction_coeff: Optional non-negative correction coefficient.
+            Defaults to the library's experimental coefficient when omitted.
 
     Returns:
         SasaResult containing total_area and per-atom atom_areas.
@@ -89,10 +95,18 @@ def calculate_sasa(
     if n_threads < 0:
         msg = f"n_threads must be non-negative, got {n_threads}"
         raise ValueError(msg)
+    if bitmask_correction and not use_bitmask:
+        msg = "bitmask_correction=True requires use_bitmask=True"
+        raise ValueError(msg)
+    if bitmask_correction_coeff is not None and (
+        bitmask_correction_coeff < 0 or not np.isfinite(bitmask_correction_coeff)
+    ):
+        msg = f"bitmask_correction_coeff must be non-negative, got {bitmask_correction_coeff}"
+        raise ValueError(msg)
 
     # Validate bitmask constraints
     if use_bitmask:
-        use_bitmask = _validate_bitmask_params(algorithm, n_points)
+        use_bitmask = _validate_bitmask_params(algorithm, n_points, strict=bitmask_correction)
 
     # Validate and convert inputs
     coords = np.ascontiguousarray(coords, dtype=np.float64)
@@ -129,18 +143,34 @@ def calculate_sasa(
 
     # Call the appropriate function
     if use_bitmask:
-        result = lib.zsasa_calc_sr_bitmask(
-            x_ptr,
-            y_ptr,
-            z_ptr,
-            radii_ptr,
-            n_atoms,
-            n_points,
-            probe_radius,
-            n_threads,
-            areas_ptr,
-            total_area,
-        )
+        if bitmask_correction:
+            coeff = 0.020 if bitmask_correction_coeff is None else bitmask_correction_coeff
+            result = lib.zsasa_calc_sr_bitmask_corrected(
+                x_ptr,
+                y_ptr,
+                z_ptr,
+                radii_ptr,
+                n_atoms,
+                n_points,
+                probe_radius,
+                n_threads,
+                coeff,
+                areas_ptr,
+                total_area,
+            )
+        else:
+            result = lib.zsasa_calc_sr_bitmask(
+                x_ptr,
+                y_ptr,
+                z_ptr,
+                radii_ptr,
+                n_atoms,
+                n_points,
+                probe_radius,
+                n_threads,
+                areas_ptr,
+                total_area,
+            )
     elif algorithm == "sr":
         result = lib.zsasa_calc_sr(
             x_ptr,
@@ -238,6 +268,8 @@ def calculate_sasa_batch(
     n_threads: int = 0,
     precision: Literal["f64", "f32"] = "f64",
     use_bitmask: bool = False,
+    bitmask_correction: bool = False,
+    bitmask_correction_coeff: float | None = None,
 ) -> BatchSasaResult:
     """Calculate SASA for multiple frames (batch processing).
 
@@ -256,6 +288,10 @@ def calculate_sasa_batch(
             or "f32" (matches RustSASA/mdsasa-bolt for comparison). Default: "f64".
         use_bitmask: Use bitmask LUT optimization for SR algorithm.
             Supports n_points 1..1024. Default: False.
+        bitmask_correction: Apply experimental bitmask exposed-fraction
+            correction. Requires use_bitmask=True. Default: False.
+        bitmask_correction_coeff: Optional non-negative correction coefficient.
+            Defaults to the library's experimental coefficient when omitted.
 
     Returns:
         BatchSasaResult containing per-atom SASA for all frames.
@@ -289,10 +325,18 @@ def calculate_sasa_batch(
     if n_threads < 0:
         msg = f"n_threads must be non-negative, got {n_threads}"
         raise ValueError(msg)
+    if bitmask_correction and not use_bitmask:
+        msg = "bitmask_correction=True requires use_bitmask=True"
+        raise ValueError(msg)
+    if bitmask_correction_coeff is not None and (
+        bitmask_correction_coeff < 0 or not np.isfinite(bitmask_correction_coeff)
+    ):
+        msg = f"bitmask_correction_coeff must be non-negative, got {bitmask_correction_coeff}"
+        raise ValueError(msg)
 
     # Validate bitmask constraints
     if use_bitmask:
-        use_bitmask = _validate_bitmask_params(algorithm, n_points)
+        use_bitmask = _validate_bitmask_params(algorithm, n_points, strict=bitmask_correction)
 
     # Validate and convert inputs
     coordinates = np.ascontiguousarray(coordinates, dtype=np.float32)
@@ -323,28 +367,55 @@ def calculate_sasa_batch(
 
     # Call the appropriate batch function based on algorithm, precision, and bitmask
     if use_bitmask:
+        coeff = 0.020 if bitmask_correction_coeff is None else bitmask_correction_coeff
         if precision == "f32":
-            result = lib.zsasa_calc_sr_batch_bitmask_f32(
-                coords_ptr,
-                n_frames,
-                n_atoms,
-                radii_ptr,
-                n_points,
-                probe_radius,
-                n_threads,
-                areas_ptr,
-            )
+            if bitmask_correction:
+                result = lib.zsasa_calc_sr_batch_bitmask_f32_corrected(
+                    coords_ptr,
+                    n_frames,
+                    n_atoms,
+                    radii_ptr,
+                    n_points,
+                    probe_radius,
+                    n_threads,
+                    coeff,
+                    areas_ptr,
+                )
+            else:
+                result = lib.zsasa_calc_sr_batch_bitmask_f32(
+                    coords_ptr,
+                    n_frames,
+                    n_atoms,
+                    radii_ptr,
+                    n_points,
+                    probe_radius,
+                    n_threads,
+                    areas_ptr,
+                )
         else:
-            result = lib.zsasa_calc_sr_batch_bitmask(
-                coords_ptr,
-                n_frames,
-                n_atoms,
-                radii_ptr,
-                n_points,
-                probe_radius,
-                n_threads,
-                areas_ptr,
-            )
+            if bitmask_correction:
+                result = lib.zsasa_calc_sr_batch_bitmask_corrected(
+                    coords_ptr,
+                    n_frames,
+                    n_atoms,
+                    radii_ptr,
+                    n_points,
+                    probe_radius,
+                    n_threads,
+                    coeff,
+                    areas_ptr,
+                )
+            else:
+                result = lib.zsasa_calc_sr_batch_bitmask(
+                    coords_ptr,
+                    n_frames,
+                    n_atoms,
+                    radii_ptr,
+                    n_points,
+                    probe_radius,
+                    n_threads,
+                    areas_ptr,
+                )
     elif precision == "f64":
         # Default: f32 I/O with f64 internal precision
         if algorithm == "sr":

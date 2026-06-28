@@ -15,6 +15,8 @@ def calculate_sasa(
     probe_radius: float = 1.4,
     n_threads: int = 0,
     use_bitmask: bool = False,
+    bitmask_correction: bool = False,
+    bitmask_correction_coeff: float | None = None,
 ) -> SasaResult
 ```
 
@@ -32,6 +34,8 @@ Calculate Solvent Accessible Surface Area.
 | `probe_radius` | `float` | `1.4` | Water probe radius in Å |
 | `n_threads` | `int` | `0` | Number of threads (0 = auto) |
 | `use_bitmask` | `bool` | `False` | Use [bitmask LUT optimization](../guide/algorithms.mdx#bitmask-lut-optimization) (SR only, n_points must be 1..1024) |
+| `bitmask_correction` | `bool` | `False` | Experimental exposed-fraction correction for bitmask quantization bias; requires `use_bitmask=True` |
+| `bitmask_correction_coeff` | `float \| None` | `None` | Override the experimental correction coefficient (`None` uses library default) |
 
 **Returns:** `SasaResult`
 
@@ -66,6 +70,8 @@ def calculate_sasa_batch(
     n_threads: int = 0,
     precision: Literal["f64", "f32"] = "f64",
     use_bitmask: bool = False,
+    bitmask_correction: bool = False,
+    bitmask_correction_coeff: float | None = None,
 ) -> BatchSasaResult
 ```
 
@@ -84,6 +90,8 @@ Calculate SASA for multiple frames in batch.
 | `n_threads` | `int` | `0` | Number of threads (0 = auto) |
 | `precision` | `"f64"` or `"f32"` | `"f64"` | Floating-point precision |
 | `use_bitmask` | `bool` | `False` | Use [bitmask LUT optimization](../guide/algorithms.mdx#bitmask-lut-optimization) (SR only, n_points must be 1..1024) |
+| `bitmask_correction` | `bool` | `False` | Experimental exposed-fraction correction for bitmask quantization bias; requires `use_bitmask=True` |
+| `bitmask_correction_coeff` | `float \| None` | `None` | Override the experimental correction coefficient (`None` uses library default) |
 
 **Returns:** `BatchSasaResult`
 

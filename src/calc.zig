@@ -67,6 +67,8 @@ pub const CalcArgs = struct {
     rsa: bool = false, // Show RSA (Relative Solvent Accessibility)
     polar: bool = false, // Show polar/nonpolar SASA summary
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
+    bitmask_correction: bool = false, // Experimental exposed-fraction correction for bitmask SR
+    bitmask_correction_coeff: f64 = shrake_rupley_bitmask.default_bitmask_correction_coeff,
     ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz|.zst])
     sdf_paths: SdfPathList = .{}, // --sdf=PATH (up to 16)
     mol_selector: ?[]const u8 = null, // --mol=NAME or --mol=N (1-based index)
@@ -92,6 +94,8 @@ pub const CalcArgs = struct {
     rsa_explicit: bool = false,
     polar_explicit: bool = false,
     use_bitmask_explicit: bool = false,
+    bitmask_correction_explicit: bool = false,
+    bitmask_correction_coeff_explicit: bool = false,
     ccd_explicit: bool = false,
     sdf_explicit: bool = false,
     mol_explicit: bool = false,
@@ -147,6 +151,19 @@ fn parseNPoints(value: []const u8) u32 {
         std.debug.print("Error: n-points must be between 1 and 10000: {d}\n", .{n});
         std.process.exit(1);
     };
+}
+
+/// Parse and validate experimental bitmask correction coefficient.
+fn parseBitmaskCorrectionCoeff(value: []const u8) f64 {
+    const coeff = std.fmt.parseFloat(f64, value) catch {
+        std.debug.print("Error: Invalid bitmask correction coefficient: {s}\n", .{value});
+        std.process.exit(1);
+    };
+    if (!std.math.isFinite(coeff) or coeff < 0.0) {
+        std.debug.print("Error: Bitmask correction coefficient must be finite and non-negative: {d}\n", .{coeff});
+        std.process.exit(1);
+    }
+    return coeff;
 }
 
 /// Parse and validate output format value
@@ -532,6 +549,28 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
             result.use_bitmask = true;
             result.use_bitmask_explicit = true;
         }
+        // --bitmask-correction
+        else if (std.mem.eql(u8, arg, "--bitmask-correction")) {
+            result.bitmask_correction = true;
+            result.bitmask_correction_explicit = true;
+        }
+        // --bitmask-correction-coeff=VALUE or --bitmask-correction-coeff VALUE
+        else if (std.mem.startsWith(u8, arg, "--bitmask-correction-coeff=")) {
+            result.bitmask_correction_coeff = parseBitmaskCorrectionCoeff(arg["--bitmask-correction-coeff=".len..]);
+            result.bitmask_correction = true;
+            result.bitmask_correction_explicit = true;
+            result.bitmask_correction_coeff_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--bitmask-correction-coeff")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --bitmask-correction-coeff\n", .{});
+                std.process.exit(1);
+            }
+            result.bitmask_correction_coeff = parseBitmaskCorrectionCoeff(args[i]);
+            result.bitmask_correction = true;
+            result.bitmask_correction_explicit = true;
+            result.bitmask_correction_coeff_explicit = true;
+        }
         // --help or -h
         else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             result.show_help = true;
@@ -779,6 +818,11 @@ pub fn printHelp(program_name: []const u8) void {
         \\    -o, --output=FILE  Output file (alternative to positional argument)
         \\    --use-bitmask      Use bitmask LUT optimization for SR algorithm
         \\                       Faster but approximate; n-points must be 1..1024
+        \\    --bitmask-correction
+        \\                       Experimental correction for bitmask quantization bias
+        \\                       Requires --use-bitmask
+        \\    --bitmask-correction-coeff=V
+        \\                       Override correction coefficient (default: 0.020)
         \\    --validate         Validate input only, do not calculate SASA
         \\    --timing           Show timing breakdown (for benchmarking)
         \\    -q, --quiet        Suppress progress output
@@ -1335,6 +1379,10 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
             std.process.exit(1);
         }
     }
+    if (effective_args.bitmask_correction and !effective_args.use_bitmask) {
+        std.debug.print("Error: --bitmask-correction requires --use-bitmask\n", .{});
+        std.process.exit(1);
+    }
 
     // Apply classifier (--config takes precedence over --classifier)
     // Default: ccd for PDB/mmCIF input (ProtOr-compatible with CCD extension)
@@ -1457,13 +1505,17 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
                     .probe_radius = effective_args.probe_radius,
                 };
                 break :blk if (effective_args.use_bitmask) bitmask_blk: {
+                    const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f64){
+                        .enabled = effective_args.bitmask_correction,
+                        .coeff = effective_args.bitmask_correction_coeff,
+                    };
                     break :bitmask_blk if (effective_args.n_threads == 1)
-                        shrake_rupley_bitmask.calculateSasa(allocator, input, config) catch |err| {
+                        shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).calculateSasaWithCorrection(allocator, input, config, correction) catch |err| {
                             std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                             std.process.exit(1);
                         }
                     else
-                        shrake_rupley_bitmask.calculateSasaParallel(allocator, input, config, effective_args.n_threads) catch |err| {
+                        shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).calculateSasaParallelWithCorrection(allocator, input, config, effective_args.n_threads, correction) catch |err| {
                             std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                             std.process.exit(1);
                         };
@@ -1506,13 +1558,17 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
                         .probe_radius = @floatCast(effective_args.probe_radius),
                     };
                     break :inner if (effective_args.use_bitmask) bitmask_inner: {
+                        const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f32){
+                            .enabled = effective_args.bitmask_correction,
+                            .coeff = @floatCast(effective_args.bitmask_correction_coeff),
+                        };
                         break :bitmask_inner if (effective_args.n_threads == 1)
-                            shrake_rupley_bitmask.calculateSasaf32(allocator, input, config) catch |err| {
+                            shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithCorrection(allocator, input, config, correction) catch |err| {
                                 std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                                 std.process.exit(1);
                             }
                         else
-                            shrake_rupley_bitmask.calculateSasaParallelf32(allocator, input, config, effective_args.n_threads) catch |err| {
+                            shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaParallelWithCorrection(allocator, input, config, effective_args.n_threads, correction) catch |err| {
                                 std.debug.print("Error calculating SASA: {s}\n", .{@errorName(err)});
                                 std.process.exit(1);
                             };
@@ -1823,6 +1879,20 @@ test "CalcArgs --use-bitmask" {
     const args = [_][]const u8{ "zsasa", "calc", "--use-bitmask", "input.json" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(true, parsed.use_bitmask);
+}
+
+test "CalcArgs --bitmask-correction" {
+    const args = [_][]const u8{ "zsasa", "calc", "--use-bitmask", "--bitmask-correction", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.use_bitmask);
+    try std.testing.expectEqual(true, parsed.bitmask_correction);
+}
+
+test "CalcArgs --bitmask-correction-coeff implies correction" {
+    const args = [_][]const u8{ "zsasa", "calc", "--use-bitmask", "--bitmask-correction-coeff=0.2", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.bitmask_correction);
+    try std.testing.expectEqual(@as(f64, 0.2), parsed.bitmask_correction_coeff);
 }
 
 test "CalcArgs --timing" {

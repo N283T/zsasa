@@ -23,16 +23,23 @@ _BITMASK_MIN_N_POINTS = 1
 _BITMASK_MAX_N_POINTS = 1024
 
 
-def _validate_bitmask_params(algorithm: str, n_points: int) -> bool:
+def _validate_bitmask_params(algorithm: str, n_points: int, *, strict: bool = False) -> bool:
     """Validate parameters for bitmask mode.
 
     Returns True if bitmask should be used, False if falling back to standard SR.
-    Raises ValueError if algorithm is incompatible (not SR).
+    Raises ValueError if algorithm is incompatible (not SR), or if strict=True
+    and n_points is outside the bitmask range.
     """
     if algorithm != "sr":
         msg = "use_bitmask=True only supports algorithm='sr' (Shrake-Rupley)"
         raise ValueError(msg)
     if not (_BITMASK_MIN_N_POINTS <= n_points <= _BITMASK_MAX_N_POINTS):
+        if strict:
+            msg = (
+                f"bitmask_correction=True requires n_points in "
+                f"{_BITMASK_MIN_N_POINTS}..{_BITMASK_MAX_N_POINTS}, got {n_points}"
+            )
+            raise ValueError(msg)
         warnings.warn(
             f"use_bitmask=True requires n_points in "
             f"{_BITMASK_MIN_N_POINTS}..{_BITMASK_MAX_N_POINTS}, got {n_points}. "
@@ -109,6 +116,12 @@ _CDEF = """
         double* atom_areas, double* total_area
     );
 
+    int zsasa_calc_sr_bitmask_corrected(
+        const double* x, const double* y, const double* z, const double* radii,
+        size_t n_atoms, uint32_t n_points, double probe_radius, size_t n_threads,
+        double correction_coeff, double* atom_areas, double* total_area
+    );
+
     // Bitmask batch SASA calculation (f64 internal precision)
     int zsasa_calc_sr_batch_bitmask(
         const float* coordinates, size_t n_frames, size_t n_atoms,
@@ -116,11 +129,23 @@ _CDEF = """
         size_t n_threads, float* atom_areas
     );
 
+    int zsasa_calc_sr_batch_bitmask_corrected(
+        const float* coordinates, size_t n_frames, size_t n_atoms,
+        const float* radii, uint32_t n_points, float probe_radius,
+        size_t n_threads, double correction_coeff, float* atom_areas
+    );
+
     // Bitmask batch SASA calculation (f32 internal precision)
     int zsasa_calc_sr_batch_bitmask_f32(
         const float* coordinates, size_t n_frames, size_t n_atoms,
         const float* radii, uint32_t n_points, float probe_radius,
         size_t n_threads, float* atom_areas
+    );
+
+    int zsasa_calc_sr_batch_bitmask_f32_corrected(
+        const float* coordinates, size_t n_frames, size_t n_atoms,
+        const float* radii, uint32_t n_points, float probe_radius,
+        size_t n_threads, double correction_coeff, float* atom_areas
     );
 
     // Classifier functions

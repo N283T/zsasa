@@ -590,6 +590,31 @@ class TestBitmask:
         expected = 4 * np.pi * (1.5 + 1.4) ** 2
         assert abs(result.total_area - expected) < 2.0
 
+    def test_bitmask_correction_increases_partial_overlap(self):
+        """Correction should increase partially occluded bitmask SASA."""
+        coords = np.array([[0.0, 0.0, 0.0], [2.5, 0.0, 0.0]])
+        radii = np.array([1.5, 1.5])
+
+        raw = calculate_sasa(coords, radii, n_points=128, use_bitmask=True)
+        corrected = calculate_sasa(
+            coords,
+            radii,
+            n_points=128,
+            use_bitmask=True,
+            bitmask_correction=True,
+            bitmask_correction_coeff=0.2,
+        )
+
+        assert corrected.total_area > raw.total_area
+
+    def test_bitmask_correction_requires_bitmask(self):
+        """Correction without bitmask mode should raise ValueError."""
+        coords = np.array([[0.0, 0.0, 0.0]])
+        radii = np.array([1.5])
+
+        with pytest.raises(ValueError, match="bitmask_correction=True requires use_bitmask=True"):
+            calculate_sasa(coords, radii, bitmask_correction=True)
+
     def test_bitmask_all_supported_n_points(self):
         """Bitmask should work for all supported n_points values."""
         coords = np.array([[0.0, 0.0, 0.0]])
@@ -618,6 +643,14 @@ class TestBitmask:
             assert len(w) == 1
             assert "Falling back" in str(w[0].message)
         assert result.total_area > 0
+
+    def test_bitmask_correction_unsupported_n_points_raises(self):
+        """Correction should not silently fall back when bitmask n_points is unsupported."""
+        coords = np.array([[0.0, 0.0, 0.0]])
+        radii = np.array([1.5])
+
+        with pytest.raises(ValueError, match="bitmask_correction=True requires n_points"):
+            calculate_sasa(coords, radii, n_points=2000, use_bitmask=True, bitmask_correction=True)
 
     def test_bitmask_default_n_points_works(self):
         """use_bitmask=True with default n_points (100) should work."""
@@ -648,6 +681,28 @@ class TestBitmask:
         assert bitmask.atom_areas.shape == (n_frames, 2)
         np.testing.assert_allclose(bitmask.atom_areas, standard.atom_areas, rtol=0.02)
 
+    def test_bitmask_batch_correction_increases_partial_overlap(self):
+        """Batch correction should increase partially occluded bitmask SASA."""
+        from zsasa import calculate_sasa_batch
+
+        coords = np.array(
+            [[[0.0, 0.0, 0.0], [2.5, 0.0, 0.0]]],
+            dtype=np.float32,
+        )
+        radii = np.array([1.5, 1.5], dtype=np.float32)
+
+        raw = calculate_sasa_batch(coords, radii, n_points=128, use_bitmask=True)
+        corrected = calculate_sasa_batch(
+            coords,
+            radii,
+            n_points=128,
+            use_bitmask=True,
+            bitmask_correction=True,
+            bitmask_correction_coeff=0.2,
+        )
+
+        assert corrected.total_areas[0] > raw.total_areas[0]
+
     def test_bitmask_batch_invalid_algorithm(self):
         """Batch bitmask with algorithm='lr' should raise ValueError."""
         from zsasa import calculate_sasa_batch
@@ -671,6 +726,22 @@ class TestBitmask:
             assert len(w) == 1
             assert "Falling back" in str(w[0].message)
         assert result.atom_areas.sum() > 0
+
+    def test_bitmask_batch_correction_unsupported_n_points_raises(self):
+        """Batch correction should not silently fall back when bitmask n_points is unsupported."""
+        from zsasa import calculate_sasa_batch
+
+        coords = np.array([[[0.0, 0.0, 0.0]]], dtype=np.float32)
+        radii = np.array([1.5], dtype=np.float32)
+
+        with pytest.raises(ValueError, match="bitmask_correction=True requires n_points"):
+            calculate_sasa_batch(
+                coords,
+                radii,
+                n_points=2000,
+                use_bitmask=True,
+                bitmask_correction=True,
+            )
 
     def test_bitmask_batch_f32_precision(self):
         """Bitmask batch with f32 precision should work."""

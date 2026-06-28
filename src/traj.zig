@@ -143,6 +143,8 @@ pub const TrajArgs = struct {
     include_hydrogens: bool = true, // Include hydrogen atoms (default: include for MD trajectories)
     batch_size: u32 = 0, // Frames per batch for parallel processing (0 = auto)
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
+    bitmask_correction: bool = false, // Experimental exposed-fraction correction for bitmask SR
+    bitmask_correction_coeff: f64 = shrake_rupley_bitmask.default_bitmask_correction_coeff,
     quiet: bool = false,
     show_progress: bool = true,
     show_help: bool = false,
@@ -150,6 +152,18 @@ pub const TrajArgs = struct {
 
 fn shouldShowProgress(args: TrajArgs) bool {
     return args.show_progress and !args.quiet;
+}
+
+fn parseBitmaskCorrectionCoeff(value: []const u8) f64 {
+    const coeff = std.fmt.parseFloat(f64, value) catch {
+        std.debug.print("Error: Invalid bitmask correction coefficient: {s}\n", .{value});
+        std.process.exit(1);
+    };
+    if (!std.math.isFinite(coeff) or coeff < 0.0) {
+        std.debug.print("Error: Bitmask correction coefficient must be finite and non-negative: {d}\n", .{coeff});
+        std.process.exit(1);
+    }
+    return coeff;
 }
 
 /// Parse trajectory mode arguments
@@ -263,6 +277,19 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) TrajArgs {
                 result.include_hydrogens = false;
             } else if (std.mem.eql(u8, arg, "--use-bitmask")) {
                 result.use_bitmask = true;
+            } else if (std.mem.eql(u8, arg, "--bitmask-correction")) {
+                result.bitmask_correction = true;
+            } else if (std.mem.startsWith(u8, arg, "--bitmask-correction-coeff=")) {
+                result.bitmask_correction_coeff = parseBitmaskCorrectionCoeff(arg["--bitmask-correction-coeff=".len..]);
+                result.bitmask_correction = true;
+            } else if (std.mem.eql(u8, arg, "--bitmask-correction-coeff")) {
+                i += 1;
+                if (i >= args.len) {
+                    std.debug.print("Error: Missing value for --bitmask-correction-coeff\n", .{});
+                    std.process.exit(1);
+                }
+                result.bitmask_correction_coeff = parseBitmaskCorrectionCoeff(args[i]);
+                result.bitmask_correction = true;
             } else if (std.mem.eql(u8, arg, "-q") or std.mem.eql(u8, arg, "--quiet")) {
                 result.quiet = true;
                 result.show_progress = false;
@@ -368,6 +395,11 @@ pub fn printHelp(program_name: []const u8) void {
         \\                       Include hydrogen atoms (default, for backward compat)
         \\    --use-bitmask      Use bitmask LUT optimization for SR algorithm
         \\                       (n-points must be 1..1024)
+        \\    --bitmask-correction
+        \\                       Experimental correction for bitmask quantization bias
+        \\                       Requires --use-bitmask
+        \\    --bitmask-correction-coeff=V
+        \\                       Override correction coefficient (default: 0.020)
         \\    --stride=N         Process every Nth frame (default: 1)
         \\    --start=N          Start from frame N (default: 0)
         \\    --end=N            End at frame N (default: all)
@@ -480,6 +512,8 @@ const BatchWorkerArgs = struct {
     coord_scale: f64, // ztraj readers already yield Å; kept for reader abstraction
     bitmask_lut_f64: ?*const bitmask_lut.BitmaskLut = null,
     bitmask_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32) = null,
+    bitmask_correction: bool = false,
+    bitmask_correction_coeff: f64 = shrake_rupley_bitmask.default_bitmask_correction_coeff,
 };
 
 /// Set error flag and store a descriptive message (first writer wins).
@@ -549,7 +583,11 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
                 .n_points = args.n_points,
             };
             if (args.bitmask_lut_f32) |lut| {
-                var result = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithLut(thread_alloc, input, config, lut) catch |err| {
+                const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f32){
+                    .enabled = args.bitmask_correction,
+                    .coeff = @floatCast(args.bitmask_correction_coeff),
+                };
+                var result = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithLutAndCorrection(thread_alloc, input, config, lut, correction) catch |err| {
                     setWorkerError(args, "frame {d}: bitmask-f32 failed: {s}", .{ frame_id, @errorName(err) });
                     return;
                 };
@@ -570,7 +608,11 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
                     .n_points = args.n_points,
                 };
                 if (args.bitmask_lut_f64) |lut| {
-                    var result = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).calculateSasaWithLut(thread_alloc, input, config, lut) catch |err| {
+                    const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f64){
+                        .enabled = args.bitmask_correction,
+                        .coeff = args.bitmask_correction_coeff,
+                    };
+                    var result = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).calculateSasaWithLutAndCorrection(thread_alloc, input, config, lut, correction) catch |err| {
                         setWorkerError(args, "frame {d}: bitmask-f64 failed: {s}", .{ frame_id, @errorName(err) });
                         return;
                     };
@@ -802,6 +844,11 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
         return error.AtomCountMismatch;
     }
 
+    if (args.bitmask_correction and !args.use_bitmask) {
+        std.debug.print("Error: --bitmask-correction requires --use-bitmask\n", .{});
+        return error.InvalidArgument;
+    }
+
     // Open output file with buffered writer
     const output_file = try std.Io.Dir.cwd().createFile(io, args.output_path, .{});
     defer output_file.close(io);
@@ -971,7 +1018,11 @@ fn runSequential(
                     .n_points = args.n_points,
                 };
                 if (luts.f32Ptr()) |lut| {
-                    var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithLut(allocator, frame_input, config, lut);
+                    const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f32){
+                        .enabled = args.bitmask_correction,
+                        .coeff = @floatCast(args.bitmask_correction_coeff),
+                    };
+                    var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithLutAndCorrection(allocator, frame_input, config, lut, correction);
                     defer result.deinit();
                     break :blk @floatCast(result.total_area);
                 } else {
@@ -988,7 +1039,11 @@ fn runSequential(
                             .n_points = args.n_points,
                         };
                         if (luts.f64Ptr()) |lut| {
-                            var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).calculateSasaWithLut(allocator, frame_input, config, lut);
+                            const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f64){
+                                .enabled = args.bitmask_correction,
+                                .coeff = args.bitmask_correction_coeff,
+                            };
+                            var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).calculateSasaWithLutAndCorrection(allocator, frame_input, config, lut, correction);
                             defer result.deinit();
                             break :blk result.total_area;
                         } else {
@@ -1096,6 +1151,8 @@ fn runBatchParallel(
                 .coord_scale = reader.coordScale(),
                 .bitmask_lut_f64 = luts.f64Ptr(),
                 .bitmask_lut_f32 = luts.f32Ptr(),
+                .bitmask_correction = args.bitmask_correction,
+                .bitmask_correction_coeff = args.bitmask_correction_coeff,
             }}) catch {
                 error_flag.store(true, .release);
                 for (threads[0..i]) |thread| {
@@ -1236,6 +1293,13 @@ test "TrajArgs quiet disables progress" {
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(true, parsed.quiet);
     try std.testing.expectEqual(false, parsed.show_progress);
+}
+
+test "TrajArgs --bitmask-correction-coeff" {
+    const args = [_][]const u8{ "zsasa", "traj", "--use-bitmask", "--bitmask-correction-coeff=0.2", "traj.xtc", "topology.pdb" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.bitmask_correction);
+    try std.testing.expectEqual(@as(f64, 0.2), parsed.bitmask_correction_coeff);
 }
 
 test "TrajArgs quiet suppresses progress even when show_progress defaults true" {
