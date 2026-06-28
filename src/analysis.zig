@@ -216,9 +216,22 @@ pub const ResidueResult = struct {
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *ResidueResult) void {
+        for (self.residues) |res| {
+            if (res.chain_id_full) |chain_id_full| {
+                self.allocator.free(chain_id_full);
+            }
+        }
         self.allocator.free(self.residues);
     }
 };
+
+fn freeResidueFullChainLabels(allocator: std.mem.Allocator, residues: []ResidueSasa) void {
+    for (residues) |res| {
+        if (res.chain_id_full) |chain_id_full| {
+            allocator.free(chain_id_full);
+        }
+    }
+}
 
 /// Aggregate atom SASA values to per-residue SASA.
 /// Atoms are grouped by (chain_id, residue_num, insertion_code).
@@ -248,6 +261,7 @@ pub fn aggregateByResidue(
     // Use a simple approach: collect unique residues and sum areas
     // For efficiency, we use a fixed-size buffer then convert to owned slice
     var residue_list = std.ArrayListUnmanaged(ResidueSasa).empty;
+    errdefer freeResidueFullChainLabels(allocator, residue_list.items);
     defer residue_list.deinit(allocator);
 
     for (0..n) |i| {
@@ -279,10 +293,16 @@ pub fn aggregateByResidue(
             residue_list.items[idx].sasa += atom_areas[i];
             residue_list.items[idx].atom_count += 1;
         } else {
+            const owned_chain_id_full = if (chain_ids_full) |full|
+                try allocator.dupe(u8, full[i])
+            else
+                null;
+            errdefer if (owned_chain_id_full) |chain_id_full| allocator.free(chain_id_full);
+
             // Add new residue
             try residue_list.append(allocator, ResidueSasa{
                 .chain_id = chain,
-                .chain_id_full = if (chain_ids_full) |full| full[i] else null,
+                .chain_id_full = owned_chain_id_full,
                 .residue_name = residue_names[i],
                 .residue_num = res_num,
                 .insertion_code = ins_code,
@@ -529,6 +549,50 @@ test "aggregateByResidue groups by full chain IDs when present" {
     try std.testing.expectEqual(@as(usize, 2), result.residues.len);
     try std.testing.expectEqualStrings("ABCD1", result.residues[0].chainLabel());
     try std.testing.expectEqualStrings("ABCD2", result.residues[1].chainLabel());
+}
+
+test "aggregateByResidue owns full chain labels independently of input" {
+    const allocator = std.testing.allocator;
+
+    const x = try allocator.alloc(f64, 1);
+    const y = try allocator.alloc(f64, 1);
+    const z = try allocator.alloc(f64, 1);
+    const r = try allocator.alloc(f64, 1);
+    const chain_id = try allocator.alloc(types.FixedString4, 1);
+    const chain_id_full = try allocator.alloc([]const u8, 1);
+    const residue = try allocator.alloc(types.FixedString5, 1);
+    const residue_num = try allocator.alloc(i32, 1);
+    const insertion_code = try allocator.alloc(types.FixedString4, 1);
+
+    x[0] = 0.0;
+    y[0] = 0.0;
+    z[0] = 0.0;
+    r[0] = 1.0;
+    chain_id[0] = types.FixedString4.fromSlice("ABCD");
+    chain_id_full[0] = try allocator.dupe(u8, "ABCD1");
+    residue[0] = types.FixedString5.fromSlice("ALA");
+    residue_num[0] = 1;
+    insertion_code[0] = types.FixedString4.fromSlice("");
+
+    var input = types.AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .chain_id = chain_id,
+        .chain_id_full = chain_id_full,
+        .residue = residue,
+        .residue_num = residue_num,
+        .insertion_code = insertion_code,
+        .allocator = allocator,
+    };
+
+    const atom_areas = [_]f64{10.0};
+    var result = try aggregateByResidue(allocator, input, atom_areas[0..]);
+    defer result.deinit();
+    input.deinit();
+
+    try std.testing.expectEqualStrings("ABCD1", result.residues[0].chainLabel());
 }
 
 test "MaxSASA lookup" {

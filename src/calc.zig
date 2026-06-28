@@ -1204,51 +1204,82 @@ fn applyBuiltinClassifier(
 /// Delegates to sdf_parser.loadSdfComponents.
 const loadSdfComponents = sdf_parser.loadSdfComponents;
 
-/// Print per-chain SASA results
-fn printPerChainResults(chain_ids: []const types.FixedString4, atom_areas: []const f64) void {
-    // Use a simple approach: iterate through to find unique chains and sum areas
-    // For efficiency, we'll use a fixed-size buffer for up to 64 unique chains
-    const max_chains = 64;
-    var chain_names: [max_chains]types.FixedString4 = undefined;
-    var chain_areas: [max_chains]f64 = undefined;
-    var chain_counts: [max_chains]usize = undefined;
+const ChainSasaSummary = struct {
+    chain_id: types.FixedString4,
+    chain_id_full: ?[]const u8 = null,
+    area: f64,
+    atom_count: usize,
+
+    fn label(self: ChainSasaSummary) []const u8 {
+        return self.chain_id_full orelse self.chain_id.slice();
+    }
+};
+
+fn sameChainSummary(summary: ChainSasaSummary, chain_id: types.FixedString4, chain_id_full: ?[]const u8) bool {
+    if (chain_id_full) |full| {
+        if (summary.chain_id_full) |summary_full| {
+            return std.mem.eql(u8, summary_full, full);
+        }
+        return false;
+    }
+    if (summary.chain_id_full != null) return false;
+    return std.mem.eql(u8, summary.chain_id.slice(), chain_id.slice());
+}
+
+fn buildPerChainSummaries(
+    chain_ids: []const types.FixedString4,
+    chain_ids_full: ?[]const []const u8,
+    atom_areas: []const f64,
+    summaries: []ChainSasaSummary,
+) usize {
     var num_chains: usize = 0;
-    var warned_overflow = false;
 
     for (chain_ids, 0..) |chain_id, i| {
-        // Find if this chain already exists
+        const full = if (chain_ids_full) |full_ids| full_ids[i] else null;
         var found_idx: ?usize = null;
-        for (0..num_chains) |j| {
-            if (std.mem.eql(u8, chain_names[j].slice(), chain_id.slice())) {
+        for (summaries[0..num_chains], 0..) |summary, j| {
+            if (sameChainSummary(summary, chain_id, full)) {
                 found_idx = j;
                 break;
             }
         }
 
         if (found_idx) |idx| {
-            // Add to existing chain
-            chain_areas[idx] += atom_areas[i];
-            chain_counts[idx] += 1;
-        } else if (num_chains < max_chains) {
-            // Add new chain
-            chain_names[num_chains] = chain_id;
-            chain_areas[num_chains] = atom_areas[i];
-            chain_counts[num_chains] = 1;
+            summaries[idx].area += atom_areas[i];
+            summaries[idx].atom_count += 1;
+        } else if (num_chains < summaries.len) {
+            summaries[num_chains] = .{
+                .chain_id = chain_id,
+                .chain_id_full = full,
+                .area = atom_areas[i],
+                .atom_count = 1,
+            };
             num_chains += 1;
-        } else if (!warned_overflow) {
-            // Warn once when limit is exceeded
-            std.debug.print("Warning: More than {d} unique chains; some chains omitted from summary\n", .{max_chains});
-            warned_overflow = true;
         }
+    }
+
+    return num_chains;
+}
+
+/// Print per-chain SASA results
+fn printPerChainResults(chain_ids: []const types.FixedString4, chain_ids_full: ?[]const []const u8, atom_areas: []const f64) void {
+    // Use a simple approach: iterate through to find unique chains and sum areas
+    // For efficiency, we'll use a fixed-size buffer for up to 64 unique chains
+    const max_chains = 64;
+    var summaries: [max_chains]ChainSasaSummary = undefined;
+    const num_chains = buildPerChainSummaries(chain_ids, chain_ids_full, atom_areas, summaries[0..]);
+
+    if (chain_ids.len > 0 and num_chains == max_chains) {
+        std.debug.print("Warning: More than {d} unique chains; some chains omitted from summary\n", .{max_chains});
     }
 
     if (num_chains > 0) {
         std.debug.print("\nPer-chain SASA:\n", .{});
         for (0..num_chains) |i| {
             std.debug.print("  {s}: {d:.2} Å² ({d} atoms)\n", .{
-                chain_names[i].slice(),
-                chain_areas[i],
-                chain_counts[i],
+                summaries[i].label(),
+                summaries[i].area,
+                summaries[i].atom_count,
             });
         }
     }
@@ -1646,7 +1677,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
 
         // Print per-chain results if chain info is available
         if (input.chain_id) |chain_ids| {
-            printPerChainResults(chain_ids, result.atom_areas);
+            printPerChainResults(chain_ids, input.chain_id_full, result.atom_areas);
         }
 
         // Print per-residue results if requested
@@ -2099,6 +2130,27 @@ test "calc default CCD includes HETATM like explicit CCD" {
 
     try std.testing.expectEqual(@as(usize, 2), try readAtomAreasLenFromJson(allocator, default_out));
     try std.testing.expectEqual(@as(usize, 2), try readAtomAreasLenFromJson(allocator, explicit_out));
+}
+
+test "per-chain summaries prefer full chain IDs over truncated prefixes" {
+    const chain_ids = [_]types.FixedString4{
+        types.FixedString4.fromSlice("ABCD"),
+        types.FixedString4.fromSlice("ABCD"),
+        types.FixedString4.fromSlice("ABCD"),
+    };
+    const chain_ids_full = [_][]const u8{ "ABCD1", "ABCD2", "ABCD1" };
+    const atom_areas = [_]f64{ 10.0, 20.0, 5.0 };
+    var summaries: [4]ChainSasaSummary = undefined;
+
+    const n = buildPerChainSummaries(chain_ids[0..], chain_ids_full[0..], atom_areas[0..], summaries[0..]);
+
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectEqualStrings("ABCD1", summaries[0].label());
+    try std.testing.expectEqual(@as(f64, 15.0), summaries[0].area);
+    try std.testing.expectEqual(@as(usize, 2), summaries[0].atom_count);
+    try std.testing.expectEqualStrings("ABCD2", summaries[1].label());
+    try std.testing.expectEqual(@as(f64, 20.0), summaries[1].area);
+    try std.testing.expectEqual(@as(usize, 1), summaries[1].atom_count);
 }
 
 test "calc workflow applies fields when CLI did not override" {
