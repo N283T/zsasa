@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-28
+
+### Added
+
+- **FreeSASA-compatible outputs**: add FreeSASA-style `calc` output formats for interoperability with existing SASA workflows. (#382)
+- **BSA workflow analysis**: add batch workflow support for two-partner buried surface area / ΔSASA analysis. (#388)
+- **Trajectory bitmask LUT modes**: add configurable trajectory bitmask lookup-table reuse modes. (#387)
+
+### Changed
+
+- **Benchmark website**: refresh benchmark documentation and website assets. (#381)
+- **Batch scheduling**: allow explicit batch thread overcommit for I/O-bound file sets. (#384)
+- **Bitmask SR accuracy controls**: add experimental bitmask bias correction controls. (#386)
+
+### Fixed
+
+- **Workflow parsing performance**: optimize multi-chain workflow parsing. (#385)
+- **Review hardening backlog**: harden C ABI test coverage, input validation, parser correctness, Python reliability, release workflows, source-install checks, and docs/package metadata. (#389)
+
 ## [0.6.0] - 2026-05-21
 
 ### Added
@@ -580,7 +599,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `calc_reference_sasa.py` - Generate reference SASA
   - `benchmark.py` - Performance benchmarking
 
-[Unreleased]: https://github.com/N283T/zsasa/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/N283T/zsasa/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/N283T/zsasa/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/N283T/zsasa/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/N283T/zsasa/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/N283T/zsasa/compare/v0.3.2...v0.4.0
