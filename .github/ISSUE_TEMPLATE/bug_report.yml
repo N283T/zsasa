@@ -12,7 +12,7 @@ body:
     attributes:
       label: zsasa Version
       description: Output of `zsasa --version` or `python -c "import zsasa; print(zsasa.get_version())"`
-      placeholder: "0.6.0"
+      placeholder: "0.7.0"
     validations:
       required: true
 

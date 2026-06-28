@@ -8,6 +8,25 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+## [v0.7.0](https://github.com/N283T/zsasa/releases/tag/v0.7.0) — 2026-06-28
+
+### Added
+
+- **FreeSASA-compatible outputs**: add FreeSASA-style `calc` output formats for interoperability with existing SASA workflows. (#382)
+- **BSA workflow analysis**: add batch workflow support for two-partner buried surface area / ΔSASA analysis. (#388)
+- **Trajectory bitmask LUT modes**: add configurable trajectory bitmask lookup-table reuse modes. (#387)
+
+### Changed
+
+- **Benchmark website**: refresh benchmark documentation and website assets. (#381)
+- **Batch scheduling**: allow explicit batch thread overcommit for I/O-bound file sets. (#384)
+- **Bitmask SR accuracy controls**: add experimental bitmask bias correction controls. (#386)
+
+### Fixed
+
+- **Workflow parsing performance**: optimize multi-chain workflow parsing. (#385)
+- **Review hardening backlog**: harden C ABI test coverage, input validation, parser correctness, Python reliability, release workflows, source-install checks, and docs/package metadata. (#389)
+
 ## [v0.6.0](https://github.com/N283T/zsasa/releases/tag/v0.6.0) — 2026-05-21
 
 ### Added

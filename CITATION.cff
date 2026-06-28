@@ -6,8 +6,8 @@ abstract: "High-performance Solvent Accessible Surface Area (SASA) calculator in
 authors:
   - family-names: "Nagae"
     given-names: "Tsubasa"
-version: "0.6.0"
-date-released: "2026-05-21"
+version: "0.7.0"
+date-released: "2026-06-28"
 license: MIT
 repository-code: "https://github.com/N283T/zsasa"
 url: "https://github.com/N283T/zsasa"
