@@ -83,6 +83,51 @@ fn cIo() std.Io {
     return std.Io.Threaded.global_single_threaded.io();
 }
 
+fn isPositiveFinite(comptime T: type, value: T) bool {
+    return std.math.isFinite(value) and value > 0.0;
+}
+
+fn isNonNegativeFinite(comptime T: type, value: T) bool {
+    return std.math.isFinite(value) and value >= 0.0;
+}
+
+fn validateAtomArraysF64(
+    x: [*]const f64,
+    y: [*]const f64,
+    z: [*]const f64,
+    radii: [*]const f64,
+    n_atoms: usize,
+) bool {
+    for (0..n_atoms) |i| {
+        if (!std.math.isFinite(x[i]) or
+            !std.math.isFinite(y[i]) or
+            !std.math.isFinite(z[i]) or
+            !isNonNegativeFinite(f64, radii[i]))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn validateBatchArraysF32(
+    coordinates: [*]const f32,
+    n_frames: usize,
+    n_atoms: usize,
+    radii: [*]const f32,
+) bool {
+    const frame_atoms = std.math.mul(usize, n_frames, n_atoms) catch return false;
+    const coordinate_count = std.math.mul(usize, frame_atoms, 3) catch return false;
+
+    for (coordinates[0..coordinate_count]) |coordinate| {
+        if (!std.math.isFinite(coordinate)) return false;
+    }
+    for (radii[0..n_atoms]) |radius| {
+        if (!isNonNegativeFinite(f32, radius)) return false;
+    }
+    return true;
+}
+
 /// Get library version string.
 export fn zsasa_version() callconv(.c) [*:0]const u8 {
     return VERSION;
@@ -115,7 +160,9 @@ export fn zsasa_calc_sr(
     total_area: *f64,
 ) callconv(.c) c_int {
     // Validate input
-    if (n_atoms == 0 or n_points == 0 or probe_radius <= 0.0) {
+    if (n_atoms == 0 or n_points == 0 or !isPositiveFinite(f64, probe_radius) or
+        !validateAtomArraysF64(x, y, z, radii, n_atoms))
+    {
         return ZSASA_ERROR_INVALID_INPUT;
     }
 
@@ -189,7 +236,9 @@ export fn zsasa_calc_sr_bitmask(
     atom_areas: [*]f64,
     total_area: *f64,
 ) callconv(.c) c_int {
-    if (n_atoms == 0 or n_points == 0 or probe_radius <= 0.0) {
+    if (n_atoms == 0 or n_points == 0 or !isPositiveFinite(f64, probe_radius) or
+        !validateAtomArraysF64(x, y, z, radii, n_atoms))
+    {
         return ZSASA_ERROR_INVALID_INPUT;
     }
 
@@ -245,7 +294,10 @@ export fn zsasa_calc_sr_bitmask_corrected(
     atom_areas: [*]f64,
     total_area: *f64,
 ) callconv(.c) c_int {
-    if (n_atoms == 0 or n_points == 0 or probe_radius <= 0.0 or correction_coeff < 0.0 or !std.math.isFinite(correction_coeff)) {
+    if (n_atoms == 0 or n_points == 0 or !isPositiveFinite(f64, probe_radius) or
+        correction_coeff < 0.0 or !std.math.isFinite(correction_coeff) or
+        !validateAtomArraysF64(x, y, z, radii, n_atoms))
+    {
         return ZSASA_ERROR_INVALID_INPUT;
     }
 
@@ -408,7 +460,9 @@ fn calculateBatch(
     algorithm: BatchAlgorithm,
 ) c_int {
     // Validate input
-    if (n_frames == 0 or n_atoms == 0 or param == 0 or probe_radius <= 0.0) {
+    if (n_frames == 0 or n_atoms == 0 or param == 0 or !isPositiveFinite(f32, probe_radius) or
+        !validateBatchArraysF32(coordinates, n_frames, n_atoms, radii))
+    {
         return ZSASA_ERROR_INVALID_INPUT;
     }
 
@@ -674,7 +728,9 @@ fn calculateBatchF32(
     atom_areas: [*]f32,
     algorithm: BatchAlgorithm,
 ) c_int {
-    if (n_frames == 0 or n_atoms == 0 or param == 0 or probe_radius <= 0.0) {
+    if (n_frames == 0 or n_atoms == 0 or param == 0 or !isPositiveFinite(f32, probe_radius) or
+        !validateBatchArraysF32(coordinates, n_frames, n_atoms, radii))
+    {
         return ZSASA_ERROR_INVALID_INPUT;
     }
 
@@ -880,7 +936,10 @@ fn calculateBatchBitmask(
     correction_coeff: f64,
     atom_areas: [*]f32,
 ) c_int {
-    if (n_frames == 0 or n_atoms == 0 or n_points == 0 or probe_radius <= 0.0 or correction_coeff < 0.0 or !std.math.isFinite(correction_coeff)) {
+    if (n_frames == 0 or n_atoms == 0 or n_points == 0 or !isPositiveFinite(f32, probe_radius) or
+        correction_coeff < 0.0 or !std.math.isFinite(correction_coeff) or
+        !validateBatchArraysF32(coordinates, n_frames, n_atoms, radii))
+    {
         return ZSASA_ERROR_INVALID_INPUT;
     }
 
@@ -1054,7 +1113,10 @@ fn calculateBatchBitmaskF32(
     correction_coeff: f64,
     atom_areas: [*]f32,
 ) c_int {
-    if (n_frames == 0 or n_atoms == 0 or n_points == 0 or probe_radius <= 0.0 or correction_coeff < 0.0 or !std.math.isFinite(correction_coeff)) {
+    if (n_frames == 0 or n_atoms == 0 or n_points == 0 or !isPositiveFinite(f32, probe_radius) or
+        correction_coeff < 0.0 or !std.math.isFinite(correction_coeff) or
+        !validateBatchArraysF32(coordinates, n_frames, n_atoms, radii))
+    {
         return ZSASA_ERROR_INVALID_INPUT;
     }
 
@@ -1276,7 +1338,9 @@ export fn zsasa_calc_lr(
     total_area: *f64,
 ) callconv(.c) c_int {
     // Validate input
-    if (n_atoms == 0 or n_slices == 0 or probe_radius <= 0.0) {
+    if (n_atoms == 0 or n_slices == 0 or !isPositiveFinite(f64, probe_radius) or
+        !validateAtomArraysF64(x, y, z, radii, n_atoms))
+    {
         return ZSASA_ERROR_INVALID_INPUT;
     }
 
@@ -1737,6 +1801,41 @@ test "zsasa_calc_sr with empty input returns error" {
     try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, result);
 }
 
+test "zsasa_calc_sr rejects non-finite inputs" {
+    var x = [_]f64{0.0};
+    var y = [_]f64{0.0};
+    var z = [_]f64{0.0};
+    var radii = [_]f64{1.5};
+    var atom_areas = [_]f64{0.0};
+    var total_area: f64 = 0.0;
+
+    x[0] = std.math.nan(f64);
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_INPUT,
+        zsasa_calc_sr(&x, &y, &z, &radii, 1, 100, 1.4, 1, &atom_areas, &total_area),
+    );
+
+    x[0] = 0.0;
+    y[0] = std.math.inf(f64);
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_INPUT,
+        zsasa_calc_sr(&x, &y, &z, &radii, 1, 100, 1.4, 1, &atom_areas, &total_area),
+    );
+
+    y[0] = 0.0;
+    radii[0] = std.math.nan(f64);
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_INPUT,
+        zsasa_calc_sr(&x, &y, &z, &radii, 1, 100, 1.4, 1, &atom_areas, &total_area),
+    );
+
+    radii[0] = 1.5;
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_INPUT,
+        zsasa_calc_sr(&x, &y, &z, &radii, 1, 100, std.math.inf(f64), 1, &atom_areas, &total_area),
+    );
+}
+
 test "zsasa_calc_sr single atom" {
     const x = [_]f64{0.0};
     const y = [_]f64{0.0};
@@ -1789,6 +1888,34 @@ test "zsasa_calc_lr single atom" {
     // Expected: 4π * (1.5 + 1.4)² ≈ 105.68 Ų
     try std.testing.expect(total_area > 100.0 and total_area < 110.0);
     try std.testing.expectEqual(total_area, atom_areas[0]);
+}
+
+test "zsasa_calc_lr rejects non-finite inputs" {
+    var x = [_]f64{0.0};
+    var y = [_]f64{0.0};
+    var z = [_]f64{0.0};
+    var radii = [_]f64{1.5};
+    var atom_areas = [_]f64{0.0};
+    var total_area: f64 = 0.0;
+
+    z[0] = -std.math.inf(f64);
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_INPUT,
+        zsasa_calc_lr(&x, &y, &z, &radii, 1, 20, 1.4, 1, &atom_areas, &total_area),
+    );
+
+    z[0] = 0.0;
+    radii[0] = std.math.inf(f64);
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_INPUT,
+        zsasa_calc_lr(&x, &y, &z, &radii, 1, 20, 1.4, 1, &atom_areas, &total_area),
+    );
+
+    radii[0] = 1.5;
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_INPUT,
+        zsasa_calc_lr(&x, &y, &z, &radii, 1, 20, std.math.nan(f64), 1, &atom_areas, &total_area),
+    );
 }
 
 test "zsasa_calc_sr_bitmask single atom" {
@@ -1858,6 +1985,31 @@ test "zsasa_calc_sr_bitmask with unsupported n_points returns error" {
     try std.testing.expectEqual(ZSASA_ERROR_UNSUPPORTED_N_POINTS, result);
 }
 
+test "zsasa_calc_sr_batch rejects non-finite inputs" {
+    var coordinates = [_]f32{ 0.0, 0.0, 0.0 };
+    var radii = [_]f32{1.5};
+    var atom_areas = [_]f32{0.0};
+
+    coordinates[0] = std.math.nan(f32);
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_INPUT,
+        zsasa_calc_sr_batch(&coordinates, 1, 1, &radii, 100, 1.4, 1, &atom_areas),
+    );
+
+    coordinates[0] = 0.0;
+    radii[0] = std.math.inf(f32);
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_INPUT,
+        zsasa_calc_sr_batch(&coordinates, 1, 1, &radii, 100, 1.4, 1, &atom_areas),
+    );
+
+    radii[0] = 1.5;
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_INPUT,
+        zsasa_calc_sr_batch(&coordinates, 1, 1, &radii, 100, std.math.inf(f32), 1, &atom_areas),
+    );
+}
+
 test "zsasa_calc_sr_batch_bitmask basic" {
     // 2 frames, 1 atom each
     const coordinates = [_]f32{
@@ -1896,7 +2048,7 @@ test "zsasa_calc_sr_batch_bitmask with unsupported n_points returns error" {
         1,
         1,
         &radii,
-        100, // Not supported
+        2000, // Not supported
         1.4,
         1,
         &atom_areas,
@@ -2562,7 +2714,7 @@ export fn zsasa_batch_dir_process(
         setError(error_code, ZSASA_ERROR_INVALID_INPUT);
         return null;
     }
-    if (n_points == 0 or !(probe_radius > 0.0)) {
+    if (n_points == 0 or !isPositiveFinite(f64, probe_radius)) {
         setError(error_code, ZSASA_ERROR_INVALID_INPUT);
         return null;
     }

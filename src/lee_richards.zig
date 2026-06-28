@@ -46,6 +46,9 @@ pub fn calculateSasa(
             .allocator = allocator,
         };
     }
+    if (config.n_slices == 0) return error.InvalidInput;
+    try types.validateProbeRadius(f64, config.probe_radius);
+    try input.validateFiniteAndRange();
 
     // Convert to Vec3 positions for neighbor list
     const positions = try allocator.alloc(Vec3, n_atoms);
@@ -536,6 +539,9 @@ pub fn calculateSasaParallel(
             .allocator = allocator,
         };
     }
+    if (config.n_slices == 0) return error.InvalidInput;
+    try types.validateProbeRadius(f64, config.probe_radius);
+    try input.validateFiniteAndRange();
 
     // Auto-detect thread count if 0
     const actual_threads = if (n_threads == 0)
@@ -1066,6 +1072,9 @@ pub fn LeeRichardsGen(comptime T: type) type {
                     .allocator = allocator,
                 };
             }
+            if (config.n_slices == 0) return error.InvalidInput;
+            try types.validateProbeRadius(T, config.probe_radius);
+            try input.validateFiniteAndRange();
 
             // Convert to Vec positions (cast from f64)
             const positions = try allocator.alloc(Vec, n_atoms);
@@ -1150,6 +1159,9 @@ pub fn LeeRichardsGen(comptime T: type) type {
                     .allocator = allocator,
                 };
             }
+            if (config.n_slices == 0) return error.InvalidInput;
+            try types.validateProbeRadius(T, config.probe_radius);
+            try input.validateFiniteAndRange();
 
             // Auto-detect thread count if 0
             const actual_threads = if (n_threads == 0)
@@ -1338,6 +1350,74 @@ test "single atom SASA" {
     // Expected: 4π(1.5 + 1.4)² = 4π(2.9)² ≈ 105.68
     const expected = 4.0 * std.math.pi * 2.9 * 2.9;
     try std.testing.expectApproxEqRel(expected, result.total_area, 0.01);
+}
+
+test "calculateSasa rejects non-finite inputs" {
+    const allocator = std.testing.allocator;
+    const y = [_]f64{0.0};
+    const z = [_]f64{0.0};
+
+    {
+        const x = [_]f64{std.math.nan(f64)};
+        const r = [_]f64{1.5};
+        const input = AtomInput{
+            .x = &x,
+            .y = &y,
+            .z = &z,
+            .r = @constCast(&r),
+            .allocator = allocator,
+        };
+        try std.testing.expectError(error.InvalidInput, calculateSasa(allocator, input, .{}));
+    }
+
+    {
+        const x = [_]f64{0.0};
+        const r = [_]f64{std.math.inf(f64)};
+        const input = AtomInput{
+            .x = &x,
+            .y = &y,
+            .z = &z,
+            .r = @constCast(&r),
+            .allocator = allocator,
+        };
+        try std.testing.expectError(error.InvalidInput, calculateSasa(allocator, input, .{}));
+    }
+
+    {
+        const x = [_]f64{0.0};
+        const r = [_]f64{1.5};
+        const input = AtomInput{
+            .x = &x,
+            .y = &y,
+            .z = &z,
+            .r = @constCast(&r),
+            .allocator = allocator,
+        };
+        try std.testing.expectError(
+            error.InvalidInput,
+            calculateSasa(allocator, input, .{ .probe_radius = std.math.inf(f64) }),
+        );
+    }
+}
+
+test "calculateSasaParallel rejects non-finite inputs" {
+    const allocator = std.testing.allocator;
+    const x = [_]f64{0.0};
+    const y = [_]f64{0.0};
+    const z = [_]f64{0.0};
+    const r = [_]f64{1.5};
+    const input = AtomInput{
+        .x = &x,
+        .y = &y,
+        .z = &z,
+        .r = @constCast(&r),
+        .allocator = allocator,
+    };
+
+    try std.testing.expectError(
+        error.InvalidInput,
+        calculateSasaParallel(allocator, input, .{ .probe_radius = std.math.nan(f64) }, 2),
+    );
 }
 
 test "parallel calculation matches serial" {
