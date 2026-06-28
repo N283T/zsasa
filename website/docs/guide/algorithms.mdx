@@ -153,11 +153,33 @@ f_corrected = f + coeff × f × (1 - f)
 
 This leaves fully buried (`f = 0`) and fully exposed (`f = 1`) atoms unchanged, while lifting partially exposed atoms where LUT direction/angle quantization most often over-occludes surface points. The default coefficient is conservative (`0.020`) and can be overridden with `--bitmask-correction-coeff=V`. Treat this as an experimental bias-mitigation mode, not as a replacement for exact SR when maximum numerical agreement is required.
 
+
+### Trajectory LUT Reuse Modes
+
+Trajectory bitmask mode reuses one prebuilt LUT by default for maximum throughput:
+
+```bash
+zsasa traj --use-bitmask --bitmask-lut-mode=single trajectory.xtc topology.pdb
+```
+
+For experiments that need to separate LUT reuse from bitmask quantization, trajectory mode also supports:
+
+- `single` — default; build one LUT and reuse it for all frames.
+- `per-frame` — rebuild the bitmask LUT for each processed frame. This is slower and mainly useful as a validation/control mode.
+- `cycle` — prebuild a small deterministic set of rotated test-point LUT variants and cycle frames through them. This keeps LUT reuse while decorrelating the fixed test-point quantization pattern across adjacent frames.
+
+```bash
+zsasa traj --use-bitmask --bitmask-lut-mode=cycle trajectory.xtc topology.pdb
+```
+
+`cycle` changes bitmask approximation details and should be treated as an experimental accuracy mode. Use exact SR when maximum numerical agreement is required.
+
 ### Constraints
 
 - **SR algorithm only** — not available for Lee-Richards
 - **Supported n_points**: 1–1024
 - **Correction mode**: requires bitmask SR and is disabled by default
+- **Trajectory LUT modes**: `single` is the default; `per-frame` and `cycle` require `--use-bitmask`
 - Lahuta uses n_points=128 fixed; zsasa supports any value in range
 
 ### When to Use
@@ -181,6 +203,9 @@ zsasa traj --use-bitmask --n-points=128 trajectory.xtc topology.pdb
 
 # Trajectory with experimental bitmask bias correction
 zsasa traj --use-bitmask --bitmask-correction trajectory.xtc topology.pdb
+
+# Trajectory with rotated LUT cycling
+zsasa traj --use-bitmask --bitmask-lut-mode=cycle trajectory.xtc topology.pdb
 
 # Batch with bitmask
 zsasa batch --use-bitmask --n-points=128 input_dir/ output_dir/
