@@ -11,11 +11,13 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
+from zsasa.classifier import ClassificationResult, ClassifierType, classify_atoms, guess_radius
 from zsasa.sasa import SasaResult
 
 __all__ = [
     "AtomData",
     "SasaResultWithAtoms",
+    "classify_atom_data",
 ]
 
 
@@ -76,3 +78,41 @@ class SasaResultWithAtoms(SasaResult):
             f"polar={self.polar_area:.1f}, apolar={self.apolar_area:.1f}, "
             f"n_atoms={len(self.atom_areas)})"
         )
+
+
+def _format_atom_identifier(atom_data: AtomData, index: int) -> str:
+    """Format a clear atom identifier for integration error messages."""
+    return (
+        f"chain {atom_data.chain_ids[index]} residue {atom_data.residue_ids[index]} "
+        f"{atom_data.residue_names[index]} atom {atom_data.atom_names[index]}"
+    )
+
+
+def classify_atom_data(
+    atom_data: AtomData,
+    classifier: ClassifierType = ClassifierType.CCD,
+) -> ClassificationResult:
+    """Classify integration atoms and resolve unknown radii safely.
+
+    Classifier misses are filled from element-derived radii when an element is
+    available. If neither the classifier nor element fallback can assign a
+    radius, a ValueError identifies the problematic atom instead of allowing a
+    NaN radius to reach the native calculator.
+    """
+    classification = classify_atoms(
+        atom_data.residue_names,
+        atom_data.atom_names,
+        classifier,
+    )
+
+    missing = np.nonzero(~np.isfinite(classification.radii))[0]
+    for index in missing:
+        element = atom_data.elements[index].strip()
+        radius = guess_radius(element) if element else None
+        if radius is None:
+            identifier = _format_atom_identifier(atom_data, int(index))
+            msg = f"Unknown radius for {identifier} (element={element!r})"
+            raise ValueError(msg)
+        classification.radii[index] = radius
+
+    return classification

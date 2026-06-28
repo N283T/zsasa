@@ -163,12 +163,16 @@ class SASAAnalysis:
         # Pre-compute radii (reused across all frames)
         self._radii = _get_radii_from_atomgroup(self.atomgroup)
 
-        # Build atom-to-residue mapping
-        self._atom_to_residue = np.array(
+        # Build atom-to-residue mapping. MDAnalysis resindices belong to the
+        # whole Universe, so selections can be nonzero/discontiguous. Remap to
+        # dense 0..N-1 columns for residue aggregation.
+        raw_atom_to_residue = np.array(
             [atom.resindex for atom in self.atomgroup],
-            dtype=np.int32,
+            dtype=np.int64,
         )
-        self._n_residues = len(np.unique(self._atom_to_residue))
+        _, dense_atom_to_residue = np.unique(raw_atom_to_residue, return_inverse=True)
+        self._atom_to_residue = dense_atom_to_residue.astype(np.int32, copy=False)
+        self._n_residues = int(self._atom_to_residue.max()) + 1 if self._atom_to_residue.size else 0
 
         # Results container
         self.results = _Results()
@@ -189,6 +193,8 @@ class SASAAnalysis:
         algorithm: Literal["sr", "lr"] = "sr",
         n_slices: int = 20,
         n_threads: int = 0,
+        chunk_size: int | None = None,
+        store_atom_areas: bool = True,
         use_bitmask: bool = False,
         bitmask_correction: bool = False,
         bitmask_correction_coeff: float | None = None,
@@ -214,6 +220,12 @@ class SASAAnalysis:
             Number of slices per atom for LR algorithm (default: 20).
         n_threads : int, optional
             Number of threads (0 = auto-detect). Default: 0.
+        chunk_size : int, optional
+            Number of frames to process per native batch. None processes all
+            selected frames in one batch.
+        store_atom_areas : bool, optional
+            Store per-atom SASA in results.atom_area. Set False to retain only
+            totals and residue aggregates.
         use_bitmask : bool, optional
             Use bitmask LUT optimization for SR algorithm.
             Supports n_points 1..1024. Default: False.
@@ -239,69 +251,76 @@ class SASAAnalysis:
         if self.n_frames == 0:
             msg = "No frames to analyze"
             raise ValueError(msg)
+        if chunk_size is None:
+            chunk_size = self.n_frames
+        if chunk_size <= 0:
+            msg = f"chunk_size must be positive, got {chunk_size}"
+            raise ValueError(msg)
 
-        # Collect coordinates for all frames
         n_atoms = len(self.atomgroup)
-        coords = np.zeros((self.n_frames, n_atoms, 3), dtype=np.float32)
         times = np.zeros(self.n_frames, dtype=np.float64)
         frames = np.zeros(self.n_frames, dtype=np.int64)
+        atom_chunks: list[NDArray[np.float32]] = []
+        residue_chunks: list[NDArray[np.float32]] = []
+        total_chunks: list[NDArray[np.float32]] = []
 
-        for i, frame_idx in enumerate(frame_indices):
-            self._trajectory[frame_idx]
-            coords[i] = self.atomgroup.positions.astype(np.float32)
-            times[i] = self._trajectory.time
-            frames[i] = frame_idx
+        def calculate_chunk(coords: NDArray[np.float32]) -> NDArray[np.float32]:
+            if algorithm == "sr":
+                return calculate_sasa_batch(
+                    coords,
+                    self._radii,
+                    algorithm="sr",
+                    n_points=n_points,
+                    probe_radius=probe_radius,
+                    n_threads=n_threads,
+                    use_bitmask=use_bitmask,
+                    bitmask_correction=bitmask_correction,
+                    bitmask_correction_coeff=bitmask_correction_coeff,
+                ).atom_areas
+            if algorithm == "lr":
+                return calculate_sasa_batch(
+                    coords,
+                    self._radii,
+                    algorithm="lr",
+                    n_slices=n_slices,
+                    probe_radius=probe_radius,
+                    n_threads=n_threads,
+                    use_bitmask=use_bitmask,
+                    bitmask_correction=bitmask_correction,
+                    bitmask_correction_coeff=bitmask_correction_coeff,
+                ).atom_areas
+            msg = f"Unknown algorithm: {algorithm}. Use 'sr' or 'lr'."
+            raise ValueError(msg)
+
+        for chunk_start in range(0, self.n_frames, chunk_size):
+            chunk_indices = frame_indices[chunk_start : chunk_start + chunk_size]
+            coords = np.zeros((len(chunk_indices), n_atoms, 3), dtype=np.float32)
+
+            for offset, frame_idx in enumerate(chunk_indices):
+                self._trajectory[frame_idx]
+                coords[offset] = self.atomgroup.positions.astype(np.float32)
+                times[chunk_start + offset] = self._trajectory.time
+                frames[chunk_start + offset] = frame_idx
+
+            atom_areas = calculate_chunk(coords)
+            if store_atom_areas:
+                atom_chunks.append(atom_areas)
+
+            residue_areas = np.zeros((atom_areas.shape[0], self._n_residues), dtype=np.float32)
+            np.add.at(
+                residue_areas,
+                (np.arange(atom_areas.shape[0])[:, np.newaxis], self._atom_to_residue),
+                atom_areas,
+            )
+            residue_chunks.append(residue_areas)
+            total_chunks.append(atom_areas.sum(axis=1))
 
         self.times = times
         self.frames = frames
 
-        # Calculate SASA using batch API
-        if algorithm == "sr":
-            result = calculate_sasa_batch(
-                coords,
-                self._radii,
-                algorithm="sr",
-                n_points=n_points,
-                probe_radius=probe_radius,
-                n_threads=n_threads,
-                use_bitmask=use_bitmask,
-                bitmask_correction=bitmask_correction,
-                bitmask_correction_coeff=bitmask_correction_coeff,
-            )
-        elif algorithm == "lr":
-            result = calculate_sasa_batch(
-                coords,
-                self._radii,
-                algorithm="lr",
-                n_slices=n_slices,
-                probe_radius=probe_radius,
-                n_threads=n_threads,
-                use_bitmask=use_bitmask,
-                bitmask_correction=bitmask_correction,
-                bitmask_correction_coeff=bitmask_correction_coeff,
-            )
-        else:
-            msg = f"Unknown algorithm: {algorithm}. Use 'sr' or 'lr'."
-            raise ValueError(msg)
-
-        # Store per-atom SASA (already in Å²)
-        self.results.atom_area = result.atom_areas
-
-        # Aggregate to per-residue SASA
-        self.results.residue_area = np.zeros(
-            (self.n_frames, self._n_residues),
-            dtype=np.float32,
-        )
-        np.add.at(
-            self.results.residue_area,
-            (np.arange(self.n_frames)[:, np.newaxis], self._atom_to_residue),
-            result.atom_areas,
-        )
-
-        # Total SASA per frame
-        self.results.total_area = result.atom_areas.sum(axis=1)
-
-        # Mean total SASA
+        self.results.atom_area = np.concatenate(atom_chunks) if store_atom_areas else None
+        self.results.residue_area = np.concatenate(residue_chunks)
+        self.results.total_area = np.concatenate(total_chunks)
         self.results.mean_total_area = float(self.results.total_area.mean())
 
         return self
@@ -334,6 +353,7 @@ def compute_sasa(
     algorithm: Literal["sr", "lr"] = "sr",
     n_slices: int = 20,
     n_threads: int = 0,
+    chunk_size: int | None = None,
     mode: Literal["atom", "residue", "total"] = "atom",
     use_bitmask: bool = False,
     bitmask_correction: bool = False,
@@ -365,6 +385,9 @@ def compute_sasa(
         Number of slices for LR algorithm (default: 20).
     n_threads : int, optional
         Number of threads (0 = auto). Default: 0.
+    chunk_size : int, optional
+        Number of frames to process per native batch. None processes all
+        selected frames in one batch.
     mode : {"atom", "residue", "total"}, optional
         Output mode (default: "atom").
     use_bitmask : bool, optional
@@ -396,6 +419,8 @@ def compute_sasa(
         algorithm=algorithm,
         n_slices=n_slices,
         n_threads=n_threads,
+        chunk_size=chunk_size,
+        store_atom_areas=mode == "atom",
         use_bitmask=use_bitmask,
         bitmask_correction=bitmask_correction,
         bitmask_correction_coeff=bitmask_correction_coeff,

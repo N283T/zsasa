@@ -172,6 +172,35 @@ class TestSASAAnalysis:
             assert analysis.results.residue_area[frame, 0] == pytest.approx(res0_atoms, rel=0.01)
             assert analysis.results.residue_area[frame, 1] == pytest.approx(res1_atoms, rel=0.01)
 
+    def test_selected_residues_are_remapped_densely(self) -> None:
+        """Selections with nonzero/discontiguous resindices should aggregate into dense columns."""
+        universe = make_universe(n_atoms=6, n_residues=3, n_frames=1)
+
+        analysis = SASAAnalysis(universe, select="resid 2 or resid 3")
+        analysis.run()
+
+        assert analysis.results.atom_area.shape == (1, 4)
+        assert analysis.results.residue_area.shape == (1, 2)
+        assert analysis.results.residue_area[0, 0] == pytest.approx(
+            analysis.results.atom_area[0, :2].sum(),
+            rel=0.01,
+        )
+        assert analysis.results.residue_area[0, 1] == pytest.approx(
+            analysis.results.atom_area[0, 2:].sum(),
+            rel=0.01,
+        )
+
+    def test_streaming_run_can_skip_retaining_atom_areas(self, universe: mda.Universe) -> None:
+        """Chunked MDAnalysis runs should expose totals/residue aggregates without atom areas."""
+        analysis = SASAAnalysis(universe)
+        analysis.run(chunk_size=1, store_atom_areas=False)
+
+        assert analysis.n_frames == 3
+        assert analysis.results.atom_area is None
+        assert analysis.results.residue_area.shape == (3, 2)
+        assert analysis.results.total_area.shape == (3,)
+        assert np.all(analysis.results.total_area > 0)
+
     def test_total_matches_sum(self, universe: mda.Universe) -> None:
         """Test that total SASA matches atom SASA sum."""
         analysis = SASAAnalysis(universe)

@@ -18,8 +18,8 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
-from zsasa.classifier import AtomClass, ClassifierType, classify_atoms
-from zsasa.integrations._types import AtomData, SasaResultWithAtoms
+from zsasa.classifier import AtomClass, ClassifierType
+from zsasa.integrations._types import AtomData, SasaResultWithAtoms, classify_atom_data
 from zsasa.sasa import calculate_sasa
 
 if TYPE_CHECKING:
@@ -203,12 +203,8 @@ def calculate_sasa_from_model(
             apolar_area=0.0,
         )
 
-    # Classify atoms
-    classification = classify_atoms(
-        atom_data.residue_names,
-        atom_data.atom_names,
-        classifier,
-    )
+    # Classify atoms, falling back to element-derived radii when available.
+    classification = classify_atom_data(atom_data, classifier)
 
     # Calculate SASA
     sasa_result = calculate_sasa(

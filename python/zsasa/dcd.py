@@ -35,7 +35,14 @@ from numpy.typing import NDArray
 
 from zsasa._ffi import _get_lib
 from zsasa.sasa import calculate_sasa_batch
-from zsasa.xtc import TrajectorySasaResult
+from zsasa.xtc import (
+    TrajectorySasaResult,
+    TrajectorySasaSummaryResult,
+    _append_residue_areas,
+    _calculate_chunk,
+    _prepare_residue_mapping,
+    _validate_chunk_size,
+)
 
 if TYPE_CHECKING:
     from cffi import FFI
@@ -225,6 +232,96 @@ class DcdReader:
     def __del__(self) -> None:
         """Destructor - ensure file is closed."""
         self.close()
+
+
+def compute_sasa_trajectory_summary(
+    dcd_path: str | Path,
+    radii: NDArray[np.floating] | list[float],
+    *,
+    atom_to_residue: NDArray[np.integer] | list[int] | None = None,
+    probe_radius: float = 1.4,
+    n_points: int = 100,
+    algorithm: Literal["sr", "lr"] = "sr",
+    n_slices: int = 20,
+    n_threads: int = 0,
+    start: int = 0,
+    stop: int | None = None,
+    step: int = 1,
+    chunk_size: int = 16,
+    use_bitmask: bool = False,
+    bitmask_correction: bool = False,
+    bitmask_correction_coeff: float | None = None,
+) -> TrajectorySasaSummaryResult:
+    """Compute DCD SASA totals/residue aggregates without retaining atom areas.
+
+    DCD coordinates are already in Angstroms. Frames are processed in chunks and
+    per-atom SASA arrays are discarded after aggregate values are accumulated.
+    """
+    radii = np.asarray(radii, dtype=np.float32)
+    chunk_size = _validate_chunk_size(chunk_size)
+
+    coords_chunk: list[NDArray[np.float32]] = []
+    total_chunks: list[NDArray[np.float32]] = []
+    residue_chunks: list[NDArray[np.float32]] = []
+    steps: list[int] = []
+    times: list[float] = []
+
+    def flush_chunk(mapping: NDArray[np.int32] | None, n_residues: int) -> None:
+        if not coords_chunk:
+            return
+        coords_angstrom = np.stack(coords_chunk, axis=0)
+        atom_areas = _calculate_chunk(
+            coords_angstrom,
+            radii,
+            probe_radius=probe_radius,
+            n_points=n_points,
+            algorithm=algorithm,
+            n_slices=n_slices,
+            n_threads=n_threads,
+            use_bitmask=use_bitmask,
+            bitmask_correction=bitmask_correction,
+            bitmask_correction_coeff=bitmask_correction_coeff,
+        )
+        total_chunks.append(atom_areas.sum(axis=1))
+        _append_residue_areas(residue_chunks, atom_areas, mapping, n_residues)
+        coords_chunk.clear()
+
+    with DcdReader(dcd_path) as reader:
+        if len(radii) != reader.natoms:
+            msg = f"radii length ({len(radii)}) doesn't match trajectory atoms ({reader.natoms})"
+            raise ValueError(msg)
+        mapping, n_residues = _prepare_residue_mapping(atom_to_residue, reader.natoms)
+
+        frame_idx = 0
+        for frame in reader:
+            if frame_idx < start:
+                frame_idx += 1
+                continue
+            if stop is not None and frame_idx >= stop:
+                break
+            if (frame_idx - start) % step != 0:
+                frame_idx += 1
+                continue
+
+            coords_chunk.append(frame.coords)
+            steps.append(frame.step)
+            times.append(frame.time)
+            if len(coords_chunk) == chunk_size:
+                flush_chunk(mapping, n_residues)
+            frame_idx += 1
+
+        flush_chunk(mapping, n_residues)
+
+    if not total_chunks:
+        msg = "No frames to process"
+        raise ValueError(msg)
+
+    return TrajectorySasaSummaryResult(
+        total_areas=np.concatenate(total_chunks).astype(np.float32, copy=False),
+        steps=np.array(steps, dtype=np.int32),
+        times=np.array(times, dtype=np.float32),
+        residue_areas=np.concatenate(residue_chunks) if residue_chunks else None,
+    )
 
 
 def compute_sasa_trajectory(
