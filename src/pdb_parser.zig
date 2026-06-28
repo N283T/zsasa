@@ -60,7 +60,7 @@ pub const PdbParser = struct {
     skip_hydrogens: bool = true,
     /// Filter to include only first alternate location
     first_alt_loc_only: bool = true,
-    /// Model number to extract (null = first model)
+    /// Model number to extract (null = all models)
     model_num: ?u32 = null,
     /// Chain IDs to include (null = all chains)
     chain_filter: ?[]const []const u8 = null,
@@ -92,6 +92,8 @@ pub const PdbParser = struct {
         defer residue_num_list.deinit(self.allocator);
         var insertion_code_list = std.ArrayListUnmanaged(types.FixedString4).empty;
         defer insertion_code_list.deinit(self.allocator);
+        var atom_records = std.ArrayListUnmanaged(AtomRecord).empty;
+        defer atom_records.deinit(self.allocator);
 
         // Pre-allocate based on estimated atom count (PDB line ~80 chars)
         const estimated_atoms = source.len / 80;
@@ -106,8 +108,8 @@ pub const PdbParser = struct {
         try residue_num_list.ensureTotalCapacity(self.allocator, estimated_atoms);
         try insertion_code_list.ensureTotalCapacity(self.allocator, estimated_atoms);
 
-        // Track alt location for filtering
-        var first_alt_loc: u8 = ' ';
+        // Track model filtering. By default all models are included, matching
+        // the calc CLI's documented `--model` default.
         var current_model: ?u32 = null;
         var in_target_model = true;
 
@@ -120,16 +122,11 @@ pub const PdbParser = struct {
                 if (self.model_num) |target| {
                     in_target_model = (current_model == target);
                 } else {
-                    // No model specified: use first model only
-                    in_target_model = (current_model == 1 or current_model == null);
+                    in_target_model = true;
                 }
                 continue;
             }
             if (std.mem.startsWith(u8, line, "ENDMDL")) {
-                if (self.model_num == null and current_model != null) {
-                    // First model complete, stop parsing
-                    break;
-                }
                 continue;
             }
 
@@ -143,7 +140,8 @@ pub const PdbParser = struct {
             if (self.atom_only and is_hetatm) continue;
 
             // Parse atom record
-            const atom = try self.parseAtomRecord(line) orelse continue;
+            var atom = try self.parseAtomRecord(line) orelse continue;
+            atom.model_num = current_model;
 
             // Hydrogen filtering (also skip deuterium D, an isotope of H)
             if (self.skip_hydrogens) {
@@ -152,17 +150,6 @@ pub const PdbParser = struct {
                 if (line.len >= 78) {
                     const elem_sym = std.mem.trim(u8, line[76..78], " ");
                     if (std.mem.eql(u8, elem_sym, "D")) continue;
-                }
-            }
-
-            // Alt location filtering
-            if (self.first_alt_loc_only) {
-                if (atom.alt_loc != ' ') {
-                    if (first_alt_loc == ' ') {
-                        first_alt_loc = atom.alt_loc;
-                    } else if (atom.alt_loc != first_alt_loc) {
-                        continue;
-                    }
                 }
             }
 
@@ -178,19 +165,26 @@ pub const PdbParser = struct {
                 if (!found) continue;
             }
 
-            // Add atom data
-            try x_list.append(self.allocator, atom.x);
-            try y_list.append(self.allocator, atom.y);
-            try z_list.append(self.allocator, atom.z);
-            try r_list.append(self.allocator, atom.radius);
-            try element_list.append(self.allocator, atom.element.atomicNumber());
+            try atom_records.append(self.allocator, atom);
+        }
 
-            // Use FixedString4 - no per-atom allocation needed
-            try atom_name_list.append(self.allocator, types.FixedString4.fromSlice(atom.atom_name));
-            try residue_list.append(self.allocator, types.FixedString5.fromSlice(atom.residue));
-            try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(atom.chain_id));
-            try residue_num_list.append(self.allocator, atom.residue_num);
-            try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(atom.insertion_code));
+        for (atom_records.items, 0..) |atom, i| {
+            if (!self.shouldKeepAltLoc(atom_records.items, i)) continue;
+
+            try appendAtomRecord(
+                self.allocator,
+                atom,
+                &x_list,
+                &y_list,
+                &z_list,
+                &r_list,
+                &element_list,
+                &atom_name_list,
+                &residue_list,
+                &chain_id_list,
+                &residue_num_list,
+                &insertion_code_list,
+            );
         }
 
         if (x_list.items.len == 0) {
@@ -238,7 +232,66 @@ pub const PdbParser = struct {
         residue_num: i32,
         insertion_code: []const u8,
         alt_loc: u8,
+        occupancy: f64,
+        model_num: ?u32 = null,
     };
+
+    fn appendAtomRecord(
+        allocator: Allocator,
+        atom: AtomRecord,
+        x_list: *std.ArrayListUnmanaged(f64),
+        y_list: *std.ArrayListUnmanaged(f64),
+        z_list: *std.ArrayListUnmanaged(f64),
+        r_list: *std.ArrayListUnmanaged(f64),
+        element_list: *std.ArrayListUnmanaged(u8),
+        atom_name_list: *std.ArrayListUnmanaged(types.FixedString4),
+        residue_list: *std.ArrayListUnmanaged(types.FixedString5),
+        chain_id_list: *std.ArrayListUnmanaged(types.FixedString4),
+        residue_num_list: *std.ArrayListUnmanaged(i32),
+        insertion_code_list: *std.ArrayListUnmanaged(types.FixedString4),
+    ) !void {
+        try x_list.append(allocator, atom.x);
+        try y_list.append(allocator, atom.y);
+        try z_list.append(allocator, atom.z);
+        try r_list.append(allocator, atom.radius);
+        try element_list.append(allocator, atom.element.atomicNumber());
+        try atom_name_list.append(allocator, types.FixedString4.fromSlice(atom.atom_name));
+        try residue_list.append(allocator, types.FixedString5.fromSlice(atom.residue));
+        try chain_id_list.append(allocator, types.FixedString4.fromSlice(atom.chain_id));
+        try residue_num_list.append(allocator, atom.residue_num);
+        try insertion_code_list.append(allocator, types.FixedString4.fromSlice(atom.insertion_code));
+    }
+
+    fn sameAltLocSite(a: AtomRecord, b: AtomRecord) bool {
+        return a.model_num == b.model_num and
+            a.residue_num == b.residue_num and
+            std.mem.eql(u8, a.chain_id, b.chain_id) and
+            std.mem.eql(u8, a.residue, b.residue) and
+            std.mem.eql(u8, a.insertion_code, b.insertion_code) and
+            std.mem.eql(u8, a.atom_name, b.atom_name);
+    }
+
+    fn shouldKeepAltLoc(self: *PdbParser, atoms: []const AtomRecord, index: usize) bool {
+        if (!self.first_alt_loc_only) return true;
+
+        const atom = atoms[index];
+        if (atom.alt_loc == ' ') return true;
+
+        var best_non_preferred: ?usize = null;
+        for (atoms, 0..) |other, other_index| {
+            if (!sameAltLocSite(atom, other)) continue;
+            if (other.alt_loc == ' ') return false;
+            if (other.alt_loc == 'A') return atom.alt_loc == 'A';
+            if (best_non_preferred) |best_index| {
+                if (other.occupancy > atoms[best_index].occupancy) {
+                    best_non_preferred = other_index;
+                }
+            } else {
+                best_non_preferred = other_index;
+            }
+        }
+        return best_non_preferred == index;
+    }
 
     /// Parse a single ATOM/HETATM record
     fn parseAtomRecord(self: *PdbParser, line: []const u8) !?AtomRecord {
@@ -270,6 +323,10 @@ pub const PdbParser = struct {
 
         // Extract other fields
         const alt_loc: u8 = if (line.len > 16) line[16] else ' ';
+        const occupancy = if (line.len >= 60)
+            std.fmt.parseFloat(f64, std.mem.trim(u8, line[54..60], " ")) catch 0.0
+        else
+            0.0;
         const residue_raw = if (line.len >= 20) line[17..20] else "   ";
         const residue = std.mem.trim(u8, residue_raw, " ");
 
@@ -301,6 +358,7 @@ pub const PdbParser = struct {
             .residue_num = residue_num,
             .insertion_code = insertion_code,
             .alt_loc = alt_loc,
+            .occupancy = occupancy,
         };
     }
 };
@@ -469,6 +527,115 @@ test "PdbParser include HETATM" {
     defer input.deinit();
 
     try testing.expectEqual(@as(usize, 4), input.atomCount());
+}
+
+test "PdbParser default model selection includes all models" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const pdb_content =
+        \\MODEL        1
+        \\ATOM      1  CA  ALA A   1      10.000  20.000  30.000  1.00 10.00           C
+        \\ENDMDL
+        \\MODEL        2
+        \\ATOM      2  CA  GLY B   2      11.000  21.000  31.000  1.00 10.00           C
+        \\ENDMDL
+        \\END
+    ;
+
+    var parser = PdbParser.init(allocator);
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try testing.expectEqual(@as(usize, 2), input.atomCount());
+    try testing.expectEqualStrings("A", input.chain_id.?[0].slice());
+    try testing.expectEqualStrings("B", input.chain_id.?[1].slice());
+}
+
+test "PdbParser explicit model selection filters requested model" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const pdb_content =
+        \\MODEL        1
+        \\ATOM      1  CA  ALA A   1      10.000  20.000  30.000  1.00 10.00           C
+        \\ENDMDL
+        \\MODEL        2
+        \\ATOM      2  CA  GLY B   2      11.000  21.000  31.000  1.00 10.00           C
+        \\ENDMDL
+        \\END
+    ;
+
+    var parser = PdbParser.init(allocator);
+    parser.model_num = 2;
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try testing.expectEqual(@as(usize, 1), input.atomCount());
+    try testing.expectEqualStrings("B", input.chain_id.?[0].slice());
+}
+
+test "PdbParser altLoc selection is per atom site and keeps later B-only sites" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const pdb_content =
+        \\ATOM      1  CA AALA A   1      10.000  20.000  30.000  0.60 10.00           C
+        \\ATOM      2  CA BALA A   1      12.000  22.000  32.000  0.40 10.00           C
+        \\ATOM      3  CA BGLY A   2      14.000  24.000  34.000  0.50 10.00           C
+        \\END
+    ;
+
+    var parser = PdbParser.init(allocator);
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try testing.expectEqual(@as(usize, 2), input.atomCount());
+    try testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
+    try testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
+    try testing.expectEqual(@as(i32, 2), input.residue_num.?[1]);
+}
+
+test "PdbParser altLoc selection falls back to highest occupancy without blank or A" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const pdb_content =
+        \\ATOM      1  CA BALA A   1      10.000  20.000  30.000  0.40 10.00           C
+        \\ATOM      2  CA CALA A   1      12.000  22.000  32.000  0.70 10.00           C
+        \\END
+    ;
+
+    var parser = PdbParser.init(allocator);
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try testing.expectEqual(@as(usize, 1), input.atomCount());
+    try testing.expectApproxEqAbs(@as(f64, 12.0), input.x[0], 0.001);
+}
+
+test "PdbParser altLoc selection is scoped by model" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const pdb_content =
+        \\MODEL        1
+        \\ATOM      1  CA AALA A   1      10.000  20.000  30.000  0.60 10.00           C
+        \\ATOM      2  CA BALA A   1      12.000  22.000  32.000  0.40 10.00           C
+        \\ENDMDL
+        \\MODEL        2
+        \\ATOM      3  CA BALA A   1      14.000  24.000  34.000  0.50 10.00           C
+        \\ENDMDL
+        \\END
+    ;
+
+    var parser = PdbParser.init(allocator);
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try testing.expectEqual(@as(usize, 2), input.atomCount());
+    try testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
+    try testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
 }
 
 test "PdbParser atom_only filter (default)" {

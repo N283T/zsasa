@@ -182,6 +182,7 @@ pub fn printPolarSummary(summary: PolarSummary) void {
 /// Per-residue SASA data
 pub const ResidueSasa = struct {
     chain_id: types.FixedString4,
+    chain_id_full: ?[]const u8 = null,
     residue_name: types.FixedString5,
     residue_num: i32,
     insertion_code: types.FixedString4,
@@ -202,6 +203,10 @@ pub const ResidueSasa = struct {
         } else {
             self.rsa = null;
         }
+    }
+
+    pub fn chainLabel(self: ResidueSasa) []const u8 {
+        return self.chain_id_full orelse self.chain_id.slice();
     }
 };
 
@@ -224,6 +229,7 @@ pub fn aggregateByResidue(
 ) !ResidueResult {
     // Check if we have the required residue info
     const chain_ids = input.chain_id orelse return error.MissingChainInfo;
+    const chain_ids_full = input.chain_id_full;
     const residue_names = input.residue orelse return error.MissingResidueInfo;
     const residue_nums = input.residue_num orelse return error.MissingResidueNumInfo;
     const insertion_codes = input.insertion_code orelse return error.MissingInsertionCodeInfo;
@@ -252,8 +258,15 @@ pub fn aggregateByResidue(
         // Find if this residue already exists
         var found_idx: ?usize = null;
         for (residue_list.items, 0..) |*res, j| {
+            const same_chain = if (chain_ids_full) |full|
+                if (res.chain_id_full) |res_full|
+                    std.mem.eql(u8, res_full, full[i])
+                else
+                    false
+            else
+                std.mem.eql(u8, res.chain_id.slice(), chain.slice());
             if (res.residue_num == res_num and
-                std.mem.eql(u8, res.chain_id.slice(), chain.slice()) and
+                same_chain and
                 std.mem.eql(u8, res.insertion_code.slice(), ins_code.slice()))
             {
                 found_idx = j;
@@ -269,6 +282,7 @@ pub fn aggregateByResidue(
             // Add new residue
             try residue_list.append(allocator, ResidueSasa{
                 .chain_id = chain,
+                .chain_id_full = if (chain_ids_full) |full| full[i] else null,
                 .residue_name = residue_names[i],
                 .residue_num = res_num,
                 .insertion_code = ins_code,
@@ -306,7 +320,7 @@ pub fn printResidueResults(residues: []const ResidueSasa) void {
 
         if (res.insertion_code.len > 0) {
             std.debug.print("{s:>5} {s:>4} {s:>5}{s:<1} {d:>10.2} {d:>6}\n", .{
-                res.chain_id.slice(),
+                res.chainLabel(),
                 res.residue_name.slice(),
                 num_str,
                 res.insertion_code.slice(),
@@ -315,7 +329,7 @@ pub fn printResidueResults(residues: []const ResidueSasa) void {
             });
         } else {
             std.debug.print("{s:>5} {s:>4} {s:>6} {d:>10.2} {d:>6}\n", .{
-                res.chain_id.slice(),
+                res.chainLabel(),
                 res.residue_name.slice(),
                 num_str,
                 res.sasa,
@@ -349,7 +363,7 @@ pub fn printResidueResultsWithRsa(residues: []const ResidueSasa) void {
 
         if (res.insertion_code.len > 0) {
             std.debug.print("{s:>5} {s:>4} {s:>5}{s:<1} {d:>10.2} {s:>6} {d:>6}\n", .{
-                res.chain_id.slice(),
+                res.chainLabel(),
                 res.residue_name.slice(),
                 num_str,
                 res.insertion_code.slice(),
@@ -359,7 +373,7 @@ pub fn printResidueResultsWithRsa(residues: []const ResidueSasa) void {
             });
         } else {
             std.debug.print("{s:>5} {s:>4} {s:>6} {d:>10.2} {s:>6} {d:>6}\n", .{
-                res.chain_id.slice(),
+                res.chainLabel(),
                 res.residue_name.slice(),
                 num_str,
                 res.sasa,
@@ -456,6 +470,65 @@ test "aggregateByResidue basic" {
     // GLY: RSA = 45.0 / 104.0 ≈ 0.433
     try std.testing.expect(result.residues[1].rsa != null);
     try std.testing.expectApproxEqRel(45.0 / 104.0, result.residues[1].rsa.?, 0.001);
+}
+
+test "aggregateByResidue groups by full chain IDs when present" {
+    const allocator = std.testing.allocator;
+
+    const x = try allocator.alloc(f64, 2);
+    defer allocator.free(x);
+    const y = try allocator.alloc(f64, 2);
+    defer allocator.free(y);
+    const z = try allocator.alloc(f64, 2);
+    defer allocator.free(z);
+    const r = try allocator.alloc(f64, 2);
+    defer allocator.free(r);
+    @memset(x, 0);
+    @memset(y, 0);
+    @memset(z, 0);
+    @memset(r, 1);
+
+    var chain_ids = try allocator.alloc(types.FixedString4, 2);
+    defer allocator.free(chain_ids);
+    chain_ids[0] = types.FixedString4.fromSlice("ABCD");
+    chain_ids[1] = types.FixedString4.fromSlice("ABCD");
+    const chain_ids_full = [_][]const u8{ "ABCD1", "ABCD2" };
+
+    var residue_names = try allocator.alloc(types.FixedString5, 2);
+    defer allocator.free(residue_names);
+    residue_names[0] = types.FixedString5.fromSlice("ALA");
+    residue_names[1] = types.FixedString5.fromSlice("ALA");
+
+    var residue_nums = try allocator.alloc(i32, 2);
+    defer allocator.free(residue_nums);
+    residue_nums[0] = 1;
+    residue_nums[1] = 1;
+
+    var insertion_codes = try allocator.alloc(types.FixedString4, 2);
+    defer allocator.free(insertion_codes);
+    insertion_codes[0] = types.FixedString4.fromSlice("");
+    insertion_codes[1] = types.FixedString4.fromSlice("");
+
+    const input = types.AtomInput{
+        .x = x,
+        .y = y,
+        .z = z,
+        .r = r,
+        .chain_id = chain_ids,
+        .chain_id_full = chain_ids_full[0..],
+        .residue = residue_names,
+        .residue_num = residue_nums,
+        .insertion_code = insertion_codes,
+        .allocator = allocator,
+    };
+    const atom_areas = [_]f64{ 10.0, 20.0 };
+
+    var result = try aggregateByResidue(allocator, input, atom_areas[0..]);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), result.residues.len);
+    try std.testing.expectEqualStrings("ABCD1", result.residues[0].chainLabel());
+    try std.testing.expectEqualStrings("ABCD2", result.residues[1].chainLabel());
 }
 
 test "MaxSASA lookup" {
