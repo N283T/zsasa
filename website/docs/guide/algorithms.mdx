@@ -137,10 +137,27 @@ The offset is **constant** regardless of n_points (unlike standard SR where erro
 
 For detailed accuracy analysis, see [SASA Validation](../benchmarks/validation.md).
 
+### Experimental Bias Correction
+
+Bitmask mode also provides an opt-in experimental correction for workflows where the mean total-SASA offset matters:
+
+```bash
+zsasa traj --use-bitmask --bitmask-correction trajectory.xtc topology.pdb
+```
+
+The correction adjusts each atom's bitmask exposed fraction with a boundary-weighted term:
+
+```text
+f_corrected = f + coeff × f × (1 - f)
+```
+
+This leaves fully buried (`f = 0`) and fully exposed (`f = 1`) atoms unchanged, while lifting partially exposed atoms where LUT direction/angle quantization most often over-occludes surface points. The default coefficient is conservative (`0.020`) and can be overridden with `--bitmask-correction-coeff=V`. Treat this as an experimental bias-mitigation mode, not as a replacement for exact SR when maximum numerical agreement is required.
+
 ### Constraints
 
 - **SR algorithm only** — not available for Lee-Richards
 - **Supported n_points**: 1–1024
+- **Correction mode**: requires bitmask SR and is disabled by default
 - Lahuta uses n_points=128 fixed; zsasa supports any value in range
 
 ### When to Use
@@ -162,6 +179,9 @@ zsasa calc --use-bitmask --n-points=128 structure.cif output.json
 # Trajectory with bitmask
 zsasa traj --use-bitmask --n-points=128 trajectory.xtc topology.pdb
 
+# Trajectory with experimental bitmask bias correction
+zsasa traj --use-bitmask --bitmask-correction trajectory.xtc topology.pdb
+
 # Batch with bitmask
 zsasa batch --use-bitmask --n-points=128 input_dir/ output_dir/
 ```
@@ -174,6 +194,15 @@ from zsasa import calculate_sasa
 
 # Single frame
 result = calculate_sasa(coords, radii, n_points=128, use_bitmask=True)
+
+# Experimental correction
+result = calculate_sasa(
+    coords,
+    radii,
+    n_points=128,
+    use_bitmask=True,
+    bitmask_correction=True,
+)
 
 # Batch (trajectory)
 from zsasa import calculate_sasa_batch

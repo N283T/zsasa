@@ -190,6 +190,8 @@ class SASAAnalysis:
         n_slices: int = 20,
         n_threads: int = 0,
         use_bitmask: bool = False,
+        bitmask_correction: bool = False,
+        bitmask_correction_coeff: float | None = None,
     ) -> SASAAnalysis:
         """Run the SASA analysis.
 
@@ -215,6 +217,12 @@ class SASAAnalysis:
         use_bitmask : bool, optional
             Use bitmask LUT optimization for SR algorithm.
             Supports n_points 1..1024. Default: False.
+        bitmask_correction : bool, optional
+            Apply experimental bitmask exposed-fraction correction.
+            Requires use_bitmask=True. Default: False.
+        bitmask_correction_coeff : float, optional
+            Override the experimental correction coefficient.
+            None uses the library default.
 
         Returns
         -------
@@ -257,6 +265,8 @@ class SASAAnalysis:
                 probe_radius=probe_radius,
                 n_threads=n_threads,
                 use_bitmask=use_bitmask,
+                bitmask_correction=bitmask_correction,
+                bitmask_correction_coeff=bitmask_correction_coeff,
             )
         elif algorithm == "lr":
             result = calculate_sasa_batch(
@@ -267,6 +277,8 @@ class SASAAnalysis:
                 probe_radius=probe_radius,
                 n_threads=n_threads,
                 use_bitmask=use_bitmask,
+                bitmask_correction=bitmask_correction,
+                bitmask_correction_coeff=bitmask_correction_coeff,
             )
         else:
             msg = f"Unknown algorithm: {algorithm}. Use 'sr' or 'lr'."
@@ -324,6 +336,8 @@ def compute_sasa(
     n_threads: int = 0,
     mode: Literal["atom", "residue", "total"] = "atom",
     use_bitmask: bool = False,
+    bitmask_correction: bool = False,
+    bitmask_correction_coeff: float | None = None,
 ) -> NDArray[np.float32]:
     """Compute SASA for MDAnalysis Universe or AtomGroup.
 
@@ -356,6 +370,12 @@ def compute_sasa(
     use_bitmask : bool, optional
         Use bitmask LUT optimization for SR algorithm.
         Supports n_points 1..1024. Default: False.
+    bitmask_correction : bool, optional
+        Apply experimental bitmask exposed-fraction correction.
+        Requires use_bitmask=True. Default: False.
+    bitmask_correction_coeff : float, optional
+        Override the experimental correction coefficient.
+        None uses the library default.
 
     Returns
     -------
@@ -377,6 +397,8 @@ def compute_sasa(
         n_slices=n_slices,
         n_threads=n_threads,
         use_bitmask=use_bitmask,
+        bitmask_correction=bitmask_correction,
+        bitmask_correction_coeff=bitmask_correction_coeff,
     )
 
     if mode == "total":

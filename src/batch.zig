@@ -70,6 +70,8 @@ pub const BatchConfig = struct {
     include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
     include_hetatm: bool = false, // Include HETATM records (default: exclude)
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
+    bitmask_correction: bool = false, // Experimental exposed-fraction correction for bitmask SR
+    bitmask_correction_coeff: f64 = shrake_rupley_bitmask.default_bitmask_correction_coeff,
     adaptive_sr: bool = false, // Experimental two-stage bitmask SR for batch mode
     coarse_points: u32 = 64,
     fine_points: u32 = 256,
@@ -268,20 +270,26 @@ fn calculateSasaDispatch(
     }
 
     if (bitmask_lut_ptr) |lut| {
+        const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(T){
+            .enabled = config.bitmask_correction,
+            .coeff = @floatCast(config.bitmask_correction_coeff),
+        };
         return if (n_threads > 1)
-            shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(T).calculateSasaParallelWithLut(
+            shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(T).calculateSasaParallelWithLutAndCorrection(
                 allocator,
                 input,
                 sr_config,
                 n_threads,
                 lut,
+                correction,
             )
         else
-            shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(T).calculateSasaWithLut(
+            shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(T).calculateSasaWithLutAndCorrection(
                 allocator,
                 input,
                 sr_config,
                 lut,
+                correction,
             );
     }
 
@@ -2143,6 +2151,8 @@ pub const BatchArgs = struct {
     include_hydrogens: bool = false,
     include_hetatm: bool = false,
     use_bitmask: bool = false,
+    bitmask_correction: bool = false,
+    bitmask_correction_coeff: f64 = shrake_rupley_bitmask.default_bitmask_correction_coeff,
     adaptive_sr: bool = false,
     coarse_points: u32 = 64,
     fine_points: u32 = 256,
@@ -2165,6 +2175,8 @@ pub const BatchArgs = struct {
     include_hydrogens_explicit: bool = false,
     include_hetatm_explicit: bool = false,
     use_bitmask_explicit: bool = false,
+    bitmask_correction_explicit: bool = false,
+    bitmask_correction_coeff_explicit: bool = false,
     adaptive_sr_explicit: bool = false,
     coarse_points_explicit: bool = false,
     fine_points_explicit: bool = false,
@@ -2246,6 +2258,18 @@ fn parseBitmaskPoints(option_name: []const u8, value: []const u8) u32 {
         std.process.exit(1);
     }
     return n;
+}
+
+fn parseBitmaskCorrectionCoeff(value: []const u8) f64 {
+    const coeff = std.fmt.parseFloat(f64, value) catch {
+        std.debug.print("Error: Invalid bitmask correction coefficient: {s}\n", .{value});
+        std.process.exit(1);
+    };
+    if (!std.math.isFinite(coeff) or coeff < 0.0) {
+        std.debug.print("Error: Bitmask correction coefficient must be finite and non-negative: {d}\n", .{coeff});
+        std.process.exit(1);
+    }
+    return coeff;
 }
 
 fn parseAdaptiveThreshold(option_name: []const u8, value: []const u8) f64 {
@@ -2522,6 +2546,28 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
             result.use_bitmask = true;
             result.use_bitmask_explicit = true;
         }
+        // --bitmask-correction
+        else if (std.mem.eql(u8, arg, "--bitmask-correction")) {
+            result.bitmask_correction = true;
+            result.bitmask_correction_explicit = true;
+        }
+        // --bitmask-correction-coeff=VALUE or --bitmask-correction-coeff VALUE
+        else if (std.mem.startsWith(u8, arg, "--bitmask-correction-coeff=")) {
+            result.bitmask_correction_coeff = parseBitmaskCorrectionCoeff(arg["--bitmask-correction-coeff=".len..]);
+            result.bitmask_correction = true;
+            result.bitmask_correction_explicit = true;
+            result.bitmask_correction_coeff_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--bitmask-correction-coeff")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --bitmask-correction-coeff\n", .{});
+                std.process.exit(1);
+            }
+            result.bitmask_correction_coeff = parseBitmaskCorrectionCoeff(args[i]);
+            result.bitmask_correction = true;
+            result.bitmask_correction_explicit = true;
+            result.bitmask_correction_coeff_explicit = true;
+        }
         // --adaptive-sr and adaptive bitmask controls
         else if (std.mem.eql(u8, arg, "--adaptive-sr")) {
             result.adaptive_sr = true;
@@ -2717,6 +2763,11 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --include-hetatm    Include HETATM records (default: exclude)
         \\    --use-bitmask       Use bitmask LUT optimization for SR algorithm
         \\                        (n-points must be 1..1024)
+        \\    --bitmask-correction
+        \\                        Experimental correction for bitmask quantization bias
+        \\                        Requires --use-bitmask
+        \\    --bitmask-correction-coeff=V
+        \\                        Override correction coefficient (default: 0.020)
         \\    --adaptive-sr       Experimental adaptive two-stage bitmask SR
         \\    --coarse-points=N   Coarse adaptive points (default: 64)
         \\    --fine-points=N     Fine adaptive points (default: --n-points or 256)
@@ -2828,8 +2879,21 @@ fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
     if (args.include_hydrogens_explicit) config.include_hydrogens = args.include_hydrogens;
     if (args.include_hetatm_explicit) config.include_hetatm = args.include_hetatm;
     if (args.use_bitmask_explicit) config.use_bitmask = args.use_bitmask;
+    if (args.bitmask_correction_explicit) config.bitmask_correction = args.bitmask_correction;
+    if (args.bitmask_correction_coeff_explicit) config.bitmask_correction_coeff = args.bitmask_correction_coeff;
     if (args.use_auth_chain) config.use_auth_chain = true;
     if (args.residue_map) config.residue_map = true;
+}
+
+fn validateBitmaskCorrectionConfig(config: BatchConfig) !void {
+    if (config.bitmask_correction and !config.use_bitmask) {
+        std.debug.print("Error: --bitmask-correction requires --use-bitmask\n", .{});
+        return error.InvalidArgument;
+    }
+    if (config.bitmask_correction and config.adaptive_sr) {
+        std.debug.print("Error: --bitmask-correction is not supported with --adaptive-sr\n", .{});
+        return error.InvalidArgument;
+    }
 }
 
 fn applyWorkflowClassifierToBatchConfig(config: *BatchConfig, args: BatchArgs, classifier_config: workflow_manifest.ClassifierConfig) !void {
@@ -2932,6 +2996,7 @@ fn runWorkflow(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     var resource_config = BatchConfig{};
     try applyWorkflowToBatchConfig(&resource_config, args, workflow.calculation, workflow.output, workflow.classifier);
     applyCliOverrides(&resource_config, args);
+    try validateBitmaskCorrectionConfig(resource_config);
     if (workflowRequiresJobFirstForAuthChain(args, workflow, resource_config)) {
         return runWorkflowJobFirst(allocator, io, args);
     }
@@ -3142,6 +3207,7 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
     var resource_config = BatchConfig{};
     try applyWorkflowToBatchConfig(&resource_config, args, workflow.calculation, workflow.output, workflow.classifier);
     applyCliOverrides(&resource_config, args);
+    try validateBitmaskCorrectionConfig(resource_config);
     const effective_classifier_type = resource_config.classifier_type;
 
     const ccd_path = resolveWorkflowCcdPath(args, workflow.classifier, effective_classifier_type);
@@ -3186,6 +3252,7 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
         config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
         if (custom_classifier) |*c| config.custom_classifier = c;
         applyWorkflowJobOverrides(&config, args, job);
+        try validateBitmaskCorrectionConfig(config);
         validateBatchOutputFormat(config.output_format) catch {
             std.debug.print("Error: freesasa and rsa output formats are only supported by the calc command\n", .{});
             return error.InvalidArgument;
@@ -3266,6 +3333,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
     var resource_config = BatchConfig{};
     try applyWorkflowToBatchConfig(&resource_config, args, workflow.calculation, workflow.output, workflow.classifier);
     applyCliOverrides(&resource_config, args);
+    try validateBitmaskCorrectionConfig(resource_config);
     resource_config.include_hetatm = resource_config.include_hetatm or (resource_config.classifier_type == .ccd);
     const effective_classifier_type = resource_config.classifier_type;
 
@@ -3317,6 +3385,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
         config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
         if (custom_classifier) |*c| config.custom_classifier = c;
         applyWorkflowJobOverrides(&config, args, job);
+        try validateBitmaskCorrectionConfig(config);
         validateBatchOutputFormat(config.output_format) catch {
             std.debug.print("Error: freesasa and rsa output formats are only supported by the calc command\n", .{});
             return error.InvalidArgument;
@@ -3624,6 +3693,14 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
             return error.InvalidArgument;
         }
     }
+    if (args.bitmask_correction and !args.use_bitmask) {
+        std.debug.print("Error: --bitmask-correction requires --use-bitmask\n", .{});
+        return error.InvalidArgument;
+    }
+    if (args.bitmask_correction and args.adaptive_sr) {
+        std.debug.print("Error: --bitmask-correction is not supported with --adaptive-sr\n", .{});
+        return error.InvalidArgument;
+    }
 
     // For jsonl, don't pass output_dir to runBatch (no per-file I/O during computation)
     const output_dir: ?[]const u8 = if (args.output_format == .jsonl) null else args.output_path;
@@ -3656,6 +3733,8 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .include_hydrogens = args.include_hydrogens,
         .include_hetatm = args.include_hetatm or (args.classifier_type == .ccd),
         .use_bitmask = args.use_bitmask,
+        .bitmask_correction = args.bitmask_correction,
+        .bitmask_correction_coeff = args.bitmask_correction_coeff,
         .adaptive_sr = args.adaptive_sr,
         .coarse_points = args.coarse_points,
         .fine_points = args.fine_points,
@@ -4816,6 +4895,31 @@ test "BatchArgs --use-bitmask" {
     const args = [_][]const u8{ "zsasa", "batch", "--use-bitmask", "input_dir/" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(true, parsed.use_bitmask);
+}
+
+test "BatchArgs --bitmask-correction-coeff" {
+    const args = [_][]const u8{ "zsasa", "batch", "--use-bitmask", "--bitmask-correction-coeff=0.2", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.bitmask_correction);
+    try std.testing.expectEqual(@as(f64, 0.2), parsed.bitmask_correction_coeff);
+}
+
+test "BatchConfig bitmask correction requires bitmask" {
+    try std.testing.expectError(
+        error.InvalidArgument,
+        validateBitmaskCorrectionConfig(.{ .bitmask_correction = true }),
+    );
+}
+
+test "BatchConfig bitmask correction rejects adaptive SR" {
+    try std.testing.expectError(
+        error.InvalidArgument,
+        validateBitmaskCorrectionConfig(.{
+            .use_bitmask = true,
+            .bitmask_correction = true,
+            .adaptive_sr = true,
+        }),
+    );
 }
 
 test "BatchArgs --output=DIR (equals form)" {

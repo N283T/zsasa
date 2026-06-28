@@ -240,6 +240,8 @@ def compute_sasa_trajectory(
     stop: int | None = None,
     step: int = 1,
     use_bitmask: bool = False,
+    bitmask_correction: bool = False,
+    bitmask_correction_coeff: float | None = None,
 ) -> TrajectorySasaResult:
     """Compute SASA for a DCD trajectory using native Zig reader.
 
@@ -272,6 +274,12 @@ def compute_sasa_trajectory(
     use_bitmask : bool, optional
         Use bitmask LUT optimization for SR algorithm.
         Supports n_points 1..1024. Default: False.
+    bitmask_correction : bool, optional
+        Apply experimental bitmask exposed-fraction correction.
+        Requires use_bitmask=True. Default: False.
+    bitmask_correction_coeff : float, optional
+        Override the experimental correction coefficient.
+        None uses the library default.
 
     Returns
     -------
@@ -340,6 +348,8 @@ def compute_sasa_trajectory(
         probe_radius=probe_radius,
         n_threads=n_threads,
         use_bitmask=use_bitmask,
+        bitmask_correction=bitmask_correction,
+        bitmask_correction_coeff=bitmask_correction_coeff,
     )
 
     return TrajectorySasaResult(

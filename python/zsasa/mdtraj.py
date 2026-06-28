@@ -112,6 +112,8 @@ def compute_sasa(
     n_threads: int = 0,
     mode: Literal["atom", "residue", "total"] = "atom",
     use_bitmask: bool = False,
+    bitmask_correction: bool = False,
+    bitmask_correction_coeff: float | None = None,
 ) -> NDArray[np.float32]:
     """Compute SASA for MDTraj trajectory using zsasa.
 
@@ -134,6 +136,10 @@ def compute_sasa(
               Default: "atom".
         use_bitmask: Use bitmask LUT optimization for SR algorithm.
             Supports n_points 1..1024. Default: False.
+        bitmask_correction: Apply experimental bitmask exposed-fraction
+            correction. Requires use_bitmask=True. Default: False.
+        bitmask_correction_coeff: Optional non-negative correction coefficient.
+            None uses the library default.
 
     Returns:
         SASA values in nm² (matching MDTraj's output units).
@@ -180,6 +186,8 @@ def compute_sasa(
             probe_radius=probe_radius,
             n_threads=n_threads,
             use_bitmask=use_bitmask,
+            bitmask_correction=bitmask_correction,
+            bitmask_correction_coeff=bitmask_correction_coeff,
         )
     elif algorithm == "lr":
         result = calculate_sasa_batch(
@@ -190,6 +198,8 @@ def compute_sasa(
             probe_radius=probe_radius,
             n_threads=n_threads,
             use_bitmask=use_bitmask,
+            bitmask_correction=bitmask_correction,
+            bitmask_correction_coeff=bitmask_correction_coeff,
         )
     else:
         msg = f"Unknown algorithm: {algorithm}. Use 'sr' or 'lr'."
