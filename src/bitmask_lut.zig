@@ -50,6 +50,16 @@ pub fn BitmaskLutGen(comptime T: type) type {
         /// Build the lookup table for the given n_points.
         /// Returns error.UnsupportedNPoints if n_points is not in 1..1024.
         pub fn init(allocator: Allocator, n_points_val: u32) !Self {
+            return initVariant(allocator, n_points_val, 0);
+        }
+
+        /// Build a deterministic rotated test-point variant of the lookup table.
+        ///
+        /// Variant 0 is identical to init(). Non-zero variants rotate sphere test
+        /// points before mask construction while keeping direction-bin layout
+        /// unchanged, which decorrelates quantization without changing runtime
+        /// binning semantics.
+        pub fn initVariant(allocator: Allocator, n_points_val: u32, variant: usize) !Self {
             if (!isSupportedNPoints(n_points_val)) return error.UnsupportedNPoints;
 
             const words: usize = (n_points_val + 63) / 64;
@@ -67,6 +77,9 @@ pub fn BitmaskLutGen(comptime T: type) type {
             const TestPointsGen = test_points.generateTestPointsGen(T);
             const tp = try TestPointsGen.generate(allocator, n_points_val);
             defer allocator.free(tp);
+            if (variant != 0) {
+                rotateTestPoints(tp, variant);
+            }
 
             // Allocate masks: n_dirs * angle_bins * words
             const total_masks = n_dirs * angle_bins * words;
@@ -102,6 +115,25 @@ pub fn BitmaskLutGen(comptime T: type) type {
                 .last_word_mask = last_word_mask,
                 .allocator = allocator,
             };
+        }
+
+        fn rotateTestPoints(points: []Vec, variant: usize) void {
+            const v: T = @floatFromInt(variant);
+            const angle_z = v * 2.39996322972865332;
+            const angle_y = v * 0.7548776662466927;
+            const cz = @cos(angle_z);
+            const sz = @sin(angle_z);
+            const cy = @cos(angle_y);
+            const sy = @sin(angle_y);
+
+            for (points) |*p| {
+                const xz = p.x * cz - p.y * sz;
+                const yz = p.x * sz + p.y * cz;
+                const zz = p.z;
+                p.x = xz * cy + zz * sy;
+                p.y = yz;
+                p.z = -xz * sy + zz * cy;
+            }
         }
 
         pub fn deinit(self: *Self) void {
@@ -229,6 +261,26 @@ test "BitmaskLut init and deinit - 128 points" {
     try std.testing.expectEqual(@as(usize, 2), lut.words);
     try std.testing.expectEqual(@as(u32, 128), lut.n_points);
     try std.testing.expectEqual(std.math.maxInt(u64), lut.last_word_mask);
+}
+
+test "BitmaskLut variant zero matches default" {
+    const allocator = std.testing.allocator;
+    var default_lut = try BitmaskLut.init(allocator, 128);
+    defer default_lut.deinit();
+    var variant_lut = try BitmaskLut.initVariant(allocator, 128, 0);
+    defer variant_lut.deinit();
+
+    try std.testing.expectEqualSlices(u64, default_lut.masks, variant_lut.masks);
+}
+
+test "BitmaskLut rotated variant changes masks" {
+    const allocator = std.testing.allocator;
+    var default_lut = try BitmaskLut.init(allocator, 128);
+    defer default_lut.deinit();
+    var variant_lut = try BitmaskLut.initVariant(allocator, 128, 1);
+    defer variant_lut.deinit();
+
+    try std.testing.expect(!std.mem.eql(u64, default_lut.masks, variant_lut.masks));
 }
 
 test "BitmaskLut init and deinit - 256 points" {

@@ -123,6 +123,14 @@ const TrajectoryReader = struct {
 
 const SdfPathList = sdf_parser.SdfPathList;
 
+const bitmask_lut_cycle_count: usize = 4;
+
+const BitmaskLutMode = enum {
+    single,
+    per_frame,
+    cycle,
+};
+
 /// Trajectory mode arguments
 pub const TrajArgs = struct {
     traj_path: ?[]const u8 = null,
@@ -143,6 +151,7 @@ pub const TrajArgs = struct {
     include_hydrogens: bool = true, // Include hydrogen atoms (default: include for MD trajectories)
     batch_size: u32 = 0, // Frames per batch for parallel processing (0 = auto)
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
+    bitmask_lut_mode: BitmaskLutMode = .single,
     bitmask_correction: bool = false, // Experimental exposed-fraction correction for bitmask SR
     bitmask_correction_coeff: f64 = shrake_rupley_bitmask.default_bitmask_correction_coeff,
     quiet: bool = false,
@@ -164,6 +173,21 @@ fn parseBitmaskCorrectionCoeff(value: []const u8) f64 {
         std.process.exit(1);
     }
     return coeff;
+}
+
+fn parseBitmaskLutMode(value: []const u8) BitmaskLutMode {
+    if (std.mem.eql(u8, value, "single")) return .single;
+    if (std.mem.eql(u8, value, "per-frame")) return .per_frame;
+    if (std.mem.eql(u8, value, "cycle")) return .cycle;
+    std.debug.print("Error: Invalid bitmask LUT mode: {s}\n", .{value});
+    std.process.exit(1);
+}
+
+fn validateBitmaskLutMode(args: TrajArgs) !void {
+    if (args.bitmask_lut_mode != .single and !args.use_bitmask) {
+        std.debug.print("Error: --bitmask-lut-mode requires --use-bitmask\n", .{});
+        return error.InvalidArgument;
+    }
 }
 
 /// Parse trajectory mode arguments
@@ -277,6 +301,15 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) TrajArgs {
                 result.include_hydrogens = false;
             } else if (std.mem.eql(u8, arg, "--use-bitmask")) {
                 result.use_bitmask = true;
+            } else if (std.mem.startsWith(u8, arg, "--bitmask-lut-mode=")) {
+                result.bitmask_lut_mode = parseBitmaskLutMode(arg["--bitmask-lut-mode=".len..]);
+            } else if (std.mem.eql(u8, arg, "--bitmask-lut-mode")) {
+                i += 1;
+                if (i >= args.len) {
+                    std.debug.print("Error: Missing value for --bitmask-lut-mode\n", .{});
+                    std.process.exit(1);
+                }
+                result.bitmask_lut_mode = parseBitmaskLutMode(args[i]);
             } else if (std.mem.eql(u8, arg, "--bitmask-correction")) {
                 result.bitmask_correction = true;
             } else if (std.mem.startsWith(u8, arg, "--bitmask-correction-coeff=")) {
@@ -395,6 +428,10 @@ pub fn printHelp(program_name: []const u8) void {
         \\                       Include hydrogen atoms (default, for backward compat)
         \\    --use-bitmask      Use bitmask LUT optimization for SR algorithm
         \\                       (n-points must be 1..1024)
+        \\    --bitmask-lut-mode=MODE
+        \\                       Trajectory bitmask LUT reuse mode:
+        \\                       single (default), per-frame, cycle
+        \\                       Non-default modes require --use-bitmask
         \\    --bitmask-correction
         \\                       Experimental correction for bitmask quantization bias
         \\                       Requires --use-bitmask
@@ -467,28 +504,73 @@ const FrameResult = struct {
 const TrajLuts = struct {
     lut_f64: ?bitmask_lut.BitmaskLut = null,
     lut_f32: ?bitmask_lut.BitmaskLutGen(f32) = null,
+    cycle_f64: [bitmask_lut_cycle_count]bitmask_lut.BitmaskLut = undefined,
+    cycle_f32: [bitmask_lut_cycle_count]bitmask_lut.BitmaskLutGen(f32) = undefined,
+    cycle_len: usize = 0,
+    cycle_precision: Precision = .f64,
 
     fn init(allocator: Allocator, args: TrajArgs) !TrajLuts {
         if (!args.use_bitmask) return .{};
         if (args.algorithm != .sr) return error.BitmaskRequiresSR;
-        return switch (args.precision) {
-            .f64 => .{ .lut_f64 = try bitmask_lut.BitmaskLut.init(allocator, args.n_points) },
-            .f32 => .{ .lut_f32 = try bitmask_lut.BitmaskLutGen(f32).init(allocator, args.n_points) },
-        };
+        if (!bitmask_lut.isSupportedNPoints(args.n_points)) return error.UnsupportedNPoints;
+        switch (args.bitmask_lut_mode) {
+            .per_frame => return .{},
+            .single => return switch (args.precision) {
+                .f64 => .{ .lut_f64 = try bitmask_lut.BitmaskLut.init(allocator, args.n_points) },
+                .f32 => .{ .lut_f32 = try bitmask_lut.BitmaskLutGen(f32).init(allocator, args.n_points) },
+            },
+            .cycle => {
+                var luts = TrajLuts{
+                    .cycle_precision = args.precision,
+                };
+                errdefer luts.deinit();
+                switch (args.precision) {
+                    .f64 => for (0..bitmask_lut_cycle_count) |i| {
+                        luts.cycle_f64[i] = try bitmask_lut.BitmaskLut.initVariant(allocator, args.n_points, i);
+                        luts.cycle_len = i + 1;
+                    },
+                    .f32 => for (0..bitmask_lut_cycle_count) |i| {
+                        luts.cycle_f32[i] = try bitmask_lut.BitmaskLutGen(f32).initVariant(allocator, args.n_points, i);
+                        luts.cycle_len = i + 1;
+                    },
+                }
+                return luts;
+            },
+        }
     }
 
     fn deinit(self: *TrajLuts) void {
         if (self.lut_f64) |*lut| lut.deinit();
         if (self.lut_f32) |*lut| lut.deinit();
+        if (self.cycle_len > 0) {
+            switch (self.cycle_precision) {
+                .f64 => for (self.cycle_f64[0..self.cycle_len]) |*lut| lut.deinit(),
+                .f32 => for (self.cycle_f32[0..self.cycle_len]) |*lut| lut.deinit(),
+            }
+        }
         self.* = .{};
     }
 
-    fn f64Ptr(self: *const TrajLuts) ?*const bitmask_lut.BitmaskLut {
-        return if (self.lut_f64 != null) &self.lut_f64.? else null;
+    fn f64Ptr(self: *const TrajLuts, frame_idx: usize) ?*const bitmask_lut.BitmaskLut {
+        if (self.lut_f64 != null) return &self.lut_f64.?;
+        if (self.cycle_len > 0 and self.cycle_precision == .f64) {
+            return &self.cycle_f64[frame_idx % self.cycle_len];
+        }
+        return null;
     }
 
-    fn f32Ptr(self: *const TrajLuts) ?*const bitmask_lut.BitmaskLutGen(f32) {
-        return if (self.lut_f32 != null) &self.lut_f32.? else null;
+    fn f32Ptr(self: *const TrajLuts, frame_idx: usize) ?*const bitmask_lut.BitmaskLutGen(f32) {
+        if (self.lut_f32 != null) return &self.lut_f32.?;
+        if (self.cycle_len > 0 and self.cycle_precision == .f32) {
+            return &self.cycle_f32[frame_idx % self.cycle_len];
+        }
+        return null;
+    }
+
+    fn reusableLutCount(self: *const TrajLuts) usize {
+        if (self.cycle_len > 0) return self.cycle_len;
+        if (self.lut_f64 != null or self.lut_f32 != null) return 1;
+        return 0;
     }
 };
 
@@ -510,6 +592,8 @@ const BatchWorkerArgs = struct {
     n_points: u32,
     n_slices: u32,
     coord_scale: f64, // ztraj readers already yield Å; kept for reader abstraction
+    use_bitmask: bool = false,
+    bitmask_luts: ?*const TrajLuts = null,
     bitmask_lut_f64: ?*const bitmask_lut.BitmaskLut = null,
     bitmask_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32) = null,
     bitmask_correction: bool = false,
@@ -576,18 +660,31 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
         // Calculate SASA (single-threaded per frame)
         var total_sasa: f64 = 0;
         const frame_id = args.frame_data[batch_idx].frame_idx;
+        const frame_slot: usize = @intCast(frame_id);
 
         if (args.precision == .f32) {
             const config = Configf32{
                 .probe_radius = @floatCast(args.probe_radius),
                 .n_points = args.n_points,
             };
-            if (args.bitmask_lut_f32) |lut| {
+            const lut_opt = if (args.bitmask_luts) |luts| luts.f32Ptr(frame_slot) else args.bitmask_lut_f32;
+            if (lut_opt) |lut| {
                 const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f32){
                     .enabled = args.bitmask_correction,
                     .coeff = @floatCast(args.bitmask_correction_coeff),
                 };
                 var result = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithLutAndCorrection(thread_alloc, input, config, lut, correction) catch |err| {
+                    setWorkerError(args, "frame {d}: bitmask-f32 failed: {s}", .{ frame_id, @errorName(err) });
+                    return;
+                };
+                total_sasa = @floatCast(result.total_area);
+                result.deinit();
+            } else if (args.use_bitmask) {
+                const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f32){
+                    .enabled = args.bitmask_correction,
+                    .coeff = @floatCast(args.bitmask_correction_coeff),
+                };
+                var result = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithCorrection(thread_alloc, input, config, correction) catch |err| {
                     setWorkerError(args, "frame {d}: bitmask-f32 failed: {s}", .{ frame_id, @errorName(err) });
                     return;
                 };
@@ -607,12 +704,24 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
                     .probe_radius = args.probe_radius,
                     .n_points = args.n_points,
                 };
-                if (args.bitmask_lut_f64) |lut| {
+                const lut_opt = if (args.bitmask_luts) |luts| luts.f64Ptr(frame_slot) else args.bitmask_lut_f64;
+                if (lut_opt) |lut| {
                     const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f64){
                         .enabled = args.bitmask_correction,
                         .coeff = args.bitmask_correction_coeff,
                     };
                     var result = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).calculateSasaWithLutAndCorrection(thread_alloc, input, config, lut, correction) catch |err| {
+                        setWorkerError(args, "frame {d}: bitmask-f64 failed: {s}", .{ frame_id, @errorName(err) });
+                        return;
+                    };
+                    total_sasa = result.total_area;
+                    result.deinit();
+                } else if (args.use_bitmask) {
+                    const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f64){
+                        .enabled = args.bitmask_correction,
+                        .coeff = args.bitmask_correction_coeff,
+                    };
+                    var result = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).calculateSasaWithCorrection(thread_alloc, input, config, correction) catch |err| {
                         setWorkerError(args, "frame {d}: bitmask-f64 failed: {s}", .{ frame_id, @errorName(err) });
                         return;
                     };
@@ -719,6 +828,11 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
         std.debug.print("Error: Missing topology file\n", .{});
         return error.MissingArgument;
     };
+    if (args.bitmask_correction and !args.use_bitmask) {
+        std.debug.print("Error: --bitmask-correction requires --use-bitmask\n", .{});
+        return error.InvalidArgument;
+    }
+    try validateBitmaskLutMode(args);
 
     // Detect trajectory format
     const traj_format = detectTrajectoryFormat(traj_path) orelse {
@@ -844,11 +958,6 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
         return error.AtomCountMismatch;
     }
 
-    if (args.bitmask_correction and !args.use_bitmask) {
-        std.debug.print("Error: --bitmask-correction requires --use-bitmask\n", .{});
-        return error.InvalidArgument;
-    }
-
     // Open output file with buffered writer
     const output_file = try std.Io.Dir.cwd().createFile(io, args.output_path, .{});
     defer output_file.close(io);
@@ -865,7 +974,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
     else
         args.n_threads;
 
-    // Build bitmask LUT once (if enabled) — reused across all frames
+    // Prepare trajectory bitmask LUTs according to the selected reuse mode.
     var luts = TrajLuts.init(allocator, args) catch |err| {
         switch (err) {
             error.BitmaskRequiresSR => {
@@ -891,6 +1000,14 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
             if (args.precision == .f32) "f32" else "f64",
             if (args.use_bitmask) ", Bitmask: enabled" else "",
         });
+        if (args.use_bitmask) {
+            const mode_name: []const u8 = switch (args.bitmask_lut_mode) {
+                .single => "single",
+                .per_frame => "per-frame",
+                .cycle => "cycle",
+            };
+            std.debug.print("Bitmask LUT mode: {s}\n", .{mode_name});
+        }
         std.debug.print("Processing frames", .{});
         if (args.stride > 1) std.debug.print(" (stride={d})", .{args.stride});
         if (args.start_frame > 0) std.debug.print(" from {d}", .{args.start_frame});
@@ -1017,12 +1134,20 @@ fn runSequential(
                     .probe_radius = @floatCast(args.probe_radius),
                     .n_points = args.n_points,
                 };
-                if (luts.f32Ptr()) |lut| {
+                if (luts.f32Ptr(@intCast(frame_idx.*))) |lut| {
                     const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f32){
                         .enabled = args.bitmask_correction,
                         .coeff = @floatCast(args.bitmask_correction_coeff),
                     };
                     var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithLutAndCorrection(allocator, frame_input, config, lut, correction);
+                    defer result.deinit();
+                    break :blk @floatCast(result.total_area);
+                } else if (args.use_bitmask) {
+                    const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f32){
+                        .enabled = args.bitmask_correction,
+                        .coeff = @floatCast(args.bitmask_correction_coeff),
+                    };
+                    var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithCorrection(allocator, frame_input, config, correction);
                     defer result.deinit();
                     break :blk @floatCast(result.total_area);
                 } else {
@@ -1038,12 +1163,20 @@ fn runSequential(
                             .probe_radius = args.probe_radius,
                             .n_points = args.n_points,
                         };
-                        if (luts.f64Ptr()) |lut| {
+                        if (luts.f64Ptr(@intCast(frame_idx.*))) |lut| {
                             const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f64){
                                 .enabled = args.bitmask_correction,
                                 .coeff = args.bitmask_correction_coeff,
                             };
                             var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).calculateSasaWithLutAndCorrection(allocator, frame_input, config, lut, correction);
+                            defer result.deinit();
+                            break :blk result.total_area;
+                        } else if (args.use_bitmask) {
+                            const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f64){
+                                .enabled = args.bitmask_correction,
+                                .coeff = args.bitmask_correction_coeff,
+                            };
+                            var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).calculateSasaWithCorrection(allocator, frame_input, config, correction);
                             defer result.deinit();
                             break :blk result.total_area;
                         } else {
@@ -1149,8 +1282,8 @@ fn runBatchParallel(
                 .n_points = args.n_points,
                 .n_slices = args.n_slices,
                 .coord_scale = reader.coordScale(),
-                .bitmask_lut_f64 = luts.f64Ptr(),
-                .bitmask_lut_f32 = luts.f32Ptr(),
+                .use_bitmask = args.use_bitmask,
+                .bitmask_luts = luts,
                 .bitmask_correction = args.bitmask_correction,
                 .bitmask_correction_coeff = args.bitmask_correction_coeff,
             }}) catch {
@@ -1300,6 +1433,49 @@ test "TrajArgs --bitmask-correction-coeff" {
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(true, parsed.bitmask_correction);
     try std.testing.expectEqual(@as(f64, 0.2), parsed.bitmask_correction_coeff);
+}
+
+test "TrajArgs --bitmask-lut-mode parses supported modes" {
+    const single_args = [_][]const u8{ "zsasa", "traj", "--use-bitmask", "--bitmask-lut-mode=single", "traj.xtc", "topology.pdb" };
+    const per_frame_args = [_][]const u8{ "zsasa", "traj", "--use-bitmask", "--bitmask-lut-mode", "per-frame", "traj.xtc", "topology.pdb" };
+    const cycle_args = [_][]const u8{ "zsasa", "traj", "--use-bitmask", "--bitmask-lut-mode=cycle", "traj.xtc", "topology.pdb" };
+
+    try std.testing.expectEqual(BitmaskLutMode.single, parseArgs(&single_args, 2).bitmask_lut_mode);
+    try std.testing.expectEqual(BitmaskLutMode.per_frame, parseArgs(&per_frame_args, 2).bitmask_lut_mode);
+    try std.testing.expectEqual(BitmaskLutMode.cycle, parseArgs(&cycle_args, 2).bitmask_lut_mode);
+}
+
+test "TrajArgs non-default bitmask LUT mode requires bitmask" {
+    try std.testing.expectError(
+        error.InvalidArgument,
+        validateBitmaskLutMode(.{ .bitmask_lut_mode = .per_frame }),
+    );
+    try validateBitmaskLutMode(.{ .use_bitmask = true, .bitmask_lut_mode = .per_frame });
+}
+
+test "TrajLuts honors bitmask LUT reuse modes" {
+    const allocator = std.testing.allocator;
+
+    var single = try TrajLuts.init(allocator, .{ .use_bitmask = true, .bitmask_lut_mode = .single, .precision = .f64 });
+    defer single.deinit();
+    try std.testing.expect(single.f64Ptr(0) != null);
+    try std.testing.expectEqual(@as(usize, 1), single.reusableLutCount());
+
+    var per_frame = try TrajLuts.init(allocator, .{ .use_bitmask = true, .bitmask_lut_mode = .per_frame, .precision = .f64 });
+    defer per_frame.deinit();
+    try std.testing.expect(per_frame.f64Ptr(0) == null);
+    try std.testing.expectEqual(@as(usize, 0), per_frame.reusableLutCount());
+    try std.testing.expectError(
+        error.UnsupportedNPoints,
+        TrajLuts.init(allocator, .{ .use_bitmask = true, .bitmask_lut_mode = .per_frame, .precision = .f64, .n_points = 2000 }),
+    );
+
+    var cycle = try TrajLuts.init(allocator, .{ .use_bitmask = true, .bitmask_lut_mode = .cycle, .precision = .f64 });
+    defer cycle.deinit();
+    try std.testing.expect(cycle.f64Ptr(0) != null);
+    try std.testing.expect(!std.mem.eql(u64, cycle.f64Ptr(0).?.masks, cycle.f64Ptr(1).?.masks));
+    try std.testing.expect(cycle.f64Ptr(bitmask_lut_cycle_count) == cycle.f64Ptr(0));
+    try std.testing.expectEqual(bitmask_lut_cycle_count, cycle.reusableLutCount());
 }
 
 test "TrajArgs quiet suppresses progress even when show_progress defaults true" {

@@ -115,6 +115,7 @@ For batch custom classifier configs, use a workflow `[classifier]` section. See 
 | `--n-points=N` | Test points per atom (SR only, 1-10000) | `100` |
 | `--n-slices=N` | Slices per atom diameter (LR only, 1-1000) | `20` |
 | `--use-bitmask` | Use [bitmask LUT optimization](../guide/algorithms.mdx#bitmask-lut-optimization) (SR only, n_points 1-1024) | off |
+| `--bitmask-lut-mode=MODE` | Trajectory-only bitmask LUT reuse mode: `single`, `per-frame`, or `cycle`; non-default modes require `--use-bitmask` | `single` |
 | `--bitmask-correction` | Experimental exposed-fraction correction for bitmask quantization bias; requires `--use-bitmask` | off |
 | `--bitmask-correction-coeff=V` | Override the experimental correction coefficient | `0.020` |
 | `--adaptive-sr` | Batch-only experimental two-stage bitmask SR; requires `--use-bitmask` and `--algorithm=sr` | off |
