@@ -129,10 +129,10 @@ For batch custom classifier configs, use a workflow `[classifier]` section. See 
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--classifier=TYPE` | Built-in classifier: `ccd`, `protor`, `naccess`, or `oons` | calc/batch: `ccd` for PDB/mmCIF, none for JSON; traj: `naccess` |
+| `--classifier=TYPE` | Built-in classifier: `ccd`, `protor`, `naccess`, or `oons` | calc/batch: `ccd` for PDB/mmCIF/BinaryCIF/SDF/MOL, none for JSON; traj: `naccess` |
 | `--ccd=FILE` | External CCD dictionary (CIF text or ZSDC binary) | none |
 
-When `--classifier` is used, atom radii are assigned based on residue and atom names. For PDB/mmCIF input, `ccd` is used by default. When `--classifier=ccd` is used, HETATM records are included automatically without needing `--include-hetatm`.
+When `--classifier` is used, atom radii are assigned based on residue and atom names. For PDB/mmCIF/BinaryCIF/SDF/MOL input, `ccd` is used by default. When `--classifier=ccd` is used, HETATM records are included automatically without needing `--include-hetatm`.
 
 See [Classifiers](../guide/classifiers.mdx) for detailed classifier documentation.
 
@@ -281,7 +281,7 @@ Most [common options](#common-options) apply, plus the trajectory-specific optio
 
 ### Atom Filtering
 
-By default, hydrogen atoms and HETATM records are excluded (matching FreeSASA/RustSASA defaults).
+By default, hydrogen atoms are excluded. HETATM records are included automatically with the default CCD classifier for structure inputs; use `--classifier=naccess`/`protor`/`oons` plus `--include-hetatm` when you need explicit non-CCD HETATM handling.
 
 ```bash
 # Include hydrogen atoms

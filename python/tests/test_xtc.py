@@ -7,7 +7,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from zsasa.xtc import TrajectorySasaResult, XtcReader, compute_sasa_trajectory
+from zsasa.xtc import (
+    TrajectorySasaResult,
+    TrajectorySasaSummaryResult,
+    XtcReader,
+    compute_sasa_trajectory,
+    compute_sasa_trajectory_summary,
+)
 
 # Path to test data
 TEST_DATA_DIR = Path(__file__).parent.parent.parent / "test_data"
@@ -166,6 +172,18 @@ class TestComputeSasaTrajectory:
             result_4.atom_areas,
             decimal=4,
         )
+
+    def test_streaming_summary_matches_full_totals_without_atom_areas(
+        self,
+        radii: np.ndarray,
+    ) -> None:
+        """Streaming XTC summary should chunk frames and avoid retaining atom areas."""
+        full = compute_sasa_trajectory(XTC_FILE, radii, stop=4)
+        summary = compute_sasa_trajectory_summary(XTC_FILE, radii, stop=4, chunk_size=2)
+
+        assert isinstance(summary, TrajectorySasaSummaryResult)
+        assert not hasattr(summary, "atom_areas")
+        np.testing.assert_allclose(summary.total_areas, full.total_areas, rtol=1e-6)
 
 
 class TestXtcReaderClosed:

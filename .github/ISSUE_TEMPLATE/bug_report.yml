@@ -8,11 +8,37 @@ body:
         Thanks for taking the time to report this bug!
 
   - type: input
+    id: version
+    attributes:
+      label: zsasa Version
+      description: Output of `zsasa --version` or `python -c "import zsasa; print(zsasa.get_version())"`
+      placeholder: "0.6.0"
+    validations:
+      required: true
+
+  - type: input
     id: zig-version
     attributes:
-      label: Zig Version
-      description: Output of `zig version`
-      placeholder: "0.16.0"
+      label: Zig Version (source builds only)
+      description: Output of `zig version`, or "not installed" for wheels/binaries
+      placeholder: "0.16.0 or not installed"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Installation Method
+      options:
+        - PyPI wheel / pip / uv
+        - install.sh binary download
+        - install.sh source build
+        - Zig source build
+        - Homebrew
+        - Scoop
+        - conda-forge
+        - Docker
+        - Other
     validations:
       required: true
 
@@ -25,6 +51,7 @@ body:
         - Linux (aarch64)
         - macOS (Apple Silicon)
         - macOS (Intel)
+        - Windows
         - Windows (WSL)
         - Other
     validations:
@@ -40,8 +67,11 @@ body:
         - Python bindings
         - Shrake-Rupley algorithm
         - Lee-Richards algorithm
-        - File parsing (PDB/mmCIF/JSON)
+        - File parsing (PDB/mmCIF/BinaryCIF/SDF/MOL/JSON)
+        - Trajectory parsing (XTC/TRR/DCD/AMBER NetCDF)
         - Batch processing
+        - Packaging / installation
+        - Documentation
         - Other
     validations:
       required: true
@@ -60,7 +90,7 @@ body:
       label: Steps to Reproduce
       description: Minimal steps to reproduce the behavior
       placeholder: |
-        1. Run `zsasa input.pdb -o output.json`
+        1. Run `zsasa calc input.cif output.json`
         2. See error...
     validations:
       required: true

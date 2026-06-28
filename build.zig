@@ -75,9 +75,11 @@ pub fn build(b: *std.Build) void {
     // Test step
     const mod_tests = b.addTest(.{ .root_module = mod });
     const exe_tests = b.addTest(.{ .root_module = exe.root_module });
+    const lib_tests = b.addTest(.{ .root_module = lib.root_module });
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(mod_tests).step);
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+    test_step.dependOn(&b.addRunArtifact(lib_tests).step);
 
     // Docs step (zig autodoc)
     const docs_lib = b.addLibrary(.{

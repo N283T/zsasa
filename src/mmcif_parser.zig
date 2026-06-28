@@ -64,6 +64,7 @@ const AtomSiteColumns = struct {
     pdbx_pdb_ins_code: ?usize = null,
     group_pdb: ?usize = null,
     label_alt_id: ?usize = null,
+    occupancy: ?usize = null,
     pdbx_pdb_model_num: ?usize = null,
 
     /// Check if required coordinate fields are present
@@ -254,6 +255,8 @@ pub const MmcifParser = struct {
                             columns.group_pdb = col_index;
                         } else if (eqlIgnoreCase(field, "label_alt_id")) {
                             columns.label_alt_id = col_index;
+                        } else if (eqlIgnoreCase(field, "occupancy")) {
+                            columns.occupancy = col_index;
                         } else if (eqlIgnoreCase(field, "pdbx_PDB_model_num")) {
                             columns.pdbx_pdb_model_num = col_index;
                         }
@@ -324,12 +327,13 @@ pub const MmcifParser = struct {
         defer residue_num_list.deinit(self.allocator);
         var insertion_code_list = std.ArrayListUnmanaged(types.FixedString4).empty;
         defer insertion_code_list.deinit(self.allocator);
+        var atom_records = std.ArrayListUnmanaged(AtomRecord).empty;
+        defer atom_records.deinit(self.allocator);
 
         // Buffer for current row values
         var row_values = try self.allocator.alloc([]const u8, num_cols);
         defer self.allocator.free(row_values);
 
-        var first_alt_loc: ?u8 = null;
         var col: usize = 0;
 
         // We need to re-read from the beginning of values since findAtomSiteLoop
@@ -347,99 +351,10 @@ pub const MmcifParser = struct {
 
                     if (col >= num_cols) {
                         // Complete row - process it
-                        const should_include = try self.shouldIncludeAtom(
-                            row_values,
-                            columns,
-                            &first_alt_loc,
-                        );
+                        const should_include = try self.shouldIncludeAtom(row_values, columns);
 
                         if (should_include) {
-                            // Parse coordinates
-                            const x = try parseFloat(row_values[columns.cartn_x.?]);
-                            const y = try parseFloat(row_values[columns.cartn_y.?]);
-                            const z = try parseFloat(row_values[columns.cartn_z.?]);
-
-                            try x_list.append(self.allocator, x);
-                            try y_list.append(self.allocator, y);
-                            try z_list.append(self.allocator, z);
-
-                            // Get element and radius
-                            var element_enum = elem.Element.X;
-                            if (columns.type_symbol) |type_col| {
-                                const symbol = row_values[type_col];
-                                if (!cif.isNull(symbol)) {
-                                    element_enum = elem.fromSymbol(symbol);
-                                }
-                            }
-
-                            // Use VdW radius as default (classifier will override)
-                            try r_list.append(self.allocator, element_enum.vdwRadius());
-                            try element_list.append(self.allocator, element_enum.atomicNumber());
-
-                            // Get residue name
-                            if (columns.getResNameCol()) |res_col| {
-                                const res = row_values[res_col];
-                                if (cif.isNull(res)) {
-                                    try residue_list.append(self.allocator, types.FixedString5.fromSlice("UNK"));
-                                } else {
-                                    try residue_list.append(self.allocator, types.FixedString5.fromSlice(res));
-                                }
-                            } else {
-                                try residue_list.append(self.allocator, types.FixedString5.fromSlice("UNK"));
-                            }
-
-                            // Get atom name
-                            if (columns.getAtomNameCol()) |atom_col| {
-                                const name = row_values[atom_col];
-                                if (cif.isNull(name)) {
-                                    try atom_name_list.append(self.allocator, types.FixedString4.fromSlice("X"));
-                                } else {
-                                    try atom_name_list.append(self.allocator, types.FixedString4.fromSlice(name));
-                                }
-                            } else {
-                                try atom_name_list.append(self.allocator, types.FixedString4.fromSlice("X"));
-                            }
-
-                            // Get chain ID
-                            if (columns.getChainCol(self.use_auth_chain)) |chain_col| {
-                                const chain = row_values[chain_col];
-                                if (cif.isNull(chain)) {
-                                    try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(""));
-                                    try chain_id_full_list.append(self.allocator, try self.allocator.dupe(u8, ""));
-                                } else {
-                                    try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(chain));
-                                    try chain_id_full_list.append(self.allocator, try self.allocator.dupe(u8, chain));
-                                    has_extended_chain = has_extended_chain or chain.len > 4;
-                                }
-                            } else {
-                                try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(""));
-                                try chain_id_full_list.append(self.allocator, try self.allocator.dupe(u8, ""));
-                            }
-
-                            // Get residue sequence number
-                            if (columns.getResSeqCol()) |seq_col| {
-                                const seq_str = row_values[seq_col];
-                                if (cif.isNull(seq_str)) {
-                                    try residue_num_list.append(self.allocator, 0);
-                                } else {
-                                    const seq_num = std.fmt.parseInt(i32, seq_str, 10) catch 0;
-                                    try residue_num_list.append(self.allocator, seq_num);
-                                }
-                            } else {
-                                try residue_num_list.append(self.allocator, 0);
-                            }
-
-                            // Get insertion code
-                            if (columns.getInsCodeCol()) |ins_col| {
-                                const ins_code = row_values[ins_col];
-                                if (cif.isNull(ins_code)) {
-                                    try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(""));
-                                } else {
-                                    try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(ins_code));
-                                }
-                            } else {
-                                try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(""));
-                            }
+                            try atom_records.append(self.allocator, try self.atomRecordFromRow(row_values, columns));
                         }
 
                         col = 0;
@@ -455,6 +370,23 @@ pub const MmcifParser = struct {
                 },
                 else => {},
             }
+        }
+
+        for (atom_records.items, 0..) |atom, i| {
+            if (!self.shouldKeepAltLoc(atom_records.items, i)) continue;
+
+            try x_list.append(self.allocator, atom.x);
+            try y_list.append(self.allocator, atom.y);
+            try z_list.append(self.allocator, atom.z);
+            try r_list.append(self.allocator, atom.radius);
+            try element_list.append(self.allocator, atom.element.atomicNumber());
+            try residue_list.append(self.allocator, types.FixedString5.fromSlice(atom.residue));
+            try atom_name_list.append(self.allocator, types.FixedString4.fromSlice(atom.atom_name));
+            try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(atom.chain_id));
+            try chain_id_full_list.append(self.allocator, try self.allocator.dupe(u8, atom.chain_id));
+            has_extended_chain = has_extended_chain or atom.chain_id.len > 4;
+            try residue_num_list.append(self.allocator, atom.residue_num);
+            try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(atom.insertion_code));
         }
 
         // Convert to AtomInput
@@ -510,12 +442,127 @@ pub const MmcifParser = struct {
         };
     }
 
+    const AtomRecord = struct {
+        x: f64,
+        y: f64,
+        z: f64,
+        radius: f64,
+        element: elem.Element,
+        atom_name: []const u8,
+        residue: []const u8,
+        chain_id: []const u8,
+        residue_num: i32,
+        insertion_code: []const u8,
+        alt_loc: u8,
+        occupancy: f64,
+        model_num: ?u32,
+    };
+
+    fn atomRecordFromRow(self: *MmcifParser, row_values: []const []const u8, columns: AtomSiteColumns) !AtomRecord {
+        const x = try parseFloat(row_values[columns.cartn_x.?]);
+        const y = try parseFloat(row_values[columns.cartn_y.?]);
+        const z = try parseFloat(row_values[columns.cartn_z.?]);
+
+        var element_enum = elem.Element.X;
+        if (columns.type_symbol) |type_col| {
+            const symbol = row_values[type_col];
+            if (!cif.isNull(symbol)) {
+                element_enum = elem.fromSymbol(symbol);
+            }
+        }
+
+        const residue = if (columns.getResNameCol()) |res_col| blk: {
+            const res = row_values[res_col];
+            break :blk if (cif.isNull(res)) "UNK" else res;
+        } else "UNK";
+
+        const atom_name = if (columns.getAtomNameCol()) |atom_col| blk: {
+            const name = row_values[atom_col];
+            break :blk if (cif.isNull(name)) "X" else name;
+        } else "X";
+
+        const chain_id = if (columns.getChainCol(self.use_auth_chain)) |chain_col| blk: {
+            const chain = row_values[chain_col];
+            break :blk if (cif.isNull(chain)) "" else chain;
+        } else "";
+
+        const residue_num = if (columns.getResSeqCol()) |seq_col| blk: {
+            const seq_str = row_values[seq_col];
+            break :blk if (cif.isNull(seq_str)) 0 else std.fmt.parseInt(i32, seq_str, 10) catch 0;
+        } else 0;
+
+        const insertion_code = if (columns.getInsCodeCol()) |ins_col| blk: {
+            const ins_code = row_values[ins_col];
+            break :blk if (cif.isNull(ins_code)) "" else ins_code;
+        } else "";
+
+        const alt_loc: u8 = if (columns.label_alt_id) |alt_col| blk: {
+            const alt_id = row_values[alt_col];
+            break :blk if (cif.isNull(alt_id) or alt_id.len == 0) ' ' else alt_id[0];
+        } else ' ';
+
+        const occupancy = if (columns.occupancy) |occ_col| blk: {
+            const occ = row_values[occ_col];
+            break :blk if (cif.isNull(occ)) 0.0 else std.fmt.parseFloat(f64, occ) catch 0.0;
+        } else 0.0;
+        const model_num = if (columns.pdbx_pdb_model_num) |model_col| blk: {
+            const model = row_values[model_col];
+            break :blk if (cif.isNull(model)) null else std.fmt.parseInt(u32, model, 10) catch null;
+        } else null;
+
+        return .{
+            .x = x,
+            .y = y,
+            .z = z,
+            .radius = element_enum.vdwRadius(),
+            .element = element_enum,
+            .atom_name = atom_name,
+            .residue = residue,
+            .chain_id = chain_id,
+            .residue_num = residue_num,
+            .insertion_code = insertion_code,
+            .alt_loc = alt_loc,
+            .occupancy = occupancy,
+            .model_num = model_num,
+        };
+    }
+
+    fn sameAltLocSite(a: AtomRecord, b: AtomRecord) bool {
+        return a.model_num == b.model_num and
+            a.residue_num == b.residue_num and
+            std.mem.eql(u8, a.chain_id, b.chain_id) and
+            std.mem.eql(u8, a.residue, b.residue) and
+            std.mem.eql(u8, a.insertion_code, b.insertion_code) and
+            std.mem.eql(u8, a.atom_name, b.atom_name);
+    }
+
+    fn shouldKeepAltLoc(self: *MmcifParser, atoms: []const AtomRecord, index: usize) bool {
+        if (!self.first_alt_loc_only) return true;
+
+        const atom = atoms[index];
+        if (atom.alt_loc == ' ') return true;
+
+        var best_non_preferred: ?usize = null;
+        for (atoms, 0..) |other, other_index| {
+            if (!sameAltLocSite(atom, other)) continue;
+            if (other.alt_loc == ' ') return false;
+            if (other.alt_loc == 'A') return atom.alt_loc == 'A';
+            if (best_non_preferred) |best_index| {
+                if (other.occupancy > atoms[best_index].occupancy) {
+                    best_non_preferred = other_index;
+                }
+            } else {
+                best_non_preferred = other_index;
+            }
+        }
+        return best_non_preferred == index;
+    }
+
     /// Check if an atom should be included based on filters
     fn shouldIncludeAtom(
         self: *MmcifParser,
         row_values: []const []const u8,
         columns: AtomSiteColumns,
-        first_alt_loc: *?u8,
     ) !bool {
         // Check group_PDB filter (ATOM vs HETATM)
         if (self.atom_only) {
@@ -533,23 +580,6 @@ pub const MmcifParser = struct {
                 const symbol = row_values[col];
                 if (!cif.isNull(symbol) and (std.mem.eql(u8, symbol, "H") or std.mem.eql(u8, symbol, "D"))) {
                     return false;
-                }
-            }
-        }
-
-        // Check alternate location filter
-        if (self.first_alt_loc_only) {
-            if (columns.label_alt_id) |col| {
-                const alt_id = row_values[col];
-                if (!cif.isNull(alt_id) and alt_id.len > 0) {
-                    const alt_char = alt_id[0];
-                    if (first_alt_loc.*) |first| {
-                        if (alt_char != first) {
-                            return false;
-                        }
-                    } else {
-                        first_alt_loc.* = alt_char;
-                    }
                 }
             }
         }
@@ -857,6 +887,124 @@ test "parse with HETATM filter (default atom_only=true)" {
     defer input2.deinit();
 
     try std.testing.expectEqual(@as(usize, 3), input2.atomCount());
+}
+
+test "parse mmCIF default model selection includes all models" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.pdbx_PDB_model_num
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C CA ALA A 1 1 10.0 20.0 30.0
+        \\2 C CA GLY B 2 2 11.0 21.0 31.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expectEqualStrings("A", input.chain_id.?[0].slice());
+    try std.testing.expectEqualStrings("B", input.chain_id.?[1].slice());
+}
+
+test "parse mmCIF explicit model selection filters requested model" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.pdbx_PDB_model_num
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C CA ALA A 1 1 10.0 20.0 30.0
+        \\2 C CA GLY B 2 2 11.0 21.0 31.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.model_num = 2;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), input.atomCount());
+    try std.testing.expectEqualStrings("B", input.chain_id.?[0].slice());
+}
+
+test "parse mmCIF altLoc selection is per atom site and keeps later B-only sites" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.occupancy
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C CA ALA A 1 A 0.60 10.0 20.0 30.0
+        \\2 C CA ALA A 1 B 0.40 12.0 22.0 32.0
+        \\3 C CA GLY A 2 B 0.50 14.0 24.0 34.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
+    try std.testing.expectEqual(@as(i32, 2), input.residue_num.?[1]);
+}
+
+test "parse mmCIF altLoc selection is scoped by model" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.occupancy
+        \\_atom_site.pdbx_PDB_model_num
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C CA ALA A 1 A 0.60 1 10.0 20.0 30.0
+        \\2 C CA ALA A 1 B 0.40 1 12.0 22.0 32.0
+        \\3 C CA ALA A 1 B 0.50 2 14.0 24.0 34.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
 }
 
 test "parse with hydrogen filter (default skip_hydrogens=true)" {

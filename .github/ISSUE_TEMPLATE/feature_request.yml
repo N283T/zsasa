@@ -16,7 +16,9 @@ body:
         - Performance
         - New algorithm or method
         - Input/output formats
+        - Trajectory formats
         - Python bindings
+        - Packaging / distribution
         - CLI interface
         - Analysis features
         - Documentation

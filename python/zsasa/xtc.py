@@ -257,6 +257,200 @@ class TrajectorySasaResult:
         return f"TrajectorySasaResult(n_frames={self.n_frames}, n_atoms={self.n_atoms})"
 
 
+@dataclass
+class TrajectorySasaSummaryResult:
+    """Memory-efficient trajectory SASA summary.
+
+    Attributes:
+        total_areas: Total SASA per frame, shape (n_frames,) in Å².
+        steps: Step numbers for each processed frame.
+        times: Time values for each processed frame in ps.
+        residue_areas: Optional per-residue SASA, shape (n_frames, n_residues) in Å².
+    """
+
+    total_areas: NDArray[np.float32]
+    steps: NDArray[np.int32]
+    times: NDArray[np.float32]
+    residue_areas: NDArray[np.float32] | None = None
+
+    @property
+    def n_frames(self) -> int:
+        """Number of frames."""
+        return self.total_areas.shape[0]
+
+    @property
+    def n_residues(self) -> int:
+        """Number of residue columns, or zero when residue areas were not requested."""
+        return 0 if self.residue_areas is None else self.residue_areas.shape[1]
+
+    def __repr__(self) -> str:
+        return (
+            f"TrajectorySasaSummaryResult(n_frames={self.n_frames}, n_residues={self.n_residues})"
+        )
+
+
+def _validate_chunk_size(chunk_size: int) -> int:
+    if chunk_size <= 0:
+        msg = f"chunk_size must be positive, got {chunk_size}"
+        raise ValueError(msg)
+    return int(chunk_size)
+
+
+def _prepare_residue_mapping(
+    atom_to_residue: NDArray[np.integer] | list[int] | None,
+    n_atoms: int,
+) -> tuple[NDArray[np.int32] | None, int]:
+    """Validate and densely remap atom-to-residue indices."""
+    if atom_to_residue is None:
+        return None, 0
+
+    mapping = np.asarray(atom_to_residue, dtype=np.int64)
+    if mapping.shape != (n_atoms,):
+        msg = f"atom_to_residue must have shape ({n_atoms},), got {mapping.shape}"
+        raise ValueError(msg)
+    if np.any(mapping < 0):
+        msg = "atom_to_residue indices must be non-negative"
+        raise ValueError(msg)
+
+    _, dense = np.unique(mapping, return_inverse=True)
+    return dense.astype(np.int32, copy=False), int(dense.max()) + 1 if dense.size else 0
+
+
+def _append_residue_areas(
+    chunks: list[NDArray[np.float32]],
+    atom_areas: NDArray[np.float32],
+    atom_to_residue: NDArray[np.int32] | None,
+    n_residues: int,
+) -> None:
+    if atom_to_residue is None:
+        return
+    residue_areas = np.zeros((atom_areas.shape[0], n_residues), dtype=np.float32)
+    np.add.at(
+        residue_areas,
+        (np.arange(atom_areas.shape[0])[:, np.newaxis], atom_to_residue),
+        atom_areas,
+    )
+    chunks.append(residue_areas)
+
+
+def _calculate_chunk(
+    coords_angstrom: NDArray[np.float32],
+    radii: NDArray[np.float32],
+    *,
+    probe_radius: float,
+    n_points: int,
+    algorithm: Literal["sr", "lr"],
+    n_slices: int,
+    n_threads: int,
+    use_bitmask: bool,
+    bitmask_correction: bool,
+    bitmask_correction_coeff: float | None,
+) -> NDArray[np.float32]:
+    result = calculate_sasa_batch(
+        coords_angstrom,
+        radii,
+        algorithm=algorithm,
+        n_points=n_points,
+        n_slices=n_slices,
+        probe_radius=probe_radius,
+        n_threads=n_threads,
+        use_bitmask=use_bitmask,
+        bitmask_correction=bitmask_correction,
+        bitmask_correction_coeff=bitmask_correction_coeff,
+    )
+    return result.atom_areas
+
+
+def compute_sasa_trajectory_summary(
+    xtc_path: str | Path,
+    radii: NDArray[np.floating] | list[float],
+    *,
+    atom_to_residue: NDArray[np.integer] | list[int] | None = None,
+    probe_radius: float = 1.4,
+    n_points: int = 100,
+    algorithm: Literal["sr", "lr"] = "sr",
+    n_slices: int = 20,
+    n_threads: int = 0,
+    start: int = 0,
+    stop: int | None = None,
+    step: int = 1,
+    chunk_size: int = 16,
+    use_bitmask: bool = False,
+    bitmask_correction: bool = False,
+    bitmask_correction_coeff: float | None = None,
+) -> TrajectorySasaSummaryResult:
+    """Compute trajectory SASA totals/residue aggregates without retaining atom areas.
+
+    XTC coordinates are read and processed in chunks. Per-atom SASA arrays are
+    discarded after total and optional residue aggregates are accumulated.
+    """
+    radii = np.asarray(radii, dtype=np.float32)
+    chunk_size = _validate_chunk_size(chunk_size)
+
+    coords_chunk: list[NDArray[np.float32]] = []
+    total_chunks: list[NDArray[np.float32]] = []
+    residue_chunks: list[NDArray[np.float32]] = []
+    steps: list[int] = []
+    times: list[float] = []
+
+    def flush_chunk(mapping: NDArray[np.int32] | None, n_residues: int) -> None:
+        if not coords_chunk:
+            return
+        coords_angstrom = np.stack(coords_chunk, axis=0) * 10.0
+        atom_areas = _calculate_chunk(
+            coords_angstrom,
+            radii,
+            probe_radius=probe_radius,
+            n_points=n_points,
+            algorithm=algorithm,
+            n_slices=n_slices,
+            n_threads=n_threads,
+            use_bitmask=use_bitmask,
+            bitmask_correction=bitmask_correction,
+            bitmask_correction_coeff=bitmask_correction_coeff,
+        )
+        total_chunks.append(atom_areas.sum(axis=1))
+        _append_residue_areas(residue_chunks, atom_areas, mapping, n_residues)
+        coords_chunk.clear()
+
+    with XtcReader(xtc_path) as reader:
+        if len(radii) != reader.natoms:
+            msg = f"radii length ({len(radii)}) doesn't match trajectory atoms ({reader.natoms})"
+            raise ValueError(msg)
+        mapping, n_residues = _prepare_residue_mapping(atom_to_residue, reader.natoms)
+
+        frame_idx = 0
+        for frame in reader:
+            if frame_idx < start:
+                frame_idx += 1
+                continue
+            if stop is not None and frame_idx >= stop:
+                break
+            if (frame_idx - start) % step != 0:
+                frame_idx += 1
+                continue
+
+            coords_chunk.append(frame.coords)
+            steps.append(frame.step)
+            times.append(frame.time)
+            if len(coords_chunk) == chunk_size:
+                flush_chunk(mapping, n_residues)
+            frame_idx += 1
+
+        flush_chunk(mapping, n_residues)
+
+    if not total_chunks:
+        msg = "No frames to process"
+        raise ValueError(msg)
+
+    return TrajectorySasaSummaryResult(
+        total_areas=np.concatenate(total_chunks).astype(np.float32, copy=False),
+        steps=np.array(steps, dtype=np.int32),
+        times=np.array(times, dtype=np.float32),
+        residue_areas=np.concatenate(residue_chunks) if residue_chunks else None,
+    )
+
+
 def compute_sasa_trajectory(
     xtc_path: str | Path,
     radii: NDArray[np.floating] | list[float],

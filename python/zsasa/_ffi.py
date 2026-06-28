@@ -232,14 +232,16 @@ def _find_library() -> Path:
     search_paths = [
         # Bundled in package (wheel installation)
         Path(__file__).parent / lib_name,
-        # Relative to this file (development: python/zsasa -> zig-out/lib)
+        # Relative to this file (development: python/zsasa -> zig-out/lib or bin)
         Path(__file__).parent.parent.parent / "zig-out" / "lib" / lib_name,
+        Path(__file__).parent.parent.parent / "zig-out" / "bin" / lib_name,
         # System paths
         Path("/usr/local/lib") / lib_name,
         Path("/usr/lib") / lib_name,
         # Current directory
         Path.cwd() / lib_name,
         Path.cwd() / "zig-out" / "lib" / lib_name,
+        Path.cwd() / "zig-out" / "bin" / lib_name,
     ]
 
     for path in search_paths:

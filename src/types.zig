@@ -216,6 +216,26 @@ pub const AtomInput = struct {
             self.chain_id != null and self.insertion_code != null;
     }
 
+    /// Validate that required coordinate/radius arrays are aligned and finite.
+    /// Radii must be non-negative; zero-radius points are accepted.
+    pub fn validateFiniteAndRange(self: AtomInput) !void {
+        const n_atoms = self.atomCount();
+        if (self.y.len != n_atoms or self.z.len != n_atoms or self.r.len != n_atoms) {
+            return error.InvalidInput;
+        }
+
+        for (0..n_atoms) |i| {
+            if (!std.math.isFinite(self.x[i]) or
+                !std.math.isFinite(self.y[i]) or
+                !std.math.isFinite(self.z[i]) or
+                !std.math.isFinite(self.r[i]) or
+                self.r[i] < 0.0)
+            {
+                return error.InvalidInput;
+            }
+        }
+    }
+
     /// Free allocated memory
     pub fn deinit(self: *AtomInput) void {
         self.allocator.free(self.x);
@@ -309,6 +329,13 @@ pub const Config = ConfigGen(f64);
 /// Single precision Config
 pub const Configf32 = ConfigGen(f32);
 
+/// Validate a positive, finite probe radius at public calculation boundaries.
+pub fn validateProbeRadius(comptime T: type, probe_radius: T) !void {
+    if (!std.math.isFinite(probe_radius) or !(probe_radius > 0.0)) {
+        return error.InvalidInput;
+    }
+}
+
 // Tests
 test "Vec3 add" {
     const v1 = Vec3{ .x = 1.0, .y = 2.0, .z = 3.0 };
@@ -375,6 +402,23 @@ test "AtomInput atomCount" {
     try std.testing.expectEqual(@as(usize, 3), input.atomCount());
 }
 
+test "AtomInput validateFiniteAndRange rejects invalid numeric inputs" {
+    const allocator = std.testing.allocator;
+    const x = [_]f64{0.0};
+    const y = [_]f64{std.math.inf(f64)};
+    const z = [_]f64{0.0};
+    const r = [_]f64{1.5};
+    const input = AtomInput{
+        .x = &x,
+        .y = &y,
+        .z = &z,
+        .r = @constCast(&r),
+        .allocator = allocator,
+    };
+
+    try std.testing.expectError(error.InvalidInput, input.validateFiniteAndRange());
+}
+
 test "SasaResult deinit" {
     const allocator = std.testing.allocator;
 
@@ -396,6 +440,12 @@ test "Config default values" {
 
     try std.testing.expectEqual(@as(u32, 100), config.n_points);
     try std.testing.expectEqual(@as(f64, 1.4), config.probe_radius);
+}
+
+test "validateProbeRadius rejects non-positive or non-finite values" {
+    try std.testing.expectError(error.InvalidInput, validateProbeRadius(f64, 0.0));
+    try std.testing.expectError(error.InvalidInput, validateProbeRadius(f64, std.math.nan(f64)));
+    try validateProbeRadius(f32, 1.4);
 }
 
 test "Config custom values" {

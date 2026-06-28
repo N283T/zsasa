@@ -12,6 +12,7 @@ The input format is auto-detected from the file extension.
 | `.cif`, `.cif.gz`, `.cif.zst`, `.mmcif`, `.mmcif.gz`, `.mmcif.zst`, `.CIF`, `.mmCIF` | mmCIF |
 | `.bcif`, `.bcif.gz`, `.bcif.zst`, `.BCIF` | BinaryCIF (`_atom_site` support) |
 | `.pdb`, `.pdb.gz`, `.pdb.zst`, `.PDB`, `.ent`, `.ent.gz`, `.ent.zst`, `.ENT` | PDB |
+| `.sdf`, `.sdf.gz`, `.sdf.zst`, `.mol`, `.mol.gz`, `.mol.zst` | SDF/MOL small molecules |
 
 ## JSON Format
 
@@ -79,6 +80,10 @@ BinaryCIF input decodes `_atom_site` for SASA calculation and uses embedded `_ch
 
 Standard PDB format files are supported with ATOM and HETATM records.
 
+## SDF/MOL Format
+
+SDF and MOL files are supported for small-molecule SASA. V2000 and V3000 records are accepted, and batch mode expands multi-molecule SDF files so each molecule is calculated independently. Use `--mol=NAME_OR_INDEX` to select one molecule from a multi-molecule SDF.
+
 ## Trajectory Formats
 
 For the `traj` subcommand, the following trajectory formats are supported:
@@ -86,7 +91,9 @@ For the `traj` subcommand, the following trajectory formats are supported:
 | Extension | Format | Coordinates |
 |-----------|--------|-------------|
 | `.xtc` | GROMACS XTC | nm (auto-converted to Å) |
+| `.trr` | GROMACS TRR | nm (auto-converted to Å) |
 | `.dcd` | NAMD/CHARMM DCD | Å |
+| `.nc`, `.ncdf` | AMBER NetCDF | Å |
 
 A topology file (PDB or mmCIF) is required alongside the trajectory to provide atom names and radii classification.
 

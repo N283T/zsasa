@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ctypes
+import operator
 from dataclasses import dataclass
 from typing import Literal
 
@@ -19,6 +21,72 @@ from zsasa._ffi import (
     _get_lib,
     _validate_bitmask_params,
 )
+
+_UINT32_MAX = 2**32 - 1
+_SIZE_T_MAX = 2 ** (ctypes.sizeof(ctypes.c_size_t) * 8) - 1
+
+
+def _validate_uint32_param(name: str, value: object) -> int:
+    """Validate an integer parameter passed to a C uint32_t argument."""
+    if isinstance(value, (bool, np.bool_)):
+        msg = f"{name} must be an integer in range 1..{_UINT32_MAX}, got {value}"
+        raise ValueError(msg)
+    try:
+        int_value = operator.index(value)  # type: ignore[arg-type]
+    except TypeError as e:
+        msg = f"{name} must be an integer in range 1..{_UINT32_MAX}, got {value}"
+        raise ValueError(msg) from e
+    if int_value <= 0:
+        msg = f"{name} must be positive, got {value}"
+        raise ValueError(msg)
+    if int_value > _UINT32_MAX:
+        msg = f"{name} must be an integer in range 1..{_UINT32_MAX}, got {value}"
+        raise ValueError(msg)
+    return int_value
+
+
+def _validate_size_t_param(name: str, value: object) -> int:
+    """Validate an integer parameter passed to a C size_t argument."""
+    if isinstance(value, (bool, np.bool_)):
+        msg = (
+            f"{name} must be a non-negative integer that fits size_t "
+            f"(0..{_SIZE_T_MAX}), got {value}"
+        )
+        raise ValueError(msg)
+    try:
+        int_value = operator.index(value)  # type: ignore[arg-type]
+    except TypeError as e:
+        msg = (
+            f"{name} must be a non-negative integer that fits size_t "
+            f"(0..{_SIZE_T_MAX}), got {value}"
+        )
+        raise ValueError(msg) from e
+    if not (0 <= int_value <= _SIZE_T_MAX):
+        msg = (
+            f"{name} must be a non-negative integer that fits size_t "
+            f"(0..{_SIZE_T_MAX}), got {value}"
+        )
+        raise ValueError(msg)
+    return int_value
+
+
+def _validate_positive_finite_float(name: str, value: float) -> float:
+    """Validate a positive finite floating-point scalar."""
+    float_value = float(value)
+    if not np.isfinite(float_value):
+        msg = f"{name} must be finite, got {value}"
+        raise ValueError(msg)
+    if float_value <= 0:
+        msg = f"{name} must be positive, got {value}"
+        raise ValueError(msg)
+    return float_value
+
+
+def _validate_finite_array(name: str, values: NDArray[np.floating]) -> None:
+    """Reject NaN/Inf arrays before passing data through CFFI."""
+    if not np.all(np.isfinite(values)):
+        msg = f"{name} must contain only finite values"
+        raise ValueError(msg)
 
 
 @dataclass
@@ -80,21 +148,12 @@ def calculate_sasa(
         >>> result = calculate_sasa(coords, radii)
         >>> print(f"Total: {result.total_area:.2f}")
     """
-    ffi, lib = _get_lib()
-
-    # Validate parameters
-    if n_points <= 0:
-        msg = f"n_points must be positive, got {n_points}"
-        raise ValueError(msg)
-    if n_slices <= 0:
-        msg = f"n_slices must be positive, got {n_slices}"
-        raise ValueError(msg)
-    if probe_radius <= 0:
-        msg = f"probe_radius must be positive, got {probe_radius}"
-        raise ValueError(msg)
-    if n_threads < 0:
-        msg = f"n_threads must be non-negative, got {n_threads}"
-        raise ValueError(msg)
+    # Validate parameters before loading the C library so invalid Python inputs
+    # never reach CFFI conversion or native code.
+    n_points = _validate_uint32_param("n_points", n_points)
+    n_slices = _validate_uint32_param("n_slices", n_slices)
+    probe_radius = _validate_positive_finite_float("probe_radius", probe_radius)
+    n_threads = _validate_size_t_param("n_threads", n_threads)
     if bitmask_correction and not use_bitmask:
         msg = "bitmask_correction=True requires use_bitmask=True"
         raise ValueError(msg)
@@ -121,9 +180,14 @@ def calculate_sasa(
         msg = f"radii must be ({n_atoms},) array, got shape {radii.shape}"
         raise ValueError(msg)
 
+    _validate_finite_array("coords", coords)
+    _validate_finite_array("radii", radii)
+
     if np.any(radii < 0):
         msg = "All radii must be non-negative"
         raise ValueError(msg)
+
+    ffi, lib = _get_lib()
 
     # Extract x, y, z as contiguous arrays
     x = np.ascontiguousarray(coords[:, 0])
@@ -310,21 +374,12 @@ def calculate_sasa_batch(
         >>> print(f"Shape: {result.atom_areas.shape}")  # (10, 100)
         >>> print(f"Total SASA per frame: {result.total_areas}")
     """
-    ffi, lib = _get_lib()
-
-    # Validate parameters
-    if n_points <= 0:
-        msg = f"n_points must be positive, got {n_points}"
-        raise ValueError(msg)
-    if n_slices <= 0:
-        msg = f"n_slices must be positive, got {n_slices}"
-        raise ValueError(msg)
-    if probe_radius <= 0:
-        msg = f"probe_radius must be positive, got {probe_radius}"
-        raise ValueError(msg)
-    if n_threads < 0:
-        msg = f"n_threads must be non-negative, got {n_threads}"
-        raise ValueError(msg)
+    # Validate parameters before loading the C library so invalid Python inputs
+    # never reach CFFI conversion or native code.
+    n_points = _validate_uint32_param("n_points", n_points)
+    n_slices = _validate_uint32_param("n_slices", n_slices)
+    probe_radius = _validate_positive_finite_float("probe_radius", probe_radius)
+    n_threads = _validate_size_t_param("n_threads", n_threads)
     if bitmask_correction and not use_bitmask:
         msg = "bitmask_correction=True requires use_bitmask=True"
         raise ValueError(msg)
@@ -353,9 +408,14 @@ def calculate_sasa_batch(
         msg = f"radii must be ({n_atoms},) array, got shape {radii.shape}"
         raise ValueError(msg)
 
+    _validate_finite_array("coordinates", coordinates)
+    _validate_finite_array("radii", radii)
+
     if np.any(radii < 0):
         msg = "All radii must be non-negative"
         raise ValueError(msg)
+
+    ffi, lib = _get_lib()
 
     # Allocate output array
     atom_areas = np.zeros((n_frames, n_atoms), dtype=np.float32)

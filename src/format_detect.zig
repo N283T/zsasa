@@ -39,29 +39,18 @@ pub const supported_extensions = [_][]const u8{
 
 /// Check if filename has a supported structure file extension
 pub fn isSupportedFile(name: []const u8) bool {
-    // Check lowercase extensions
     for (supported_extensions) |ext| {
-        if (std.mem.endsWith(u8, name, ext)) return true;
+        if (std.ascii.endsWithIgnoreCase(name, ext)) return true;
     }
-    // Check uppercase extensions (.PDB, .CIF, .ENT)
-    if (std.mem.endsWith(u8, name, ".PDB")) return true;
-    if (std.mem.endsWith(u8, name, ".CIF")) return true;
-    if (std.mem.endsWith(u8, name, ".ENT")) return true;
-    if (std.mem.endsWith(u8, name, ".JSON")) return true;
-    if (std.mem.endsWith(u8, name, ".BCIF")) return true;
-    if (std.mem.endsWith(u8, name, ".MMCIF")) return true;
-    if (std.mem.endsWith(u8, name, ".mmCIF")) return true;
-    if (std.mem.endsWith(u8, name, ".SDF")) return true;
-    if (std.mem.endsWith(u8, name, ".MOL")) return true;
     return false;
 }
 
 /// Strip supported compression extension from path.
 fn stripCompressionExt(path: []const u8) []const u8 {
-    if (std.mem.endsWith(u8, path, ".gz")) {
+    if (std.ascii.endsWithIgnoreCase(path, ".gz")) {
         return path[0 .. path.len - 3];
     }
-    if (std.mem.endsWith(u8, path, ".zst")) {
+    if (std.ascii.endsWithIgnoreCase(path, ".zst")) {
         return path[0 .. path.len - 4];
     }
     return path;
@@ -72,27 +61,19 @@ pub fn detectInputFormat(path: []const u8) InputFormat {
     const base = stripCompressionExt(path);
 
     // BinaryCIF formats (detect before mmCIF)
-    if (std.mem.endsWith(u8, base, ".bcif")) return .bcif;
-    if (std.mem.endsWith(u8, base, ".BCIF")) return .bcif;
+    if (std.ascii.endsWithIgnoreCase(base, ".bcif")) return .bcif;
 
     // mmCIF formats
-    if (std.mem.endsWith(u8, base, ".cif")) return .mmcif;
-    if (std.mem.endsWith(u8, base, ".mmcif")) return .mmcif;
-    if (std.mem.endsWith(u8, base, ".CIF")) return .mmcif;
-    if (std.mem.endsWith(u8, base, ".MMCIF")) return .mmcif;
-    if (std.mem.endsWith(u8, base, ".mmCIF")) return .mmcif;
+    if (std.ascii.endsWithIgnoreCase(base, ".cif")) return .mmcif;
+    if (std.ascii.endsWithIgnoreCase(base, ".mmcif")) return .mmcif;
 
     // PDB formats
-    if (std.mem.endsWith(u8, base, ".pdb")) return .pdb;
-    if (std.mem.endsWith(u8, base, ".PDB")) return .pdb;
-    if (std.mem.endsWith(u8, base, ".ent")) return .pdb;
-    if (std.mem.endsWith(u8, base, ".ENT")) return .pdb;
+    if (std.ascii.endsWithIgnoreCase(base, ".pdb")) return .pdb;
+    if (std.ascii.endsWithIgnoreCase(base, ".ent")) return .pdb;
 
     // SDF/MOL formats
-    if (std.mem.endsWith(u8, base, ".sdf")) return .sdf;
-    if (std.mem.endsWith(u8, base, ".SDF")) return .sdf;
-    if (std.mem.endsWith(u8, base, ".mol")) return .sdf;
-    if (std.mem.endsWith(u8, base, ".MOL")) return .sdf;
+    if (std.ascii.endsWithIgnoreCase(base, ".sdf")) return .sdf;
+    if (std.ascii.endsWithIgnoreCase(base, ".mol")) return .sdf;
 
     // Default to JSON
     return .json;
@@ -154,6 +135,18 @@ test "detectInputFormat handles .gz compressed files" {
     try std.testing.expectEqual(InputFormat.mmcif, detectInputFormat("file.cif.zst"));
     try std.testing.expectEqual(InputFormat.json, detectInputFormat("file.json.gz"));
     try std.testing.expectEqual(InputFormat.json, detectInputFormat("file.json.zst"));
+}
+
+test "format detection handles uppercase compressed suffixes" {
+    try std.testing.expect(isSupportedFile("MODEL.PDB.GZ"));
+    try std.testing.expect(isSupportedFile("MODEL.CIF.ZST"));
+    try std.testing.expect(isSupportedFile("MODEL.BCIF.GZ"));
+    try std.testing.expect(isSupportedFile("MODEL.SDF.ZST"));
+
+    try std.testing.expectEqual(InputFormat.pdb, detectInputFormat("MODEL.PDB.GZ"));
+    try std.testing.expectEqual(InputFormat.mmcif, detectInputFormat("MODEL.CIF.ZST"));
+    try std.testing.expectEqual(InputFormat.bcif, detectInputFormat("MODEL.BCIF.GZ"));
+    try std.testing.expectEqual(InputFormat.sdf, detectInputFormat("MODEL.SDF.ZST"));
 }
 
 test "isSupportedFile accepts SDF/MOL files" {

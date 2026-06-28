@@ -142,6 +142,51 @@ jobs:
       - name: Test validate mode
         run: ./zig-out/bin/zsasa calc --validate examples/1ubq.pdb
 
+  source_install:
+    runs-on: ubuntu-latest
+    name: Source install smoke
+    needs: [fmt]
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build sdist
+        working-directory: python
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --sdist
+
+      - name: Install from sdist and smoke test
+        shell: bash
+        run: |
+          python -m venv /tmp/zsasa-sdist-smoke
+          . /tmp/zsasa-sdist-smoke/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install python/dist/zsasa-*.tar.gz
+          zsasa --version
+          python - <<'PY_SMOKE'
+          import numpy as np
+          from zsasa import calculate_sasa, get_version
+
+          coords = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+          radii = np.array([1.5, 1.5])
+          result = calculate_sasa(coords, radii)
+          assert get_version()
+          assert result.total_area > 0
+          PY_SMOKE
+
   python:
     strategy:
       fail-fast: false

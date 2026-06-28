@@ -1,14 +1,14 @@
 # Example Files
 
-Sample structure files for testing zsasa.
+Sample structure files for testing zsasa. Counts include ATOM and HETATM coordinate records in the fixture files.
 
-| File | Format | Structure | Atoms |
-|------|--------|-----------|-------|
+| File | Format | Structure | Coordinate records |
+|------|--------|-----------|--------------------|
 | `1crn.pdb` | PDB | Crambin | 327 |
 | `1crn.cif.gz` | mmCIF (gzip) | Crambin | 327 |
 | `1ubq.pdb` | PDB | Ubiquitin | 660 |
 | `1ubq.cif` | mmCIF | Ubiquitin | 660 |
-| `3hhb.cif.gz` | mmCIF (gzip) | Hemoglobin | 4,779 |
+| `3hhb.cif.gz` | mmCIF (gzip) | Hemoglobin | 4,612 |
 
 ## Usage
 

@@ -287,6 +287,9 @@ pub fn calculateSasa(
 ) !SasaResult {
     const n_atoms = input.atomCount();
     if (n_atoms == 0) return error.NoAtoms;
+    if (config.n_points == 0) return error.InvalidInput;
+    try types.validateProbeRadius(f64, config.probe_radius);
+    try input.validateFiniteAndRange();
 
     // Generate test points
     const test_points_array = try test_points.generateTestPoints(allocator, config.n_points);
@@ -408,6 +411,9 @@ pub fn calculateSasaParallel(
 ) !SasaResult {
     const n_atoms = input.atomCount();
     if (n_atoms == 0) return error.NoAtoms;
+    if (config.n_points == 0) return error.InvalidInput;
+    try types.validateProbeRadius(f64, config.probe_radius);
+    try input.validateFiniteAndRange();
 
     // Auto-detect thread count if 0
     const actual_threads = if (n_threads == 0)
@@ -718,6 +724,9 @@ pub fn ShrakeRupleyGen(comptime T: type) type {
         ) !Result {
             const n_atoms = input.atomCount();
             if (n_atoms == 0) return error.NoAtoms;
+            if (config.n_points == 0) return error.InvalidInput;
+            try types.validateProbeRadius(T, config.probe_radius);
+            try input.validateFiniteAndRange();
 
             // Generate test points
             const test_points_array = try TestPointsGen.generate(allocator, config.n_points);
@@ -792,6 +801,9 @@ pub fn ShrakeRupleyGen(comptime T: type) type {
         ) !Result {
             const n_atoms = input.atomCount();
             if (n_atoms == 0) return error.NoAtoms;
+            if (config.n_points == 0) return error.InvalidInput;
+            try types.validateProbeRadius(T, config.probe_radius);
+            try input.validateFiniteAndRange();
 
             // Auto-detect thread count if 0
             const actual_threads = if (n_threads == 0)
@@ -1119,6 +1131,74 @@ test "calculateSasa - no atoms error" {
 
     const result = calculateSasa(allocator, input, config);
     try std.testing.expectError(error.NoAtoms, result);
+}
+
+test "calculateSasa rejects non-finite inputs" {
+    const allocator = std.testing.allocator;
+    const y = [_]f64{0.0};
+    const z = [_]f64{0.0};
+
+    {
+        const x = [_]f64{std.math.nan(f64)};
+        const r = [_]f64{1.5};
+        const input = AtomInput{
+            .x = &x,
+            .y = &y,
+            .z = &z,
+            .r = @constCast(&r),
+            .allocator = allocator,
+        };
+        try std.testing.expectError(error.InvalidInput, calculateSasa(allocator, input, .{}));
+    }
+
+    {
+        const x = [_]f64{0.0};
+        const r = [_]f64{std.math.inf(f64)};
+        const input = AtomInput{
+            .x = &x,
+            .y = &y,
+            .z = &z,
+            .r = @constCast(&r),
+            .allocator = allocator,
+        };
+        try std.testing.expectError(error.InvalidInput, calculateSasa(allocator, input, .{}));
+    }
+
+    {
+        const x = [_]f64{0.0};
+        const r = [_]f64{1.5};
+        const input = AtomInput{
+            .x = &x,
+            .y = &y,
+            .z = &z,
+            .r = @constCast(&r),
+            .allocator = allocator,
+        };
+        try std.testing.expectError(
+            error.InvalidInput,
+            calculateSasa(allocator, input, .{ .probe_radius = std.math.inf(f64) }),
+        );
+    }
+}
+
+test "calculateSasaParallel rejects non-finite inputs" {
+    const allocator = std.testing.allocator;
+    const x = [_]f64{0.0};
+    const y = [_]f64{0.0};
+    const z = [_]f64{0.0};
+    const r = [_]f64{1.5};
+    const input = AtomInput{
+        .x = &x,
+        .y = &y,
+        .z = &z,
+        .r = @constCast(&r),
+        .allocator = allocator,
+    };
+
+    try std.testing.expectError(
+        error.InvalidInput,
+        calculateSasaParallel(allocator, input, .{ .probe_radius = std.math.nan(f64) }, 2),
+    );
 }
 
 test "optimized vs original - same results" {

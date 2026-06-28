@@ -47,7 +47,7 @@ print(f"Total SASA: {result.total_area:.2f} Å²")
 ### CLI
 
 ```bash
-# One-line install (downloads pre-built binary)
+# One-line install for Linux/macOS (downloads a pre-built binary unless Zig 0.16.0 is available)
 curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | sh
 
 # Or with custom install directory

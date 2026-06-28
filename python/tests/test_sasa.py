@@ -208,6 +208,65 @@ class TestInputValidation:
         with pytest.raises(ValueError, match="non-negative"):
             calculate_sasa(coords, radii)
 
+    @pytest.mark.parametrize(
+        ("coords", "radii", "kwargs", "match"),
+        [
+            (
+                np.array([[np.nan, 0.0, 0.0]]),
+                np.array([1.5]),
+                {},
+                "coords.*finite",
+            ),
+            (
+                np.array([[0.0, 0.0, 0.0]]),
+                np.array([np.inf]),
+                {},
+                "radii.*finite",
+            ),
+            (
+                np.array([[0.0, 0.0, 0.0]]),
+                np.array([1.5]),
+                {"probe_radius": np.inf},
+                "probe_radius.*finite",
+            ),
+            (
+                np.array([[0.0, 0.0, 0.0]]),
+                np.array([1.5]),
+                {"n_points": 2**32},
+                "n_points.*1.*4294967295",
+            ),
+            (
+                np.array([[0.0, 0.0, 0.0]]),
+                np.array([1.5]),
+                {"n_slices": 2**32},
+                "n_slices.*1.*4294967295",
+            ),
+            (
+                np.array([[0.0, 0.0, 0.0]]),
+                np.array([1.5]),
+                {"n_threads": 2**64},
+                "n_threads.*size_t",
+            ),
+        ],
+    )
+    def test_invalid_values_rejected_before_loading_library(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        coords: np.ndarray,
+        radii: np.ndarray,
+        kwargs: dict[str, object],
+        match: str,
+    ) -> None:
+        """Invalid numeric inputs should fail before any CFFI library lookup/call."""
+
+        def fail_get_lib() -> None:
+            pytest.fail("_get_lib should not be called for invalid input")
+
+        monkeypatch.setattr("zsasa.sasa._get_lib", fail_get_lib)
+
+        with pytest.raises(ValueError, match=match):
+            calculate_sasa(coords, radii, **kwargs)
+
 
 # =============================================================================
 # Classifier Tests

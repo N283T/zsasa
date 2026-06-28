@@ -6,6 +6,10 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: "Release tag to build/publish (must match vX.Y.Z)"
+        required: true
+        type: string
       target:
         description: "Publish target"
         required: true
@@ -31,11 +35,41 @@ permissions:
   contents: write
   packages: write
 
-# ---------- Phase 1: Build everything (preflight) ----------
-
 jobs:
+  prepare:
+    name: Resolve release tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Resolve and validate release tag
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.release_tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          if ! printf '%s' "${TAG}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "release_tag must be exactly vX.Y.Z, got '${TAG}'" >&2
+            exit 1
+          fi
+
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Using release tag ${TAG} (version ${VERSION})"
+
+  # ---------- Phase 1: Build everything (preflight) ----------
+
   build_wheels:
     name: Wheels (${{ matrix.os }})
+    needs: [prepare]
     if: >-
       github.event_name == 'push'
       || inputs.jobs == 'all'
@@ -49,6 +83,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -84,6 +120,7 @@ jobs:
 
   build_sdist:
     name: Source dist
+    needs: [prepare]
     if: >-
       github.event_name == 'push'
       || inputs.jobs == 'all'
@@ -93,11 +130,18 @@ jobs:
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
 
       - name: Install build
         run: pip install build
@@ -105,6 +149,25 @@ jobs:
       - name: Build sdist
         working-directory: python
         run: python -m build --sdist
+
+      - name: Smoke test sdist source install
+        shell: bash
+        run: |
+          python -m venv /tmp/zsasa-sdist-smoke
+          . /tmp/zsasa-sdist-smoke/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install python/dist/zsasa-*.tar.gz
+          zsasa --version
+          python - <<'PY'
+          import numpy as np
+          from zsasa import calculate_sasa, get_version
+
+          coords = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+          radii = np.array([1.5, 1.5])
+          result = calculate_sasa(coords, radii)
+          assert get_version()
+          assert result.total_area > 0
+          PY
 
       - name: Upload sdist
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -114,11 +177,11 @@ jobs:
 
   build_cli:
     name: CLI (${{ matrix.target }})
+    needs: [prepare]
     if: >-
       github.event_name == 'push'
       || inputs.jobs == 'all'
       || inputs.jobs == 'github-release'
-      || inputs.jobs == 'package-managers'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -143,6 +206,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -164,8 +229,8 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           BINARY: ${{ matrix.binary }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           ASSET_NAME="zsasa-${VERSION}-${TARGET}"
           mkdir -p dist
           if [ "${TARGET}" = "windows-x86_64" ]; then
@@ -183,6 +248,7 @@ jobs:
 
   build_docker:
     name: Docker build (preflight)
+    needs: [prepare]
     if: >-
       github.event_name == 'push'
       || inputs.jobs == 'all'
@@ -192,6 +258,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Build Docker image (no push)
         uses: docker/build-push-action@v6
@@ -200,11 +268,11 @@ jobs:
           push: false
           tags: ghcr.io/n283t/zsasa:preflight
 
-  # ---------- Phase 2: Release (after all builds pass) ----------
+  # ---------- Phase 2: Release (after build gates pass) ----------
 
   publish:
     name: Publish to PyPI
-    needs: [build_wheels, build_sdist]
+    needs: [prepare, build_wheels, build_sdist]
     runs-on: ubuntu-latest
     if: >-
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
@@ -248,7 +316,7 @@ jobs:
 
   github_release:
     name: GitHub Release
-    needs: [build_cli, build_docker]
+    needs: [prepare, build_cli]
     runs-on: ubuntu-latest
     if: >-
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
@@ -256,16 +324,20 @@ jobs:
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Extract release notes from CHANGELOG
         id: notes
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          # Extract the section for this version from CHANGELOG.md
-          # Matches from "## [X.Y.Z]" to the next "## [" or end of file
           NOTES=$(awk "/^## \\[${VERSION}\\]/{found=1; next} /^## \\[/{if(found) exit} found{print}" CHANGELOG.md)
-          # Write to file to preserve multiline
           echo "$NOTES" > /tmp/release_notes.md
+          if [ ! -s /tmp/release_notes.md ]; then
+            echo "No CHANGELOG.md section found for ${VERSION}" >&2
+            exit 1
+          fi
 
       - name: Download CLI artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -278,34 +350,45 @@ jobs:
         run: |
           cd dist
           sha256sum zsasa-*-linux-* zsasa-*-macos-* zsasa-*-windows-* > SHA256SUMS 2>/dev/null || true
-          if [ -f SHA256SUMS ] && [ -s SHA256SUMS ]; then
-            echo "Generated checksums:"
-            cat SHA256SUMS
+          if [ ! -s SHA256SUMS ]; then
+            echo "No release assets found for checksum generation" >&2
+            exit 1
           fi
+          cat SHA256SUMS
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
+          gh release create "${RELEASE_TAG}" \
+            --title "${RELEASE_TAG}" \
             --notes-file /tmp/release_notes.md \
             dist/*
 
   update_homebrew:
     name: Update Homebrew tap
-    needs: [github_release]
+    needs: [prepare, github_release]
     runs-on: ubuntu-latest
     if: >-
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-      || (github.event_name == 'workflow_dispatch' && (inputs.jobs == 'all' || inputs.jobs == 'package-managers'))
+      always()
+      && needs.prepare.result == 'success'
+      && (
+        (
+          (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+          || (github.event_name == 'workflow_dispatch' && inputs.jobs == 'all')
+        )
+        && needs.github_release.result == 'success'
+        || (github.event_name == 'workflow_dispatch' && inputs.jobs == 'package-managers')
+      )
 
     steps:
       - name: Download checksums
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          gh release download "$GITHUB_REF_NAME" \
+          gh release download "${RELEASE_TAG}" \
             --repo N283T/zsasa \
             --pattern "SHA256SUMS" \
             --dir .
@@ -318,8 +401,9 @@ jobs:
           path: homebrew-zsasa
 
       - name: Update Formula
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           FORMULA="homebrew-zsasa/Formula/zsasa.rb"
 
           LINUX_X86=$(grep "linux-x86_64" SHA256SUMS | awk '{print $1}')
@@ -343,8 +427,9 @@ jobs:
 
       - name: Commit and push
         working-directory: homebrew-zsasa
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/zsasa.rb
@@ -354,18 +439,27 @@ jobs:
 
   update_scoop:
     name: Update Scoop bucket
-    needs: [github_release]
+    needs: [prepare, github_release]
     runs-on: ubuntu-latest
     if: >-
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-      || (github.event_name == 'workflow_dispatch' && (inputs.jobs == 'all' || inputs.jobs == 'package-managers'))
+      always()
+      && needs.prepare.result == 'success'
+      && (
+        (
+          (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+          || (github.event_name == 'workflow_dispatch' && inputs.jobs == 'all')
+        )
+        && needs.github_release.result == 'success'
+        || (github.event_name == 'workflow_dispatch' && inputs.jobs == 'package-managers')
+      )
 
     steps:
       - name: Download checksums
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          gh release download "$GITHUB_REF_NAME" \
+          gh release download "${RELEASE_TAG}" \
             --repo N283T/zsasa \
             --pattern "SHA256SUMS" \
             --dir .
@@ -378,8 +472,9 @@ jobs:
           path: scoop-zsasa
 
       - name: Update manifest
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           WIN_HASH=$(grep "windows-x86_64" SHA256SUMS | awk '{print $1}')
           MANIFEST="scoop-zsasa/bucket/zsasa.json"
 
@@ -398,8 +493,9 @@ jobs:
 
       - name: Commit and push
         working-directory: scoop-zsasa
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add bucket/zsasa.json
@@ -409,7 +505,7 @@ jobs:
 
   docker:
     name: Docker push
-    needs: [build_docker]
+    needs: [prepare, build_docker]
     runs-on: ubuntu-latest
     if: >-
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
@@ -420,6 +516,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -430,7 +528,7 @@ jobs:
 
       - name: Extract version
         id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: echo "version=${{ needs.prepare.outputs.version }}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v6

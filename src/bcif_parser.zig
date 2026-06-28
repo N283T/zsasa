@@ -560,6 +560,7 @@ const AtomSiteColumns = struct {
     pdbx_pdb_ins_code: ?usize = null,
     group_pdb: ?usize = null,
     label_alt_id: ?usize = null,
+    occupancy: ?usize = null,
     pdbx_pdb_model_num: ?usize = null,
 
     fn hasRequiredFields(self: AtomSiteColumns) bool {
@@ -733,62 +734,30 @@ pub const BcifParser = struct {
         defer residue_num_list.deinit(self.allocator);
         var insertion_code_list = std.ArrayListUnmanaged(types.FixedString4).empty;
         defer insertion_code_list.deinit(self.allocator);
+        var atom_records = std.ArrayListUnmanaged(AtomRecord).empty;
+        defer atom_records.deinit(self.allocator);
 
-        var first_alt_loc: ?u8 = null;
         var row: usize = 0;
         while (row < row_count) : (row += 1) {
-            if (!self.shouldIncludeAtom(decoded, columns, row, &first_alt_loc)) continue;
+            if (!self.shouldIncludeAtom(decoded, columns, row)) continue;
+            try atom_records.append(self.allocator, try self.atomRecordFromRow(decoded, columns, row));
+        }
 
-            const x = try scalarFloat(decoded[columns.cartn_x.?], row);
-            const y = try scalarFloat(decoded[columns.cartn_y.?], row);
-            const z = try scalarFloat(decoded[columns.cartn_z.?], row);
-            try x_list.append(self.allocator, x);
-            try y_list.append(self.allocator, y);
-            try z_list.append(self.allocator, z);
+        for (atom_records.items, 0..) |atom, i| {
+            if (!self.shouldKeepAltLoc(atom_records.items, i)) continue;
 
-            var element_enum = elem.Element.X;
-            if (columns.type_symbol) |type_col| {
-                if (scalarString(decoded[type_col], row)) |symbol| {
-                    element_enum = elem.fromSymbol(symbol);
-                }
-            }
-            try r_list.append(self.allocator, element_enum.vdwRadius());
-            try element_list.append(self.allocator, element_enum.atomicNumber());
-
-            if (columns.getResNameCol()) |res_col| {
-                try residue_list.append(self.allocator, types.FixedString5.fromSlice(scalarString(decoded[res_col], row) orelse "UNK"));
-            } else {
-                try residue_list.append(self.allocator, types.FixedString5.fromSlice("UNK"));
-            }
-
-            if (columns.getAtomNameCol()) |atom_col| {
-                try atom_name_list.append(self.allocator, types.FixedString4.fromSlice(scalarString(decoded[atom_col], row) orelse "X"));
-            } else {
-                try atom_name_list.append(self.allocator, types.FixedString4.fromSlice("X"));
-            }
-
-            if (columns.getChainCol(self.use_auth_chain)) |chain_col| {
-                const chain = scalarString(decoded[chain_col], row) orelse "";
-                try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(chain));
-                try chain_id_full_list.append(self.allocator, try self.allocator.dupe(u8, chain));
-                has_extended_chain = has_extended_chain or chain.len > 4;
-            } else {
-                try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(""));
-                try chain_id_full_list.append(self.allocator, try self.allocator.dupe(u8, ""));
-            }
-
-            if (columns.getResSeqCol()) |seq_col| {
-                const seq = scalarInt(decoded[seq_col], row) orelse 0;
-                try residue_num_list.append(self.allocator, std.math.cast(i32, seq) orelse 0);
-            } else {
-                try residue_num_list.append(self.allocator, 0);
-            }
-
-            if (columns.getInsCodeCol()) |ins_col| {
-                try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(scalarString(decoded[ins_col], row) orelse ""));
-            } else {
-                try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(""));
-            }
+            try x_list.append(self.allocator, atom.x);
+            try y_list.append(self.allocator, atom.y);
+            try z_list.append(self.allocator, atom.z);
+            try r_list.append(self.allocator, atom.radius);
+            try element_list.append(self.allocator, atom.element.atomicNumber());
+            try residue_list.append(self.allocator, types.FixedString5.fromSlice(atom.residue));
+            try atom_name_list.append(self.allocator, types.FixedString4.fromSlice(atom.atom_name));
+            try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(atom.chain_id));
+            try chain_id_full_list.append(self.allocator, try self.allocator.dupe(u8, atom.chain_id));
+            has_extended_chain = has_extended_chain or atom.chain_id.len > 4;
+            try residue_num_list.append(self.allocator, atom.residue_num);
+            try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(atom.insertion_code));
         }
 
         const x = try x_list.toOwnedSlice(self.allocator);
@@ -849,7 +818,101 @@ pub const BcifParser = struct {
         return self.parse(mapped.data);
     }
 
-    fn shouldIncludeAtom(self: *BcifParser, decoded: []const DecodedColumn, columns: AtomSiteColumns, row: usize, first_alt_loc: *?u8) bool {
+    const AtomRecord = struct {
+        x: f64,
+        y: f64,
+        z: f64,
+        radius: f64,
+        element: elem.Element,
+        atom_name: []const u8,
+        residue: []const u8,
+        chain_id: []const u8,
+        residue_num: i32,
+        insertion_code: []const u8,
+        alt_loc: u8,
+        occupancy: f64,
+        model_num: ?u32,
+    };
+
+    fn atomRecordFromRow(self: *BcifParser, decoded: []const DecodedColumn, columns: AtomSiteColumns, row: usize) !AtomRecord {
+        const x = try scalarFloat(decoded[columns.cartn_x.?], row);
+        const y = try scalarFloat(decoded[columns.cartn_y.?], row);
+        const z = try scalarFloat(decoded[columns.cartn_z.?], row);
+
+        var element_enum = elem.Element.X;
+        if (columns.type_symbol) |type_col| {
+            if (scalarString(decoded[type_col], row)) |symbol| {
+                element_enum = elem.fromSymbol(symbol);
+            }
+        }
+
+        const atom_name = if (columns.getAtomNameCol()) |atom_col| scalarString(decoded[atom_col], row) orelse "X" else "X";
+        const residue = if (columns.getResNameCol()) |res_col| scalarString(decoded[res_col], row) orelse "UNK" else "UNK";
+        const chain_id = if (columns.getChainCol(self.use_auth_chain)) |chain_col| scalarString(decoded[chain_col], row) orelse "" else "";
+        const residue_num = if (columns.getResSeqCol()) |seq_col| blk: {
+            const seq = scalarInt(decoded[seq_col], row) orelse 0;
+            break :blk std.math.cast(i32, seq) orelse 0;
+        } else 0;
+        const insertion_code = if (columns.getInsCodeCol()) |ins_col| scalarString(decoded[ins_col], row) orelse "" else "";
+        const alt_loc: u8 = if (columns.label_alt_id) |alt_col| blk: {
+            const alt_id = scalarString(decoded[alt_col], row) orelse "";
+            break :blk if (alt_id.len == 0) ' ' else alt_id[0];
+        } else ' ';
+        const occupancy = if (columns.occupancy) |occ_col| scalarFloat(decoded[occ_col], row) catch 0.0 else 0.0;
+        const model_num = if (columns.pdbx_pdb_model_num) |model_col| blk: {
+            const model = scalarInt(decoded[model_col], row) orelse break :blk null;
+            break :blk std.math.cast(u32, model);
+        } else null;
+
+        return .{
+            .x = x,
+            .y = y,
+            .z = z,
+            .radius = element_enum.vdwRadius(),
+            .element = element_enum,
+            .atom_name = atom_name,
+            .residue = residue,
+            .chain_id = chain_id,
+            .residue_num = residue_num,
+            .insertion_code = insertion_code,
+            .alt_loc = alt_loc,
+            .occupancy = occupancy,
+            .model_num = model_num,
+        };
+    }
+
+    fn sameAltLocSite(a: AtomRecord, b: AtomRecord) bool {
+        return a.model_num == b.model_num and
+            a.residue_num == b.residue_num and
+            std.mem.eql(u8, a.chain_id, b.chain_id) and
+            std.mem.eql(u8, a.residue, b.residue) and
+            std.mem.eql(u8, a.insertion_code, b.insertion_code) and
+            std.mem.eql(u8, a.atom_name, b.atom_name);
+    }
+
+    fn shouldKeepAltLoc(self: *BcifParser, atoms: []const AtomRecord, index: usize) bool {
+        if (!self.first_alt_loc_only) return true;
+
+        const atom = atoms[index];
+        if (atom.alt_loc == ' ') return true;
+
+        var best_non_preferred: ?usize = null;
+        for (atoms, 0..) |other, other_index| {
+            if (!sameAltLocSite(atom, other)) continue;
+            if (other.alt_loc == ' ') return false;
+            if (other.alt_loc == 'A') return atom.alt_loc == 'A';
+            if (best_non_preferred) |best_index| {
+                if (other.occupancy > atoms[best_index].occupancy) {
+                    best_non_preferred = other_index;
+                }
+            } else {
+                best_non_preferred = other_index;
+            }
+        }
+        return best_non_preferred == index;
+    }
+
+    fn shouldIncludeAtom(self: *BcifParser, decoded: []const DecodedColumn, columns: AtomSiteColumns, row: usize) bool {
         if (self.atom_only) {
             if (columns.group_pdb) |col| {
                 const group = scalarString(decoded[col], row) orelse return false;
@@ -861,21 +924,6 @@ pub const BcifParser = struct {
             if (columns.type_symbol) |col| {
                 if (scalarString(decoded[col], row)) |symbol| {
                     if (std.mem.eql(u8, symbol, "H") or std.mem.eql(u8, symbol, "D")) return false;
-                }
-            }
-        }
-
-        if (self.first_alt_loc_only) {
-            if (columns.label_alt_id) |col| {
-                if (scalarString(decoded[col], row)) |alt_id| {
-                    if (alt_id.len > 0) {
-                        const alt_char = alt_id[0];
-                        if (first_alt_loc.*) |first| {
-                            if (alt_char != first) return false;
-                        } else {
-                            first_alt_loc.* = alt_char;
-                        }
-                    }
                 }
             }
         }
@@ -1373,6 +1421,8 @@ fn mapAtomSiteColumn(columns: *AtomSiteColumns, name: []const u8, idx: usize) vo
         columns.group_pdb = idx;
     } else if (eqlIgnoreCase(name, "label_alt_id")) {
         columns.label_alt_id = idx;
+    } else if (eqlIgnoreCase(name, "occupancy")) {
+        columns.occupancy = idx;
     } else if (eqlIgnoreCase(name, "pdbx_PDB_model_num")) {
         columns.pdbx_pdb_model_num = idx;
     }
@@ -1456,6 +1506,8 @@ const BuildBcifOptions = struct {
     null_first_model: bool = false,
     include_long_chain: bool = false,
     include_very_long_chain: bool = false,
+    include_alt_later_b_only: bool = false,
+    include_alt_across_models: bool = false,
 };
 
 fn buildMinimalBcif(options: BuildBcifOptions) ![]u8 {
@@ -1475,8 +1527,18 @@ fn buildMinimalBcif(options: BuildBcifOptions) ![]u8 {
         "ABCD"
     else
         "A";
-    try rows.append(allocator, .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = first_chain, .seq = 1, .x = 10.0, .y = 20.0, .z = 30.0, .model = 1 });
-    try rows.append(allocator, .{ .group = "ATOM", .element = "N", .atom = "N", .residue = "ALA", .chain = second_chain, .seq = 1, .x = 11.0, .y = 21.0, .z = 32.0, .model = 1 });
+    if (options.include_alt_across_models) {
+        try rows.append(allocator, .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "A", .seq = 1, .alt = "A", .x = 10.0, .y = 20.0, .z = 30.0, .model = 1 });
+        try rows.append(allocator, .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "A", .seq = 1, .alt = "B", .x = 12.0, .y = 22.0, .z = 32.0, .model = 1 });
+        try rows.append(allocator, .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "A", .seq = 1, .alt = "B", .x = 14.0, .y = 24.0, .z = 34.0, .model = 2 });
+    } else if (options.include_alt_later_b_only) {
+        try rows.append(allocator, .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "A", .seq = 1, .alt = "A", .x = 10.0, .y = 20.0, .z = 30.0, .model = 1 });
+        try rows.append(allocator, .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "A", .seq = 1, .alt = "B", .x = 12.0, .y = 22.0, .z = 32.0, .model = 1 });
+        try rows.append(allocator, .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 2, .alt = "B", .x = 14.0, .y = 24.0, .z = 34.0, .model = 1 });
+    } else {
+        try rows.append(allocator, .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = first_chain, .seq = 1, .x = 10.0, .y = 20.0, .z = 30.0, .model = 1 });
+        try rows.append(allocator, .{ .group = "ATOM", .element = "N", .atom = "N", .residue = "ALA", .chain = second_chain, .seq = 1, .x = 11.0, .y = 21.0, .z = 32.0, .model = 1 });
+    }
     if (options.include_hydrogen) {
         try rows.append(allocator, .{ .group = "ATOM", .element = "H", .atom = "H", .residue = "ALA", .chain = "A", .seq = 1, .x = 12.0, .y = 22.0, .z = 33.0, .model = 1 });
     }
@@ -1521,7 +1583,7 @@ fn buildMinimalBcif(options: BuildBcifOptions) ![]u8 {
     if (!options.omit_chain) try packStringColumn(allocator, &bytes, "label_asym_id", rows.items, TestAtomRow.chainValue);
     try packIntColumn(allocator, &bytes, "label_seq_id", rows.items, TestAtomRow.seqValue, false);
     try packStringColumn(allocator, &bytes, "pdbx_PDB_ins_code", rows.items, TestAtomRow.emptyValue);
-    try packStringColumn(allocator, &bytes, "label_alt_id", rows.items, TestAtomRow.emptyValue);
+    try packStringColumn(allocator, &bytes, "label_alt_id", rows.items, TestAtomRow.altValue);
     if (!options.omit_model) try packIntColumn(allocator, &bytes, "pdbx_PDB_model_num", rows.items, TestAtomRow.modelValue, options.null_first_model);
     try packFloatColumn(allocator, &bytes, "Cartn_x", rows.items, TestAtomRow.xValue);
     try packFloatColumn(allocator, &bytes, "Cartn_y", rows.items, TestAtomRow.yValue);
@@ -1686,6 +1748,7 @@ const TestAtomRow = struct {
     y: f32,
     z: f32,
     model: i32,
+    alt: []const u8 = "",
 
     fn groupValue(row: TestAtomRow) []const u8 {
         return row.group;
@@ -1704,6 +1767,9 @@ const TestAtomRow = struct {
     }
     fn emptyValue(_: TestAtomRow) []const u8 {
         return "";
+    }
+    fn altValue(row: TestAtomRow) []const u8 {
+        return row.alt;
     }
     fn seqValue(row: TestAtomRow) i32 {
         return row.seq;
@@ -1941,6 +2007,58 @@ test "parse BinaryCIF with inline CCD data" {
     try std.testing.expectEqual(@as(u16, 0), comp.bonds[0].atom_idx_1);
     try std.testing.expectEqual(@as(u16, 1), comp.bonds[0].atom_idx_2);
     try std.testing.expectEqual(.double, comp.bonds[0].order);
+}
+
+test "parse BinaryCIF default model selection includes all models" {
+    const source = try buildMinimalBcif(.{ .include_second_model = true });
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), input.atomCount());
+    try std.testing.expectEqualStrings("B", input.chain_id.?[2].slice());
+}
+
+test "parse BinaryCIF explicit model selection filters requested model" {
+    const source = try buildMinimalBcif(.{ .include_second_model = true });
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.model_num = 2;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), input.atomCount());
+    try std.testing.expectEqualStrings("B", input.chain_id.?[0].slice());
+}
+
+test "parse BinaryCIF altLoc selection is per atom site and keeps later B-only sites" {
+    const source = try buildMinimalBcif(.{ .include_alt_later_b_only = true });
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
+    try std.testing.expectEqual(@as(i32, 2), input.residue_num.?[1]);
+}
+
+test "parse BinaryCIF altLoc selection is scoped by model" {
+    const source = try buildMinimalBcif(.{ .include_alt_across_models = true });
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
 }
 
 test "parse BinaryCIF applies filters" {
