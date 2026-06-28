@@ -1226,13 +1226,19 @@ fn sameChainSummary(summary: ChainSasaSummary, chain_id: types.FixedString4, cha
     return std.mem.eql(u8, summary.chain_id.slice(), chain_id.slice());
 }
 
+const PerChainBuildResult = struct {
+    count: usize,
+    overflow: bool,
+};
+
 fn buildPerChainSummaries(
     chain_ids: []const types.FixedString4,
     chain_ids_full: ?[]const []const u8,
     atom_areas: []const f64,
     summaries: []ChainSasaSummary,
-) usize {
+) PerChainBuildResult {
     var num_chains: usize = 0;
+    var overflow = false;
 
     for (chain_ids, 0..) |chain_id, i| {
         const full = if (chain_ids_full) |full_ids| full_ids[i] else null;
@@ -1255,10 +1261,12 @@ fn buildPerChainSummaries(
                 .atom_count = 1,
             };
             num_chains += 1;
+        } else {
+            overflow = true;
         }
     }
 
-    return num_chains;
+    return .{ .count = num_chains, .overflow = overflow };
 }
 
 /// Print per-chain SASA results
@@ -1267,9 +1275,10 @@ fn printPerChainResults(chain_ids: []const types.FixedString4, chain_ids_full: ?
     // For efficiency, we'll use a fixed-size buffer for up to 64 unique chains
     const max_chains = 64;
     var summaries: [max_chains]ChainSasaSummary = undefined;
-    const num_chains = buildPerChainSummaries(chain_ids, chain_ids_full, atom_areas, summaries[0..]);
+    const build_result = buildPerChainSummaries(chain_ids, chain_ids_full, atom_areas, summaries[0..]);
+    const num_chains = build_result.count;
 
-    if (chain_ids.len > 0 and num_chains == max_chains) {
+    if (build_result.overflow) {
         std.debug.print("Warning: More than {d} unique chains; some chains omitted from summary\n", .{max_chains});
     }
 
@@ -2142,9 +2151,10 @@ test "per-chain summaries prefer full chain IDs over truncated prefixes" {
     const atom_areas = [_]f64{ 10.0, 20.0, 5.0 };
     var summaries: [4]ChainSasaSummary = undefined;
 
-    const n = buildPerChainSummaries(chain_ids[0..], chain_ids_full[0..], atom_areas[0..], summaries[0..]);
+    const build_result = buildPerChainSummaries(chain_ids[0..], chain_ids_full[0..], atom_areas[0..], summaries[0..]);
 
-    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectEqual(@as(usize, 2), build_result.count);
+    try std.testing.expect(!build_result.overflow);
     try std.testing.expectEqualStrings("ABCD1", summaries[0].label());
     try std.testing.expectEqual(@as(f64, 15.0), summaries[0].area);
     try std.testing.expectEqual(@as(usize, 2), summaries[0].atom_count);
