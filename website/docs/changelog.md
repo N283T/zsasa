@@ -8,6 +8,12 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+## [v0.7.1](https://github.com/N283T/zsasa/releases/tag/v0.7.1) — 2026-06-29
+
+### Fixed
+
+- **RSA text compatibility warning**: warn when `--format=rsa` output exceeds legacy NACCESS fixed-width columns, and document JSON/JSONL as the recommended machine-readable formats.
+
 ## [v0.7.0](https://github.com/N283T/zsasa/releases/tag/v0.7.0) — 2026-06-28
 
 ### Added

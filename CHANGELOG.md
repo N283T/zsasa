@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-06-29
+
+### Fixed
+
+- **RSA text compatibility warning**: warn when `--format=rsa` output exceeds legacy NACCESS fixed-width columns, and document JSON/JSONL as the recommended machine-readable formats.
+
 ## [0.7.0] - 2026-06-28
 
 ### Added
@@ -599,7 +605,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `calc_reference_sasa.py` - Generate reference SASA
   - `benchmark.py` - Performance benchmarking
 
-[Unreleased]: https://github.com/N283T/zsasa/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/N283T/zsasa/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/N283T/zsasa/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/N283T/zsasa/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/N283T/zsasa/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/N283T/zsasa/compare/v0.4.0...v0.5.0
