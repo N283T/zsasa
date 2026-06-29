@@ -261,6 +261,67 @@ fn residueNumberString(buf: []u8, number: i32, insertion_code: types.FixedString
     return std.fmt.bufPrint(buf, "{d}", .{number}) catch "?";
 }
 
+fn formattedExceedsWidth(comptime fmt: []const u8, args: anytype, width: usize) bool {
+    return std.fmt.count(fmt, args) > width;
+}
+
+fn absRelNeedsLegacyWidthWarning(abs: f64, rel: ?f64) bool {
+    if (formattedExceedsWidth("{d:.2}", .{abs}, 7)) return true;
+    if (rel) |value| {
+        if (formattedExceedsWidth("{d:.1}", .{value}, 6)) return true;
+    }
+    return false;
+}
+
+fn areaBreakdownNeedsResidueWidthWarning(area: AreaBreakdown, rel_total: ?f64) bool {
+    return absRelNeedsLegacyWidthWarning(area.total, rel_total) or
+        absRelNeedsLegacyWidthWarning(area.side_chain, null) or
+        absRelNeedsLegacyWidthWarning(area.main_chain, null) or
+        absRelNeedsLegacyWidthWarning(area.apolar, null) or
+        absRelNeedsLegacyWidthWarning(area.polar, null);
+}
+
+fn areaBreakdownNeedsSummaryWidthWarning(area: AreaBreakdown) bool {
+    return formattedExceedsWidth("{d:.1}", .{area.total}, 10) or
+        formattedExceedsWidth("{d:.1}", .{area.side_chain}, 10) or
+        formattedExceedsWidth("{d:.1}", .{area.main_chain}, 10) or
+        formattedExceedsWidth("{d:.1}", .{area.apolar}, 10) or
+        formattedExceedsWidth("{d:.1}", .{area.polar}, 10);
+}
+
+fn rsaResultNeedsLegacyWidthWarning(allocator: Allocator, result: SasaResult, input: AtomInput) !bool {
+    const residues = try collectResidueAreas(allocator, input, result.atom_areas);
+    defer allocator.free(residues);
+    const chains = try collectChainAreas(allocator, residues);
+    defer allocator.free(chains);
+
+    var total = AreaBreakdown{};
+    for (residues) |residue| {
+        var num_buf: [32]u8 = undefined;
+        const num = residueNumberString(&num_buf, residue.residue_number, residue.insertion_code);
+        const rel_total: ?f64 = if (analysis.MaxSASA.get(residue.residue.slice())) |max_sasa|
+            if (max_sasa > 0) residue.area.total * 100.0 / max_sasa else null
+        else
+            null;
+
+        if (residue.residue.len > 3 or residue.chain.len > 3 or num.len > 4) return true;
+        if (areaBreakdownNeedsResidueWidthWarning(residue.area, rel_total)) return true;
+
+        total.total += residue.area.total;
+        total.side_chain += residue.area.side_chain;
+        total.main_chain += residue.area.main_chain;
+        total.apolar += residue.area.apolar;
+        total.polar += residue.area.polar;
+    }
+
+    for (chains, 0..) |chain, i| {
+        if (i + 1 > 999 or chain.chain.len > 3) return true;
+        if (areaBreakdownNeedsSummaryWidthWarning(chain.area)) return true;
+    }
+
+    return areaBreakdownNeedsSummaryWidthWarning(total);
+}
+
 pub fn sasaResultToRsa(allocator: Allocator, result: SasaResult, input: AtomInput, options: TextOutputOptions) ![]u8 {
     const residues = try collectResidueAreas(allocator, input, result.atom_areas);
     defer allocator.free(residues);
@@ -443,6 +504,13 @@ pub fn writeSasaResultWithFormatAndInputOptions(
     format: OutputFormat,
     options: TextOutputOptions,
 ) !void {
+    if (format == .rsa and try rsaResultNeedsLegacyWidthWarning(allocator, result, input)) {
+        std.debug.print(
+            "Warning: --format=rsa output exceeds legacy NACCESS fixed-width columns; columns may be misaligned. Use --format=json for machine-readable output.\n",
+            .{},
+        );
+    }
+
     const output_str = switch (format) {
         .json => try sasaResultToJsonPretty(allocator, result),
         .compact => try sasaResultToJson(allocator, result),
@@ -1298,6 +1366,74 @@ test "sasaResultToRsa aggregates non-contiguous atoms from the same residue" {
 
     try std.testing.expect(std.mem.indexOf(u8, output, "RES ALA   A 1      30.00  23.3") != null);
     try std.testing.expectEqual(@as(?usize, null), std.mem.indexOf(u8, output, "RES ALA   A 1      10.00"));
+}
+
+test "rsaResultNeedsLegacyWidthWarning detects oversized RSA numeric columns" {
+    const allocator = std.testing.allocator;
+
+    const x = [_]f64{0};
+    const y = [_]f64{0};
+    const z = [_]f64{0};
+    var r = [_]f64{1};
+    const chain = [_]types.FixedString4{types.FixedString4.fromSlice("A")};
+    const residue = [_]types.FixedString5{types.FixedString5.fromSlice("ALA")};
+    const residue_num = [_]i32{1};
+    const insertion = [_]types.FixedString4{types.FixedString4.fromSlice("")};
+    const atom_names = [_]types.FixedString4{types.FixedString4.fromSlice("CB")};
+    var atom_areas = [_]f64{10000.0};
+    const result = SasaResult{
+        .total_area = 10000.0,
+        .atom_areas = atom_areas[0..],
+        .allocator = allocator,
+    };
+    const input = AtomInput{
+        .x = x[0..],
+        .y = y[0..],
+        .z = z[0..],
+        .r = r[0..],
+        .chain_id = chain[0..],
+        .residue = residue[0..],
+        .residue_num = residue_num[0..],
+        .insertion_code = insertion[0..],
+        .atom_name = atom_names[0..],
+        .allocator = allocator,
+    };
+
+    try std.testing.expect(try rsaResultNeedsLegacyWidthWarning(allocator, result, input));
+}
+
+test "rsaResultNeedsLegacyWidthWarning accepts legacy-width RSA output" {
+    const allocator = std.testing.allocator;
+
+    const x = [_]f64{0};
+    const y = [_]f64{0};
+    const z = [_]f64{0};
+    var r = [_]f64{1};
+    const chain = [_]types.FixedString4{types.FixedString4.fromSlice("A")};
+    const residue = [_]types.FixedString5{types.FixedString5.fromSlice("ALA")};
+    const residue_num = [_]i32{1};
+    const insertion = [_]types.FixedString4{types.FixedString4.fromSlice("")};
+    const atom_names = [_]types.FixedString4{types.FixedString4.fromSlice("CB")};
+    var atom_areas = [_]f64{30.0};
+    const result = SasaResult{
+        .total_area = 30.0,
+        .atom_areas = atom_areas[0..],
+        .allocator = allocator,
+    };
+    const input = AtomInput{
+        .x = x[0..],
+        .y = y[0..],
+        .z = z[0..],
+        .r = r[0..],
+        .chain_id = chain[0..],
+        .residue = residue[0..],
+        .residue_num = residue_num[0..],
+        .insertion_code = insertion[0..],
+        .atom_name = atom_names[0..],
+        .allocator = allocator,
+    };
+
+    try std.testing.expect(!try rsaResultNeedsLegacyWidthWarning(allocator, result, input));
 }
 
 test "sasaResultToCsv empty atoms" {

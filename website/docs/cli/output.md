@@ -21,6 +21,10 @@ Pretty-printed JSON with 2-space indentation:
 }
 ```
 
+Use JSON for machine-readable output and long-term pipelines. Legacy text
+formats such as `freesasa` and `rsa` are best-effort compatibility outputs for
+tools or reports that expect FreeSASA/NACCESS-style text.
+
 ### Compact JSON
 
 Single-line JSON without whitespace:
@@ -96,6 +100,12 @@ TOTAL              30.0         20.0         10.0         20.0         10.0
 that provides chain, residue name, residue number, and insertion code fields.
 Relative all-atom RSA values are reported for standard amino acids; unavailable
 relative values are printed as `N/A`, matching FreeSASA's convention.
+
+The RSA text table follows legacy NACCESS-style fixed-width columns where
+possible. If residue labels, residue numbers, chain IDs, or SASA/RSA values are
+too wide for those columns, zsasa still writes the full values and prints a
+warning that columns may be misaligned. Use `--format=json` for robust
+machine-readable output.
 
 The `freesasa` and `rsa` formats are available for single `calc` runs only.
 Batch output remains `json`, `compact`, `csv`, or `jsonl`.

@@ -169,6 +169,10 @@ See [Output & Analysis](output.md#analysis-features) for detailed output descrip
 | `-q, --quiet` | Suppress progress output, including standard progress bars shown by `batch` and `traj` | off |
 | `--validate` | Validate input only, do not calculate | off |
 
+Prefer `json` or `jsonl` for machine-readable pipelines. The `freesasa` and
+`rsa` formats are legacy compatibility text formats; `rsa` warns if values do
+not fit legacy NACCESS fixed-width columns.
+
 ### Information Options
 
 | Option | Description |
