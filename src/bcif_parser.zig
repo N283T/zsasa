@@ -635,6 +635,7 @@ pub const BcifParser = struct {
     model_num: ?u32 = null,
     chain_filter: ?[]const []const u8 = null,
     use_auth_chain: bool = false,
+    parse_inline_ccd: bool = true,
     inline_ccd: ?ccd_parser.ComponentDict = null,
 
     pub fn init(allocator: Allocator) BcifParser {
@@ -665,12 +666,16 @@ pub const BcifParser = struct {
         const root = try reader.readValue();
         defer freeMsgValue(self.allocator, root);
 
-        var inline_ccd = try parseInlineCcd(self.allocator, root);
-        if (inline_ccd.count() == 0) {
-            inline_ccd.deinit();
-            self.inline_ccd = null;
+        if (self.parse_inline_ccd) {
+            var inline_ccd = try parseInlineCcd(self.allocator, root);
+            if (inline_ccd.count() == 0) {
+                inline_ccd.deinit();
+                self.inline_ccd = null;
+            } else {
+                self.inline_ccd = inline_ccd;
+            }
         } else {
-            self.inline_ccd = inline_ccd;
+            self.inline_ccd = null;
         }
         errdefer self.deinitCcd();
 
@@ -2007,6 +2012,21 @@ test "parse BinaryCIF with inline CCD data" {
     try std.testing.expectEqual(@as(u16, 0), comp.bonds[0].atom_idx_1);
     try std.testing.expectEqual(@as(u16, 1), comp.bonds[0].atom_idx_2);
     try std.testing.expectEqual(.double, comp.bonds[0].order);
+}
+
+test "parse BinaryCIF can skip inline CCD data" {
+    const source = try buildMinimalBcifWithInlineCcd();
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.atom_only = false;
+    parser.parse_inline_ccd = false;
+    var input = try parser.parse(source);
+    defer input.deinit();
+    defer parser.deinitCcd();
+
+    try std.testing.expectEqual(@as(usize, 3), input.atomCount());
+    try std.testing.expect(parser.getInlineCcd() == null);
 }
 
 test "parse BinaryCIF default model selection includes all models" {

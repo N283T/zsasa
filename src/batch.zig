@@ -13,7 +13,6 @@ const bitmask_lut = @import("bitmask_lut.zig");
 const lee_richards = @import("lee_richards.zig");
 const classifier = @import("classifier.zig");
 const classifier_parser = @import("classifier_parser.zig");
-// classifier_protor removed — ProtOr is now an alias for CCD
 const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
@@ -614,6 +613,10 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             parser.atom_only = !config.include_hetatm;
             parser.chain_filter = config.chain_filter;
             parser.use_auth_chain = config.use_auth_chain;
+            // Batch classification currently uses shared external/SDF CCD
+            // resources, not per-file inline CCD dictionaries. Avoid decoding
+            // inline CCD categories for every structure.
+            parser.parse_inline_ccd = false;
             break :blk parser.parseFile(io, path);
         },
         .mmcif => blk: {
@@ -622,6 +625,10 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             parser.atom_only = !config.include_hetatm;
             parser.chain_filter = config.chain_filter;
             parser.use_auth_chain = config.use_auth_chain;
+            // Batch classification currently uses shared external/SDF CCD
+            // resources, not per-file inline CCD dictionaries. Avoid scanning
+            // each mmCIF twice.
+            parser.parse_inline_ccd = false;
             break :blk parser.parseFile(io, path);
         },
         .pdb => blk: {
@@ -657,11 +664,12 @@ fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType, sdf_ccd: ?*cons
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
 
-    // For CCD/ProtOr: create classifier instance and feed external CCD components
+    // CCD and ProtOr share the static ProtOr-compatible table. Only CCD may
+    // extend it with runtime component topology.
     var ccd_clf: ?classifier_ccd.CcdClassifier = if (ct == .ccd or ct == .protor) classifier_ccd.CcdClassifier.init(input.allocator) else null;
     defer if (ccd_clf) |*c| c.deinit();
 
-    if (ccd_clf != null) {
+    if (ct == .ccd and ccd_clf != null) {
         // Deduplicate: collect unique non-hardcoded residues
         var needed: std.StringHashMapUnmanaged(void) = .empty;
         defer needed.deinit(input.allocator);
@@ -2809,7 +2817,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --algorithm=ALGO    Algorithm: sr (shrake-rupley), lr (lee-richards)
         \\                        Default: sr
         \\    --classifier=TYPE   Built-in classifier: ccd, protor, naccess, oons
-        \\                        Default: ccd (protor is an alias for ccd)
+        \\                        Default: ccd (protor uses static ProtOr radii only)
         \\    --ccd=PATH          External CCD dictionary file (.zsdc or .cif[.gz|.zst])
         \\                        Used with --classifier=ccd for non-standard residues
         \\    --sdf=PATH          SDF file with bond topology for CCD classifier
@@ -2989,7 +2997,7 @@ fn parseWorkflowFile(allocator: Allocator, io: std.Io, path: []const u8) !workfl
 
 fn classifierUsesCcdResources(effective_classifier_type: ?ClassifierType) bool {
     const classifier_type = effective_classifier_type orelse return false;
-    return classifier_type == .ccd or classifier_type == .protor;
+    return classifier_type == .ccd;
 }
 
 fn resolveWorkflowCcdPath(args: BatchArgs, classifier_config: workflow_manifest.ClassifierConfig, effective_classifier_type: ?ClassifierType) ?[]const u8 {
@@ -4535,9 +4543,9 @@ test "batch resource resolver only loads CCD resources for CCD classifiers" {
     try std.testing.expectEqual(@as(usize, 0), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], .oons).len);
     try std.testing.expectEqual(@as(usize, 0), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], null).len);
     try std.testing.expectEqualStrings("workflow.zsdc", resolveWorkflowCcdPath(workflow_only_args, classifier_config, .ccd).?);
-    try std.testing.expectEqualStrings("workflow.zsdc", resolveWorkflowCcdPath(workflow_only_args, classifier_config, .protor).?);
+    try std.testing.expect(resolveWorkflowCcdPath(workflow_only_args, classifier_config, .protor) == null);
     try std.testing.expectEqual(@as(usize, 1), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], .ccd).len);
-    try std.testing.expectEqual(@as(usize, 1), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], .protor).len);
+    try std.testing.expectEqual(@as(usize, 0), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], .protor).len);
 
     var explicit_resource_args = BatchArgs{
         .classifier_explicit = true,

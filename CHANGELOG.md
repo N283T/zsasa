@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **ProtOr classifier**: make `--classifier=protor` use static ProtOr-compatible radii without loading inline, external, or SDF-derived CCD resources. This provides a faster protein-only path for mmCIF/PDB inputs such as AFDB models.
+
+### Fixed
+
+- **mmCIF batch parsing**: skip per-file inline CCD extraction in batch mode and avoid scanning mmCIF files for inline CCD data when no `_chem_comp_atom` category is present.
+
 ## [0.7.1] - 2026-06-29
 
 ### Fixed

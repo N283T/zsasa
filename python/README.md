@@ -45,7 +45,7 @@ print(f"Total: {result.total_area:.1f} Å²")
 - **Two algorithms**: Shrake-Rupley and Lee-Richards, with bitmask LUT optimization
 - **Selectable precision**: f64 (default) or f32
 - **Multi-threading**: Automatic parallelization
-- **Atom classification**: NACCESS, ProtOr, OONS classifiers
+- **Atom classification**: CCD, ProtOr, NACCESS, and OONS classifiers
 - **Analysis**: Per-residue aggregation, RSA, polar/nonpolar classification
 - **Batch processing**: `process_directory()` for proteome-scale datasets
 - **MD trajectory**: [MDTraj](https://github.com/mdtraj/mdtraj) and [MDAnalysis](https://github.com/MDAnalysis/mdanalysis) integrations; use [pyztraj](https://github.com/N283T/ztraj) for direct trajectory-file I/O

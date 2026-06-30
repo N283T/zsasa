@@ -11,7 +11,6 @@ const lee_richards = @import("lee_richards.zig");
 const types = @import("types.zig");
 const classifier = @import("classifier.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
-// classifier_protor removed — ProtOr is now an alias for CCD
 const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
 const analysis = @import("analysis.zig");

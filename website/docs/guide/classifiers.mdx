@@ -12,7 +12,7 @@ Classifiers assign van der Waals radii and polarity classes to atoms based on re
 ## Quick Recommendation
 
 - **CCD** (default for `calc`/`batch`): ProtOr-compatible hybridization-based radii (Tsai et al. 1999), extended with CCD bond topology analysis for non-standard residues. Uses united-atom radii (implicit H). Recommended for crystal structures.
-- **ProtOr**: Alias for CCD. Accepted for backward compatibility with [FreeSASA](https://freesasa.github.io/).
+- **ProtOr**: Static ProtOr-compatible radii only. Use this for protein-only structures such as AFDB models when runtime CCD bond-topology analysis is unnecessary.
 - **NACCESS** (default for `traj`): Use for MD trajectories with explicit hydrogens, or when reproducing NACCESS-based studies.
 - **OONS**: Larger aliphatic carbon radii (2.00 Å). Use when reproducing or comparing with OONS-based studies.
 
@@ -54,17 +54,17 @@ NACCESS treats S, Se, and P as **apolar**, while ProtOr, OONS, and CCD treat the
 
 ### Key Differences
 
-| Property | CCD (= ProtOr) | NACCESS | OONS |
-|----------|:---:|:---:|:---:|
-| **Basis** | Hybridization state | Atom type | Atom type |
-| **ANY fallback** | No | Yes | Yes |
-| **S, Se, P polarity** | Polar | Apolar | Polar |
-| **Carbonyl C polarity** | Apolar | Apolar | **Polar** |
-| **Non-standard residues** | CCD bond topology | Element fallback | Element fallback |
-| **Reference** | Tsai et al. 1999 + wwPDB CCD | Hubbard & Thornton 1993 | Ooi et al. 1987 |
+| Property | CCD | ProtOr | NACCESS | OONS |
+|----------|:---:|:---:|:---:|:---:|
+| **Basis** | Hybridization state + CCD topology | Hybridization state | Atom type | Atom type |
+| **ANY fallback** | No | No | Yes | Yes |
+| **S, Se, P polarity** | Polar | Polar | Apolar | Polar |
+| **Carbonyl C polarity** | Apolar | Apolar | Apolar | **Polar** |
+| **Non-standard residues** | CCD bond topology when resources are available | Element fallback | Element fallback | Element fallback |
+| **Reference** | Tsai et al. 1999 + wwPDB CCD | Tsai et al. 1999 | Hubbard & Thornton 1993 | Ooi et al. 1987 |
 
-:::info[ProtOr is an alias for CCD]
-`--classifier=protor` and `--classifier=ccd` use the same classifier internally. ProtOr is accepted for backward compatibility with FreeSASA. There is no reason to prefer ProtOr over CCD — CCD is strictly a superset.
+:::info[ProtOr skips CCD resource parsing]
+`--classifier=protor` uses the static ProtOr-compatible radii table and does not load inline, external, or SDF-derived CCD resources. Prefer it for protein-only mmCIF/PDB inputs where CCD topology analysis is unnecessary.
 :::
 
 ## Usage
@@ -191,7 +191,7 @@ type = "C_ALI"
 
 ## CCD Classifier
 
-The CCD classifier is the default classifier in zsasa (`--classifier=protor` is an alias). It derives van der Waals radii from the [wwPDB Chemical Component Dictionary](https://www.wwpdb.org/data/ccd) (CCD) bond topology, using the same hybridization-based radii as ProtOr (Tsai et al. 1999). Unlike NACCESS and OONS — which only cover standard amino acids and nucleotides — the CCD classifier can assign hybridization-aware radii to **any** chemical component: ligands, modified residues, cofactors, post-translational modifications, and more.
+The CCD classifier is the default classifier in zsasa. It derives van der Waals radii from the [wwPDB Chemical Component Dictionary](https://www.wwpdb.org/data/ccd) (CCD) bond topology, using the same hybridization-based radii as ProtOr (Tsai et al. 1999). Unlike NACCESS and OONS — which only cover standard amino acids and nucleotides — the CCD classifier can assign hybridization-aware radii to **any** chemical component: ligands, modified residues, cofactors, post-translational modifications, and more. Use `--classifier=protor` when you want the static ProtOr-compatible table without runtime CCD resource parsing.
 
 ### Why CCD?
 
@@ -219,15 +219,20 @@ The CCD classifier uses a 3-level lookup:
 
 | Input Format | Hardcoded Table | Inline CCD | External CCD (`--ccd=`) |
 |-------------|:-:|:-:|:-:|
-| **mmCIF** | ✅ | ✅ auto-extracted | ✅ |
+| **mmCIF (`calc`)** | ✅ | ✅ auto-extracted with `--classifier=ccd` | ✅ |
+| **mmCIF (`batch`)** | ✅ | skipped for throughput | ✅ |
 | **PDB** | ✅ | — (not available in PDB format) | ✅ |
 
-- **mmCIF input**: Inline CCD data (if present) is automatically parsed. No extra flags needed.
+- **mmCIF calc input**: Inline CCD data (if present) is automatically parsed with `--classifier=ccd`. Use `--classifier=protor` to skip CCD resource parsing for protein-only structures.
+- **mmCIF batch input**: Inline CCD data is skipped for throughput. Provide `--ccd=<path>` or `--sdf=<path>` when batch jobs need CCD topology for non-standard residues.
 - **PDB input**: PDB format does not include bond topology, so inline CCD is not available. For non-standard residues, provide an external CCD dictionary with `--ccd=<path>` to get the same hybridization-aware radii.
 
 ```bash
-# mmCIF — inline CCD is automatically used
+# mmCIF calc — inline CCD is automatically used with CCD
 zsasa calc --classifier=ccd structure.cif output.json
+
+# protein-only mmCIF — skip CCD resource parsing
+zsasa calc --classifier=protor structure.cif output.json
 
 # PDB — use external CCD for non-standard residues
 zsasa calc --classifier=ccd --ccd=HEM.cif structure.pdb output.json
@@ -326,8 +331,8 @@ When a classifier cannot find a matching (residue, atom name) pair:
 2. If still unmatched, the element is extracted from the atom name and a generic van der Waals radius is assigned
 
 The CCD classifier avoids this element fallback for non-standard residues by deriving hybridization-aware radii from CCD bond topology. To maximize coverage:
-- Use mmCIF input (inline CCD is auto-extracted)
-- Or provide `--ccd=<path>` for PDB input
+- Use `zsasa calc --classifier=ccd` with mmCIF input when inline CCD categories are present
+- Provide `--ccd=<path>` for PDB input or batch workloads
 
 To avoid ambiguity (e.g., "CA" = Carbon-alpha vs Calcium), include an `element` field (atomic numbers) in JSON input:
 

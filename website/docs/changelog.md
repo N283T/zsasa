@@ -8,6 +8,14 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+### Changed
+
+- **ProtOr classifier**: make `--classifier=protor` use static ProtOr-compatible radii without loading inline, external, or SDF-derived CCD resources. This provides a faster protein-only path for mmCIF/PDB inputs such as AFDB models.
+
+### Fixed
+
+- **mmCIF batch parsing**: skip per-file inline CCD extraction in batch mode and avoid scanning mmCIF files for inline CCD data when no `_chem_comp_atom` category is present.
+
 ## [v0.7.1](https://github.com/N283T/zsasa/releases/tag/v0.7.1) — 2026-06-29
 
 ### Fixed

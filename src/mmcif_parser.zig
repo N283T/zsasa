@@ -118,6 +118,9 @@ pub const MmcifParser = struct {
     chain_filter: ?[]const []const u8 = null,
     /// Use auth_asym_id instead of label_asym_id for chain
     use_auth_chain: bool = false,
+    /// Parse inline CCD data from `_chem_comp_atom`/`_chem_comp_bond` loops.
+    /// Disable this when the caller will not use inline CCD resources.
+    parse_inline_ccd: bool = true,
     /// Inline CCD data parsed from `_chem_comp_atom`/`_chem_comp_bond` loops
     inline_ccd: ?ccd_parser.ComponentDict = null,
 
@@ -142,13 +145,21 @@ pub const MmcifParser = struct {
 
     /// Parse mmCIF from a string
     pub fn parse(self: *MmcifParser, source: []const u8) !AtomInput {
+        self.deinitCcd();
+
         // First pass: extract any inline CCD data (_chem_comp_atom / _chem_comp_bond)
-        var ccd_dict = try ccd_parser.parseCcdData(self.allocator, source, null);
-        if (ccd_dict.count() == 0) {
-            ccd_dict.deinit();
-            self.inline_ccd = null;
+        // only when the caller can use it. Most protein-only batch workflows do
+        // not need this full-file scan.
+        if (self.parse_inline_ccd and hasInlineCcdAtomTag(source)) {
+            var ccd_dict = try ccd_parser.parseCcdData(self.allocator, source, null);
+            if (ccd_dict.count() == 0) {
+                ccd_dict.deinit();
+                self.inline_ccd = null;
+            } else {
+                self.inline_ccd = ccd_dict;
+            }
         } else {
-            self.inline_ccd = ccd_dict;
+            self.inline_ccd = null;
         }
 
         // Second pass: parse _atom_site loop for coordinates
@@ -621,6 +632,10 @@ pub const MmcifParser = struct {
         return true;
     }
 };
+
+fn hasInlineCcdAtomTag(source: []const u8) bool {
+    return std.mem.indexOf(u8, source, "_chem_comp_atom.") != null;
+}
 
 fn freeStringItems(allocator: Allocator, items: []const []const u8) void {
     for (items) |item| allocator.free(item);
@@ -1259,4 +1274,40 @@ test "parse mmCIF with inline CCD after atom_site" {
     try std.testing.expect(comp != null);
     try std.testing.expectEqual(@as(usize, 4), comp.?.atoms.len);
     try std.testing.expectEqual(@as(usize, 3), comp.?.bonds.len);
+}
+
+test "parse mmCIF can skip inline CCD extraction" {
+    const source =
+        \\data_TEST
+        \\#
+        \\loop_
+        \\_chem_comp_atom.comp_id
+        \\_chem_comp_atom.atom_id
+        \\_chem_comp_atom.type_symbol
+        \\LIG C1 C
+        \\LIG O1 O
+        \\#
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.group_PDB
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C C1 LIG ATOM 10.0 20.0 30.0
+        \\2 O O1 LIG ATOM 11.0 21.0 31.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.parse_inline_ccd = false;
+    defer parser.deinitCcd();
+
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expect(parser.getInlineCcd() == null);
 }
