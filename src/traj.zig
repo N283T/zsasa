@@ -148,6 +148,8 @@ pub const TrajArgs = struct {
     start_frame: u32 = 0, // Start frame
     end_frame: ?u32 = null, // End frame (null = all)
     include_hydrogens: bool = true, // Include hydrogen atoms (default: include for MD trajectories)
+    alt_loc_mode: mmcif_parser.AltLocMode = .auto, // Alternate-location handling for mmCIF topology
+    alt_loc_id: u8 = 'A',
     batch_size: u32 = 0, // Frames per batch for parallel processing (0 = auto)
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
     bitmask_lut_mode: BitmaskLutMode = .single,
@@ -298,6 +300,19 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) TrajArgs {
                 result.include_hydrogens = true;
             } else if (std.mem.eql(u8, arg, "--no-hydrogens") or std.mem.eql(u8, arg, "--exclude-hydrogens")) {
                 result.include_hydrogens = false;
+            } else if (std.mem.startsWith(u8, arg, "--altloc=")) {
+                const setting = parseAltLocSetting(arg["--altloc=".len..]);
+                result.alt_loc_mode = setting.mode;
+                result.alt_loc_id = setting.id;
+            } else if (std.mem.eql(u8, arg, "--altloc")) {
+                i += 1;
+                if (i >= args.len) {
+                    std.debug.print("Error: Missing value for --altloc\n", .{});
+                    std.process.exit(1);
+                }
+                const setting = parseAltLocSetting(args[i]);
+                result.alt_loc_mode = setting.mode;
+                result.alt_loc_id = setting.id;
             } else if (std.mem.eql(u8, arg, "--use-bitmask")) {
                 result.use_bitmask = true;
             } else if (std.mem.startsWith(u8, arg, "--bitmask-lut-mode=")) {
@@ -385,6 +400,14 @@ fn parsePrecision(value: []const u8) Precision {
     }
 }
 
+fn parseAltLocSetting(value: []const u8) mmcif_parser.AltLocSetting {
+    return mmcif_parser.parseAltLocSetting(value) orelse {
+        std.debug.print("Error: Invalid altloc mode: {s}\n", .{value});
+        std.debug.print("Valid altloc modes: auto, none, all, highest-occupancy, or a single altLoc ID like A\n", .{});
+        std.process.exit(1);
+    };
+}
+
 fn parseClassifierType(value: []const u8) ClassifierType {
     if (ClassifierType.fromString(value)) |ct| {
         return ct;
@@ -425,6 +448,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --no-hydrogens     Exclude hydrogen atoms (default: included)
         \\    --include-hydrogens
         \\                       Include hydrogen atoms (default, for backward compat)
+        \\    --altloc=MODE      mmCIF topology alternate-location handling: auto, none,
+        \\                       all, highest-occupancy, or a single ID like A (default: auto)
         \\    --use-bitmask      Use bitmask LUT optimization for SR algorithm
         \\                       (n-points must be 1..1024)
         \\    --bitmask-lut-mode=MODE
@@ -859,6 +884,8 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
         .mmcif => blk: {
             var parser = mmcif_parser.MmcifParser.init(allocator);
             parser.skip_hydrogens = !args.include_hydrogens;
+            parser.alt_loc_mode = args.alt_loc_mode;
+            parser.alt_loc_id = args.alt_loc_id;
             parser.parse_inline_ccd = false;
             break :blk try parser.parseFile(io, topology_path);
         },
@@ -1430,6 +1457,18 @@ test "TrajArgs quiet disables progress" {
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(true, parsed.quiet);
     try std.testing.expectEqual(false, parsed.show_progress);
+}
+
+test "TrajArgs --altloc modes" {
+    const none_args = [_][]const u8{ "zsasa", "traj", "--altloc=none", "traj.xtc", "topology.cif" };
+    const selected_args = [_][]const u8{ "zsasa", "traj", "--altloc", "D", "traj.xtc", "topology.cif" };
+
+    const none = parseArgs(&none_args, 2);
+    try std.testing.expectEqual(mmcif_parser.AltLocMode.none, none.alt_loc_mode);
+
+    const selected = parseArgs(&selected_args, 2);
+    try std.testing.expectEqual(mmcif_parser.AltLocMode.selected, selected.alt_loc_mode);
+    try std.testing.expectEqual(@as(u8, 'D'), selected.alt_loc_id);
 }
 
 test "TrajArgs --bitmask-correction-coeff" {

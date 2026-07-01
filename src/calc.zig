@@ -60,6 +60,8 @@ pub const CalcArgs = struct {
     chain_filter: ?[]const u8 = null, // Chain filter (e.g., "A" or "A,B,C")
     model_num: ?u32 = null, // Model number for NMR structures
     use_auth_chain: bool = false, // Use auth_asym_id instead of label_asym_id
+    alt_loc_mode: mmcif_parser.AltLocMode = .auto, // Alternate-location handling for mmCIF
+    alt_loc_id: u8 = 'A', // Selected altLoc ID for --altloc=<ID>
     include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
     include_hetatm: bool = false, // Include HETATM records (default: exclude)
     per_residue: bool = false, // Show per-residue SASA
@@ -87,6 +89,7 @@ pub const CalcArgs = struct {
     chain_explicit: bool = false,
     model_explicit: bool = false,
     auth_chain_explicit: bool = false,
+    alt_loc_explicit: bool = false,
     include_hydrogens_explicit: bool = false,
     include_hetatm_explicit: bool = false,
     per_residue_explicit: bool = false,
@@ -218,6 +221,14 @@ fn parseClassifierType(value: []const u8) ClassifierType {
         std.debug.print("Valid classifiers: ccd, protor, naccess, oons\n", .{});
         std.process.exit(1);
     }
+}
+
+fn parseAltLocSetting(value: []const u8) mmcif_parser.AltLocSetting {
+    return mmcif_parser.parseAltLocSetting(value) orelse {
+        std.debug.print("Error: Invalid altloc mode: {s}\n", .{value});
+        std.debug.print("Valid altloc modes: auto, none, all, highest-occupancy, or a single altLoc ID like A\n", .{});
+        std.process.exit(1);
+    };
 }
 
 /// Parse and validate precision value
@@ -450,6 +461,23 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
         else if (std.mem.eql(u8, arg, "--auth-chain")) {
             result.use_auth_chain = true;
             result.auth_chain_explicit = true;
+        }
+        // --altloc=MODE or --altloc MODE
+        else if (std.mem.startsWith(u8, arg, "--altloc=")) {
+            const setting = parseAltLocSetting(arg["--altloc=".len..]);
+            result.alt_loc_mode = setting.mode;
+            result.alt_loc_id = setting.id;
+            result.alt_loc_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--altloc")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --altloc\n", .{});
+                std.process.exit(1);
+            }
+            const setting = parseAltLocSetting(args[i]);
+            result.alt_loc_mode = setting.mode;
+            result.alt_loc_id = setting.id;
+            result.alt_loc_explicit = true;
         }
         // --include-hydrogens (include hydrogen atoms, default: exclude)
         else if (std.mem.eql(u8, arg, "--include-hydrogens")) {
@@ -799,6 +827,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --chain=ID         Filter by chain ID (e.g., --chain=A or --chain=A,B,C)
         \\                       Default: label_asym_id (mmCIF standard)
         \\    --auth-chain       Use auth_asym_id instead of label_asym_id
+        \\    --altloc=MODE      mmCIF/BCIF alternate-location handling: auto, none, all,
+        \\                       highest-occupancy, or a single ID like A (default: auto)
         \\    --include-hydrogens Include hydrogen atoms (default: excluded)
         \\    --include-hetatm   Include HETATM records (default: excluded)
         \\    --model=N          Model number for NMR structures (default: all)
@@ -925,6 +955,8 @@ fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, arg
             parser.use_auth_chain = args.use_auth_chain;
             parser.skip_hydrogens = !args.include_hydrogens;
             parser.atom_only = !args.include_hetatm;
+            parser.alt_loc_mode = args.alt_loc_mode;
+            parser.alt_loc_id = args.alt_loc_id;
             parser.parse_inline_ccd = calcArgsUseCcdResources(args);
 
             // Parse chain filter if specified
@@ -944,6 +976,8 @@ fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, arg
             parser.use_auth_chain = args.use_auth_chain;
             parser.skip_hydrogens = !args.include_hydrogens;
             parser.atom_only = !args.include_hetatm;
+            parser.alt_loc_mode = args.alt_loc_mode;
+            parser.alt_loc_id = args.alt_loc_id;
             parser.parse_inline_ccd = calcArgsUseCcdResources(args);
 
             // Parse chain filter if specified
@@ -2064,6 +2098,26 @@ test "CalcArgs --auth-chain" {
     const args = [_][]const u8{ "zsasa", "calc", "--auth-chain", "input.json" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(true, parsed.use_auth_chain);
+}
+
+test "CalcArgs --altloc modes" {
+    const none_args = [_][]const u8{ "zsasa", "calc", "--altloc=none", "input.cif" };
+    const all_args = [_][]const u8{ "zsasa", "calc", "--altloc", "all", "input.cif" };
+    const selected_args = [_][]const u8{ "zsasa", "calc", "--altloc=B", "input.cif" };
+    const occupancy_args = [_][]const u8{ "zsasa", "calc", "--altloc=highest-occupancy", "input.cif" };
+
+    const none = parseArgs(&none_args, 2);
+    try std.testing.expectEqual(mmcif_parser.AltLocMode.none, none.alt_loc_mode);
+
+    const all = parseArgs(&all_args, 2);
+    try std.testing.expectEqual(mmcif_parser.AltLocMode.all, all.alt_loc_mode);
+
+    const selected = parseArgs(&selected_args, 2);
+    try std.testing.expectEqual(mmcif_parser.AltLocMode.selected, selected.alt_loc_mode);
+    try std.testing.expectEqual(@as(u8, 'B'), selected.alt_loc_id);
+
+    const occupancy = parseArgs(&occupancy_args, 2);
+    try std.testing.expectEqual(mmcif_parser.AltLocMode.highest_occupancy, occupancy.alt_loc_mode);
 }
 
 test "CalcArgs --output FILE (space-separated)" {
