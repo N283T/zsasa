@@ -16,7 +16,7 @@ The Python bindings provide:
 - **NumPy integration**: Pass coordinates and radii as NumPy arrays
 - **Two algorithms**: Shrake-Rupley (fast) and Lee-Richards (precise)
 - **Multi-threading**: Automatic parallelization across CPU cores
-- **Atom classification**: CCD (default), PROTOR alias, NACCESS, and OONS classifiers
+- **Atom classification**: CCD (default), static PROTOR, NACCESS, and OONS classifiers
 - **RSA calculation**: Relative Solvent Accessibility
 - **Per-residue aggregation**: Aggregate atom SASA to residue level
 - **Directory batch processing**: Process entire directories of structure files

@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **mmCIF batch parsing**: skip per-file inline CCD extraction in batch mode and avoid scanning mmCIF files for inline CCD data when no `_chem_comp_atom` category is present.
+- **mmCIF batch parsing**: keep per-file inline CCD extraction for `batch --classifier=ccd` when `_chem_comp_atom` data is present, but fast-skip AFDB-like mmCIF files without inline CCD categories.
 
 ## [0.7.1] - 2026-06-29
 

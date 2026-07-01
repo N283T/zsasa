@@ -220,11 +220,11 @@ The CCD classifier uses a 3-level lookup:
 | Input Format | Hardcoded Table | Inline CCD | External CCD (`--ccd=`) |
 |-------------|:-:|:-:|:-:|
 | **mmCIF (`calc`)** | ✅ | ✅ auto-extracted with `--classifier=ccd` | ✅ |
-| **mmCIF (`batch`)** | ✅ | skipped for throughput | ✅ |
+| **mmCIF (`batch`)** | ✅ | ✅ auto-extracted with `--classifier=ccd`; fast-skipped when absent | ✅ |
 | **PDB** | ✅ | — (not available in PDB format) | ✅ |
 
 - **mmCIF calc input**: Inline CCD data (if present) is automatically parsed with `--classifier=ccd`. Use `--classifier=protor` to skip CCD resource parsing for protein-only structures.
-- **mmCIF batch input**: Inline CCD data is skipped for throughput. Provide `--ccd=<path>` or `--sdf=<path>` when batch jobs need CCD topology for non-standard residues.
+- **mmCIF batch input**: Inline CCD data is automatically parsed with `--classifier=ccd` when present. AFDB-like files without `_chem_comp_atom` are detected quickly and do not pay the full inline CCD extraction cost. Use `--classifier=protor` for protein-only runs that should skip all CCD resources.
 - **PDB input**: PDB format does not include bond topology, so inline CCD is not available. For non-standard residues, provide an external CCD dictionary with `--ccd=<path>` to get the same hybridization-aware radii.
 
 ```bash

@@ -134,6 +134,14 @@ pub const MmcifParser = struct {
         return null;
     }
 
+    /// Move inline CCD data out of the parser. The caller owns the returned
+    /// dictionary and must call `.deinit()` on it.
+    pub fn takeInlineCcd(self: *MmcifParser) ?ccd_parser.ComponentDict {
+        const dict = self.inline_ccd;
+        self.inline_ccd = null;
+        return dict;
+    }
+
     /// Clean up inline CCD data. Must be called before the parser goes out of
     /// scope when `parse()` has been called and `getInlineCcd()` is non-null.
     pub fn deinitCcd(self: *MmcifParser) void {

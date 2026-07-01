@@ -7,7 +7,7 @@ Atom classification and RSA calculation.
 ```python
 class ClassifierType(IntEnum):
     NACCESS = 0  # NACCESS-compatible radii
-    PROTOR = 1   # Alias for CCD, kept for compatibility
+    PROTOR = 1   # Static ProtOr-compatible radii
     OONS = 2     # OONS radii
     CCD = 3      # CCD-based radii (default)
 ```

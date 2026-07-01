@@ -304,7 +304,7 @@ fn validateClassifier(config: ClassifierConfig) WorkflowError!void {
 }
 
 fn classifierAllowsCcdResources(classifier_type: []const u8) bool {
-    return std.mem.eql(u8, classifier_type, "ccd") or std.mem.eql(u8, classifier_type, "protor");
+    return std.mem.eql(u8, classifier_type, "ccd");
 }
 
 fn validateAnalysis(analysis: Analysis) WorkflowError!void {
@@ -848,4 +848,24 @@ test "reject invalid classifier combinations" {
         \\sdf = "ligand.sdf"
     ;
     try std.testing.expectError(error.InvalidClassifierConfig, parse(std.testing.allocator, naccess_with_sdf));
+
+    const protor_with_ccd =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[classifier]
+        \\type = "protor"
+        \\ccd = "components.zsdc"
+    ;
+    try std.testing.expectError(error.InvalidClassifierConfig, parse(std.testing.allocator, protor_with_ccd));
+
+    const protor_with_sdf =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[classifier]
+        \\type = "protor"
+        \\sdf = "ligand.sdf"
+    ;
+    try std.testing.expectError(error.InvalidClassifierConfig, parse(std.testing.allocator, protor_with_sdf));
 }

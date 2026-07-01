@@ -14,7 +14,7 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ### Fixed
 
-- **mmCIF batch parsing**: skip per-file inline CCD extraction in batch mode and avoid scanning mmCIF files for inline CCD data when no `_chem_comp_atom` category is present.
+- **mmCIF batch parsing**: keep per-file inline CCD extraction for `batch --classifier=ccd` when `_chem_comp_atom` data is present, but fast-skip AFDB-like mmCIF files without inline CCD categories.
 
 ## [v0.7.1](https://github.com/N283T/zsasa/releases/tag/v0.7.1) — 2026-06-29
 
