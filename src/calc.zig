@@ -994,6 +994,10 @@ fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, arg
 
             const input_result = try sdf_parser.toAtomInput(allocator, selected, !args.include_hydrogens);
 
+            if (!calcArgsUseCcdResources(args)) {
+                break :blk .{ .input = input_result };
+            }
+
             // Build CCD component dict from selected molecule's bond topology
             var sdf_dict = ccd_parser.ComponentDict.init(allocator);
             errdefer sdf_dict.deinit();

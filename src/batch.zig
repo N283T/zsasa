@@ -1067,7 +1067,7 @@ fn processOneSdfMolecule(
 
     // Build CCD component dict for this molecule's bond topology
     var sdf_dict: ?ccd_parser.ComponentDict = null;
-    if (molecule.name.len > 0) {
+    if (classifierUsesCcdResources(config.classifier_type) and molecule.name.len > 0) {
         const stored = sdf_parser.toStoredComponent(arena, molecule) catch |err| blk: {
             logWarning("{s}: failed to build SDF component: {s}", .{ display_name, @errorName(err) });
             break :blk null;
@@ -3022,6 +3022,10 @@ fn classifierUsesCcdResources(effective_classifier_type: ?ClassifierType) bool {
     return classifier_type == .ccd;
 }
 
+fn batchArgsUseCcdResources(args: BatchArgs) bool {
+    return classifierUsesCcdResources(args.classifier_type);
+}
+
 fn resolveWorkflowCcdPath(args: BatchArgs, classifier_config: workflow_manifest.ClassifierConfig, effective_classifier_type: ?ClassifierType) ?[]const u8 {
     if (!classifierUsesCcdResources(effective_classifier_type)) return null;
     if (args.ccd_explicit) return args.ccd_path;
@@ -3966,40 +3970,43 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
 
     // Load external CCD dictionary if specified
     var ext_ccd: ?ccd_parser.ComponentDict = null;
-    if (args.ccd_path) |ccd_path| {
-        const ccd_data = if (compressed.isCompressed(ccd_path))
-            compressed.read(allocator, ccd_path) catch |err| {
-                std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
-                std.process.exit(1);
-            }
-        else blk: {
-            const f = std.Io.Dir.cwd().openFile(io, ccd_path, .{}) catch |err| {
-                std.debug.print("Error opening CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
-                std.process.exit(1);
+    const use_ccd_resources = batchArgsUseCcdResources(args);
+    if (use_ccd_resources) {
+        if (args.ccd_path) |ccd_path| {
+            const ccd_data = if (compressed.isCompressed(ccd_path))
+                compressed.read(allocator, ccd_path) catch |err| {
+                    std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                    std.process.exit(1);
+                }
+            else blk: {
+                const f = std.Io.Dir.cwd().openFile(io, ccd_path, .{}) catch |err| {
+                    std.debug.print("Error opening CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                    std.process.exit(1);
+                };
+                defer f.close(io);
+                var read_buf_ccd: [65536]u8 = undefined;
+                var file_r_ccd = f.reader(io, &read_buf_ccd);
+                break :blk file_r_ccd.interface.allocRemaining(allocator, .unlimited) catch |err| {
+                    std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                    std.process.exit(1);
+                };
             };
-            defer f.close(io);
-            var read_buf_ccd: [65536]u8 = undefined;
-            var file_r_ccd = f.reader(io, &read_buf_ccd);
-            break :blk file_r_ccd.interface.allocRemaining(allocator, .unlimited) catch |err| {
-                std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
-                std.process.exit(1);
-            };
-        };
-        defer allocator.free(ccd_data);
+            defer allocator.free(ccd_data);
 
-        ext_ccd = ccd_binary.loadDict(allocator, ccd_data) catch |err| {
-            std.debug.print("Error loading CCD dictionary '{s}': {s}\n", .{ ccd_path, @errorName(err) });
-            std.process.exit(1);
-        };
-        if (!args.quiet) {
-            std.debug.print("External CCD: loaded {d} components from '{s}'\n", .{ ext_ccd.?.components.count(), ccd_path });
+            ext_ccd = ccd_binary.loadDict(allocator, ccd_data) catch |err| {
+                std.debug.print("Error loading CCD dictionary '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                std.process.exit(1);
+            };
+            if (!args.quiet) {
+                std.debug.print("External CCD: loaded {d} components from '{s}'\n", .{ ext_ccd.?.components.count(), ccd_path });
+            }
         }
     }
     defer if (ext_ccd) |*d| d.deinit();
 
     // Load SDF components from --sdf option
     var sdf_ccd: ?ccd_parser.ComponentDict = null;
-    if (args.sdf_paths.len > 0) {
+    if (use_ccd_resources and args.sdf_paths.len > 0) {
         sdf_ccd = loadSdfComponents(allocator, io, args.sdf_paths.constSlice(), args.quiet) catch |err| {
             std.debug.print("Error loading SDF components: {s}\n", .{@errorName(err)});
             std.process.exit(1);
@@ -4553,6 +4560,11 @@ test "workflow custom classifier config path resolves for batch" {
 }
 
 test "batch resource resolver only loads CCD resources for CCD classifiers" {
+    try std.testing.expect(batchArgsUseCcdResources(.{ .classifier_type = .ccd }));
+    try std.testing.expect(!batchArgsUseCcdResources(.{ .classifier_type = .protor }));
+    try std.testing.expect(!batchArgsUseCcdResources(.{ .classifier_type = .naccess }));
+    try std.testing.expect(!batchArgsUseCcdResources(.{ .classifier_type = .oons }));
+
     const classifier_config = @import("workflow_manifest.zig").ClassifierConfig{
         .ccd = "workflow.zsdc",
     };
