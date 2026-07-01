@@ -8,13 +8,22 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+## [v0.8.0](https://github.com/N283T/zsasa/releases/tag/v0.8.0) — 2026-07-01
+
+### Added
+
+- **AltLoc parsing modes**: add shared `--altloc` policy support for mmCIF and BinaryCIF inputs across `calc`, `batch`, and `traj`, including `auto`, `none`, `all`, `highest-occupancy`, and single-ID selection. (#394)
+- **Workflow JSONL output controls**: add workflow `[output.jsonl]` controls for atom areas, total areas, decimal rounding, and metadata sidecars. (#396)
+
 ### Changed
 
-- **ProtOr classifier**: make `--classifier=protor` use static ProtOr-compatible radii without loading inline, external, or SDF-derived CCD resources. This provides a faster protein-only path for mmCIF/PDB inputs such as AFDB models.
+- **Batch JSONL output**: add explicit success/error status rows, configurable decimal rounding, and stricter serialization/write error handling for JSONL output. (#395)
+- **mmCIF parser performance**: reduce atom_site parsing overhead by batching tokenizer position updates, skipping unnecessary AltLoc selection, and lazily backfilling extended chain IDs. (#393)
+- **ProtOr classifier**: make `--classifier=protor` use static ProtOr-compatible radii without loading inline, external, or SDF-derived CCD resources. This provides a faster protein-only path for mmCIF/PDB inputs such as AFDB models. (#392)
 
 ### Fixed
 
-- **mmCIF batch parsing**: keep per-file inline CCD extraction for `batch --classifier=ccd` when `_chem_comp_atom` data is present, but fast-skip AFDB-like mmCIF files without inline CCD categories.
+- **Inline CCD parsing**: gate inline CCD extraction so batch and trajectory topology parsing skip unnecessary CCD work, while `batch --classifier=ccd` still uses per-file inline CCD data when present. (#392)
 
 ## [v0.7.1](https://github.com/N283T/zsasa/releases/tag/v0.7.1) — 2026-06-29
 
