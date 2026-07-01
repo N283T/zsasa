@@ -86,6 +86,7 @@ pub const BatchConfig = struct {
     alt_loc_mode: mmcif_parser.AltLocMode = .auto,
     alt_loc_id: u8 = 'A',
     residue_map: bool = false,
+    jsonl_decimals: ?u8 = null,
 };
 
 /// Helper to build and hold bitmask LUTs for batch processing.
@@ -812,6 +813,10 @@ fn attachResidueMap(
     return true;
 }
 
+fn jsonlOptions(config: BatchConfig) json_writer.JsonlOptions {
+    return .{ .decimals = config.jsonl_decimals };
+}
+
 /// Scan directory for structure files (.json, .pdb, .cif, .mmcif, .ent and compressed variants)
 pub fn scanDirectory(allocator: Allocator, io: std.Io, dir_path: []const u8) ![][]const u8 {
     var files: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -1270,10 +1275,13 @@ const JsonlStreamWriter = struct {
     mutex: std.Io.Mutex = .init,
     file: std.Io.File,
     io: std.Io,
-    /// Set to true if any writeResult call failed to write to the output file.
-    /// TODO: surface this from runBatch return value to make the CLI exit
-    /// non-zero on partial JSONL write failure.
-    write_failed: bool = false,
+    options: json_writer.JsonlOptions = .{},
+    /// Set to true if any writeResult call failed to serialize or write.
+    write_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn recordFailure(self: *JsonlStreamWriter) void {
+        self.write_failed.store(true, .release);
+    }
 
     /// Serialize and write one JSONL line for a completed file result.
     /// alloc is a short-lived allocator (e.g., thread-local arena) used only for
@@ -1283,8 +1291,9 @@ const JsonlStreamWriter = struct {
         alloc: Allocator,
         result: *FileResult,
     ) void {
-        const line = fileResultToJsonlLine(alloc, result) catch |err| {
+        const line = fileResultToJsonlLineOptions(alloc, result, self.options) catch |err| {
             logWarning("failed to serialize {s}: {s}", .{ result.filename, @errorName(err) });
+            self.recordFailure();
             return;
         };
         // line is on alloc (arena); no explicit free needed — arena reset handles it.
@@ -1298,57 +1307,56 @@ const JsonlStreamWriter = struct {
         var w = std.Io.File.Writer.initStreaming(self.file, self.io, &buf);
         w.interface.writeAll(line) catch |err| {
             logWarning("JSONL write failed for {s}: {s}", .{ result.filename, @errorName(err) });
-            self.write_failed = true;
+            self.recordFailure();
             return;
         };
         w.interface.writeAll("\n") catch |err| {
             logWarning("JSONL newline write failed for {s}: {s}", .{ result.filename, @errorName(err) });
-            self.write_failed = true;
+            self.recordFailure();
             return;
         };
         w.interface.flush() catch |err| {
             logWarning("JSONL flush failed for {s}: {s}", .{ result.filename, @errorName(err) });
-            self.write_failed = true;
+            self.recordFailure();
         };
     }
 
     /// Returns true if any write to the JSONL file failed.
     pub fn hasError(self: *const JsonlStreamWriter) bool {
-        return self.write_failed;
+        return self.write_failed.load(.acquire);
     }
 };
 
 /// Write a JSONL line for a result via the buffered writer.
 /// atom_areas live on the arena and are invalidated after arena reset.
 fn fileResultToJsonlLine(allocator: Allocator, result: *FileResult) ![]u8 {
+    return fileResultToJsonlLineOptions(allocator, result, .{});
+}
+
+fn fileResultToJsonlLineOptions(allocator: Allocator, result: *FileResult, options: json_writer.JsonlOptions) ![]u8 {
+    if (result.status == .err) {
+        return json_writer.fileErrorToJsonlLine(allocator, result.filename, result.error_msg orelse "unknown error");
+    }
     const areas = result.atom_areas orelse return error.MissingAtomAreas;
     if (result.residue_map) |map| {
-        return json_writer.fileResultWithResidueMapToJsonlLine(allocator, result.filename, result.total_sasa, areas, map);
+        return json_writer.fileResultWithResidueMapToJsonlLineOptions(allocator, result.filename, result.total_sasa, areas, map, options);
     }
-    return json_writer.fileResultToJsonlLine(allocator, result.filename, result.total_sasa, areas);
+    return json_writer.fileResultToJsonlLineOptions(allocator, result.filename, result.total_sasa, areas, options);
 }
 
 fn writeJsonlResult(
     jsonl_writer: *std.Io.File.Writer,
     arena_alloc: Allocator,
     result: *FileResult,
-) void {
-    if (result.status != .ok) return;
-    const line = fileResultToJsonlLine(arena_alloc, result) catch |err| {
+    options: json_writer.JsonlOptions,
+) !void {
+    const line = fileResultToJsonlLineOptions(arena_alloc, result, options) catch |err| {
         logWarning("failed to serialize {s}: {s}", .{ result.filename, @errorName(err) });
-        return;
+        return error.JsonlWriteFailed;
     };
-    jsonl_writer.interface.writeAll(line) catch |err| {
-        logWarning("JSONL write failed for {s}: {s}", .{ result.filename, @errorName(err) });
-        return; // Don't attempt newline or flush
-    };
-    jsonl_writer.interface.writeAll("\n") catch |err| {
-        logWarning("JSONL newline write failed for {s}: {s}", .{ result.filename, @errorName(err) });
-        return; // Don't flush a corrupted line
-    };
-    jsonl_writer.interface.flush() catch |err| {
-        logWarning("JSONL flush failed for {s}: {s}", .{ result.filename, @errorName(err) });
-    };
+    try jsonl_writer.interface.writeAll(line);
+    try jsonl_writer.interface.writeAll("\n");
+    try jsonl_writer.interface.flush();
 }
 
 fn truncateJsonlOutput(io: std.Io, path: []const u8) !void {
@@ -1356,10 +1364,8 @@ fn truncateJsonlOutput(io: std.Io, path: []const u8) !void {
     file.close(io);
 }
 
-fn appendJsonlResultToFile(io: std.Io, file: std.Io.File, allocator: Allocator, result: *FileResult) !void {
-    if (result.status != .ok) return;
-
-    const line = try fileResultToJsonlLine(allocator, result);
+fn appendJsonlResultToFile(io: std.Io, file: std.Io.File, allocator: Allocator, result: *FileResult, options: json_writer.JsonlOptions) !void {
+    const line = try fileResultToJsonlLineOptions(allocator, result, options);
     defer allocator.free(line);
 
     const file_len = try file.length(io);
@@ -1371,8 +1377,8 @@ fn appendJsonlResultToFile(io: std.Io, file: std.Io.File, allocator: Allocator, 
     try writer.interface.flush();
 }
 
-fn appendBsaAnalysisJsonlToFile(io: std.Io, file: std.Io.File, allocator: Allocator, row: json_writer.BsaAnalysisJsonl) !void {
-    const line = try json_writer.bsaAnalysisToJsonlLine(allocator, row);
+fn appendBsaAnalysisJsonlToFile(io: std.Io, file: std.Io.File, allocator: Allocator, row: json_writer.BsaAnalysisJsonl, options: json_writer.JsonlOptions) !void {
+    const line = try json_writer.bsaAnalysisToJsonlLineOptions(allocator, row, options);
     defer allocator.free(line);
 
     const file_len = try file.length(io);
@@ -1632,7 +1638,7 @@ pub fn runBatchSequential(
 
                 // Stream JSONL output
                 if (jsonl_writer) |*w| {
-                    writeJsonlResult(w, arena.allocator(), &mol_result);
+                    try writeJsonlResult(w, arena.allocator(), &mol_result, jsonlOptions(config));
                 }
                 mol_result.atom_areas = null;
                 mol_result.residue_map = null;
@@ -1673,7 +1679,7 @@ pub fn runBatchSequential(
 
             // Stream JSONL output
             if (jsonl_writer) |*w| {
-                writeJsonlResult(w, arena.allocator(), &result);
+                try writeJsonlResult(w, arena.allocator(), &result, jsonlOptions(config));
             }
             result.atom_areas = null;
             result.residue_map = null;
@@ -1860,9 +1866,7 @@ fn parallelWorker(ctx: *ParallelContext) void {
             ctx.results[item_idx] = result;
 
             if (ctx.jsonl_stream) |stream| {
-                if (result.status == .ok) {
-                    stream.writeResult(arena.allocator(), &result);
-                }
+                stream.writeResult(arena.allocator(), &result);
             }
             ctx.results[item_idx].atom_areas = null;
             ctx.results[item_idx].residue_map = null;
@@ -1891,9 +1895,7 @@ fn parallelWorker(ctx: *ParallelContext) void {
 
             // Stream JSONL output (atom_areas on arena, valid until reset)
             if (ctx.jsonl_stream) |stream| {
-                if (result.status == .ok) {
-                    stream.writeResult(arena.allocator(), &result);
-                }
+                stream.writeResult(arena.allocator(), &result);
             }
             // Clear atom_areas since arena will free them
             ctx.results[item_idx].atom_areas = null;
@@ -2118,7 +2120,7 @@ pub fn runBatchParallel(
     // SAFETY: `undefined` when jsonl_file is null — never accessed because
     // jsonl_stream_ptr is also null in that case.
     var jsonl_stream_storage: JsonlStreamWriter = if (jsonl_file) |jf|
-        JsonlStreamWriter{ .file = jf, .io = io }
+        JsonlStreamWriter{ .file = jf, .io = io, .options = jsonlOptions(config) }
     else
         undefined;
     const jsonl_stream_ptr: ?*JsonlStreamWriter = if (jsonl_file != null) &jsonl_stream_storage else null;
@@ -2191,6 +2193,10 @@ pub fn runBatchParallel(
         }
     }
 
+    if (jsonl_stream_ptr) |stream| {
+        if (stream.hasError()) return error.JsonlWriteFailed;
+    }
+
     const total_time_ns: u64 = @intCast(total_timer.untilNow(io, .awake).nanoseconds);
 
     return BatchResult{
@@ -2245,6 +2251,7 @@ pub const BatchArgs = struct {
     alt_loc_mode: mmcif_parser.AltLocMode = .auto,
     alt_loc_id: u8 = 'A',
     residue_map: bool = false,
+    jsonl_decimals: ?u8 = null,
     n_threads: usize = 0,
     probe_radius: f64 = 1.4,
     n_points: u32 = 100,
@@ -2292,6 +2299,7 @@ pub const BatchArgs = struct {
     sdf_explicit: bool = false,
     quiet_explicit: bool = false,
     timing_explicit: bool = false,
+    jsonl_decimals_explicit: bool = false,
 };
 
 // Parse helper functions (local to batch.zig)
@@ -2462,6 +2470,18 @@ fn parsePrecision(value: []const u8) Precision {
     }
 }
 
+fn parseJsonlDecimals(value: []const u8) u8 {
+    const decimals = std.fmt.parseInt(u8, value, 10) catch {
+        std.debug.print("Error: Invalid jsonl decimals: {s}\n", .{value});
+        std.process.exit(1);
+    };
+    if (decimals > 15) {
+        std.debug.print("Error: --jsonl-decimals must be between 0 and 15: {d}\n", .{decimals});
+        std.process.exit(1);
+    }
+    return decimals;
+}
+
 fn parseBatchChainFilter(allocator: Allocator, filter_str: []const u8) ![]const []const u8 {
     var chains = std.ArrayListUnmanaged([]const u8).empty;
     errdefer chains.deinit(allocator);
@@ -2561,6 +2581,20 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
                 std.process.exit(1);
             }
             result.output_format = parseOutputFormat(args[i]);
+        }
+        // --jsonl-decimals=N or --jsonl-decimals N
+        else if (std.mem.startsWith(u8, arg, "--jsonl-decimals=")) {
+            result.jsonl_decimals_explicit = true;
+            const value = arg["--jsonl-decimals=".len..];
+            result.jsonl_decimals = parseJsonlDecimals(value);
+        } else if (std.mem.eql(u8, arg, "--jsonl-decimals")) {
+            result.jsonl_decimals_explicit = true;
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --jsonl-decimals\n", .{});
+                std.process.exit(1);
+            }
+            result.jsonl_decimals = parseJsonlDecimals(args[i]);
         }
         // --algorithm=ALGO or --algorithm ALGO
         else if (std.mem.startsWith(u8, arg, "--algorithm=")) {
@@ -2892,6 +2926,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --n-slices=N        Slices per atom diameter (default: 20, for lr)
         \\    --precision=PREC    Floating-point precision: f32, f64 (default: f64)
         \\    --format=FORMAT     Output format: json, compact, csv, jsonl (default: json)
+        \\    --jsonl-decimals=N  Round JSONL floating-point values to N decimals (0..15)
         \\    --include-hydrogens Include hydrogen atoms (default: exclude)
         \\    --include-hetatm    Include HETATM records (default: exclude)
         \\    --use-bitmask       Use bitmask LUT optimization for SR algorithm
@@ -3016,6 +3051,7 @@ fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
     if (args.bitmask_correction_coeff_explicit) config.bitmask_correction_coeff = args.bitmask_correction_coeff;
     if (args.use_auth_chain) config.use_auth_chain = true;
     if (args.residue_map) config.residue_map = true;
+    if (args.jsonl_decimals_explicit) config.jsonl_decimals = args.jsonl_decimals;
 }
 
 fn validateBitmaskCorrectionConfig(config: BatchConfig) !void {
@@ -3406,7 +3442,7 @@ fn runWorkflowBsaAnalysis(
             .residue_number = residue_arrays.residue_number,
             .residue_insertion_code = residue_arrays.residue_insertion_code,
             .residue_delta_sasa = residue_arrays.residue_delta_sasa,
-        });
+        }, jsonlOptions(config));
 
         successful += 1;
         total_sasa_time_ns += partner_a_result.sasa_time_ns + partner_b_result.sasa_time_ns + complex_result.sasa_time_ns;
@@ -3541,7 +3577,7 @@ fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
             }
 
             if (runtime.jsonl_stream) |*stream| {
-                if (result.status == .ok) stream.writeResult(arena.allocator(), &result);
+                stream.writeResult(arena.allocator(), &result);
             }
 
             result.atom_areas = null;
@@ -3835,11 +3871,11 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
                     const file = try std.Io.Dir.cwd().createFile(io, path, .{});
                     runtimes[i].jsonl_file = file;
                     runtimes[i].jsonl_file_needs_close = true;
-                    runtimes[i].jsonl_stream = JsonlStreamWriter{ .file = file, .io = io };
+                    runtimes[i].jsonl_stream = JsonlStreamWriter{ .file = file, .io = io, .options = jsonlOptions(state.config) };
                 } else {
                     const file = std.Io.File.stdout();
                     runtimes[i].jsonl_file = file;
-                    runtimes[i].jsonl_stream = JsonlStreamWriter{ .file = file, .io = io };
+                    runtimes[i].jsonl_stream = JsonlStreamWriter{ .file = file, .io = io, .options = jsonlOptions(state.config) };
                 }
             }
             runtimes_initialized += 1;
@@ -3885,6 +3921,9 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
             runtime.state.total_sasa_time_ns = runtime.counter.total_sasa_time_ns.load(.monotonic);
             successful += runtime.state.successful;
             failed += runtime.state.failed;
+            if (runtime.jsonl_stream) |*stream| {
+                if (stream.hasError()) return error.JsonlWriteFailed;
+            }
         }
         std.debug.print("Workflow complete: {d} successful, {d} failed\n", .{ successful, failed });
         return;
@@ -3963,11 +4002,11 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
                 if (state.jsonl_output_path) |path| {
                     const file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .write_only });
                     defer file.close(io);
-                    try appendJsonlResultToFile(io, file, arena.allocator(), &result);
+                    try appendJsonlResultToFile(io, file, arena.allocator(), &result, jsonlOptions(state.config));
                 } else {
                     var stdout_write_buf: [64 * 1024]u8 = undefined;
                     var stdout_writer = std.Io.File.Writer.initStreaming(std.Io.File.stdout(), io, &stdout_write_buf);
-                    writeJsonlResult(&stdout_writer, arena.allocator(), &result);
+                    try writeJsonlResult(&stdout_writer, arena.allocator(), &result, jsonlOptions(state.config));
                 }
             }
 
@@ -4132,6 +4171,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .alt_loc_mode = args.alt_loc_mode,
         .alt_loc_id = args.alt_loc_id,
         .residue_map = args.residue_map,
+        .jsonl_decimals = args.jsonl_decimals,
     };
 
     if (!args.quiet) {
@@ -5044,10 +5084,10 @@ test "workflow mmCIF chain filters preserve long chain IDs" {
     const prefix_content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, prefix_jsonl, allocator, .limited(4096));
     defer allocator.free(prefix_content);
 
-    try std.testing.expect(std.mem.indexOf(u8, long_chain_content, "\"filename\":\"long-chain.cif\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, long_chain_content, "\"filename\":\"long-chain-2.cif\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prefix_content, "\"filename\":\"long-chain.cif\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prefix_content, "\"filename\":\"long-chain-2.cif\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, long_chain_content, "\"status\":\"ok\",\"filename\":\"long-chain.cif\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, long_chain_content, "\"status\":\"err\",\"filename\":\"long-chain-2.cif\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prefix_content, "\"status\":\"err\",\"filename\":\"long-chain.cif\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prefix_content, "\"status\":\"ok\",\"filename\":\"long-chain-2.cif\"") != null);
 }
 
 test "workflowJsonlOutputPath uses job file under output dir" {
@@ -5161,12 +5201,12 @@ test "appendJsonlResultToFile appends without truncating existing JSONL content"
     {
         const file = try std.Io.Dir.cwd().openFile(std.testing.io, output_path, .{ .mode = .write_only });
         defer file.close(std.testing.io);
-        try appendJsonlResultToFile(std.testing.io, file, allocator, &first);
+        try appendJsonlResultToFile(std.testing.io, file, allocator, &first, .{});
     }
     {
         const file = try std.Io.Dir.cwd().openFile(std.testing.io, output_path, .{ .mode = .write_only });
         defer file.close(std.testing.io);
-        try appendJsonlResultToFile(std.testing.io, file, allocator, &second);
+        try appendJsonlResultToFile(std.testing.io, file, allocator, &second, .{});
     }
 
     const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(4096));
@@ -5215,6 +5255,30 @@ test "FileResult JSONL uses residue map serializer when present" {
     try std.testing.expect(std.mem.indexOf(u8, line, "\"residue_sasa\":[3]") != null);
 }
 
+test "FileResult JSONL serializes error result without atom areas" {
+    const allocator = std.testing.allocator;
+    var result = FileResult{
+        .filename = "bad.pdb",
+        .n_atoms = 0,
+        .sasa_time_ns = 0,
+        .total_sasa = 0,
+        .status = .err,
+        .error_msg = "read/parse failed: InvalidFormat",
+    };
+
+    const line = try fileResultToJsonlLine(allocator, &result);
+    defer allocator.free(line);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+    defer parsed.deinit();
+
+    const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("err", obj.get("status").?.string);
+    try std.testing.expectEqualStrings("bad.pdb", obj.get("filename").?.string);
+    try std.testing.expectEqualStrings("read/parse failed: InvalidFormat", obj.get("error").?.string);
+    try std.testing.expect(obj.get("atom_areas") == null);
+}
+
 test "JsonlStreamWriter writes many parseable JSONL lines" {
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -5259,6 +5323,7 @@ test "JsonlStreamWriter writes many parseable JSONL lines" {
         const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
         defer parsed.deinit();
         const object = parsed.value.object;
+        try std.testing.expectEqualStrings("ok", object.get("status").?.string);
         try std.testing.expect(object.get("filename") != null);
         try std.testing.expect(object.get("atom_areas") != null);
         count += 1;
@@ -5321,6 +5386,7 @@ test "runBatchParallel writes parseable JSONL with multiple threads" {
         const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
         defer parsed.deinit();
         const object = parsed.value.object;
+        try std.testing.expectEqualStrings("ok", object.get("status").?.string);
         try std.testing.expect(object.get("filename") != null);
         try std.testing.expect(object.get("total_area") != null);
         try std.testing.expect(object.get("atom_areas") != null);
@@ -5328,6 +5394,57 @@ test "runBatchParallel writes parseable JSONL with multiple threads" {
         count += 1;
     }
     try std.testing.expectEqual(@as(usize, 10), count);
+}
+
+test "runBatchParallel writes JSONL error rows for failed files" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root_path = root_buf[0..root_len];
+
+    const input_dir = try std.fs.path.join(allocator, &.{ root_path, "input" });
+    defer allocator.free(input_dir);
+    const output_path = try std.fs.path.join(allocator, &.{ root_path, "results.jsonl" });
+    defer allocator.free(output_path);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+
+    const good_pdb =
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N\n" ++
+        "ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C\n" ++
+        "END\n";
+    const good_path = try std.fs.path.join(allocator, &.{ input_dir, "good.pdb" });
+    defer allocator.free(good_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = good_path, .data = good_pdb });
+
+    const bad_path = try std.fs.path.join(allocator, &.{ input_dir, "bad.pdb" });
+    defer allocator.free(bad_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = bad_path, .data = "not a pdb file\n" });
+
+    var result = try runBatchParallel(allocator, std.testing.io, input_dir, null, .{
+        .n_threads = 2,
+        .algorithm = .sr,
+        .n_points = 8,
+        .quiet = true,
+        .show_progress = false,
+        .output_format = .jsonl,
+        .store_atom_areas = true,
+        .classifier_type = .naccess,
+    }, output_path);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), result.total_files);
+    try std.testing.expectEqual(@as(usize, 1), result.successful);
+    try std.testing.expectEqual(@as(usize, 1), result.failed);
+
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(4096));
+    defer allocator.free(content);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, content, "\n"));
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"status\":\"ok\",\"filename\":\"good.pdb\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"status\":\"err\",\"filename\":\"bad.pdb\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"error\":") != null);
 }
 
 test "BatchArgs explicit option flags" {
@@ -5384,6 +5501,13 @@ test "BatchArgs --format=jsonl" {
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(OutputFormat.jsonl, parsed.output_format);
     try std.testing.expectEqualStrings("out.jsonl", parsed.output_path.?);
+}
+
+test "BatchArgs --jsonl-decimals" {
+    const args = [_][]const u8{ "zsasa", "batch", "--format=jsonl", "--jsonl-decimals=3", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(@as(?u8, 3), parsed.jsonl_decimals);
+    try std.testing.expectEqual(true, parsed.jsonl_decimals_explicit);
 }
 
 test "BatchArgs --classifier=naccess" {

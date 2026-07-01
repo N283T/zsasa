@@ -566,6 +566,30 @@ pub const ResidueMap = struct {
     }
 };
 
+pub const JsonlOptions = struct {
+    decimals: ?u8 = null,
+};
+
+fn roundJsonlFloat(value: f64, decimals: u8) f64 {
+    if (!std.math.isFinite(value)) return value;
+    const factor = std.math.pow(f64, 10.0, @floatFromInt(decimals));
+    const rounded = @round(value * factor) / factor;
+    return if (rounded == 0.0) 0.0 else rounded;
+}
+
+fn maybeRoundJsonlFloat(value: f64, options: JsonlOptions) f64 {
+    return if (options.decimals) |decimals| roundJsonlFloat(value, decimals) else value;
+}
+
+fn maybeRoundJsonlFloatSlice(allocator: Allocator, values: []const f64, options: JsonlOptions) ![]const f64 {
+    const decimals = options.decimals orelse return values;
+    const rounded = try allocator.alloc(f64, values.len);
+    for (values, 0..) |value, i| {
+        rounded[i] = roundJsonlFloat(value, decimals);
+    }
+    return rounded;
+}
+
 fn sameResidue(
     chain_ids: []const types.FixedString4,
     chain_ids_full: ?[]const []const u8,
@@ -670,19 +694,42 @@ pub fn buildResidueMap(allocator: Allocator, input: AtomInput, atom_areas: []con
 
 /// Serialize a single batch result as a JSONL line: {"filename":"...","total_area":...,"atom_areas":[...]}
 pub fn fileResultToJsonlLine(allocator: Allocator, filename: []const u8, total_area: f64, atom_areas: []const f64) ![]u8 {
+    return fileResultToJsonlLineOptions(allocator, filename, total_area, atom_areas, .{});
+}
+
+pub fn fileResultToJsonlLineOptions(allocator: Allocator, filename: []const u8, total_area: f64, atom_areas: []const f64, options: JsonlOptions) ![]u8 {
+    const output_areas = try maybeRoundJsonlFloatSlice(allocator, atom_areas, options);
+    defer if (options.decimals != null) allocator.free(output_areas);
+
     const JsonlEntry = struct {
+        status: []const u8,
         filename: []const u8,
         total_area: f64,
         atom_areas: []const f64,
     };
 
     const entry = JsonlEntry{
+        .status = "ok",
         .filename = filename,
-        .total_area = total_area,
-        .atom_areas = atom_areas,
+        .total_area = maybeRoundJsonlFloat(total_area, options),
+        .atom_areas = output_areas,
     };
 
     return std.json.Stringify.valueAlloc(allocator, entry, .{});
+}
+
+pub fn fileErrorToJsonlLine(allocator: Allocator, filename: []const u8, error_msg: []const u8) ![]u8 {
+    const JsonlEntry = struct {
+        status: []const u8,
+        filename: []const u8,
+        @"error": []const u8,
+    };
+
+    return std.json.Stringify.valueAlloc(allocator, JsonlEntry{
+        .status = "err",
+        .filename = filename,
+        .@"error" = error_msg,
+    }, .{});
 }
 
 pub fn fileResultWithResidueMapToJsonlLine(
@@ -692,12 +739,27 @@ pub fn fileResultWithResidueMapToJsonlLine(
     atom_areas: []const f64,
     residue_map: ResidueMap,
 ) ![]u8 {
+    return fileResultWithResidueMapToJsonlLineOptions(allocator, filename, total_area, atom_areas, residue_map, .{});
+}
+
+pub fn fileResultWithResidueMapToJsonlLineOptions(
+    allocator: Allocator,
+    filename: []const u8,
+    total_area: f64,
+    atom_areas: []const f64,
+    residue_map: ResidueMap,
+    options: JsonlOptions,
+) ![]u8 {
     const residue_chain = try allocator.alloc([]const u8, residue_map.len());
     defer allocator.free(residue_chain);
     const residue_name = try allocator.alloc([]const u8, residue_map.len());
     defer allocator.free(residue_name);
     const residue_insertion_code = try allocator.alloc([]const u8, residue_map.len());
     defer allocator.free(residue_insertion_code);
+    const output_areas = try maybeRoundJsonlFloatSlice(allocator, atom_areas, options);
+    defer if (options.decimals != null) allocator.free(output_areas);
+    const output_residue_sasa = try maybeRoundJsonlFloatSlice(allocator, residue_map.residue_sasa, options);
+    defer if (options.decimals != null) allocator.free(output_residue_sasa);
 
     for (0..residue_map.len()) |i| {
         residue_chain[i] = if (residue_map.residue_chain_full) |chains|
@@ -709,6 +771,7 @@ pub fn fileResultWithResidueMapToJsonlLine(
     }
 
     const JsonlEntry = struct {
+        status: []const u8,
         filename: []const u8,
         total_area: f64,
         atom_areas: []const f64,
@@ -722,16 +785,17 @@ pub fn fileResultWithResidueMapToJsonlLine(
     };
 
     const entry = JsonlEntry{
+        .status = "ok",
         .filename = filename,
-        .total_area = total_area,
-        .atom_areas = atom_areas,
+        .total_area = maybeRoundJsonlFloat(total_area, options),
+        .atom_areas = output_areas,
         .residue_chain = residue_chain,
         .residue_name = residue_name,
         .residue_number = residue_map.residue_number,
         .residue_insertion_code = residue_insertion_code,
         .residue_atom_start = residue_map.residue_atom_start,
         .residue_atom_count = residue_map.residue_atom_count,
-        .residue_sasa = residue_map.residue_sasa,
+        .residue_sasa = output_residue_sasa,
     };
 
     return std.json.Stringify.valueAlloc(allocator, entry, .{});
@@ -756,6 +820,13 @@ pub const BsaAnalysisJsonl = struct {
 };
 
 pub fn bsaAnalysisToJsonlLine(allocator: Allocator, row: BsaAnalysisJsonl) ![]u8 {
+    return bsaAnalysisToJsonlLineOptions(allocator, row, .{});
+}
+
+pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl, options: JsonlOptions) ![]u8 {
+    const output_residue_delta_sasa = try maybeRoundJsonlFloatSlice(allocator, row.residue_delta_sasa, options);
+    defer if (options.decimals != null) allocator.free(output_residue_delta_sasa);
+
     if (std.mem.eql(u8, row.delta_sasa_level, "residue")) {
         const Entry = struct {
             filename: []const u8,
@@ -781,17 +852,17 @@ pub fn bsaAnalysisToJsonlLine(allocator: Allocator, row: BsaAnalysisJsonl) ![]u8
             .name = row.name,
             .partner_a = row.partner_a,
             .partner_b = row.partner_b,
-            .sasa_partner_a = row.sasa_partner_a,
-            .sasa_partner_b = row.sasa_partner_b,
-            .sasa_complex = row.sasa_complex,
-            .delta_sasa_total = row.delta_sasa_total,
-            .bsa = row.bsa,
+            .sasa_partner_a = maybeRoundJsonlFloat(row.sasa_partner_a, options),
+            .sasa_partner_b = maybeRoundJsonlFloat(row.sasa_partner_b, options),
+            .sasa_complex = maybeRoundJsonlFloat(row.sasa_complex, options),
+            .delta_sasa_total = maybeRoundJsonlFloat(row.delta_sasa_total, options),
+            .bsa = maybeRoundJsonlFloat(row.bsa, options),
             .delta_sasa_level = row.delta_sasa_level,
             .residue_chain = row.residue_chain,
             .residue_name = row.residue_name,
             .residue_number = row.residue_number,
             .residue_insertion_code = row.residue_insertion_code,
-            .residue_delta_sasa = row.residue_delta_sasa,
+            .residue_delta_sasa = output_residue_delta_sasa,
         }, .{});
     }
 
@@ -814,11 +885,11 @@ pub fn bsaAnalysisToJsonlLine(allocator: Allocator, row: BsaAnalysisJsonl) ![]u8
         .name = row.name,
         .partner_a = row.partner_a,
         .partner_b = row.partner_b,
-        .sasa_partner_a = row.sasa_partner_a,
-        .sasa_partner_b = row.sasa_partner_b,
-        .sasa_complex = row.sasa_complex,
-        .delta_sasa_total = row.delta_sasa_total,
-        .bsa = row.bsa,
+        .sasa_partner_a = maybeRoundJsonlFloat(row.sasa_partner_a, options),
+        .sasa_partner_b = maybeRoundJsonlFloat(row.sasa_partner_b, options),
+        .sasa_complex = maybeRoundJsonlFloat(row.sasa_complex, options),
+        .delta_sasa_total = maybeRoundJsonlFloat(row.delta_sasa_total, options),
+        .bsa = maybeRoundJsonlFloat(row.bsa, options),
         .delta_sasa_level = row.delta_sasa_level,
     }, .{});
 }
@@ -1024,7 +1095,7 @@ test "fileResultWithResidueMapToJsonlLine serializes columnar residue arrays" {
     defer allocator.free(line);
 
     try std.testing.expectEqualStrings(
-        "{\"filename\":\"example.cif\",\"total_area\":13.75,\"atom_areas\":[10,2.5,1.25],\"residue_chain\":[\"A\",\"B\"],\"residue_name\":[\"MET\",\"ALA\"],\"residue_number\":[1,7],\"residue_insertion_code\":[\"\",\"\"],\"residue_atom_start\":[0,2],\"residue_atom_count\":[2,1],\"residue_sasa\":[12.5,1.25]}",
+        "{\"status\":\"ok\",\"filename\":\"example.cif\",\"total_area\":13.75,\"atom_areas\":[10,2.5,1.25],\"residue_chain\":[\"A\",\"B\"],\"residue_name\":[\"MET\",\"ALA\"],\"residue_number\":[1,7],\"residue_insertion_code\":[\"\",\"\"],\"residue_atom_start\":[0,2],\"residue_atom_count\":[2,1],\"residue_sasa\":[12.5,1.25]}",
         line,
     );
 }
@@ -1062,6 +1133,35 @@ test "BSA analysis JSONL includes total and residue delta fields" {
     try std.testing.expect(std.mem.indexOf(u8, line, "\"delta_sasa_total\":16") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "\"bsa\":8") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "\"residue_delta_sasa\":[3,5]") != null);
+}
+
+test "BSA analysis JSONL rounds floats when decimals option is set" {
+    const allocator = std.testing.allocator;
+    const partner_a = [_][]const u8{"A"};
+    const partner_b = [_][]const u8{"B"};
+    const residue_delta_sasa = [_]f64{ 3.14159, 5.55555 };
+
+    const line = try bsaAnalysisToJsonlLineOptions(allocator, .{
+        .filename = "tiny.pdb",
+        .name = "interface_ab",
+        .partner_a = partner_a[0..],
+        .partner_b = partner_b[0..],
+        .sasa_partner_a = 10.12345,
+        .sasa_partner_b = 20.98765,
+        .sasa_complex = 14.44444,
+        .delta_sasa_total = 16.66666,
+        .bsa = 8.33333,
+        .delta_sasa_level = "residue",
+        .residue_delta_sasa = residue_delta_sasa[0..],
+    }, .{ .decimals = 2 });
+    defer allocator.free(line);
+
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"sasa_partner_a\":10.12") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"sasa_partner_b\":20.99") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"sasa_complex\":14.44") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"delta_sasa_total\":16.67") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"bsa\":8.33") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"residue_delta_sasa\":[3.14,5.56]") != null);
 }
 
 test "sasaResultToJson basic" {
@@ -1735,5 +1835,18 @@ test "fileResultToJsonlLine basic" {
     defer parsed.deinit();
 
     const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("ok", obj.get("status").?.string);
     try std.testing.expectEqualStrings("test.pdb", obj.get("filename").?.string);
+}
+
+test "fileResultToJsonlLine rounds floats when decimals option is set" {
+    const allocator = std.testing.allocator;
+    const areas = [_]f64{ 1.23456, 2.55555, 0.004 };
+    const line = try fileResultToJsonlLineOptions(allocator, "test.pdb", 6.789, &areas, .{ .decimals = 2 });
+    defer allocator.free(line);
+
+    try std.testing.expectEqualStrings(
+        "{\"status\":\"ok\",\"filename\":\"test.pdb\",\"total_area\":6.79,\"atom_areas\":[1.23,2.56,0]}",
+        line,
+    );
 }
