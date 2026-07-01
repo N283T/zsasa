@@ -348,10 +348,13 @@ pub const MmcifParser = struct {
         defer insertion_code_list.deinit(self.allocator);
         var atom_records = std.ArrayListUnmanaged(AtomRecord).empty;
         defer atom_records.deinit(self.allocator);
+        var has_non_blank_alt_loc = false;
 
         // Buffer for current row values
         var row_values = try self.allocator.alloc([]const u8, num_cols);
         defer self.allocator.free(row_values);
+        const estimated_rows = estimateAtomSiteRows(tokenizer.source.len - tokenizer.pos, num_cols);
+        try atom_records.ensureTotalCapacity(self.allocator, estimated_rows);
 
         var col: usize = 0;
 
@@ -373,7 +376,9 @@ pub const MmcifParser = struct {
                         const should_include = try self.shouldIncludeAtom(row_values, columns);
 
                         if (should_include) {
-                            try atom_records.append(self.allocator, try self.atomRecordFromRow(row_values, columns));
+                            const atom = try self.atomRecordFromRow(row_values, columns);
+                            has_non_blank_alt_loc = has_non_blank_alt_loc or atom.alt_loc != ' ';
+                            try atom_records.append(self.allocator, atom);
                         }
 
                         col = 0;
@@ -391,8 +396,20 @@ pub const MmcifParser = struct {
             }
         }
 
+        const max_output_atoms = atom_records.items.len;
+        try x_list.ensureTotalCapacity(self.allocator, max_output_atoms);
+        try y_list.ensureTotalCapacity(self.allocator, max_output_atoms);
+        try z_list.ensureTotalCapacity(self.allocator, max_output_atoms);
+        try r_list.ensureTotalCapacity(self.allocator, max_output_atoms);
+        try residue_list.ensureTotalCapacity(self.allocator, max_output_atoms);
+        try atom_name_list.ensureTotalCapacity(self.allocator, max_output_atoms);
+        try element_list.ensureTotalCapacity(self.allocator, max_output_atoms);
+        try chain_id_list.ensureTotalCapacity(self.allocator, max_output_atoms);
+        try residue_num_list.ensureTotalCapacity(self.allocator, max_output_atoms);
+        try insertion_code_list.ensureTotalCapacity(self.allocator, max_output_atoms);
+
         for (atom_records.items, 0..) |atom, i| {
-            if (!self.shouldKeepAltLoc(atom_records.items, i)) continue;
+            if (has_non_blank_alt_loc and !self.shouldKeepAltLoc(atom_records.items, i)) continue;
 
             try x_list.append(self.allocator, atom.x);
             try y_list.append(self.allocator, atom.y);
@@ -402,8 +419,16 @@ pub const MmcifParser = struct {
             try residue_list.append(self.allocator, types.FixedString5.fromSlice(atom.residue));
             try atom_name_list.append(self.allocator, types.FixedString4.fromSlice(atom.atom_name));
             try chain_id_list.append(self.allocator, types.FixedString4.fromSlice(atom.chain_id));
-            try chain_id_full_list.append(self.allocator, try self.allocator.dupe(u8, atom.chain_id));
-            has_extended_chain = has_extended_chain or atom.chain_id.len > 4;
+            if (!has_extended_chain and atom.chain_id.len > 4) {
+                try chain_id_full_list.ensureTotalCapacity(self.allocator, max_output_atoms);
+                for (chain_id_list.items[0 .. chain_id_list.items.len - 1]) |chain_id| {
+                    chain_id_full_list.appendAssumeCapacity(try self.allocator.dupe(u8, chain_id.slice()));
+                }
+                has_extended_chain = true;
+            }
+            if (has_extended_chain) {
+                chain_id_full_list.appendAssumeCapacity(try self.allocator.dupe(u8, atom.chain_id));
+            }
             try residue_num_list.append(self.allocator, atom.residue_num);
             try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(atom.insertion_code));
         }
@@ -430,12 +455,10 @@ pub const MmcifParser = struct {
         errdefer self.allocator.free(element);
         const chain_id = try chain_id_list.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(chain_id);
-        const chain_id_full_owned = try chain_id_full_list.toOwnedSlice(self.allocator);
-        const chain_id_full: ?[]const []const u8 = if (has_extended_chain) chain_id_full_owned else blk: {
-            freeStringItems(self.allocator, chain_id_full_owned);
-            self.allocator.free(chain_id_full_owned);
-            break :blk null;
-        };
+        const chain_id_full: ?[]const []const u8 = if (has_extended_chain)
+            try chain_id_full_list.toOwnedSlice(self.allocator)
+        else
+            null;
         errdefer if (chain_id_full) |chains| {
             freeStringItems(self.allocator, chains);
             self.allocator.free(chains);
@@ -649,6 +672,13 @@ fn freeStringItems(allocator: Allocator, items: []const []const u8) void {
     for (items) |item| allocator.free(item);
 }
 
+fn estimateAtomSiteRows(remaining_bytes: usize, num_cols: usize) usize {
+    if (remaining_bytes == 0) return 16;
+    const bytes_per_col = 4;
+    const min_row_bytes = @max(num_cols * bytes_per_col, 96);
+    return @max(@as(usize, 16), @min(remaining_bytes / min_row_bytes, 128 * 1024));
+}
+
 /// Parse a float from a string, handling CIF null values
 fn parseFloat(s: []const u8) !f64 {
     if (cif.isNull(s)) {
@@ -768,6 +798,37 @@ test "parse mmCIF keeps extended chain IDs when label_asym_id exceeds four chara
     try std.testing.expectEqualStrings("ABCD", input.chain_id.?[0].slice());
     try std.testing.expectEqualStrings("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg", input.chain_id_full.?[0]);
     try std.testing.expectEqualStrings("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", input.chain_id_full.?[1]);
+}
+
+test "parse mmCIF backfills extended chain IDs after short chains" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C CA ALA A         10.000 20.000 30.000
+        \\2 N N  GLY LONGCHAIN 11.000 21.000 31.000
+        \\3 O O  SER B         12.000 22.000 32.000
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), input.atomCount());
+    try std.testing.expect(input.chain_id_full != null);
+    try std.testing.expectEqual(input.atomCount(), input.chain_id_full.?.len);
+    try std.testing.expectEqualStrings("A", input.chain_id_full.?[0]);
+    try std.testing.expectEqualStrings("LONGCHAIN", input.chain_id_full.?[1]);
+    try std.testing.expectEqualStrings("B", input.chain_id_full.?[2]);
+    try std.testing.expectEqualStrings("LONG", input.chain_id.?[1].slice());
 }
 
 test "parse with alternate locations" {
@@ -966,6 +1027,221 @@ test "parse mmCIF explicit model selection filters requested model" {
 
     try std.testing.expectEqual(@as(usize, 1), input.atomCount());
     try std.testing.expectEqualStrings("B", input.chain_id.?[0].slice());
+}
+
+test "parse mmCIF handles quoted atom_site values" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C "C A" "M ET" "A#1" 10.0 20.0 30.0
+        \\2 N 'N''X' GLY B 11.0 21.0 31.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expectEqualStrings("C A", input.atom_name.?[0].slice());
+    try std.testing.expectEqualStrings("M ET", input.residue.?[0].slice());
+    try std.testing.expectEqualStrings("A#1", input.chain_id.?[0].slice());
+    try std.testing.expectEqualStrings("N''X", input.atom_name.?[1].slice());
+}
+
+test "parse mmCIF skips semicolon text in ignored atom_site column" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\_atom_site.pdbx_description
+        \\1 C CA ALA 10.0 20.0 30.0
+        \\;
+        \\ignored atom-site text
+        \\still ignored
+        \\;
+        \\2 N N GLY 11.0 21.0 31.0 plain
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 11.0), input.x[1], 0.001);
+}
+
+test "parse mmCIF atom_site stops at new data block" {
+    const source =
+        \\data_ONE
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C 10.0 20.0 30.0
+        \\data_TWO
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\2 N 11.0 21.0 31.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
+}
+
+test "parse mmCIF null coordinate is invalid" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C . 20.0 30.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    const result = parser.parse(source);
+    try std.testing.expectError(ParseError.InvalidCoordinate, result);
+}
+
+test "parse mmCIF model filter keeps null model values" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_asym_id
+        \\_atom_site.pdbx_PDB_model_num
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C A ? 10.0 20.0 30.0
+        \\2 C B 2 11.0 21.0 31.0
+        \\3 C C 3 12.0 22.0 32.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.model_num = 2;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expectEqualStrings("A", input.chain_id.?[0].slice());
+    try std.testing.expectEqualStrings("B", input.chain_id.?[1].slice());
+}
+
+test "parse mmCIF auth chain filter uses auth_asym_id" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_asym_id
+        \\_atom_site.auth_asym_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C L1 A 10.0 20.0 30.0
+        \\2 C L2 B 11.0 21.0 31.0
+        \\#
+    ;
+    const chains = [_][]const u8{"A"};
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.use_auth_chain = true;
+    parser.chain_filter = chains[0..];
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), input.atomCount());
+    try std.testing.expectEqualStrings("A", input.chain_id.?[0].slice());
+}
+
+test "parse mmCIF altLoc selection keeps highest occupancy without A" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.occupancy
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C CB ALA A 1 B 0.40 10.0 20.0 30.0
+        \\2 C CB ALA A 1 C 0.70 11.0 21.0 31.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 11.0), input.x[0], 0.001);
+}
+
+test "parse mmCIF null altLoc is treated as blank" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.occupancy
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C CB ALA A 1 ? 1.00 10.0 20.0 30.0
+        \\2 C CB ALA A 1 B 0.50 11.0 21.0 31.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
 }
 
 test "parse mmCIF altLoc selection is per atom site and keeps later B-only sites" {

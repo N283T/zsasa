@@ -165,12 +165,14 @@ pub const Tokenizer = struct {
         self.col += 5;
 
         const start = self.pos;
-        while (self.pos < self.source.len) {
-            const c = self.source[self.pos];
+        var end = start;
+        while (end < self.source.len) {
+            const c = self.source[end];
             if (isWhitespace(c)) break;
-            self.pos += 1;
-            self.col += 1;
+            end += 1;
         }
+        self.col += end - self.pos;
+        self.pos = end;
 
         return .{ .data_block = self.source[start..self.pos] };
     }
@@ -181,12 +183,14 @@ pub const Tokenizer = struct {
         self.col += 5;
 
         const start = self.pos;
-        while (self.pos < self.source.len) {
-            const c = self.source[self.pos];
+        var end = start;
+        while (end < self.source.len) {
+            const c = self.source[end];
             if (isWhitespace(c)) break;
-            self.pos += 1;
-            self.col += 1;
+            end += 1;
         }
+        self.col += end - self.pos;
+        self.pos = end;
 
         if (start == self.pos) {
             return .save_end;
@@ -197,15 +201,14 @@ pub const Tokenizer = struct {
     /// Read a tag: _category.field
     fn readTag(self: *Tokenizer) Token {
         const start = self.pos;
-        self.pos += 1; // skip '_'
-        self.col += 1;
-
-        while (self.pos < self.source.len) {
-            const c = self.source[self.pos];
+        var end = self.pos + 1; // skip '_'
+        while (end < self.source.len) {
+            const c = self.source[end];
             if (isWhitespace(c)) break;
-            self.pos += 1;
-            self.col += 1;
+            end += 1;
         }
+        self.col += end - self.pos;
+        self.pos = end;
 
         return .{ .tag = self.source[start..self.pos] };
     }
@@ -287,12 +290,14 @@ pub const Tokenizer = struct {
     fn readUnquotedValue(self: *Tokenizer) Token {
         const start = self.pos;
 
-        while (self.pos < self.source.len) {
-            const c = self.source[self.pos];
+        var end = start;
+        while (end < self.source.len) {
+            const c = self.source[end];
             if (isWhitespace(c)) break;
-            self.pos += 1;
-            self.col += 1;
+            end += 1;
         }
+        self.col += end - self.pos;
+        self.pos = end;
 
         return .{ .value = self.source[start..self.pos] };
     }
