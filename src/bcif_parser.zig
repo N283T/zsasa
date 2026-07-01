@@ -6,6 +6,7 @@ const compressed = @import("compressed.zig");
 const types = @import("types.zig");
 const ccd_parser = @import("ccd_parser.zig");
 const hyb = @import("hybridization.zig");
+const altloc = @import("altloc.zig");
 const AtomInput = types.AtomInput;
 pub const ParseError = error{
     InvalidMessagePack,
@@ -17,6 +18,7 @@ pub const ParseError = error{
     UnsupportedEncoding,
     InvalidColumnData,
     InvalidCoordinate,
+    UnexpectedAltLoc,
     ColumnLengthMismatch,
 };
 
@@ -632,6 +634,8 @@ pub const BcifParser = struct {
     atom_only: bool = true,
     skip_hydrogens: bool = true,
     first_alt_loc_only: bool = true,
+    alt_loc_mode: altloc.AltLocMode = .auto,
+    alt_loc_id: u8 = 'A',
     model_num: ?u32 = null,
     chain_filter: ?[]const []const u8 = null,
     use_auth_chain: bool = false,
@@ -703,10 +707,11 @@ pub const BcifParser = struct {
 
         var decoded = try self.allocator.alloc(DecodedColumn, raw_columns.len);
         var decoded_count: usize = 0;
-        errdefer {
+        var decoded_errdefer_active = true;
+        errdefer if (decoded_errdefer_active) {
             for (decoded[0..decoded_count]) |*column| column.deinit(self.allocator);
             self.allocator.free(decoded);
-        }
+        };
         for (raw_columns) |column| {
             decoded[decoded_count] = decodeBcifColumn(self.allocator, column) catch |err| {
                 self.deinitCcd();
@@ -718,6 +723,7 @@ pub const BcifParser = struct {
                 return ParseError.ColumnLengthMismatch;
             }
         }
+        decoded_errdefer_active = false;
         defer {
             for (decoded[0..decoded_count]) |*column| column.deinit(self.allocator);
             self.allocator.free(decoded);
@@ -753,7 +759,11 @@ pub const BcifParser = struct {
         var row: usize = 0;
         while (row < row_count) : (row += 1) {
             if (!self.shouldIncludeAtom(decoded, columns, row)) continue;
-            try atom_records.append(self.allocator, try self.atomRecordFromRow(decoded, columns, row));
+            const atom = try self.atomRecordFromRow(decoded, columns, row);
+            if (self.alt_loc_mode == .none and atom.alt_loc != ' ') {
+                return ParseError.UnexpectedAltLoc;
+            }
+            try atom_records.append(self.allocator, atom);
         }
 
         for (atom_records.items, 0..) |atom, i| {
@@ -906,6 +916,18 @@ pub const BcifParser = struct {
     fn shouldKeepAltLoc(self: *BcifParser, atoms: []const AtomRecord, index: usize) bool {
         if (!self.first_alt_loc_only) return true;
 
+        return switch (self.alt_loc_mode) {
+            .all, .none => true,
+            .selected => blk: {
+                const atom = atoms[index];
+                break :blk atom.alt_loc == ' ' or atom.alt_loc == self.alt_loc_id;
+            },
+            .highest_occupancy => shouldKeepHighestOccupancyAltLoc(atoms, index),
+            .auto => shouldKeepAutoAltLoc(atoms, index),
+        };
+    }
+
+    fn shouldKeepAutoAltLoc(atoms: []const AtomRecord, index: usize) bool {
         const atom = atoms[index];
         if (atom.alt_loc == ' ') return true;
 
@@ -923,6 +945,18 @@ pub const BcifParser = struct {
             }
         }
         return best_non_preferred == index;
+    }
+
+    fn shouldKeepHighestOccupancyAltLoc(atoms: []const AtomRecord, index: usize) bool {
+        const atom = atoms[index];
+        var best_index = index;
+        for (atoms, 0..) |other, other_index| {
+            if (!sameAltLocSite(atom, other)) continue;
+            if (other.occupancy > atoms[best_index].occupancy) {
+                best_index = other_index;
+            }
+        }
+        return best_index == index;
     }
 
     fn shouldIncludeAtom(self: *BcifParser, decoded: []const DecodedColumn, columns: AtomSiteColumns, row: usize) bool {
@@ -2074,6 +2108,46 @@ test "parse BinaryCIF altLoc selection is per atom site and keeps later B-only s
     try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
     try std.testing.expectEqual(@as(i32, 2), input.residue_num.?[1]);
+}
+
+test "parse BinaryCIF altLoc all mode keeps every alternate" {
+    const source = try buildMinimalBcif(.{ .include_alt_later_b_only = true });
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .all;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 12.0), input.x[1], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 14.0), input.x[2], 0.001);
+}
+
+test "parse BinaryCIF altLoc none mode rejects non-blank alternate" {
+    const source = try buildMinimalBcif(.{ .include_alt_later_b_only = true });
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .none;
+    const result = parser.parse(source);
+    try std.testing.expectError(ParseError.UnexpectedAltLoc, result);
+}
+
+test "parse BinaryCIF altLoc selected ID keeps requested alternate" {
+    const source = try buildMinimalBcif(.{ .include_alt_later_b_only = true });
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .selected;
+    parser.alt_loc_id = 'B';
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 12.0), input.x[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
 }
 
 test "parse BinaryCIF altLoc selection is scoped by model" {

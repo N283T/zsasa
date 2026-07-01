@@ -70,11 +70,13 @@ Standard mmCIF files are supported. The parser extracts:
 - `_atom_site.label_seq_id` / `auth_seq_id` - Residue number
 - `_atom_site.pdbx_PDB_ins_code` - Insertion code
 - `_atom_site.pdbx_PDB_model_num` - Model number
-- `_atom_site.label_alt_id` - Alternate location (first kept by default)
+- `_atom_site.label_alt_id` - Alternate location (`--altloc=auto` by default)
+
+Alternate-location handling can be controlled with `--altloc=MODE` for mmCIF and BinaryCIF input. `auto` preserves the historical behavior (blank alternate location first, then `A`, then highest occupancy), `none` assumes no non-blank alternate locations and errors if one is found, `all` keeps every alternate, `highest-occupancy` keeps the highest-occupancy atom for each site, and a single ID such as `--altloc=A` keeps blank atoms plus that alternate ID.
 
 ## BinaryCIF Format
 
-BinaryCIF input decodes `_atom_site` for SASA calculation and uses embedded `_chem_comp_atom` / `_chem_comp_bond` inline CCD data when `--classifier=ccd` (or the `ccd` default) needs bond topology for non-standard compounds. You can still provide external CCD or SDF topology when the BinaryCIF file does not include component topology.
+BinaryCIF input decodes `_atom_site` for SASA calculation, supports the same `--altloc` policy as mmCIF, and uses embedded `_chem_comp_atom` / `_chem_comp_bond` inline CCD data when `--classifier=ccd` (or the `ccd` default) needs bond topology for non-standard compounds. You can still provide external CCD or SDF topology when the BinaryCIF file does not include component topology.
 
 ## PDB Format
 

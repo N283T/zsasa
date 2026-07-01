@@ -83,6 +83,8 @@ pub const BatchConfig = struct {
     custom_classifier_path: ?[]const u8 = null,
     chain_filter: ?[]const []const u8 = null,
     use_auth_chain: bool = false,
+    alt_loc_mode: mmcif_parser.AltLocMode = .auto,
+    alt_loc_id: u8 = 'A',
     residue_map: bool = false,
 };
 
@@ -632,6 +634,8 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             parser.atom_only = !config.include_hetatm;
             parser.chain_filter = config.chain_filter;
             parser.use_auth_chain = config.use_auth_chain;
+            parser.alt_loc_mode = config.alt_loc_mode;
+            parser.alt_loc_id = config.alt_loc_id;
             parser.parse_inline_ccd = classifierUsesCcdResources(config.classifier_type);
             const input = try parser.parseFile(io, path);
             break :blk .{ .input = input, .inline_ccd = parser.takeInlineCcd() };
@@ -643,6 +647,8 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             parser.atom_only = !config.include_hetatm;
             parser.chain_filter = config.chain_filter;
             parser.use_auth_chain = config.use_auth_chain;
+            parser.alt_loc_mode = config.alt_loc_mode;
+            parser.alt_loc_id = config.alt_loc_id;
             parser.parse_inline_ccd = classifierUsesCcdResources(config.classifier_type);
             const input = try parser.parseFile(io, path);
             break :blk .{ .input = input, .inline_ccd = parser.takeInlineCcd() };
@@ -2236,6 +2242,8 @@ pub const BatchArgs = struct {
     workflow_path: ?[]const u8 = null,
     chain_filter: ?[]const u8 = null,
     use_auth_chain: bool = false,
+    alt_loc_mode: mmcif_parser.AltLocMode = .auto,
+    alt_loc_id: u8 = 'A',
     residue_map: bool = false,
     n_threads: usize = 0,
     probe_radius: f64 = 1.4,
@@ -2271,6 +2279,7 @@ pub const BatchArgs = struct {
     classifier_explicit: bool = false,
     include_hydrogens_explicit: bool = false,
     include_hetatm_explicit: bool = false,
+    alt_loc_explicit: bool = false,
     use_bitmask_explicit: bool = false,
     bitmask_correction_explicit: bool = false,
     bitmask_correction_coeff_explicit: bool = false,
@@ -2432,6 +2441,14 @@ fn parseClassifierType(value: []const u8) ClassifierType {
         std.debug.print("Valid classifiers: ccd, protor, naccess, oons\n", .{});
         std.process.exit(1);
     }
+}
+
+fn parseAltLocSetting(value: []const u8) mmcif_parser.AltLocSetting {
+    return mmcif_parser.parseAltLocSetting(value) orelse {
+        std.debug.print("Error: Invalid altloc mode: {s}\n", .{value});
+        std.debug.print("Valid altloc modes: auto, none, all, highest-occupancy, or a single altLoc ID like A\n", .{});
+        std.process.exit(1);
+    };
 }
 
 /// Parse and validate precision value
@@ -2623,6 +2640,23 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         // --auth-chain
         else if (std.mem.eql(u8, arg, "--auth-chain")) {
             result.use_auth_chain = true;
+        }
+        // --altloc=MODE or --altloc MODE
+        else if (std.mem.startsWith(u8, arg, "--altloc=")) {
+            const setting = parseAltLocSetting(arg["--altloc=".len..]);
+            result.alt_loc_mode = setting.mode;
+            result.alt_loc_id = setting.id;
+            result.alt_loc_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--altloc")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --altloc\n", .{});
+                std.process.exit(1);
+            }
+            const setting = parseAltLocSetting(args[i]);
+            result.alt_loc_mode = setting.mode;
+            result.alt_loc_id = setting.id;
+            result.alt_loc_explicit = true;
         }
         // --residue-map
         else if (std.mem.eql(u8, arg, "--residue-map")) {
@@ -2850,6 +2884,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --manifest=PATH     Compatibility alias for --workflow
         \\    --chain=ID          Filter by chain ID for non-workflow batch (e.g. A or A,B)
         \\    --auth-chain        Use auth_asym_id instead of label_asym_id for mmCIF chain matching
+        \\    --altloc=MODE       mmCIF/BCIF alternate-location handling: auto, none, all,
+        \\                        highest-occupancy, or a single ID like A (default: auto)
         \\    --residue-map       Include compact residue map arrays in JSONL output
         \\    --probe-radius=R    Probe radius in Angstroms (default: 1.4)
         \\    --n-points=N        Test points per atom (default: 100, for sr)
@@ -4093,6 +4129,8 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null,
         .chain_filter = chain_filter_slice,
         .use_auth_chain = args.use_auth_chain,
+        .alt_loc_mode = args.alt_loc_mode,
+        .alt_loc_id = args.alt_loc_id,
         .residue_map = args.residue_map,
     };
 
@@ -4436,6 +4474,26 @@ test "BatchArgs --auth-chain" {
     const args = [_][]const u8{ "zsasa", "batch", "--auth-chain", "input_dir/" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(true, parsed.use_auth_chain);
+}
+
+test "BatchArgs --altloc modes" {
+    const none_args = [_][]const u8{ "zsasa", "batch", "--altloc=none", "input_dir/" };
+    const all_args = [_][]const u8{ "zsasa", "batch", "--altloc", "all", "input_dir/" };
+    const selected_args = [_][]const u8{ "zsasa", "batch", "--altloc=C", "input_dir/" };
+    const occupancy_args = [_][]const u8{ "zsasa", "batch", "--altloc=highest-occupancy", "input_dir/" };
+
+    const none = parseArgs(&none_args, 2);
+    try std.testing.expectEqual(mmcif_parser.AltLocMode.none, none.alt_loc_mode);
+
+    const all = parseArgs(&all_args, 2);
+    try std.testing.expectEqual(mmcif_parser.AltLocMode.all, all.alt_loc_mode);
+
+    const selected = parseArgs(&selected_args, 2);
+    try std.testing.expectEqual(mmcif_parser.AltLocMode.selected, selected.alt_loc_mode);
+    try std.testing.expectEqual(@as(u8, 'C'), selected.alt_loc_id);
+
+    const occupancy = parseArgs(&occupancy_args, 2);
+    try std.testing.expectEqual(mmcif_parser.AltLocMode.highest_occupancy, occupancy.alt_loc_mode);
 }
 
 test "BatchArgs --residue-map" {

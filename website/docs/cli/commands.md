@@ -144,6 +144,7 @@ See [Classifiers](../guide/classifiers.mdx) for detailed classifier documentatio
 | `--chain=ID` | Filter by chain ID (e.g., `A` or `A,B,C`) | all chains |
 | `--model=N` | Model number for NMR structures (≥1) | all models |
 | `--auth-chain` | Use auth_asym_id instead of label_asym_id | label_asym_id |
+| `--altloc=MODE` | mmCIF/BinaryCIF alternate-location handling: `auto`, `none`, `all`, `highest-occupancy`, or one ID such as `A` | `auto` |
 | `--include-hydrogens` | Include hydrogen atoms (calc/batch default: excluded) | excluded |
 | `--no-hydrogens` | Exclude hydrogen atoms (traj default: included) | — |
 | `--include-hetatm` | Include HETATM records | excluded |
@@ -202,6 +203,7 @@ Most [common options](#common-options) apply, plus the trajectory-specific optio
 | `--precision=P` | Floating-point precision: `f32` or `f64` | `f32` (note: different from calc/batch) |
 | `--no-hydrogens` | Exclude hydrogen atoms | included |
 | `--include-hydrogens` | Include hydrogen atoms (default, for backward compat) | included |
+| `--altloc=MODE` | mmCIF topology alternate-location handling: `auto`, `none`, `all`, `highest-occupancy`, or one ID such as `A` | `auto` |
 | `--stride=N` | Process every Nth frame | `1` |
 | `--start=N` | Start from frame N | `0` |
 | `--end=N` | End at frame N | all |

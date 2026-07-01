@@ -36,6 +36,7 @@ const compressed = @import("compressed.zig");
 const types = @import("types.zig");
 const AtomInput = types.AtomInput;
 const ccd_parser = @import("ccd_parser.zig");
+const altloc = @import("altloc.zig");
 
 /// Error types for mmCIF parsing
 pub const ParseError = error{
@@ -45,7 +46,13 @@ pub const ParseError = error{
     MissingCoordinateField,
     /// Invalid coordinate value (not a valid number)
     InvalidCoordinate,
+    /// A non-blank altLoc was encountered while altLoc mode is `none`
+    UnexpectedAltLoc,
 };
+
+pub const AltLocMode = altloc.AltLocMode;
+pub const AltLocSetting = altloc.AltLocSetting;
+pub const parseAltLocSetting = altloc.parseSetting;
 
 /// Column indices for atom_site fields
 const AtomSiteColumns = struct {
@@ -112,6 +119,10 @@ pub const MmcifParser = struct {
     skip_hydrogens: bool = true,
     /// Filter to include only first alternate location
     first_alt_loc_only: bool = true,
+    /// Alternate-location handling policy for mmCIF atom_site rows.
+    alt_loc_mode: AltLocMode = .auto,
+    /// Selected altLoc ID when `alt_loc_mode == .selected`.
+    alt_loc_id: u8 = 'A',
     /// Model number to extract (null = first model or all)
     model_num: ?u32 = null,
     /// Chain IDs to include (null = all chains)
@@ -377,6 +388,9 @@ pub const MmcifParser = struct {
 
                         if (should_include) {
                             const atom = try self.atomRecordFromRow(row_values, columns);
+                            if (self.alt_loc_mode == .none and atom.alt_loc != ' ') {
+                                return ParseError.UnexpectedAltLoc;
+                            }
                             has_non_blank_alt_loc = has_non_blank_alt_loc or atom.alt_loc != ' ';
                             try atom_records.append(self.allocator, atom);
                         }
@@ -581,6 +595,18 @@ pub const MmcifParser = struct {
     fn shouldKeepAltLoc(self: *MmcifParser, atoms: []const AtomRecord, index: usize) bool {
         if (!self.first_alt_loc_only) return true;
 
+        return switch (self.alt_loc_mode) {
+            .all, .none => true,
+            .selected => blk: {
+                const atom = atoms[index];
+                break :blk atom.alt_loc == ' ' or atom.alt_loc == self.alt_loc_id;
+            },
+            .highest_occupancy => shouldKeepHighestOccupancyAltLoc(atoms, index),
+            .auto => shouldKeepAutoAltLoc(atoms, index),
+        };
+    }
+
+    fn shouldKeepAutoAltLoc(atoms: []const AtomRecord, index: usize) bool {
         const atom = atoms[index];
         if (atom.alt_loc == ' ') return true;
 
@@ -598,6 +624,18 @@ pub const MmcifParser = struct {
             }
         }
         return best_non_preferred == index;
+    }
+
+    fn shouldKeepHighestOccupancyAltLoc(atoms: []const AtomRecord, index: usize) bool {
+        const atom = atoms[index];
+        var best_index = index;
+        for (atoms, 0..) |other, other_index| {
+            if (!sameAltLocSite(atom, other)) continue;
+            if (other.occupancy > atoms[best_index].occupancy) {
+                best_index = other_index;
+            }
+        }
+        return best_index == index;
     }
 
     /// Check if an atom should be included based on filters
@@ -1242,6 +1280,150 @@ test "parse mmCIF null altLoc is treated as blank" {
 
     try std.testing.expectEqual(@as(usize, 1), input.atomCount());
     try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
+}
+
+test "parse mmCIF altLoc all mode keeps every alternate" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.occupancy
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C CB ALA A 1 A 0.60 10.0 20.0 30.0
+        \\2 C CB ALA A 1 B 0.40 11.0 21.0 31.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .all;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 11.0), input.x[1], 0.001);
+}
+
+test "parse mmCIF altLoc none mode rejects non-blank alternate" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.occupancy
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C CB ALA A 1 A 0.60 10.0 20.0 30.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .none;
+    const result = parser.parse(source);
+    try std.testing.expectError(ParseError.UnexpectedAltLoc, result);
+}
+
+test "parse mmCIF altLoc none mode accepts blank alternates" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.occupancy
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C CB ALA A 1 . 1.00 10.0 20.0 30.0
+        \\2 C CG ALA A 1 ? 1.00 11.0 21.0 31.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .none;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+}
+
+test "parse mmCIF altLoc selected ID keeps blank and requested alternate" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.occupancy
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C CA ALA A 1 . 1.00 9.0 19.0 29.0
+        \\2 C CB ALA A 1 A 0.60 10.0 20.0 30.0
+        \\3 C CB ALA A 1 B 0.40 11.0 21.0 31.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .selected;
+    parser.alt_loc_id = 'B';
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 9.0), input.x[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 11.0), input.x[1], 0.001);
+}
+
+test "parse mmCIF altLoc highest occupancy mode ignores A preference" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.occupancy
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C CB ALA A 1 A 0.40 10.0 20.0 30.0
+        \\2 C CB ALA A 1 B 0.70 11.0 21.0 31.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .highest_occupancy;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 11.0), input.x[0], 0.001);
 }
 
 test "parse mmCIF altLoc selection is per atom site and keeps later B-only sites" {
