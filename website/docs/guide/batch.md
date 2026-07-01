@@ -32,6 +32,28 @@ zsasa batch structures/ results/ --format=jsonl --output=results.jsonl
 
 JSONL is especially useful when you want to concatenate, filter, or process results incrementally.
 
+Successful JSONL rows include `status: "ok"` plus the result fields:
+
+```json
+{"status":"ok","filename":"1ubq.pdb","total_area":5656.6511885225,"atom_areas":[0,6.759702080876085]}
+```
+
+Failed structures are emitted as `status: "err"` rows instead of being available only in the batch summary:
+
+```json
+{"status":"err","filename":"bad.pdb","error":"read/parse failed: InvalidFormat"}
+```
+
+Parallel JSONL is streamed in completion order for throughput; input-order output is not currently guaranteed.
+
+Use `--jsonl-decimals=N` to round JSONL floating-point values and reduce output size:
+
+```bash
+zsasa batch structures/ --format=jsonl --output=results.jsonl --jsonl-decimals=3
+```
+
+Rounding applies to JSONL floating-point fields such as `total_area`, `atom_areas`, residue SASA arrays, and BSA analysis values. Omitting the option preserves full precision.
+
 ## Thread Count for Large File Sets
 
 By default, `zsasa batch` uses the detected CPU count. For large directories with many small structure files, the workload can spend significant time waiting on file open/read/parse operations. In those I/O-bound cases, you can explicitly set `--threads=N` above the CPU count to keep more files in flight:
@@ -83,7 +105,7 @@ This adds these arrays to each JSONL result:
 - `residue_atom_count`
 - `residue_sasa`
 
-The default JSONL schema is unchanged unless `--residue-map` is enabled.
+Without `--residue-map`, result rows include only `status`, `filename`, `total_area`, and `atom_areas`.
 
 ## Chain Filters
 

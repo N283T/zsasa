@@ -100,3 +100,5 @@ site/
 # Draft documents
 docs/seminar-draft.md
 docs/examples/
+
+.worktrees/
