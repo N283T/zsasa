@@ -568,6 +568,8 @@ pub const ResidueMap = struct {
 
 pub const JsonlOptions = struct {
     decimals: ?u8 = null,
+    include_atom_areas: bool = true,
+    include_total_area: bool = true,
 };
 
 fn roundJsonlFloat(value: f64, decimals: u8) f64 {
@@ -701,6 +703,43 @@ pub fn fileResultToJsonlLineOptions(allocator: Allocator, filename: []const u8, 
     const output_areas = try maybeRoundJsonlFloatSlice(allocator, atom_areas, options);
     defer if (options.decimals != null) allocator.free(output_areas);
 
+    if (options.include_total_area and !options.include_atom_areas) {
+        const JsonlEntry = struct {
+            status: []const u8,
+            filename: []const u8,
+            total_area: f64,
+        };
+        return std.json.Stringify.valueAlloc(allocator, JsonlEntry{
+            .status = "ok",
+            .filename = filename,
+            .total_area = maybeRoundJsonlFloat(total_area, options),
+        }, .{});
+    }
+
+    if (!options.include_total_area and options.include_atom_areas) {
+        const JsonlEntry = struct {
+            status: []const u8,
+            filename: []const u8,
+            atom_areas: []const f64,
+        };
+        return std.json.Stringify.valueAlloc(allocator, JsonlEntry{
+            .status = "ok",
+            .filename = filename,
+            .atom_areas = output_areas,
+        }, .{});
+    }
+
+    if (!options.include_total_area and !options.include_atom_areas) {
+        const JsonlEntry = struct {
+            status: []const u8,
+            filename: []const u8,
+        };
+        return std.json.Stringify.valueAlloc(allocator, JsonlEntry{
+            .status = "ok",
+            .filename = filename,
+        }, .{});
+    }
+
     const JsonlEntry = struct {
         status: []const u8,
         filename: []const u8,
@@ -770,11 +809,92 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
         residue_insertion_code[i] = residue_map.residue_insertion_code[i].slice();
     }
 
+    if (options.include_total_area and options.include_atom_areas) {
+        const JsonlEntry = struct {
+            status: []const u8,
+            filename: []const u8,
+            total_area: f64,
+            atom_areas: []const f64,
+            residue_chain: []const []const u8,
+            residue_name: []const []const u8,
+            residue_number: []const i32,
+            residue_insertion_code: []const []const u8,
+            residue_atom_start: []const usize,
+            residue_atom_count: []const usize,
+            residue_sasa: []const f64,
+        };
+        return std.json.Stringify.valueAlloc(allocator, JsonlEntry{
+            .status = "ok",
+            .filename = filename,
+            .total_area = maybeRoundJsonlFloat(total_area, options),
+            .atom_areas = output_areas,
+            .residue_chain = residue_chain,
+            .residue_name = residue_name,
+            .residue_number = residue_map.residue_number,
+            .residue_insertion_code = residue_insertion_code,
+            .residue_atom_start = residue_map.residue_atom_start,
+            .residue_atom_count = residue_map.residue_atom_count,
+            .residue_sasa = output_residue_sasa,
+        }, .{});
+    }
+
+    if (options.include_total_area and !options.include_atom_areas) {
+        const JsonlEntry = struct {
+            status: []const u8,
+            filename: []const u8,
+            total_area: f64,
+            residue_chain: []const []const u8,
+            residue_name: []const []const u8,
+            residue_number: []const i32,
+            residue_insertion_code: []const []const u8,
+            residue_atom_start: []const usize,
+            residue_atom_count: []const usize,
+            residue_sasa: []const f64,
+        };
+        return std.json.Stringify.valueAlloc(allocator, JsonlEntry{
+            .status = "ok",
+            .filename = filename,
+            .total_area = maybeRoundJsonlFloat(total_area, options),
+            .residue_chain = residue_chain,
+            .residue_name = residue_name,
+            .residue_number = residue_map.residue_number,
+            .residue_insertion_code = residue_insertion_code,
+            .residue_atom_start = residue_map.residue_atom_start,
+            .residue_atom_count = residue_map.residue_atom_count,
+            .residue_sasa = output_residue_sasa,
+        }, .{});
+    }
+
+    if (!options.include_total_area and options.include_atom_areas) {
+        const JsonlEntry = struct {
+            status: []const u8,
+            filename: []const u8,
+            atom_areas: []const f64,
+            residue_chain: []const []const u8,
+            residue_name: []const []const u8,
+            residue_number: []const i32,
+            residue_insertion_code: []const []const u8,
+            residue_atom_start: []const usize,
+            residue_atom_count: []const usize,
+            residue_sasa: []const f64,
+        };
+        return std.json.Stringify.valueAlloc(allocator, JsonlEntry{
+            .status = "ok",
+            .filename = filename,
+            .atom_areas = output_areas,
+            .residue_chain = residue_chain,
+            .residue_name = residue_name,
+            .residue_number = residue_map.residue_number,
+            .residue_insertion_code = residue_insertion_code,
+            .residue_atom_start = residue_map.residue_atom_start,
+            .residue_atom_count = residue_map.residue_atom_count,
+            .residue_sasa = output_residue_sasa,
+        }, .{});
+    }
+
     const JsonlEntry = struct {
         status: []const u8,
         filename: []const u8,
-        total_area: f64,
-        atom_areas: []const f64,
         residue_chain: []const []const u8,
         residue_name: []const []const u8,
         residue_number: []const i32,
@@ -783,12 +903,9 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
         residue_atom_count: []const usize,
         residue_sasa: []const f64,
     };
-
-    const entry = JsonlEntry{
+    return std.json.Stringify.valueAlloc(allocator, JsonlEntry{
         .status = "ok",
         .filename = filename,
-        .total_area = maybeRoundJsonlFloat(total_area, options),
-        .atom_areas = output_areas,
         .residue_chain = residue_chain,
         .residue_name = residue_name,
         .residue_number = residue_map.residue_number,
@@ -796,9 +913,7 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
         .residue_atom_start = residue_map.residue_atom_start,
         .residue_atom_count = residue_map.residue_atom_count,
         .residue_sasa = output_residue_sasa,
-    };
-
-    return std.json.Stringify.valueAlloc(allocator, entry, .{});
+    }, .{});
 }
 
 pub const BsaAnalysisJsonl = struct {
@@ -1847,6 +1962,34 @@ test "fileResultToJsonlLine rounds floats when decimals option is set" {
 
     try std.testing.expectEqualStrings(
         "{\"status\":\"ok\",\"filename\":\"test.pdb\",\"total_area\":6.79,\"atom_areas\":[1.23,2.56,0]}",
+        line,
+    );
+}
+
+test "fileResultToJsonlLine can omit atom areas" {
+    const allocator = std.testing.allocator;
+    const areas = [_]f64{ 1.0, 2.0 };
+    const line = try fileResultToJsonlLineOptions(allocator, "summary.pdb", 3.0, &areas, .{
+        .include_atom_areas = false,
+    });
+    defer allocator.free(line);
+
+    try std.testing.expectEqualStrings(
+        "{\"status\":\"ok\",\"filename\":\"summary.pdb\",\"total_area\":3}",
+        line,
+    );
+}
+
+test "fileResultToJsonlLine can omit total area" {
+    const allocator = std.testing.allocator;
+    const areas = [_]f64{ 1.0, 2.0 };
+    const line = try fileResultToJsonlLineOptions(allocator, "areas.pdb", 3.0, &areas, .{
+        .include_total_area = false,
+    });
+    defer allocator.free(line);
+
+    try std.testing.expectEqualStrings(
+        "{\"status\":\"ok\",\"filename\":\"areas.pdb\",\"atom_areas\":[1,2]}",
         line,
     );
 }

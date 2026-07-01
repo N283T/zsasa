@@ -29,6 +29,14 @@ pub const Output = struct {
     path: ?[]const u8 = null,
     dir: ?[]const u8 = null,
     format: ?[]const u8 = null,
+    jsonl: JsonlOutput = .{},
+};
+
+pub const JsonlOutput = struct {
+    atom_areas: ?bool = null,
+    total_area: ?bool = null,
+    decimals: ?u8 = null,
+    metadata: ?[]const u8 = null,
 };
 
 pub const Calculation = struct {
@@ -142,6 +150,7 @@ fn parseOwned(allocator: Allocator, owned_content: []const u8) Error!Workflow {
     } else {
         if (doc.getTable("input")) |table| workflow.input = try parseInput(table);
         if (doc.getTable("output")) |table| workflow.output = try parseOutput(table);
+        if (doc.getTable("output.jsonl")) |table| workflow.output.jsonl = try parseOutputJsonl(table);
         if (doc.getTable("calculation")) |table| workflow.calculation = try parseCalculation(table);
         if (doc.getTable("classifier")) |table| workflow.classifier = try parseClassifier(allocator, table);
         if (doc.getTable("analysis")) |table| workflow.analysis = try parseAnalysis(allocator, table);
@@ -234,6 +243,29 @@ fn parseOutput(table: toml_parser.Table) WorkflowError!Output {
         .dir = try optionalString(table.entries, "dir"),
         .format = try optionalString(table.entries, "format"),
     };
+}
+
+fn parseOutputJsonl(table: toml_parser.Table) WorkflowError!JsonlOutput {
+    try rejectUnknownFields(table.entries, &.{ "atom_areas", "total_area", "decimals", "metadata" });
+    const output = JsonlOutput{
+        .atom_areas = try optionalBool(table.entries, "atom_areas"),
+        .total_area = try optionalBool(table.entries, "total_area"),
+        .decimals = try optionalU8(table.entries, "decimals"),
+        .metadata = try optionalString(table.entries, "metadata"),
+    };
+    try validateOutputJsonl(output);
+    return output;
+}
+
+fn validateOutputJsonl(output: JsonlOutput) WorkflowError!void {
+    if (output.decimals) |decimals| {
+        if (decimals > 15) return error.InvalidFieldType;
+    }
+    if (output.metadata) |metadata| {
+        if (!std.mem.eql(u8, metadata, "none") and !std.mem.eql(u8, metadata, "sidecar")) {
+            return error.InvalidFieldType;
+        }
+    }
 }
 
 fn parseCalculation(table: toml_parser.Table) WorkflowError!Calculation {
@@ -418,6 +450,7 @@ fn validateKnownDocumentShape(doc: toml_parser.Document, is_legacy: bool) Workfl
         if (is_legacy) return error.UnknownField;
         if (std.mem.eql(u8, table.name, "input") or
             std.mem.eql(u8, table.name, "output") or
+            std.mem.eql(u8, table.name, "output.jsonl") or
             std.mem.eql(u8, table.name, "calculation") or
             std.mem.eql(u8, table.name, "classifier") or
             std.mem.eql(u8, table.name, "analysis"))
@@ -505,6 +538,14 @@ fn optionalU32(entries: []const toml_parser.Value.Entry, key: []const u8) Workfl
     const value = findValue(entries, key) orelse return null;
     return switch (value) {
         .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @intCast(i) else error.InvalidFieldType,
+        else => error.InvalidFieldType,
+    };
+}
+
+fn optionalU8(entries: []const toml_parser.Value.Entry, key: []const u8) WorkflowError!?u8 {
+    const value = findValue(entries, key) orelse return null;
+    return switch (value) {
+        .integer => |i| if (i >= 0 and i <= std.math.maxInt(u8)) @intCast(i) else error.InvalidFieldType,
         else => error.InvalidFieldType,
     };
 }
@@ -647,6 +688,48 @@ test "parse sectioned batch workflow with jobs" {
     try std.testing.expectEqualStrings("complex_AB", workflow.jobs[1].name);
     try std.testing.expectEqualStrings("B", workflow.jobs[1].chains.?[1]);
     try std.testing.expectEqual(true, workflow.jobs[1].auth_chain.?);
+}
+
+test "parse output jsonl workflow options" {
+    const input =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "structures"
+        \\
+        \\[output]
+        \\dir = "results"
+        \\format = "jsonl"
+        \\
+        \\[output.jsonl]
+        \\atom_areas = false
+        \\total_area = true
+        \\decimals = 3
+        \\metadata = "sidecar"
+        \\
+        \\[[jobs]]
+        \\name = "all"
+    ;
+    var workflow = try parse(std.testing.allocator, input);
+    defer workflow.deinit();
+
+    try std.testing.expectEqual(false, workflow.output.jsonl.atom_areas.?);
+    try std.testing.expectEqual(true, workflow.output.jsonl.total_area.?);
+    try std.testing.expectEqual(@as(u8, 3), workflow.output.jsonl.decimals.?);
+    try std.testing.expectEqualStrings("sidecar", workflow.output.jsonl.metadata.?);
+}
+
+test "reject unknown output jsonl workflow option" {
+    const input =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[output.jsonl]
+        \\unexpected = true
+    ;
+
+    try std.testing.expectError(error.UnknownField, parse(std.testing.allocator, input));
 }
 
 test "parse BSA analysis workflow" {

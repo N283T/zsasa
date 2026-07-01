@@ -69,6 +69,12 @@ dir = "structures"
 dir = "results"
 format = "jsonl"
 
+[output.jsonl]
+decimals = 3
+atom_areas = false
+total_area = true
+metadata = "sidecar"
+
 [calculation]
 algorithm = "sr"
 residue_map = true
@@ -211,6 +217,27 @@ residue_map = true
 ```
 
 This is equivalent to passing `--residue-map` with `--format=jsonl` in non-workflow batch mode.
+
+## JSONL Output Options
+
+Workflow files can tune batch JSONL output under `[output.jsonl]`:
+
+```toml
+[output]
+dir = "results"
+format = "jsonl"
+
+[output.jsonl]
+atom_areas = false    # omit per-atom SASA arrays
+total_area = true     # keep per-structure totals
+decimals = 3          # round JSONL floating-point values
+metadata = "sidecar"  # none | sidecar
+```
+
+Defaults preserve the CLI JSONL schema: `atom_areas = true`, `total_area = true`,
+full precision, and no metadata sidecar. When `metadata = "sidecar"` is set,
+workflow batch jobs write a `<job>.meta.json` file next to `<job>.jsonl` with
+the effective JSONL and calculation settings.
 
 ## Reference
 
