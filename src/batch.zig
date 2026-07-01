@@ -13,7 +13,6 @@ const bitmask_lut = @import("bitmask_lut.zig");
 const lee_richards = @import("lee_richards.zig");
 const classifier = @import("classifier.zig");
 const classifier_parser = @import("classifier_parser.zig");
-// classifier_protor removed — ProtOr is now an alias for CCD
 const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
@@ -604,32 +603,56 @@ fn copySelectedAtomInput(allocator: Allocator, input: AtomInput, chains: ?[]cons
 }
 
 /// Read input file with auto-format detection
-fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: BatchConfig) !AtomInput {
+const ParsedInput = struct {
+    input: AtomInput,
+    inline_ccd: ?ccd_parser.ComponentDict = null,
+
+    fn deinit(self: *ParsedInput) void {
+        self.input.deinit();
+        if (self.inline_ccd) |*dict| {
+            dict.deinit();
+            self.inline_ccd = null;
+        }
+    }
+
+    fn inlineCcdPtr(self: *const ParsedInput) ?*const ccd_parser.ComponentDict {
+        if (self.inline_ccd != null) return &self.inline_ccd.?;
+        return null;
+    }
+};
+
+fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: BatchConfig) !ParsedInput {
     const format = format_detect.detectInputFormat(path);
     return switch (format) {
-        .json => json_parser.readAtomInputFromFile(allocator, io, path),
+        .json => .{ .input = try json_parser.readAtomInputFromFile(allocator, io, path) },
         .bcif => blk: {
             var parser = bcif_parser.BcifParser.init(allocator);
+            errdefer parser.deinitCcd();
             parser.skip_hydrogens = !config.include_hydrogens;
             parser.atom_only = !config.include_hetatm;
             parser.chain_filter = config.chain_filter;
             parser.use_auth_chain = config.use_auth_chain;
-            break :blk parser.parseFile(io, path);
+            parser.parse_inline_ccd = classifierUsesCcdResources(config.classifier_type);
+            const input = try parser.parseFile(io, path);
+            break :blk .{ .input = input, .inline_ccd = parser.takeInlineCcd() };
         },
         .mmcif => blk: {
             var parser = mmcif_parser.MmcifParser.init(allocator);
+            errdefer parser.deinitCcd();
             parser.skip_hydrogens = !config.include_hydrogens;
             parser.atom_only = !config.include_hetatm;
             parser.chain_filter = config.chain_filter;
             parser.use_auth_chain = config.use_auth_chain;
-            break :blk parser.parseFile(io, path);
+            parser.parse_inline_ccd = classifierUsesCcdResources(config.classifier_type);
+            const input = try parser.parseFile(io, path);
+            break :blk .{ .input = input, .inline_ccd = parser.takeInlineCcd() };
         },
         .pdb => blk: {
             var parser = pdb_parser.PdbParser.init(allocator);
             parser.skip_hydrogens = !config.include_hydrogens;
             parser.atom_only = !config.include_hetatm;
             parser.chain_filter = config.chain_filter;
-            break :blk parser.parseFile(io, path);
+            break :blk .{ .input = try parser.parseFile(io, path) };
         },
         .sdf => blk: {
             const source = if (compressed.isCompressed(path))
@@ -646,22 +669,29 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             const molecules = try sdf_parser.parse(allocator, source);
             defer sdf_parser.freeMolecules(allocator, molecules);
 
-            break :blk try sdf_parser.toAtomInput(allocator, molecules, !config.include_hydrogens);
+            break :blk .{ .input = try sdf_parser.toAtomInput(allocator, molecules, !config.include_hydrogens) };
         },
     };
 }
 
 /// Apply built-in classifier to replace radii based on residue/atom names
-fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType, sdf_ccd: ?*const ccd_parser.ComponentDict, external_ccd: ?*const ccd_parser.ComponentDict) !void {
+fn applyBuiltinClassifier(
+    input: *AtomInput,
+    ct: ClassifierType,
+    sdf_ccd: ?*const ccd_parser.ComponentDict,
+    inline_ccd: ?*const ccd_parser.ComponentDict,
+    external_ccd: ?*const ccd_parser.ComponentDict,
+) !void {
     const n = input.atomCount();
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
 
-    // For CCD/ProtOr: create classifier instance and feed external CCD components
+    // CCD and ProtOr share the static ProtOr-compatible table. Only CCD may
+    // extend it with runtime component topology.
     var ccd_clf: ?classifier_ccd.CcdClassifier = if (ct == .ccd or ct == .protor) classifier_ccd.CcdClassifier.init(input.allocator) else null;
     defer if (ccd_clf) |*c| c.deinit();
 
-    if (ccd_clf != null) {
+    if (ct == .ccd and ccd_clf != null) {
         // Deduplicate: collect unique non-hardcoded residues
         var needed: std.StringHashMapUnmanaged(void) = .empty;
         defer needed.deinit(input.allocator);
@@ -673,7 +703,7 @@ fn applyBuiltinClassifier(input: *AtomInput, ct: ClassifierType, sdf_ccd: ?*cons
         }
 
         if (needed.count() > 0) {
-            const dicts: [2]?*const ccd_parser.ComponentDict = .{ sdf_ccd, external_ccd };
+            const dicts: [3]?*const ccd_parser.ComponentDict = .{ sdf_ccd, inline_ccd, external_ccd };
             for (dicts) |maybe_dict| {
                 if (maybe_dict) |dict| {
                     var it = needed.keyIterator();
@@ -940,17 +970,17 @@ fn processOneFile(
     };
 
     // Read and parse input (auto-detect format from extension)
-    var input = readInputFile(arena, io, input_path, config) catch |err| {
+    var parsed = readInputFile(arena, io, input_path, config) catch |err| {
         result.status = .err;
         result.error_msg = std.fmt.allocPrint(result_allocator, "read/parse failed: {s}", .{@errorName(err)}) catch null;
         return result;
     };
-    defer input.deinit();
+    defer parsed.deinit();
 
     // Apply classifier for PDB/mmCIF input (skip JSON unless classification info exists).
     if (config.custom_classifier) |custom_classifier| {
-        if (input.hasClassificationInfo()) {
-            applyCustomClassifier(&input, custom_classifier, config.quiet) catch |err| {
+        if (parsed.input.hasClassificationInfo()) {
+            applyCustomClassifier(&parsed.input, custom_classifier, config.quiet) catch |err| {
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
                 return result;
@@ -958,8 +988,8 @@ fn processOneFile(
         }
     } else if (config.classifier_type) |ct| {
         const format = format_detect.detectInputFormat(input_path);
-        if (format != .json and input.hasClassificationInfo()) {
-            applyBuiltinClassifier(&input, ct, config.sdf_ccd, config.external_ccd) catch |err| {
+        if (format != .json and parsed.input.hasClassificationInfo()) {
+            applyBuiltinClassifier(&parsed.input, ct, config.sdf_ccd, parsed.inlineCcdPtr(), config.external_ccd) catch |err| {
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
                 return result;
@@ -973,7 +1003,7 @@ fn processOneFile(
             arena,
             io,
             result_allocator,
-            input,
+            parsed.input,
             output_dir,
             filename,
             config,
@@ -987,7 +1017,7 @@ fn processOneFile(
             arena,
             io,
             result_allocator,
-            input,
+            parsed.input,
             output_dir,
             filename,
             config,
@@ -1037,7 +1067,7 @@ fn processOneSdfMolecule(
 
     // Build CCD component dict for this molecule's bond topology
     var sdf_dict: ?ccd_parser.ComponentDict = null;
-    if (molecule.name.len > 0) {
+    if (classifierUsesCcdResources(config.classifier_type) and molecule.name.len > 0) {
         const stored = sdf_parser.toStoredComponent(arena, molecule) catch |err| blk: {
             logWarning("{s}: failed to build SDF component: {s}", .{ display_name, @errorName(err) });
             break :blk null;
@@ -1112,7 +1142,7 @@ fn processOneSdfMoleculeInner(
         if (input.hasClassificationInfo()) {
             // Merge SDF-derived dict with external CCD if available
             const effective_sdf_ccd = sdf_ccd orelse config.sdf_ccd;
-            applyBuiltinClassifier(input, ct, effective_sdf_ccd, config.external_ccd) catch |err| {
+            applyBuiltinClassifier(input, ct, effective_sdf_ccd, null, config.external_ccd) catch |err| {
                 res.status = .err;
                 res.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
                 return res;
@@ -2809,7 +2839,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --algorithm=ALGO    Algorithm: sr (shrake-rupley), lr (lee-richards)
         \\                        Default: sr
         \\    --classifier=TYPE   Built-in classifier: ccd, protor, naccess, oons
-        \\                        Default: ccd (protor is an alias for ccd)
+        \\                        Default: ccd (protor uses static ProtOr radii only)
         \\    --ccd=PATH          External CCD dictionary file (.zsdc or .cif[.gz|.zst])
         \\                        Used with --classifier=ccd for non-standard residues
         \\    --sdf=PATH          SDF file with bond topology for CCD classifier
@@ -2989,7 +3019,11 @@ fn parseWorkflowFile(allocator: Allocator, io: std.Io, path: []const u8) !workfl
 
 fn classifierUsesCcdResources(effective_classifier_type: ?ClassifierType) bool {
     const classifier_type = effective_classifier_type orelse return false;
-    return classifier_type == .ccd or classifier_type == .protor;
+    return classifier_type == .ccd;
+}
+
+fn batchArgsUseCcdResources(args: BatchArgs) bool {
+    return classifierUsesCcdResources(args.classifier_type);
 }
 
 fn resolveWorkflowCcdPath(args: BatchArgs, classifier_config: workflow_manifest.ClassifierConfig, effective_classifier_type: ?ClassifierType) ?[]const u8 {
@@ -3216,39 +3250,39 @@ fn runWorkflowBsaAnalysis(
 
         var source_config = config;
         source_config.chain_filter = null;
-        var source_input = readInputFile(arena.allocator(), io, input_path, source_config) catch |err| {
+        var source_parsed = readInputFile(arena.allocator(), io, input_path, source_config) catch |err| {
             failed += 1;
             std.debug.print("Error running BSA analysis '{s}' on '{s}': read/parse failed: {s}\n", .{ name, filename, @errorName(err) });
             _ = arena.reset(.retain_capacity);
             continue;
         };
 
-        workflowClassifySourceInput(&source_input, input_path, source_config) catch |err| {
+        workflowClassifySourceInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
             failed += 1;
             std.debug.print("Error running BSA analysis '{s}' on '{s}': classifier failed: {s}\n", .{ name, filename, @errorName(err) });
-            source_input.deinit();
+            source_parsed.deinit();
             _ = arena.reset(.retain_capacity);
             continue;
         };
 
-        const partner_a_input = copySelectedAtomInput(arena.allocator(), source_input, partner_a) catch |err| {
+        const partner_a_input = copySelectedAtomInput(arena.allocator(), source_parsed.input, partner_a) catch |err| {
             failed += 1;
             std.debug.print("Error running BSA analysis '{s}' on '{s}': partner A selection failed: {s}\n", .{ name, filename, @errorName(err) });
-            source_input.deinit();
+            source_parsed.deinit();
             _ = arena.reset(.retain_capacity);
             continue;
         };
-        const partner_b_input = copySelectedAtomInput(arena.allocator(), source_input, partner_b) catch |err| {
+        const partner_b_input = copySelectedAtomInput(arena.allocator(), source_parsed.input, partner_b) catch |err| {
             failed += 1;
             std.debug.print("Error running BSA analysis '{s}' on '{s}': partner B selection failed: {s}\n", .{ name, filename, @errorName(err) });
-            source_input.deinit();
+            source_parsed.deinit();
             _ = arena.reset(.retain_capacity);
             continue;
         };
-        const complex_input = copySelectedAtomInput(arena.allocator(), source_input, complex_chains) catch |err| {
+        const complex_input = copySelectedAtomInput(arena.allocator(), source_parsed.input, complex_chains) catch |err| {
             failed += 1;
             std.debug.print("Error running BSA analysis '{s}' on '{s}': complex selection failed: {s}\n", .{ name, filename, @errorName(err) });
-            source_input.deinit();
+            source_parsed.deinit();
             _ = arena.reset(.retain_capacity);
             continue;
         };
@@ -3270,26 +3304,26 @@ fn runWorkflowBsaAnalysis(
         if (partner_a_result.status != .ok or partner_b_result.status != .ok or complex_result.status != .ok) {
             failed += 1;
             std.debug.print("Error running BSA analysis '{s}' on '{s}': SASA calculation failed\n", .{ name, filename });
-            source_input.deinit();
+            source_parsed.deinit();
             _ = arena.reset(.retain_capacity);
             continue;
         }
 
         const partner_a_areas = partner_a_result.atom_areas orelse {
             failed += 1;
-            source_input.deinit();
+            source_parsed.deinit();
             _ = arena.reset(.retain_capacity);
             continue;
         };
         const partner_b_areas = partner_b_result.atom_areas orelse {
             failed += 1;
-            source_input.deinit();
+            source_parsed.deinit();
             _ = arena.reset(.retain_capacity);
             continue;
         };
         const complex_areas = complex_result.atom_areas orelse {
             failed += 1;
-            source_input.deinit();
+            source_parsed.deinit();
             _ = arena.reset(.retain_capacity);
             continue;
         };
@@ -3314,7 +3348,7 @@ fn runWorkflowBsaAnalysis(
             residue_arrays = buildBsaResidueDeltaArrays(arena.allocator(), complex_input, atom_delta_sasa) catch |err| {
                 failed += 1;
                 std.debug.print("Error running BSA analysis '{s}' on '{s}': residue delta map failed: {s}\n", .{ name, filename, @errorName(err) });
-                source_input.deinit();
+                source_parsed.deinit();
                 _ = arena.reset(.retain_capacity);
                 continue;
             };
@@ -3340,7 +3374,7 @@ fn runWorkflowBsaAnalysis(
 
         successful += 1;
         total_sasa_time_ns += partner_a_result.sasa_time_ns + partner_b_result.sasa_time_ns + complex_result.sasa_time_ns;
-        source_input.deinit();
+        source_parsed.deinit();
         _ = arena.reset(.retain_capacity);
     }
 
@@ -3389,6 +3423,7 @@ fn workflowMarkAllJobsFailed(ctx: *WorkflowParallelContext) void {
 
 fn workflowClassifySourceInput(
     input: *AtomInput,
+    inline_ccd: ?*const ccd_parser.ComponentDict,
     input_path: []const u8,
     config: BatchConfig,
 ) !void {
@@ -3399,7 +3434,7 @@ fn workflowClassifySourceInput(
     } else if (config.classifier_type) |ct| {
         const format = format_detect.detectInputFormat(input_path);
         if (format != .json and input.hasClassificationInfo()) {
-            try applyBuiltinClassifier(input, ct, config.sdf_ccd, config.external_ccd);
+            try applyBuiltinClassifier(input, ct, config.sdf_ccd, inline_ccd, config.external_ccd);
         }
     }
 }
@@ -3423,7 +3458,7 @@ fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
 
         var source_config = ctx.resource_config;
         source_config.chain_filter = null;
-        var source_input = readInputFile(arena.allocator(), ctx.io, input_path, source_config) catch |err| {
+        var source_parsed = readInputFile(arena.allocator(), ctx.io, input_path, source_config) catch |err| {
             workflowMarkAllJobsFailed(ctx);
             for (ctx.runtimes) |runtime| {
                 std.debug.print("Error running workflow job '{s}' on '{s}': read/parse failed: {s}\n", .{ runtime.state.name, filename, @errorName(err) });
@@ -3433,12 +3468,12 @@ fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
             continue;
         };
 
-        workflowClassifySourceInput(&source_input, input_path, source_config) catch |err| {
+        workflowClassifySourceInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
             workflowMarkAllJobsFailed(ctx);
             for (ctx.runtimes) |runtime| {
                 std.debug.print("Error running workflow job '{s}' on '{s}': classifier failed: {s}\n", .{ runtime.state.name, filename, @errorName(err) });
             }
-            source_input.deinit();
+            source_parsed.deinit();
             _ = ctx.processed_count.fetchAdd(1, .release);
             _ = arena.reset(.retain_capacity);
             continue;
@@ -3448,7 +3483,7 @@ fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
         for (ctx.jobs, 0..) |job, job_index| {
             var runtime = &ctx.runtimes[job_index];
             const selected_chains: ?[]const []const u8 = if (format == .json) null else job.chains;
-            var selected_input = copySelectedAtomInput(arena.allocator(), source_input, selected_chains) catch |err| {
+            var selected_input = copySelectedAtomInput(arena.allocator(), source_parsed.input, selected_chains) catch |err| {
                 _ = runtime.counter.failed.fetchAdd(1, .monotonic);
                 std.debug.print("Error running workflow job '{s}' on '{s}': selection failed: {s}\n", .{ runtime.state.name, filename, @errorName(err) });
                 continue;
@@ -3477,7 +3512,7 @@ fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
             result.residue_map = null;
         }
 
-        source_input.deinit();
+        source_parsed.deinit();
         _ = ctx.processed_count.fetchAdd(1, .release);
         _ = arena.reset(.retain_capacity);
     }
@@ -3827,7 +3862,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
 
         var source_config = resource_config;
         source_config.chain_filter = null;
-        var source_input = readInputFile(arena.allocator(), io, input_path, source_config) catch |err| {
+        var source_parsed = readInputFile(arena.allocator(), io, input_path, source_config) catch |err| {
             for (states) |*state| {
                 state.failed += 1;
                 std.debug.print("Error running workflow job '{s}' on '{s}': read/parse failed: {s}\n", .{ state.name, filename, @errorName(err) });
@@ -3837,26 +3872,26 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
         };
 
         if (source_config.custom_classifier) |custom| {
-            if (source_input.hasClassificationInfo()) {
-                applyCustomClassifier(&source_input, custom, source_config.quiet) catch |err| {
+            if (source_parsed.input.hasClassificationInfo()) {
+                applyCustomClassifier(&source_parsed.input, custom, source_config.quiet) catch |err| {
                     for (states) |*state| {
                         state.failed += 1;
                         std.debug.print("Error running workflow job '{s}' on '{s}': classifier failed: {s}\n", .{ state.name, filename, @errorName(err) });
                     }
-                    source_input.deinit();
+                    source_parsed.deinit();
                     _ = arena.reset(.retain_capacity);
                     continue;
                 };
             }
         } else if (source_config.classifier_type) |ct| {
             const format = format_detect.detectInputFormat(input_path);
-            if (format != .json and source_input.hasClassificationInfo()) {
-                applyBuiltinClassifier(&source_input, ct, source_config.sdf_ccd, source_config.external_ccd) catch |err| {
+            if (format != .json and source_parsed.input.hasClassificationInfo()) {
+                applyBuiltinClassifier(&source_parsed.input, ct, source_config.sdf_ccd, source_parsed.inlineCcdPtr(), source_config.external_ccd) catch |err| {
                     for (states) |*state| {
                         state.failed += 1;
                         std.debug.print("Error running workflow job '{s}' on '{s}': classifier failed: {s}\n", .{ state.name, filename, @errorName(err) });
                     }
-                    source_input.deinit();
+                    source_parsed.deinit();
                     _ = arena.reset(.retain_capacity);
                     continue;
                 };
@@ -3867,7 +3902,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
             var state = &states[job_index];
 
             const selected_chains: ?[]const []const u8 = if (format_detect.detectInputFormat(input_path) == .json) null else job.chains;
-            var selected_input = copySelectedAtomInput(arena.allocator(), source_input, selected_chains) catch |err| {
+            var selected_input = copySelectedAtomInput(arena.allocator(), source_parsed.input, selected_chains) catch |err| {
                 state.failed += 1;
                 std.debug.print("Error running workflow job '{s}' on '{s}': selection failed: {s}\n", .{ state.name, filename, @errorName(err) });
                 continue;
@@ -3904,7 +3939,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
             result.residue_map = null;
         }
 
-        source_input.deinit();
+        source_parsed.deinit();
         _ = arena.reset(.retain_capacity);
     }
 
@@ -3935,40 +3970,43 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
 
     // Load external CCD dictionary if specified
     var ext_ccd: ?ccd_parser.ComponentDict = null;
-    if (args.ccd_path) |ccd_path| {
-        const ccd_data = if (compressed.isCompressed(ccd_path))
-            compressed.read(allocator, ccd_path) catch |err| {
-                std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
-                std.process.exit(1);
-            }
-        else blk: {
-            const f = std.Io.Dir.cwd().openFile(io, ccd_path, .{}) catch |err| {
-                std.debug.print("Error opening CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
-                std.process.exit(1);
+    const use_ccd_resources = batchArgsUseCcdResources(args);
+    if (use_ccd_resources) {
+        if (args.ccd_path) |ccd_path| {
+            const ccd_data = if (compressed.isCompressed(ccd_path))
+                compressed.read(allocator, ccd_path) catch |err| {
+                    std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                    std.process.exit(1);
+                }
+            else blk: {
+                const f = std.Io.Dir.cwd().openFile(io, ccd_path, .{}) catch |err| {
+                    std.debug.print("Error opening CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                    std.process.exit(1);
+                };
+                defer f.close(io);
+                var read_buf_ccd: [65536]u8 = undefined;
+                var file_r_ccd = f.reader(io, &read_buf_ccd);
+                break :blk file_r_ccd.interface.allocRemaining(allocator, .unlimited) catch |err| {
+                    std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                    std.process.exit(1);
+                };
             };
-            defer f.close(io);
-            var read_buf_ccd: [65536]u8 = undefined;
-            var file_r_ccd = f.reader(io, &read_buf_ccd);
-            break :blk file_r_ccd.interface.allocRemaining(allocator, .unlimited) catch |err| {
-                std.debug.print("Error reading CCD file '{s}': {s}\n", .{ ccd_path, @errorName(err) });
-                std.process.exit(1);
-            };
-        };
-        defer allocator.free(ccd_data);
+            defer allocator.free(ccd_data);
 
-        ext_ccd = ccd_binary.loadDict(allocator, ccd_data) catch |err| {
-            std.debug.print("Error loading CCD dictionary '{s}': {s}\n", .{ ccd_path, @errorName(err) });
-            std.process.exit(1);
-        };
-        if (!args.quiet) {
-            std.debug.print("External CCD: loaded {d} components from '{s}'\n", .{ ext_ccd.?.components.count(), ccd_path });
+            ext_ccd = ccd_binary.loadDict(allocator, ccd_data) catch |err| {
+                std.debug.print("Error loading CCD dictionary '{s}': {s}\n", .{ ccd_path, @errorName(err) });
+                std.process.exit(1);
+            };
+            if (!args.quiet) {
+                std.debug.print("External CCD: loaded {d} components from '{s}'\n", .{ ext_ccd.?.components.count(), ccd_path });
+            }
         }
     }
     defer if (ext_ccd) |*d| d.deinit();
 
     // Load SDF components from --sdf option
     var sdf_ccd: ?ccd_parser.ComponentDict = null;
-    if (args.sdf_paths.len > 0) {
+    if (use_ccd_resources and args.sdf_paths.len > 0) {
         sdf_ccd = loadSdfComponents(allocator, io, args.sdf_paths.constSlice(), args.quiet) catch |err| {
             std.debug.print("Error loading SDF components: {s}\n", .{@errorName(err)});
             std.process.exit(1);
@@ -4522,6 +4560,11 @@ test "workflow custom classifier config path resolves for batch" {
 }
 
 test "batch resource resolver only loads CCD resources for CCD classifiers" {
+    try std.testing.expect(batchArgsUseCcdResources(.{ .classifier_type = .ccd }));
+    try std.testing.expect(!batchArgsUseCcdResources(.{ .classifier_type = .protor }));
+    try std.testing.expect(!batchArgsUseCcdResources(.{ .classifier_type = .naccess }));
+    try std.testing.expect(!batchArgsUseCcdResources(.{ .classifier_type = .oons }));
+
     const classifier_config = @import("workflow_manifest.zig").ClassifierConfig{
         .ccd = "workflow.zsdc",
     };
@@ -4535,9 +4578,9 @@ test "batch resource resolver only loads CCD resources for CCD classifiers" {
     try std.testing.expectEqual(@as(usize, 0), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], .oons).len);
     try std.testing.expectEqual(@as(usize, 0), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], null).len);
     try std.testing.expectEqualStrings("workflow.zsdc", resolveWorkflowCcdPath(workflow_only_args, classifier_config, .ccd).?);
-    try std.testing.expectEqualStrings("workflow.zsdc", resolveWorkflowCcdPath(workflow_only_args, classifier_config, .protor).?);
+    try std.testing.expect(resolveWorkflowCcdPath(workflow_only_args, classifier_config, .protor) == null);
     try std.testing.expectEqual(@as(usize, 1), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], .ccd).len);
-    try std.testing.expectEqual(@as(usize, 1), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], .protor).len);
+    try std.testing.expectEqual(@as(usize, 0), resolveWorkflowSdfPaths(workflow_only_args, workflow_sdf_paths[0..], .protor).len);
 
     var explicit_resource_args = BatchArgs{
         .classifier_explicit = true,
@@ -4556,6 +4599,73 @@ test "batch resource resolver only loads CCD resources for CCD classifiers" {
     const resolved_sdf_paths = resolveWorkflowSdfPaths(explicit_resource_args, workflow_sdf_paths[0..], .ccd);
     try std.testing.expectEqual(@as(usize, 1), resolved_sdf_paths.len);
     try std.testing.expectEqualStrings("cli.sdf", resolved_sdf_paths[0]);
+}
+
+test "batch mmCIF CCD classifier uses inline CCD while ProtOr skips it" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root_path = root_buf[0..root_len];
+    const cif_path = try std.fs.path.join(allocator, &.{ root_path, "ligand.cif" });
+    defer allocator.free(cif_path);
+
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = cif_path,
+        .data =
+        \\data_LIGAND
+        \\#
+        \\loop_
+        \\_chem_comp_atom.comp_id
+        \\_chem_comp_atom.atom_id
+        \\_chem_comp_atom.type_symbol
+        \\_chem_comp_atom.pdbx_aromatic_flag
+        \\_chem_comp_atom.pdbx_leaving_atom_flag
+        \\LIG C1 C N N
+        \\LIG N1 N N N
+        \\#
+        \\loop_
+        \\_chem_comp_bond.comp_id
+        \\_chem_comp_bond.atom_id_1
+        \\_chem_comp_bond.atom_id_2
+        \\_chem_comp_bond.value_order
+        \\LIG C1 N1 SING
+        \\#
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.group_PDB
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C C1 LIG HETATM 0.0 0.0 0.0
+        \\2 N N1 LIG HETATM 2.0 0.0 0.0
+        \\#
+        \\
+        ,
+    });
+
+    var ccd_parsed = try readInputFile(allocator, std.testing.io, cif_path, .{
+        .classifier_type = .ccd,
+        .include_hetatm = true,
+    });
+    defer ccd_parsed.deinit();
+    try std.testing.expect(ccd_parsed.inlineCcdPtr() != null);
+    try applyBuiltinClassifier(&ccd_parsed.input, .ccd, null, ccd_parsed.inlineCcdPtr(), null);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.64), ccd_parsed.input.r[1], 0.001);
+
+    var protor_parsed = try readInputFile(allocator, std.testing.io, cif_path, .{
+        .classifier_type = .protor,
+        .include_hetatm = true,
+    });
+    defer protor_parsed.deinit();
+    try std.testing.expect(protor_parsed.inlineCcdPtr() == null);
+    try applyBuiltinClassifier(&protor_parsed.input, .protor, null, protor_parsed.inlineCcdPtr(), null);
+    try std.testing.expect(protor_parsed.input.r[1] != 1.64);
 }
 
 test "resolveBatchThreadCount allows explicit overcommit for IO-bound runs" {

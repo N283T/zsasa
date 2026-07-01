@@ -11,7 +11,6 @@ const lee_richards = @import("lee_richards.zig");
 const types = @import("types.zig");
 const classifier = @import("classifier.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
-// classifier_protor removed — ProtOr is now an alias for CCD
 const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
 const analysis = @import("analysis.zig");
@@ -52,7 +51,7 @@ pub const ZSASA_ALGORITHM_LR: c_int = 1;
 
 /// NACCESS-compatible radii
 pub const ZSASA_CLASSIFIER_NACCESS: c_int = 0;
-/// Alias for CCD (backward compatibility)
+/// Static ProtOr-compatible radii
 pub const ZSASA_CLASSIFIER_PROTOR: c_int = 1;
 /// OONS radii (older FreeSASA default)
 pub const ZSASA_CLASSIFIER_OONS: c_int = 2;

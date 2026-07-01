@@ -20,7 +20,6 @@ const pdb_parser = @import("pdb_parser.zig");
 const mmcif_parser = @import("mmcif_parser.zig");
 const classifier = @import("classifier.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
-// classifier_protor removed — ProtOr is now an alias for CCD
 const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
 const ccd_parser = @import("ccd_parser.zig");
@@ -860,6 +859,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
         .mmcif => blk: {
             var parser = mmcif_parser.MmcifParser.init(allocator);
             parser.skip_hydrogens = !args.include_hydrogens;
+            parser.parse_inline_ccd = false;
             break :blk try parser.parseFile(io, topology_path);
         },
     };
@@ -871,29 +871,32 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
     }
 
     // Load external CCD dictionary if specified
+    const use_ccd_resources = args.classifier_type == .ccd;
     var ext_ccd: ?ccd_parser.ComponentDict = null;
-    if (args.ccd_path) |ccd_path| {
-        const ccd_data = if (compressed.isCompressed(ccd_path))
-            try compressed.read(allocator, ccd_path)
-        else blk: {
-            const f = try std.Io.Dir.cwd().openFile(io, ccd_path, .{});
-            defer f.close(io);
-            var read_buf_ccd: [65536]u8 = undefined;
-            var file_r_ccd = f.reader(io, &read_buf_ccd);
-            break :blk try file_r_ccd.interface.allocRemaining(allocator, .unlimited);
-        };
-        defer allocator.free(ccd_data);
+    if (use_ccd_resources) {
+        if (args.ccd_path) |ccd_path| {
+            const ccd_data = if (compressed.isCompressed(ccd_path))
+                try compressed.read(allocator, ccd_path)
+            else blk: {
+                const f = try std.Io.Dir.cwd().openFile(io, ccd_path, .{});
+                defer f.close(io);
+                var read_buf_ccd: [65536]u8 = undefined;
+                var file_r_ccd = f.reader(io, &read_buf_ccd);
+                break :blk try file_r_ccd.interface.allocRemaining(allocator, .unlimited);
+            };
+            defer allocator.free(ccd_data);
 
-        ext_ccd = try ccd_binary.loadDict(allocator, ccd_data);
-        if (!args.quiet) {
-            std.debug.print("External CCD: loaded {d} components from '{s}'\n", .{ ext_ccd.?.components.count(), ccd_path });
+            ext_ccd = try ccd_binary.loadDict(allocator, ccd_data);
+            if (!args.quiet) {
+                std.debug.print("External CCD: loaded {d} components from '{s}'\n", .{ ext_ccd.?.components.count(), ccd_path });
+            }
         }
     }
     defer if (ext_ccd) |*d| d.deinit();
 
     // Load SDF components from --sdf option
     var sdf_ccd: ?ccd_parser.ComponentDict = null;
-    if (args.sdf_paths.len > 0) {
+    if (use_ccd_resources and args.sdf_paths.len > 0) {
         sdf_ccd = loadSdfComponents(allocator, io, args.sdf_paths.constSlice(), args.quiet) catch |err| {
             std.debug.print("Error loading SDF components: {s}\n", .{@errorName(err)});
             std.process.exit(1);
@@ -1342,11 +1345,12 @@ fn applyBuiltinClassifier(
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
 
-    // For CCD/ProtOr: create classifier instance and feed external CCD components
+    // CCD and ProtOr share the static ProtOr-compatible table. Only CCD may
+    // extend it with runtime component topology.
     var ccd_clf: ?classifier_ccd.CcdClassifier = if (ct == .ccd or ct == .protor) classifier_ccd.CcdClassifier.init(input.allocator) else null;
     defer if (ccd_clf) |*c| c.deinit();
 
-    if (ccd_clf != null) {
+    if (ct == .ccd and ccd_clf != null) {
         // Deduplicate: collect unique non-hardcoded residues
         var needed: std.StringHashMapUnmanaged(void) = .empty;
         defer needed.deinit(input.allocator);

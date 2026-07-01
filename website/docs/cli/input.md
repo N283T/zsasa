@@ -107,7 +107,7 @@ Built-in classifiers assign atom radii based on residue and atom names. See [Cla
 |------------|-------------|
 | `naccess` | NACCESS-compatible radii (Hubbard & Thornton 1993) |
 | `ccd` | CCD bond-topology radii — **default for calc/batch PDB/mmCIF** |
-| `protor` | Alias for CCD, accepted for compatibility |
+| `protor` | Static ProtOr-compatible radii without runtime CCD resource parsing |
 | `oons` | OONS radii (Ooi et al. 1987) |
 
 ### Custom Config (`--config=FILE`)

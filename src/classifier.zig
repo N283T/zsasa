@@ -10,9 +10,10 @@
 //!
 //! ## Available Built-in Classifiers
 //!
-//! - **CCD**: Default. Derives radii from CCD bond topology (ProtOr-compatible).
-//!   ProtOr is an alias for CCD — they use the same hardcoded radii, but CCD
-//!   additionally supports runtime analysis of non-standard residues.
+//! - **CCD**: Default. Uses ProtOr-compatible hardcoded radii and can extend
+//!   them with runtime CCD bond-topology analysis for non-standard residues.
+//! - **ProtOr**: Static ProtOr-compatible hardcoded radii only. This is useful
+//!   for protein-only inputs where runtime CCD analysis is unnecessary.
 //! - **NACCESS**: NACCESS-compatible radii (João Rodrigues)
 //! - **OONS**: Ooi, Oobatake, Nemethy, Scheraga radii (older FreeSASA default)
 //!
@@ -40,15 +41,13 @@ pub const ClassifierType = enum {
     /// Based on naccess.config from FreeSASA (João Rodrigues)
     naccess,
 
-    /// Alias for CCD — kept for backward compatibility
-    /// Uses the same CCD classifier internally
+    /// Static ProtOr-compatible hardcoded radii
     protor,
 
     /// OONS radii (older FreeSASA default)
     /// Reference: Ooi, Oobatake, Nemethy, Scheraga
     oons,
 
-    /// CCD-based radii derived from bond topology (default)
     /// Hardcoded ProtOr radii + runtime CCD analysis for non-standard residues
     ccd,
 

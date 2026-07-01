@@ -18,7 +18,6 @@ const types = @import("types.zig");
 const classifier = @import("classifier.zig");
 const classifier_parser = @import("classifier_parser.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
-// classifier_protor removed — ProtOr is now an alias for CCD
 const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
 const ccd_parser = @import("ccd_parser.zig");
@@ -757,7 +756,7 @@ fn applyWorkflowClassifierToCalcArgs(args: *CalcArgs, classifier_config: workflo
 
 fn classifierUsesCcdResources(effective_classifier_type: ?ClassifierType) bool {
     const classifier_type = effective_classifier_type orelse return false;
-    return classifier_type == .ccd or classifier_type == .protor;
+    return classifier_type == .ccd;
 }
 
 fn calcArgsUseCcdResources(args: CalcArgs) bool {
@@ -788,7 +787,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\                       Default: sr
         \\    --classifier=TYPE  Built-in classifier: ccd, protor, naccess, oons
         \\                       Default: ccd for PDB/mmCIF, none for JSON
-        \\                       protor is an alias for ccd
+        \\                       protor uses static ProtOr-compatible radii only
         \\    --ccd=PATH         External CCD dictionary file (.zsdc or .cif[.gz|.zst])
         \\                       Extends CCD coverage for non-standard residues
         \\    --sdf=PATH         SDF file with bond topology for CCD classifier
@@ -834,7 +833,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\
         \\CLASSIFIERS:
         \\    ccd      CCD bond-topology radii (default for PDB/mmCIF)
-        \\    protor   Alias for ccd (ProtOr-compatible, Tsai et al. 1999)
+        \\    protor   Static ProtOr-compatible radii (Tsai et al. 1999)
         \\    naccess  NACCESS-compatible radii
         \\    oons     OONS radii (Ooi et al.)
         \\
@@ -926,6 +925,7 @@ fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, arg
             parser.use_auth_chain = args.use_auth_chain;
             parser.skip_hydrogens = !args.include_hydrogens;
             parser.atom_only = !args.include_hetatm;
+            parser.parse_inline_ccd = calcArgsUseCcdResources(args);
 
             // Parse chain filter if specified
             var chain_filter_slice: ?[]const []const u8 = null;
@@ -944,6 +944,7 @@ fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, arg
             parser.use_auth_chain = args.use_auth_chain;
             parser.skip_hydrogens = !args.include_hydrogens;
             parser.atom_only = !args.include_hetatm;
+            parser.parse_inline_ccd = calcArgsUseCcdResources(args);
 
             // Parse chain filter if specified
             var chain_filter_slice: ?[]const []const u8 = null;
@@ -992,6 +993,10 @@ fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, arg
             const selected = molecules[mol_idx .. mol_idx + 1];
 
             const input_result = try sdf_parser.toAtomInput(allocator, selected, !args.include_hydrogens);
+
+            if (!calcArgsUseCcdResources(args)) {
+                break :blk .{ .input = input_result };
+            }
 
             // Build CCD component dict from selected molecule's bond topology
             var sdf_dict = ccd_parser.ComponentDict.init(allocator);
@@ -1106,14 +1111,14 @@ fn applyBuiltinClassifier(
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
 
-    // For CCD/ProtOr: create classifier instance and feed inline/external CCD components
-    // ProtOr is an alias for CCD (same hardcoded radii, plus runtime CCD analysis)
+    // CCD and ProtOr share the static ProtOr-compatible table. Only CCD may
+    // extend it with runtime component topology.
     var ccd_clf: ?classifier_ccd.CcdClassifier = if (ct == .ccd or ct == .protor) classifier_ccd.CcdClassifier.init(input.allocator) else null;
     defer if (ccd_clf) |*c| c.deinit();
 
     // Feed CCD components for non-standard residues
     // Only load components that are actually present in the input structure
-    if (ccd_clf != null) {
+    if (ct == .ccd and ccd_clf != null) {
         // Collect unique non-hardcoded residue names from input
         var needed: std.StringHashMapUnmanaged(void) = .empty;
         defer needed.deinit(input.allocator);
@@ -1360,6 +1365,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
     const input_format = format_detect.detectInputFormat(input_path);
     const effective_classifier: ?ClassifierType = effective_args.classifier_type orelse
         if (effective_args.config_path == null and input_format != .json) .ccd else null;
+    effective_args.classifier_type = if (effective_args.validate_only) null else effective_classifier;
 
     // CCD classifier implies HETATM inclusion (the whole point is classifying non-standard residues)
     if (effective_classifier) |ct| {
@@ -2252,34 +2258,44 @@ test "calc CLI explicit classifier overrides workflow classifier" {
     try std.testing.expectEqual(@as(?[]const u8, null), args.config_path);
 }
 
-test "calc workflow applies CCD resources for CCD and ProtOr classifiers" {
+test "calc workflow applies CCD resources only for CCD classifier" {
     const sdf_paths = [_][]const u8{ "workflow-ligand.sdf", "workflow-cofactor.sdf" };
 
-    inline for (.{ ClassifierType.ccd, ClassifierType.protor }) |expected_classifier| {
-        const classifier_type = switch (expected_classifier) {
-            .ccd => "ccd",
-            .protor => "protor",
-            else => unreachable,
-        };
-        const workflow = workflow_manifest.Workflow{
-            .allocator = std.testing.allocator,
-            .content = "",
-            .classifier = .{
-                .type = classifier_type,
-                .ccd = "workflow.zsdc",
-                .sdf = sdf_paths[0..],
-            },
-        };
-        var args = CalcArgs{};
+    const ccd_workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .classifier = .{
+            .type = "ccd",
+            .ccd = "workflow.zsdc",
+            .sdf = sdf_paths[0..],
+        },
+    };
+    var ccd_args = CalcArgs{};
 
-        try applyWorkflowToCalcArgs(&args, workflow);
+    try applyWorkflowToCalcArgs(&ccd_args, ccd_workflow);
 
-        try std.testing.expectEqual(expected_classifier, args.classifier_type.?);
-        try std.testing.expectEqualStrings("workflow.zsdc", args.ccd_path.?);
-        try std.testing.expectEqual(@as(usize, 2), args.sdf_paths.len);
-        try std.testing.expectEqualStrings("workflow-ligand.sdf", args.sdf_paths.constSlice()[0]);
-        try std.testing.expectEqualStrings("workflow-cofactor.sdf", args.sdf_paths.constSlice()[1]);
-    }
+    try std.testing.expectEqual(ClassifierType.ccd, ccd_args.classifier_type.?);
+    try std.testing.expectEqualStrings("workflow.zsdc", ccd_args.ccd_path.?);
+    try std.testing.expectEqual(@as(usize, 2), ccd_args.sdf_paths.len);
+    try std.testing.expectEqualStrings("workflow-ligand.sdf", ccd_args.sdf_paths.constSlice()[0]);
+    try std.testing.expectEqualStrings("workflow-cofactor.sdf", ccd_args.sdf_paths.constSlice()[1]);
+
+    const protor_workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .classifier = .{
+            .type = "protor",
+            .ccd = "workflow.zsdc",
+            .sdf = sdf_paths[0..],
+        },
+    };
+    var protor_args = CalcArgs{};
+
+    try applyWorkflowToCalcArgs(&protor_args, protor_workflow);
+
+    try std.testing.expectEqual(ClassifierType.protor, protor_args.classifier_type.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), protor_args.ccd_path);
+    try std.testing.expectEqual(@as(usize, 0), protor_args.sdf_paths.len);
 }
 
 test "calc CLI explicit CCD resources are preserved for CCD workflow classifier" {
