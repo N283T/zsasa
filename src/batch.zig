@@ -53,6 +53,11 @@ pub const Algorithm = enum {
     lr, // Lee-Richards (slice method)
 };
 
+const JsonlMetadataMode = enum {
+    none,
+    sidecar,
+};
+
 /// Configuration for batch processing
 pub const BatchConfig = struct {
     n_threads: usize = 0, // 0 = auto-detect
@@ -87,6 +92,9 @@ pub const BatchConfig = struct {
     alt_loc_id: u8 = 'A',
     residue_map: bool = false,
     jsonl_decimals: ?u8 = null,
+    jsonl_include_atom_areas: bool = true,
+    jsonl_include_total_area: bool = true,
+    jsonl_metadata: JsonlMetadataMode = .none,
 };
 
 /// Helper to build and hold bitmask LUTs for batch processing.
@@ -180,6 +188,12 @@ fn workflowJsonlOutputPath(allocator: Allocator, output_dir: []const u8, job_nam
 
 fn workflowAnalysisJsonlOutputPath(allocator: Allocator, output_dir: []const u8, analysis_name: []const u8) ![]const u8 {
     const filename = try std.fmt.allocPrint(allocator, "{s}.jsonl", .{analysis_name});
+    defer allocator.free(filename);
+    return std.fs.path.join(allocator, &.{ output_dir, filename });
+}
+
+fn workflowJsonlMetadataPath(allocator: Allocator, output_dir: []const u8, name: []const u8) ![]const u8 {
+    const filename = try std.fmt.allocPrint(allocator, "{s}.meta.json", .{name});
     defer allocator.free(filename);
     return std.fs.path.join(allocator, &.{ output_dir, filename });
 }
@@ -814,7 +828,95 @@ fn attachResidueMap(
 }
 
 fn jsonlOptions(config: BatchConfig) json_writer.JsonlOptions {
-    return .{ .decimals = config.jsonl_decimals };
+    return .{
+        .decimals = config.jsonl_decimals,
+        .include_atom_areas = config.jsonl_include_atom_areas,
+        .include_total_area = config.jsonl_include_total_area,
+    };
+}
+
+fn batchShouldStoreAtomAreas(config: BatchConfig) bool {
+    return config.output_format == .jsonl and config.jsonl_include_atom_areas;
+}
+
+fn classifierTypeName(classifier_type: ?ClassifierType) []const u8 {
+    const ct = classifier_type orelse return "none";
+    return switch (ct) {
+        .naccess => "naccess",
+        .protor => "protor",
+        .oons => "oons",
+        .ccd => "ccd",
+    };
+}
+
+fn precisionName(precision: Precision) []const u8 {
+    return switch (precision) {
+        .f32 => "f32",
+        .f64 => "f64",
+    };
+}
+
+fn algorithmName(algorithm: Algorithm) []const u8 {
+    return switch (algorithm) {
+        .sr => "sr",
+        .lr => "lr",
+    };
+}
+
+fn writeWorkflowJsonlMetadata(
+    allocator: Allocator,
+    io: std.Io,
+    path: []const u8,
+    name: []const u8,
+    config: BatchConfig,
+) !void {
+    if (config.jsonl_metadata != .sidecar) return;
+
+    const JsonlMeta = struct {
+        atom_areas: bool,
+        total_area: bool,
+        decimals: ?u8,
+    };
+    const CalculationMeta = struct {
+        algorithm: []const u8,
+        n_points: u32,
+        n_slices: u32,
+        probe_radius: f64,
+        precision: []const u8,
+        classifier: []const u8,
+    };
+    const Metadata = struct {
+        name: []const u8,
+        job: []const u8,
+        format: []const u8,
+        metadata: []const u8,
+        jsonl: JsonlMeta,
+        calculation: CalculationMeta,
+    };
+
+    const meta = Metadata{
+        .name = name,
+        .job = name,
+        .format = "jsonl",
+        .metadata = "sidecar",
+        .jsonl = .{
+            .atom_areas = config.jsonl_include_atom_areas,
+            .total_area = config.jsonl_include_total_area,
+            .decimals = config.jsonl_decimals,
+        },
+        .calculation = .{
+            .algorithm = algorithmName(config.algorithm),
+            .n_points = config.n_points,
+            .n_slices = config.n_slices,
+            .probe_radius = config.probe_radius,
+            .precision = precisionName(config.precision),
+            .classifier = classifierTypeName(config.classifier_type),
+        },
+    };
+
+    const text = try std.json.Stringify.valueAlloc(allocator, meta, .{ .whitespace = .indent_2 });
+    defer allocator.free(text);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = text });
 }
 
 /// Scan directory for structure files (.json, .pdb, .cif, .mmcif, .ent and compressed variants)
@@ -1337,10 +1439,11 @@ fn fileResultToJsonlLineOptions(allocator: Allocator, result: *FileResult, optio
     if (result.status == .err) {
         return json_writer.fileErrorToJsonlLine(allocator, result.filename, result.error_msg orelse "unknown error");
     }
-    const areas = result.atom_areas orelse return error.MissingAtomAreas;
     if (result.residue_map) |map| {
+        const areas = result.atom_areas orelse if (options.include_atom_areas) return error.MissingAtomAreas else &.{};
         return json_writer.fileResultWithResidueMapToJsonlLineOptions(allocator, result.filename, result.total_sasa, areas, map, options);
     }
+    const areas = result.atom_areas orelse if (options.include_atom_areas) return error.MissingAtomAreas else &.{};
     return json_writer.fileResultToJsonlLineOptions(allocator, result.filename, result.total_sasa, areas, options);
 }
 
@@ -3002,6 +3105,15 @@ fn applyWorkflowToBatchConfig(
     if (!args.format_explicit) {
         if (output.format) |v| config.output_format = parseOutputFormat(v);
     }
+    if (!args.jsonl_decimals_explicit) {
+        if (output.jsonl.decimals) |v| config.jsonl_decimals = v;
+    }
+    if (output.jsonl.atom_areas) |v| config.jsonl_include_atom_areas = v;
+    if (output.jsonl.total_area) |v| config.jsonl_include_total_area = v;
+    if (output.jsonl.metadata) |v| config.jsonl_metadata = parseWorkflowJsonlMetadata(v) catch |err| {
+        std.debug.print("Error: output.jsonl.metadata must be \"none\" or \"sidecar\": {s}\n", .{v});
+        return err;
+    };
     if (!args.timing_explicit) {
         if (calculation.timing) |v| config.show_timing = v;
     }
@@ -3024,6 +3136,12 @@ fn applyWorkflowToBatchConfig(
     if (calculation.residue_map) |v| config.residue_map = v;
 
     try applyWorkflowClassifierToBatchConfig(config, args, classifier_config);
+}
+
+fn parseWorkflowJsonlMetadata(value: []const u8) !JsonlMetadataMode {
+    if (std.mem.eql(u8, value, "none")) return .none;
+    if (std.mem.eql(u8, value, "sidecar")) return .sidecar;
+    return error.InvalidArgument;
 }
 
 fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
@@ -3263,6 +3381,12 @@ fn runWorkflowBsaAnalysis(
     config.output_format = .jsonl;
     config.chain_filter = null;
     const effective_classifier_type = config.classifier_type;
+
+    if (config.jsonl_metadata == .sidecar) {
+        const metadata_path = try workflowJsonlMetadataPath(allocator, output_dir, name);
+        defer allocator.free(metadata_path);
+        try writeWorkflowJsonlMetadata(allocator, io, metadata_path, name, config);
+    }
 
     const ccd_path = resolveWorkflowCcdPath(args, workflow.classifier, effective_classifier_type);
     var ext_ccd: ?ccd_parser.ComponentDict = null;
@@ -3664,7 +3788,7 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
         applyCliOverrides(&config, args);
 
         config.include_hetatm = config.include_hetatm or (config.classifier_type == .ccd);
-        config.store_atom_areas = (config.output_format == .jsonl);
+        config.store_atom_areas = batchShouldStoreAtomAreas(config);
         config.external_ccd = if (ext_ccd != null) &ext_ccd.? else null;
         config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
         if (custom_classifier) |*c| config.custom_classifier = c;
@@ -3693,6 +3817,11 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
             if (output_dir) |out| {
                 try std.Io.Dir.cwd().createDirPath(io, out);
                 jsonl_output_path = try workflowJsonlOutputPath(allocator, out, job.name);
+                if (config.jsonl_metadata == .sidecar) {
+                    const metadata_path = try workflowJsonlMetadataPath(allocator, out, job.name);
+                    defer allocator.free(metadata_path);
+                    try writeWorkflowJsonlMetadata(allocator, io, metadata_path, job.name, config);
+                }
             }
         } else if (output_dir) |out| {
             job_output_dir = try workflowPerFileOutputDir(allocator, out, job.name);
@@ -3797,7 +3926,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
         try applyWorkflowToBatchConfig(&config, args, workflow.calculation, workflow.output, workflow.classifier);
         applyCliOverrides(&config, args);
         config.include_hetatm = config.include_hetatm or (config.classifier_type == .ccd);
-        config.store_atom_areas = (config.output_format == .jsonl);
+        config.store_atom_areas = batchShouldStoreAtomAreas(config);
         config.external_ccd = if (ext_ccd != null) &ext_ccd.? else null;
         config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
         if (custom_classifier) |*c| config.custom_classifier = c;
@@ -3827,6 +3956,11 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
                 try std.Io.Dir.cwd().createDirPath(io, out);
                 jsonl_output_path = try workflowJsonlOutputPath(allocator, out, job.name);
                 try truncateJsonlOutput(io, jsonl_output_path.?);
+                if (config.jsonl_metadata == .sidecar) {
+                    const metadata_path = try workflowJsonlMetadataPath(allocator, out, job.name);
+                    defer allocator.free(metadata_path);
+                    try writeWorkflowJsonlMetadata(allocator, io, metadata_path, job.name, config);
+                }
             }
         } else if (output_dir) |out| {
             job_output_dir = try workflowPerFileOutputDir(allocator, out, job.name);
@@ -4163,7 +4297,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .fine_points = args.fine_points,
         .adaptive_low = args.adaptive_low,
         .adaptive_high = args.adaptive_high,
-        .store_atom_areas = (args.output_format == .jsonl),
+        .store_atom_areas = batchShouldStoreAtomAreas(.{ .output_format = args.output_format }),
         .external_ccd = if (ext_ccd != null) &ext_ccd.? else null,
         .sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null,
         .chain_filter = chain_filter_slice,
@@ -5094,6 +5228,89 @@ test "workflowJsonlOutputPath uses job file under output dir" {
     const path = try workflowJsonlOutputPath(std.testing.allocator, "results", "chain_A");
     defer std.testing.allocator.free(path);
     try std.testing.expectEqualStrings("results/chain_A.jsonl", path);
+}
+
+test "workflow JSONL output options control fields and metadata sidecar" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root_path = root_buf[0..root_len];
+
+    const input_dir = try std.fs.path.join(allocator, &.{ root_path, "input" });
+    defer allocator.free(input_dir);
+    const output_dir = try std.fs.path.join(allocator, &.{ root_path, "output" });
+    defer allocator.free(output_dir);
+    const workflow_path = try std.fs.path.join(allocator, &.{ root_path, "workflow.toml" });
+    defer allocator.free(workflow_path);
+    const input_path = try std.fs.path.join(allocator, &.{ input_dir, "tiny.pdb" });
+    defer allocator.free(input_path);
+
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = input_path,
+        .data =
+        \\ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N
+        \\ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C
+        \\END
+        \\
+        ,
+    });
+
+    const workflow = try std.fmt.allocPrint(allocator,
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "{s}"
+        \\
+        \\[output]
+        \\dir = "{s}"
+        \\format = "jsonl"
+        \\
+        \\[output.jsonl]
+        \\atom_areas = false
+        \\total_area = true
+        \\decimals = 2
+        \\metadata = "sidecar"
+        \\
+        \\[calculation]
+        \\n_points = 8
+        \\quiet = true
+        \\
+        \\[classifier]
+        \\type = "naccess"
+        \\
+        \\[[jobs]]
+        \\name = "all"
+        \\
+    , .{ input_dir, output_dir });
+    defer allocator.free(workflow);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
+
+    try runWorkflow(allocator, std.testing.io, .{ .workflow_path = workflow_path });
+
+    const jsonl_path = try std.fs.path.join(allocator, &.{ output_dir, "all.jsonl" });
+    defer allocator.free(jsonl_path);
+    const meta_path = try std.fs.path.join(allocator, &.{ output_dir, "all.meta.json" });
+    defer allocator.free(meta_path);
+
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, jsonl_path, allocator, .limited(4096));
+    defer allocator.free(content);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"status\":\"ok\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"total_area\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"atom_areas\"") == null);
+
+    const meta = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, meta_path, allocator, .limited(4096));
+    defer allocator.free(meta);
+    const parsed_meta = try std.json.parseFromSlice(std.json.Value, allocator, meta, .{});
+    defer parsed_meta.deinit();
+    const meta_obj = parsed_meta.value.object;
+    try std.testing.expectEqualStrings("all", meta_obj.get("job").?.string);
+    try std.testing.expectEqual(false, meta_obj.get("jsonl").?.object.get("atom_areas").?.bool);
+    try std.testing.expectEqual(@as(i64, 2), meta_obj.get("jsonl").?.object.get("decimals").?.integer);
 }
 
 test "workflowPerFileOutputDir uses job directory under output dir" {

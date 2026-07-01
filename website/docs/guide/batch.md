@@ -54,6 +54,20 @@ zsasa batch structures/ --format=jsonl --output=results.jsonl --jsonl-decimals=3
 
 Rounding applies to JSONL floating-point fields such as `total_area`, `atom_areas`, residue SASA arrays, and BSA analysis values. Omitting the option preserves full precision.
 
+For workflow-driven batch runs, use `[output.jsonl]` to also omit bulky fields
+or write metadata sidecars:
+
+```toml
+[output]
+format = "jsonl"
+
+[output.jsonl]
+atom_areas = false
+total_area = true
+decimals = 3
+metadata = "sidecar"
+```
+
 ## Thread Count for Large File Sets
 
 By default, `zsasa batch` uses the detected CPU count. For large directories with many small structure files, the workload can spend significant time waiting on file open/read/parse operations. In those I/O-bound cases, you can explicitly set `--threads=N` above the CPU count to keep more files in flight:
