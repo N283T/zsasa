@@ -82,6 +82,23 @@ zsasa batch structures/ results.jsonl \
 
 This can improve throughput on fast local SSDs, but the best value is machine- and dataset-dependent. Higher thread counts increase memory use and may stop helping once storage or CPU scheduling becomes saturated.
 
+## Experimental AlphaFold mmCIF Fast Parser
+
+For AlphaFold-like single-chain protein mmCIF batches, `--af-model-fast`
+enables an experimental parser that reads the sequence and consecutive `ATOM`
+coordinate rows directly:
+
+```bash
+zsasa batch afdb/ results.jsonl \
+  --format=jsonl \
+  --af-model-fast
+```
+
+This path is intended for benchmarking AFDB-style model files. It falls back to
+the generic mmCIF parser when the file does not match the expected standard
+amino-acid atom layout. Chain filters, author-chain matching, alternate-location
+overrides, and explicit hydrogen inclusion use the generic parser.
+
 ## Experimental Adaptive Bitmask SR
 
 For large SR batch jobs that already use bitmask mode, `--adaptive-sr` runs a coarse bitmask pass for every atom and recomputes only intermediate-exposure atoms with a fine point count:

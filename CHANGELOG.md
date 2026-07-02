@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Batch AF model fast parser**: add experimental `zsasa batch --af-model-fast` for AlphaFold-like mmCIF batches, with fallback to the generic parser when the input does not match the expected standard amino-acid layout.
+
 ## [0.8.0] - 2026-07-01
 
 ### Added

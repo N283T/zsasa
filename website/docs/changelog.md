@@ -8,6 +8,10 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+### Added
+
+- **Batch AF model fast parser**: add experimental `zsasa batch --af-model-fast` for AlphaFold-like mmCIF batches, with fallback to the generic parser when the input does not match the expected standard amino-acid layout.
+
 ## [v0.8.0](https://github.com/N283T/zsasa/releases/tag/v0.8.0) — 2026-07-01
 
 ### Added

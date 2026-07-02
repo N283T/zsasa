@@ -6,6 +6,7 @@ const json_parser = @import("json_parser.zig");
 const json_writer = @import("json_writer.zig");
 const bcif_parser = @import("bcif_parser.zig");
 const mmcif_parser = @import("mmcif_parser.zig");
+const af_model_parser = @import("af_model_parser.zig");
 const pdb_parser = @import("pdb_parser.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
 const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
@@ -90,6 +91,7 @@ pub const BatchConfig = struct {
     use_auth_chain: bool = false,
     alt_loc_mode: mmcif_parser.AltLocMode = .auto,
     alt_loc_id: u8 = 'A',
+    af_model_fast: bool = false,
     residue_map: bool = false,
     jsonl_decimals: ?u8 = null,
     jsonl_include_atom_areas: bool = true,
@@ -656,6 +658,15 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             break :blk .{ .input = input, .inline_ccd = parser.takeInlineCcd() };
         },
         .mmcif => blk: {
+            if (shouldTryAfModelFastParser(config)) {
+                const input = af_model_parser.parseFile(allocator, io, path) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => null,
+                };
+                if (input) |fast_input| {
+                    break :blk .{ .input = fast_input };
+                }
+            }
             var parser = mmcif_parser.MmcifParser.init(allocator);
             errdefer parser.deinitCcd();
             parser.skip_hydrogens = !config.include_hydrogens;
@@ -693,6 +704,14 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             break :blk .{ .input = try sdf_parser.toAtomInput(allocator, molecules, !config.include_hydrogens) };
         },
     };
+}
+
+fn shouldTryAfModelFastParser(config: BatchConfig) bool {
+    return config.af_model_fast and
+        config.chain_filter == null and
+        !config.use_auth_chain and
+        !config.include_hydrogens and
+        config.alt_loc_mode == .auto;
 }
 
 /// Apply built-in classifier to replace radii based on residue/atom names
@@ -2353,6 +2372,7 @@ pub const BatchArgs = struct {
     use_auth_chain: bool = false,
     alt_loc_mode: mmcif_parser.AltLocMode = .auto,
     alt_loc_id: u8 = 'A',
+    af_model_fast: bool = false,
     residue_map: bool = false,
     jsonl_decimals: ?u8 = null,
     n_threads: usize = 0,
@@ -2390,6 +2410,7 @@ pub const BatchArgs = struct {
     include_hydrogens_explicit: bool = false,
     include_hetatm_explicit: bool = false,
     alt_loc_explicit: bool = false,
+    af_model_fast_explicit: bool = false,
     use_bitmask_explicit: bool = false,
     bitmask_correction_explicit: bool = false,
     bitmask_correction_coeff_explicit: bool = false,
@@ -2778,6 +2799,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         else if (std.mem.eql(u8, arg, "--auth-chain")) {
             result.use_auth_chain = true;
         }
+        // --af-model-fast
+        else if (std.mem.eql(u8, arg, "--af-model-fast")) {
+            result.af_model_fast = true;
+            result.af_model_fast_explicit = true;
+        }
         // --altloc=MODE or --altloc MODE
         else if (std.mem.startsWith(u8, arg, "--altloc=")) {
             const setting = parseAltLocSetting(arg["--altloc=".len..]);
@@ -3021,6 +3047,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --manifest=PATH     Compatibility alias for --workflow
         \\    --chain=ID          Filter by chain ID for non-workflow batch (e.g. A or A,B)
         \\    --auth-chain        Use auth_asym_id instead of label_asym_id for mmCIF chain matching
+        \\    --af-model-fast     Use an experimental AlphaFold-model mmCIF fast parser
+        \\                        for batch mmCIF inputs; falls back to the generic parser
         \\    --altloc=MODE       mmCIF/BCIF alternate-location handling: auto, none, all,
         \\                        highest-occupancy, or a single ID like A (default: auto)
         \\    --residue-map       Include compact residue map arrays in JSONL output
@@ -3133,6 +3161,7 @@ fn applyWorkflowToBatchConfig(
         if (calculation.use_bitmask) |v| config.use_bitmask = v;
     }
     if (calculation.auth_chain) |v| config.use_auth_chain = v;
+    if (args.af_model_fast_explicit) config.af_model_fast = args.af_model_fast;
     if (calculation.residue_map) |v| config.residue_map = v;
 
     try applyWorkflowClassifierToBatchConfig(config, args, classifier_config);
@@ -3153,6 +3182,7 @@ fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
     if (args.precision_explicit) config.precision = args.precision;
     if (args.format_explicit) config.output_format = args.output_format;
     if (args.timing_explicit) config.show_timing = args.show_timing;
+    if (args.af_model_fast_explicit) config.af_model_fast = args.af_model_fast;
     if (args.quiet_explicit) {
         config.quiet = args.quiet;
         config.show_progress = args.show_progress;
@@ -4304,6 +4334,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .use_auth_chain = args.use_auth_chain,
         .alt_loc_mode = args.alt_loc_mode,
         .alt_loc_id = args.alt_loc_id,
+        .af_model_fast = args.af_model_fast,
         .residue_map = args.residue_map,
         .jsonl_decimals = args.jsonl_decimals,
     };
@@ -5824,6 +5855,69 @@ test "BatchArgs classifier_type defaults to ccd" {
     const args = [_][]const u8{ "zsasa", "batch", "input_dir/" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(ClassifierType.ccd, parsed.classifier_type);
+}
+
+test "BatchArgs --af-model-fast" {
+    const args = [_][]const u8{ "zsasa", "batch", "--af-model-fast", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expect(parsed.af_model_fast);
+}
+
+test "readInputFile uses AF model fast parser for batch mmCIF when requested" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const source =
+        \\data_AF_FAST
+        \\_struct_ref.pdbx_seq_one_letter_code A
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_entity_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.pdbx_PDB_ins_code
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\ATOM 1 N XX . BAD Z 1 9 ? 1.000 2.000 3.000
+        \\ATOM 2 C XX . BAD Z 1 9 ? 2.000 3.000 4.000
+        \\ATOM 3 C XX . BAD Z 1 9 ? 3.000 4.000 5.000
+        \\ATOM 4 C XX . BAD Z 1 9 ? 4.000 5.000 6.000
+        \\ATOM 5 O XX . BAD Z 1 9 ? 5.000 6.000 7.000
+        \\ATOM 6 O XX . BAD Z 1 9 ? 6.000 7.000 8.000
+        \\
+    ;
+
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "af.cif", .data = source });
+    const path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "af.cif", allocator);
+    defer allocator.free(path);
+
+    var parsed = try readInputFile(allocator, std.testing.io, path, .{
+        .af_model_fast = true,
+        .classifier_type = null,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 6), parsed.input.atomCount());
+    try std.testing.expectEqualStrings("ALA", parsed.input.residue.?[0].slice());
+    try std.testing.expectEqualStrings("CB", parsed.input.atom_name.?[3].slice());
+    try std.testing.expectEqualStrings("OXT", parsed.input.atom_name.?[5].slice());
+    try std.testing.expectEqualStrings("A", parsed.input.chain_id.?[0].slice());
+    try std.testing.expectEqual(@as(i32, 1), parsed.input.residue_num.?[0]);
+}
+
+test "AF model fast parser is skipped when chain filtering is requested" {
+    const chains = [_][]const u8{"Z"};
+    try std.testing.expect(!shouldTryAfModelFastParser(.{
+        .af_model_fast = true,
+        .chain_filter = chains[0..],
+    }));
 }
 
 test "BatchConfig quiet suppresses progress even when show_progress defaults true" {
