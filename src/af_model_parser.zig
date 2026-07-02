@@ -108,15 +108,24 @@ pub fn parse(allocator: Allocator, source: []const u8) !AtomInput {
     var insertion_code = try allocator.alloc(types.FixedString4, expected_atoms);
     errdefer allocator.free(insertion_code);
 
-    var line_it = std.mem.splitScalar(u8, source, '\n');
+    const first_atom = findFirstAtomLine(source) orelse return ParseError.NoAtomRecord;
+    const first_line_end = lineEndTrimmed(source, first_atom);
+    const q_abs = std.mem.indexOfScalarPos(u8, source, first_atom, '?') orelse return ParseError.MissingCoordinateMarker;
+    if (q_abs >= first_line_end) return ParseError.MissingCoordinateMarker;
+    const coord_section_offset = q_abs + 1 - first_atom;
+
+    var atom_start = first_atom;
     var atom_index: usize = 0;
     var cursor = AtomDescriptionCursor{ .sequence = sequence };
-    while (line_it.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, "\r");
-        if (!std.mem.startsWith(u8, line, "ATOM ")) continue;
-        if (atom_index >= expected_atoms) return ParseError.AtomCountMismatch;
+    while (atom_index < expected_atoms) {
+        if (atom_start + 5 > source.len or !std.mem.startsWith(u8, source[atom_start..], "ATOM ")) break;
 
-        const xyz = try parseAtomLineCoordinates(line);
+        const raw_line_end = lineEnd(source, atom_start);
+        const trimmed_line_end = trimCarriageReturn(source, raw_line_end);
+        if (atom_start + coord_section_offset >= trimmed_line_end) return ParseError.InvalidCoordinate;
+
+        const line = source[atom_start..trimmed_line_end];
+        const xyz = try parseAtomLineCoordinatesAtOffset(line, coord_section_offset);
         x[atom_index] = xyz[0];
         y[atom_index] = xyz[1];
         z[atom_index] = xyz[2];
@@ -132,6 +141,8 @@ pub fn parse(allocator: Allocator, source: []const u8) !AtomInput {
         insertion_code[atom_index] = types.FixedString4.fromSlice("");
 
         atom_index += 1;
+        if (raw_line_end >= source.len) break;
+        atom_start = raw_line_end + 1;
     }
 
     if (atom_index == 0) return ParseError.NoAtomRecord;
@@ -191,17 +202,81 @@ fn expectedAtomCount(sequence: []const u8) !usize {
     return count;
 }
 
-fn parseAtomLineCoordinates(line: []const u8) ![3]f64 {
-    const q_index = std.mem.indexOfScalar(u8, line, '?') orelse return ParseError.MissingCoordinateMarker;
-    var token_it = std.mem.tokenizeAny(u8, line[q_index + 1 ..], " \t\r");
-    const x_token = token_it.next() orelse return ParseError.InvalidCoordinate;
-    const y_token = token_it.next() orelse return ParseError.InvalidCoordinate;
-    const z_token = token_it.next() orelse return ParseError.InvalidCoordinate;
-    return .{
-        std.fmt.parseFloat(f64, x_token) catch return ParseError.InvalidCoordinate,
-        std.fmt.parseFloat(f64, y_token) catch return ParseError.InvalidCoordinate,
-        std.fmt.parseFloat(f64, z_token) catch return ParseError.InvalidCoordinate,
-    };
+fn findFirstAtomLine(source: []const u8) ?usize {
+    var line_start: usize = 0;
+    while (line_start < source.len) {
+        const raw_line_end = lineEnd(source, line_start);
+        const trimmed_line_end = trimCarriageReturn(source, raw_line_end);
+        if (std.mem.startsWith(u8, source[line_start..trimmed_line_end], "ATOM ")) return line_start;
+        if (raw_line_end >= source.len) break;
+        line_start = raw_line_end + 1;
+    }
+    return null;
+}
+
+fn lineEnd(source: []const u8, line_start: usize) usize {
+    return std.mem.indexOfScalarPos(u8, source, line_start, '\n') orelse source.len;
+}
+
+fn lineEndTrimmed(source: []const u8, line_start: usize) usize {
+    return trimCarriageReturn(source, lineEnd(source, line_start));
+}
+
+fn trimCarriageReturn(source: []const u8, raw_line_end: usize) usize {
+    if (raw_line_end > 0 and source[raw_line_end - 1] == '\r') return raw_line_end - 1;
+    return raw_line_end;
+}
+
+fn parseAtomLineCoordinatesAtOffset(line: []const u8, coord_section_offset: usize) ![3]f64 {
+    var cursor = coord_section_offset;
+    const x = try parseNextFixedFloat(line, &cursor);
+    const y = try parseNextFixedFloat(line, &cursor);
+    const z = try parseNextFixedFloat(line, &cursor);
+    return .{ x, y, z };
+}
+
+fn parseNextFixedFloat(line: []const u8, cursor: *usize) !f64 {
+    while (cursor.* < line.len and (line[cursor.*] == ' ' or line[cursor.*] == '\t')) cursor.* += 1;
+    const start = cursor.*;
+    while (cursor.* < line.len and isFixedFloatChar(line[cursor.*])) cursor.* += 1;
+    if (cursor.* == start) return ParseError.InvalidCoordinate;
+    return parseFixedFloat(line[start..cursor.*]) orelse ParseError.InvalidCoordinate;
+}
+
+fn isFixedFloatChar(c: u8) bool {
+    return (c >= '0' and c <= '9') or c == '.' or c == '-' or c == '+';
+}
+
+fn parseFixedFloat(field: []const u8) ?f64 {
+    if (field.len == 0) return null;
+    var i: usize = 0;
+    var negative = false;
+    if (field[i] == '-') {
+        negative = true;
+        i += 1;
+    } else if (field[i] == '+') {
+        i += 1;
+    }
+
+    var value: f64 = 0.0;
+    var has_digits = false;
+    while (i < field.len and field[i] >= '0' and field[i] <= '9') : (i += 1) {
+        has_digits = true;
+        value = value * 10.0 + @as(f64, @floatFromInt(field[i] - '0'));
+    }
+
+    if (i < field.len and field[i] == '.') {
+        i += 1;
+        var factor: f64 = 0.1;
+        while (i < field.len and field[i] >= '0' and field[i] <= '9') : (i += 1) {
+            has_digits = true;
+            value += @as(f64, @floatFromInt(field[i] - '0')) * factor;
+            factor *= 0.1;
+        }
+    }
+
+    if (!has_digits or i != field.len) return null;
+    return if (negative) -value else value;
 }
 
 const AtomDescription = struct {
@@ -284,16 +359,16 @@ test "parse AlphaFold-like mmCIF atom records from sequence and ATOM rows" {
         \\_atom_site.Cartn_z
         \\_atom_site.occupancy
         \\_atom_site.B_iso_or_equiv
-        \\ATOM 1 N N . ALA A 1 1 ? 1.000 2.000 3.000 1.00 90.00
-        \\ATOM 2 C CA . ALA A 1 1 ? 2.000 3.000 4.000 1.00 90.00
-        \\ATOM 3 C C . ALA A 1 1 ? 3.000 4.000 5.000 1.00 90.00
-        \\ATOM 4 C CB . ALA A 1 1 ? 4.000 5.000 6.000 1.00 90.00
-        \\ATOM 5 O O . ALA A 1 1 ? 5.000 6.000 7.000 1.00 90.00
-        \\ATOM 6 N N . GLY A 1 2 ? 6.000 7.000 8.000 1.00 80.00
-        \\ATOM 7 C CA . GLY A 1 2 ? 7.000 8.000 9.000 1.00 80.00
-        \\ATOM 8 C C . GLY A 1 2 ? 8.000 9.000 10.000 1.00 80.00
-        \\ATOM 9 O O . GLY A 1 2 ? 9.000 10.000 11.000 1.00 80.00
-        \\ATOM 10 O OXT . GLY A 1 2 ? 10.000 11.000 12.000 1.00 80.00
+        \\ATOM 1    N N   . ALA A 1 1   ? 1.000  2.000  3.000  1.00 90.00
+        \\ATOM 2    C CA  . ALA A 1 1   ? 2.000  3.000  4.000  1.00 90.00
+        \\ATOM 3    C C   . ALA A 1 1   ? 3.000  4.000  5.000  1.00 90.00
+        \\ATOM 4    C CB  . ALA A 1 1   ? 4.000  5.000  6.000  1.00 90.00
+        \\ATOM 5    O O   . ALA A 1 1   ? 5.000  6.000  7.000  1.00 90.00
+        \\ATOM 6    N N   . GLY A 1 2   ? 6.000  7.000  8.000  1.00 80.00
+        \\ATOM 7    C CA  . GLY A 1 2   ? 7.000  8.000  9.000  1.00 80.00
+        \\ATOM 8    C C   . GLY A 1 2   ? 8.000  9.000  10.000 1.00 80.00
+        \\ATOM 9    O O   . GLY A 1 2   ? 9.000  10.000 11.000 1.00 80.00
+        \\ATOM 10   O OXT . GLY A 1 2   ? 10.000 11.000 12.000 1.00 80.00
         \\#
         \\
     ;
@@ -330,9 +405,24 @@ test "rejects AlphaFold-like mmCIF when ATOM row count does not match sequence" 
         \\_atom_site.Cartn_x
         \\_atom_site.Cartn_y
         \\_atom_site.Cartn_z
-        \\ATOM 1 N N . ALA A 1 1 ? 1.000 2.000 3.000
+        \\ATOM 1    N N   . ALA A 1 1   ? 1.000  2.000  3.000
         \\
     ;
 
     try std.testing.expectError(error.AtomCountMismatch, parse(std.testing.allocator, source));
+}
+
+test "rejects AF model mmCIF when ATOM rows are not consecutive" {
+    const allocator = std.testing.allocator;
+    const cif =
+        "_struct_ref.pdbx_seq_one_letter_code A\n" ++
+        "ATOM 1    N N   . ALA A 1 1   ? 1.000  2.000  3.000  1.00 90.00\n" ++
+        "# non-ATOM row between atom records forces generic parser fallback\n" ++
+        "ATOM 2    C CA  . ALA A 1 1   ? 2.000  3.000  4.000  1.00 90.00\n" ++
+        "ATOM 3    C C   . ALA A 1 1   ? 3.000  4.000  5.000  1.00 90.00\n" ++
+        "ATOM 4    C CB  . ALA A 1 1   ? 4.000  5.000  6.000  1.00 90.00\n" ++
+        "ATOM 5    O O   . ALA A 1 1   ? 5.000  6.000  7.000  1.00 90.00\n" ++
+        "ATOM 6    O OXT . ALA A 1 1   ? 6.000  7.000  8.000  1.00 90.00\n";
+
+    try std.testing.expectError(ParseError.AtomCountMismatch, parse(allocator, cif));
 }
