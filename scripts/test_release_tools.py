@@ -37,7 +37,12 @@ class ReleaseBumpTests(unittest.TestCase):
         root.joinpath("packaging", "conda-forge").mkdir(parents=True)
         root.joinpath("website", "docs").mkdir(parents=True)
         root.joinpath("build.zig").write_text('const version = "0.7.1";\n')
-        root.joinpath("build.zig.zon").write_text('    .version = "0.7.1",\n')
+        root.joinpath("build.zig.zon").write_text(textwrap.dedent("""\
+                .version = "0.7.1",
+                .dependencies = .{
+                    .example = .{ .hash = "example-0.7.1-abcdef" },
+                },
+            """))
         root.joinpath("flake.nix").write_text('version = "0.7.1";\n')
         root.joinpath("python", "pyproject.toml").write_text('[project]\nname = "zsasa"\nversion = "0.7.1"\n')
         root.joinpath("python", "uv.lock").write_text('[[package]]\nname = "zsasa"\nversion = "0.7.1"\n')
@@ -99,7 +104,10 @@ class ReleaseBumpTests(unittest.TestCase):
             "CITATION.cff",
         ]:
             self.assertIn("0.8.0", self.tmp.joinpath(rel).read_text(), rel)
-            self.assertNotIn("0.7.1", self.tmp.joinpath(rel).read_text(), rel)
+            if rel != "build.zig.zon":
+                self.assertNotIn("0.7.1", self.tmp.joinpath(rel).read_text(), rel)
+
+        self.assertIn("example-0.7.1-abcdef", self.tmp.joinpath("build.zig.zon").read_text())
 
         changelog = self.tmp.joinpath("CHANGELOG.md").read_text()
         self.assertIn("## [Unreleased]\n\n## [0.8.0] - 2026-07-01", changelog)

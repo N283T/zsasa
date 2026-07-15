@@ -157,22 +157,21 @@ def promote_changelog(root: Path, version: str, tag: str, old: str, release_date
 
 
 def collect_stale_refs(root: Path, old: str) -> tuple[str, ...]:
-    active_paths = [
-        "build.zig",
-        "build.zig.zon",
-        "flake.nix",
-        "python/pyproject.toml",
-        "python/uv.lock",
-        "packaging/conda-forge/meta.yaml",
-        "src/c_api.zig",
-        "CITATION.cff",
-    ]
+    active_patterns = {
+        "build.zig": re.compile(rf'^const version = "{re.escape(old)}";$'),
+        "build.zig.zon": re.compile(rf'^\s*\.version = "{re.escape(old)}",$'),
+        "flake.nix": re.compile(rf'^\s*version = "{re.escape(old)}";$'),
+        "python/pyproject.toml": re.compile(rf'^version = "{re.escape(old)}"$'),
+        "python/uv.lock": re.compile(rf'^version = "{re.escape(old)}"$'),
+        "packaging/conda-forge/meta.yaml": re.compile(rf'^{{% set version = "{re.escape(old)}" %}}$'),
+        "src/c_api.zig": re.compile(rf'^const VERSION = "{re.escape(old)}";$'),
+        "CITATION.cff": re.compile(rf'^version: "{re.escape(old)}"$'),
+    }
     stale: list[str] = []
-    pattern = re.compile(rf"\b{re.escape(old)}\b")
-    for rel in active_paths:
+    for rel, pattern in active_patterns.items():
         path = root.joinpath(rel)
         for number, line in enumerate(path.read_text().splitlines(), start=1):
-            if pattern.search(line):
+            if pattern.match(line):
                 stale.append(f"{rel}:{number}:{line}")
     return tuple(stale)
 
