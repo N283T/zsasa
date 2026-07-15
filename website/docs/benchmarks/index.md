@@ -45,5 +45,6 @@ The pinned current pinned benchmarks were run on one consumer laptop:
 ## Evidence sources
 
 - Manuscript repository: [`N283T/zsasa-paper`](https://github.com/N283T/zsasa-paper)
+- Preprint: [Nagae and Tomii, *bioRxiv* (2026)](https://doi.org/10.64898/2026.06.29.733683)
 - Benchmark harness and result tables: [`N283T/zsasa-benchmarks`](https://github.com/N283T/zsasa-benchmarks)
 - Feature comparison: [Comparison with Other Tools](/docs/comparison)

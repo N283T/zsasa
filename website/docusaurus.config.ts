@@ -74,6 +74,11 @@ const config: Config = {
           label: "Benchmarks",
         },
         {
+          href: "https://doi.org/10.64898/2026.06.29.733683",
+          label: "Preprint",
+          position: "left",
+        },
+        {
           href: "https://github.com/N283T/zsasa",
           label: "GitHub",
           position: "right",
@@ -101,6 +106,11 @@ const config: Config = {
         {
           title: "More",
           items: [
+            {
+              label: "Preprint",
+              href: "https://doi.org/10.64898/2026.06.29.733683",
+            },
+            { label: "Citation", to: "/docs/citation" },
             { label: "GitHub", href: "https://github.com/N283T/zsasa" },
             { label: "PyPI", href: "https://pypi.org/project/zsasa/" },
           ],

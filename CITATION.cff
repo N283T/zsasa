@@ -6,6 +6,7 @@ abstract: "High-performance Solvent Accessible Surface Area (SASA) calculator in
 authors:
   - family-names: "Nagae"
     given-names: "Tsubasa"
+    orcid: "https://orcid.org/0009-0003-2202-8741"
 version: "0.8.0"
 date-released: "2026-07-01"
 license: MIT
@@ -20,3 +21,18 @@ keywords:
   - python
   - simd
   - molecular-dynamics
+preferred-citation:
+  type: article
+  title: "zsasa: a Zig-based engine for high-throughput solvent accessible surface area at proteome scale"
+  authors:
+    - family-names: "Nagae"
+      given-names: "Tsubasa"
+      orcid: "https://orcid.org/0009-0003-2202-8741"
+    - family-names: "Tomii"
+      given-names: "Kentaro"
+      orcid: "https://orcid.org/0000-0002-4567-4768"
+  journal: "bioRxiv"
+  year: 2026
+  month: 7
+  doi: "10.64898/2026.06.29.733683"
+  url: "https://www.biorxiv.org/content/10.64898/2026.06.29.733683v1"

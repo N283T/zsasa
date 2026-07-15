@@ -67,7 +67,7 @@ const sidebars: SidebarsConfig = {
     {
       type: "category",
       label: "Project",
-      items: ["comparison", "changelog"],
+      items: ["citation", "comparison", "changelog"],
     },
   ],
 };

@@ -1,11 +1,12 @@
 <p align="center">
-  <img src="logos/logo.svg" alt="zsasa logo" width="480">
+  <img src="logos/logo_bg_white.svg" alt="zsasa logo" width="480">
 </p>
 
 # zsasa
 
 [![CI](https://github.com/N283T/zsasa/actions/workflows/ci.yml/badge.svg)](https://github.com/N283T/zsasa/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/zsasa?color=blue)](https://pypi.org/project/zsasa/)
+[![bioRxiv](https://img.shields.io/badge/bioRxiv-10.64898%2F2026.06.29.733683-B31B1B)](https://doi.org/10.64898/2026.06.29.733683)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.16.0+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776ab?logo=python&logoColor=white)](https://www.python.org/)
@@ -14,7 +15,7 @@
 High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 Paper-era benchmarks cover FreeSASA agreement, proteome-scale batch throughput, large single structures, and low-memory MD trajectory analysis.
 
-**[Documentation](https://n283t.github.io/zsasa/)** · **[Benchmarks](https://n283t.github.io/zsasa/docs/benchmarks)** · **[Comparison](https://n283t.github.io/zsasa/docs/comparison)**
+**[Documentation](https://n283t.github.io/zsasa/)** · **[Preprint](https://doi.org/10.64898/2026.06.29.733683)** · **[Benchmarks](https://n283t.github.io/zsasa/docs/benchmarks)** · **[Comparison](https://n283t.github.io/zsasa/docs/comparison)**
 
 ## Features
 
@@ -77,13 +78,31 @@ zsasa batch --workflow bsa.toml
 | [Benchmarks](https://n283t.github.io/zsasa/docs/benchmarks) | Performance and accuracy results |
 | [Comparison](https://n283t.github.io/zsasa/docs/comparison) | vs FreeSASA, RustSASA, Lahuta |
 
+## Citation
+
+If you use zsasa in your research, please cite the bioRxiv preprint:
+
+> Nagae, T.; Tomii, K. **zsasa: a Zig-based engine for high-throughput solvent accessible surface area at proteome scale.** *bioRxiv* 2026. [doi:10.64898/2026.06.29.733683](https://doi.org/10.64898/2026.06.29.733683)
+
+```bibtex
+@article{Nagae2026zsasa,
+  author  = {Nagae, Tsubasa and Tomii, Kentaro},
+  title   = {zsasa: a Zig-based engine for high-throughput solvent accessible surface area at proteome scale},
+  journal = {bioRxiv},
+  year    = {2026},
+  doi     = {10.64898/2026.06.29.733683}
+}
+```
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 
 ## License
 
-[MIT](LICENSE)
+The zsasa software is licensed under the [MIT License](LICENSE).
+
+The zsasa name and logo assets are not covered by the MIT License. Unmodified use is permitted for referring to zsasa, including in academic publications, presentations, and posters. See the [zsasa Logo and Name Policy](TRADEMARKS.md) for details.
 
 ## Acknowledgments
 
