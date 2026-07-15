@@ -84,9 +84,8 @@ This can improve throughput on fast local SSDs, but the best value is machine- a
 
 ## Experimental AlphaFold mmCIF Fast Parser
 
-For AlphaFold-like single-chain protein mmCIF batches, `--af-model-fast`
-enables an experimental parser that reads the sequence and consecutive `ATOM`
-coordinate rows directly:
+For AlphaFold-like protein mmCIF batches, `--af-model-fast` enables an
+experimental parser for simple, consecutive `_atom_site` `ATOM` rows:
 
 ```bash
 zsasa batch afdb/ results.jsonl \
@@ -94,10 +93,22 @@ zsasa batch afdb/ results.jsonl \
   --af-model-fast
 ```
 
-This path is intended for benchmarking AFDB-style model files. It falls back to
-the generic mmCIF parser when the file does not match the expected standard
-amino-acid atom layout. Chain filters, author-chain matching, alternate-location
-overrides, and explicit hydrogen inclusion use the generic parser.
+This path preserves chain, residue, atom, element, and residue-number metadata,
+including multiple chains. It falls back to the generic mmCIF parser for
+unsupported layouts, alternate locations, multiple models, hydrogens, and
+extended chain IDs. Malformed coordinates and I/O errors are reported instead
+of being hidden by fallback. Chain filters, author-chain matching,
+alternate-location overrides, and explicit hydrogen inclusion use the generic
+parser directly.
+
+The input strategy can be selected independently with
+`--input-io=auto|mmap|read`. `auto` uses whole-file reads for the AF fast path
+and keeps each generic parser's existing default. Explicit `mmap` or `read`
+values are useful when benchmarking storage and operating-system behavior.
+
+For parser and output profiling, combine `--timing` with `--profile-stages`.
+The additional machine-readable lines report aggregate read/parse, classifier,
+and JSONL write times across the batch.
 
 ## Experimental Adaptive Bitmask SR
 

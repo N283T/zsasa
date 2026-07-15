@@ -31,12 +31,14 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const cif = @import("cif_tokenizer.zig");
 const elem = @import("element.zig");
+const input_io = @import("input_io.zig");
 const mmap_reader = @import("mmap_reader.zig");
 const compressed = @import("compressed.zig");
 const types = @import("types.zig");
 const AtomInput = types.AtomInput;
 const ccd_parser = @import("ccd_parser.zig");
 const altloc = @import("altloc.zig");
+pub const InputIoMode = input_io.InputIoMode;
 
 /// Error types for mmCIF parsing
 pub const ParseError = error{
@@ -205,14 +207,32 @@ pub const MmcifParser = struct {
 
     /// Parse mmCIF from a file (handles plain, .gz, and .zst compressed)
     pub fn parseFile(self: *MmcifParser, io: std.Io, path: []const u8) !AtomInput {
+        return self.parseFileWithInputIo(io, path, .auto);
+    }
+
+    pub fn parseFileWithInputIo(self: *MmcifParser, io: std.Io, path: []const u8, input_io_mode: InputIoMode) !AtomInput {
         if (compressed.isCompressed(path)) {
             const data = try compressed.read(self.allocator, path);
             defer self.allocator.free(data);
             return self.parse(data);
         }
-        const mapped = try mmap_reader.mmapFile(self.allocator, io, path);
-        defer mapped.deinit();
-        return self.parse(mapped.data);
+        switch (input_io_mode.resolve(.mmap)) {
+            .mmap => {
+                const mapped = try mmap_reader.mmapFile(self.allocator, io, path);
+                defer mapped.deinit();
+                return self.parse(mapped.data);
+            },
+            .read => {
+                const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+                defer file.close(io);
+                var read_buf: [64 * 1024]u8 = undefined;
+                var reader = file.reader(io, &read_buf);
+                const data = try reader.interface.allocRemaining(self.allocator, .unlimited);
+                defer self.allocator.free(data);
+                return self.parse(data);
+            },
+            .auto => unreachable,
+        }
     }
 
     /// Result from findAtomSiteLoop containing columns and their count
