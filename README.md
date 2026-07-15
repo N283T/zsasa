@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logos/logo_bg_white.svg" alt="zsasa logo" width="480">
+  <img src="logos/logo_white.svg" alt="zsasa logo" width="480">
 </p>
 
 # zsasa
