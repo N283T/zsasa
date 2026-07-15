@@ -2,7 +2,7 @@
 
 The primary assets are:
 
-- `logo_bg_white.svg` — primary zsasa logo.
+- `logo_white.svg` — primary zsasa logo.
 - `icon_black.svg` — primary zsasa icon.
 
 Other files in this directory are official variants for different backgrounds.
