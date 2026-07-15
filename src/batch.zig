@@ -6,6 +6,7 @@ const json_parser = @import("json_parser.zig");
 const json_writer = @import("json_writer.zig");
 const bcif_parser = @import("bcif_parser.zig");
 const mmcif_parser = @import("mmcif_parser.zig");
+const af_model_parser = @import("af_model_parser.zig");
 const pdb_parser = @import("pdb_parser.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
 const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
@@ -20,6 +21,7 @@ const ccd_parser = @import("ccd_parser.zig");
 const ccd_binary = @import("ccd_binary.zig");
 const sdf_parser = @import("sdf_parser.zig");
 const compressed = @import("compressed.zig");
+const input_io = @import("input_io.zig");
 
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
@@ -30,6 +32,7 @@ const ConfigGen = types.ConfigGen;
 const Precision = types.Precision;
 const ClassifierType = classifier.ClassifierType;
 const OutputFormat = json_writer.OutputFormat;
+pub const InputIoMode = input_io.InputIoMode;
 const LeeRichardsConfig = lee_richards.LeeRichardsConfig;
 const LeeRichardsConfigGen = lee_richards.LeeRichardsConfigGen;
 
@@ -67,6 +70,8 @@ pub const BatchConfig = struct {
     probe_radius: f64 = 1.4,
     output_format: OutputFormat = .json,
     show_timing: bool = false,
+    profile_stages: bool = false,
+    input_io: InputIoMode = .auto,
     quiet: bool = false,
     show_progress: bool = true,
     precision: Precision = .f64, // f32 or f64
@@ -90,6 +95,7 @@ pub const BatchConfig = struct {
     use_auth_chain: bool = false,
     alt_loc_mode: mmcif_parser.AltLocMode = .auto,
     alt_loc_id: u8 = 'A',
+    af_model_fast: bool = false,
     residue_map: bool = false,
     jsonl_decimals: ?u8 = null,
     jsonl_include_atom_areas: bool = true,
@@ -369,6 +375,8 @@ pub const FileResult = struct {
     error_msg: ?[]const u8 = null,
     atom_areas: ?[]const f64 = null, // Populated for jsonl output
     residue_map: ?json_writer.ResidueMap = null, // Populated for jsonl residue-map output
+    read_parse_time_ns: u64 = 0,
+    classifier_time_ns: u64 = 0,
 
     pub const Status = enum {
         ok,
@@ -386,6 +394,9 @@ pub const BatchResult = struct {
     scan_time_ns: u64 = 0,
     build_items_time_ns: u64 = 0,
     process_time_ns: u64 = 0,
+    read_parse_time_ns: u64 = 0,
+    classifier_time_ns: u64 = 0,
+    jsonl_write_time_ns: u64 = 0,
     file_results: []FileResult,
     allocator: Allocator,
 
@@ -483,6 +494,16 @@ pub const BatchResult = struct {
         std.debug.print("BATCH_FILES:{d}\n", .{self.total_files});
         std.debug.print("BATCH_SUCCESS:{d}\n", .{self.successful});
     }
+
+    pub fn printStageProfile(self: BatchResult) void {
+        const ns_to_ms = 1_000_000.0;
+        const read_parse_ms = @as(f64, @floatFromInt(self.read_parse_time_ns)) / ns_to_ms;
+        const classifier_ms = @as(f64, @floatFromInt(self.classifier_time_ns)) / ns_to_ms;
+        const jsonl_write_ms = @as(f64, @floatFromInt(self.jsonl_write_time_ns)) / ns_to_ms;
+        std.debug.print("BATCH_READ_PARSE_TIME_MS:{d:.2}\n", .{read_parse_ms});
+        std.debug.print("BATCH_CLASSIFIER_TIME_MS:{d:.2}\n", .{classifier_ms});
+        std.debug.print("BATCH_JSONL_WRITE_TIME_MS:{d:.2}\n", .{jsonl_write_ms});
+    }
 };
 
 const WorkflowJobState = struct {
@@ -509,11 +530,17 @@ const WorkflowJobCounter = struct {
 const WorkflowJobRuntime = struct {
     state: *WorkflowJobState,
     jsonl_stream: ?JsonlStreamWriter = null,
+    jsonl_buffer: [64 * 1024]u8 = undefined,
     jsonl_file: ?std.Io.File = null,
     jsonl_file_needs_close: bool = false,
     counter: WorkflowJobCounter = .{},
 
     fn close(self: *WorkflowJobRuntime, io: std.Io) void {
+        if (self.jsonl_stream) |*stream| {
+            stream.flush() catch |err| {
+                logWarning("workflow JSONL flush failed for {s}: {s}", .{ self.state.name, @errorName(err) });
+            };
+        }
         if (self.jsonl_file_needs_close) {
             if (self.jsonl_file) |file| file.close(io);
         }
@@ -652,10 +679,18 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             parser.alt_loc_mode = config.alt_loc_mode;
             parser.alt_loc_id = config.alt_loc_id;
             parser.parse_inline_ccd = classifierUsesCcdResources(config.classifier_type);
-            const input = try parser.parseFile(io, path);
+            const input = try parser.parseFileWithInputIo(io, path, config.input_io);
             break :blk .{ .input = input, .inline_ccd = parser.takeInlineCcd() };
         },
         .mmcif => blk: {
+            if (shouldTryAfModelFastParser(config)) {
+                const input = af_model_parser.parseFileWithOptions(allocator, io, path, .{
+                    .io_mode = config.input_io.resolve(.read),
+                }) catch |err| if (shouldFallbackAfModelFastError(err)) null else return err;
+                if (input) |fast_input| {
+                    break :blk .{ .input = fast_input };
+                }
+            }
             var parser = mmcif_parser.MmcifParser.init(allocator);
             errdefer parser.deinitCcd();
             parser.skip_hydrogens = !config.include_hydrogens;
@@ -665,7 +700,7 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             parser.alt_loc_mode = config.alt_loc_mode;
             parser.alt_loc_id = config.alt_loc_id;
             parser.parse_inline_ccd = classifierUsesCcdResources(config.classifier_type);
-            const input = try parser.parseFile(io, path);
+            const input = try parser.parseFileWithInputIo(io, path, config.input_io);
             break :blk .{ .input = input, .inline_ccd = parser.takeInlineCcd() };
         },
         .pdb => blk: {
@@ -673,7 +708,7 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             parser.skip_hydrogens = !config.include_hydrogens;
             parser.atom_only = !config.include_hetatm;
             parser.chain_filter = config.chain_filter;
-            break :blk .{ .input = try parser.parseFile(io, path) };
+            break :blk .{ .input = try parser.parseFileWithInputIo(io, path, config.input_io) };
         },
         .sdf => blk: {
             const source = if (compressed.isCompressed(path))
@@ -693,6 +728,18 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             break :blk .{ .input = try sdf_parser.toAtomInput(allocator, molecules, !config.include_hydrogens) };
         },
     };
+}
+
+fn shouldTryAfModelFastParser(config: BatchConfig) bool {
+    return config.af_model_fast and
+        config.chain_filter == null and
+        !config.use_auth_chain and
+        !config.include_hydrogens and
+        config.alt_loc_mode == .auto;
+}
+
+fn shouldFallbackAfModelFastError(err: anyerror) bool {
+    return err == error.UnsupportedLayout;
 }
 
 /// Apply built-in classifier to replace radii based on residue/atom names
@@ -1083,17 +1130,24 @@ fn processOneFile(
     };
 
     // Read and parse input (auto-detect format from extension)
+    var read_parse_timer: std.Io.Timestamp = undefined;
+    if (config.profile_stages) read_parse_timer = std.Io.Timestamp.now(io, .awake);
     var parsed = readInputFile(arena, io, input_path, config) catch |err| {
+        if (config.profile_stages) result.read_parse_time_ns = @intCast(read_parse_timer.untilNow(io, .awake).nanoseconds);
         result.status = .err;
         result.error_msg = std.fmt.allocPrint(result_allocator, "read/parse failed: {s}", .{@errorName(err)}) catch null;
         return result;
     };
+    if (config.profile_stages) result.read_parse_time_ns = @intCast(read_parse_timer.untilNow(io, .awake).nanoseconds);
     defer parsed.deinit();
 
     // Apply classifier for PDB/mmCIF input (skip JSON unless classification info exists).
+    var classifier_timer: std.Io.Timestamp = undefined;
+    if (config.profile_stages) classifier_timer = std.Io.Timestamp.now(io, .awake);
     if (config.custom_classifier) |custom_classifier| {
         if (parsed.input.hasClassificationInfo()) {
             applyCustomClassifier(&parsed.input, custom_classifier, config.quiet) catch |err| {
+                if (config.profile_stages) result.classifier_time_ns = @intCast(classifier_timer.untilNow(io, .awake).nanoseconds);
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
                 return result;
@@ -1103,14 +1157,16 @@ fn processOneFile(
         const format = format_detect.detectInputFormat(input_path);
         if (format != .json and parsed.input.hasClassificationInfo()) {
             applyBuiltinClassifier(&parsed.input, ct, config.sdf_ccd, parsed.inlineCcdPtr(), config.external_ccd) catch |err| {
+                if (config.profile_stages) result.classifier_time_ns = @intCast(classifier_timer.untilNow(io, .awake).nanoseconds);
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
                 return result;
             };
         }
     }
+    if (config.profile_stages) result.classifier_time_ns = @intCast(classifier_timer.untilNow(io, .awake).nanoseconds);
 
-    return switch (config.precision) {
+    var calc_result = switch (config.precision) {
         .f64 => calculatePreparedInputResult(
             f64,
             arena,
@@ -1140,6 +1196,9 @@ fn processOneFile(
             fine_lut_f32,
         ),
     };
+    calc_result.read_parse_time_ns = result.read_parse_time_ns;
+    calc_result.classifier_time_ns = result.classifier_time_ns;
+    return calc_result;
 }
 
 /// Process a single SDF molecule and return result.
@@ -1372,14 +1431,33 @@ fn processOneSdfMoleculeInner(
 }
 
 /// Thread-safe JSONL streaming writer.
-/// Each call to writeResult acquires the mutex, serializes one line, and flushes.
+/// Each call to writeResult acquires the mutex and serializes one line into a
+/// persistent buffered file writer. The owner must call flush after workers join.
 const JsonlStreamWriter = struct {
+    const buffer_size = 64 * 1024;
+    const large_line_threshold = buffer_size / 2;
+
     mutex: std.Io.Mutex = .init,
     file: std.Io.File,
     io: std.Io,
     options: json_writer.JsonlOptions = .{},
+    writer: std.Io.File.Writer,
     /// Set to true if any writeResult call failed to serialize or write.
     write_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    pub fn init(
+        file: std.Io.File,
+        io: std.Io,
+        options: json_writer.JsonlOptions,
+        buffer: *[buffer_size]u8,
+    ) JsonlStreamWriter {
+        return .{
+            .file = file,
+            .io = io,
+            .options = options,
+            .writer = std.Io.File.Writer.initStreaming(file, io, buffer),
+        };
+    }
 
     fn recordFailure(self: *JsonlStreamWriter) void {
         self.write_failed.store(true, .release);
@@ -1403,24 +1481,50 @@ const JsonlStreamWriter = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
-        // 64KB stack buffer; use streaming mode so the OS seek position
-        // advances (safe under mutex — only one thread writes at a time).
-        var buf: [64 * 1024]u8 = undefined;
-        var w = std.Io.File.Writer.initStreaming(self.file, self.io, &buf);
-        w.interface.writeAll(line) catch |err| {
+        // Human AFDB PDB JSONL lines are often close to the 64 KiB buffer size.
+        // Keeping such lines in a persistent shared buffer causes extra buffer
+        // churn; use the previous per-line streaming writer behavior for large
+        // lines while retaining persistent buffering for smaller rounded JSONL.
+        if (line.len > large_line_threshold) {
+            self.writer.interface.flush() catch |err| {
+                logWarning("JSONL flush failed before large write for {s}: {s}", .{ result.filename, @errorName(err) });
+                self.recordFailure();
+                return;
+            };
+            var local_buf: [buffer_size]u8 = undefined;
+            var local_writer = std.Io.File.Writer.initStreaming(self.file, self.io, &local_buf);
+            local_writer.interface.writeAll(line) catch |err| {
+                logWarning("JSONL large write failed for {s}: {s}", .{ result.filename, @errorName(err) });
+                self.recordFailure();
+                return;
+            };
+            local_writer.interface.writeAll("\n") catch |err| {
+                logWarning("JSONL large newline write failed for {s}: {s}", .{ result.filename, @errorName(err) });
+                self.recordFailure();
+                return;
+            };
+            local_writer.interface.flush() catch |err| {
+                logWarning("JSONL large flush failed for {s}: {s}", .{ result.filename, @errorName(err) });
+                self.recordFailure();
+            };
+            return;
+        }
+
+        self.writer.interface.writeAll(line) catch |err| {
             logWarning("JSONL write failed for {s}: {s}", .{ result.filename, @errorName(err) });
             self.recordFailure();
             return;
         };
-        w.interface.writeAll("\n") catch |err| {
+        self.writer.interface.writeAll("\n") catch |err| {
             logWarning("JSONL newline write failed for {s}: {s}", .{ result.filename, @errorName(err) });
             self.recordFailure();
-            return;
         };
-        w.interface.flush() catch |err| {
-            logWarning("JSONL flush failed for {s}: {s}", .{ result.filename, @errorName(err) });
-            self.recordFailure();
-        };
+    }
+
+    pub fn flush(self: *JsonlStreamWriter) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        try self.writer.interface.flush();
     }
 
     /// Returns true if any write to the JSONL file failed.
@@ -1576,7 +1680,7 @@ pub fn runBatchSequential(
         try std.Io.Dir.cwd().createDirPath(io, out_dir);
     }
 
-    // Open JSONL output file (or stdout) when streaming is requested
+    // Sequential mode writes JSONL as each file completes.
     var jsonl_file: ?std.Io.File = null;
     var jsonl_file_needs_close = false;
     if (jsonl_output_path) |path| {
@@ -1595,6 +1699,9 @@ pub fn runBatchSequential(
 
     // Process each file
     var total_sasa_time_ns: u64 = 0;
+    var total_read_parse_time_ns: u64 = 0;
+    var total_classifier_time_ns: u64 = 0;
+    var total_jsonl_write_time_ns: u64 = 0;
     var successful: usize = 0;
     var failed: usize = 0;
 
@@ -1735,13 +1842,18 @@ pub fn runBatchSequential(
                 if (mol_result.status == .ok) {
                     successful += 1;
                     total_sasa_time_ns += mol_result.sasa_time_ns;
+                    total_read_parse_time_ns += mol_result.read_parse_time_ns;
+                    total_classifier_time_ns += mol_result.classifier_time_ns;
                 } else {
                     failed += 1;
                 }
 
                 // Stream JSONL output
                 if (jsonl_writer) |*w| {
+                    var write_timer: std.Io.Timestamp = undefined;
+                    if (config.profile_stages) write_timer = std.Io.Timestamp.now(io, .awake);
                     try writeJsonlResult(w, arena.allocator(), &mol_result, jsonlOptions(config));
+                    if (config.profile_stages) total_jsonl_write_time_ns += @intCast(write_timer.untilNow(io, .awake).nanoseconds);
                 }
                 mol_result.atom_areas = null;
                 mol_result.residue_map = null;
@@ -1776,13 +1888,18 @@ pub fn runBatchSequential(
             if (result.status == .ok) {
                 successful += 1;
                 total_sasa_time_ns += result.sasa_time_ns;
+                total_read_parse_time_ns += result.read_parse_time_ns;
+                total_classifier_time_ns += result.classifier_time_ns;
             } else {
                 failed += 1;
             }
 
             // Stream JSONL output
             if (jsonl_writer) |*w| {
+                var write_timer: std.Io.Timestamp = undefined;
+                if (config.profile_stages) write_timer = std.Io.Timestamp.now(io, .awake);
                 try writeJsonlResult(w, arena.allocator(), &result, jsonlOptions(config));
+                if (config.profile_stages) total_jsonl_write_time_ns += @intCast(write_timer.untilNow(io, .awake).nanoseconds);
             }
             result.atom_areas = null;
             result.residue_map = null;
@@ -1809,6 +1926,9 @@ pub fn runBatchSequential(
         .total_time_ns = total_time_ns,
         .scan_time_ns = scan_time_ns,
         .process_time_ns = process_time_ns,
+        .read_parse_time_ns = total_read_parse_time_ns,
+        .classifier_time_ns = total_classifier_time_ns,
+        .jsonl_write_time_ns = total_jsonl_write_time_ns,
         .file_results = try results_list.toOwnedSlice(allocator),
         .allocator = allocator,
     };
@@ -1844,6 +1964,7 @@ const ParallelContext = struct {
     result_allocator: Allocator,
     next_item: std.atomic.Value(usize),
     processed_count: std.atomic.Value(usize),
+    jsonl_write_time_ns: std.atomic.Value(u64),
     lut_f64: ?*const bitmask_lut.BitmaskLut,
     lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
     coarse_lut_f64: ?*const bitmask_lut.BitmaskLut,
@@ -1969,7 +2090,13 @@ fn parallelWorker(ctx: *ParallelContext) void {
             ctx.results[item_idx] = result;
 
             if (ctx.jsonl_stream) |stream| {
+                var write_timer: std.Io.Timestamp = undefined;
+                if (ctx.config.profile_stages) write_timer = std.Io.Timestamp.now(ctx.io, .awake);
                 stream.writeResult(arena.allocator(), &result);
+                if (ctx.config.profile_stages) {
+                    const elapsed: u64 = @intCast(write_timer.untilNow(ctx.io, .awake).nanoseconds);
+                    _ = ctx.jsonl_write_time_ns.fetchAdd(elapsed, .monotonic);
+                }
             }
             ctx.results[item_idx].atom_areas = null;
             ctx.results[item_idx].residue_map = null;
@@ -1998,9 +2125,15 @@ fn parallelWorker(ctx: *ParallelContext) void {
 
             // Stream JSONL output (atom_areas on arena, valid until reset)
             if (ctx.jsonl_stream) |stream| {
+                var write_timer: std.Io.Timestamp = undefined;
+                if (ctx.config.profile_stages) write_timer = std.Io.Timestamp.now(ctx.io, .awake);
                 stream.writeResult(arena.allocator(), &result);
+                if (ctx.config.profile_stages) {
+                    const elapsed: u64 = @intCast(write_timer.untilNow(ctx.io, .awake).nanoseconds);
+                    _ = ctx.jsonl_write_time_ns.fetchAdd(elapsed, .monotonic);
+                }
             }
-            // Clear atom_areas since arena will free them
+            // Clear arena-owned payloads after streaming.
             ctx.results[item_idx].atom_areas = null;
             ctx.results[item_idx].residue_map = null;
         }
@@ -2195,6 +2328,7 @@ pub fn runBatchParallel(
     // Determine thread count
     const cpu_count = std.Thread.getCpuCount() catch 1;
     const n_threads = resolveBatchThreadCount(config.n_threads, cpu_count);
+    const actual_threads = @min(n_threads, work_items.len);
 
     // For single item or single thread, use sequential
     if (work_items.len == 1 or n_threads <= 1) {
@@ -2206,7 +2340,7 @@ pub fn runBatchParallel(
     var luts = try BatchLuts.init(allocator, config);
     defer luts.deinit();
 
-    // Open JSONL output file (or stdout) when streaming is requested
+    // Open JSONL output file (or stdout) when requested.
     var jsonl_file: ?std.Io.File = null;
     var jsonl_file_needs_close = false;
     if (jsonl_output_path) |path| {
@@ -2222,8 +2356,9 @@ pub fn runBatchParallel(
     // Set up the stream writer on the stack (if JSONL streaming is active).
     // SAFETY: `undefined` when jsonl_file is null — never accessed because
     // jsonl_stream_ptr is also null in that case.
+    var jsonl_stream_buffer: [64 * 1024]u8 = undefined;
     var jsonl_stream_storage: JsonlStreamWriter = if (jsonl_file) |jf|
-        JsonlStreamWriter{ .file = jf, .io = io, .options = jsonlOptions(config) }
+        JsonlStreamWriter.init(jf, io, jsonlOptions(config), &jsonl_stream_buffer)
     else
         undefined;
     const jsonl_stream_ptr: ?*JsonlStreamWriter = if (jsonl_file != null) &jsonl_stream_storage else null;
@@ -2238,6 +2373,7 @@ pub fn runBatchParallel(
         .result_allocator = allocator,
         .next_item = std.atomic.Value(usize).init(0),
         .processed_count = std.atomic.Value(usize).init(0),
+        .jsonl_write_time_ns = std.atomic.Value(u64).init(0),
         .lut_f64 = luts.f64Ptr(),
         .lut_f32 = luts.f32Ptr(),
         .coarse_lut_f64 = luts.coarseF64Ptr(),
@@ -2250,7 +2386,6 @@ pub fn runBatchParallel(
     };
 
     // Spawn worker threads
-    const actual_threads = @min(n_threads, work_items.len);
     const threads = try allocator.alloc(std.Thread, actual_threads);
     defer allocator.free(threads);
 
@@ -2284,6 +2419,8 @@ pub fn runBatchParallel(
 
     // Aggregate results
     var total_sasa_time_ns: u64 = 0;
+    var total_read_parse_time_ns: u64 = 0;
+    var total_classifier_time_ns: u64 = 0;
     var successful: usize = 0;
     var failed: usize = 0;
 
@@ -2291,12 +2428,15 @@ pub fn runBatchParallel(
         if (result.status == .ok) {
             successful += 1;
             total_sasa_time_ns += result.sasa_time_ns;
+            total_read_parse_time_ns += result.read_parse_time_ns;
+            total_classifier_time_ns += result.classifier_time_ns;
         } else {
             failed += 1;
         }
     }
 
     if (jsonl_stream_ptr) |stream| {
+        try stream.flush();
         if (stream.hasError()) return error.JsonlWriteFailed;
     }
 
@@ -2311,6 +2451,9 @@ pub fn runBatchParallel(
         .scan_time_ns = scan_time_ns,
         .build_items_time_ns = build_items_time_ns,
         .process_time_ns = process_time_ns,
+        .read_parse_time_ns = total_read_parse_time_ns,
+        .classifier_time_ns = total_classifier_time_ns,
+        .jsonl_write_time_ns = ctx.jsonl_write_time_ns.load(.monotonic),
         .file_results = file_results,
         .allocator = allocator,
     };
@@ -2353,6 +2496,7 @@ pub const BatchArgs = struct {
     use_auth_chain: bool = false,
     alt_loc_mode: mmcif_parser.AltLocMode = .auto,
     alt_loc_id: u8 = 'A',
+    af_model_fast: bool = false,
     residue_map: bool = false,
     jsonl_decimals: ?u8 = null,
     n_threads: usize = 0,
@@ -2378,6 +2522,8 @@ pub const BatchArgs = struct {
     quiet: bool = false,
     show_progress: bool = true,
     show_timing: bool = false,
+    profile_stages: bool = false,
+    input_io: InputIoMode = .auto,
     show_help: bool = false,
     threads_explicit: bool = false,
     probe_radius_explicit: bool = false,
@@ -2390,6 +2536,7 @@ pub const BatchArgs = struct {
     include_hydrogens_explicit: bool = false,
     include_hetatm_explicit: bool = false,
     alt_loc_explicit: bool = false,
+    af_model_fast_explicit: bool = false,
     use_bitmask_explicit: bool = false,
     bitmask_correction_explicit: bool = false,
     bitmask_correction_coeff_explicit: bool = false,
@@ -2402,6 +2549,8 @@ pub const BatchArgs = struct {
     sdf_explicit: bool = false,
     quiet_explicit: bool = false,
     timing_explicit: bool = false,
+    profile_stages_explicit: bool = false,
+    input_io_explicit: bool = false,
     jsonl_decimals_explicit: bool = false,
 };
 
@@ -2573,6 +2722,14 @@ fn parsePrecision(value: []const u8) Precision {
     }
 }
 
+fn parseInputIoMode(value: []const u8) InputIoMode {
+    return InputIoMode.parse(value) orelse {
+        std.debug.print("Error: Invalid input I/O mode: {s}\n", .{value});
+        std.debug.print("Valid input I/O modes: auto, mmap, read\n", .{});
+        std.process.exit(1);
+    };
+}
+
 fn parseJsonlDecimals(value: []const u8) u8 {
     const decimals = std.fmt.parseInt(u8, value, 10) catch {
         std.debug.print("Error: Invalid jsonl decimals: {s}\n", .{value});
@@ -2741,6 +2898,20 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
             }
             result.precision = parsePrecision(args[i]);
         }
+        // --input-io=MODE or --input-io MODE
+        else if (std.mem.startsWith(u8, arg, "--input-io=")) {
+            result.input_io_explicit = true;
+            const value = arg["--input-io=".len..];
+            result.input_io = parseInputIoMode(value);
+        } else if (std.mem.eql(u8, arg, "--input-io")) {
+            result.input_io_explicit = true;
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --input-io\n", .{});
+                std.process.exit(1);
+            }
+            result.input_io = parseInputIoMode(args[i]);
+        }
         // --workflow=PATH or --workflow PATH
         else if (std.mem.startsWith(u8, arg, "--workflow=")) {
             result.workflow_path = arg["--workflow=".len..];
@@ -2777,6 +2948,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         // --auth-chain
         else if (std.mem.eql(u8, arg, "--auth-chain")) {
             result.use_auth_chain = true;
+        }
+        // --af-model-fast
+        else if (std.mem.eql(u8, arg, "--af-model-fast")) {
+            result.af_model_fast = true;
+            result.af_model_fast_explicit = true;
         }
         // --altloc=MODE or --altloc MODE
         else if (std.mem.startsWith(u8, arg, "--altloc=")) {
@@ -2930,6 +3106,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
             result.show_timing = true;
             result.timing_explicit = true;
         }
+        // --profile-stages
+        else if (std.mem.eql(u8, arg, "--profile-stages")) {
+            result.profile_stages = true;
+            result.profile_stages_explicit = true;
+        }
         // --help or -h
         else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             result.show_help = true;
@@ -3021,6 +3202,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --manifest=PATH     Compatibility alias for --workflow
         \\    --chain=ID          Filter by chain ID for non-workflow batch (e.g. A or A,B)
         \\    --auth-chain        Use auth_asym_id instead of label_asym_id for mmCIF chain matching
+        \\    --af-model-fast     Use an experimental AlphaFold-model mmCIF fast parser
+        \\                        with multi-chain metadata and safe generic fallback
         \\    --altloc=MODE       mmCIF/BCIF alternate-location handling: auto, none, all,
         \\                        highest-occupancy, or a single ID like A (default: auto)
         \\    --residue-map       Include compact residue map arrays in JSONL output
@@ -3028,6 +3211,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --n-points=N        Test points per atom (default: 100, for sr)
         \\    --n-slices=N        Slices per atom diameter (default: 20, for lr)
         \\    --precision=PREC    Floating-point precision: f32, f64 (default: f64)
+        \\    --input-io=MODE     File input strategy where supported: auto, mmap, read
+        \\                        Default: auto (AF fast uses read; others keep defaults)
         \\    --format=FORMAT     Output format: json, compact, csv, jsonl (default: json)
         \\    --jsonl-decimals=N  Round JSONL floating-point values to N decimals (0..15)
         \\    --include-hydrogens Include hydrogen atoms (default: exclude)
@@ -3045,6 +3230,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --adaptive-low=X    Coarse accept low exposed fraction (default: 0.10)
         \\    --adaptive-high=X   Coarse accept high exposed fraction (default: 0.90)
         \\    --timing            Show timing breakdown for benchmarking
+        \\    --profile-stages    Include read/parse, classifier, and JSONL stage timings
         \\    -o, --output=PATH   Output directory, or file path for --format=jsonl
         \\    -q, --quiet         Suppress progress output
         \\    -h, --help          Show this help message
@@ -3133,6 +3319,7 @@ fn applyWorkflowToBatchConfig(
         if (calculation.use_bitmask) |v| config.use_bitmask = v;
     }
     if (calculation.auth_chain) |v| config.use_auth_chain = v;
+    if (args.af_model_fast_explicit) config.af_model_fast = args.af_model_fast;
     if (calculation.residue_map) |v| config.residue_map = v;
 
     try applyWorkflowClassifierToBatchConfig(config, args, classifier_config);
@@ -3153,6 +3340,9 @@ fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
     if (args.precision_explicit) config.precision = args.precision;
     if (args.format_explicit) config.output_format = args.output_format;
     if (args.timing_explicit) config.show_timing = args.show_timing;
+    if (args.profile_stages_explicit) config.profile_stages = args.profile_stages;
+    if (args.input_io_explicit) config.input_io = args.input_io;
+    if (args.af_model_fast_explicit) config.af_model_fast = args.af_model_fast;
     if (args.quiet_explicit) {
         config.quiet = args.quiet;
         config.show_progress = args.show_progress;
@@ -4005,11 +4195,11 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
                     const file = try std.Io.Dir.cwd().createFile(io, path, .{});
                     runtimes[i].jsonl_file = file;
                     runtimes[i].jsonl_file_needs_close = true;
-                    runtimes[i].jsonl_stream = JsonlStreamWriter{ .file = file, .io = io, .options = jsonlOptions(state.config) };
+                    runtimes[i].jsonl_stream = JsonlStreamWriter.init(file, io, jsonlOptions(state.config), &runtimes[i].jsonl_buffer);
                 } else {
                     const file = std.Io.File.stdout();
                     runtimes[i].jsonl_file = file;
-                    runtimes[i].jsonl_stream = JsonlStreamWriter{ .file = file, .io = io, .options = jsonlOptions(state.config) };
+                    runtimes[i].jsonl_stream = JsonlStreamWriter.init(file, io, jsonlOptions(state.config), &runtimes[i].jsonl_buffer);
                 }
             }
             runtimes_initialized += 1;
@@ -4056,6 +4246,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
             successful += runtime.state.successful;
             failed += runtime.state.failed;
             if (runtime.jsonl_stream) |*stream| {
+                try stream.flush();
                 if (stream.hasError()) return error.JsonlWriteFailed;
             }
         }
@@ -4284,6 +4475,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .precision = args.precision,
         .output_format = args.output_format,
         .show_timing = args.show_timing,
+        .profile_stages = args.profile_stages,
         .quiet = args.quiet,
         .show_progress = args.show_progress,
         .classifier_type = args.classifier_type,
@@ -4304,6 +4496,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .use_auth_chain = args.use_auth_chain,
         .alt_loc_mode = args.alt_loc_mode,
         .alt_loc_id = args.alt_loc_id,
+        .af_model_fast = args.af_model_fast,
         .residue_map = args.residue_map,
         .jsonl_decimals = args.jsonl_decimals,
     };
@@ -4335,6 +4528,9 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     if (args.show_timing) {
         std.debug.print("\n", .{});
         result.printBenchmarkOutput();
+        if (args.profile_stages) {
+            result.printStageProfile();
+        }
     }
 }
 
@@ -4599,10 +4795,10 @@ test "BatchArgs with output dir" {
 
 test "BatchArgs with options" {
     const args = [_][]const u8{
-        "zsasa",          "batch",
-        "--algorithm=lr", "--threads=4",
-        "--quiet",        "--timing",
-        "input_dir/",
+        "zsasa",            "batch",
+        "--algorithm=lr",   "--threads=4",
+        "--quiet",          "--timing",
+        "--profile-stages", "input_dir/",
     };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqualStrings("input_dir/", parsed.input_path.?);
@@ -4611,6 +4807,7 @@ test "BatchArgs with options" {
     try std.testing.expectEqual(true, parsed.quiet);
     try std.testing.expectEqual(false, parsed.show_progress);
     try std.testing.expectEqual(true, parsed.show_timing);
+    try std.testing.expectEqual(true, parsed.profile_stages);
 }
 
 test "BatchArgs help flag" {
@@ -5507,7 +5704,8 @@ test "JsonlStreamWriter writes many parseable JSONL lines" {
     defer allocator.free(output_path);
 
     const file = try std.Io.Dir.cwd().createFile(std.testing.io, output_path, .{});
-    var stream = JsonlStreamWriter{ .file = file, .io = std.testing.io };
+    var stream_buf: [64 * 1024]u8 = undefined;
+    var stream = JsonlStreamWriter.init(file, std.testing.io, .{}, &stream_buf);
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -5528,6 +5726,7 @@ test "JsonlStreamWriter writes many parseable JSONL lines" {
         stream.writeResult(arena.allocator(), &result);
         try std.testing.expect(!stream.hasError());
     }
+    try stream.flush();
     file.close(std.testing.io);
 
     const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(64 * 1024));
@@ -5824,6 +6023,113 @@ test "BatchArgs classifier_type defaults to ccd" {
     const args = [_][]const u8{ "zsasa", "batch", "input_dir/" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(ClassifierType.ccd, parsed.classifier_type);
+}
+
+test "BatchArgs --af-model-fast" {
+    const args = [_][]const u8{ "zsasa", "batch", "--af-model-fast", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expect(parsed.af_model_fast);
+}
+
+test "BatchArgs --input-io" {
+    const args = [_][]const u8{ "zsasa", "batch", "--input-io=read", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(InputIoMode.read, parsed.input_io);
+    try std.testing.expect(parsed.input_io_explicit);
+}
+
+test "readInputFile preserves AF model atom metadata when fast parsing is requested" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const source =
+        \\data_AF_FAST
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_entity_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.pdbx_PDB_ins_code
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\ATOM 1 N N  . GLY A 1 1 ? 1.000 2.000 3.000
+        \\ATOM 2 C CA . GLY A 1 1 ? 2.000 3.000 4.000
+        \\ATOM 3 N N  . ALA B 2 1 ? 4.000 5.000 6.000
+        \\ATOM 4 C CA . ALA B 2 1 ? 5.000 6.000 7.000
+        \\
+    ;
+
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "af.cif", .data = source });
+    const path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "af.cif", allocator);
+    defer allocator.free(path);
+
+    var parsed = try readInputFile(allocator, std.testing.io, path, .{
+        .af_model_fast = true,
+        .classifier_type = null,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 4), parsed.input.atomCount());
+    try std.testing.expectEqualStrings("GLY", parsed.input.residue.?[0].slice());
+    try std.testing.expectEqualStrings("CA", parsed.input.atom_name.?[3].slice());
+    try std.testing.expectEqualStrings("A", parsed.input.chain_id.?[0].slice());
+    try std.testing.expectEqualStrings("B", parsed.input.chain_id.?[2].slice());
+    try std.testing.expectEqual(@as(i32, 1), parsed.input.residue_num.?[0]);
+}
+
+test "AF model fast fallback is limited to unsupported layouts" {
+    try std.testing.expect(shouldFallbackAfModelFastError(error.UnsupportedLayout));
+    try std.testing.expect(!shouldFallbackAfModelFastError(error.InvalidCoordinate));
+    try std.testing.expect(!shouldFallbackAfModelFastError(error.AccessDenied));
+}
+
+test "readInputFile falls back to generic mmCIF for unsupported fast layout" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const source =
+        \\data_GENERIC
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\ATOM C CA GLY 1.0 2.0 3.0
+        \\#
+    ;
+
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "generic.cif", .data = source });
+    const path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "generic.cif", allocator);
+    defer allocator.free(path);
+
+    var parsed = try readInputFile(allocator, std.testing.io, path, .{
+        .af_model_fast = true,
+        .classifier_type = null,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.input.atomCount());
+    try std.testing.expectEqualStrings("GLY", parsed.input.residue.?[0].slice());
+    try std.testing.expectEqualStrings("CA", parsed.input.atom_name.?[0].slice());
+}
+
+test "AF model fast parser is skipped when chain filtering is requested" {
+    const chains = [_][]const u8{"Z"};
+    try std.testing.expect(!shouldTryAfModelFastParser(.{
+        .af_model_fast = true,
+        .chain_filter = chains[0..],
+    }));
 }
 
 test "BatchConfig quiet suppresses progress even when show_progress defaults true" {

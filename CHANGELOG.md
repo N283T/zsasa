@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Batch AF model fast parser**: add experimental `zsasa batch --af-model-fast` for AlphaFold-like mmCIF batches. The fast path preserves multiple chains and atom metadata, and falls back to the generic parser for unsupported layouts.
+- **Batch input I/O selection**: add `--input-io=auto|mmap|read` to compare or select file input strategies where supported.
+- **Batch stage profiling**: add `--profile-stages` with `--timing` to report aggregate read/parse, classifier, and JSONL write times.
+
+### Changed
+
+- **Batch JSONL streaming**: buffer normal-sized JSONL records while streaming large records directly to avoid regressions for PDB batches with large atom-area payloads.
+
 ## [0.8.0] - 2026-07-01
 
 ### Added
