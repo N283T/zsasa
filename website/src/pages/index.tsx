@@ -49,6 +49,12 @@ function HomepageHeader() {
           >
             Benchmarks
           </Link>
+          <Link
+            className="button button--secondary button--lg"
+            href="https://doi.org/10.64898/2026.06.29.733683"
+          >
+            Read the Preprint
+          </Link>
         </div>
       </div>
     </header>
@@ -64,6 +70,18 @@ export default function Home(): ReactNode {
         {/* Highlight section */}
         <section className={styles.highlight}>
           <div className="container">
+            <div className={styles.preprintNotice}>
+              <Heading as="h2">zsasa preprint now on bioRxiv</Heading>
+              <p>
+                Read the paper describing zsasa&apos;s design, validation, and
+                proteome-scale performance.
+              </p>
+              <Link href="https://doi.org/10.64898/2026.06.29.733683">
+                Read the preprint →
+              </Link>
+              <span aria-hidden="true"> · </span>
+              <Link to="/docs/citation">Citation details →</Link>
+            </div>
             <div className="row">
               <div className="col col--6">
                 <Heading as="h2">Benchmark Results</Heading>

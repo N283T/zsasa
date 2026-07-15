@@ -32,6 +32,17 @@
   background: var(--ifm-color-emphasis-100);
 }
 
+.preprintNotice {
+  margin-bottom: 2.5rem;
+  padding-bottom: 2rem;
+  text-align: center;
+  border-bottom: 1px solid var(--ifm-color-emphasis-300);
+}
+
+.preprintNotice p {
+  margin-bottom: 0.5rem;
+}
+
 .highlight h2 {
   font-size: 1.4rem;
 }

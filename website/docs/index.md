@@ -11,6 +11,14 @@ sidebar_position: 1
 High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 The current benchmark suite covers FreeSASA agreement, proteome-scale batch throughput, large single structures, and low-memory MD trajectory analysis.
 
+:::info Preprint
+
+The zsasa preprint is now available on bioRxiv: [**zsasa: a Zig-based engine for high-throughput solvent accessible surface area at proteome scale**](https://doi.org/10.64898/2026.06.29.733683).
+
+See [Citation](citation.md) for the formatted reference and BibTeX.
+
+:::
+
 ## Quick Start
 
 ### Python
@@ -59,3 +67,4 @@ zsasa calc structure.cif output.json
 | [Python API](python-api/) | Python bindings, core API, and integrations |
 | [Benchmarks](benchmarks/) | Performance and accuracy benchmarks |
 | [Comparison](comparison.md) | How zsasa compares to FreeSASA, RustSASA, and Lahuta |
+| [Citation](citation.md) | Preprint reference and BibTeX |
