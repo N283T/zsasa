@@ -50,7 +50,7 @@
 
           zsasa = pkgs.stdenv.mkDerivation {
             pname = "zsasa";
-            version = "0.9.0";
+            version = "0.9.1";
 
             src = ./.;
 
