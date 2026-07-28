@@ -174,6 +174,16 @@ avoid nested oversubscription. With one file, the configured threads are
 available to its SASA calculations. Progress advances once per discovered
 structure after all of its selections finish.
 
+For multi-selection maps, zsasa schedules discovered structures by descending
+selection count before file workers claim them. Filename order breaks equal-cost
+ties deterministically. This longest-processing-time-first estimate starts
+selection-heavy structures early to reduce the file-level tail without reading
+or parsing inputs during scheduling. Generic batch scans, BSA workflows, and
+legacy one-row-per-file maps keep their existing order. Selection calculations
+within a structure remain serial, so exceptionally heavy final structures can
+still leave residual tail latency; bounded parse-once work stealing is tracked
+in [GitHub issue #413](https://github.com/N283T/zsasa/issues/413).
+
 Multi-selection maps require JSONL output. Each requested selection produces a
 complete, non-interleaved success or error row:
 
