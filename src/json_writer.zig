@@ -918,6 +918,7 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
 
 pub const BsaAnalysisJsonl = struct {
     filename: []const u8,
+    id: []const u8,
     name: []const u8,
     partner_a: []const []const u8,
     partner_b: []const []const u8,
@@ -927,24 +928,147 @@ pub const BsaAnalysisJsonl = struct {
     delta_sasa_total: f64,
     bsa: f64,
     delta_sasa_level: []const u8,
+    atom_output: bool = false,
+    residue_partner: []const []const u8 = &.{},
     residue_chain: []const []const u8 = &.{},
     residue_name: []const []const u8 = &.{},
     residue_number: []const i32 = &.{},
     residue_insertion_code: []const []const u8 = &.{},
+    residue_sasa_isolated: []const f64 = &.{},
+    residue_sasa_complex: []const f64 = &.{},
     residue_delta_sasa: []const f64 = &.{},
+    atom_index: []const usize = &.{},
+    atom_partner: []const []const u8 = &.{},
+    atom_chain: []const []const u8 = &.{},
+    atom_residue_name: []const []const u8 = &.{},
+    atom_residue_number: []const i32 = &.{},
+    atom_insertion_code: []const []const u8 = &.{},
+    atom_name: []const []const u8 = &.{},
+    atom_element: []const []const u8 = &.{},
+    atom_sasa_isolated: []const f64 = &.{},
+    atom_sasa_complex: []const f64 = &.{},
+    atom_delta_sasa: []const f64 = &.{},
 };
+
+pub const BsaAnalysisErrorJsonl = struct {
+    filename: []const u8,
+    id: []const u8,
+    name: []const u8,
+    error_message: []const u8,
+};
+
+pub fn bsaAnalysisErrorToJsonlLine(allocator: Allocator, row: BsaAnalysisErrorJsonl) ![]u8 {
+    const Entry = struct {
+        status: []const u8,
+        filename: []const u8,
+        id: []const u8,
+        analysis: []const u8,
+        name: []const u8,
+        @"error": []const u8,
+    };
+    return std.json.Stringify.valueAlloc(allocator, Entry{
+        .status = "err",
+        .filename = row.filename,
+        .id = row.id,
+        .analysis = "bsa",
+        .name = row.name,
+        .@"error" = row.error_message,
+    }, .{});
+}
 
 pub fn bsaAnalysisToJsonlLine(allocator: Allocator, row: BsaAnalysisJsonl) ![]u8 {
     return bsaAnalysisToJsonlLineOptions(allocator, row, .{});
 }
 
 pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl, options: JsonlOptions) ![]u8 {
+    const output_residue_sasa_isolated = try maybeRoundJsonlFloatSlice(allocator, row.residue_sasa_isolated, options);
+    defer if (options.decimals != null) allocator.free(output_residue_sasa_isolated);
+    const output_residue_sasa_complex = try maybeRoundJsonlFloatSlice(allocator, row.residue_sasa_complex, options);
+    defer if (options.decimals != null) allocator.free(output_residue_sasa_complex);
     const output_residue_delta_sasa = try maybeRoundJsonlFloatSlice(allocator, row.residue_delta_sasa, options);
     defer if (options.decimals != null) allocator.free(output_residue_delta_sasa);
+    const output_atom_sasa_isolated = try maybeRoundJsonlFloatSlice(allocator, row.atom_sasa_isolated, options);
+    defer if (options.decimals != null) allocator.free(output_atom_sasa_isolated);
+    const output_atom_sasa_complex = try maybeRoundJsonlFloatSlice(allocator, row.atom_sasa_complex, options);
+    defer if (options.decimals != null) allocator.free(output_atom_sasa_complex);
+    const output_atom_delta_sasa = try maybeRoundJsonlFloatSlice(allocator, row.atom_delta_sasa, options);
+    defer if (options.decimals != null) allocator.free(output_atom_delta_sasa);
 
     if (std.mem.eql(u8, row.delta_sasa_level, "residue")) {
+        if (row.atom_output) {
+            const Entry = struct {
+                status: []const u8,
+                filename: []const u8,
+                id: []const u8,
+                analysis: []const u8,
+                name: []const u8,
+                partner_a: []const []const u8,
+                partner_b: []const []const u8,
+                sasa_partner_a: f64,
+                sasa_partner_b: f64,
+                sasa_complex: f64,
+                delta_sasa_total: f64,
+                bsa: f64,
+                delta_sasa_level: []const u8,
+                residue_partner: []const []const u8,
+                residue_chain: []const []const u8,
+                residue_name: []const []const u8,
+                residue_number: []const i32,
+                residue_insertion_code: []const []const u8,
+                residue_sasa_isolated: []const f64,
+                residue_sasa_complex: []const f64,
+                residue_delta_sasa: []const f64,
+                atom_index: []const usize,
+                atom_partner: []const []const u8,
+                atom_chain: []const []const u8,
+                atom_residue_name: []const []const u8,
+                atom_residue_number: []const i32,
+                atom_insertion_code: []const []const u8,
+                atom_name: []const []const u8,
+                atom_element: []const []const u8,
+                atom_sasa_isolated: []const f64,
+                atom_sasa_complex: []const f64,
+                atom_delta_sasa: []const f64,
+            };
+            return std.json.Stringify.valueAlloc(allocator, Entry{
+                .status = "ok",
+                .filename = row.filename,
+                .id = row.id,
+                .analysis = "bsa",
+                .name = row.name,
+                .partner_a = row.partner_a,
+                .partner_b = row.partner_b,
+                .sasa_partner_a = maybeRoundJsonlFloat(row.sasa_partner_a, options),
+                .sasa_partner_b = maybeRoundJsonlFloat(row.sasa_partner_b, options),
+                .sasa_complex = maybeRoundJsonlFloat(row.sasa_complex, options),
+                .delta_sasa_total = maybeRoundJsonlFloat(row.delta_sasa_total, options),
+                .bsa = maybeRoundJsonlFloat(row.bsa, options),
+                .delta_sasa_level = row.delta_sasa_level,
+                .residue_partner = row.residue_partner,
+                .residue_chain = row.residue_chain,
+                .residue_name = row.residue_name,
+                .residue_number = row.residue_number,
+                .residue_insertion_code = row.residue_insertion_code,
+                .residue_sasa_isolated = output_residue_sasa_isolated,
+                .residue_sasa_complex = output_residue_sasa_complex,
+                .residue_delta_sasa = output_residue_delta_sasa,
+                .atom_index = row.atom_index,
+                .atom_partner = row.atom_partner,
+                .atom_chain = row.atom_chain,
+                .atom_residue_name = row.atom_residue_name,
+                .atom_residue_number = row.atom_residue_number,
+                .atom_insertion_code = row.atom_insertion_code,
+                .atom_name = row.atom_name,
+                .atom_element = row.atom_element,
+                .atom_sasa_isolated = output_atom_sasa_isolated,
+                .atom_sasa_complex = output_atom_sasa_complex,
+                .atom_delta_sasa = output_atom_delta_sasa,
+            }, .{});
+        }
         const Entry = struct {
+            status: []const u8,
             filename: []const u8,
+            id: []const u8,
             analysis: []const u8,
             name: []const u8,
             partner_a: []const []const u8,
@@ -955,14 +1079,19 @@ pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl
             delta_sasa_total: f64,
             bsa: f64,
             delta_sasa_level: []const u8,
+            residue_partner: []const []const u8,
             residue_chain: []const []const u8,
             residue_name: []const []const u8,
             residue_number: []const i32,
             residue_insertion_code: []const []const u8,
+            residue_sasa_isolated: []const f64,
+            residue_sasa_complex: []const f64,
             residue_delta_sasa: []const f64,
         };
         return std.json.Stringify.valueAlloc(allocator, Entry{
+            .status = "ok",
             .filename = row.filename,
+            .id = row.id,
             .analysis = "bsa",
             .name = row.name,
             .partner_a = row.partner_a,
@@ -973,16 +1102,21 @@ pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl
             .delta_sasa_total = maybeRoundJsonlFloat(row.delta_sasa_total, options),
             .bsa = maybeRoundJsonlFloat(row.bsa, options),
             .delta_sasa_level = row.delta_sasa_level,
+            .residue_partner = row.residue_partner,
             .residue_chain = row.residue_chain,
             .residue_name = row.residue_name,
             .residue_number = row.residue_number,
             .residue_insertion_code = row.residue_insertion_code,
+            .residue_sasa_isolated = output_residue_sasa_isolated,
+            .residue_sasa_complex = output_residue_sasa_complex,
             .residue_delta_sasa = output_residue_delta_sasa,
         }, .{});
     }
 
     const Entry = struct {
+        status: []const u8,
         filename: []const u8,
+        id: []const u8,
         analysis: []const u8,
         name: []const u8,
         partner_a: []const []const u8,
@@ -995,7 +1129,9 @@ pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl
         delta_sasa_level: []const u8,
     };
     return std.json.Stringify.valueAlloc(allocator, Entry{
+        .status = "ok",
         .filename = row.filename,
+        .id = row.id,
         .analysis = "bsa",
         .name = row.name,
         .partner_a = row.partner_a,
@@ -1223,10 +1359,14 @@ test "BSA analysis JSONL includes total and residue delta fields" {
     const residue_name = [_][]const u8{ "GLY", "ALA" };
     const residue_number = [_]i32{ 1, 2 };
     const residue_insertion_code = [_][]const u8{ "", "" };
+    const residue_partner = [_][]const u8{ "a", "b" };
+    const residue_sasa_isolated = [_]f64{ 7.0, 9.0 };
+    const residue_sasa_complex = [_]f64{ 4.0, 4.0 };
     const residue_delta_sasa = [_]f64{ 3.0, 5.0 };
 
     const line = try bsaAnalysisToJsonlLine(allocator, .{
         .filename = "tiny.pdb",
+        .id = "interaction-001",
         .name = "interface_ab",
         .partner_a = partner_a[0..],
         .partner_b = partner_b[0..],
@@ -1236,18 +1376,26 @@ test "BSA analysis JSONL includes total and residue delta fields" {
         .delta_sasa_total = 16.0,
         .bsa = 8.0,
         .delta_sasa_level = "residue",
+        .residue_partner = residue_partner[0..],
         .residue_chain = residue_chain[0..],
         .residue_name = residue_name[0..],
         .residue_number = residue_number[0..],
         .residue_insertion_code = residue_insertion_code[0..],
+        .residue_sasa_isolated = residue_sasa_isolated[0..],
+        .residue_sasa_complex = residue_sasa_complex[0..],
         .residue_delta_sasa = residue_delta_sasa[0..],
     });
     defer allocator.free(line);
 
     try std.testing.expect(std.mem.indexOf(u8, line, "\"analysis\":\"bsa\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"status\":\"ok\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"id\":\"interaction-001\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "\"delta_sasa_total\":16") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "\"bsa\":8") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "\"residue_delta_sasa\":[3,5]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"residue_partner\":[\"a\",\"b\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"residue_sasa_isolated\":[7,9]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"residue_sasa_complex\":[4,4]") != null);
 }
 
 test "BSA analysis JSONL rounds floats when decimals option is set" {
@@ -1258,6 +1406,7 @@ test "BSA analysis JSONL rounds floats when decimals option is set" {
 
     const line = try bsaAnalysisToJsonlLineOptions(allocator, .{
         .filename = "tiny.pdb",
+        .id = "tiny.pdb",
         .name = "interface_ab",
         .partner_a = partner_a[0..],
         .partner_b = partner_b[0..],
@@ -1277,6 +1426,71 @@ test "BSA analysis JSONL rounds floats when decimals option is set" {
     try std.testing.expect(std.mem.indexOf(u8, line, "\"delta_sasa_total\":16.67") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "\"bsa\":8.33") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "\"residue_delta_sasa\":[3.14,5.56]") != null);
+}
+
+test "BSA analysis JSONL includes opt-in atom detail" {
+    const allocator = std.testing.allocator;
+    const partner_a = [_][]const u8{"A"};
+    const partner_b = [_][]const u8{"B"};
+    const atom_index = [_]usize{ 0, 1 };
+    const atom_partner = [_][]const u8{ "a", "b" };
+    const atom_chain = [_][]const u8{ "A", "B" };
+    const atom_residue_name = [_][]const u8{ "GLY", "ALA" };
+    const atom_residue_number = [_]i32{ 1, 2 };
+    const atom_insertion_code = [_][]const u8{ "", "" };
+    const atom_name = [_][]const u8{ "CA", "N" };
+    const atom_element = [_][]const u8{ "C", "N" };
+    const atom_sasa_isolated = [_]f64{ 7.0, 9.0 };
+    const atom_sasa_complex = [_]f64{ 4.0, 4.0 };
+    const atom_delta_sasa = [_]f64{ 3.0, 5.0 };
+
+    const line = try bsaAnalysisToJsonlLine(allocator, .{
+        .filename = "tiny.pdb",
+        .id = "atoms",
+        .name = "interface_ab",
+        .partner_a = partner_a[0..],
+        .partner_b = partner_b[0..],
+        .sasa_partner_a = 10.0,
+        .sasa_partner_b = 20.0,
+        .sasa_complex = 14.0,
+        .delta_sasa_total = 16.0,
+        .bsa = 8.0,
+        .delta_sasa_level = "residue",
+        .atom_output = true,
+        .atom_index = atom_index[0..],
+        .atom_partner = atom_partner[0..],
+        .atom_chain = atom_chain[0..],
+        .atom_residue_name = atom_residue_name[0..],
+        .atom_residue_number = atom_residue_number[0..],
+        .atom_insertion_code = atom_insertion_code[0..],
+        .atom_name = atom_name[0..],
+        .atom_element = atom_element[0..],
+        .atom_sasa_isolated = atom_sasa_isolated[0..],
+        .atom_sasa_complex = atom_sasa_complex[0..],
+        .atom_delta_sasa = atom_delta_sasa[0..],
+    });
+    defer allocator.free(line);
+
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"atom_partner\":[\"a\",\"b\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"atom_element\":[\"C\",\"N\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"atom_sasa_isolated\":[7,9]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"atom_sasa_complex\":[4,4]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"atom_delta_sasa\":[3,5]") != null);
+}
+
+test "BSA analysis error JSONL includes stable ID" {
+    const line = try bsaAnalysisErrorToJsonlLine(std.testing.allocator, .{
+        .filename = "bad.cif",
+        .id = "interaction-bad",
+        .name = "interfaces",
+        .error_message = "read/parse failed: InvalidFormat",
+    });
+    defer std.testing.allocator.free(line);
+
+    try std.testing.expectEqualStrings(
+        "{\"status\":\"err\",\"filename\":\"bad.cif\",\"id\":\"interaction-bad\",\"analysis\":\"bsa\",\"name\":\"interfaces\",\"error\":\"read/parse failed: InvalidFormat\"}",
+        line,
+    );
 }
 
 test "sasaResultToJson basic" {

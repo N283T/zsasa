@@ -314,6 +314,11 @@ By default, hydrogen atoms are excluded. HETATM records are included automatical
 ./zig-out/bin/zsasa batch --workflow bsa.toml
 ```
 
+BSA workflow interface maps may contain multiple stable-ID rows for one input
+filename. The command writes one JSONL success or error row per requested
+interface; residue components and opt-in atom detail are configured in the
+workflow. See [Workflow Files](../guide/workflows.md#bsa-analysis).
+
 ### Trajectory Analysis
 
 ```bash

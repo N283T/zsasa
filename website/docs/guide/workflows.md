@@ -165,7 +165,7 @@ lists, and jobs that specify both
 `chains` and `chain_map` are rejected. Chain maps are supported for PDB,
 mmCIF, and BinaryCIF inputs, not JSON atom arrays or SDF molecule batches.
 
-## BSA / ΔSASA Analysis
+## BSA / ΔSASA Analysis {#bsa-analysis}
 
 Batch workflows can also write an analysis JSONL file for a two-partner interface:
 
@@ -210,9 +210,10 @@ level = "residue"
 CSV interface maps use one comma-separated chain set for each partner:
 
 ```csv
-filename,partner_a,partner_b,asym_id_type
-1abc.cif,"A,B","C,D",auth
-2xyz.cif,A,"B,C",label
+filename,id,partner_a,partner_b,asym_id_type
+1abc.cif,interaction-001,"A,B","C,D",auth
+1abc.cif,interaction-002,E,"C,D",auth
+2xyz.cif,interaction-003,A,"B,C",label
 ```
 
 The equivalent JSON is:
@@ -221,12 +222,28 @@ The equivalent JSON is:
 [
   {
     "filename": "1abc.cif",
+    "id": "interaction-001",
     "partner_a": ["A", "B"],
+    "partner_b": ["C", "D"],
+    "asym_id_type": "auth"
+  },
+  {
+    "filename": "1abc.cif",
+    "id": "interaction-002",
+    "partner_a": ["E"],
     "partner_b": ["C", "D"],
     "asym_id_type": "auth"
   }
 ]
 ```
+
+Multiple rows may name the same input file. `id` is required for every row
+when a filename occurs more than once and must be unique across the map. A
+legacy one-row-per-file map may omit `id`; its stable output ID defaults to the
+filename. Fixed `partner_a`/`partner_b` workflows also use the filename as the
+interface ID. All rows for one file must use the same `asym_id_type`, allowing
+zsasa to read, decompress, parse, and classify that structure once before
+processing its interfaces.
 
 For the first row, zsasa calculates isolated A+B, isolated C+D, and the
 A+B+C+D complex. The reported values are therefore:
@@ -238,8 +255,7 @@ bsa = delta_sasa_total / 2
 
 `asym_id_type` defaults to `label` and may be set independently for each
 mmCIF or BinaryCIF file. Fixed `partner_a`/`partner_b` settings and
-`analysis.chain_map` are mutually exclusive. As with job chain maps, every
-discovered PDB, mmCIF, or BinaryCIF file must have exactly one entry.
+`analysis.chain_map` are mutually exclusive.
 
 Run it with:
 
@@ -247,16 +263,51 @@ Run it with:
 zsasa batch --workflow bsa.toml
 ```
 
-This writes `results/interface_ab.jsonl`, with one row per input structure. The initial implementation computes partner A, partner B, and the AB complex internally, then reports:
+This writes `results/interface_ab.jsonl`, with one row per requested
+interface. Each success row has `status = "ok"` and its stable `id`. Invalid
+chain selections and read, parse, classification, or calculation failures are
+written as `status = "err"` rows with the same `filename` and `id`. A map row
+whose source file is missing also produces an error row. A discovered file
+without a map entry uses its filename as the error-row ID.
+
+The workflow computes partner A, partner B, and the AB complex internally,
+then reports:
 
 ```text
 delta_sasa_total = sasa_partner_a + sasa_partner_b - sasa_complex
 bsa = delta_sasa_total / 2
 ```
 
-`ΔSASA` and `BSA` are deliberately separate fields. `delta_sasa_total` and `residue_delta_sasa` are not halved; `bsa` is the two-partner buried surface area after the `1/2` factor.
+`ΔSASA` and `BSA` are deliberately separate fields. `delta_sasa_total`,
+`residue_delta_sasa`, and `atom_delta_sasa` are not halved; `bsa` is the
+two-partner buried surface area after the `1/2` factor.
 
-BSA analysis JSONL uses analysis-specific fields such as `sasa_partner_a`, `sasa_partner_b`, `sasa_complex`, `delta_sasa_total`, `bsa`, and `residue_delta_sasa`. It does not use the normal SASA JSONL `total_area` and `atom_areas` fields, because those names are ambiguous for interface analysis.
+BSA analysis JSONL uses analysis-specific fields such as `sasa_partner_a`,
+`sasa_partner_b`, `sasa_complex`, `delta_sasa_total`, and `bsa`. With
+`level = "residue"`, parallel residue arrays include `residue_partner`,
+residue identity, `residue_sasa_isolated`, `residue_sasa_complex`, and
+`residue_delta_sasa`.
+
+Atom detail is disabled by default because it can greatly increase JSONL
+volume. Enable it only with residue detail:
+
+```toml
+[analysis]
+type = "bsa"
+chain_map = "interfaces.csv"
+level = "residue"
+atom_output = true
+```
+
+Atom-detail rows include `atom_index` (zero-based in the selected interface
+complex), `atom_partner`, chain, residue and atom identity, element,
+`atom_sasa_isolated`, `atom_sasa_complex`, and
+`atom_delta_sasa`. Atom and residue ΔSASA arrays reconcile to the unhalved
+`delta_sasa_total` within floating-point tolerance before optional JSONL
+decimal rounding. Polar/apolar decomposition
+is not emitted; the atom metadata is available for downstream classification.
+The schema does not use normal SASA JSONL `total_area` and `atom_areas` fields,
+because those names are ambiguous for interface analysis.
 
 ## Override Precedence
 

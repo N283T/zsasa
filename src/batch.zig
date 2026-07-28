@@ -23,6 +23,7 @@ const ccd_binary = @import("ccd_binary.zig");
 const sdf_parser = @import("sdf_parser.zig");
 const compressed = @import("compressed.zig");
 const input_io = @import("input_io.zig");
+const element_module = @import("element.zig");
 
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
@@ -1610,6 +1611,19 @@ fn appendBsaAnalysisJsonlToFile(io: std.Io, file: std.Io.File, allocator: Alloca
     try writer.interface.flush();
 }
 
+fn appendBsaAnalysisErrorJsonlToFile(io: std.Io, file: std.Io.File, allocator: Allocator, row: json_writer.BsaAnalysisErrorJsonl) !void {
+    const line = try json_writer.bsaAnalysisErrorToJsonlLine(allocator, row);
+    defer allocator.free(line);
+
+    const file_len = try file.length(io);
+    var write_buf: [64 * 1024]u8 = undefined;
+    var writer = std.Io.File.Writer.init(file, io, &write_buf);
+    try writer.seekTo(file_len);
+    try writer.interface.writeAll(line);
+    try writer.interface.writeByte('\n');
+    try writer.interface.flush();
+}
+
 fn analysisName(analysis: workflow_manifest.Analysis) []const u8 {
     return analysis.name orelse "bsa";
 }
@@ -1626,35 +1640,101 @@ fn appendChainGroups(allocator: Allocator, a: []const []const u8, b: []const []c
 }
 
 const BsaResidueDeltaArrays = struct {
+    residue_partner: []const []const u8 = &.{},
     residue_chain: []const []const u8 = &.{},
     residue_name: []const []const u8 = &.{},
     residue_number: []const i32 = &.{},
     residue_insertion_code: []const []const u8 = &.{},
+    residue_sasa_isolated: []const f64 = &.{},
+    residue_sasa_complex: []const f64 = &.{},
     residue_delta_sasa: []const f64 = &.{},
 };
 
-fn buildBsaResidueDeltaArrays(allocator: Allocator, input: AtomInput, atom_delta_sasa: []const f64) !BsaResidueDeltaArrays {
-    var map = try json_writer.buildResidueMap(allocator, input, atom_delta_sasa);
-    defer map.deinit();
+fn buildBsaResidueDeltaArrays(
+    allocator: Allocator,
+    input: AtomInput,
+    atom_sasa_isolated: []const f64,
+    atom_sasa_complex: []const f64,
+    partner_a: []const []const u8,
+) !BsaResidueDeltaArrays {
+    var isolated_map = try json_writer.buildResidueMap(allocator, input, atom_sasa_isolated);
+    defer isolated_map.deinit();
+    var complex_map = try json_writer.buildResidueMap(allocator, input, atom_sasa_complex);
+    defer complex_map.deinit();
+    if (isolated_map.len() != complex_map.len()) return error.InvalidResidueMap;
 
-    const residue_chain = try allocator.alloc([]const u8, map.len());
-    const residue_name = try allocator.alloc([]const u8, map.len());
-    const residue_insertion_code = try allocator.alloc([]const u8, map.len());
-    const residue_number = try allocator.dupe(i32, map.residue_number);
-    const residue_delta_sasa = try allocator.dupe(f64, map.residue_sasa);
+    const residue_partner = try allocator.alloc([]const u8, isolated_map.len());
+    const residue_chain = try allocator.alloc([]const u8, isolated_map.len());
+    const residue_name = try allocator.alloc([]const u8, isolated_map.len());
+    const residue_insertion_code = try allocator.alloc([]const u8, isolated_map.len());
+    const residue_number = try allocator.dupe(i32, isolated_map.residue_number);
+    const residue_sasa_isolated = try allocator.dupe(f64, isolated_map.residue_sasa);
+    const residue_sasa_complex = try allocator.dupe(f64, complex_map.residue_sasa);
+    const residue_delta_sasa = try allocator.alloc(f64, isolated_map.len());
 
-    for (0..map.len()) |i| {
-        residue_chain[i] = try allocator.dupe(u8, map.residue_chain[i].slice());
-        residue_name[i] = try allocator.dupe(u8, map.residue_name[i].slice());
-        residue_insertion_code[i] = try allocator.dupe(u8, map.residue_insertion_code[i].slice());
+    for (0..isolated_map.len()) |i| {
+        residue_partner[i] = if (atomSelectedByChains(input, isolated_map.residue_atom_start[i], partner_a)) "a" else "b";
+        residue_chain[i] = try allocator.dupe(u8, isolated_map.residue_chain[i].slice());
+        residue_name[i] = try allocator.dupe(u8, isolated_map.residue_name[i].slice());
+        residue_insertion_code[i] = try allocator.dupe(u8, isolated_map.residue_insertion_code[i].slice());
+        residue_delta_sasa[i] = residue_sasa_isolated[i] - residue_sasa_complex[i];
     }
 
     return .{
+        .residue_partner = residue_partner,
         .residue_chain = residue_chain,
         .residue_name = residue_name,
         .residue_number = residue_number,
         .residue_insertion_code = residue_insertion_code,
+        .residue_sasa_isolated = residue_sasa_isolated,
+        .residue_sasa_complex = residue_sasa_complex,
         .residue_delta_sasa = residue_delta_sasa,
+    };
+}
+
+const BsaAtomArrays = struct {
+    atom_index: []const usize = &.{},
+    atom_partner: []const []const u8 = &.{},
+    atom_chain: []const []const u8 = &.{},
+    atom_residue_name: []const []const u8 = &.{},
+    atom_residue_number: []const i32 = &.{},
+    atom_insertion_code: []const []const u8 = &.{},
+    atom_name: []const []const u8 = &.{},
+    atom_element: []const []const u8 = &.{},
+};
+
+fn buildBsaAtomArrays(allocator: Allocator, input: AtomInput, partner_a: []const []const u8) !BsaAtomArrays {
+    if (!input.hasResidueInfo() or input.atom_name == null or input.element == null) return error.MissingAtomMetadata;
+
+    const atom_count = input.atomCount();
+    const atom_index = try allocator.alloc(usize, atom_count);
+    const atom_partner = try allocator.alloc([]const u8, atom_count);
+    const atom_chain = try allocator.alloc([]const u8, atom_count);
+    const atom_residue_name = try allocator.alloc([]const u8, atom_count);
+    const atom_residue_number = try allocator.dupe(i32, input.residue_num.?);
+    const atom_insertion_code = try allocator.alloc([]const u8, atom_count);
+    const atom_name = try allocator.alloc([]const u8, atom_count);
+    const atom_element = try allocator.alloc([]const u8, atom_count);
+
+    for (0..atom_count) |i| {
+        atom_index[i] = i;
+        atom_partner[i] = if (atomSelectedByChains(input, i, partner_a)) "a" else "b";
+        atom_chain[i] = try allocator.dupe(u8, if (input.chain_id_full) |chains| chains[i] else input.chain_id.?[i].slice());
+        atom_residue_name[i] = try allocator.dupe(u8, input.residue.?[i].slice());
+        atom_insertion_code[i] = try allocator.dupe(u8, input.insertion_code.?[i].slice());
+        atom_name[i] = try allocator.dupe(u8, input.atom_name.?[i].slice());
+        atom_element[i] = element_module.fromAtomicNumber(input.element.?[i]).symbol();
+    }
+
+    return .{
+        .atom_index = atom_index,
+        .atom_partner = atom_partner,
+        .atom_chain = atom_chain,
+        .atom_residue_name = atom_residue_name,
+        .atom_residue_number = atom_residue_number,
+        .atom_insertion_code = atom_insertion_code,
+        .atom_name = atom_name,
+        .atom_element = atom_element,
     };
 }
 
@@ -3561,6 +3641,195 @@ fn workflowRequiresJobFirstForAuthChain(args: BatchArgs, workflow: workflow_mani
     return false;
 }
 
+const BsaInterfaceSelection = struct {
+    id: []const u8,
+    partner_a: []const []const u8,
+    partner_b: []const []const u8,
+};
+
+const BsaInterfaceStats = struct {
+    successful: bool,
+    sasa_time_ns: u64 = 0,
+};
+
+fn bsaPartnersOverlap(partner_a: []const []const u8, partner_b: []const []const u8) bool {
+    for (partner_a) |a| {
+        for (partner_b) |b| {
+            if (std.mem.eql(u8, a, b)) return true;
+        }
+    }
+    return false;
+}
+
+fn bsaInputContainsChain(input: AtomInput, target: []const u8) bool {
+    for (0..input.atomCount()) |i| {
+        if (input.chain_id_full) |chains| {
+            if (std.mem.eql(u8, chains[i], target)) return true;
+        } else if (input.chain_id) |chains| {
+            if (chains[i].eqlSlice(target)) return true;
+        }
+    }
+    return false;
+}
+
+fn bsaInputContainsAllChains(input: AtomInput, chains: []const []const u8) bool {
+    for (chains) |chain| {
+        if (!bsaInputContainsChain(input, chain)) return false;
+    }
+    return true;
+}
+
+fn writeBsaInterfaceError(
+    io: std.Io,
+    jsonl_file: std.Io.File,
+    allocator: Allocator,
+    filename: []const u8,
+    id: []const u8,
+    name: []const u8,
+    error_message: []const u8,
+) !BsaInterfaceStats {
+    try appendBsaAnalysisErrorJsonlToFile(io, jsonl_file, allocator, .{
+        .filename = filename,
+        .id = id,
+        .name = name,
+        .error_message = error_message,
+    });
+    return .{ .successful = false };
+}
+
+fn processBsaInterface(
+    allocator: Allocator,
+    io: std.Io,
+    jsonl_file: std.Io.File,
+    filename: []const u8,
+    name: []const u8,
+    level: []const u8,
+    atom_output: bool,
+    selection: BsaInterfaceSelection,
+    source_input: AtomInput,
+    config: BatchConfig,
+    luts: *const BatchLuts,
+) !BsaInterfaceStats {
+    if (bsaPartnersOverlap(selection.partner_a, selection.partner_b)) {
+        return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, "partner chain groups overlap");
+    }
+    if (!bsaInputContainsAllChains(source_input, selection.partner_a)) {
+        return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, "partner A chain not found");
+    }
+    if (!bsaInputContainsAllChains(source_input, selection.partner_b)) {
+        return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, "partner B chain not found");
+    }
+
+    const complex_chains = try appendChainGroups(allocator, selection.partner_a, selection.partner_b);
+    const partner_a_input = try copySelectedAtomInput(allocator, source_input, selection.partner_a);
+    const partner_b_input = try copySelectedAtomInput(allocator, source_input, selection.partner_b);
+    const complex_input = try copySelectedAtomInput(allocator, source_input, complex_chains);
+
+    const n_threads = effectiveWorkflowSasaThreads(config);
+    const partner_a_result = switch (config.precision) {
+        .f64 => calculatePreparedInputResult(f64, allocator, io, allocator, partner_a_input, null, filename, config, n_threads, luts.f64Ptr(), luts.coarseF64Ptr(), luts.fineF64Ptr()),
+        .f32 => calculatePreparedInputResult(f32, allocator, io, allocator, partner_a_input, null, filename, config, n_threads, luts.f32Ptr(), luts.coarseF32Ptr(), luts.fineF32Ptr()),
+    };
+    const partner_b_result = switch (config.precision) {
+        .f64 => calculatePreparedInputResult(f64, allocator, io, allocator, partner_b_input, null, filename, config, n_threads, luts.f64Ptr(), luts.coarseF64Ptr(), luts.fineF64Ptr()),
+        .f32 => calculatePreparedInputResult(f32, allocator, io, allocator, partner_b_input, null, filename, config, n_threads, luts.f32Ptr(), luts.coarseF32Ptr(), luts.fineF32Ptr()),
+    };
+    const complex_result = switch (config.precision) {
+        .f64 => calculatePreparedInputResult(f64, allocator, io, allocator, complex_input, null, filename, config, n_threads, luts.f64Ptr(), luts.coarseF64Ptr(), luts.fineF64Ptr()),
+        .f32 => calculatePreparedInputResult(f32, allocator, io, allocator, complex_input, null, filename, config, n_threads, luts.f32Ptr(), luts.coarseF32Ptr(), luts.fineF32Ptr()),
+    };
+
+    if (partner_a_result.status != .ok or partner_b_result.status != .ok or complex_result.status != .ok) {
+        const detail = partner_a_result.error_msg orelse partner_b_result.error_msg orelse complex_result.error_msg orelse "unknown error";
+        const message = try std.fmt.allocPrint(allocator, "SASA calculation failed: {s}", .{detail});
+        return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, message);
+    }
+
+    const partner_a_areas = partner_a_result.atom_areas orelse
+        return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, "partner A atom areas unavailable");
+    const partner_b_areas = partner_b_result.atom_areas orelse
+        return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, "partner B atom areas unavailable");
+    const complex_areas = complex_result.atom_areas orelse
+        return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, "complex atom areas unavailable");
+
+    const atom_sasa_isolated = try allocator.alloc(f64, complex_input.atomCount());
+    const atom_delta_sasa = try allocator.alloc(f64, complex_input.atomCount());
+    var a_index: usize = 0;
+    var b_index: usize = 0;
+    for (0..complex_input.atomCount()) |i| {
+        atom_sasa_isolated[i] = if (atomSelectedByChains(complex_input, i, selection.partner_a)) blk: {
+            defer a_index += 1;
+            break :blk partner_a_areas[a_index];
+        } else blk: {
+            defer b_index += 1;
+            break :blk partner_b_areas[b_index];
+        };
+        atom_delta_sasa[i] = atom_sasa_isolated[i] - complex_areas[i];
+    }
+
+    var residue_arrays = BsaResidueDeltaArrays{};
+    if (std.mem.eql(u8, level, "residue")) {
+        residue_arrays = buildBsaResidueDeltaArrays(
+            allocator,
+            complex_input,
+            atom_sasa_isolated,
+            complex_areas,
+            selection.partner_a,
+        ) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "residue detail failed: {s}", .{@errorName(err)});
+            return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, message);
+        };
+    }
+
+    var atom_arrays = BsaAtomArrays{};
+    if (atom_output) {
+        atom_arrays = buildBsaAtomArrays(allocator, complex_input, selection.partner_a) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "atom detail failed: {s}", .{@errorName(err)});
+            return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, message);
+        };
+    }
+
+    const delta_total = partner_a_result.total_sasa + partner_b_result.total_sasa - complex_result.total_sasa;
+    try appendBsaAnalysisJsonlToFile(io, jsonl_file, allocator, .{
+        .filename = filename,
+        .id = selection.id,
+        .name = name,
+        .partner_a = selection.partner_a,
+        .partner_b = selection.partner_b,
+        .sasa_partner_a = partner_a_result.total_sasa,
+        .sasa_partner_b = partner_b_result.total_sasa,
+        .sasa_complex = complex_result.total_sasa,
+        .delta_sasa_total = delta_total,
+        .bsa = delta_total / 2.0,
+        .delta_sasa_level = level,
+        .atom_output = atom_output,
+        .residue_partner = residue_arrays.residue_partner,
+        .residue_chain = residue_arrays.residue_chain,
+        .residue_name = residue_arrays.residue_name,
+        .residue_number = residue_arrays.residue_number,
+        .residue_insertion_code = residue_arrays.residue_insertion_code,
+        .residue_sasa_isolated = residue_arrays.residue_sasa_isolated,
+        .residue_sasa_complex = residue_arrays.residue_sasa_complex,
+        .residue_delta_sasa = residue_arrays.residue_delta_sasa,
+        .atom_index = atom_arrays.atom_index,
+        .atom_partner = atom_arrays.atom_partner,
+        .atom_chain = atom_arrays.atom_chain,
+        .atom_residue_name = atom_arrays.atom_residue_name,
+        .atom_residue_number = atom_arrays.atom_residue_number,
+        .atom_insertion_code = atom_arrays.atom_insertion_code,
+        .atom_name = atom_arrays.atom_name,
+        .atom_element = atom_arrays.atom_element,
+        .atom_sasa_isolated = if (atom_output) atom_sasa_isolated else &.{},
+        .atom_sasa_complex = if (atom_output) complex_areas else &.{},
+        .atom_delta_sasa = if (atom_output) atom_delta_sasa else &.{},
+    }, jsonlOptions(config));
+
+    return .{
+        .successful = true,
+        .sasa_time_ns = partner_a_result.sasa_time_ns + partner_b_result.sasa_time_ns + complex_result.sasa_time_ns,
+    };
+}
+
 fn runWorkflowBsaAnalysis(
     allocator: Allocator,
     io: std.Io,
@@ -3571,6 +3840,7 @@ fn runWorkflowBsaAnalysis(
     const fixed_partner_a = analysis.partner_a;
     const fixed_partner_b = analysis.partner_b;
     const level = analysisLevel(analysis);
+    const atom_output = analysis.atom_output orelse false;
     const name = analysisName(analysis);
 
     if (workflow.output.format) |format| {
@@ -3672,154 +3942,171 @@ fn runWorkflowBsaAnalysis(
     var failed: usize = 0;
     var total_sasa_time_ns: u64 = 0;
 
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
+    var discovered_files = std.StringHashMapUnmanaged(void){};
+    defer discovered_files.deinit(allocator);
+    for (files) |filename| try discovered_files.put(allocator, filename, {});
 
     for (files) |filename| {
-        var partner_a = fixed_partner_a orelse &.{};
-        var partner_b = fixed_partner_b orelse &.{};
+        var source_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer source_arena.deinit();
+
+        const map_indices: ?[]const usize = if (interface_map) |*map| map.getIndices(filename) else null;
+        if (interface_map != null and map_indices == null) {
+            var error_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer error_arena.deinit();
+            const stats = try writeBsaInterfaceError(
+                io,
+                jsonl_file,
+                error_arena.allocator(),
+                filename,
+                filename,
+                name,
+                "interface chain map entry not found",
+            );
+            _ = stats;
+            failed += 1;
+            continue;
+        }
+
         var source_config = config;
         source_config.chain_filter = null;
         if (interface_map) |*map| {
-            const selection = map.get(filename) orelse {
-                failed += 1;
-                std.debug.print("Error running BSA analysis '{s}' on '{s}': interface chain map entry not found\n", .{ name, filename });
-                _ = arena.reset(.retain_capacity);
-                continue;
-            };
-            partner_a = selection.partner_a;
-            partner_b = selection.partner_b;
-            source_config.use_auth_chain = selection.asym_id_type == .auth;
-        }
-        const complex_chains = try appendChainGroups(arena.allocator(), partner_a, partner_b);
-        const input_path = try std.fs.path.join(arena.allocator(), &.{ input_dir, filename });
-
-        var source_parsed = readInputFile(arena.allocator(), io, input_path, source_config) catch |err| {
-            failed += 1;
-            std.debug.print("Error running BSA analysis '{s}' on '{s}': read/parse failed: {s}\n", .{ name, filename, @errorName(err) });
-            _ = arena.reset(.retain_capacity);
-            continue;
-        };
-
-        workflowClassifySourceInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
-            failed += 1;
-            std.debug.print("Error running BSA analysis '{s}' on '{s}': classifier failed: {s}\n", .{ name, filename, @errorName(err) });
-            source_parsed.deinit();
-            _ = arena.reset(.retain_capacity);
-            continue;
-        };
-
-        const partner_a_input = copySelectedAtomInput(arena.allocator(), source_parsed.input, partner_a) catch |err| {
-            failed += 1;
-            std.debug.print("Error running BSA analysis '{s}' on '{s}': partner A selection failed: {s}\n", .{ name, filename, @errorName(err) });
-            source_parsed.deinit();
-            _ = arena.reset(.retain_capacity);
-            continue;
-        };
-        const partner_b_input = copySelectedAtomInput(arena.allocator(), source_parsed.input, partner_b) catch |err| {
-            failed += 1;
-            std.debug.print("Error running BSA analysis '{s}' on '{s}': partner B selection failed: {s}\n", .{ name, filename, @errorName(err) });
-            source_parsed.deinit();
-            _ = arena.reset(.retain_capacity);
-            continue;
-        };
-        const complex_input = copySelectedAtomInput(arena.allocator(), source_parsed.input, complex_chains) catch |err| {
-            failed += 1;
-            std.debug.print("Error running BSA analysis '{s}' on '{s}': complex selection failed: {s}\n", .{ name, filename, @errorName(err) });
-            source_parsed.deinit();
-            _ = arena.reset(.retain_capacity);
-            continue;
-        };
-
-        const n_threads = effectiveWorkflowSasaThreads(config);
-        const partner_a_result = switch (config.precision) {
-            .f64 => calculatePreparedInputResult(f64, arena.allocator(), io, arena.allocator(), partner_a_input, null, filename, config, n_threads, luts.f64Ptr(), luts.coarseF64Ptr(), luts.fineF64Ptr()),
-            .f32 => calculatePreparedInputResult(f32, arena.allocator(), io, arena.allocator(), partner_a_input, null, filename, config, n_threads, luts.f32Ptr(), luts.coarseF32Ptr(), luts.fineF32Ptr()),
-        };
-        const partner_b_result = switch (config.precision) {
-            .f64 => calculatePreparedInputResult(f64, arena.allocator(), io, arena.allocator(), partner_b_input, null, filename, config, n_threads, luts.f64Ptr(), luts.coarseF64Ptr(), luts.fineF64Ptr()),
-            .f32 => calculatePreparedInputResult(f32, arena.allocator(), io, arena.allocator(), partner_b_input, null, filename, config, n_threads, luts.f32Ptr(), luts.coarseF32Ptr(), luts.fineF32Ptr()),
-        };
-        const complex_result = switch (config.precision) {
-            .f64 => calculatePreparedInputResult(f64, arena.allocator(), io, arena.allocator(), complex_input, null, filename, config, n_threads, luts.f64Ptr(), luts.coarseF64Ptr(), luts.fineF64Ptr()),
-            .f32 => calculatePreparedInputResult(f32, arena.allocator(), io, arena.allocator(), complex_input, null, filename, config, n_threads, luts.f32Ptr(), luts.coarseF32Ptr(), luts.fineF32Ptr()),
-        };
-
-        if (partner_a_result.status != .ok or partner_b_result.status != .ok or complex_result.status != .ok) {
-            failed += 1;
-            std.debug.print("Error running BSA analysis '{s}' on '{s}': SASA calculation failed\n", .{ name, filename });
-            source_parsed.deinit();
-            _ = arena.reset(.retain_capacity);
-            continue;
-        }
-
-        const partner_a_areas = partner_a_result.atom_areas orelse {
-            failed += 1;
-            source_parsed.deinit();
-            _ = arena.reset(.retain_capacity);
-            continue;
-        };
-        const partner_b_areas = partner_b_result.atom_areas orelse {
-            failed += 1;
-            source_parsed.deinit();
-            _ = arena.reset(.retain_capacity);
-            continue;
-        };
-        const complex_areas = complex_result.atom_areas orelse {
-            failed += 1;
-            source_parsed.deinit();
-            _ = arena.reset(.retain_capacity);
-            continue;
-        };
-
-        const delta_total = partner_a_result.total_sasa + partner_b_result.total_sasa - complex_result.total_sasa;
-        const bsa = delta_total / 2.0;
-
-        var residue_arrays = BsaResidueDeltaArrays{};
-        if (std.mem.eql(u8, level, "residue")) {
-            const atom_delta_sasa = try arena.allocator().alloc(f64, complex_input.atomCount());
-            var a_index: usize = 0;
-            var b_index: usize = 0;
-            for (0..complex_input.atomCount()) |i| {
-                if (atomSelectedByChains(complex_input, i, partner_a)) {
-                    atom_delta_sasa[i] = partner_a_areas[a_index] - complex_areas[i];
-                    a_index += 1;
-                } else {
-                    atom_delta_sasa[i] = partner_b_areas[b_index] - complex_areas[i];
-                    b_index += 1;
+            const indices = map_indices.?;
+            const first_type = map.entries[indices[0]].asym_id_type;
+            var mixed_asym_id_type = false;
+            for (indices[1..]) |entry_index| {
+                if (map.entries[entry_index].asym_id_type != first_type) {
+                    mixed_asym_id_type = true;
+                    break;
                 }
             }
-            residue_arrays = buildBsaResidueDeltaArrays(arena.allocator(), complex_input, atom_delta_sasa) catch |err| {
-                failed += 1;
-                std.debug.print("Error running BSA analysis '{s}' on '{s}': residue delta map failed: {s}\n", .{ name, filename, @errorName(err) });
-                source_parsed.deinit();
-                _ = arena.reset(.retain_capacity);
+            if (mixed_asym_id_type) {
+                for (indices) |entry_index| {
+                    var error_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                    defer error_arena.deinit();
+                    const entry = map.entries[entry_index];
+                    _ = try writeBsaInterfaceError(
+                        io,
+                        jsonl_file,
+                        error_arena.allocator(),
+                        filename,
+                        entry.id orelse filename,
+                        name,
+                        "interfaces for one file must use the same asym_id_type",
+                    );
+                    failed += 1;
+                }
                 continue;
-            };
+            }
+            source_config.use_auth_chain = first_type == .auth;
         }
+        const input_path = try std.fs.path.join(source_arena.allocator(), &.{ input_dir, filename });
 
-        try appendBsaAnalysisJsonlToFile(io, jsonl_file, arena.allocator(), .{
-            .filename = filename,
-            .name = name,
-            .partner_a = partner_a,
-            .partner_b = partner_b,
-            .sasa_partner_a = partner_a_result.total_sasa,
-            .sasa_partner_b = partner_b_result.total_sasa,
-            .sasa_complex = complex_result.total_sasa,
-            .delta_sasa_total = delta_total,
-            .bsa = bsa,
-            .delta_sasa_level = level,
-            .residue_chain = residue_arrays.residue_chain,
-            .residue_name = residue_arrays.residue_name,
-            .residue_number = residue_arrays.residue_number,
-            .residue_insertion_code = residue_arrays.residue_insertion_code,
-            .residue_delta_sasa = residue_arrays.residue_delta_sasa,
-        }, jsonlOptions(config));
+        var source_parsed = readInputFile(source_arena.allocator(), io, input_path, source_config) catch |err| {
+            const message = try std.fmt.allocPrint(source_arena.allocator(), "read/parse failed: {s}", .{@errorName(err)});
+            if (interface_map) |*map| {
+                for (map_indices.?) |entry_index| {
+                    const entry = map.entries[entry_index];
+                    _ = try writeBsaInterfaceError(io, jsonl_file, source_arena.allocator(), filename, entry.id orelse filename, name, message);
+                    failed += 1;
+                }
+            } else {
+                _ = try writeBsaInterfaceError(io, jsonl_file, source_arena.allocator(), filename, filename, name, message);
+                failed += 1;
+            }
+            continue;
+        };
+        defer source_parsed.deinit();
 
-        successful += 1;
-        total_sasa_time_ns += partner_a_result.sasa_time_ns + partner_b_result.sasa_time_ns + complex_result.sasa_time_ns;
-        source_parsed.deinit();
-        _ = arena.reset(.retain_capacity);
+        workflowClassifySourceInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
+            const message = try std.fmt.allocPrint(source_arena.allocator(), "classifier failed: {s}", .{@errorName(err)});
+            if (interface_map) |*map| {
+                for (map_indices.?) |entry_index| {
+                    const entry = map.entries[entry_index];
+                    _ = try writeBsaInterfaceError(io, jsonl_file, source_arena.allocator(), filename, entry.id orelse filename, name, message);
+                    failed += 1;
+                }
+            } else {
+                _ = try writeBsaInterfaceError(io, jsonl_file, source_arena.allocator(), filename, filename, name, message);
+                failed += 1;
+            }
+            continue;
+        };
+
+        if (interface_map) |*map| {
+            for (map_indices.?) |entry_index| {
+                const entry = map.entries[entry_index];
+                var interface_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                defer interface_arena.deinit();
+                const stats = try processBsaInterface(
+                    interface_arena.allocator(),
+                    io,
+                    jsonl_file,
+                    filename,
+                    name,
+                    level,
+                    atom_output,
+                    .{
+                        .id = entry.id orelse filename,
+                        .partner_a = entry.partner_a,
+                        .partner_b = entry.partner_b,
+                    },
+                    source_parsed.input,
+                    config,
+                    &luts,
+                );
+                if (stats.successful) {
+                    successful += 1;
+                    total_sasa_time_ns += stats.sasa_time_ns;
+                } else {
+                    failed += 1;
+                }
+            }
+        } else {
+            var interface_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer interface_arena.deinit();
+            const stats = try processBsaInterface(
+                interface_arena.allocator(),
+                io,
+                jsonl_file,
+                filename,
+                name,
+                level,
+                atom_output,
+                .{
+                    .id = filename,
+                    .partner_a = fixed_partner_a.?,
+                    .partner_b = fixed_partner_b.?,
+                },
+                source_parsed.input,
+                config,
+                &luts,
+            );
+            if (stats.successful) {
+                successful += 1;
+                total_sasa_time_ns += stats.sasa_time_ns;
+            } else {
+                failed += 1;
+            }
+        }
+    }
+
+    if (interface_map) |*map| {
+        for (map.entries) |entry| {
+            if (discovered_files.contains(entry.filename)) continue;
+            var error_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer error_arena.deinit();
+            _ = try writeBsaInterfaceError(
+                io,
+                jsonl_file,
+                error_arena.allocator(),
+                entry.filename,
+                entry.id orelse entry.filename,
+                name,
+                "input structure not found",
+            );
+            failed += 1;
+        }
     }
 
     if (config.show_timing) {
@@ -5588,6 +5875,8 @@ test "workflow BSA analysis uses per-file multi-chain interface map" {
     defer parsed.deinit();
     const object = parsed.value.object;
 
+    try std.testing.expectEqualStrings("ok", object.get("status").?.string);
+    try std.testing.expectEqualStrings("abcd.cif", object.get("id").?.string);
     const partner_a = object.get("partner_a").?.array.items;
     const partner_b = object.get("partner_b").?.array.items;
     try std.testing.expectEqual(@as(usize, 2), partner_a.len);
@@ -5601,6 +5890,165 @@ test "workflow BSA analysis uses per-file multi-chain interface map" {
     try std.testing.expectEqual(@as(usize, 4), residue_chains.len);
     try std.testing.expectEqualStrings("A", residue_chains[0].string);
     try std.testing.expectEqualStrings("D", residue_chains[3].string);
+    try std.testing.expectEqual(@as(usize, 4), object.get("residue_partner").?.array.items.len);
+    try std.testing.expectEqual(@as(usize, 4), object.get("residue_sasa_isolated").?.array.items.len);
+    try std.testing.expectEqual(@as(usize, 4), object.get("residue_sasa_complex").?.array.items.len);
+}
+
+fn testJsonNumber(value: std.json.Value) f64 {
+    return switch (value) {
+        .float => |number| number,
+        .integer => |number| @floatFromInt(number),
+        else => unreachable,
+    };
+}
+
+fn testJsonNumberArraySum(values: std.json.Array) f64 {
+    var total: f64 = 0;
+    for (values.items) |value| total += testJsonNumber(value);
+    return total;
+}
+
+test "workflow BSA analysis emits one detailed row per interface and stable error IDs" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root = root_buf[0..root_len];
+
+    const input_dir = try std.fs.path.join(allocator, &.{ root, "input" });
+    defer allocator.free(input_dir);
+    const output_dir = try std.fs.path.join(allocator, &.{ root, "output" });
+    defer allocator.free(output_dir);
+    const pdb_path = try std.fs.path.join(allocator, &.{ input_dir, "multi.pdb" });
+    defer allocator.free(pdb_path);
+    const map_path = try std.fs.path.join(allocator, &.{ root, "interfaces.csv" });
+    defer allocator.free(map_path);
+    const workflow_path = try std.fs.path.join(allocator, &.{ root, "bsa-multi.toml" });
+    defer allocator.free(workflow_path);
+
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = pdb_path,
+        .data = "ATOM      1  N   GLY A   1       0.000   0.000   0.000  1.00 20.00           N  \n" ++
+            "ATOM      2  CA  GLY A   1       1.500   0.000   0.000  1.00 20.00           C  \n" ++
+            "ATOM      3  N   ALA B   2       3.000   0.000   0.000  1.00 20.00           N  \n" ++
+            "ATOM      4  CA  ALA B   2       4.500   0.000   0.000  1.00 20.00           C  \n" ++
+            "ATOM      5  N   SER C   3       6.000   0.000   0.000  1.00 20.00           N  \n" ++
+            "ATOM      6  CA  SER C   3       7.500   0.000   0.000  1.00 20.00           C  \n" ++
+            "END\n",
+    });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = map_path,
+        .data =
+        \\filename,id,partner_a,partner_b,asym_id_type
+        \\multi.pdb,interface-ab,A,B,label
+        \\multi.pdb,interface-cb,C,B,label
+        \\multi.pdb,interface-invalid,Z,B,label
+        \\missing.pdb,interface-missing,A,B,label
+        \\
+        ,
+    });
+
+    const workflow = try std.fmt.allocPrint(allocator,
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "{s}"
+        \\
+        \\[output]
+        \\dir = "{s}"
+        \\format = "jsonl"
+        \\
+        \\[calculation]
+        \\n_points = 16
+        \\quiet = true
+        \\
+        \\[classifier]
+        \\type = "naccess"
+        \\
+        \\[analysis]
+        \\type = "bsa"
+        \\name = "interfaces"
+        \\chain_map = "{s}"
+        \\level = "residue"
+        \\atom_output = true
+        \\
+    , .{ input_dir, output_dir, map_path });
+    defer allocator.free(workflow);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
+
+    try runWorkflow(allocator, std.testing.io, .{ .workflow_path = workflow_path });
+
+    const output_path = try std.fs.path.join(allocator, &.{ output_dir, "interfaces.jsonl" });
+    defer allocator.free(output_path);
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(65536));
+    defer allocator.free(content);
+
+    var row_count: usize = 0;
+    var ok_count: usize = 0;
+    var error_count: usize = 0;
+    var saw_invalid = false;
+    var saw_missing = false;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        row_count += 1;
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer parsed.deinit();
+        const object = parsed.value.object;
+        const status = object.get("status").?.string;
+        const id = object.get("id").?.string;
+        if (std.mem.eql(u8, status, "err")) {
+            error_count += 1;
+            if (std.mem.eql(u8, id, "interface-invalid")) saw_invalid = true;
+            if (std.mem.eql(u8, id, "interface-missing")) saw_missing = true;
+            try std.testing.expect(object.get("error") != null);
+            continue;
+        }
+
+        ok_count += 1;
+        try std.testing.expect(std.mem.eql(u8, id, "interface-ab") or std.mem.eql(u8, id, "interface-cb"));
+        const atom_isolated = object.get("atom_sasa_isolated").?.array;
+        const atom_complex = object.get("atom_sasa_complex").?.array;
+        const atom_delta = object.get("atom_delta_sasa").?.array;
+        try std.testing.expectEqual(atom_isolated.items.len, atom_complex.items.len);
+        try std.testing.expectEqual(atom_isolated.items.len, atom_delta.items.len);
+        try std.testing.expectEqual(atom_isolated.items.len, object.get("atom_partner").?.array.items.len);
+        try std.testing.expectApproxEqAbs(
+            testJsonNumberArraySum(atom_isolated) - testJsonNumberArraySum(atom_complex),
+            testJsonNumberArraySum(atom_delta),
+            1e-9,
+        );
+
+        const residue_isolated = object.get("residue_sasa_isolated").?.array;
+        const residue_complex = object.get("residue_sasa_complex").?.array;
+        const residue_delta = object.get("residue_delta_sasa").?.array;
+        try std.testing.expectApproxEqAbs(
+            testJsonNumberArraySum(residue_isolated) - testJsonNumberArraySum(residue_complex),
+            testJsonNumberArraySum(residue_delta),
+            1e-9,
+        );
+        try std.testing.expectApproxEqAbs(
+            testJsonNumber(object.get("delta_sasa_total").?),
+            testJsonNumberArraySum(atom_delta),
+            1e-9,
+        );
+        try std.testing.expectApproxEqAbs(
+            testJsonNumber(object.get("delta_sasa_total").?) / 2.0,
+            testJsonNumber(object.get("bsa").?),
+            1e-9,
+        );
+    }
+
+    try std.testing.expectEqual(@as(usize, 4), row_count);
+    try std.testing.expectEqual(@as(usize, 2), ok_count);
+    try std.testing.expectEqual(@as(usize, 2), error_count);
+    try std.testing.expect(saw_invalid);
+    try std.testing.expect(saw_missing);
 }
 
 test "workflow mmCIF chain filters preserve long chain IDs" {
