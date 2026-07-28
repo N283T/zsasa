@@ -127,30 +127,84 @@ name = "selected_complexes"
 chain_map = "chains.csv"
 ```
 
-The CSV must contain `filename` and `chains` columns. `asym_id_type` is optional
-and defaults to `label`:
+The CSV must contain `filename` and `chains` columns. Add a globally unique
+`id` for each requested selection when a filename appears more than once.
+`asym_id_type` is optional and defaults to `label`:
 
 ```csv
-filename,chains,asym_id_type
-1abc.pdb,"A,C",label
-2xyz.cif,"A,C",auth
-3def.cif,"B,D",label
+filename,id,chains,asym_id_type
+1111.cif,a,A,label
+1111.cif,bc,"B,C",label
+1111.cif,abc,"A,B,C",label
+2222.cif,a_2222,X,label
+2222.cif,b_2222,Y,label
+2222.cif,complex_2222,"X,Y",label
 ```
 
 `chains` is a comma-separated set. A row containing `A,C` calculates the SASA
 of the A+C complex: atoms in both chains are included and occlude each other.
-It does not calculate A and C independently. A map has one selection per
-filename; to calculate multiple selections for each file, add multiple named
-workflow jobs with separate chain maps.
+It does not calculate A and C independently. The first three rows above emit
+the reusable primitive results SASA(A), SASA(B+C), and SASA(A+B+C). This path
+does not calculate ΔSASA or BSA; derive those quantities downstream.
 
 JSON chain maps are also accepted:
 
 ```json
 [
-  {"filename": "1abc.pdb", "chains": ["A", "C"], "asym_id_type": "label"},
-  {"filename": "2xyz.cif", "chains": ["A", "C"], "asym_id_type": "auth"}
+  {"filename": "1111.cif", "id": "a", "chains": ["A"], "asym_id_type": "label"},
+  {"filename": "1111.cif", "id": "bc", "chains": ["B", "C"], "asym_id_type": "label"},
+  {"filename": "1111.cif", "id": "abc", "chains": ["A", "B", "C"], "asym_id_type": "label"}
 ]
 ```
+
+For a repeated filename, every row must have an `id`, IDs must be unique across
+the whole map, and all rows must use the same `asym_id_type`. Legacy maps with
+one row per filename may omit `id`; the output ID then defaults to the
+filename, preserving one result per structure.
+
+zsasa groups map rows by filename. It reads/decompresses, parses, and classifies
+each discovered structure once, then calculates its selections from that
+prepared input. Chain sets are canonicalized as sets, so requests such as
+`["B", "C"]` and `["C", "B"]` share one SASA calculation while still emitting
+separate rows with their requested IDs and chain order.
+
+Workflow `threads` controls concurrent structure-file workers. With more than
+one file worker, every individual SASA calculation uses one internal thread to
+avoid nested oversubscription. With one file, the configured threads are
+available to its SASA calculations. Progress advances once per discovered
+structure after all of its selections finish.
+
+Multi-selection maps require JSONL output. Each requested selection produces a
+complete, non-interleaved success or error row:
+
+```json
+{"status":"ok","filename":"1111.cif","id":"bc","chains":["B","C"],"total_area":1234.5,"atom_areas":[12.3,0]}
+{"status":"err","filename":"1111.cif","id":"missing","chains":["Z"],"error":"selected chain not found: Z"}
+```
+
+Success rows always include `filename`, `id`, `chains`, and `total_area`.
+`atom_areas` follows `[output.jsonl].atom_areas`, and residue arrays follow
+`[calculation].residue_map`. Missing map rows, missing input structures,
+missing selected chains, and per-selection calculation failures are emitted as
+error rows without discarding other selections for the same structure.
+
+For stable atom joins across selections, enable identity metadata together with
+atom areas:
+
+```toml
+[output.jsonl]
+atom_areas = true
+atom_identity = true
+```
+
+This adds parallel `source_atom_index`, `atom_chain`, `atom_residue_name`,
+`atom_residue_number`, `atom_insertion_code`, `atom_name`, and `atom_element`
+arrays. `source_atom_index` is zero-based in the once-parsed source atom array
+after configured model, alternate-location, hydrogen, and HETATM filtering. It
+therefore aligns atoms across A, B+C, and A+B+C rows from the same source and
+settings. `atom_element` supports downstream polar/apolar classification
+without adding this metadata when atom output is disabled. `atom_identity`
+currently applies only to `chain_map` jobs and requires `atom_areas = true`.
 
 For mmCIF and BinaryCIF, `label` matches `_atom_site.label_asym_id` and `auth`
 matches `_atom_site.auth_asym_id`. PDB has one chain-ID field, so `label` and
@@ -160,9 +214,9 @@ Filenames must be basenames that exactly match files in the input directory,
 including their structure and compression extensions. Every discovered
 structure must have one map entry; a missing entry is written as a failed batch
 result. Keep a JSON chain map outside the input directory because `.json` is
-also a supported structure-input extension. Duplicate filenames, empty chain
-lists, and jobs that specify both
-`chains` and `chain_map` are rejected. Chain maps are supported for PDB,
+also a supported structure-input extension. Missing/duplicate IDs, mixed
+`asym_id_type` values for one filename, empty chain lists, and jobs that specify
+both `chains` and `chain_map` are rejected. Chain maps are supported for PDB,
 mmCIF, and BinaryCIF inputs, not JSON atom arrays or SDF molecule batches.
 
 ## BSA / ΔSASA Analysis {#bsa-analysis}
@@ -406,15 +460,18 @@ format = "jsonl"
 
 [output.jsonl]
 atom_areas = false    # omit per-atom SASA arrays
+atom_identity = false # chain-map-only stable atom identity arrays
 total_area = true     # keep per-structure totals
 decimals = 3          # round JSONL floating-point values
 metadata = "sidecar"  # none | sidecar
 ```
 
-Defaults preserve the CLI JSONL schema: `atom_areas = true`, `total_area = true`,
-full precision, and no metadata sidecar. When `metadata = "sidecar"` is set,
-workflow batch jobs write a `<job>.meta.json` file next to `<job>.jsonl` with
-the effective JSONL and calculation settings.
+Defaults preserve the CLI JSONL schema: `atom_areas = true`,
+`atom_identity = false`, `total_area = true`, full precision, and no metadata
+sidecar. `atom_identity` is available only for chain-map jobs and requires atom
+areas. Selection-map JSONL also requires `total_area = true`. When
+`metadata = "sidecar"` is set, workflow batch jobs write a `<job>.meta.json`
+file next to `<job>.jsonl` with the effective JSONL and calculation settings.
 
 ## Reference
 

@@ -15,11 +15,13 @@ pub const AsymIdType = enum {
 
 pub const Entry = struct {
     filename: []const u8,
+    id: ?[]const u8,
     chains: []const []const u8,
     asym_id_type: AsymIdType,
 
     fn deinit(self: Entry, allocator: Allocator) void {
         allocator.free(self.filename);
+        if (self.id) |id| allocator.free(id);
         for (self.chains) |chain| allocator.free(chain);
         allocator.free(self.chains);
     }
@@ -28,18 +30,34 @@ pub const Entry = struct {
 pub const ChainMap = struct {
     allocator: Allocator,
     entries: []Entry,
-    index: std.StringHashMapUnmanaged(usize),
+    index: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(usize)),
 
     pub fn deinit(self: *ChainMap) void {
+        var values = self.index.valueIterator();
+        while (values.next()) |indices| indices.deinit(self.allocator);
         self.index.deinit(self.allocator);
         for (self.entries) |entry| entry.deinit(self.allocator);
         self.allocator.free(self.entries);
         self.* = undefined;
     }
 
+    pub fn getIndices(self: *const ChainMap, filename: []const u8) ?[]const usize {
+        const indices = self.index.get(filename) orelse return null;
+        return indices.items;
+    }
+
+    /// Return the first selection for compatibility with one-row-per-file maps.
     pub fn get(self: *const ChainMap, filename: []const u8) ?Entry {
-        const index = self.index.get(filename) orelse return null;
-        return self.entries[index];
+        const indices = self.getIndices(filename) orelse return null;
+        return self.entries[indices[0]];
+    }
+
+    pub fn hasMultipleSelections(self: *const ChainMap) bool {
+        var values = self.index.valueIterator();
+        while (values.next()) |indices| {
+            if (indices.items.len > 1) return true;
+        }
+        return false;
     }
 };
 
@@ -111,6 +129,7 @@ pub fn parseCsv(allocator: Allocator, content: []const u8) !ChainMap {
     defer if (header) |fields| freeFields(allocator, fields);
 
     var filename_col: ?usize = null;
+    var id_col: ?usize = null;
     var chains_col: ?usize = null;
     var asym_id_type_col: ?usize = null;
 
@@ -124,6 +143,7 @@ pub fn parseCsv(allocator: Allocator, content: []const u8) !ChainMap {
             for (fields, 0..) |field, i| {
                 const normalized = if (i == 0) std.mem.trimStart(u8, field, "\xEF\xBB\xBF") else field;
                 if (std.ascii.eqlIgnoreCase(normalized, "filename")) filename_col = i;
+                if (std.ascii.eqlIgnoreCase(normalized, "id")) id_col = i;
                 if (std.ascii.eqlIgnoreCase(normalized, "chains")) chains_col = i;
                 if (std.ascii.eqlIgnoreCase(normalized, "asym_id_type")) asym_id_type_col = i;
             }
@@ -143,7 +163,14 @@ pub fn parseCsv(allocator: Allocator, content: []const u8) !ChainMap {
             try parseAsymIdTypeOrDefault(fields[col])
         else
             AsymIdType.label;
-        try appendEntry(allocator, &entries, fields[filename_col.?], fields[chains_col.?], asym_id_type);
+        try appendEntry(
+            allocator,
+            &entries,
+            fields[filename_col.?],
+            if (id_col) |col| fields[col] else null,
+            fields[chains_col.?],
+            asym_id_type,
+        );
     }
 
     if (header == null) return error.MissingChainMapHeader;
@@ -152,6 +179,7 @@ pub fn parseCsv(allocator: Allocator, content: []const u8) !ChainMap {
 
 const JsonEntry = struct {
     filename: []const u8,
+    id: ?[]const u8 = null,
     chains: []const []const u8,
     asym_id_type: ?[]const u8 = null,
 };
@@ -165,7 +193,7 @@ pub fn parseJson(allocator: Allocator, content: []const u8) !ChainMap {
 
     for (parsed.value) |json_entry| {
         const asym_id_type = try parseAsymIdTypeOrDefault(json_entry.asym_id_type orelse "");
-        try appendEntryFromChains(allocator, &entries, json_entry.filename, json_entry.chains, asym_id_type);
+        try appendEntryFromChains(allocator, &entries, json_entry.filename, json_entry.id, json_entry.chains, asym_id_type);
     }
     return finish(allocator, &entries);
 }
@@ -272,24 +300,26 @@ fn appendEntry(
     allocator: Allocator,
     entries: *std.ArrayListUnmanaged(Entry),
     filename_value: []const u8,
+    id_value: ?[]const u8,
     chains_value: []const u8,
     asym_id_type: AsymIdType,
 ) !void {
     const owned_chains = try parseCommaSeparatedChains(allocator, chains_value);
     errdefer freeChains(allocator, owned_chains);
-    try appendOwnedEntry(allocator, entries, filename_value, owned_chains, asym_id_type);
+    try appendOwnedEntry(allocator, entries, filename_value, id_value, owned_chains, asym_id_type);
 }
 
 fn appendEntryFromChains(
     allocator: Allocator,
     entries: *std.ArrayListUnmanaged(Entry),
     filename_value: []const u8,
+    id_value: ?[]const u8,
     chain_values: []const []const u8,
     asym_id_type: AsymIdType,
 ) !void {
     const chains = try dupeChains(allocator, chain_values);
     errdefer freeChains(allocator, chains);
-    try appendOwnedEntry(allocator, entries, filename_value, chains, asym_id_type);
+    try appendOwnedEntry(allocator, entries, filename_value, id_value, chains, asym_id_type);
 }
 
 fn appendInterfaceEntryCsv(
@@ -328,14 +358,21 @@ fn appendOwnedEntry(
     allocator: Allocator,
     entries: *std.ArrayListUnmanaged(Entry),
     filename_value: []const u8,
+    id_value: ?[]const u8,
     chains: []const []const u8,
     asym_id_type: AsymIdType,
 ) !void {
     const filename = try validateFilename(filename_value);
     const owned_filename = try allocator.dupe(u8, filename);
     errdefer allocator.free(owned_filename);
+    const owned_id = if (id_value) |value| blk: {
+        const id = std.mem.trim(u8, value, " \t\r");
+        break :blk if (id.len == 0) null else try allocator.dupe(u8, try validateSelectionId(id));
+    } else null;
+    errdefer if (owned_id) |id| allocator.free(id);
     try entries.append(allocator, .{
         .filename = owned_filename,
+        .id = owned_id,
         .chains = chains,
         .asym_id_type = asym_id_type,
     });
@@ -374,11 +411,33 @@ fn finish(allocator: Allocator, entries: *std.ArrayListUnmanaged(Entry)) !ChainM
         allocator.free(owned_entries);
     }
 
-    var index = std.StringHashMapUnmanaged(usize){};
-    errdefer index.deinit(allocator);
+    var index = std.StringHashMapUnmanaged(std.ArrayListUnmanaged(usize)){};
+    errdefer {
+        var values = index.valueIterator();
+        while (values.next()) |indices| indices.deinit(allocator);
+        index.deinit(allocator);
+    }
     for (owned_entries, 0..) |entry, i| {
-        if (index.contains(entry.filename)) return error.DuplicateFilename;
-        try index.put(allocator, entry.filename, i);
+        const result = try index.getOrPut(allocator, entry.filename);
+        if (!result.found_existing) result.value_ptr.* = .empty;
+        try result.value_ptr.append(allocator, i);
+    }
+    var values = index.valueIterator();
+    while (values.next()) |indices| {
+        if (indices.items.len <= 1) continue;
+        const first_type = owned_entries[indices.items[0]].asym_id_type;
+        for (indices.items) |entry_index| {
+            const entry = owned_entries[entry_index];
+            if (entry.id == null) return error.MissingSelectionId;
+            if (entry.asym_id_type != first_type) return error.MixedSelectionAsymIdType;
+        }
+    }
+    var ids = std.StringHashMapUnmanaged(void){};
+    defer ids.deinit(allocator);
+    for (owned_entries) |entry| {
+        const id = entry.id orelse entry.filename;
+        if (ids.contains(id)) return error.DuplicateSelectionId;
+        try ids.put(allocator, id, {});
     }
 
     return .{
@@ -449,6 +508,12 @@ fn validateFilename(filename_value: []const u8) ![]const u8 {
 fn validateInterfaceId(id_value: []const u8) ![]const u8 {
     const id = std.mem.trim(u8, id_value, " \t\r");
     if (id.len == 0) return error.EmptyInterfaceId;
+    return id;
+}
+
+fn validateSelectionId(id_value: []const u8) ![]const u8 {
+    const id = std.mem.trim(u8, id_value, " \t\r");
+    if (id.len == 0) return error.EmptySelectionId;
     return id;
 }
 
@@ -605,14 +670,71 @@ test "parse JSON chain map defaults to label IDs" {
     try std.testing.expectEqual(AsymIdType.auth, map.get("2xyz.cif").?.asym_id_type);
 }
 
-test "reject duplicate chain map filenames" {
+test "parse multiple CSV selections for one filename with globally unique IDs" {
+    var map = try parseCsv(
+        std.testing.allocator,
+        "filename,id,chains,asym_id_type\n" ++
+            "1abc.cif,a,A,label\n" ++
+            "1abc.cif,bc,\"B,C\",label\n" ++
+            "2xyz.cif,other,X,auth\n",
+    );
+    defer map.deinit();
+
+    const indices = map.getIndices("1abc.cif").?;
+    try std.testing.expectEqual(@as(usize, 2), indices.len);
+    try std.testing.expectEqualStrings("a", map.entries[indices[0]].id.?);
+    try std.testing.expectEqualStrings("bc", map.entries[indices[1]].id.?);
+    try std.testing.expectEqualStrings("B", map.entries[indices[1]].chains[0]);
+    try std.testing.expectEqualStrings("C", map.entries[indices[1]].chains[1]);
+}
+
+test "parse multiple JSON selections for one filename with globally unique IDs" {
+    var map = try parseJson(std.testing.allocator,
+        \\[
+        \\  {"filename":"1abc.cif","id":"a","chains":["A"]},
+        \\  {"filename":"1abc.cif","id":"bc","chains":["B","C"]}
+        \\]
+    );
+    defer map.deinit();
+
+    const indices = map.getIndices("1abc.cif").?;
+    try std.testing.expectEqual(@as(usize, 2), indices.len);
+    try std.testing.expectEqualStrings("a", map.entries[indices[0]].id.?);
+    try std.testing.expectEqualStrings("bc", map.entries[indices[1]].id.?);
+}
+
+test "require IDs when a chain map filename appears more than once" {
     try std.testing.expectError(
-        error.DuplicateFilename,
+        error.MissingSelectionId,
         parseCsv(
             std.testing.allocator,
-            "filename,chains\n" ++
-                "1abc.cif,A\n" ++
-                "1abc.cif,B\n",
+            "filename,id,chains\n" ++
+                "1abc.cif,a,A\n" ++
+                "1abc.cif,,B\n",
+        ),
+    );
+}
+
+test "reject duplicate selection IDs across filenames" {
+    try std.testing.expectError(
+        error.DuplicateSelectionId,
+        parseCsv(
+            std.testing.allocator,
+            "filename,id,chains\n" ++
+                "1abc.cif,same,A\n" ++
+                "2xyz.cif,same,B\n",
+        ),
+    );
+}
+
+test "reject mixed asym ID types within one selection-map filename" {
+    try std.testing.expectError(
+        error.MixedSelectionAsymIdType,
+        parseCsv(
+            std.testing.allocator,
+            "filename,id,chains,asym_id_type\n" ++
+                "1abc.cif,a,A,label\n" ++
+                "1abc.cif,b,B,auth\n",
         ),
     );
 }

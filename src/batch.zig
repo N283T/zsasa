@@ -102,6 +102,7 @@ pub const BatchConfig = struct {
     residue_map: bool = false,
     jsonl_decimals: ?u8 = null,
     jsonl_include_atom_areas: bool = true,
+    jsonl_include_atom_identity: bool = false,
     jsonl_include_total_area: bool = true,
     jsonl_metadata: JsonlMetadataMode = .none,
 };
@@ -881,6 +882,7 @@ fn jsonlOptions(config: BatchConfig) json_writer.JsonlOptions {
     return .{
         .decimals = config.jsonl_decimals,
         .include_atom_areas = config.jsonl_include_atom_areas,
+        .include_atom_identity = config.jsonl_include_atom_identity,
         .include_total_area = config.jsonl_include_total_area,
     };
 }
@@ -924,6 +926,7 @@ fn writeWorkflowJsonlMetadata(
 
     const JsonlMeta = struct {
         atom_areas: bool,
+        atom_identity: bool,
         total_area: bool,
         decimals: ?u8,
     };
@@ -951,6 +954,7 @@ fn writeWorkflowJsonlMetadata(
         .metadata = "sidecar",
         .jsonl = .{
             .atom_areas = config.jsonl_include_atom_areas,
+            .atom_identity = config.jsonl_include_atom_identity,
             .total_area = config.jsonl_include_total_area,
             .decimals = config.jsonl_decimals,
         },
@@ -3407,6 +3411,7 @@ fn applyWorkflowToBatchConfig(
         if (output.jsonl.decimals) |v| config.jsonl_decimals = v;
     }
     if (output.jsonl.atom_areas) |v| config.jsonl_include_atom_areas = v;
+    if (output.jsonl.atom_identity) |v| config.jsonl_include_atom_identity = v;
     if (output.jsonl.total_area) |v| config.jsonl_include_total_area = v;
     if (output.jsonl.metadata) |v| config.jsonl_metadata = parseWorkflowJsonlMetadata(v) catch |err| {
         std.debug.print("Error: output.jsonl.metadata must be \"none\" or \"sidecar\": {s}\n", .{v});
@@ -4206,6 +4211,501 @@ fn runWorkflowBsaAnalysis(
     std.debug.print("Workflow complete: {d} successful, {d} failed\n", .{ successful, failed });
 }
 
+const SelectionMapBatchStats = struct {
+    successful: usize,
+    failed: usize,
+    total_sasa_time_ns: u64,
+    read_parse_count: usize,
+    classifier_count: usize,
+    calculation_count: usize,
+    file_threads: usize,
+    sasa_threads: usize,
+};
+
+const SelectionMapCounter = struct {
+    successful: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    failed: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    total_sasa_time_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    read_parse_count: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    classifier_count: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    calculation_count: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+};
+
+const SelectionGroup = struct {
+    representative_entry_index: usize,
+    result: FileResult,
+    atom_identity: ?json_writer.SelectionAtomIdentity = null,
+};
+
+const SelectionMapContext = struct {
+    files: []const []const u8,
+    input_dir: []const u8,
+    map: *const chain_map.ChainMap,
+    config: BatchConfig,
+    sasa_threads: usize,
+    luts: *const BatchLuts,
+    jsonl_stream: *JsonlStreamWriter,
+    next_file: std.atomic.Value(usize),
+    processed_count: std.atomic.Value(usize),
+    progress_node: std.Progress.Node,
+    counter: SelectionMapCounter = .{},
+    worker_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    io: std.Io,
+};
+
+fn chainsContain(chains: []const []const u8, target: []const u8) bool {
+    for (chains) |chain| {
+        if (std.mem.eql(u8, chain, target)) return true;
+    }
+    return false;
+}
+
+fn uniqueChainCount(chains: []const []const u8) usize {
+    var count: usize = 0;
+    for (chains, 0..) |chain, i| {
+        var seen = false;
+        for (chains[0..i]) |previous| {
+            if (std.mem.eql(u8, chain, previous)) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) count += 1;
+    }
+    return count;
+}
+
+fn sameCanonicalChainSet(a: []const []const u8, b: []const []const u8) bool {
+    if (uniqueChainCount(a) != uniqueChainCount(b)) return false;
+    for (a) |chain| {
+        if (!chainsContain(b, chain)) return false;
+    }
+    return true;
+}
+
+fn missingSelectedChain(input: AtomInput, chains: []const []const u8) ?[]const u8 {
+    for (chains) |chain| {
+        if (!bsaInputContainsChain(input, chain)) return chain;
+    }
+    return null;
+}
+
+fn selectedSourceAtomIndices(allocator: Allocator, source_input: AtomInput, chains: []const []const u8) ![]const usize {
+    const count = countSelectedAtoms(source_input, chains);
+    const indices = try allocator.alloc(usize, count);
+    var out_index: usize = 0;
+    for (0..source_input.atomCount()) |source_index| {
+        if (!atomSelectedByChains(source_input, source_index, chains)) continue;
+        indices[out_index] = source_index;
+        out_index += 1;
+    }
+    return indices;
+}
+
+fn buildSelectionAtomIdentity(
+    allocator: Allocator,
+    selected_input: AtomInput,
+    source_atom_index: []const usize,
+) !json_writer.SelectionAtomIdentity {
+    if (!selected_input.hasResidueInfo() or selected_input.atom_name == null or selected_input.element == null) {
+        return error.MissingAtomMetadata;
+    }
+    if (source_atom_index.len != selected_input.atomCount()) return error.LengthMismatch;
+
+    const atom_count = selected_input.atomCount();
+    const atom_chain = try allocator.alloc([]const u8, atom_count);
+    const atom_residue_name = try allocator.alloc([]const u8, atom_count);
+    const atom_residue_number = try allocator.dupe(i32, selected_input.residue_num.?);
+    const atom_insertion_code = try allocator.alloc([]const u8, atom_count);
+    const atom_name = try allocator.alloc([]const u8, atom_count);
+    const atom_element = try allocator.alloc([]const u8, atom_count);
+    for (0..atom_count) |i| {
+        atom_chain[i] = if (selected_input.chain_id_full) |chains|
+            chains[i]
+        else
+            selected_input.chain_id.?[i].slice();
+        atom_residue_name[i] = selected_input.residue.?[i].slice();
+        atom_insertion_code[i] = selected_input.insertion_code.?[i].slice();
+        atom_name[i] = selected_input.atom_name.?[i].slice();
+        atom_element[i] = element_module.fromAtomicNumber(selected_input.element.?[i]).symbol();
+    }
+    return .{
+        .source_atom_index = source_atom_index,
+        .atom_chain = atom_chain,
+        .atom_residue_name = atom_residue_name,
+        .atom_residue_number = atom_residue_number,
+        .atom_insertion_code = atom_insertion_code,
+        .atom_name = atom_name,
+        .atom_element = atom_element,
+    };
+}
+
+fn selectionErrorResult(allocator: Allocator, filename: []const u8, comptime format: []const u8, args: anytype) FileResult {
+    return .{
+        .filename = filename,
+        .n_atoms = 0,
+        .sasa_time_ns = 0,
+        .total_sasa = 0,
+        .status = .err,
+        .error_msg = std.fmt.allocPrint(allocator, format, args) catch null,
+    };
+}
+
+fn writeSelectionError(
+    stream: *JsonlStreamWriter,
+    allocator: Allocator,
+    filename: []const u8,
+    id: []const u8,
+    chains: []const []const u8,
+    message: []const u8,
+) !void {
+    const line = try json_writer.selectionErrorToJsonlLine(allocator, .{
+        .filename = filename,
+        .id = id,
+        .chains = chains,
+        .error_message = message,
+    });
+    defer allocator.free(line);
+    try stream.writeLine(filename, line);
+}
+
+fn writeSelectionSuccess(
+    stream: *JsonlStreamWriter,
+    allocator: Allocator,
+    entry: chain_map.Entry,
+    result: FileResult,
+    identity: ?json_writer.SelectionAtomIdentity,
+) !void {
+    const line = try json_writer.selectionResultToJsonlLineOptions(allocator, .{
+        .filename = entry.filename,
+        .id = entry.id orelse entry.filename,
+        .chains = entry.chains,
+        .total_area = result.total_sasa,
+        .atom_areas = result.atom_areas orelse &.{},
+        .residue_map = result.residue_map,
+        .atom_identity = identity,
+    }, stream.options);
+    defer allocator.free(line);
+    try stream.writeLine(entry.filename, line);
+}
+
+fn writeSelectionSourceErrorRows(
+    ctx: *SelectionMapContext,
+    allocator: Allocator,
+    filename: []const u8,
+    map_indices: ?[]const usize,
+    message: []const u8,
+) !void {
+    if (map_indices) |indices| {
+        for (indices) |entry_index| {
+            const entry = ctx.map.entries[entry_index];
+            try writeSelectionError(
+                ctx.jsonl_stream,
+                allocator,
+                filename,
+                entry.id orelse filename,
+                entry.chains,
+                message,
+            );
+            _ = ctx.counter.failed.fetchAdd(1, .monotonic);
+        }
+        return;
+    }
+    try writeSelectionError(ctx.jsonl_stream, allocator, filename, filename, &.{}, message);
+    _ = ctx.counter.failed.fetchAdd(1, .monotonic);
+}
+
+fn calculateSelectionGroup(
+    ctx: *SelectionMapContext,
+    allocator: Allocator,
+    filename: []const u8,
+    source_input: AtomInput,
+    representative_entry_index: usize,
+) SelectionGroup {
+    const entry = ctx.map.entries[representative_entry_index];
+    if (missingSelectedChain(source_input, entry.chains)) |missing_chain| {
+        return .{
+            .representative_entry_index = representative_entry_index,
+            .result = selectionErrorResult(allocator, filename, "selected chain not found: {s}", .{missing_chain}),
+        };
+    }
+
+    const source_indices: []const usize = if (ctx.config.jsonl_include_atom_identity)
+        selectedSourceAtomIndices(allocator, source_input, entry.chains) catch |err| {
+            return .{
+                .representative_entry_index = representative_entry_index,
+                .result = selectionErrorResult(allocator, filename, "selection source-index mapping failed: {s}", .{@errorName(err)}),
+            };
+        }
+    else
+        &.{};
+    const selected_input = copySelectedAtomInput(allocator, source_input, entry.chains) catch |err| {
+        return .{
+            .representative_entry_index = representative_entry_index,
+            .result = selectionErrorResult(allocator, filename, "selection failed: {s}", .{@errorName(err)}),
+        };
+    };
+
+    _ = ctx.counter.calculation_count.fetchAdd(1, .monotonic);
+    const result = switch (ctx.config.precision) {
+        .f64 => calculatePreparedInputResult(
+            f64,
+            allocator,
+            ctx.io,
+            allocator,
+            selected_input,
+            null,
+            filename,
+            ctx.config,
+            ctx.sasa_threads,
+            ctx.luts.f64Ptr(),
+            ctx.luts.coarseF64Ptr(),
+            ctx.luts.fineF64Ptr(),
+        ),
+        .f32 => calculatePreparedInputResult(
+            f32,
+            allocator,
+            ctx.io,
+            allocator,
+            selected_input,
+            null,
+            filename,
+            ctx.config,
+            ctx.sasa_threads,
+            ctx.luts.f32Ptr(),
+            ctx.luts.coarseF32Ptr(),
+            ctx.luts.fineF32Ptr(),
+        ),
+    };
+    if (result.status != .ok) {
+        return .{
+            .representative_entry_index = representative_entry_index,
+            .result = result,
+        };
+    }
+
+    const identity: ?json_writer.SelectionAtomIdentity = if (ctx.config.jsonl_include_atom_identity)
+        buildSelectionAtomIdentity(allocator, selected_input, source_indices) catch |err| {
+            return .{
+                .representative_entry_index = representative_entry_index,
+                .result = selectionErrorResult(allocator, filename, "atom identity failed: {s}", .{@errorName(err)}),
+            };
+        }
+    else
+        null;
+
+    return .{
+        .representative_entry_index = representative_entry_index,
+        .result = result,
+        .atom_identity = identity,
+    };
+}
+
+fn processSelectionMapFile(ctx: *SelectionMapContext, allocator: Allocator, filename: []const u8) !void {
+    const map_indices = ctx.map.getIndices(filename) orelse
+        return writeSelectionSourceErrorRows(ctx, allocator, filename, null, "selection chain map entry not found");
+
+    const first_type = ctx.map.entries[map_indices[0]].asym_id_type;
+    for (map_indices[1..]) |entry_index| {
+        if (ctx.map.entries[entry_index].asym_id_type != first_type) {
+            return writeSelectionSourceErrorRows(
+                ctx,
+                allocator,
+                filename,
+                map_indices,
+                "selections for one file must use the same asym_id_type",
+            );
+        }
+    }
+
+    var source_config = ctx.config;
+    source_config.chain_filter = null;
+    source_config.use_auth_chain = first_type == .auth;
+    const input_path = try std.fs.path.join(allocator, &.{ ctx.input_dir, filename });
+
+    _ = ctx.counter.read_parse_count.fetchAdd(1, .monotonic);
+    var source_parsed = readInputFile(allocator, ctx.io, input_path, source_config) catch |err| {
+        const message = try std.fmt.allocPrint(allocator, "read/parse failed: {s}", .{@errorName(err)});
+        return writeSelectionSourceErrorRows(ctx, allocator, filename, map_indices, message);
+    };
+    defer source_parsed.deinit();
+
+    _ = ctx.counter.classifier_count.fetchAdd(1, .monotonic);
+    workflowClassifySourceInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
+        const message = try std.fmt.allocPrint(allocator, "classifier failed: {s}", .{@errorName(err)});
+        return writeSelectionSourceErrorRows(ctx, allocator, filename, map_indices, message);
+    };
+
+    var groups = std.ArrayListUnmanaged(SelectionGroup).empty;
+    for (map_indices) |entry_index| {
+        const entry = ctx.map.entries[entry_index];
+        var group_index: ?usize = null;
+        for (groups.items, 0..) |group, i| {
+            const representative = ctx.map.entries[group.representative_entry_index];
+            if (sameCanonicalChainSet(entry.chains, representative.chains)) {
+                group_index = i;
+                break;
+            }
+        }
+        if (group_index == null) {
+            try groups.append(allocator, calculateSelectionGroup(ctx, allocator, filename, source_parsed.input, entry_index));
+        }
+    }
+
+    for (map_indices) |entry_index| {
+        const entry = ctx.map.entries[entry_index];
+        const group = for (groups.items) |candidate| {
+            const representative = ctx.map.entries[candidate.representative_entry_index];
+            if (sameCanonicalChainSet(entry.chains, representative.chains)) break candidate;
+        } else unreachable;
+
+        if (group.result.status == .ok) {
+            try writeSelectionSuccess(ctx.jsonl_stream, allocator, entry, group.result, group.atom_identity);
+            _ = ctx.counter.successful.fetchAdd(1, .monotonic);
+        } else {
+            try writeSelectionError(
+                ctx.jsonl_stream,
+                allocator,
+                filename,
+                entry.id orelse filename,
+                entry.chains,
+                group.result.error_msg orelse "unknown error",
+            );
+            _ = ctx.counter.failed.fetchAdd(1, .monotonic);
+        }
+    }
+
+    for (groups.items) |group| {
+        if (group.result.status == .ok) {
+            _ = ctx.counter.total_sasa_time_ns.fetchAdd(group.result.sasa_time_ns, .monotonic);
+        }
+    }
+}
+
+fn selectionMapWorker(ctx: *SelectionMapContext) void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer arena.deinit();
+
+    while (true) {
+        const file_index = ctx.next_file.fetchAdd(1, .monotonic);
+        if (file_index >= ctx.files.len) break;
+        const filename = ctx.files[file_index];
+        defer {
+            _ = ctx.processed_count.fetchAdd(1, .release);
+            ctx.progress_node.completeOne();
+        }
+
+        processSelectionMapFile(ctx, arena.allocator(), filename) catch |err| {
+            ctx.worker_failed.store(true, .release);
+            std.debug.print("Error running selection map on '{s}': {s}\n", .{ filename, @errorName(err) });
+        };
+        _ = arena.reset(.retain_capacity);
+    }
+}
+
+fn runSelectionMapBatch(
+    allocator: Allocator,
+    io: std.Io,
+    input_dir: []const u8,
+    config: BatchConfig,
+    jsonl_output_path: ?[]const u8,
+    map: *const chain_map.ChainMap,
+) !SelectionMapBatchStats {
+    if (config.output_format != .jsonl) return error.MultiSelectionMapRequiresJsonl;
+    if (!config.jsonl_include_total_area) return error.SelectionMapRequiresTotalArea;
+    if (config.jsonl_include_atom_identity and !config.jsonl_include_atom_areas) {
+        return error.AtomIdentityRequiresAtomAreas;
+    }
+
+    const files = try scanDirectory(allocator, io, input_dir);
+    defer freeScannedFiles(allocator, files);
+    try validateMappedChainInputFormats(files, true);
+
+    var luts = try BatchLuts.init(allocator, config);
+    defer luts.deinit();
+
+    const jsonl_file = if (jsonl_output_path) |path|
+        try std.Io.Dir.cwd().createFile(io, path, .{})
+    else
+        std.Io.File.stdout();
+    defer if (jsonl_output_path != null) jsonl_file.close(io);
+    var jsonl_buffer: [64 * 1024]u8 = undefined;
+    var jsonl_stream = JsonlStreamWriter.init(jsonl_file, io, jsonlOptions(config), &jsonl_buffer);
+    errdefer jsonl_stream.flush() catch {};
+
+    var discovered_files = std.StringHashMapUnmanaged(void){};
+    defer discovered_files.deinit(allocator);
+    for (files) |filename| try discovered_files.put(allocator, filename, {});
+
+    var progress_root: std.Progress.Node = if (shouldShowProgress(config))
+        std.Progress.start(io, .{ .root_name = "Processing files", .estimated_total_items = files.len })
+    else
+        .none;
+    defer progress_root.end();
+
+    const file_threads = effectiveWorkflowFileThreads(config, files.len);
+    const sasa_threads = if (file_threads > 1) 1 else effectiveWorkflowSasaThreads(config);
+    var ctx = SelectionMapContext{
+        .files = files,
+        .input_dir = input_dir,
+        .map = map,
+        .config = config,
+        .sasa_threads = sasa_threads,
+        .luts = &luts,
+        .jsonl_stream = &jsonl_stream,
+        .next_file = std.atomic.Value(usize).init(0),
+        .processed_count = std.atomic.Value(usize).init(0),
+        .progress_node = progress_root,
+        .io = io,
+    };
+
+    if (file_threads > 1 and files.len > 1) {
+        const threads = try allocator.alloc(std.Thread, file_threads);
+        defer allocator.free(threads);
+        var spawned_count: usize = 0;
+        errdefer joinSpawnedThreads(threads, spawned_count);
+        for (threads) |*thread| {
+            thread.* = try std.Thread.spawn(.{}, selectionMapWorker, .{&ctx});
+            spawned_count += 1;
+        }
+        joinSpawnedThreads(threads, spawned_count);
+    } else {
+        selectionMapWorker(&ctx);
+    }
+
+    if (ctx.processed_count.load(.acquire) != files.len) return error.SelectionMapWorkerFailed;
+
+    for (map.entries) |entry| {
+        if (discovered_files.contains(entry.filename)) continue;
+        var error_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer error_arena.deinit();
+        try writeSelectionError(
+            &jsonl_stream,
+            error_arena.allocator(),
+            entry.filename,
+            entry.id orelse entry.filename,
+            entry.chains,
+            "input structure not found",
+        );
+        _ = ctx.counter.failed.fetchAdd(1, .monotonic);
+    }
+
+    try jsonl_stream.flush();
+    if (jsonl_stream.hasError()) return error.JsonlWriteFailed;
+    if (ctx.worker_failed.load(.acquire)) return error.SelectionMapWorkerFailed;
+
+    return .{
+        .successful = ctx.counter.successful.load(.monotonic),
+        .failed = ctx.counter.failed.load(.monotonic),
+        .total_sasa_time_ns = ctx.counter.total_sasa_time_ns.load(.monotonic),
+        .read_parse_count = ctx.counter.read_parse_count.load(.monotonic),
+        .classifier_count = ctx.counter.classifier_count.load(.monotonic),
+        .calculation_count = ctx.counter.calculation_count.load(.monotonic),
+        .file_threads = file_threads,
+        .sasa_threads = sasa_threads,
+    };
+}
+
 fn effectiveWorkflowSasaThreads(config: BatchConfig) usize {
     return if (config.n_threads == 0)
         std.Thread.getCpuCount() catch 1
@@ -4428,6 +4928,10 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
             };
             config.chain_map = &loaded_chain_map.?;
         }
+        if (config.jsonl_include_atom_identity and loaded_chain_map == null) {
+            std.debug.print("Error: output.jsonl.atom_identity is supported only for chain_map jobs\n", .{});
+            return error.AtomIdentityRequiresSelectionMap;
+        }
         try validateBitmaskCorrectionConfig(config);
         validateBatchOutputFormat(config.output_format) catch {
             std.debug.print("Error: freesasa and rsa output formats are only supported by the calc command\n", .{});
@@ -4464,6 +4968,29 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
 
         if (!config.quiet) {
             std.debug.print("Workflow job: {s}\n", .{job.name});
+        }
+
+        if (loaded_chain_map != null and config.output_format == .jsonl) {
+            const stats = runSelectionMapBatch(
+                allocator,
+                io,
+                input_dir,
+                config,
+                jsonl_output_path,
+                &loaded_chain_map.?,
+            ) catch |err| {
+                std.debug.print("Error running selection-map workflow job '{s}': {s}\n", .{ job.name, @errorName(err) });
+                return err;
+            };
+            successful += stats.successful;
+            failed += stats.failed;
+            continue;
+        }
+        if (loaded_chain_map) |*map| {
+            if (map.hasMultipleSelections()) {
+                std.debug.print("Error: chain maps with multiple selections per file require format = \"jsonl\"\n", .{});
+                return error.MultiSelectionMapRequiresJsonl;
+            }
         }
 
         var result = runBatch(allocator, io, input_dir, job_output_dir, config, jsonl_output_path) catch |err| {
@@ -4566,6 +5093,10 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
         config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
         if (custom_classifier) |*c| config.custom_classifier = c;
         applyWorkflowJobOverrides(&config, args, job);
+        if (config.jsonl_include_atom_identity) {
+            std.debug.print("Error: output.jsonl.atom_identity is supported only for chain_map jobs\n", .{});
+            return error.AtomIdentityRequiresSelectionMap;
+        }
         try validateBitmaskCorrectionConfig(config);
         validateBatchOutputFormat(config.output_format) catch {
             std.debug.print("Error: freesasa and rsa output formats are only supported by the calc command\n", .{});
@@ -5804,6 +6335,170 @@ test "workflow chain map selects per-file PDB and mmCIF chain complexes" {
         found += 1;
     }
     try std.testing.expectEqual(@as(usize, 3), found);
+}
+
+test "selection map parses and classifies once, reuses chain sets, and emits joinable JSONL" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root = root_buf[0..root_len];
+    const input_dir = try std.fs.path.join(allocator, &.{ root, "input" });
+    defer allocator.free(input_dir);
+    const input_path = try std.fs.path.join(allocator, &.{ input_dir, "multi.pdb" });
+    defer allocator.free(input_path);
+    const output_path = try std.fs.path.join(allocator, &.{ root, "selections.jsonl" });
+    defer allocator.free(output_path);
+
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = input_path,
+        .data = "ATOM      1  N   GLY A   1       0.000   0.000   0.000  1.00 20.00           N  \n" ++
+            "ATOM      2  CA  GLY A   1       1.500   0.000   0.000  1.00 20.00           C  \n" ++
+            "ATOM      3  N   ALA B   2       3.000   0.000   0.000  1.00 20.00           N  \n" ++
+            "ATOM      4  CA  ALA B   2       4.500   0.000   0.000  1.00 20.00           C  \n" ++
+            "ATOM      5  N   SER C   3       6.000   0.000   0.000  1.00 20.00           N  \n" ++
+            "ATOM      6  CA  SER C   3       7.500   0.000   0.000  1.00 20.00           C  \n" ++
+            "END\n",
+    });
+
+    var map = try chain_map.parseCsv(
+        allocator,
+        "filename,id,chains,asym_id_type\n" ++
+            "multi.pdb,a,A,label\n" ++
+            "multi.pdb,bc,\"B,C\",label\n" ++
+            "multi.pdb,abc,\"A,B,C\",label\n" ++
+            "multi.pdb,bc-copy,\"C,B\",label\n" ++
+            "multi.pdb,bad,Z,label\n" ++
+            "absent.pdb,absent,A,label\n",
+    );
+    defer map.deinit();
+
+    const stats = try runSelectionMapBatch(allocator, std.testing.io, input_dir, .{
+        .n_threads = 4,
+        .n_points = 128,
+        .use_bitmask = true,
+        .precision = .f64,
+        .classifier_type = .ccd,
+        .include_hetatm = true,
+        .output_format = .jsonl,
+        .store_atom_areas = true,
+        .residue_map = true,
+        .jsonl_include_atom_areas = true,
+        .jsonl_include_atom_identity = true,
+        .quiet = true,
+    }, output_path, &map);
+
+    try std.testing.expectEqual(@as(usize, 4), stats.successful);
+    try std.testing.expectEqual(@as(usize, 2), stats.failed);
+    try std.testing.expectEqual(@as(usize, 1), stats.read_parse_count);
+    try std.testing.expectEqual(@as(usize, 1), stats.classifier_count);
+    try std.testing.expectEqual(@as(usize, 3), stats.calculation_count);
+    try std.testing.expectEqual(@as(usize, 1), stats.file_threads);
+    try std.testing.expectEqual(@as(usize, 4), stats.sasa_threads);
+
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(65536));
+    defer allocator.free(content);
+    const expected_ids = [_][]const u8{ "a", "bc", "abc", "bc-copy", "bad", "absent" };
+    var row_index: usize = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer parsed.deinit();
+        const object = parsed.value.object;
+        try std.testing.expectEqualStrings(expected_ids[row_index], object.get("id").?.string);
+        try std.testing.expect(object.get("filename") != null);
+        try std.testing.expect(object.get("chains") != null);
+        if (row_index < 4) {
+            try std.testing.expectEqualStrings("ok", object.get("status").?.string);
+            try std.testing.expect(object.get("total_area") != null);
+            const areas = object.get("atom_areas").?.array.items;
+            const source_indices = object.get("source_atom_index").?.array.items;
+            try std.testing.expectEqual(areas.len, source_indices.len);
+            try std.testing.expectEqual(areas.len, object.get("atom_element").?.array.items.len);
+            try std.testing.expect(object.get("residue_sasa") != null);
+            if (std.mem.eql(u8, expected_ids[row_index], "a")) {
+                try std.testing.expectEqual(@as(i64, 0), source_indices[0].integer);
+                try std.testing.expectEqual(@as(i64, 1), source_indices[1].integer);
+            } else if (std.mem.eql(u8, expected_ids[row_index], "bc") or
+                std.mem.eql(u8, expected_ids[row_index], "bc-copy"))
+            {
+                try std.testing.expectEqual(@as(i64, 2), source_indices[0].integer);
+                try std.testing.expectEqual(@as(i64, 5), source_indices[3].integer);
+            } else {
+                try std.testing.expectEqual(@as(i64, 0), source_indices[0].integer);
+                try std.testing.expectEqual(@as(i64, 5), source_indices[5].integer);
+            }
+        } else {
+            try std.testing.expectEqualStrings("err", object.get("status").?.string);
+            try std.testing.expect(object.get("error") != null);
+        }
+        row_index += 1;
+    }
+    try std.testing.expectEqual(expected_ids.len, row_index);
+}
+
+test "selection map parallelizes files and keeps internal SASA single-threaded" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root = root_buf[0..root_len];
+    const input_dir = try std.fs.path.join(allocator, &.{ root, "input" });
+    defer allocator.free(input_dir);
+    const output_path = try std.fs.path.join(allocator, &.{ root, "parallel.jsonl" });
+    defer allocator.free(output_path);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+
+    const pdb =
+        "ATOM      1  N   GLY A   1       0.000   0.000   0.000  1.00 20.00           N  \n" ++
+        "ATOM      2  CA  GLY A   1       1.500   0.000   0.000  1.00 20.00           C  \n" ++
+        "END\n";
+    for ([_][]const u8{ "one.pdb", "two.pdb" }) |filename| {
+        const path = try std.fs.path.join(allocator, &.{ input_dir, filename });
+        defer allocator.free(path);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = pdb });
+    }
+
+    var map = try chain_map.parseCsv(
+        allocator,
+        "filename,id,chains\n" ++
+            "one.pdb,one,A\n" ++
+            "two.pdb,two,A\n",
+    );
+    defer map.deinit();
+    const stats = try runSelectionMapBatch(allocator, std.testing.io, input_dir, .{
+        .n_threads = 4,
+        .n_points = 8,
+        .classifier_type = .naccess,
+        .output_format = .jsonl,
+        .store_atom_areas = true,
+        .quiet = true,
+    }, output_path, &map);
+
+    try std.testing.expectEqual(@as(usize, 2), stats.file_threads);
+    try std.testing.expectEqual(@as(usize, 1), stats.sasa_threads);
+    try std.testing.expectEqual(@as(usize, 2), stats.read_parse_count);
+    try std.testing.expectEqual(@as(usize, 2), stats.classifier_count);
+    try std.testing.expectEqual(@as(usize, 2), stats.calculation_count);
+
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(8192));
+    defer allocator.free(content);
+    var row_count: usize = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings("ok", parsed.value.object.get("status").?.string);
+        row_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), row_count);
 }
 
 test "workflow BSA analysis writes analysis JSONL" {

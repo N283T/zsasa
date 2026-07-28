@@ -319,6 +319,12 @@ filename. The command writes one JSONL success or error row per requested
 interface; residue components and opt-in atom detail are configured in the
 workflow. See [Workflow Files](../guide/workflows.md#bsa-analysis).
 
+Ordinary SASA workflow `chain_map` files may also contain multiple stable-ID
+rows per filename. zsasa parses and classifies each source once, reuses
+identical chain-set calculations, and emits primitive SASA JSONL rows for
+downstream analysis. See
+[Per-file Chain Maps](../guide/workflows.md#per-file-chain-maps).
+
 ### Trajectory Analysis
 
 ```bash
