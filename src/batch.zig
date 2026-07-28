@@ -1,5 +1,6 @@
 const std = @import("std");
 const workflow_manifest = @import("workflow_manifest.zig");
+const chain_map = @import("chain_map.zig");
 const types = @import("types.zig");
 const format_detect = @import("format_detect.zig");
 const json_parser = @import("json_parser.zig");
@@ -92,6 +93,7 @@ pub const BatchConfig = struct {
     custom_classifier: ?*const classifier.Classifier = null,
     custom_classifier_path: ?[]const u8 = null,
     chain_filter: ?[]const []const u8 = null,
+    chain_map: ?*const chain_map.ChainMap = null,
     use_auth_chain: bool = false,
     alt_loc_mode: mmcif_parser.AltLocMode = .auto,
     alt_loc_id: u8 = 'A',
@@ -1122,6 +1124,17 @@ fn processOneFile(
         .status = .ok,
     };
 
+    var file_config = config;
+    if (config.chain_map) |map| {
+        const selection = map.get(filename) orelse {
+            result.status = .err;
+            result.error_msg = std.fmt.allocPrint(result_allocator, "chain map entry not found", .{}) catch null;
+            return result;
+        };
+        file_config.chain_filter = selection.chains;
+        file_config.use_auth_chain = selection.asym_id_type == .auth;
+    }
+
     // Build input path
     const input_path = std.fs.path.join(arena, &.{ input_dir, filename }) catch |err| {
         result.status = .err;
@@ -1131,42 +1144,42 @@ fn processOneFile(
 
     // Read and parse input (auto-detect format from extension)
     var read_parse_timer: std.Io.Timestamp = undefined;
-    if (config.profile_stages) read_parse_timer = std.Io.Timestamp.now(io, .awake);
-    var parsed = readInputFile(arena, io, input_path, config) catch |err| {
-        if (config.profile_stages) result.read_parse_time_ns = @intCast(read_parse_timer.untilNow(io, .awake).nanoseconds);
+    if (file_config.profile_stages) read_parse_timer = std.Io.Timestamp.now(io, .awake);
+    var parsed = readInputFile(arena, io, input_path, file_config) catch |err| {
+        if (file_config.profile_stages) result.read_parse_time_ns = @intCast(read_parse_timer.untilNow(io, .awake).nanoseconds);
         result.status = .err;
         result.error_msg = std.fmt.allocPrint(result_allocator, "read/parse failed: {s}", .{@errorName(err)}) catch null;
         return result;
     };
-    if (config.profile_stages) result.read_parse_time_ns = @intCast(read_parse_timer.untilNow(io, .awake).nanoseconds);
+    if (file_config.profile_stages) result.read_parse_time_ns = @intCast(read_parse_timer.untilNow(io, .awake).nanoseconds);
     defer parsed.deinit();
 
     // Apply classifier for PDB/mmCIF input (skip JSON unless classification info exists).
     var classifier_timer: std.Io.Timestamp = undefined;
-    if (config.profile_stages) classifier_timer = std.Io.Timestamp.now(io, .awake);
-    if (config.custom_classifier) |custom_classifier| {
+    if (file_config.profile_stages) classifier_timer = std.Io.Timestamp.now(io, .awake);
+    if (file_config.custom_classifier) |custom_classifier| {
         if (parsed.input.hasClassificationInfo()) {
-            applyCustomClassifier(&parsed.input, custom_classifier, config.quiet) catch |err| {
-                if (config.profile_stages) result.classifier_time_ns = @intCast(classifier_timer.untilNow(io, .awake).nanoseconds);
+            applyCustomClassifier(&parsed.input, custom_classifier, file_config.quiet) catch |err| {
+                if (file_config.profile_stages) result.classifier_time_ns = @intCast(classifier_timer.untilNow(io, .awake).nanoseconds);
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
                 return result;
             };
         }
-    } else if (config.classifier_type) |ct| {
+    } else if (file_config.classifier_type) |ct| {
         const format = format_detect.detectInputFormat(input_path);
         if (format != .json and parsed.input.hasClassificationInfo()) {
-            applyBuiltinClassifier(&parsed.input, ct, config.sdf_ccd, parsed.inlineCcdPtr(), config.external_ccd) catch |err| {
-                if (config.profile_stages) result.classifier_time_ns = @intCast(classifier_timer.untilNow(io, .awake).nanoseconds);
+            applyBuiltinClassifier(&parsed.input, ct, file_config.sdf_ccd, parsed.inlineCcdPtr(), file_config.external_ccd) catch |err| {
+                if (file_config.profile_stages) result.classifier_time_ns = @intCast(classifier_timer.untilNow(io, .awake).nanoseconds);
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
                 return result;
             };
         }
     }
-    if (config.profile_stages) result.classifier_time_ns = @intCast(classifier_timer.untilNow(io, .awake).nanoseconds);
+    if (file_config.profile_stages) result.classifier_time_ns = @intCast(classifier_timer.untilNow(io, .awake).nanoseconds);
 
-    var calc_result = switch (config.precision) {
+    var calc_result = switch (file_config.precision) {
         .f64 => calculatePreparedInputResult(
             f64,
             arena,
@@ -1175,7 +1188,7 @@ fn processOneFile(
             parsed.input,
             output_dir,
             filename,
-            config,
+            file_config,
             n_threads,
             lut_f64,
             coarse_lut_f64,
@@ -1189,7 +1202,7 @@ fn processOneFile(
             parsed.input,
             output_dir,
             filename,
-            config,
+            file_config,
             n_threads,
             lut_f32,
             coarse_lut_f32,
@@ -1667,6 +1680,7 @@ pub fn runBatchSequential(
         for (files) |f| allocator.free(f);
         allocator.free(files);
     }
+    try validateChainMapInputFormats(files, config);
 
     var progress_root: std.Progress.Node = if (shouldShowProgress(config))
         std.Progress.start(io, .{ .root_name = "Processing files", .estimated_total_items = files.len })
@@ -2282,6 +2296,7 @@ pub fn runBatchParallel(
         for (files) |f| allocator.free(f);
         allocator.free(files);
     }
+    try validateChainMapInputFormats(files, config);
 
     if (files.len == 0) {
         return BatchResult{
@@ -2587,6 +2602,20 @@ fn validateBatchOutputFormat(output_format: OutputFormat) !void {
     switch (output_format) {
         .json, .compact, .csv, .jsonl => {},
         .freesasa, .rsa => return error.InvalidArgument,
+    }
+}
+
+fn validateChainMapInputFormats(files: []const []const u8, config: BatchConfig) !void {
+    return validateMappedChainInputFormats(files, config.chain_map != null);
+}
+
+fn validateMappedChainInputFormats(files: []const []const u8, enabled: bool) !void {
+    if (!enabled) return;
+    for (files) |filename| {
+        switch (format_detect.detectInputFormat(filename)) {
+            .pdb, .mmcif, .bcif => {},
+            .json, .sdf => return error.UnsupportedChainMapInputFormat,
+        }
     }
 }
 
@@ -3472,6 +3501,7 @@ fn runWorkflow(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     if (workflow.analysis != null) return runWorkflowBsaAnalysis(allocator, io, args, workflow);
 
     if (workflow.jobs.len == 0) return runWorkflowFileFirst(allocator, io, args, null);
+    if (workflowHasChainMap(workflow)) return runWorkflowJobFirst(allocator, io, args);
     const input_dir = args.input_path orelse workflow.input.dir orelse return runWorkflowFileFirst(allocator, io, args, null);
     const output_dir = args.output_path orelse workflow.output.dir;
     if (workflow.jobs.len > 1 and output_dir == null) return runWorkflowFileFirst(allocator, io, args, null);
@@ -3494,6 +3524,13 @@ fn runWorkflow(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         return runWorkflowJobFirst(allocator, io, args);
     }
     return runWorkflowFileFirst(allocator, io, args, files);
+}
+
+fn workflowHasChainMap(workflow: workflow_manifest.Workflow) bool {
+    for (workflow.jobs) |job| {
+        if (job.chain_map != null) return true;
+    }
+    return false;
 }
 
 fn freeScannedFiles(allocator: Allocator, files: []const []const u8) void {
@@ -3531,8 +3568,8 @@ fn runWorkflowBsaAnalysis(
     workflow: workflow_manifest.Workflow,
 ) !void {
     const analysis = workflow.analysis orelse return error.InvalidArgument;
-    const partner_a = analysis.partner_a orelse return error.InvalidArgument;
-    const partner_b = analysis.partner_b orelse return error.InvalidArgument;
+    const fixed_partner_a = analysis.partner_a;
+    const fixed_partner_b = analysis.partner_b;
     const level = analysisLevel(analysis);
     const name = analysisName(analysis);
 
@@ -3610,6 +3647,15 @@ fn runWorkflowBsaAnalysis(
     config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
     if (custom_classifier) |*c| config.custom_classifier = c;
 
+    var interface_map: ?chain_map.InterfaceMap = null;
+    if (analysis.chain_map) |path| {
+        interface_map = chain_map.loadInterfaceFile(allocator, io, path) catch |err| {
+            std.debug.print("Error loading interface chain map '{s}' for BSA analysis '{s}': {s}\n", .{ path, name, @errorName(err) });
+            return err;
+        };
+    }
+    defer if (interface_map) |*map| map.deinit();
+
     if ((config.classifier_type == .ccd or config.classifier_type == .protor) and config.include_hydrogens and !config.quiet) {
         std.debug.print("Warning: --include-hydrogens with CCD classifier may give inaccurate results\n", .{});
         std.debug.print("         CCD uses united-atom radii that already account for implicit hydrogens\n", .{});
@@ -3617,12 +3663,10 @@ fn runWorkflowBsaAnalysis(
 
     const files = try scanDirectory(allocator, io, input_dir);
     defer freeScannedFiles(allocator, files);
+    try validateMappedChainInputFormats(files, interface_map != null);
 
     var luts = try BatchLuts.init(allocator, config);
     defer luts.deinit();
-
-    const complex_chains = try appendChainGroups(allocator, partner_a, partner_b);
-    defer allocator.free(complex_chains);
 
     var successful: usize = 0;
     var failed: usize = 0;
@@ -3632,10 +3676,24 @@ fn runWorkflowBsaAnalysis(
     defer arena.deinit();
 
     for (files) |filename| {
-        const input_path = try std.fs.path.join(arena.allocator(), &.{ input_dir, filename });
-
+        var partner_a = fixed_partner_a orelse &.{};
+        var partner_b = fixed_partner_b orelse &.{};
         var source_config = config;
         source_config.chain_filter = null;
+        if (interface_map) |*map| {
+            const selection = map.get(filename) orelse {
+                failed += 1;
+                std.debug.print("Error running BSA analysis '{s}' on '{s}': interface chain map entry not found\n", .{ name, filename });
+                _ = arena.reset(.retain_capacity);
+                continue;
+            };
+            partner_a = selection.partner_a;
+            partner_b = selection.partner_b;
+            source_config.use_auth_chain = selection.asym_id_type == .auth;
+        }
+        const complex_chains = try appendChainGroups(arena.allocator(), partner_a, partner_b);
+        const input_path = try std.fs.path.join(arena.allocator(), &.{ input_dir, filename });
+
         var source_parsed = readInputFile(arena.allocator(), io, input_path, source_config) catch |err| {
             failed += 1;
             std.debug.print("Error running BSA analysis '{s}' on '{s}': read/parse failed: {s}\n", .{ name, filename, @errorName(err) });
@@ -3973,6 +4031,9 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
     var failed: usize = 0;
 
     for (workflow.jobs) |job| {
+        var loaded_chain_map: ?chain_map.ChainMap = null;
+        defer if (loaded_chain_map) |*map| map.deinit();
+
         var config = BatchConfig{};
         try applyWorkflowToBatchConfig(&config, args, workflow.calculation, workflow.output, workflow.classifier);
         applyCliOverrides(&config, args);
@@ -3983,6 +4044,13 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
         config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
         if (custom_classifier) |*c| config.custom_classifier = c;
         applyWorkflowJobOverrides(&config, args, job);
+        if (job.chain_map) |path| {
+            loaded_chain_map = chain_map.loadFile(allocator, io, path) catch |err| {
+                std.debug.print("Error loading chain map '{s}' for workflow job '{s}': {s}\n", .{ path, job.name, @errorName(err) });
+                return err;
+            };
+            config.chain_map = &loaded_chain_map.?;
+        }
         try validateBitmaskCorrectionConfig(config);
         validateBatchOutputFormat(config.output_format) catch {
             std.debug.print("Error: freesasa and rsa output formats are only supported by the calc command\n", .{});
@@ -5244,6 +5312,123 @@ test "workflow file-first keeps existing output layout" {
     try std.testing.expect(std.mem.indexOf(u8, chain_a_json_content_2, "\"total_area\"") != null);
 }
 
+test "workflow chain map selects per-file PDB and mmCIF chain complexes" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root = root_buf[0..root_len];
+
+    const input_dir = try std.fs.path.join(allocator, &.{ root, "input" });
+    defer allocator.free(input_dir);
+    const output_dir = try std.fs.path.join(allocator, &.{ root, "output" });
+    defer allocator.free(output_dir);
+    const pdb_path = try std.fs.path.join(allocator, &.{ input_dir, "pdb-complex.pdb" });
+    defer allocator.free(pdb_path);
+    const auth_cif_path = try std.fs.path.join(allocator, &.{ input_dir, "auth-complex.cif" });
+    defer allocator.free(auth_cif_path);
+    const label_cif_path = try std.fs.path.join(allocator, &.{ input_dir, "label-complex.cif" });
+    defer allocator.free(label_cif_path);
+    const map_path = try std.fs.path.join(allocator, &.{ root, "chains.csv" });
+    defer allocator.free(map_path);
+    const workflow_path = try std.fs.path.join(allocator, &.{ root, "workflow.toml" });
+    defer allocator.free(workflow_path);
+
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = pdb_path,
+        .data =
+        \\ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N
+        \\ATOM      2  N   ALA B   1       4.000   0.000   0.000  1.00 20.00           N
+        \\ATOM      3  N   ALA C   1       8.000   0.000   0.000  1.00 20.00           N
+        \\END
+        \\
+        ,
+    });
+
+    const cif_template =
+        \\data_CHAIN_MAP
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.auth_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\ATOM 1 N N ALA L1 A 1 0.000 0.000 0.000
+        \\ATOM 2 N N ALA L2 B 1 4.000 0.000 0.000
+        \\ATOM 3 N N ALA L3 C 1 8.000 0.000 0.000
+        \\#
+        \\
+    ;
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = auth_cif_path, .data = cif_template });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = label_cif_path, .data = cif_template });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = map_path,
+        .data =
+        \\filename,chains,asym_id_type
+        \\pdb-complex.pdb,"A,C",label
+        \\auth-complex.cif,"A,C",auth
+        \\label-complex.cif,"L1,L3",label
+        \\
+        ,
+    });
+
+    const workflow = try std.fmt.allocPrint(allocator,
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "{s}"
+        \\
+        \\[output]
+        \\dir = "{s}"
+        \\format = "jsonl"
+        \\
+        \\[calculation]
+        \\threads = 2
+        \\n_points = 8
+        \\quiet = true
+        \\
+        \\[classifier]
+        \\type = "naccess"
+        \\
+        \\[[jobs]]
+        \\name = "selected_complexes"
+        \\chain_map = "{s}"
+        \\
+    , .{ input_dir, output_dir, map_path });
+    defer allocator.free(workflow);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
+
+    try runWorkflow(allocator, std.testing.io, .{ .workflow_path = workflow_path });
+
+    const output_path = try std.fs.path.join(allocator, &.{ output_dir, "selected_complexes.jsonl" });
+    defer allocator.free(output_path);
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(16384));
+    defer allocator.free(content);
+
+    var found: usize = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer parsed.deinit();
+        const object = parsed.value.object;
+        try std.testing.expectEqualStrings("ok", object.get("status").?.string);
+        try std.testing.expectEqual(@as(usize, 2), object.get("atom_areas").?.array.items.len);
+        found += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 3), found);
+}
+
 test "workflow BSA analysis writes analysis JSONL" {
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -5308,6 +5493,114 @@ test "workflow BSA analysis writes analysis JSONL" {
     try std.testing.expect(std.mem.indexOf(u8, content, "\"delta_sasa_total\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "\"bsa\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "\"residue_delta_sasa\"") != null);
+}
+
+test "workflow BSA analysis uses per-file multi-chain interface map" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root = root_buf[0..root_len];
+
+    const input_dir = try std.fs.path.join(allocator, &.{ root, "input" });
+    defer allocator.free(input_dir);
+    const output_dir = try std.fs.path.join(allocator, &.{ root, "output" });
+    defer allocator.free(output_dir);
+    const cif_path = try std.fs.path.join(allocator, &.{ input_dir, "abcd.cif" });
+    defer allocator.free(cif_path);
+    const map_path = try std.fs.path.join(allocator, &.{ root, "interfaces.csv" });
+    defer allocator.free(map_path);
+    const workflow_path = try std.fs.path.join(allocator, &.{ root, "bsa-map.toml" });
+    defer allocator.free(workflow_path);
+
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = cif_path,
+        .data =
+        \\data_ABCD
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.auth_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\ATOM 1 N N GLY L1 A 1 0.000 0.000 0.000
+        \\ATOM 2 N N GLY L2 B 1 2.000 0.000 0.000
+        \\ATOM 3 N N GLY L3 C 1 4.000 0.000 0.000
+        \\ATOM 4 N N GLY L4 D 1 6.000 0.000 0.000
+        \\#
+        \\
+        ,
+    });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = map_path,
+        .data =
+        \\filename,partner_a,partner_b,asym_id_type
+        \\abcd.cif,"A,B","C,D",auth
+        \\
+        ,
+    });
+
+    const workflow = try std.fmt.allocPrint(allocator,
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "{s}"
+        \\
+        \\[output]
+        \\dir = "{s}"
+        \\format = "jsonl"
+        \\
+        \\[calculation]
+        \\n_points = 8
+        \\quiet = true
+        \\
+        \\[classifier]
+        \\type = "naccess"
+        \\
+        \\[analysis]
+        \\type = "bsa"
+        \\name = "interfaces"
+        \\chain_map = "{s}"
+        \\level = "residue"
+        \\
+    , .{ input_dir, output_dir, map_path });
+    defer allocator.free(workflow);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
+
+    try runWorkflow(allocator, std.testing.io, .{ .workflow_path = workflow_path });
+
+    const output_path = try std.fs.path.join(allocator, &.{ output_dir, "interfaces.jsonl" });
+    defer allocator.free(output_path);
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(16384));
+    defer allocator.free(content);
+    const line = std.mem.trim(u8, content, " \t\r\n");
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+    defer parsed.deinit();
+    const object = parsed.value.object;
+
+    const partner_a = object.get("partner_a").?.array.items;
+    const partner_b = object.get("partner_b").?.array.items;
+    try std.testing.expectEqual(@as(usize, 2), partner_a.len);
+    try std.testing.expectEqualStrings("A", partner_a[0].string);
+    try std.testing.expectEqualStrings("B", partner_a[1].string);
+    try std.testing.expectEqual(@as(usize, 2), partner_b.len);
+    try std.testing.expectEqualStrings("C", partner_b[0].string);
+    try std.testing.expectEqualStrings("D", partner_b[1].string);
+
+    const residue_chains = object.get("residue_chain").?.array.items;
+    try std.testing.expectEqual(@as(usize, 4), residue_chains.len);
+    try std.testing.expectEqualStrings("A", residue_chains[0].string);
+    try std.testing.expectEqualStrings("D", residue_chains[3].string);
 }
 
 test "workflow mmCIF chain filters preserve long chain IDs" {

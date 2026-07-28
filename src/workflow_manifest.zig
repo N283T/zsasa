@@ -71,12 +71,14 @@ pub const Analysis = struct {
     name: ?[]const u8 = null,
     partner_a: ?[]const []const u8 = null,
     partner_b: ?[]const []const u8 = null,
+    chain_map: ?[]const u8 = null,
     level: ?[]const u8 = null,
 };
 
 pub const Job = struct {
     name: []const u8,
     chains: ?[]const []const u8 = null,
+    chain_map: ?[]const u8 = null,
     auth_chain: ?bool = null,
 };
 
@@ -306,12 +308,13 @@ fn parseClassifier(allocator: Allocator, table: toml_parser.Table) Error!Classif
 }
 
 fn parseAnalysis(allocator: Allocator, table: toml_parser.Table) Error!Analysis {
-    try rejectUnknownFields(table.entries, &.{ "type", "name", "partner_a", "partner_b", "level" });
+    try rejectUnknownFields(table.entries, &.{ "type", "name", "partner_a", "partner_b", "chain_map", "level" });
     const analysis = Analysis{
         .type = try optionalString(table.entries, "type"),
         .name = try optionalString(table.entries, "name"),
         .partner_a = try optionalStringArray(allocator, table.entries, "partner_a"),
         .partner_b = try optionalStringArray(allocator, table.entries, "partner_b"),
+        .chain_map = try optionalString(table.entries, "chain_map"),
         .level = try optionalString(table.entries, "level"),
     };
     errdefer {
@@ -345,14 +348,23 @@ fn validateAnalysis(analysis: Analysis) WorkflowError!void {
     if (analysis.name) |name| {
         if (name.len == 0 or !isSafeJobName(name)) return error.InvalidAnalysisConfig;
     }
-    const partner_a = analysis.partner_a orelse return error.InvalidAnalysisConfig;
-    const partner_b = analysis.partner_b orelse return error.InvalidAnalysisConfig;
-    if (partner_a.len == 0 or partner_b.len == 0) return error.InvalidAnalysisConfig;
-    for (partner_a) |chain| {
-        if (chain.len == 0) return error.InvalidAnalysisConfig;
+    if (analysis.chain_map) |path| {
+        if (path.len == 0 or analysis.partner_a != null or analysis.partner_b != null) {
+            return error.InvalidAnalysisConfig;
+        }
+    } else if (analysis.partner_a == null or analysis.partner_b == null) {
+        return error.InvalidAnalysisConfig;
     }
-    for (partner_b) |chain| {
-        if (chain.len == 0) return error.InvalidAnalysisConfig;
+    if (analysis.chain_map == null) {
+        const partner_a = analysis.partner_a.?;
+        const partner_b = analysis.partner_b.?;
+        if (partner_a.len == 0 or partner_b.len == 0) return error.InvalidAnalysisConfig;
+        for (partner_a) |chain| {
+            if (chain.len == 0) return error.InvalidAnalysisConfig;
+        }
+        for (partner_b) |chain| {
+            if (chain.len == 0) return error.InvalidAnalysisConfig;
+        }
     }
     if (analysis.level) |level| {
         if (!std.mem.eql(u8, level, "total") and !std.mem.eql(u8, level, "residue")) {
@@ -383,7 +395,7 @@ fn parseJobs(allocator: Allocator, array_tables: []const toml_parser.Document.Ar
 }
 
 fn parseJob(allocator: Allocator, entries: []const toml_parser.Value.Entry, existing_jobs: []const Job) Error!Job {
-    try rejectUnknownFields(entries, &.{ "name", "chains", "auth_chain" });
+    try rejectUnknownFields(entries, &.{ "name", "chains", "chain_map", "auth_chain" });
 
     const name = try optionalString(entries, "name") orelse return error.MissingJobName;
     if (name.len == 0) return error.MissingJobName;
@@ -394,11 +406,15 @@ fn parseJob(allocator: Allocator, entries: []const toml_parser.Value.Entry, exis
 
     const chains = try optionalStringArray(allocator, entries, "chains");
     errdefer if (chains) |items| allocator.free(items);
+    const chain_map = try optionalString(entries, "chain_map");
+    if (chains != null and chain_map != null) return error.InvalidFieldType;
     const auth_chain = try optionalBool(entries, "auth_chain");
+    if (chain_map != null and auth_chain != null) return error.InvalidFieldType;
 
     return .{
         .name = name,
         .chains = chains,
+        .chain_map = chain_map,
         .auth_chain = auth_chain,
     };
 }
@@ -690,6 +706,39 @@ test "parse sectioned batch workflow with jobs" {
     try std.testing.expectEqual(true, workflow.jobs[1].auth_chain.?);
 }
 
+test "parse workflow job with per-file chain map" {
+    const input =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "structures"
+        \\
+        \\[[jobs]]
+        \\name = "selected_complexes"
+        \\chain_map = "chains.csv"
+    ;
+    var workflow = try parse(std.testing.allocator, input);
+    defer workflow.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), workflow.jobs.len);
+    try std.testing.expectEqualStrings("chains.csv", workflow.jobs[0].chain_map.?);
+    try std.testing.expect(workflow.jobs[0].chains == null);
+}
+
+test "reject workflow job with both chains and chain map" {
+    const input =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[[jobs]]
+        \\name = "ambiguous"
+        \\chains = ["A"]
+        \\chain_map = "chains.csv"
+    ;
+    try std.testing.expectError(error.InvalidFieldType, parse(std.testing.allocator, input));
+}
+
 test "parse output jsonl workflow options" {
     const input =
         \\version = 1
@@ -761,6 +810,39 @@ test "parse BSA analysis workflow" {
     try std.testing.expectEqual(@as(usize, 1), workflow.analysis.?.partner_b.?.len);
     try std.testing.expectEqualStrings("B", workflow.analysis.?.partner_b.?[0]);
     try std.testing.expectEqualStrings("residue", workflow.analysis.?.level.?);
+}
+
+test "parse BSA analysis workflow with per-file chain map" {
+    const input =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[analysis]
+        \\type = "bsa"
+        \\name = "interfaces"
+        \\chain_map = "interfaces.csv"
+        \\level = "total"
+    ;
+    var workflow = try parse(std.testing.allocator, input);
+    defer workflow.deinit();
+
+    try std.testing.expectEqualStrings("interfaces.csv", workflow.analysis.?.chain_map.?);
+    try std.testing.expect(workflow.analysis.?.partner_a == null);
+    try std.testing.expect(workflow.analysis.?.partner_b == null);
+}
+
+test "reject BSA analysis with fixed partners and chain map" {
+    const input =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[analysis]
+        \\type = "bsa"
+        \\partner_a = ["A"]
+        \\partner_b = ["B"]
+        \\chain_map = "interfaces.csv"
+    ;
+    try std.testing.expectError(error.InvalidAnalysisConfig, parse(std.testing.allocator, input));
 }
 
 test "reject BSA analysis without both partners" {
