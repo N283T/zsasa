@@ -569,6 +569,7 @@ pub const ResidueMap = struct {
 pub const JsonlOptions = struct {
     decimals: ?u8 = null,
     include_atom_areas: bool = true,
+    include_atom_identity: bool = false,
     include_total_area: bool = true,
 };
 
@@ -913,6 +914,263 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
         .residue_atom_start = residue_map.residue_atom_start,
         .residue_atom_count = residue_map.residue_atom_count,
         .residue_sasa = output_residue_sasa,
+    }, .{});
+}
+
+pub const SelectionAtomIdentity = struct {
+    source_atom_index: []const usize,
+    atom_chain: []const []const u8,
+    atom_residue_name: []const []const u8,
+    atom_residue_number: []const i32,
+    atom_insertion_code: []const []const u8,
+    atom_name: []const []const u8,
+    atom_element: []const []const u8,
+};
+
+pub const SelectionResultJsonl = struct {
+    filename: []const u8,
+    id: []const u8,
+    chains: []const []const u8,
+    total_area: f64,
+    atom_areas: []const f64 = &.{},
+    residue_map: ?ResidueMap = null,
+    atom_identity: ?SelectionAtomIdentity = null,
+};
+
+pub const SelectionErrorJsonl = struct {
+    filename: []const u8,
+    id: []const u8,
+    chains: []const []const u8,
+    error_message: []const u8,
+};
+
+pub fn selectionErrorToJsonlLine(allocator: Allocator, row: SelectionErrorJsonl) ![]u8 {
+    const Entry = struct {
+        status: []const u8,
+        filename: []const u8,
+        id: []const u8,
+        chains: []const []const u8,
+        @"error": []const u8,
+    };
+    return std.json.Stringify.valueAlloc(allocator, Entry{
+        .status = "err",
+        .filename = row.filename,
+        .id = row.id,
+        .chains = row.chains,
+        .@"error" = row.error_message,
+    }, .{});
+}
+
+pub fn selectionResultToJsonlLineOptions(
+    allocator: Allocator,
+    row: SelectionResultJsonl,
+    options: JsonlOptions,
+) ![]u8 {
+    if (row.atom_identity != null and !options.include_atom_identity) return error.UnexpectedAtomIdentity;
+    const output_areas = try maybeRoundJsonlFloatSlice(allocator, row.atom_areas, options);
+    defer if (options.decimals != null) allocator.free(output_areas);
+
+    var residue_chain: [][]const u8 = &.{};
+    var residue_name: [][]const u8 = &.{};
+    var residue_insertion_code: [][]const u8 = &.{};
+    if (row.residue_map) |map| {
+        residue_chain = try allocator.alloc([]const u8, map.len());
+        residue_name = try allocator.alloc([]const u8, map.len());
+        residue_insertion_code = try allocator.alloc([]const u8, map.len());
+        for (0..map.len()) |i| {
+            residue_chain[i] = if (map.residue_chain_full) |chains| chains[i] else map.residue_chain[i].slice();
+            residue_name[i] = map.residue_name[i].slice();
+            residue_insertion_code[i] = map.residue_insertion_code[i].slice();
+        }
+    }
+    defer {
+        if (row.residue_map != null) {
+            allocator.free(residue_chain);
+            allocator.free(residue_name);
+            allocator.free(residue_insertion_code);
+        }
+    }
+    const output_residue_sasa = if (row.residue_map) |map|
+        try maybeRoundJsonlFloatSlice(allocator, map.residue_sasa, options)
+    else
+        &.{};
+    defer if (row.residue_map != null and options.decimals != null) allocator.free(output_residue_sasa);
+
+    if (row.atom_identity) |identity| {
+        if (!options.include_atom_areas) return error.AtomIdentityRequiresAtomAreas;
+        if (row.residue_map) |map| {
+            const Entry = struct {
+                status: []const u8,
+                filename: []const u8,
+                id: []const u8,
+                chains: []const []const u8,
+                total_area: f64,
+                atom_areas: []const f64,
+                source_atom_index: []const usize,
+                atom_chain: []const []const u8,
+                atom_residue_name: []const []const u8,
+                atom_residue_number: []const i32,
+                atom_insertion_code: []const []const u8,
+                atom_name: []const []const u8,
+                atom_element: []const []const u8,
+                residue_chain: []const []const u8,
+                residue_name: []const []const u8,
+                residue_number: []const i32,
+                residue_insertion_code: []const []const u8,
+                residue_atom_start: []const usize,
+                residue_atom_count: []const usize,
+                residue_sasa: []const f64,
+            };
+            return std.json.Stringify.valueAlloc(allocator, Entry{
+                .status = "ok",
+                .filename = row.filename,
+                .id = row.id,
+                .chains = row.chains,
+                .total_area = maybeRoundJsonlFloat(row.total_area, options),
+                .atom_areas = output_areas,
+                .source_atom_index = identity.source_atom_index,
+                .atom_chain = identity.atom_chain,
+                .atom_residue_name = identity.atom_residue_name,
+                .atom_residue_number = identity.atom_residue_number,
+                .atom_insertion_code = identity.atom_insertion_code,
+                .atom_name = identity.atom_name,
+                .atom_element = identity.atom_element,
+                .residue_chain = residue_chain,
+                .residue_name = residue_name,
+                .residue_number = map.residue_number,
+                .residue_insertion_code = residue_insertion_code,
+                .residue_atom_start = map.residue_atom_start,
+                .residue_atom_count = map.residue_atom_count,
+                .residue_sasa = output_residue_sasa,
+            }, .{});
+        }
+        const Entry = struct {
+            status: []const u8,
+            filename: []const u8,
+            id: []const u8,
+            chains: []const []const u8,
+            total_area: f64,
+            atom_areas: []const f64,
+            source_atom_index: []const usize,
+            atom_chain: []const []const u8,
+            atom_residue_name: []const []const u8,
+            atom_residue_number: []const i32,
+            atom_insertion_code: []const []const u8,
+            atom_name: []const []const u8,
+            atom_element: []const []const u8,
+        };
+        return std.json.Stringify.valueAlloc(allocator, Entry{
+            .status = "ok",
+            .filename = row.filename,
+            .id = row.id,
+            .chains = row.chains,
+            .total_area = maybeRoundJsonlFloat(row.total_area, options),
+            .atom_areas = output_areas,
+            .source_atom_index = identity.source_atom_index,
+            .atom_chain = identity.atom_chain,
+            .atom_residue_name = identity.atom_residue_name,
+            .atom_residue_number = identity.atom_residue_number,
+            .atom_insertion_code = identity.atom_insertion_code,
+            .atom_name = identity.atom_name,
+            .atom_element = identity.atom_element,
+        }, .{});
+    }
+
+    if (row.residue_map) |map| {
+        if (options.include_atom_areas) {
+            const Entry = struct {
+                status: []const u8,
+                filename: []const u8,
+                id: []const u8,
+                chains: []const []const u8,
+                total_area: f64,
+                atom_areas: []const f64,
+                residue_chain: []const []const u8,
+                residue_name: []const []const u8,
+                residue_number: []const i32,
+                residue_insertion_code: []const []const u8,
+                residue_atom_start: []const usize,
+                residue_atom_count: []const usize,
+                residue_sasa: []const f64,
+            };
+            return std.json.Stringify.valueAlloc(allocator, Entry{
+                .status = "ok",
+                .filename = row.filename,
+                .id = row.id,
+                .chains = row.chains,
+                .total_area = maybeRoundJsonlFloat(row.total_area, options),
+                .atom_areas = output_areas,
+                .residue_chain = residue_chain,
+                .residue_name = residue_name,
+                .residue_number = map.residue_number,
+                .residue_insertion_code = residue_insertion_code,
+                .residue_atom_start = map.residue_atom_start,
+                .residue_atom_count = map.residue_atom_count,
+                .residue_sasa = output_residue_sasa,
+            }, .{});
+        }
+        const Entry = struct {
+            status: []const u8,
+            filename: []const u8,
+            id: []const u8,
+            chains: []const []const u8,
+            total_area: f64,
+            residue_chain: []const []const u8,
+            residue_name: []const []const u8,
+            residue_number: []const i32,
+            residue_insertion_code: []const []const u8,
+            residue_atom_start: []const usize,
+            residue_atom_count: []const usize,
+            residue_sasa: []const f64,
+        };
+        return std.json.Stringify.valueAlloc(allocator, Entry{
+            .status = "ok",
+            .filename = row.filename,
+            .id = row.id,
+            .chains = row.chains,
+            .total_area = maybeRoundJsonlFloat(row.total_area, options),
+            .residue_chain = residue_chain,
+            .residue_name = residue_name,
+            .residue_number = map.residue_number,
+            .residue_insertion_code = residue_insertion_code,
+            .residue_atom_start = map.residue_atom_start,
+            .residue_atom_count = map.residue_atom_count,
+            .residue_sasa = output_residue_sasa,
+        }, .{});
+    }
+
+    if (options.include_atom_areas) {
+        const Entry = struct {
+            status: []const u8,
+            filename: []const u8,
+            id: []const u8,
+            chains: []const []const u8,
+            total_area: f64,
+            atom_areas: []const f64,
+        };
+        return std.json.Stringify.valueAlloc(allocator, Entry{
+            .status = "ok",
+            .filename = row.filename,
+            .id = row.id,
+            .chains = row.chains,
+            .total_area = maybeRoundJsonlFloat(row.total_area, options),
+            .atom_areas = output_areas,
+        }, .{});
+    }
+
+    const Entry = struct {
+        status: []const u8,
+        filename: []const u8,
+        id: []const u8,
+        chains: []const []const u8,
+        total_area: f64,
+    };
+    return std.json.Stringify.valueAlloc(allocator, Entry{
+        .status = "ok",
+        .filename = row.filename,
+        .id = row.id,
+        .chains = row.chains,
+        .total_area = maybeRoundJsonlFloat(row.total_area, options),
     }, .{});
 }
 
@@ -1489,6 +1747,61 @@ test "BSA analysis error JSONL includes stable ID" {
 
     try std.testing.expectEqualStrings(
         "{\"status\":\"err\",\"filename\":\"bad.cif\",\"id\":\"interaction-bad\",\"analysis\":\"bsa\",\"name\":\"interfaces\",\"error\":\"read/parse failed: InvalidFormat\"}",
+        line,
+    );
+}
+
+test "selection JSONL includes stable ID chains and opt-in source atom identity" {
+    const source_atom_index = [_]usize{ 0, 2 };
+    const atom_chain = [_][]const u8{ "A", "C" };
+    const atom_residue_name = [_][]const u8{ "GLY", "SER" };
+    const atom_residue_number = [_]i32{ 1, 3 };
+    const atom_insertion_code = [_][]const u8{ "", "" };
+    const atom_name = [_][]const u8{ "N", "CA" };
+    const atom_element = [_][]const u8{ "N", "C" };
+    const chains = [_][]const u8{ "A", "C" };
+    const areas = [_]f64{ 10.123, 20.456 };
+
+    const line = try selectionResultToJsonlLineOptions(std.testing.allocator, .{
+        .filename = "complex.cif",
+        .id = "ac",
+        .chains = chains[0..],
+        .total_area = 30.579,
+        .atom_areas = areas[0..],
+        .atom_identity = .{
+            .source_atom_index = source_atom_index[0..],
+            .atom_chain = atom_chain[0..],
+            .atom_residue_name = atom_residue_name[0..],
+            .atom_residue_number = atom_residue_number[0..],
+            .atom_insertion_code = atom_insertion_code[0..],
+            .atom_name = atom_name[0..],
+            .atom_element = atom_element[0..],
+        },
+    }, .{ .decimals = 2, .include_atom_identity = true });
+    defer std.testing.allocator.free(line);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line, .{});
+    defer parsed.deinit();
+    const object = parsed.value.object;
+    try std.testing.expectEqualStrings("ok", object.get("status").?.string);
+    try std.testing.expectEqualStrings("ac", object.get("id").?.string);
+    try std.testing.expectEqual(@as(usize, 2), object.get("chains").?.array.items.len);
+    try std.testing.expectEqual(@as(i64, 2), object.get("source_atom_index").?.array.items[1].integer);
+    try std.testing.expectEqualStrings("N", object.get("atom_element").?.array.items[0].string);
+}
+
+test "selection error JSONL preserves requested ID and chains" {
+    const chains = [_][]const u8{"Z"};
+    const line = try selectionErrorToJsonlLine(std.testing.allocator, .{
+        .filename = "complex.cif",
+        .id = "missing",
+        .chains = chains[0..],
+        .error_message = "selected chain not found: Z",
+    });
+    defer std.testing.allocator.free(line);
+
+    try std.testing.expectEqualStrings(
+        "{\"status\":\"err\",\"filename\":\"complex.cif\",\"id\":\"missing\",\"chains\":[\"Z\"],\"error\":\"selected chain not found: Z\"}",
         line,
     );
 }

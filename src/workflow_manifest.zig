@@ -34,6 +34,7 @@ pub const Output = struct {
 
 pub const JsonlOutput = struct {
     atom_areas: ?bool = null,
+    atom_identity: ?bool = null,
     total_area: ?bool = null,
     decimals: ?u8 = null,
     metadata: ?[]const u8 = null,
@@ -249,9 +250,10 @@ fn parseOutput(table: toml_parser.Table) WorkflowError!Output {
 }
 
 fn parseOutputJsonl(table: toml_parser.Table) WorkflowError!JsonlOutput {
-    try rejectUnknownFields(table.entries, &.{ "atom_areas", "total_area", "decimals", "metadata" });
+    try rejectUnknownFields(table.entries, &.{ "atom_areas", "atom_identity", "total_area", "decimals", "metadata" });
     const output = JsonlOutput{
         .atom_areas = try optionalBool(table.entries, "atom_areas"),
+        .atom_identity = try optionalBool(table.entries, "atom_identity"),
         .total_area = try optionalBool(table.entries, "total_area"),
         .decimals = try optionalU8(table.entries, "decimals"),
         .metadata = try optionalString(table.entries, "metadata"),
@@ -758,6 +760,7 @@ test "parse output jsonl workflow options" {
         \\
         \\[output.jsonl]
         \\atom_areas = false
+        \\atom_identity = true
         \\total_area = true
         \\decimals = 3
         \\metadata = "sidecar"
@@ -769,6 +772,7 @@ test "parse output jsonl workflow options" {
     defer workflow.deinit();
 
     try std.testing.expectEqual(false, workflow.output.jsonl.atom_areas.?);
+    try std.testing.expectEqual(true, workflow.output.jsonl.atom_identity.?);
     try std.testing.expectEqual(true, workflow.output.jsonl.total_area.?);
     try std.testing.expectEqual(@as(u8, 3), workflow.output.jsonl.decimals.?);
     try std.testing.expectEqualStrings("sidecar", workflow.output.jsonl.metadata.?);

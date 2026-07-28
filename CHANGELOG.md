@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Parse-once SASA selection maps**: allow ordinary workflow chain maps to request multiple globally identified chain selections per structure, reuse one parsed/classified input and duplicate chain-set calculations, emit per-selection JSONL success/error rows, and optionally include stable source-indexed atom identity metadata.
 - **Multi-interface BSA workflows**: allow CSV and JSON interface maps to request multiple stable-ID interfaces per structure while reusing one parsed/classified input, emitting per-interface success/error JSONL rows, auditable residue SASA components, and opt-in atom-level detail. (#408)
 
 ### Fixed

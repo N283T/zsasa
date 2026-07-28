@@ -165,7 +165,9 @@ For named multi-job runs such as chain A, chain B, and AB complex calculations, 
 When the desired chain set differs by input file, use a workflow
 [`chain_map`](workflows.md#per-file-chain-maps). Chain maps accept CSV or JSON
 and can choose `label` or `auth` chain IDs independently for each mmCIF or
-BinaryCIF file.
+BinaryCIF file. Multiple stable-ID rows for one filename are calculated from
+one parsed/classified structure, with optional source-indexed atom identity for
+joining primitive SASA selections downstream.
 
 ## When to Use Workflow Files
 
