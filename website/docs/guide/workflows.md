@@ -106,6 +106,65 @@ zsasa batch --workflow bsa.toml
 
 For ordinary PDB, JSON, and unfiltered mmCIF/BinaryCIF workflow batch runs with compatible chain-ID settings, zsasa reuses each parsed input structure across jobs internally. For named chain analyses such as chain A, chain B, and complex AB, list only the jobs you want; eligible runs parse each input structure once and then compute each requested chain selection independently. Some inputs or settings, such as SDF files, per-job `auth_chain` changes, or mmCIF/BinaryCIF workflows with chain filters, use the compatibility job-first path instead so full chain-ID selection matches parser behavior.
 
+## Per-file Chain Maps
+
+Use a chain map when each structure needs a different chain selection. Set
+`chain_map` on a workflow job instead of `chains`:
+
+```toml
+version = 1
+kind = "workflow"
+
+[input]
+dir = "structures"
+
+[output]
+dir = "results"
+format = "jsonl"
+
+[[jobs]]
+name = "selected_complexes"
+chain_map = "chains.csv"
+```
+
+The CSV must contain `filename` and `chains` columns. `asym_id_type` is optional
+and defaults to `label`:
+
+```csv
+filename,chains,asym_id_type
+1abc.pdb,"A,C",label
+2xyz.cif,"A,C",auth
+3def.cif,"B,D",label
+```
+
+`chains` is a comma-separated set. A row containing `A,C` calculates the SASA
+of the A+C complex: atoms in both chains are included and occlude each other.
+It does not calculate A and C independently. A map has one selection per
+filename; to calculate multiple selections for each file, add multiple named
+workflow jobs with separate chain maps.
+
+JSON chain maps are also accepted:
+
+```json
+[
+  {"filename": "1abc.pdb", "chains": ["A", "C"], "asym_id_type": "label"},
+  {"filename": "2xyz.cif", "chains": ["A", "C"], "asym_id_type": "auth"}
+]
+```
+
+For mmCIF and BinaryCIF, `label` matches `_atom_site.label_asym_id` and `auth`
+matches `_atom_site.auth_asym_id`. PDB has one chain-ID field, so `label` and
+`auth` select the same value for PDB input.
+
+Filenames must be basenames that exactly match files in the input directory,
+including their structure and compression extensions. Every discovered
+structure must have one map entry; a missing entry is written as a failed batch
+result. Keep a JSON chain map outside the input directory because `.json` is
+also a supported structure-input extension. Duplicate filenames, empty chain
+lists, and jobs that specify both
+`chains` and `chain_map` are rejected. Chain maps are supported for PDB,
+mmCIF, and BinaryCIF inputs, not JSON atom arrays or SDF molecule batches.
+
 ## BSA / ΔSASA Analysis
 
 Batch workflows can also write an analysis JSONL file for a two-partner interface:
@@ -136,6 +195,51 @@ partner_a = ["A"]
 partner_b = ["B"]
 level = "residue"
 ```
+
+When the two partner groups differ by structure, replace `partner_a` and
+`partner_b` with an analysis `chain_map`:
+
+```toml
+[analysis]
+type = "bsa"
+name = "interfaces"
+chain_map = "interfaces.csv"
+level = "residue"
+```
+
+CSV interface maps use one comma-separated chain set for each partner:
+
+```csv
+filename,partner_a,partner_b,asym_id_type
+1abc.cif,"A,B","C,D",auth
+2xyz.cif,A,"B,C",label
+```
+
+The equivalent JSON is:
+
+```json
+[
+  {
+    "filename": "1abc.cif",
+    "partner_a": ["A", "B"],
+    "partner_b": ["C", "D"],
+    "asym_id_type": "auth"
+  }
+]
+```
+
+For the first row, zsasa calculates isolated A+B, isolated C+D, and the
+A+B+C+D complex. The reported values are therefore:
+
+```text
+delta_sasa_total = sasa(A+B) + sasa(C+D) - sasa(A+B+C+D)
+bsa = delta_sasa_total / 2
+```
+
+`asym_id_type` defaults to `label` and may be set independently for each
+mmCIF or BinaryCIF file. Fixed `partner_a`/`partner_b` settings and
+`analysis.chain_map` are mutually exclusive. As with job chain maps, every
+discovered PDB, mmCIF, or BinaryCIF file must have exactly one entry.
 
 Run it with:
 
