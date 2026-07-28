@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **BSA workflow parallelism**: apply workflow thread counts to concurrent structure-file workers, keep partner and complex SASA calculations single-threaded in the multi-file path, and serialize concurrent JSONL rows safely.
+- **BSA workflow parallelism and progress**: apply workflow thread counts to concurrent structure-file workers, keep partner and complex SASA calculations single-threaded in the multi-file path, serialize concurrent JSONL rows safely, and report completed structure files through the standard terminal progress display.
 
 ## [0.9.1] - 2026-07-28
 
