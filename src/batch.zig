@@ -1456,7 +1456,7 @@ const JsonlStreamWriter = struct {
     io: std.Io,
     options: json_writer.JsonlOptions = .{},
     writer: std.Io.File.Writer,
-    /// Set to true if any writeResult call failed to serialize or write.
+    /// Set to true if any JSONL serialization or write failed.
     write_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     pub fn init(
@@ -1477,6 +1477,52 @@ const JsonlStreamWriter = struct {
         self.write_failed.store(true, .release);
     }
 
+    fn writeLine(self: *JsonlStreamWriter, filename: []const u8, line: []const u8) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        // Human AFDB PDB JSONL lines are often close to the 64 KiB buffer size.
+        // Keeping such lines in a persistent shared buffer causes extra buffer
+        // churn; use the previous per-line streaming writer behavior for large
+        // lines while retaining persistent buffering for smaller rounded JSONL.
+        if (line.len > large_line_threshold) {
+            self.writer.interface.flush() catch |err| {
+                logWarning("JSONL flush failed before large write for {s}: {s}", .{ filename, @errorName(err) });
+                self.recordFailure();
+                return err;
+            };
+            var local_buf: [buffer_size]u8 = undefined;
+            var local_writer = std.Io.File.Writer.initStreaming(self.file, self.io, &local_buf);
+            local_writer.interface.writeAll(line) catch |err| {
+                logWarning("JSONL large write failed for {s}: {s}", .{ filename, @errorName(err) });
+                self.recordFailure();
+                return err;
+            };
+            local_writer.interface.writeAll("\n") catch |err| {
+                logWarning("JSONL large newline write failed for {s}: {s}", .{ filename, @errorName(err) });
+                self.recordFailure();
+                return err;
+            };
+            local_writer.interface.flush() catch |err| {
+                logWarning("JSONL large flush failed for {s}: {s}", .{ filename, @errorName(err) });
+                self.recordFailure();
+                return err;
+            };
+            return;
+        }
+
+        self.writer.interface.writeAll(line) catch |err| {
+            logWarning("JSONL write failed for {s}: {s}", .{ filename, @errorName(err) });
+            self.recordFailure();
+            return err;
+        };
+        self.writer.interface.writeAll("\n") catch |err| {
+            logWarning("JSONL newline write failed for {s}: {s}", .{ filename, @errorName(err) });
+            self.recordFailure();
+            return err;
+        };
+    }
+
     /// Serialize and write one JSONL line for a completed file result.
     /// alloc is a short-lived allocator (e.g., thread-local arena) used only for
     /// the serialized string; it is freed by the caller's arena reset.
@@ -1492,45 +1538,7 @@ const JsonlStreamWriter = struct {
         };
         // line is on alloc (arena); no explicit free needed — arena reset handles it.
 
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-
-        // Human AFDB PDB JSONL lines are often close to the 64 KiB buffer size.
-        // Keeping such lines in a persistent shared buffer causes extra buffer
-        // churn; use the previous per-line streaming writer behavior for large
-        // lines while retaining persistent buffering for smaller rounded JSONL.
-        if (line.len > large_line_threshold) {
-            self.writer.interface.flush() catch |err| {
-                logWarning("JSONL flush failed before large write for {s}: {s}", .{ result.filename, @errorName(err) });
-                self.recordFailure();
-                return;
-            };
-            var local_buf: [buffer_size]u8 = undefined;
-            var local_writer = std.Io.File.Writer.initStreaming(self.file, self.io, &local_buf);
-            local_writer.interface.writeAll(line) catch |err| {
-                logWarning("JSONL large write failed for {s}: {s}", .{ result.filename, @errorName(err) });
-                self.recordFailure();
-                return;
-            };
-            local_writer.interface.writeAll("\n") catch |err| {
-                logWarning("JSONL large newline write failed for {s}: {s}", .{ result.filename, @errorName(err) });
-                self.recordFailure();
-                return;
-            };
-            local_writer.interface.flush() catch |err| {
-                logWarning("JSONL large flush failed for {s}: {s}", .{ result.filename, @errorName(err) });
-                self.recordFailure();
-            };
-            return;
-        }
-
-        self.writer.interface.writeAll(line) catch |err| {
-            logWarning("JSONL write failed for {s}: {s}", .{ result.filename, @errorName(err) });
-            self.recordFailure();
-            return;
-        };
-        self.writer.interface.writeAll("\n") catch |err| {
-            logWarning("JSONL newline write failed for {s}: {s}", .{ result.filename, @errorName(err) });
+        self.writeLine(result.filename, line) catch {
             self.recordFailure();
         };
     }
@@ -1598,30 +1606,25 @@ fn appendJsonlResultToFile(io: std.Io, file: std.Io.File, allocator: Allocator, 
     try writer.interface.flush();
 }
 
-fn appendBsaAnalysisJsonlToFile(io: std.Io, file: std.Io.File, allocator: Allocator, row: json_writer.BsaAnalysisJsonl, options: json_writer.JsonlOptions) !void {
+fn writeBsaAnalysisJsonl(
+    stream: *JsonlStreamWriter,
+    allocator: Allocator,
+    row: json_writer.BsaAnalysisJsonl,
+    options: json_writer.JsonlOptions,
+) !void {
     const line = try json_writer.bsaAnalysisToJsonlLineOptions(allocator, row, options);
     defer allocator.free(line);
-
-    const file_len = try file.length(io);
-    var write_buf: [64 * 1024]u8 = undefined;
-    var writer = std.Io.File.Writer.init(file, io, &write_buf);
-    try writer.seekTo(file_len);
-    try writer.interface.writeAll(line);
-    try writer.interface.writeByte('\n');
-    try writer.interface.flush();
+    try stream.writeLine(row.filename, line);
 }
 
-fn appendBsaAnalysisErrorJsonlToFile(io: std.Io, file: std.Io.File, allocator: Allocator, row: json_writer.BsaAnalysisErrorJsonl) !void {
+fn writeBsaAnalysisErrorJsonl(
+    stream: *JsonlStreamWriter,
+    allocator: Allocator,
+    row: json_writer.BsaAnalysisErrorJsonl,
+) !void {
     const line = try json_writer.bsaAnalysisErrorToJsonlLine(allocator, row);
     defer allocator.free(line);
-
-    const file_len = try file.length(io);
-    var write_buf: [64 * 1024]u8 = undefined;
-    var writer = std.Io.File.Writer.init(file, io, &write_buf);
-    try writer.seekTo(file_len);
-    try writer.interface.writeAll(line);
-    try writer.interface.writeByte('\n');
-    try writer.interface.flush();
+    try stream.writeLine(row.filename, line);
 }
 
 fn analysisName(analysis: workflow_manifest.Analysis) []const u8 {
@@ -3652,6 +3655,12 @@ const BsaInterfaceStats = struct {
     sasa_time_ns: u64 = 0,
 };
 
+const BsaWorkflowCounter = struct {
+    successful: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    failed: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    total_sasa_time_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+};
+
 fn bsaPartnersOverlap(partner_a: []const []const u8, partner_b: []const []const u8) bool {
     for (partner_a) |a| {
         for (partner_b) |b| {
@@ -3680,15 +3689,14 @@ fn bsaInputContainsAllChains(input: AtomInput, chains: []const []const u8) bool 
 }
 
 fn writeBsaInterfaceError(
-    io: std.Io,
-    jsonl_file: std.Io.File,
+    jsonl_stream: *JsonlStreamWriter,
     allocator: Allocator,
     filename: []const u8,
     id: []const u8,
     name: []const u8,
     error_message: []const u8,
 ) !BsaInterfaceStats {
-    try appendBsaAnalysisErrorJsonlToFile(io, jsonl_file, allocator, .{
+    try writeBsaAnalysisErrorJsonl(jsonl_stream, allocator, .{
         .filename = filename,
         .id = id,
         .name = name,
@@ -3700,7 +3708,7 @@ fn writeBsaInterfaceError(
 fn processBsaInterface(
     allocator: Allocator,
     io: std.Io,
-    jsonl_file: std.Io.File,
+    jsonl_stream: *JsonlStreamWriter,
     filename: []const u8,
     name: []const u8,
     level: []const u8,
@@ -3708,16 +3716,17 @@ fn processBsaInterface(
     selection: BsaInterfaceSelection,
     source_input: AtomInput,
     config: BatchConfig,
+    sasa_threads: usize,
     luts: *const BatchLuts,
 ) !BsaInterfaceStats {
     if (bsaPartnersOverlap(selection.partner_a, selection.partner_b)) {
-        return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, "partner chain groups overlap");
+        return writeBsaInterfaceError(jsonl_stream, allocator, filename, selection.id, name, "partner chain groups overlap");
     }
     if (!bsaInputContainsAllChains(source_input, selection.partner_a)) {
-        return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, "partner A chain not found");
+        return writeBsaInterfaceError(jsonl_stream, allocator, filename, selection.id, name, "partner A chain not found");
     }
     if (!bsaInputContainsAllChains(source_input, selection.partner_b)) {
-        return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, "partner B chain not found");
+        return writeBsaInterfaceError(jsonl_stream, allocator, filename, selection.id, name, "partner B chain not found");
     }
 
     const complex_chains = try appendChainGroups(allocator, selection.partner_a, selection.partner_b);
@@ -3725,32 +3734,31 @@ fn processBsaInterface(
     const partner_b_input = try copySelectedAtomInput(allocator, source_input, selection.partner_b);
     const complex_input = try copySelectedAtomInput(allocator, source_input, complex_chains);
 
-    const n_threads = effectiveWorkflowSasaThreads(config);
     const partner_a_result = switch (config.precision) {
-        .f64 => calculatePreparedInputResult(f64, allocator, io, allocator, partner_a_input, null, filename, config, n_threads, luts.f64Ptr(), luts.coarseF64Ptr(), luts.fineF64Ptr()),
-        .f32 => calculatePreparedInputResult(f32, allocator, io, allocator, partner_a_input, null, filename, config, n_threads, luts.f32Ptr(), luts.coarseF32Ptr(), luts.fineF32Ptr()),
+        .f64 => calculatePreparedInputResult(f64, allocator, io, allocator, partner_a_input, null, filename, config, sasa_threads, luts.f64Ptr(), luts.coarseF64Ptr(), luts.fineF64Ptr()),
+        .f32 => calculatePreparedInputResult(f32, allocator, io, allocator, partner_a_input, null, filename, config, sasa_threads, luts.f32Ptr(), luts.coarseF32Ptr(), luts.fineF32Ptr()),
     };
     const partner_b_result = switch (config.precision) {
-        .f64 => calculatePreparedInputResult(f64, allocator, io, allocator, partner_b_input, null, filename, config, n_threads, luts.f64Ptr(), luts.coarseF64Ptr(), luts.fineF64Ptr()),
-        .f32 => calculatePreparedInputResult(f32, allocator, io, allocator, partner_b_input, null, filename, config, n_threads, luts.f32Ptr(), luts.coarseF32Ptr(), luts.fineF32Ptr()),
+        .f64 => calculatePreparedInputResult(f64, allocator, io, allocator, partner_b_input, null, filename, config, sasa_threads, luts.f64Ptr(), luts.coarseF64Ptr(), luts.fineF64Ptr()),
+        .f32 => calculatePreparedInputResult(f32, allocator, io, allocator, partner_b_input, null, filename, config, sasa_threads, luts.f32Ptr(), luts.coarseF32Ptr(), luts.fineF32Ptr()),
     };
     const complex_result = switch (config.precision) {
-        .f64 => calculatePreparedInputResult(f64, allocator, io, allocator, complex_input, null, filename, config, n_threads, luts.f64Ptr(), luts.coarseF64Ptr(), luts.fineF64Ptr()),
-        .f32 => calculatePreparedInputResult(f32, allocator, io, allocator, complex_input, null, filename, config, n_threads, luts.f32Ptr(), luts.coarseF32Ptr(), luts.fineF32Ptr()),
+        .f64 => calculatePreparedInputResult(f64, allocator, io, allocator, complex_input, null, filename, config, sasa_threads, luts.f64Ptr(), luts.coarseF64Ptr(), luts.fineF64Ptr()),
+        .f32 => calculatePreparedInputResult(f32, allocator, io, allocator, complex_input, null, filename, config, sasa_threads, luts.f32Ptr(), luts.coarseF32Ptr(), luts.fineF32Ptr()),
     };
 
     if (partner_a_result.status != .ok or partner_b_result.status != .ok or complex_result.status != .ok) {
         const detail = partner_a_result.error_msg orelse partner_b_result.error_msg orelse complex_result.error_msg orelse "unknown error";
         const message = try std.fmt.allocPrint(allocator, "SASA calculation failed: {s}", .{detail});
-        return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, message);
+        return writeBsaInterfaceError(jsonl_stream, allocator, filename, selection.id, name, message);
     }
 
     const partner_a_areas = partner_a_result.atom_areas orelse
-        return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, "partner A atom areas unavailable");
+        return writeBsaInterfaceError(jsonl_stream, allocator, filename, selection.id, name, "partner A atom areas unavailable");
     const partner_b_areas = partner_b_result.atom_areas orelse
-        return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, "partner B atom areas unavailable");
+        return writeBsaInterfaceError(jsonl_stream, allocator, filename, selection.id, name, "partner B atom areas unavailable");
     const complex_areas = complex_result.atom_areas orelse
-        return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, "complex atom areas unavailable");
+        return writeBsaInterfaceError(jsonl_stream, allocator, filename, selection.id, name, "complex atom areas unavailable");
 
     const atom_sasa_isolated = try allocator.alloc(f64, complex_input.atomCount());
     const atom_delta_sasa = try allocator.alloc(f64, complex_input.atomCount());
@@ -3777,7 +3785,7 @@ fn processBsaInterface(
             selection.partner_a,
         ) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "residue detail failed: {s}", .{@errorName(err)});
-            return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, message);
+            return writeBsaInterfaceError(jsonl_stream, allocator, filename, selection.id, name, message);
         };
     }
 
@@ -3785,12 +3793,12 @@ fn processBsaInterface(
     if (atom_output) {
         atom_arrays = buildBsaAtomArrays(allocator, complex_input, selection.partner_a) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "atom detail failed: {s}", .{@errorName(err)});
-            return writeBsaInterfaceError(io, jsonl_file, allocator, filename, selection.id, name, message);
+            return writeBsaInterfaceError(jsonl_stream, allocator, filename, selection.id, name, message);
         };
     }
 
     const delta_total = partner_a_result.total_sasa + partner_b_result.total_sasa - complex_result.total_sasa;
-    try appendBsaAnalysisJsonlToFile(io, jsonl_file, allocator, .{
+    try writeBsaAnalysisJsonl(jsonl_stream, allocator, .{
         .filename = filename,
         .id = selection.id,
         .name = name,
@@ -3830,6 +3838,178 @@ fn processBsaInterface(
     };
 }
 
+fn effectiveBsaSasaThreads(config: BatchConfig, file_threads: usize) usize {
+    return if (file_threads > 1) 1 else effectiveWorkflowSasaThreads(config);
+}
+
+const BsaParallelContext = struct {
+    files: []const []const u8,
+    input_dir: []const u8,
+    interface_map: ?*const chain_map.InterfaceMap,
+    fixed_partner_a: ?[]const []const u8,
+    fixed_partner_b: ?[]const []const u8,
+    name: []const u8,
+    level: []const u8,
+    atom_output: bool,
+    config: BatchConfig,
+    sasa_threads: usize,
+    luts: *const BatchLuts,
+    jsonl_stream: *JsonlStreamWriter,
+    next_file: std.atomic.Value(usize),
+    counter: BsaWorkflowCounter = .{},
+    worker_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    io: std.Io,
+};
+
+fn recordBsaInterfaceStats(ctx: *BsaParallelContext, stats: BsaInterfaceStats) void {
+    if (stats.successful) {
+        _ = ctx.counter.successful.fetchAdd(1, .monotonic);
+        _ = ctx.counter.total_sasa_time_ns.fetchAdd(stats.sasa_time_ns, .monotonic);
+    } else {
+        _ = ctx.counter.failed.fetchAdd(1, .monotonic);
+    }
+}
+
+fn writeBsaSourceErrorRows(
+    ctx: *BsaParallelContext,
+    allocator: Allocator,
+    filename: []const u8,
+    map_indices: ?[]const usize,
+    message: []const u8,
+) !void {
+    if (ctx.interface_map) |map| {
+        if (map_indices) |indices| {
+            for (indices) |entry_index| {
+                const entry = map.entries[entry_index];
+                const stats = try writeBsaInterfaceError(
+                    ctx.jsonl_stream,
+                    allocator,
+                    filename,
+                    entry.id orelse filename,
+                    ctx.name,
+                    message,
+                );
+                recordBsaInterfaceStats(ctx, stats);
+            }
+            return;
+        }
+    }
+
+    const stats = try writeBsaInterfaceError(
+        ctx.jsonl_stream,
+        allocator,
+        filename,
+        filename,
+        ctx.name,
+        message,
+    );
+    recordBsaInterfaceStats(ctx, stats);
+}
+
+fn processBsaFile(ctx: *BsaParallelContext, allocator: Allocator, filename: []const u8) !void {
+    const map_indices: ?[]const usize = if (ctx.interface_map) |map| map.getIndices(filename) else null;
+    if (ctx.interface_map != null and map_indices == null) {
+        return writeBsaSourceErrorRows(ctx, allocator, filename, null, "interface chain map entry not found");
+    }
+
+    var source_config = ctx.config;
+    source_config.chain_filter = null;
+    if (ctx.interface_map) |map| {
+        const indices = map_indices.?;
+        const first_type = map.entries[indices[0]].asym_id_type;
+        for (indices[1..]) |entry_index| {
+            if (map.entries[entry_index].asym_id_type != first_type) {
+                return writeBsaSourceErrorRows(
+                    ctx,
+                    allocator,
+                    filename,
+                    indices,
+                    "interfaces for one file must use the same asym_id_type",
+                );
+            }
+        }
+        source_config.use_auth_chain = first_type == .auth;
+    }
+
+    const input_path = try std.fs.path.join(allocator, &.{ ctx.input_dir, filename });
+    var source_parsed = readInputFile(allocator, ctx.io, input_path, source_config) catch |err| {
+        const message = try std.fmt.allocPrint(allocator, "read/parse failed: {s}", .{@errorName(err)});
+        return writeBsaSourceErrorRows(ctx, allocator, filename, map_indices, message);
+    };
+    defer source_parsed.deinit();
+
+    workflowClassifySourceInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
+        const message = try std.fmt.allocPrint(allocator, "classifier failed: {s}", .{@errorName(err)});
+        return writeBsaSourceErrorRows(ctx, allocator, filename, map_indices, message);
+    };
+
+    if (ctx.interface_map) |map| {
+        for (map_indices.?) |entry_index| {
+            const entry = map.entries[entry_index];
+            var interface_arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+            defer interface_arena.deinit();
+            const stats = try processBsaInterface(
+                interface_arena.allocator(),
+                ctx.io,
+                ctx.jsonl_stream,
+                filename,
+                ctx.name,
+                ctx.level,
+                ctx.atom_output,
+                .{
+                    .id = entry.id orelse filename,
+                    .partner_a = entry.partner_a,
+                    .partner_b = entry.partner_b,
+                },
+                source_parsed.input,
+                ctx.config,
+                ctx.sasa_threads,
+                ctx.luts,
+            );
+            recordBsaInterfaceStats(ctx, stats);
+        }
+    } else {
+        var interface_arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+        defer interface_arena.deinit();
+        const stats = try processBsaInterface(
+            interface_arena.allocator(),
+            ctx.io,
+            ctx.jsonl_stream,
+            filename,
+            ctx.name,
+            ctx.level,
+            ctx.atom_output,
+            .{
+                .id = filename,
+                .partner_a = ctx.fixed_partner_a.?,
+                .partner_b = ctx.fixed_partner_b.?,
+            },
+            source_parsed.input,
+            ctx.config,
+            ctx.sasa_threads,
+            ctx.luts,
+        );
+        recordBsaInterfaceStats(ctx, stats);
+    }
+}
+
+fn bsaParallelWorker(ctx: *BsaParallelContext) void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer arena.deinit();
+
+    while (true) {
+        const file_index = ctx.next_file.fetchAdd(1, .monotonic);
+        if (file_index >= ctx.files.len) break;
+        const filename = ctx.files[file_index];
+
+        processBsaFile(ctx, arena.allocator(), filename) catch |err| {
+            ctx.worker_failed.store(true, .release);
+            std.debug.print("Error running BSA analysis on '{s}': {s}\n", .{ filename, @errorName(err) });
+        };
+        _ = arena.reset(.retain_capacity);
+    }
+}
+
 fn runWorkflowBsaAnalysis(
     allocator: Allocator,
     io: std.Io,
@@ -3865,6 +4045,9 @@ fn runWorkflowBsaAnalysis(
     try truncateJsonlOutput(io, jsonl_output_path);
     const jsonl_file = try std.Io.Dir.cwd().openFile(io, jsonl_output_path, .{ .mode = .write_only });
     defer jsonl_file.close(io);
+    var jsonl_buffer: [64 * 1024]u8 = undefined;
+    var jsonl_stream = JsonlStreamWriter.init(jsonl_file, io, .{}, &jsonl_buffer);
+    errdefer jsonl_stream.flush() catch {};
 
     const load_quiet = if (args.quiet_explicit) args.quiet else (workflow.calculation.quiet orelse args.quiet);
 
@@ -3938,157 +4121,40 @@ fn runWorkflowBsaAnalysis(
     var luts = try BatchLuts.init(allocator, config);
     defer luts.deinit();
 
-    var successful: usize = 0;
-    var failed: usize = 0;
-    var total_sasa_time_ns: u64 = 0;
-
     var discovered_files = std.StringHashMapUnmanaged(void){};
     defer discovered_files.deinit(allocator);
     for (files) |filename| try discovered_files.put(allocator, filename, {});
 
-    for (files) |filename| {
-        var source_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer source_arena.deinit();
+    const file_threads = effectiveWorkflowFileThreads(config, files.len);
+    var ctx = BsaParallelContext{
+        .files = files,
+        .input_dir = input_dir,
+        .interface_map = if (interface_map) |*map| map else null,
+        .fixed_partner_a = fixed_partner_a,
+        .fixed_partner_b = fixed_partner_b,
+        .name = name,
+        .level = level,
+        .atom_output = atom_output,
+        .config = config,
+        .sasa_threads = effectiveBsaSasaThreads(config, file_threads),
+        .luts = &luts,
+        .jsonl_stream = &jsonl_stream,
+        .next_file = std.atomic.Value(usize).init(0),
+        .io = io,
+    };
 
-        const map_indices: ?[]const usize = if (interface_map) |*map| map.getIndices(filename) else null;
-        if (interface_map != null and map_indices == null) {
-            var error_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-            defer error_arena.deinit();
-            const stats = try writeBsaInterfaceError(
-                io,
-                jsonl_file,
-                error_arena.allocator(),
-                filename,
-                filename,
-                name,
-                "interface chain map entry not found",
-            );
-            _ = stats;
-            failed += 1;
-            continue;
+    if (file_threads > 1 and files.len > 1) {
+        const threads = try allocator.alloc(std.Thread, file_threads);
+        defer allocator.free(threads);
+        var spawned_count: usize = 0;
+        errdefer joinSpawnedThreads(threads, spawned_count);
+        for (threads) |*thread| {
+            thread.* = try std.Thread.spawn(.{}, bsaParallelWorker, .{&ctx});
+            spawned_count += 1;
         }
-
-        var source_config = config;
-        source_config.chain_filter = null;
-        if (interface_map) |*map| {
-            const indices = map_indices.?;
-            const first_type = map.entries[indices[0]].asym_id_type;
-            var mixed_asym_id_type = false;
-            for (indices[1..]) |entry_index| {
-                if (map.entries[entry_index].asym_id_type != first_type) {
-                    mixed_asym_id_type = true;
-                    break;
-                }
-            }
-            if (mixed_asym_id_type) {
-                for (indices) |entry_index| {
-                    var error_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-                    defer error_arena.deinit();
-                    const entry = map.entries[entry_index];
-                    _ = try writeBsaInterfaceError(
-                        io,
-                        jsonl_file,
-                        error_arena.allocator(),
-                        filename,
-                        entry.id orelse filename,
-                        name,
-                        "interfaces for one file must use the same asym_id_type",
-                    );
-                    failed += 1;
-                }
-                continue;
-            }
-            source_config.use_auth_chain = first_type == .auth;
-        }
-        const input_path = try std.fs.path.join(source_arena.allocator(), &.{ input_dir, filename });
-
-        var source_parsed = readInputFile(source_arena.allocator(), io, input_path, source_config) catch |err| {
-            const message = try std.fmt.allocPrint(source_arena.allocator(), "read/parse failed: {s}", .{@errorName(err)});
-            if (interface_map) |*map| {
-                for (map_indices.?) |entry_index| {
-                    const entry = map.entries[entry_index];
-                    _ = try writeBsaInterfaceError(io, jsonl_file, source_arena.allocator(), filename, entry.id orelse filename, name, message);
-                    failed += 1;
-                }
-            } else {
-                _ = try writeBsaInterfaceError(io, jsonl_file, source_arena.allocator(), filename, filename, name, message);
-                failed += 1;
-            }
-            continue;
-        };
-        defer source_parsed.deinit();
-
-        workflowClassifySourceInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
-            const message = try std.fmt.allocPrint(source_arena.allocator(), "classifier failed: {s}", .{@errorName(err)});
-            if (interface_map) |*map| {
-                for (map_indices.?) |entry_index| {
-                    const entry = map.entries[entry_index];
-                    _ = try writeBsaInterfaceError(io, jsonl_file, source_arena.allocator(), filename, entry.id orelse filename, name, message);
-                    failed += 1;
-                }
-            } else {
-                _ = try writeBsaInterfaceError(io, jsonl_file, source_arena.allocator(), filename, filename, name, message);
-                failed += 1;
-            }
-            continue;
-        };
-
-        if (interface_map) |*map| {
-            for (map_indices.?) |entry_index| {
-                const entry = map.entries[entry_index];
-                var interface_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-                defer interface_arena.deinit();
-                const stats = try processBsaInterface(
-                    interface_arena.allocator(),
-                    io,
-                    jsonl_file,
-                    filename,
-                    name,
-                    level,
-                    atom_output,
-                    .{
-                        .id = entry.id orelse filename,
-                        .partner_a = entry.partner_a,
-                        .partner_b = entry.partner_b,
-                    },
-                    source_parsed.input,
-                    config,
-                    &luts,
-                );
-                if (stats.successful) {
-                    successful += 1;
-                    total_sasa_time_ns += stats.sasa_time_ns;
-                } else {
-                    failed += 1;
-                }
-            }
-        } else {
-            var interface_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-            defer interface_arena.deinit();
-            const stats = try processBsaInterface(
-                interface_arena.allocator(),
-                io,
-                jsonl_file,
-                filename,
-                name,
-                level,
-                atom_output,
-                .{
-                    .id = filename,
-                    .partner_a = fixed_partner_a.?,
-                    .partner_b = fixed_partner_b.?,
-                },
-                source_parsed.input,
-                config,
-                &luts,
-            );
-            if (stats.successful) {
-                successful += 1;
-                total_sasa_time_ns += stats.sasa_time_ns;
-            } else {
-                failed += 1;
-            }
-        }
+        joinSpawnedThreads(threads, spawned_count);
+    } else {
+        bsaParallelWorker(&ctx);
     }
 
     if (interface_map) |*map| {
@@ -4096,19 +4162,25 @@ fn runWorkflowBsaAnalysis(
             if (discovered_files.contains(entry.filename)) continue;
             var error_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer error_arena.deinit();
-            _ = try writeBsaInterfaceError(
-                io,
-                jsonl_file,
+            const stats = try writeBsaInterfaceError(
+                &jsonl_stream,
                 error_arena.allocator(),
                 entry.filename,
                 entry.id orelse entry.filename,
                 name,
                 "input structure not found",
             );
-            failed += 1;
+            recordBsaInterfaceStats(&ctx, stats);
         }
     }
 
+    try jsonl_stream.flush();
+    if (jsonl_stream.hasError()) return error.JsonlWriteFailed;
+    if (ctx.worker_failed.load(.acquire)) return error.BsaWorkerFailed;
+
+    const successful = ctx.counter.successful.load(.monotonic);
+    const failed = ctx.counter.failed.load(.monotonic);
+    const total_sasa_time_ns = ctx.counter.total_sasa_time_ns.load(.monotonic);
     if (config.show_timing) {
         const total_sasa_ms = @as(f64, @floatFromInt(total_sasa_time_ns)) / 1_000_000.0;
         std.debug.print("BSA analysis SASA time: {d:.2} ms\n", .{total_sasa_ms});
@@ -6051,6 +6123,147 @@ test "workflow BSA analysis emits one detailed row per interface and stable erro
     try std.testing.expect(saw_missing);
 }
 
+test "workflow BSA analysis writes parseable rows from parallel file workers" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root = root_buf[0..root_len];
+
+    const input_dir = try std.fs.path.join(allocator, &.{ root, "input" });
+    defer allocator.free(input_dir);
+    const output_dir = try std.fs.path.join(allocator, &.{ root, "output" });
+    defer allocator.free(output_dir);
+    const map_path = try std.fs.path.join(allocator, &.{ root, "interfaces.csv" });
+    defer allocator.free(map_path);
+    const workflow_path = try std.fs.path.join(allocator, &.{ root, "bsa-parallel.toml" });
+    defer allocator.free(workflow_path);
+
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+    const pdb =
+        "ATOM      1  N   GLY A   1       0.000   0.000   0.000  1.00 20.00           N  \n" ++
+        "ATOM      2  CA  GLY A   1       1.500   0.000   0.000  1.00 20.00           C  \n" ++
+        "ATOM      3  N   ALA B   2       3.000   0.000   0.000  1.00 20.00           N  \n" ++
+        "ATOM      4  CA  ALA B   2       4.500   0.000   0.000  1.00 20.00           C  \n" ++
+        "ATOM      5  N   SER C   3       6.000   0.000   0.000  1.00 20.00           N  \n" ++
+        "ATOM      6  CA  SER C   3       7.500   0.000   0.000  1.00 20.00           C  \n" ++
+        "END\n";
+    for ([_][]const u8{ "alpha.pdb", "beta.pdb" }) |filename| {
+        const pdb_path = try std.fs.path.join(allocator, &.{ input_dir, filename });
+        defer allocator.free(pdb_path);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = pdb_path, .data = pdb });
+    }
+    const broken_path = try std.fs.path.join(allocator, &.{ input_dir, "broken.pdb" });
+    defer allocator.free(broken_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = broken_path, .data = "not a structure\n" });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = map_path,
+        .data =
+        \\filename,id,partner_a,partner_b,asym_id_type
+        \\alpha.pdb,alpha-ab,A,B,label
+        \\alpha.pdb,alpha-cb,C,B,label
+        \\beta.pdb,beta-ab,A,B,label
+        \\beta.pdb,beta-invalid,Z,B,label
+        \\broken.pdb,broken-ab,A,B,label
+        \\broken.pdb,broken-cb,C,B,label
+        \\missing.pdb,missing-ab,A,B,label
+        \\
+        ,
+    });
+
+    const workflow = try std.fmt.allocPrint(allocator,
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "{s}"
+        \\
+        \\[output]
+        \\dir = "{s}"
+        \\format = "jsonl"
+        \\
+        \\[calculation]
+        \\n_points = 16
+        \\quiet = true
+        \\
+        \\[classifier]
+        \\type = "naccess"
+        \\
+        \\[analysis]
+        \\type = "bsa"
+        \\name = "interfaces"
+        \\chain_map = "{s}"
+        \\level = "residue"
+        \\
+    , .{ input_dir, output_dir, map_path });
+    defer allocator.free(workflow);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
+
+    try runWorkflow(allocator, std.testing.io, .{
+        .workflow_path = workflow_path,
+        .n_threads = 4,
+        .threads_explicit = true,
+    });
+
+    const output_path = try std.fs.path.join(allocator, &.{ output_dir, "interfaces.jsonl" });
+    defer allocator.free(output_path);
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(65536));
+    defer allocator.free(content);
+
+    const expected_alpha = [_][]const u8{ "alpha-ab", "alpha-cb" };
+    const expected_beta = [_][]const u8{ "beta-ab", "beta-invalid" };
+    const expected_broken = [_][]const u8{ "broken-ab", "broken-cb" };
+    var alpha_index: usize = 0;
+    var beta_index: usize = 0;
+    var broken_index: usize = 0;
+    var row_count: usize = 0;
+    var ok_count: usize = 0;
+    var error_count: usize = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        row_count += 1;
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer parsed.deinit();
+        const object = parsed.value.object;
+        const filename = object.get("filename").?.string;
+        const id = object.get("id").?.string;
+        const status = object.get("status").?.string;
+
+        if (std.mem.eql(u8, filename, "alpha.pdb")) {
+            try std.testing.expectEqualStrings(expected_alpha[alpha_index], id);
+            alpha_index += 1;
+        } else if (std.mem.eql(u8, filename, "beta.pdb")) {
+            try std.testing.expectEqualStrings(expected_beta[beta_index], id);
+            beta_index += 1;
+        } else if (std.mem.eql(u8, filename, "broken.pdb")) {
+            try std.testing.expectEqualStrings(expected_broken[broken_index], id);
+            broken_index += 1;
+        }
+
+        if (std.mem.eql(u8, status, "ok")) {
+            ok_count += 1;
+            try std.testing.expect(object.get("sasa_partner_a") != null);
+            try std.testing.expect(object.get("sasa_partner_b") != null);
+            try std.testing.expect(object.get("sasa_complex") != null);
+            try std.testing.expect(object.get("delta_sasa_total") != null);
+            try std.testing.expect(object.get("bsa") != null);
+        } else {
+            try std.testing.expectEqualStrings("err", status);
+            error_count += 1;
+        }
+    }
+
+    try std.testing.expectEqual(@as(usize, 7), row_count);
+    try std.testing.expectEqual(@as(usize, 3), ok_count);
+    try std.testing.expectEqual(@as(usize, 4), error_count);
+    try std.testing.expectEqual(expected_alpha.len, alpha_index);
+    try std.testing.expectEqual(expected_beta.len, beta_index);
+    try std.testing.expectEqual(expected_broken.len, broken_index);
+}
+
 test "workflow mmCIF chain filters preserve long chain IDs" {
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -6321,6 +6534,14 @@ test "workflowRequiresJobFirstForAuthChain detects job-level auth-chain mismatch
 test "effectiveWorkflowSasaThreads honors explicit and auto thread counts" {
     try std.testing.expectEqual(@as(usize, 7), effectiveWorkflowSasaThreads(BatchConfig{ .n_threads = 7 }));
     try std.testing.expect(effectiveWorkflowSasaThreads(BatchConfig{ .n_threads = 0 }) >= 1);
+}
+
+test "BSA workflow uses explicit file workers without nested SASA threads" {
+    const config = BatchConfig{ .n_threads = 40 };
+    const file_threads = effectiveWorkflowFileThreads(config, 100);
+    try std.testing.expectEqual(@as(usize, 40), file_threads);
+    try std.testing.expectEqual(@as(usize, 1), effectiveBsaSasaThreads(config, file_threads));
+    try std.testing.expectEqual(@as(usize, 40), effectiveBsaSasaThreads(config, 1));
 }
 
 test "appendJsonlResultToFile appends without truncating existing JSONL content" {
