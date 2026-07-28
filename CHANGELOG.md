@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-07-28
+
+### Added
+
+- **Per-file workflow chain maps**: add CSV and JSON maps for file-specific single- or multi-chain SASA selections and BSA/ΔSASA partner groups, with per-entry `label` or `auth` asym ID selection for mmCIF and BinaryCIF inputs. (#406)
+
 ## [0.9.0] - 2026-07-15
 
 ### Added
@@ -634,7 +640,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `calc_reference_sasa.py` - Generate reference SASA
   - `benchmark.py` - Performance benchmarking
 
-[Unreleased]: https://github.com/N283T/zsasa/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/N283T/zsasa/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/N283T/zsasa/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/N283T/zsasa/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/N283T/zsasa/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/N283T/zsasa/compare/v0.7.0...v0.7.1
