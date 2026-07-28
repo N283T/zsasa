@@ -3856,10 +3856,17 @@ const BsaParallelContext = struct {
     luts: *const BatchLuts,
     jsonl_stream: *JsonlStreamWriter,
     next_file: std.atomic.Value(usize),
+    processed_count: std.atomic.Value(usize),
+    progress_node: std.Progress.Node,
     counter: BsaWorkflowCounter = .{},
     worker_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     io: std.Io,
 };
+
+fn markBsaFileCompleted(ctx: *BsaParallelContext) void {
+    _ = ctx.processed_count.fetchAdd(1, .release);
+    ctx.progress_node.completeOne();
+}
 
 fn recordBsaInterfaceStats(ctx: *BsaParallelContext, stats: BsaInterfaceStats) void {
     if (stats.successful) {
@@ -4001,6 +4008,7 @@ fn bsaParallelWorker(ctx: *BsaParallelContext) void {
         const file_index = ctx.next_file.fetchAdd(1, .monotonic);
         if (file_index >= ctx.files.len) break;
         const filename = ctx.files[file_index];
+        defer markBsaFileCompleted(ctx);
 
         processBsaFile(ctx, arena.allocator(), filename) catch |err| {
             ctx.worker_failed.store(true, .release);
@@ -4125,6 +4133,12 @@ fn runWorkflowBsaAnalysis(
     defer discovered_files.deinit(allocator);
     for (files) |filename| try discovered_files.put(allocator, filename, {});
 
+    var progress_root: std.Progress.Node = if (shouldShowProgress(config))
+        std.Progress.start(io, .{ .root_name = "Processing files", .estimated_total_items = files.len })
+    else
+        .none;
+    defer progress_root.end();
+
     const file_threads = effectiveWorkflowFileThreads(config, files.len);
     var ctx = BsaParallelContext{
         .files = files,
@@ -4140,6 +4154,8 @@ fn runWorkflowBsaAnalysis(
         .luts = &luts,
         .jsonl_stream = &jsonl_stream,
         .next_file = std.atomic.Value(usize).init(0),
+        .processed_count = std.atomic.Value(usize).init(0),
+        .progress_node = progress_root,
         .io = io,
     };
 
@@ -4156,6 +4172,8 @@ fn runWorkflowBsaAnalysis(
     } else {
         bsaParallelWorker(&ctx);
     }
+
+    if (ctx.processed_count.load(.acquire) != files.len) return error.BsaWorkerFailed;
 
     if (interface_map) |*map| {
         for (map.entries) |entry| {
@@ -6123,7 +6141,7 @@ test "workflow BSA analysis emits one detailed row per interface and stable erro
     try std.testing.expect(saw_missing);
 }
 
-test "workflow BSA analysis writes parseable rows from parallel file workers" {
+test "workflow BSA progress completes across parallel success and error paths" {
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -6186,7 +6204,7 @@ test "workflow BSA analysis writes parseable rows from parallel file workers" {
         \\
         \\[calculation]
         \\n_points = 16
-        \\quiet = true
+        \\quiet = false
         \\
         \\[classifier]
         \\type = "naccess"
@@ -7094,7 +7112,8 @@ test "AF model fast parser is skipped when chain filtering is requested" {
     }));
 }
 
-test "BatchConfig quiet suppresses progress even when show_progress defaults true" {
-    const config = BatchConfig{ .quiet = true };
-    try std.testing.expectEqual(false, shouldShowProgress(config));
+test "BatchConfig progress respects show_progress and quiet" {
+    try std.testing.expect(shouldShowProgress(.{}));
+    try std.testing.expect(!shouldShowProgress(.{ .show_progress = false }));
+    try std.testing.expect(!shouldShowProgress(.{ .quiet = true }));
 }

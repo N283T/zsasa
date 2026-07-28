@@ -254,6 +254,15 @@ serial and reuse the same parsed and classified input. When only one file or
 one worker is available, the configured thread count is instead available to
 the SASA calculations within that file.
 
+BSA workflows show standard terminal progress by completed structure file, not
+by interface row. Each discovered file advances progress once after all of its
+interfaces finish, including files that produce parse, classification,
+selection, or calculation errors. Set `quiet = true` or pass `--quiet` to
+suppress progress. The standard progress display requires stderr to be a
+terminal: redirecting stderr, including with `2>&1 | tee`, disables the
+interactive bar, while piping stdout alone leaves the bar on the terminal but
+does not capture it in `tee`.
+
 BSA JSONL rows from different files are streamed in completion order, so global
 input order is not guaranteed. Rows are written atomically, and interface order
 within each file follows the interface-map order.
