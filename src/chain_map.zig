@@ -45,12 +45,14 @@ pub const ChainMap = struct {
 
 pub const InterfaceEntry = struct {
     filename: []const u8,
+    id: ?[]const u8,
     partner_a: []const []const u8,
     partner_b: []const []const u8,
     asym_id_type: AsymIdType,
 
     fn deinit(self: InterfaceEntry, allocator: Allocator) void {
         allocator.free(self.filename);
+        if (self.id) |id| allocator.free(id);
         freeChains(allocator, self.partner_a);
         freeChains(allocator, self.partner_b);
     }
@@ -59,18 +61,26 @@ pub const InterfaceEntry = struct {
 pub const InterfaceMap = struct {
     allocator: Allocator,
     entries: []InterfaceEntry,
-    index: std.StringHashMapUnmanaged(usize),
+    index: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(usize)),
 
     pub fn deinit(self: *InterfaceMap) void {
+        var values = self.index.valueIterator();
+        while (values.next()) |indices| indices.deinit(self.allocator);
         self.index.deinit(self.allocator);
         for (self.entries) |entry| entry.deinit(self.allocator);
         self.allocator.free(self.entries);
         self.* = undefined;
     }
 
+    pub fn getIndices(self: *const InterfaceMap, filename: []const u8) ?[]const usize {
+        const indices = self.index.get(filename) orelse return null;
+        return indices.items;
+    }
+
+    /// Return the first interface for compatibility with one-row-per-file maps.
     pub fn get(self: *const InterfaceMap, filename: []const u8) ?InterfaceEntry {
-        const index = self.index.get(filename) orelse return null;
-        return self.entries[index];
+        const indices = self.getIndices(filename) orelse return null;
+        return self.entries[indices[0]];
     }
 };
 
@@ -169,6 +179,7 @@ pub fn parseInterfaceCsv(allocator: Allocator, content: []const u8) !InterfaceMa
     defer if (header) |fields| freeFields(allocator, fields);
 
     var filename_col: ?usize = null;
+    var id_col: ?usize = null;
     var partner_a_col: ?usize = null;
     var partner_b_col: ?usize = null;
     var asym_id_type_col: ?usize = null;
@@ -183,6 +194,7 @@ pub fn parseInterfaceCsv(allocator: Allocator, content: []const u8) !InterfaceMa
             for (fields, 0..) |field, i| {
                 const normalized = if (i == 0) std.mem.trimStart(u8, field, "\xEF\xBB\xBF") else field;
                 if (std.ascii.eqlIgnoreCase(normalized, "filename")) filename_col = i;
+                if (std.ascii.eqlIgnoreCase(normalized, "id")) id_col = i;
                 if (std.ascii.eqlIgnoreCase(normalized, "partner_a")) partner_a_col = i;
                 if (std.ascii.eqlIgnoreCase(normalized, "partner_b")) partner_b_col = i;
                 if (std.ascii.eqlIgnoreCase(normalized, "asym_id_type")) asym_id_type_col = i;
@@ -209,6 +221,7 @@ pub fn parseInterfaceCsv(allocator: Allocator, content: []const u8) !InterfaceMa
             allocator,
             &entries,
             fields[filename_col.?],
+            if (id_col) |col| fields[col] else null,
             fields[partner_a_col.?],
             fields[partner_b_col.?],
             asym_id_type,
@@ -221,6 +234,7 @@ pub fn parseInterfaceCsv(allocator: Allocator, content: []const u8) !InterfaceMa
 
 const JsonInterfaceEntry = struct {
     filename: []const u8,
+    id: ?[]const u8 = null,
     partner_a: []const []const u8,
     partner_b: []const []const u8,
     asym_id_type: ?[]const u8 = null,
@@ -239,6 +253,7 @@ pub fn parseInterfaceJson(allocator: Allocator, content: []const u8) !InterfaceM
             allocator,
             &entries,
             json_entry.filename,
+            json_entry.id,
             json_entry.partner_a,
             json_entry.partner_b,
             asym_id_type,
@@ -281,6 +296,7 @@ fn appendInterfaceEntryCsv(
     allocator: Allocator,
     entries: *std.ArrayListUnmanaged(InterfaceEntry),
     filename_value: []const u8,
+    id_value: ?[]const u8,
     partner_a_value: []const u8,
     partner_b_value: []const u8,
     asym_id_type: AsymIdType,
@@ -289,13 +305,14 @@ fn appendInterfaceEntryCsv(
     errdefer freeChains(allocator, partner_a);
     const partner_b = try parseCommaSeparatedChains(allocator, partner_b_value);
     errdefer freeChains(allocator, partner_b);
-    try appendOwnedInterfaceEntry(allocator, entries, filename_value, partner_a, partner_b, asym_id_type);
+    try appendOwnedInterfaceEntry(allocator, entries, filename_value, id_value, partner_a, partner_b, asym_id_type);
 }
 
 fn appendInterfaceEntryJson(
     allocator: Allocator,
     entries: *std.ArrayListUnmanaged(InterfaceEntry),
     filename_value: []const u8,
+    id_value: ?[]const u8,
     partner_a_values: []const []const u8,
     partner_b_values: []const []const u8,
     asym_id_type: AsymIdType,
@@ -304,7 +321,7 @@ fn appendInterfaceEntryJson(
     errdefer freeChains(allocator, partner_a);
     const partner_b = try dupeChains(allocator, partner_b_values);
     errdefer freeChains(allocator, partner_b);
-    try appendOwnedInterfaceEntry(allocator, entries, filename_value, partner_a, partner_b, asym_id_type);
+    try appendOwnedInterfaceEntry(allocator, entries, filename_value, id_value, partner_a, partner_b, asym_id_type);
 }
 
 fn appendOwnedEntry(
@@ -328,6 +345,7 @@ fn appendOwnedInterfaceEntry(
     allocator: Allocator,
     entries: *std.ArrayListUnmanaged(InterfaceEntry),
     filename_value: []const u8,
+    id_value: ?[]const u8,
     partner_a: []const []const u8,
     partner_b: []const []const u8,
     asym_id_type: AsymIdType,
@@ -335,8 +353,14 @@ fn appendOwnedInterfaceEntry(
     const filename = try validateFilename(filename_value);
     const owned_filename = try allocator.dupe(u8, filename);
     errdefer allocator.free(owned_filename);
+    const owned_id = if (id_value) |value| blk: {
+        const id = std.mem.trim(u8, value, " \t\r");
+        break :blk if (id.len == 0) null else try allocator.dupe(u8, try validateInterfaceId(id));
+    } else null;
+    errdefer if (owned_id) |id| allocator.free(id);
     try entries.append(allocator, .{
         .filename = owned_filename,
+        .id = owned_id,
         .partner_a = partner_a,
         .partner_b = partner_b,
         .asym_id_type = asym_id_type,
@@ -371,11 +395,30 @@ fn finishInterface(allocator: Allocator, entries: *std.ArrayListUnmanaged(Interf
         allocator.free(owned_entries);
     }
 
-    var index = std.StringHashMapUnmanaged(usize){};
-    errdefer index.deinit(allocator);
+    var index = std.StringHashMapUnmanaged(std.ArrayListUnmanaged(usize)){};
+    errdefer {
+        var values = index.valueIterator();
+        while (values.next()) |indices| indices.deinit(allocator);
+        index.deinit(allocator);
+    }
     for (owned_entries, 0..) |entry, i| {
-        if (index.contains(entry.filename)) return error.DuplicateFilename;
-        try index.put(allocator, entry.filename, i);
+        const result = try index.getOrPut(allocator, entry.filename);
+        if (!result.found_existing) result.value_ptr.* = .empty;
+        try result.value_ptr.append(allocator, i);
+    }
+    var values = index.valueIterator();
+    while (values.next()) |indices| {
+        if (indices.items.len <= 1) continue;
+        for (indices.items) |entry_index| {
+            if (owned_entries[entry_index].id == null) return error.MissingInterfaceId;
+        }
+    }
+    var ids = std.StringHashMapUnmanaged(void){};
+    defer ids.deinit(allocator);
+    for (owned_entries) |entry| {
+        const id = entry.id orelse entry.filename;
+        if (ids.contains(id)) return error.DuplicateInterfaceId;
+        try ids.put(allocator, id, {});
     }
 
     return .{
@@ -401,6 +444,12 @@ fn validateFilename(filename_value: []const u8) ![]const u8 {
         return error.UnsafeFilename;
     }
     return filename;
+}
+
+fn validateInterfaceId(id_value: []const u8) ![]const u8 {
+    const id = std.mem.trim(u8, id_value, " \t\r");
+    if (id.len == 0) return error.EmptyInterfaceId;
+    return id;
 }
 
 fn parseCommaSeparatedChains(allocator: Allocator, value: []const u8) ![]const []const u8 {
@@ -587,7 +636,7 @@ test "parse CSV interface map with multi-chain partners" {
     );
     defer map.deinit();
 
-    const entry = map.get("1abc.cif").?;
+    const entry = map.entries[map.getIndices("1abc.cif").?[0]];
     try std.testing.expectEqual(@as(usize, 2), entry.partner_a.len);
     try std.testing.expectEqualStrings("A", entry.partner_a[0]);
     try std.testing.expectEqualStrings("B", entry.partner_a[1]);
@@ -610,8 +659,74 @@ test "parse JSON interface map" {
     );
     defer map.deinit();
 
-    const entry = map.get("1abc.cif").?;
+    const entry = map.entries[map.getIndices("1abc.cif").?[0]];
     try std.testing.expectEqualStrings("B", entry.partner_a[1]);
     try std.testing.expectEqualStrings("D", entry.partner_b[1]);
     try std.testing.expectEqual(AsymIdType.label, entry.asym_id_type);
+}
+
+test "parse multiple CSV interfaces for one filename with stable IDs" {
+    var map = try parseInterfaceCsv(
+        std.testing.allocator,
+        "filename,id,partner_a,partner_b,asym_id_type\n" ++
+            "1abc.cif,interaction-001,A,\"B,C\",label\n" ++
+            "1abc.cif,interaction-002,D,\"B,C\",label\n",
+    );
+    defer map.deinit();
+
+    const indices = map.getIndices("1abc.cif").?;
+    try std.testing.expectEqual(@as(usize, 2), indices.len);
+    try std.testing.expectEqualStrings("interaction-001", map.entries[indices[0]].id.?);
+    try std.testing.expectEqualStrings("interaction-002", map.entries[indices[1]].id.?);
+}
+
+test "parse multiple JSON interfaces for one filename with stable IDs" {
+    var map = try parseInterfaceJson(std.testing.allocator,
+        \\[
+        \\  {"filename":"1abc.cif","id":"one","partner_a":["A"],"partner_b":["B"]},
+        \\  {"filename":"1abc.cif","id":"two","partner_a":["C"],"partner_b":["D"]}
+        \\]
+    );
+    defer map.deinit();
+
+    const indices = map.getIndices("1abc.cif").?;
+    try std.testing.expectEqual(@as(usize, 2), indices.len);
+    try std.testing.expectEqualStrings("one", map.entries[indices[0]].id.?);
+    try std.testing.expectEqualStrings("two", map.entries[indices[1]].id.?);
+}
+
+test "require IDs when a filename has multiple interfaces" {
+    try std.testing.expectError(
+        error.MissingInterfaceId,
+        parseInterfaceCsv(
+            std.testing.allocator,
+            "filename,id,partner_a,partner_b\n" ++
+                "1abc.cif,one,A,B\n" ++
+                "1abc.cif,,C,D\n",
+        ),
+    );
+}
+
+test "reject duplicate interface IDs" {
+    try std.testing.expectError(
+        error.DuplicateInterfaceId,
+        parseInterfaceCsv(
+            std.testing.allocator,
+            "filename,id,partner_a,partner_b\n" ++
+                "1abc.cif,same,A,B\n" ++
+                "2xyz.cif,same,C,D\n",
+        ),
+    );
+}
+
+test "reject explicit interface ID that collides with legacy filename ID" {
+    try std.testing.expectError(
+        error.DuplicateInterfaceId,
+        parseInterfaceCsv(
+            std.testing.allocator,
+            "filename,id,partner_a,partner_b\n" ++
+                "1abc.cif,,A,B\n" ++
+                "2xyz.cif,1abc.cif,C,D\n",
+        ),
+    );
 }

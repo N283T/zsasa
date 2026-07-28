@@ -73,6 +73,7 @@ pub const Analysis = struct {
     partner_b: ?[]const []const u8 = null,
     chain_map: ?[]const u8 = null,
     level: ?[]const u8 = null,
+    atom_output: ?bool = null,
 };
 
 pub const Job = struct {
@@ -308,7 +309,7 @@ fn parseClassifier(allocator: Allocator, table: toml_parser.Table) Error!Classif
 }
 
 fn parseAnalysis(allocator: Allocator, table: toml_parser.Table) Error!Analysis {
-    try rejectUnknownFields(table.entries, &.{ "type", "name", "partner_a", "partner_b", "chain_map", "level" });
+    try rejectUnknownFields(table.entries, &.{ "type", "name", "partner_a", "partner_b", "chain_map", "level", "atom_output" });
     const analysis = Analysis{
         .type = try optionalString(table.entries, "type"),
         .name = try optionalString(table.entries, "name"),
@@ -316,6 +317,7 @@ fn parseAnalysis(allocator: Allocator, table: toml_parser.Table) Error!Analysis 
         .partner_b = try optionalStringArray(allocator, table.entries, "partner_b"),
         .chain_map = try optionalString(table.entries, "chain_map"),
         .level = try optionalString(table.entries, "level"),
+        .atom_output = try optionalBool(table.entries, "atom_output"),
     };
     errdefer {
         if (analysis.partner_a) |items| allocator.free(items);
@@ -370,6 +372,9 @@ fn validateAnalysis(analysis: Analysis) WorkflowError!void {
         if (!std.mem.eql(u8, level, "total") and !std.mem.eql(u8, level, "residue")) {
             return error.InvalidAnalysisConfig;
         }
+    }
+    if ((analysis.atom_output orelse false) and !std.mem.eql(u8, analysis.level orelse "total", "residue")) {
+        return error.InvalidAnalysisConfig;
     }
 }
 
@@ -869,6 +874,38 @@ test "reject BSA analysis invalid level" {
         \\level = "chain"
     ;
     try std.testing.expectError(error.InvalidAnalysisConfig, parse(std.testing.allocator, input));
+}
+
+test "parse BSA analysis with opt-in atom output" {
+    const content =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[analysis]
+        \\type = "bsa"
+        \\partner_a = ["A"]
+        \\partner_b = ["B"]
+        \\level = "residue"
+        \\atom_output = true
+    ;
+    var workflow = try parse(std.testing.allocator, content);
+    defer workflow.deinit();
+
+    try std.testing.expectEqual(true, workflow.analysis.?.atom_output.?);
+}
+
+test "reject BSA atom output without residue detail" {
+    const content =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[analysis]
+        \\type = "bsa"
+        \\partner_a = ["A"]
+        \\partner_b = ["B"]
+        \\atom_output = true
+    ;
+    try std.testing.expectError(error.InvalidAnalysisConfig, parse(std.testing.allocator, content));
 }
 
 test "parse legacy flat batch manifest" {

@@ -8,6 +8,10 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+### Added
+
+- **Multi-interface BSA workflows**: allow CSV and JSON interface maps to request multiple stable-ID interfaces per structure while reusing one parsed/classified input, emitting per-interface success/error JSONL rows, auditable residue SASA components, and opt-in atom-level detail. (#408)
+
 ## [v0.9.1](https://github.com/N283T/zsasa/releases/tag/v0.9.1) — 2026-07-28
 
 ### Added
