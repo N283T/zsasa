@@ -245,6 +245,19 @@ interface ID. All rows for one file must use the same `asym_id_type`, allowing
 zsasa to read, decompress, parse, and classify that structure once before
 processing its interfaces.
 
+For BSA workflows, `threads` and `--threads=N` control the number of structure
+files processed concurrently. Explicit values may exceed the detected CPU
+count, which is useful for large I/O-bound datasets. In the multi-file worker
+path, each partner A, partner B, and complex SASA calculation uses one internal
+thread to avoid nested oversubscription; all interfaces for a structure remain
+serial and reuse the same parsed and classified input. When only one file or
+one worker is available, the configured thread count is instead available to
+the SASA calculations within that file.
+
+BSA JSONL rows from different files are streamed in completion order, so global
+input order is not guaranteed. Rows are written atomically, and interface order
+within each file follows the interface-map order.
+
 For the first row, zsasa calculates isolated A+B, isolated C+D, and the
 A+B+C+D complex. The reported values are therefore:
 

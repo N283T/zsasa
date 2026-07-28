@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Multi-interface BSA workflows**: allow CSV and JSON interface maps to request multiple stable-ID interfaces per structure while reusing one parsed/classified input, emitting per-interface success/error JSONL rows, auditable residue SASA components, and opt-in atom-level detail. (#408)
 
+### Fixed
+
+- **BSA workflow parallelism**: apply workflow thread counts to concurrent structure-file workers, keep partner and complex SASA calculations single-threaded in the multi-file path, and serialize concurrent JSONL rows safely.
+
 ## [0.9.1] - 2026-07-28
 
 ### Added
