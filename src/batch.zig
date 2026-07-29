@@ -4237,6 +4237,31 @@ const SelectionGroup = struct {
     atom_identity: ?json_writer.SelectionAtomIdentity = null,
 };
 
+fn selectionMapEstimatedFileCost(map: *const chain_map.ChainMap, filename: []const u8) usize {
+    return if (map.getIndices(filename)) |indices| indices.len else 0;
+}
+
+fn sortSelectionMapFilesByEstimatedCost(files: [][]const u8, map: *const chain_map.ChainMap) void {
+    std.mem.sort([]const u8, files, map, struct {
+        fn lessThan(chain_map_value: *const chain_map.ChainMap, a: []const u8, b: []const u8) bool {
+            const a_cost = selectionMapEstimatedFileCost(chain_map_value, a);
+            const b_cost = selectionMapEstimatedFileCost(chain_map_value, b);
+            if (a_cost != b_cost) return a_cost > b_cost;
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lessThan);
+}
+
+fn scheduleSelectionMapFiles(files: [][]const u8, map: *const chain_map.ChainMap) void {
+    if (map.hasMultipleSelections()) sortSelectionMapFilesByEstimatedCost(files, map);
+}
+
+fn claimSelectionMapFile(files: []const []const u8, next_file: *std.atomic.Value(usize)) ?[]const u8 {
+    const file_index = next_file.fetchAdd(1, .monotonic);
+    if (file_index >= files.len) return null;
+    return files[file_index];
+}
+
 const SelectionMapContext = struct {
     files: []const []const u8,
     input_dir: []const u8,
@@ -4587,9 +4612,7 @@ fn selectionMapWorker(ctx: *SelectionMapContext) void {
     defer arena.deinit();
 
     while (true) {
-        const file_index = ctx.next_file.fetchAdd(1, .monotonic);
-        if (file_index >= ctx.files.len) break;
-        const filename = ctx.files[file_index];
+        const filename = claimSelectionMapFile(ctx.files, &ctx.next_file) orelse break;
         defer {
             _ = ctx.processed_count.fetchAdd(1, .release);
             ctx.progress_node.completeOne();
@@ -4620,6 +4643,7 @@ fn runSelectionMapBatch(
     const files = try scanDirectory(allocator, io, input_dir);
     defer freeScannedFiles(allocator, files);
     try validateMappedChainInputFormats(files, true);
+    scheduleSelectionMapFiles(files, map);
 
     var luts = try BatchLuts.init(allocator, config);
     defer luts.deinit();
@@ -6335,6 +6359,133 @@ test "workflow chain map selects per-file PDB and mmCIF chain complexes" {
         found += 1;
     }
     try std.testing.expectEqual(@as(usize, 3), found);
+}
+
+test "selection map LPT claims highest-cost files first with deterministic ties" {
+    const allocator = std.testing.allocator;
+    var map = try chain_map.parseCsv(
+        allocator,
+        "filename,id,chains\n" ++
+            "z-heavy.pdb,z1,A\n" ++
+            "z-heavy.pdb,z2,B\n" ++
+            "z-heavy.pdb,z3,C\n" ++
+            "a-heavy.pdb,a1,A\n" ++
+            "a-heavy.pdb,a2,B\n" ++
+            "a-heavy.pdb,a3,C\n" ++
+            "middle.pdb,m1,A\n" ++
+            "middle.pdb,m2,B\n" ++
+            "light.pdb,light,A\n",
+    );
+    defer map.deinit();
+
+    var files = [_][]const u8{
+        "z-heavy.pdb",
+        "unmapped.pdb",
+        "light.pdb",
+        "middle.pdb",
+        "a-heavy.pdb",
+    };
+    scheduleSelectionMapFiles(files[0..], &map);
+
+    var next_file = std.atomic.Value(usize).init(0);
+    const expected = [_][]const u8{
+        "a-heavy.pdb",
+        "z-heavy.pdb",
+        "middle.pdb",
+        "light.pdb",
+        "unmapped.pdb",
+    };
+    for (expected) |filename| {
+        try std.testing.expectEqualStrings(filename, claimSelectionMapFile(files[0..], &next_file).?);
+    }
+    try std.testing.expect(claimSelectionMapFile(files[0..], &next_file) == null);
+}
+
+test "selection map scheduling leaves legacy one-row file order unchanged" {
+    const allocator = std.testing.allocator;
+    var map = try chain_map.parseCsv(
+        allocator,
+        "filename,chains\n" ++
+            "charlie.pdb,A\n" ++
+            "alpha.pdb,A\n" ++
+            "bravo.pdb,A\n",
+    );
+    defer map.deinit();
+
+    var files = [_][]const u8{ "alpha.pdb", "bravo.pdb", "charlie.pdb" };
+    scheduleSelectionMapFiles(files[0..], &map);
+
+    try std.testing.expectEqualStrings("alpha.pdb", files[0]);
+    try std.testing.expectEqualStrings("bravo.pdb", files[1]);
+    try std.testing.expectEqualStrings("charlie.pdb", files[2]);
+}
+
+test "selection map LPT preserves JSONL results while processing a heavy file first" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root = root_buf[0..root_len];
+    const input_dir = try std.fs.path.join(allocator, &.{ root, "input" });
+    defer allocator.free(input_dir);
+    const output_path = try std.fs.path.join(allocator, &.{ root, "lpt.jsonl" });
+    defer allocator.free(output_path);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+
+    const pdb =
+        "ATOM      1  N   GLY A   1       0.000   0.000   0.000  1.00 20.00           N  \n" ++
+        "ATOM      2  N   ALA B   2       4.000   0.000   0.000  1.00 20.00           N  \n" ++
+        "END\n";
+    for ([_][]const u8{ "a-light.pdb", "z-heavy.pdb" }) |filename| {
+        const path = try std.fs.path.join(allocator, &.{ input_dir, filename });
+        defer allocator.free(path);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = pdb });
+    }
+
+    var map = try chain_map.parseCsv(
+        allocator,
+        "filename,id,chains\n" ++
+            "a-light.pdb,light,A\n" ++
+            "z-heavy.pdb,heavy-a,A\n" ++
+            "z-heavy.pdb,heavy-b,B\n" ++
+            "z-heavy.pdb,heavy-ab,\"A,B\"\n",
+    );
+    defer map.deinit();
+
+    const stats = try runSelectionMapBatch(allocator, std.testing.io, input_dir, .{
+        .n_threads = 1,
+        .n_points = 1,
+        .classifier_type = .naccess,
+        .output_format = .jsonl,
+        .store_atom_areas = true,
+        .quiet = true,
+    }, output_path, &map);
+
+    try std.testing.expectEqual(@as(usize, 4), stats.successful);
+    try std.testing.expectEqual(@as(usize, 0), stats.failed);
+    try std.testing.expectEqual(@as(usize, 2), stats.read_parse_count);
+    try std.testing.expectEqual(@as(usize, 2), stats.classifier_count);
+    try std.testing.expectEqual(@as(usize, 4), stats.calculation_count);
+
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(16384));
+    defer allocator.free(content);
+    const expected_ids = [_][]const u8{ "heavy-a", "heavy-b", "heavy-ab", "light" };
+    var row_index: usize = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer parsed.deinit();
+        const object = parsed.value.object;
+        try std.testing.expectEqualStrings("ok", object.get("status").?.string);
+        try std.testing.expectEqualStrings(expected_ids[row_index], object.get("id").?.string);
+        try std.testing.expect(object.get("total_area") != null);
+        try std.testing.expect(object.get("atom_areas") != null);
+        row_index += 1;
+    }
+    try std.testing.expectEqual(expected_ids.len, row_index);
 }
 
 test "selection map parses and classifies once, reuses chain sets, and emits joinable JSONL" {

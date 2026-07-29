@@ -13,6 +13,10 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 - **Parse-once SASA selection maps**: allow ordinary workflow chain maps to request multiple globally identified chain selections per structure, reuse one parsed/classified input and duplicate chain-set calculations, emit per-selection JSONL success/error rows, and optionally include stable source-indexed atom identity metadata.
 - **Multi-interface BSA workflows**: allow CSV and JSON interface maps to request multiple stable-ID interfaces per structure while reusing one parsed/classified input, emitting per-interface success/error JSONL rows, auditable residue SASA components, and opt-in atom-level detail. (#408)
 
+### Changed
+
+- **Selection-map tail scheduling**: claim ordinary multi-selection chain-map files in deterministic longest-processing-time-first order using selection count, while preserving generic batch, BSA, and legacy one-row map ordering.
+
 ### Fixed
 
 - **BSA workflow parallelism**: apply workflow thread counts to concurrent structure-file workers, keep partner and complex SASA calculations single-threaded in the multi-file path, and serialize concurrent JSONL rows safely.
