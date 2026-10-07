@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import shutil
 from pathlib import Path
 
 import pytest
@@ -76,6 +77,21 @@ class TestProcessDirectory:
         assert result.successful > 0
         output_files = list(tmp_path.iterdir())
         assert len(output_files) > 0
+
+    def test_process_directory_output_name_collision(self, tmp_path: Path) -> None:
+        """Inputs sharing a stem are rejected instead of overwriting each other."""
+        input_dir = tmp_path / "in"
+        output_dir = tmp_path / "out"
+        input_dir.mkdir()
+        shutil.copy(TEST_DATA_DIR / "1l2y.pdb", input_dir / "1l2y.pdb")
+        shutil.copy(TEST_DATA_DIR / "1l2y.pdb", input_dir / "1l2y.ent")
+
+        with pytest.raises(ValueError, match="same output file name"):
+            process_directory(input_dir, output_dir=output_dir)
+        assert not output_dir.exists()
+
+        result = process_directory(input_dir)
+        assert result.total_files == 2
 
     def test_process_directory_invalid_algorithm(self) -> None:
         """ValueError for an invalid algorithm string."""

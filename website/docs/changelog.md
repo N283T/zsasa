@@ -20,6 +20,7 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 ### Fixed
 
 - **BSA workflow parallelism**: apply workflow thread counts to concurrent structure-file workers, keep partner and complex SASA calculations single-threaded in the multi-file path, and serialize concurrent JSONL rows safely.
+- **Batch output name collisions**: reject directories whose inputs share an output stem (for example `1crn.pdb` and `1crn.cif.gz`) before processing, instead of reporting every file as successful while later results silently overwrite earlier ones. Applies to per-file output from `zsasa batch`, workflow jobs, and `process_directory(output_dir=...)`; JSONL output is unaffected. The C API reports the condition as `ZSASA_ERROR_OUTPUT_NAME_COLLISION`. (#415)
 
 ## [v0.9.1](https://github.com/N283T/zsasa/releases/tag/v0.9.1) — 2026-07-28
 

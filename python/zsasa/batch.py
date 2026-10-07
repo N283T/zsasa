@@ -14,6 +14,7 @@ from zsasa._ffi import (
     ZSASA_ERROR_FILE_IO,
     ZSASA_ERROR_INVALID_INPUT,
     ZSASA_ERROR_OUT_OF_MEMORY,
+    ZSASA_ERROR_OUTPUT_NAME_COLLISION,
     _get_lib,
 )
 from zsasa.classifier import ClassifierType
@@ -89,6 +90,8 @@ def process_directory(
     Args:
         input_dir: Path to directory containing structure files.
         output_dir: Optional path for per-file output. None = no file output.
+            Output files are named after the input stem, so inputs that share
+            a stem (``1crn.pdb`` and ``1crn.cif``) are rejected.
         algorithm: Algorithm to use: "sr" (Shrake-Rupley) or "lr" (Lee-Richards).
         n_points: Number of test points per atom (SR only; ignored for LR).
             Default: 100.
@@ -105,7 +108,8 @@ def process_directory(
         BatchDirResult with per-file details.
 
     Raises:
-        ValueError: If input parameters are invalid.
+        ValueError: If input parameters are invalid, or if ``output_dir`` is
+            set and several inputs map to the same output file name.
         FileNotFoundError: If the input directory does not exist.
         MemoryError: If out of memory.
         RuntimeError: For other processing errors.
@@ -177,6 +181,12 @@ def process_directory(
         elif ec == ZSASA_ERROR_FILE_IO:
             msg = f"Directory not found or not readable: {input_dir}"
             raise FileNotFoundError(msg)
+        elif ec == ZSASA_ERROR_OUTPUT_NAME_COLLISION:
+            msg = (
+                f"Several inputs in {input_dir} map to the same output file name "
+                "(same stem, different extension); split them into separate directories"
+            )
+            raise ValueError(msg)
         else:
             msg = f"Directory batch processing failed with error code: {ec}"
             raise RuntimeError(msg)

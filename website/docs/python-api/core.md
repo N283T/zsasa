@@ -170,7 +170,7 @@ Process all supported structure files (.pdb, .cif, .mmcif, .bcif, .ent, .json, .
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `input_dir` | `str \| Path` | required | Directory containing structure files |
-| `output_dir` | `str \| Path \| None` | `None` | Output directory for per-file results |
+| `output_dir` | `str \| Path \| None` | `None` | Output directory for per-file results, named after the input stem |
 | `algorithm` | `"sr"` or `"lr"` | `"sr"` | Shrake-Rupley or Lee-Richards |
 | `n_points` | `int` | `100` | Test points per atom (SR only) |
 | `n_slices` | `int` | `20` | Slices per atom (LR only) |
@@ -186,7 +186,7 @@ Process all supported structure files (.pdb, .cif, .mmcif, .bcif, .ent, .json, .
 
 | Exception | Cause |
 |-----------|-------|
-| `ValueError` | Invalid parameters (algorithm, probe_radius, n_points, etc.) |
+| `ValueError` | Invalid parameters (algorithm, probe_radius, n_points, etc.), or `output_dir` is set and several inputs share an output file name (`1crn.pdb` and `1crn.cif`) |
 | `FileNotFoundError` | Directory does not exist or is not readable |
 | `MemoryError` | Out of memory |
 | `RuntimeError` | Calculation or other processing error |

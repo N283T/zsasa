@@ -35,6 +35,8 @@ pub const ZSASA_ERROR_CALCULATION: c_int = -3;
 pub const ZSASA_ERROR_FILE_IO: c_int = -4;
 /// Unsupported n_points value for bitmask algorithm (must be 1..1024)
 pub const ZSASA_ERROR_UNSUPPORTED_N_POINTS: c_int = -5;
+/// Several inputs map to the same per-file output name in the output directory
+pub const ZSASA_ERROR_OUTPUT_NAME_COLLISION: c_int = -6;
 
 // =============================================================================
 // Algorithm Constants
@@ -2688,6 +2690,9 @@ const BatchDirHandle = struct {
 ///   Opaque handle on success, null on failure.
 ///   Partial success (some files fail) returns a valid handle -- check per-file status.
 ///   Empty directory returns a valid handle with total_files=0.
+///   When output_dir is set and several inputs would be written to the same
+///   output file (e.g. 1crn.pdb and 1crn.cif), nothing is processed and
+///   error_code is set to ZSASA_ERROR_OUTPUT_NAME_COLLISION.
 ///   Caller must call zsasa_batch_dir_free() to release resources.
 export fn zsasa_batch_dir_process(
     input_dir: ?[*:0]const u8,
@@ -2763,6 +2768,7 @@ export fn zsasa_batch_dir_process(
     var batch_result = batch.runBatch(c_allocator, batch_io, input_dir_slice, output_dir_slice, config, null) catch |err| {
         const code = switch (err) {
             error.OutOfMemory => ZSASA_ERROR_OUT_OF_MEMORY,
+            error.OutputNameCollision => ZSASA_ERROR_OUTPUT_NAME_COLLISION,
             else => ZSASA_ERROR_FILE_IO,
         };
         setError(error_code, code);
