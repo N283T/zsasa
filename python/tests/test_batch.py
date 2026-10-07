@@ -66,6 +66,32 @@ class TestCalculateSasaBatch:
         # Total areas should be reasonable
         assert np.all(result.total_areas > 0)
 
+    @pytest.mark.parametrize("precision", ["f64", "f32"])
+    @pytest.mark.parametrize(
+        "options",
+        [
+            {"algorithm": "sr"},
+            {"algorithm": "lr"},
+            {"algorithm": "sr", "use_bitmask": True, "n_points": 128},
+        ],
+    )
+    def test_far_apart_atoms_are_isolated_spheres(self, precision: str, options: dict) -> None:
+        """Atoms far apart must not make the neighbor grid grow with the box (#428)."""
+        coords = np.array(
+            [
+                [[0.0, 0.0, 0.0], [2000.0, 2000.0, 2000.0]],
+                [[0.0, 0.0, 0.0], [34359738352.0, 34359738352.0, 0.0]],
+                [[0.0, 0.0, 0.0], [9999.999, 9999.999, 9999.999]],
+            ],
+            dtype=np.float32,
+        )
+        radii = np.array([1.7, 1.7], dtype=np.float32)
+
+        result = calculate_sasa_batch(coords, radii, precision=precision, **options)
+
+        expected_area = 4 * np.pi * (1.7 + 1.4) ** 2
+        assert result.atom_areas == pytest.approx(np.full((3, 2), expected_area), rel=1e-5)
+
     def test_overlapping_atoms(self) -> None:
         """Test that overlapping atoms reduce SASA."""
         # Two atoms at same position
