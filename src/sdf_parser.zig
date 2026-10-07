@@ -282,7 +282,9 @@ fn parseV3000Body(
 
     if (!found_counts) return error.InvalidCountsLine;
 
-    // Parse ATOM block
+    // Parse ATOM block. COUNTS only sizes the lists: the atoms and bonds
+    // actually present must match it, so a body that disagrees with its
+    // header is an error instead of a write past the reserved capacity.
     var atom_list = std.ArrayListUnmanaged(SdfAtom).empty;
     errdefer atom_list.deinit(allocator);
     try atom_list.ensureTotalCapacity(allocator, atom_count);
@@ -291,6 +293,7 @@ fn parseV3000Body(
         const line = stripCr(raw_line);
         if (stripV30(line)) |payload| {
             if (std.mem.startsWith(u8, payload, "END ATOM")) break;
+            if (atom_list.items.len == atom_count) return error.InvalidV3000;
 
             // "index element x y z charge [...]"
             var tok = std.mem.tokenizeScalar(u8, payload, ' ');
@@ -309,6 +312,7 @@ fn parseV3000Body(
             atom_list.appendAssumeCapacity(.{ .x = x, .y = y, .z = z, .element = element });
         }
     }
+    if (atom_list.items.len != atom_count) return error.InvalidV3000;
 
     // Look for BEGIN BOND (there may be lines between END ATOM and BEGIN BOND)
     var bond_list = std.ArrayListUnmanaged(SdfBond).empty;
@@ -317,6 +321,7 @@ fn parseV3000Body(
 
     // We may have already consumed "BEGIN ATOM"... now scan for "BEGIN BOND"
     var in_bond_block = false;
+    var found_terminator = false;
     while (line_iter.next()) |raw_line| {
         const line = stripCr(raw_line);
         if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " "), "M  END")) {
@@ -325,14 +330,8 @@ fn parseV3000Body(
         }
         if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " "), "$$$$")) {
             // Terminator found before M  END
-            const atoms = try atom_list.toOwnedSlice(allocator);
-            errdefer allocator.free(atoms);
-            const bonds = try bond_list.toOwnedSlice(allocator);
-
-            return .{
-                .molecule = .{ .name = name, .atoms = atoms, .bonds = bonds },
-                .has_terminator = true,
-            };
+            found_terminator = true;
+            break;
         }
 
         if (stripV30(line)) |payload| {
@@ -349,6 +348,8 @@ fn parseV3000Body(
             }
 
             if (in_bond_block) {
+                if (bond_list.items.len == bond_count) return error.InvalidV3000;
+
                 // "index bondtype atom1 atom2 [...]"
                 var tok = std.mem.tokenizeScalar(u8, payload, ' ');
                 _ = tok.next() orelse return error.InvalidBondLine; // index (skip)
@@ -360,8 +361,9 @@ fn parseV3000Body(
                 const idx1_raw = std.fmt.parseInt(u16, a1_str, 10) catch return error.InvalidInteger;
                 const idx2_raw = std.fmt.parseInt(u16, a2_str, 10) catch return error.InvalidInteger;
 
-                if (idx1_raw == 0 or idx1_raw > atom_count) return error.BondIndexOutOfRange;
-                if (idx2_raw == 0 or idx2_raw > atom_count) return error.BondIndexOutOfRange;
+                // 1-based indices must refer to atoms that were read
+                if (idx1_raw == 0 or idx1_raw > atom_list.items.len) return error.BondIndexOutOfRange;
+                if (idx2_raw == 0 or idx2_raw > atom_list.items.len) return error.BondIndexOutOfRange;
 
                 bond_list.appendAssumeCapacity(.{
                     .atom_idx_1 = idx1_raw - 1,
@@ -371,15 +373,12 @@ fn parseV3000Body(
             }
         }
     }
+    if (bond_list.items.len != bond_count) return error.InvalidV3000;
 
     // Skip remaining lines until $$$$ or EOF
-    var found_terminator = false;
-    while (line_iter.next()) |rest_raw| {
-        const rest_line = stripCr(rest_raw);
-        if (std.mem.startsWith(u8, rest_line, "$$$$")) {
-            found_terminator = true;
-            break;
-        }
+    while (!found_terminator) {
+        const rest_line = stripCr(line_iter.next() orelse break);
+        if (std.mem.startsWith(u8, rest_line, "$$$$")) found_terminator = true;
     }
 
     const atoms = try atom_list.toOwnedSlice(allocator);
@@ -1314,6 +1313,197 @@ test "parse V3000 with bad bond index returns error" {
     ;
     const result = parse(allocator, source);
     try std.testing.expectError(error.BondIndexOutOfRange, result);
+}
+
+/// Builds a V3000 molecule whose COUNTS line declares `counts` ("atoms bonds")
+/// and whose body lists `atom_lines` atoms and `bond_lines` bonds; bond `i`
+/// joins atoms `i` and `i + 1`. The bond block is left out when `bond_lines`
+/// is 0.
+fn buildV3000(allocator: Allocator, counts: []const u8, atom_lines: usize, bond_lines: usize) ![]u8 {
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    errdefer aw.deinit();
+    const writer = &aw.writer;
+
+    try writer.writeAll("mol\n     zsasa   3D\n\n  0  0  0  0  0  0  0  0  0  0999 V3000\n");
+    try writer.print("M  V30 BEGIN CTAB\nM  V30 COUNTS {s} 0 0 0\nM  V30 BEGIN ATOM\n", .{counts});
+    for (0..atom_lines) |i| {
+        try writer.print("M  V30 {d} C {d}.5000 0.0000 0.0000 0\n", .{ i + 1, i });
+    }
+    try writer.writeAll("M  V30 END ATOM\n");
+    if (bond_lines > 0) {
+        try writer.writeAll("M  V30 BEGIN BOND\n");
+        for (0..bond_lines) |i| {
+            try writer.print("M  V30 {d} 1 {d} {d}\n", .{ i + 1, i + 1, i + 2 });
+        }
+        try writer.writeAll("M  V30 END BOND\n");
+    }
+    try writer.writeAll("M  V30 END CTAB\nM  END\n$$$$\n");
+
+    return aw.toOwnedSlice();
+}
+
+fn expectV3000Error(expected: SdfError, counts: []const u8, atom_lines: usize, bond_lines: usize) !void {
+    const allocator = std.testing.allocator;
+    const source = try buildV3000(allocator, counts, atom_lines, bond_lines);
+    defer allocator.free(source);
+    try std.testing.expectError(expected, parse(allocator, source));
+}
+
+test "parse V3000 rejects more atoms than COUNTS declares" {
+    // Each of these used to write past the capacity reserved from COUNTS.
+    try expectV3000Error(error.InvalidV3000, "0 0", 9, 8);
+    try expectV3000Error(error.InvalidV3000, "2 0", 9, 0);
+    try expectV3000Error(error.InvalidV3000, "8 8", 9, 8);
+    try expectV3000Error(error.InvalidV3000, "1 0", 5000, 0);
+}
+
+test "parse V3000 rejects more bonds than COUNTS declares" {
+    try expectV3000Error(error.InvalidV3000, "9 0", 9, 8);
+    try expectV3000Error(error.InvalidV3000, "9 7", 9, 8);
+    try expectV3000Error(error.InvalidV3000, "5000 1", 5000, 4999);
+}
+
+test "parse V3000 rejects fewer atoms or bonds than COUNTS declares" {
+    try expectV3000Error(error.InvalidV3000, "9 8", 8, 7);
+    try expectV3000Error(error.InvalidV3000, "9 8", 0, 0);
+    try expectV3000Error(error.InvalidV3000, "9 8", 9, 7);
+    try expectV3000Error(error.InvalidV3000, "9 8", 9, 0);
+}
+
+test "parse V3000 rejects a body cut off before the declared counts" {
+    const allocator = std.testing.allocator;
+    const source = try buildV3000(allocator, "9 8", 9, 8);
+    defer allocator.free(source);
+
+    // Input that ends inside the atom block, and inside the bond block
+    const in_atoms = std.mem.find(u8, source, "M  V30 5 C").?;
+    try std.testing.expectError(error.InvalidV3000, parse(allocator, source[0..in_atoms]));
+    const in_bonds = std.mem.find(u8, source, "M  V30 5 1").?;
+    try std.testing.expectError(error.InvalidV3000, parse(allocator, source[0..in_bonds]));
+}
+
+test "parse V3000 checks bond indices against the atoms that were read" {
+    // The second bond names atom 3, and the molecule has two atoms.
+    try expectV3000Error(error.BondIndexOutOfRange, "2 2", 2, 2);
+}
+
+test "parse V3000 keeps every atom and bond of a body that matches COUNTS" {
+    const allocator = std.testing.allocator;
+    const source = try buildV3000(allocator, "9 8", 9, 8);
+    defer allocator.free(source);
+
+    const molecules = try parse(allocator, source);
+    defer freeMolecules(allocator, molecules);
+
+    try std.testing.expectEqual(@as(usize, 1), molecules.len);
+    const mol = molecules[0];
+    try std.testing.expectEqualStrings("mol", mol.name);
+    try std.testing.expectEqual(@as(usize, 9), mol.atoms.len);
+    try std.testing.expectEqual(@as(usize, 8), mol.bonds.len);
+    for (mol.atoms, 0..) |atom, i| {
+        try std.testing.expectEqual(elem.Element.C, atom.element);
+        try std.testing.expectEqual(@as(f64, @floatFromInt(i)) + 0.5, atom.x);
+        try std.testing.expectEqual(@as(f64, 0.0), atom.y);
+        try std.testing.expectEqual(@as(f64, 0.0), atom.z);
+    }
+    for (mol.bonds, 0..) |bond, i| {
+        try std.testing.expectEqual(@as(u16, @intCast(i)), bond.atom_idx_1);
+        try std.testing.expectEqual(@as(u16, @intCast(i + 1)), bond.atom_idx_2);
+        try std.testing.expectEqual(hybridization.BondOrder.single, bond.order);
+    }
+}
+
+test "parse V3000 molecules without a bond block or M  END" {
+    const allocator = std.testing.allocator;
+    // The first molecule has no bond block and ends at $$$$ without M  END.
+    const source =
+        \\first
+        \\     zsasa   3D
+        \\
+        \\  0  0  0  0  0  0  0  0  0  0999 V3000
+        \\M  V30 BEGIN CTAB
+        \\M  V30 COUNTS 2 0 0 0 0
+        \\M  V30 BEGIN ATOM
+        \\M  V30 1 O 0.0000 0.0000 0.0000 0
+        \\M  V30 2 N 1.2000 0.0000 0.0000 0
+        \\M  V30 END ATOM
+        \\M  V30 END CTAB
+        \\$$$$
+        \\second
+        \\     zsasa   3D
+        \\
+        \\  0  0  0  0  0  0  0  0  0  0999 V3000
+        \\M  V30 BEGIN CTAB
+        \\M  V30 COUNTS 2 1 0 0 0
+        \\M  V30 BEGIN ATOM
+        \\M  V30 1 C 0.0000 0.0000 0.0000 0
+        \\M  V30 2 S 1.8000 0.0000 0.0000 0
+        \\M  V30 END ATOM
+        \\M  V30 BEGIN BOND
+        \\M  V30 1 2 1 2
+        \\M  V30 END BOND
+        \\M  V30 END CTAB
+        \\M  END
+        \\$$$$
+    ;
+    const molecules = try parse(allocator, source);
+    defer freeMolecules(allocator, molecules);
+
+    try std.testing.expectEqual(@as(usize, 2), molecules.len);
+
+    try std.testing.expectEqualStrings("first", molecules[0].name);
+    try std.testing.expectEqual(@as(usize, 2), molecules[0].atoms.len);
+    try std.testing.expectEqual(elem.Element.O, molecules[0].atoms[0].element);
+    try std.testing.expectEqual(elem.Element.N, molecules[0].atoms[1].element);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.2), molecules[0].atoms[1].x, 0.001);
+    try std.testing.expectEqual(@as(usize, 0), molecules[0].bonds.len);
+
+    try std.testing.expectEqualStrings("second", molecules[1].name);
+    try std.testing.expectEqual(@as(usize, 2), molecules[1].atoms.len);
+    try std.testing.expectEqual(elem.Element.S, molecules[1].atoms[1].element);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.8), molecules[1].atoms[1].x, 0.001);
+    try std.testing.expectEqual(@as(usize, 1), molecules[1].bonds.len);
+    try std.testing.expectEqual(@as(u16, 0), molecules[1].bonds[0].atom_idx_1);
+    try std.testing.expectEqual(@as(u16, 1), molecules[1].bonds[0].atom_idx_2);
+    try std.testing.expectEqual(hybridization.BondOrder.double, molecules[1].bonds[0].order);
+}
+
+test "parse V2000 stores exactly the atoms and bonds its counts line declares" {
+    const allocator = std.testing.allocator;
+    const header = "mol\n     zsasa   3D\n\n";
+    const atom_line = "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n";
+    const bond_line = "  1  2  1  0  0  0  0\n";
+    const end = "M  END\n$$$$\n";
+
+    // Fewer atom lines than declared: "M  END" is not an atom line
+    try std.testing.expectError(error.InvalidAtomLine, parse(
+        allocator,
+        header ++ "  3  0  0  0  0  0  0  0  0  0999 V2000\n" ++ atom_line ++ atom_line ++ end,
+    ));
+    // Input that ends before the declared atoms, or before the declared bonds
+    try std.testing.expectError(error.InvalidAtomLine, parse(
+        allocator,
+        header ++ "999  0  0  0  0  0  0  0  0  0999 V2000\n" ++ atom_line,
+    ));
+    try std.testing.expectError(error.InvalidBondLine, parse(
+        allocator,
+        header ++ "  2999  0  0  0  0  0  0  0  0999 V2000\n" ++ atom_line ++ atom_line ++ bond_line,
+    ));
+    // More atom lines than declared: the extra one is read as a bond line
+    try std.testing.expectError(error.InvalidInteger, parse(
+        allocator,
+        header ++ "  1  1  0  0  0  0  0  0  0  0999 V2000\n" ++ atom_line ++ atom_line ++ end,
+    ));
+
+    // With no bonds declared, lines past the counts are skipped, not stored
+    const molecules = try parse(
+        allocator,
+        header ++ "  1  0  0  0  0  0  0  0  0  0999 V2000\n" ++ atom_line ++ atom_line ++ bond_line ++ end,
+    );
+    defer freeMolecules(allocator, molecules);
+    try std.testing.expectEqual(@as(usize, 1), molecules.len);
+    try std.testing.expectEqual(@as(usize, 1), molecules[0].atoms.len);
+    try std.testing.expectEqual(@as(usize, 0), molecules[0].bonds.len);
 }
 
 test "sdfBondOrder maps all types correctly" {

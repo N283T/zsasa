@@ -41,6 +41,14 @@ const MsgValue = union(enum) {
 
 const MsgPair = struct { key: MsgValue, value: MsgValue };
 
+/// Deepest nesting of arrays and maps the reader accepts. A BinaryCIF file
+/// nests 12 deep at most: file, dataBlocks, block, categories, category,
+/// columns, column, data, encoding list, StringArray encoding, its
+/// dataEncoding or offsetEncoding list, and the encodings in that list.
+/// The reader, `freeMsgValue` and the encoding parser recurse once per level,
+/// so input without a limit could exhaust the stack.
+const max_msgpack_depth = 32;
+
 const MsgReader = struct {
     allocator: Allocator,
     data: []const u8,
@@ -51,11 +59,16 @@ const MsgReader = struct {
     }
 
     fn readValue(self: *MsgReader) MsgError!MsgValue {
+        return self.readValueAtDepth(0);
+    }
+
+    /// `depth` is the number of arrays and maps that enclose the value.
+    fn readValueAtDepth(self: *MsgReader, depth: usize) MsgError!MsgValue {
         const marker = try self.readByte();
 
         if (marker <= 0x7f) return .{ .uint = marker };
-        if (marker >= 0x80 and marker <= 0x8f) return self.readMap(marker & 0x0f);
-        if (marker >= 0x90 and marker <= 0x9f) return self.readArray(marker & 0x0f);
+        if (marker >= 0x80 and marker <= 0x8f) return self.readMap(marker & 0x0f, depth);
+        if (marker >= 0x90 and marker <= 0x9f) return self.readArray(marker & 0x0f, depth);
         if (marker >= 0xa0 and marker <= 0xbf) return .{ .str = try self.readBytes(marker & 0x1f) };
         if (marker >= 0xe0) return .{ .int = @as(i8, @bitCast(marker)) };
 
@@ -79,15 +92,17 @@ const MsgReader = struct {
             0xd9 => .{ .str = try self.readBytes(try self.readU8()) },
             0xda => .{ .str = try self.readBytes(try self.readU16()) },
             0xdb => .{ .str = try self.readBytes(try self.readU32AsUsize()) },
-            0xdc => self.readArray(try self.readU16()),
-            0xdd => self.readArray(try self.readU32AsUsize()),
-            0xde => self.readMap(try self.readU16()),
-            0xdf => self.readMap(try self.readU32AsUsize()),
+            0xdc => self.readArray(try self.readU16(), depth),
+            0xdd => self.readArray(try self.readU32AsUsize(), depth),
+            0xde => self.readMap(try self.readU16(), depth),
+            0xdf => self.readMap(try self.readU32AsUsize(), depth),
             else => ParseError.UnsupportedMessagePackType,
         };
     }
 
-    fn readArray(self: *MsgReader, len: usize) MsgError!MsgValue {
+    /// `depth` is the number of arrays and maps that enclose this array.
+    fn readArray(self: *MsgReader, len: usize, depth: usize) MsgError!MsgValue {
+        if (depth >= max_msgpack_depth) return ParseError.InvalidMessagePack;
         const items = try self.allocator.alloc(MsgValue, len);
         var initialized: usize = 0;
         errdefer {
@@ -96,13 +111,15 @@ const MsgReader = struct {
         }
 
         while (initialized < len) : (initialized += 1) {
-            items[initialized] = try self.readValue();
+            items[initialized] = try self.readValueAtDepth(depth + 1);
         }
 
         return .{ .array = items };
     }
 
-    fn readMap(self: *MsgReader, len: usize) MsgError!MsgValue {
+    /// `depth` is the number of arrays and maps that enclose this map.
+    fn readMap(self: *MsgReader, len: usize, depth: usize) MsgError!MsgValue {
+        if (depth >= max_msgpack_depth) return ParseError.InvalidMessagePack;
         const pairs = try self.allocator.alloc(MsgPair, len);
         var initialized: usize = 0;
         errdefer {
@@ -114,8 +131,8 @@ const MsgReader = struct {
         }
 
         while (initialized < len) : (initialized += 1) {
-            const key = try self.readValue();
-            const value = self.readValue() catch |err| {
+            const key = try self.readValueAtDepth(depth + 1);
+            const value = self.readValueAtDepth(depth + 1) catch |err| {
                 freeMsgValue(self.allocator, key);
                 return err;
             };
@@ -261,16 +278,81 @@ const Encoding = union(enum) {
 
 const PackingSentinel = struct { positive: i64, negative: i64 };
 
-fn decodeColumn(allocator: Allocator, data: []const u8, encodings: []const Encoding) DecodeError!DecodedColumn {
-    return decodeColumnWithNullHints(allocator, data, encodings, null);
+/// What is known about the length of a decoded array before it is decoded.
+const LengthBound = union(enum) {
+    /// The array has exactly this many values.
+    exact: usize,
+    /// The array has at most this many values.
+    at_most: usize,
+
+    fn allows(self: LengthBound, len: usize) bool {
+        return switch (self) {
+            .exact => |expected| len == expected,
+            .at_most => |limit| len <= limit,
+        };
+    }
+};
+
+/// Checks the lengths that an encoding chain declares (`srcSize`) against
+/// `bound`, the bound on the fully decoded array, without decoding anything.
+/// A length that cannot be right is rejected here, before a decoder allocates
+/// memory for it.
+///
+/// `encodings` is in encoding order: `encodings[0]` produces the final values
+/// and every later entry produces the input of the entry before it. Returns
+/// the bound on the output of the last entry, which is decoded first, or null
+/// when only the size of the data bounds it.
+fn checkDeclaredLengths(encodings: []const Encoding, bound: LengthBound) ParseError!?LengthBound {
+    // Bound on the output of the entry being visited.
+    var current: ?LengthBound = bound;
+    for (encodings, 0..) |encoding, i| {
+        switch (encoding) {
+            // One output value per input value.
+            .delta, .fixed_point, .interval_quantization => {},
+            // RunLength is the one encoding whose output can be longer than
+            // its input, so its declared length has to follow from `bound`.
+            // Below IntegerPacking nothing bounds it. No writer puts it
+            // there: IntegerPacking packs into an 8 or 16 bit array, which
+            // only ByteArray takes.
+            .run_length => |params| {
+                const limit = current orelse return ParseError.UnsupportedEncoding;
+                if (!limit.allows(params.src_size)) return ParseError.ColumnLengthMismatch;
+                // The input is [value, count] pairs, and a run that a writer
+                // emits holds at least one value.
+                current = .{ .at_most = params.src_size *| 2 };
+            },
+            .integer_packing => |params| {
+                if (current) |limit| {
+                    if (!limit.allows(params.src_size)) return ParseError.ColumnLengthMismatch;
+                }
+                // One value can be split over any number of packed values, so
+                // the input is bounded only by the data it is decoded from.
+                current = null;
+            },
+            // These decode the column data itself and must come last.
+            .byte_array, .string_array => if (i + 1 != encodings.len) return ParseError.UnsupportedEncoding,
+        }
+    }
+    return current;
 }
 
+fn decodeColumn(allocator: Allocator, data: []const u8, encodings: []const Encoding, bound: LengthBound) DecodeError!DecodedColumn {
+    return decodeColumnWithNullHints(allocator, data, encodings, null, bound);
+}
+
+/// Decodes `data` through `encodings`. `bound` is what the caller knows about
+/// the decoded length; lengths the encodings declare are checked against it
+/// before decoding (see `checkDeclaredLengths`). The length of the result is
+/// not checked.
 fn decodeColumnWithNullHints(
     allocator: Allocator,
     data: []const u8,
     encodings: []const Encoding,
     null_hints: ?[]const NullKind,
+    bound: LengthBound,
 ) DecodeError!DecodedColumn {
+    const initial_bound = try checkDeclaredLengths(encodings, bound);
+
     var column = DecodedColumn{ .values = &.{} };
     var initialized = false;
     errdefer if (initialized) column.deinit(allocator);
@@ -279,7 +361,7 @@ fn decodeColumnWithNullHints(
     while (i > 0) {
         i -= 1;
         if (!initialized) {
-            column = try decodeInitialEncoding(allocator, data, encodings[i], null_hints);
+            column = try decodeInitialEncoding(allocator, data, encodings[i], null_hints, initial_bound);
             initialized = true;
         } else {
             initialized = false;
@@ -302,8 +384,9 @@ fn decodeColumnWithMask(
     encodings: []const Encoding,
     mask_data: []const u8,
     mask_encodings: []const Encoding,
+    bound: LengthBound,
 ) DecodeError!DecodedColumn {
-    var mask = try decodeColumn(allocator, mask_data, mask_encodings);
+    var mask = try decodeColumn(allocator, mask_data, mask_encodings, bound);
     defer mask.deinit(allocator);
 
     const nulls = try allocator.alloc(NullKind, mask.values.len);
@@ -318,7 +401,7 @@ fn decodeColumnWithMask(
         };
     }
 
-    var column = try decodeColumnWithNullHints(allocator, data, encodings, nulls);
+    var column = try decodeColumnWithNullHints(allocator, data, encodings, nulls, bound);
     errdefer column.deinit(allocator);
     if (mask.values.len != column.values.len) return ParseError.ColumnLengthMismatch;
 
@@ -326,10 +409,19 @@ fn decodeColumnWithMask(
     return column;
 }
 
-fn decodeInitialEncoding(allocator: Allocator, data: []const u8, encoding: Encoding, null_hints: ?[]const NullKind) DecodeError!DecodedColumn {
+/// `bound` is the bound on the output of `encoding`, or null when there is none.
+fn decodeInitialEncoding(
+    allocator: Allocator,
+    data: []const u8,
+    encoding: Encoding,
+    null_hints: ?[]const NullKind,
+    bound: ?LengthBound,
+) DecodeError!DecodedColumn {
     return switch (encoding) {
         .byte_array => |params| decodeByteArray(allocator, data, params.type_code),
-        .string_array => |params| decodeStringArray(allocator, data, params, null_hints),
+        // The indices of a string array go through an encoding chain of
+        // their own, which needs a bound like any other.
+        .string_array => |params| decodeStringArray(allocator, data, params, null_hints, bound orelse return ParseError.UnsupportedEncoding),
         else => ParseError.UnsupportedEncoding,
     };
 }
@@ -389,6 +481,8 @@ fn decodeIntegerPacking(allocator: Allocator, column: DecodedColumn, byte_count:
     }
 
     const sentinel = packingSentinel(byte_count, is_unsigned) orelse return ParseError.UnsupportedEncoding;
+    // Every decoded value takes at least one packed value.
+    if (src_size > column.values.len) return ParseError.InvalidColumnData;
     var out = try std.ArrayListUnmanaged(Scalar).initCapacity(allocator, src_size);
     errdefer out.deinit(allocator);
 
@@ -433,6 +527,8 @@ fn packingSentinel(byte_count: u8, is_unsigned: bool) ?PackingSentinel {
     };
 }
 
+/// Expands [value, count] pairs to `src_size` values. `src_size` comes from
+/// the file, and the caller must have checked it (see `checkDeclaredLengths`).
 fn decodeRunLength(allocator: Allocator, column: DecodedColumn, src_size: usize) DecodeError!DecodedColumn {
     defer {
         var old = column;
@@ -504,10 +600,22 @@ fn decodeIntervalQuantization(allocator: Allocator, column: DecodedColumn, min: 
     return .{ .values = values };
 }
 
-fn decodeStringArray(allocator: Allocator, data: []const u8, params: @FieldType(Encoding, "string_array"), null_hints: ?[]const NullKind) DecodeError!DecodedColumn {
-    var indices = try decodeColumn(allocator, data, params.data_encoding);
+/// `bound` is the bound on the number of strings decoded, one per row.
+fn decodeStringArray(
+    allocator: Allocator,
+    data: []const u8,
+    params: @FieldType(Encoding, "string_array"),
+    null_hints: ?[]const NullKind,
+    bound: LengthBound,
+) DecodeError!DecodedColumn {
+    var indices = try decodeColumn(allocator, data, params.data_encoding, bound);
     defer indices.deinit(allocator);
-    var offsets = try decodeColumn(allocator, params.offset_data, params.offset_encoding);
+    // There is one more offset than there are strings. Each row refers to at
+    // most one string, and the strings that no row refers to are distinct in
+    // what a writer emits, so all but one of them take at least one byte of
+    // `stringData`.
+    const max_offsets = indices.values.len +| params.string_data.len +| 2;
+    var offsets = try decodeColumn(allocator, params.offset_data, params.offset_encoding, .{ .at_most = max_offsets });
     defer offsets.deinit(allocator);
     if (offsets.values.len == 0) return ParseError.InvalidColumnData;
 
@@ -705,29 +813,8 @@ pub const BcifParser = struct {
             return ParseError.MissingCoordinateField;
         }
 
-        var decoded = try self.allocator.alloc(DecodedColumn, raw_columns.len);
-        var decoded_count: usize = 0;
-        var decoded_errdefer_active = true;
-        errdefer if (decoded_errdefer_active) {
-            for (decoded[0..decoded_count]) |*column| column.deinit(self.allocator);
-            self.allocator.free(decoded);
-        };
-        for (raw_columns) |column| {
-            decoded[decoded_count] = decodeBcifColumn(self.allocator, column) catch |err| {
-                self.deinitCcd();
-                return err;
-            };
-            decoded_count += 1;
-            if (decoded[decoded_count - 1].values.len != row_count) {
-                self.deinitCcd();
-                return ParseError.ColumnLengthMismatch;
-            }
-        }
-        decoded_errdefer_active = false;
-        defer {
-            for (decoded[0..decoded_count]) |*column| column.deinit(self.allocator);
-            self.allocator.free(decoded);
-        }
+        const decoded = try decodeMappedColumns(self.allocator, raw_columns, columns, row_count);
+        defer freeDecodedColumns(self.allocator, decoded);
 
         var x_list = std.ArrayListUnmanaged(f64).empty;
         defer x_list.deinit(self.allocator);
@@ -1203,7 +1290,47 @@ fn columnMask(column: MsgValue) ?MsgValue {
     };
 }
 
-fn decodeBcifColumn(allocator: Allocator, column: MsgValue) !DecodedColumn {
+/// Decodes the columns of a category that `columns` maps and checks that each
+/// has `row_count` values. `columns` is a struct of optional indices into
+/// `raw_columns`, such as `AtomSiteColumns`. The result is indexed like
+/// `raw_columns`; the entry of a column that is not mapped stays empty and
+/// its data is not decoded. Free the result with `freeDecodedColumns`.
+fn decodeMappedColumns(
+    allocator: Allocator,
+    raw_columns: []const MsgValue,
+    columns: anytype,
+    row_count: usize,
+) ![]DecodedColumn {
+    const decoded = try allocator.alloc(DecodedColumn, raw_columns.len);
+    for (decoded) |*column| column.* = .{ .values = &.{} };
+    errdefer freeDecodedColumns(allocator, decoded);
+
+    for (raw_columns, decoded, 0..) |raw_column, *column, idx| {
+        if (!isMappedColumn(columns, idx)) continue;
+        column.* = try decodeBcifColumn(allocator, raw_column, row_count);
+        if (column.values.len != row_count) return ParseError.ColumnLengthMismatch;
+    }
+    return decoded;
+}
+
+fn freeDecodedColumns(allocator: Allocator, decoded: []DecodedColumn) void {
+    for (decoded) |*column| column.deinit(allocator);
+    allocator.free(decoded);
+}
+
+/// True when a field of `columns`, a struct of optional column indices, is `idx`.
+fn isMappedColumn(columns: anytype, idx: usize) bool {
+    inline for (std.meta.fields(@TypeOf(columns))) |field| {
+        if (@field(columns, field.name) == idx) return true;
+    }
+    return false;
+}
+
+/// Decodes one column of a category with `row_count` rows. Lengths that the
+/// column's encodings declare are checked against `row_count` before
+/// decoding; the caller checks the length of the result.
+fn decodeBcifColumn(allocator: Allocator, column: MsgValue, row_count: usize) !DecodedColumn {
+    const bound = LengthBound{ .exact = row_count };
     const data_obj = try columnData(column);
     const data_map = switch (data_obj) {
         .map => |map| map,
@@ -1221,10 +1348,10 @@ fn decodeBcifColumn(allocator: Allocator, column: MsgValue) !DecodedColumn {
         const mask_data = try msgBytes(getMapValue(mask_map, "data") orelse return ParseError.InvalidColumnData);
         const mask_encodings = try parseEncodingList(allocator, getMapValue(mask_map, "encoding") orelse return ParseError.InvalidColumnData);
         defer freeEncodingList(allocator, mask_encodings);
-        return decodeColumnWithMask(allocator, data, encodings, mask_data, mask_encodings);
+        return decodeColumnWithMask(allocator, data, encodings, mask_data, mask_encodings, bound);
     }
 
-    return decodeColumn(allocator, data, encodings);
+    return decodeColumn(allocator, data, encodings, bound);
 }
 
 fn parseInlineCcd(allocator: Allocator, root: MsgValue) !ccd_parser.ComponentDict {
@@ -1306,17 +1433,8 @@ fn parseInlineCcdAtoms(
     }
     if (!cols.hasRequiredFields()) return;
 
-    var decoded = try allocator.alloc(DecodedColumn, raw_columns.len);
-    var decoded_count: usize = 0;
-    defer {
-        for (decoded[0..decoded_count]) |*column| column.deinit(allocator);
-        allocator.free(decoded);
-    }
-    for (raw_columns) |column| {
-        decoded[decoded_count] = try decodeBcifColumn(allocator, column);
-        decoded_count += 1;
-        if (decoded[decoded_count - 1].values.len != row_count) return ParseError.ColumnLengthMismatch;
-    }
+    const decoded = try decodeMappedColumns(allocator, raw_columns, cols, row_count);
+    defer freeDecodedColumns(allocator, decoded);
 
     var row: usize = 0;
     while (row < row_count) : (row += 1) {
@@ -1354,17 +1472,8 @@ fn parseInlineCcdBonds(
     }
     if (!cols.hasRequiredFields()) return;
 
-    var decoded = try allocator.alloc(DecodedColumn, raw_columns.len);
-    var decoded_count: usize = 0;
-    defer {
-        for (decoded[0..decoded_count]) |*column| column.deinit(allocator);
-        allocator.free(decoded);
-    }
-    for (raw_columns) |column| {
-        decoded[decoded_count] = try decodeBcifColumn(allocator, column);
-        decoded_count += 1;
-        if (decoded[decoded_count - 1].values.len != row_count) return ParseError.ColumnLengthMismatch;
-    }
+    const decoded = try decodeMappedColumns(allocator, raw_columns, cols, row_count);
+    defer freeDecodedColumns(allocator, decoded);
 
     var row: usize = 0;
     while (row < row_count) : (row += 1) {
@@ -2098,8 +2207,15 @@ fn packStr(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), value: []co
 }
 
 fn packBin(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), value: []const u8) !void {
-    try bytes.append(allocator, 0xc4);
-    try bytes.append(allocator, @intCast(value.len));
+    if (value.len <= 255) {
+        try bytes.append(allocator, 0xc4);
+        try bytes.append(allocator, @intCast(value.len));
+    } else {
+        try bytes.append(allocator, 0xc5);
+        var buf: [2]u8 = undefined;
+        std.mem.writeInt(u16, &buf, @intCast(value.len), .big);
+        try bytes.appendSlice(allocator, &buf);
+    }
     try bytes.appendSlice(allocator, value);
 }
 
@@ -2111,6 +2227,348 @@ fn packInt(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), value: i64)
         var buf: [4]u8 = undefined;
         std.mem.writeInt(i32, &buf, @intCast(value), .big);
         try bytes.appendSlice(allocator, &buf);
+    }
+}
+
+/// Encoded bytes and the encodings that decode them, so that a test can write
+/// any encoding chain, including chains that no writer produces.
+const TestEncodedData = struct {
+    data: []const u8,
+    encodings: []const Encoding,
+};
+
+const TestEncodedColumn = struct {
+    name: []const u8,
+    values: TestEncodedData,
+    mask: ?TestEncodedData = null,
+};
+
+/// Builds a file whose only category is an `_atom_site` that declares
+/// `row_count` rows and holds `columns`.
+fn buildEncodedBcif(row_count: usize, columns: []const TestEncodedColumn) ![]u8 {
+    const allocator = std.testing.allocator;
+    var bytes = std.ArrayListUnmanaged(u8).empty;
+    errdefer bytes.deinit(allocator);
+
+    try packAtomSiteFileHeader(allocator, &bytes, row_count);
+    try packArrayHeader(allocator, &bytes, columns.len);
+    for (columns) |column| {
+        try packColumnHeaderWithFieldCount(allocator, &bytes, column.name, if (column.mask == null) 2 else 3);
+        try packEncodedData(allocator, &bytes, column.values);
+        if (column.mask) |mask| {
+            try packStr(allocator, &bytes, "mask");
+            try packEncodedData(allocator, &bytes, mask);
+        }
+    }
+
+    return bytes.toOwnedSlice(allocator);
+}
+
+fn packEncodedData(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), encoded: TestEncodedData) !void {
+    try packEncodedDataMapHeader(allocator, bytes);
+    try packBin(allocator, bytes, encoded.data);
+    try packStr(allocator, bytes, "encoding");
+    try packEncodingList(allocator, bytes, encoded.encodings);
+}
+
+fn packEncodingList(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), encodings: []const Encoding) Allocator.Error!void {
+    try packArrayHeader(allocator, bytes, encodings.len);
+    for (encodings) |encoding| {
+        switch (encoding) {
+            .byte_array => |params| try packByteArrayEncoding(allocator, bytes, params.type_code),
+            .integer_packing => |params| {
+                try packMapHeader(allocator, bytes, 4);
+                try packStr(allocator, bytes, "kind");
+                try packStr(allocator, bytes, "IntegerPacking");
+                try packStr(allocator, bytes, "byteCount");
+                try packInt(allocator, bytes, params.byte_count);
+                try packStr(allocator, bytes, "isUnsigned");
+                try bytes.append(allocator, if (params.is_unsigned) 0xc3 else 0xc2);
+                try packStr(allocator, bytes, "srcSize");
+                try packInt(allocator, bytes, @intCast(params.src_size));
+            },
+            .run_length => |params| {
+                try packMapHeader(allocator, bytes, 2);
+                try packStr(allocator, bytes, "kind");
+                try packStr(allocator, bytes, "RunLength");
+                try packStr(allocator, bytes, "srcSize");
+                try packInt(allocator, bytes, @intCast(params.src_size));
+            },
+            .delta => |params| {
+                try packMapHeader(allocator, bytes, 2);
+                try packStr(allocator, bytes, "kind");
+                try packStr(allocator, bytes, "Delta");
+                try packStr(allocator, bytes, "origin");
+                try packInt(allocator, bytes, params.origin);
+            },
+            .fixed_point => |params| {
+                try packMapHeader(allocator, bytes, 2);
+                try packStr(allocator, bytes, "kind");
+                try packStr(allocator, bytes, "FixedPoint");
+                try packStr(allocator, bytes, "factor");
+                try packFloat(allocator, bytes, params.factor);
+            },
+            .interval_quantization => |params| {
+                try packMapHeader(allocator, bytes, 4);
+                try packStr(allocator, bytes, "kind");
+                try packStr(allocator, bytes, "IntervalQuantization");
+                try packStr(allocator, bytes, "min");
+                try packFloat(allocator, bytes, params.min);
+                try packStr(allocator, bytes, "max");
+                try packFloat(allocator, bytes, params.max);
+                try packStr(allocator, bytes, "numSteps");
+                try packInt(allocator, bytes, params.num_steps);
+            },
+            .string_array => |params| {
+                try packMapHeader(allocator, bytes, 5);
+                try packStr(allocator, bytes, "kind");
+                try packStr(allocator, bytes, "StringArray");
+                try packStr(allocator, bytes, "stringData");
+                try packStr(allocator, bytes, params.string_data);
+                try packStr(allocator, bytes, "offsets");
+                try packBin(allocator, bytes, params.offset_data);
+                try packStr(allocator, bytes, "offsetEncoding");
+                try packEncodingList(allocator, bytes, params.offset_encoding);
+                try packStr(allocator, bytes, "dataEncoding");
+                try packEncodingList(allocator, bytes, params.data_encoding);
+            },
+        }
+    }
+}
+
+fn packFloat(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), value: f64) !void {
+    try bytes.append(allocator, 0xcb);
+    var buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &buf, @bitCast(value), .big);
+    try bytes.appendSlice(allocator, &buf);
+}
+
+/// Little-endian Int32 bytes of `values`, for ByteArray type 3.
+fn int32Bytes(comptime values: []const i32) [values.len * 4]u8 {
+    var bytes: [values.len * 4]u8 = undefined;
+    for (values, 0..) |value, i| std.mem.writeInt(i32, bytes[i * 4 ..][0..4], value, .little);
+    return bytes;
+}
+
+/// Encodes `values` with the chain that BinaryCIF writers use for integer
+/// columns: Delta (when `use_delta`), RunLength, then IntegerPacking into
+/// signed bytes. The result is allocated from `arena`.
+fn encodeTestInts(arena: Allocator, values: []const i32, use_delta: bool) !TestEncodedData {
+    // RunLength [value, count] pairs
+    var pairs = std.ArrayListUnmanaged(i32).empty;
+    var previous: i32 = 0;
+    for (values) |value| {
+        const item = if (use_delta) value - previous else value;
+        previous = value;
+        if (pairs.items.len > 0 and pairs.items[pairs.items.len - 2] == item) {
+            pairs.items[pairs.items.len - 1] += 1;
+        } else {
+            try pairs.appendSlice(arena, &.{ item, 1 });
+        }
+    }
+
+    // A value outside the Int8 range is split into parts that sum to it
+    var data = std.ArrayListUnmanaged(u8).empty;
+    for (pairs.items) |pair_item| {
+        var rest = pair_item;
+        while (rest >= 127) : (rest -= 127) try data.append(arena, 0x7f);
+        while (rest <= -128) : (rest += 128) try data.append(arena, 0x80);
+        try data.append(arena, @bitCast(@as(i8, @intCast(rest))));
+    }
+
+    var encodings = std.ArrayListUnmanaged(Encoding).empty;
+    if (use_delta) try encodings.append(arena, .{ .delta = .{ .origin = 0 } });
+    try encodings.appendSlice(arena, &.{
+        .{ .run_length = .{ .src_size = values.len } },
+        .{ .integer_packing = .{ .byte_count = 1, .is_unsigned = false, .src_size = pairs.items.len } },
+        .{ .byte_array = .{ .type_code = 1 } },
+    });
+    return .{ .data = data.items, .encodings = encodings.items };
+}
+
+/// Encodes `values` as a StringArray of the distinct strings, with the
+/// indices and the offsets encoded by `encodeTestInts`.
+fn encodeTestStrings(arena: Allocator, values: []const []const u8) !TestEncodedData {
+    var strings = std.ArrayListUnmanaged([]const u8).empty;
+    var string_data = std.ArrayListUnmanaged(u8).empty;
+    var offsets = std.ArrayListUnmanaged(i32).empty;
+    var indices = std.ArrayListUnmanaged(i32).empty;
+
+    try offsets.append(arena, 0);
+    for (values) |value| {
+        const index = for (strings.items, 0..) |known, i| {
+            if (std.mem.eql(u8, known, value)) break i;
+        } else new: {
+            try strings.append(arena, value);
+            try string_data.appendSlice(arena, value);
+            try offsets.append(arena, @intCast(string_data.items.len));
+            break :new strings.items.len - 1;
+        };
+        try indices.append(arena, @intCast(index));
+    }
+
+    const encoded_indices = try encodeTestInts(arena, indices.items, false);
+    const encoded_offsets = try encodeTestInts(arena, offsets.items, true);
+    const encodings = try arena.alloc(Encoding, 1);
+    encodings[0] = .{ .string_array = .{
+        .string_data = string_data.items,
+        .offset_data = encoded_offsets.data,
+        .offset_encoding = encoded_offsets.encodings,
+        .data_encoding = encoded_indices.encodings,
+    } };
+    return .{ .data = encoded_indices.data, .encodings = encodings };
+}
+
+fn runLengthStringColumn(arena: Allocator, name: []const u8, rows: []const TestAtomRow, comptime get: fn (TestAtomRow) []const u8) !TestEncodedColumn {
+    const values = try arena.alloc([]const u8, rows.len);
+    for (rows, values) |row, *value| value.* = get(row);
+    return .{ .name = name, .values = try encodeTestStrings(arena, values) };
+}
+
+/// Null values are stored as 0 and flagged 1 ('.') in a mask, which is
+/// written only when a value is null.
+fn runLengthIntColumn(arena: Allocator, name: []const u8, rows: []const TestAtomRow, comptime get: fn (TestAtomRow) ?i32) !TestEncodedColumn {
+    const values = try arena.alloc(i32, rows.len);
+    const mask = try arena.alloc(i32, rows.len);
+    var has_null = false;
+    for (rows, values, mask) |row, *value, *flag| {
+        const maybe_value = get(row);
+        value.* = maybe_value orelse 0;
+        flag.* = if (maybe_value == null) 1 else 0;
+        has_null = has_null or maybe_value == null;
+    }
+    return .{
+        .name = name,
+        .values = try encodeTestInts(arena, values, true),
+        .mask = if (has_null) try encodeTestInts(arena, mask, false) else null,
+    };
+}
+
+/// Coordinates are stored as FixedPoint integers with three decimals.
+fn runLengthFloatColumn(arena: Allocator, name: []const u8, rows: []const TestAtomRow, comptime get: fn (TestAtomRow) f32) !TestEncodedColumn {
+    const values = try arena.alloc(i32, rows.len);
+    for (rows, values) |row, *value| value.* = @intFromFloat(@round(@as(f64, get(row)) * 1000.0));
+    const encoded = try encodeTestInts(arena, values, true);
+
+    const encodings = try arena.alloc(Encoding, encoded.encodings.len + 1);
+    encodings[0] = .{ .fixed_point = .{ .factor = 1000.0 } };
+    @memcpy(encodings[1..], encoded.encodings);
+    return .{ .name = name, .values = .{ .data = encoded.data, .encodings = encodings } };
+}
+
+/// The columns of `buildSeqIdBcif`, encoded the way writers encode real
+/// files: RunLength and IntegerPacking for integer columns, masks, string
+/// indices and string offsets, with FixedPoint and Delta for coordinates.
+/// The result is allocated from `arena`.
+fn runLengthAtomSiteColumns(arena: Allocator, rows: []const TestAtomRow) ![]TestEncodedColumn {
+    const modelValue = struct {
+        fn get(row: TestAtomRow) ?i32 {
+            return row.model;
+        }
+    }.get;
+
+    return arena.dupe(TestEncodedColumn, &.{
+        try runLengthStringColumn(arena, "group_PDB", rows, TestAtomRow.groupValue),
+        try runLengthStringColumn(arena, "type_symbol", rows, TestAtomRow.elementValue),
+        try runLengthStringColumn(arena, "label_atom_id", rows, TestAtomRow.atomValue),
+        try runLengthStringColumn(arena, "label_comp_id", rows, TestAtomRow.residueValue),
+        try runLengthStringColumn(arena, "label_asym_id", rows, TestAtomRow.chainValue),
+        try runLengthIntColumn(arena, "label_seq_id", rows, TestAtomRow.labelSeqValue),
+        try runLengthIntColumn(arena, "auth_seq_id", rows, TestAtomRow.authSeqValue),
+        try runLengthStringColumn(arena, "pdbx_PDB_ins_code", rows, TestAtomRow.insCodeValue),
+        try runLengthStringColumn(arena, "label_alt_id", rows, TestAtomRow.altValue),
+        try runLengthIntColumn(arena, "pdbx_PDB_model_num", rows, modelValue),
+        try runLengthFloatColumn(arena, "Cartn_x", rows, TestAtomRow.xValue),
+        try runLengthFloatColumn(arena, "Cartn_y", rows, TestAtomRow.yValue),
+        try runLengthFloatColumn(arena, "Cartn_z", rows, TestAtomRow.zValue),
+        try runLengthStringColumn(arena, "auth_asym_id", rows, TestAtomRow.authChainValue),
+    });
+}
+
+/// Rows with runs of equal values in every column, a null label_seq_id on
+/// the waters, and coordinates that three decimals store exactly.
+const run_length_test_rows = [_]TestAtomRow{
+    .{ .group = "ATOM", .element = "N", .atom = "N", .residue = "ALA", .chain = "A", .seq = 1, .auth_seq = 11, .x = 10.0, .y = 20.0, .z = 30.0 },
+    .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "A", .seq = 1, .auth_seq = 11, .x = 11.5, .y = 20.0, .z = 30.25 },
+    .{ .group = "ATOM", .element = "C", .atom = "C", .residue = "ALA", .chain = "A", .seq = 1, .auth_seq = 11, .x = 12.125, .y = 20.0, .z = 31.0 },
+    .{ .group = "ATOM", .element = "N", .atom = "N", .residue = "GLY", .chain = "A", .seq = 2, .auth_seq = 12, .x = 13.0, .y = 21.5, .z = 31.0 },
+    .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 2, .auth_seq = 12, .x = 14.75, .y = 21.5, .z = 31.0 },
+    .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "B", .auth_chain = "A", .seq = null, .auth_seq = 201, .x = -3.25, .y = -40.0, .z = 0.0 },
+    .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "B", .auth_chain = "A", .seq = null, .auth_seq = 202, .x = -3.25, .y = 250.5, .z = 0.0 },
+};
+
+/// A column that expands to `declared` values from one eight-byte
+/// [value, count] pair. Each decoded value takes 24 bytes.
+fn runLengthBombColumn(comptime name: []const u8, comptime declared: usize) TestEncodedColumn {
+    return .{ .name = name, .values = .{
+        .data = &comptime int32Bytes(&.{ 0, @intCast(declared) }),
+        .encodings = &.{
+            .{ .run_length = .{ .src_size = declared } },
+            .{ .byte_array = .{ .type_code = 3 } },
+        },
+    } };
+}
+
+/// Allocator for tests that fails any request above `limit` bytes. A parse
+/// that passes with it did not ask for memory for a length it had to reject.
+const LimitedAllocator = struct {
+    child: Allocator,
+    limit: usize,
+
+    fn allocator(self: *LimitedAllocator) Allocator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .alloc = alloc,
+                .resize = resize,
+                .remap = remap,
+                .free = free,
+            },
+        };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+        const self: *LimitedAllocator = @ptrCast(@alignCast(ctx));
+        if (len > self.limit) return null;
+        return self.child.rawAlloc(len, alignment, ra);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) bool {
+        const self: *LimitedAllocator = @ptrCast(@alignCast(ctx));
+        if (new_len > self.limit) return false;
+        return self.child.rawResize(memory, alignment, new_len, ra);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+        const self: *LimitedAllocator = @ptrCast(@alignCast(ctx));
+        if (new_len > self.limit) return null;
+        return self.child.rawRemap(memory, alignment, new_len, ra);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ra: usize) void {
+        const self: *LimitedAllocator = @ptrCast(@alignCast(ctx));
+        self.child.rawFree(memory, alignment, ra);
+    }
+};
+
+/// Largest request the tests below allow: far more than a file of a few rows
+/// needs, and far less than the 480 MB that 20 million decoded values take.
+const test_allocation_limit = 1 << 20;
+const bomb_len = 20_000_000;
+
+fn expectSameAtoms(expected: AtomInput, actual: AtomInput) !void {
+    try std.testing.expectEqual(expected.atomCount(), actual.atomCount());
+    try std.testing.expectEqualSlices(f64, expected.x, actual.x);
+    try std.testing.expectEqualSlices(f64, expected.y, actual.y);
+    try std.testing.expectEqualSlices(f64, expected.z, actual.z);
+    try std.testing.expectEqualSlices(f64, expected.r, actual.r);
+    try std.testing.expectEqualSlices(u8, expected.element.?, actual.element.?);
+    try std.testing.expectEqualSlices(i32, expected.residue_num.?, actual.residue_num.?);
+    for (0..expected.atomCount()) |i| {
+        try std.testing.expectEqualStrings(expected.residue.?[i].slice(), actual.residue.?[i].slice());
+        try std.testing.expectEqualStrings(expected.atom_name.?[i].slice(), actual.atom_name.?[i].slice());
+        try std.testing.expectEqualStrings(expected.chain_id.?[i].slice(), actual.chain_id.?[i].slice());
+        try std.testing.expectEqualStrings(expected.insertion_code.?[i].slice(), actual.insertion_code.?[i].slice());
     }
 }
 
@@ -2808,7 +3266,7 @@ test "bcif decoders decode numeric encoding chains" {
         .{ .fixed_point = .{ .factor = 100.0 } },
         .{ .byte_array = .{ .type_code = 2 } },
     };
-    var column = try decodeColumn(allocator, &byte_array, &encs);
+    var column = try decodeColumn(allocator, &byte_array, &encs, .{ .exact = 3 });
     defer column.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 3), column.values.len);
@@ -2826,7 +3284,7 @@ test "bcif decoders decode integer packing run length delta" {
         .{ .integer_packing = .{ .byte_count = 1, .is_unsigned = false, .src_size = 4 } },
         .{ .byte_array = .{ .type_code = 1 } },
     };
-    var column = try decodeColumn(allocator, &packed_bytes, &encs);
+    var column = try decodeColumn(allocator, &packed_bytes, &encs, .{ .exact = 4 });
     defer column.deinit(allocator);
 
     try std.testing.expectEqual(@as(i64, 11), column.values[0].int);
@@ -2845,7 +3303,7 @@ test "bcif decoders decode string arrays" {
         .offset_encoding = &[_]Encoding{.{ .byte_array = .{ .type_code = 4 } }},
         .data_encoding = &[_]Encoding{.{ .byte_array = .{ .type_code = 4 } }},
     } };
-    var column = try decodeColumn(allocator, &index_bytes, &[_]Encoding{encoding});
+    var column = try decodeColumn(allocator, &index_bytes, &[_]Encoding{encoding}, .{ .exact = 4 });
     defer column.deinit(allocator);
 
     try std.testing.expectEqualStrings("A", column.values[0].str);
@@ -2864,6 +3322,7 @@ test "bcif mask maps dot and question to null states" {
         &[_]Encoding{.{ .byte_array = .{ .type_code = 4 } }},
         &mask_data,
         &[_]Encoding{.{ .byte_array = .{ .type_code = 4 } }},
+        .{ .exact = 3 },
     );
     defer column.deinit(allocator);
 
@@ -2891,7 +3350,7 @@ test "bcif column treats nil mask as absent mask" {
         .{ .key = .{ .str = "mask" }, .value = .nil },
     };
 
-    var column = try decodeBcifColumn(allocator, .{ .map = &column_pairs });
+    var column = try decodeBcifColumn(allocator, .{ .map = &column_pairs }, data.len);
     defer column.deinit(allocator);
 
     try std.testing.expect(column.nulls == null);
@@ -2917,6 +3376,7 @@ test "bcif masked string arrays tolerate negative null sentinels" {
         &[_]Encoding{encoding},
         &mask_data,
         &[_]Encoding{.{ .byte_array = .{ .type_code = 4 } }},
+        .{ .exact = 3 },
     );
     defer column.deinit(allocator);
 
@@ -2933,7 +3393,7 @@ test "bcif decoder chain frees intermediate column once on transform error" {
         decodeColumn(allocator, &bytes, &[_]Encoding{
             .{ .fixed_point = .{ .factor = 0.0 } },
             .{ .byte_array = .{ .type_code = 2 } },
-        }),
+        }, .{ .exact = 1 }),
     );
 }
 
@@ -2975,7 +3435,7 @@ test "bcif run length rejects malformed pairs" {
         decodeColumn(allocator, &bytes, &[_]Encoding{
             .{ .run_length = .{ .src_size = 2 } },
             .{ .byte_array = .{ .type_code = 4 } },
-        }),
+        }, .{ .exact = 2 }),
     );
 }
 
@@ -2992,6 +3452,7 @@ test "bcif mask rejects mismatched lengths" {
             &[_]Encoding{.{ .byte_array = .{ .type_code = 4 } }},
             &mask_data,
             &[_]Encoding{.{ .byte_array = .{ .type_code = 4 } }},
+            .{ .exact = 2 },
         ),
     );
 }
@@ -3009,6 +3470,7 @@ test "bcif mask rejects non-integer masks" {
             &[_]Encoding{.{ .byte_array = .{ .type_code = 4 } }},
             &mask_data,
             &[_]Encoding{.{ .byte_array = .{ .type_code = 32 } }},
+            .{ .exact = 1 },
         ),
     );
 }
@@ -3026,6 +3488,359 @@ test "bcif string arrays reject bad offsets" {
 
     try std.testing.expectError(
         ParseError.InvalidColumnData,
-        decodeColumn(allocator, &index_bytes, &[_]Encoding{encoding}),
+        decodeColumn(allocator, &index_bytes, &[_]Encoding{encoding}, .{ .exact = 1 }),
     );
+}
+
+/// Number of arrays and maps on the deepest path through `value`.
+fn msgValueDepth(value: MsgValue) usize {
+    var deepest: usize = 0;
+    switch (value) {
+        .array => |items| {
+            for (items) |item| deepest = @max(deepest, msgValueDepth(item));
+        },
+        .map => |pairs| {
+            for (pairs) |pair| deepest = @max(deepest, msgValueDepth(pair.key), msgValueDepth(pair.value));
+        },
+        else => return 0,
+    }
+    return deepest + 1;
+}
+
+test "msgpack reader rejects nesting deeper than max_msgpack_depth" {
+    const allocator = std.testing.allocator;
+    const levels = 100_000;
+
+    // Arrays of one array each. Without a depth limit the reader recursed
+    // once per byte until the stack ran out.
+    const arrays = try allocator.alloc(u8, levels);
+    defer allocator.free(arrays);
+    @memset(arrays, 0x91);
+    var array_reader = MsgReader.init(allocator, arrays);
+    try std.testing.expectError(ParseError.InvalidMessagePack, array_reader.readValue());
+
+    // Maps nested as keys ({{{...}: 0}: 0}) and as values ({"k": {"k": ...}})
+    const map_keys = try allocator.alloc(u8, levels);
+    defer allocator.free(map_keys);
+    @memset(map_keys, 0x81);
+    var key_reader = MsgReader.init(allocator, map_keys);
+    try std.testing.expectError(ParseError.InvalidMessagePack, key_reader.readValue());
+
+    const map_values = try allocator.alloc(u8, 3 * levels);
+    defer allocator.free(map_values);
+    for (0..levels) |i| @memcpy(map_values[3 * i ..][0..3], &[_]u8{ 0x81, 0xa1, 'k' });
+    var value_reader = MsgReader.init(allocator, map_values);
+    try std.testing.expectError(ParseError.InvalidMessagePack, value_reader.readValue());
+
+    var parser = BcifParser.init(allocator);
+    try std.testing.expectError(ParseError.InvalidMessagePack, parser.parse(arrays));
+}
+
+test "msgpack reader accepts nesting up to max_msgpack_depth" {
+    const allocator = std.testing.allocator;
+    // One integer inside as many arrays as the limit allows, and inside one more
+    const at_limit = [_]u8{0x91} ** max_msgpack_depth ++ [_]u8{0x07};
+    const past_limit = [_]u8{0x91} ** (max_msgpack_depth + 1) ++ [_]u8{0x07};
+
+    var reader = MsgReader.init(allocator, &at_limit);
+    const value = try reader.readValue();
+    defer freeMsgValue(allocator, value);
+    try std.testing.expectEqual(@as(usize, max_msgpack_depth), msgValueDepth(value));
+
+    var deeper_reader = MsgReader.init(allocator, &past_limit);
+    try std.testing.expectError(ParseError.InvalidMessagePack, deeper_reader.readValue());
+}
+
+test "BinaryCIF files nest well within max_msgpack_depth" {
+    const allocator = std.testing.allocator;
+    // StringArray columns are the deepest part of a file: 12 levels.
+    const source = try buildMinimalBcif(.{});
+    defer allocator.free(source);
+
+    var reader = MsgReader.init(allocator, source);
+    const root = try reader.readValue();
+    defer freeMsgValue(allocator, root);
+
+    try std.testing.expectEqual(@as(usize, 12), msgValueDepth(root));
+    try std.testing.expect(max_msgpack_depth >= 2 * msgValueDepth(root));
+}
+
+test "checkDeclaredLengths follows the bound through an encoding chain" {
+    // The chain that writers use for integer columns: 100 values in 20 runs
+    const chain = [_]Encoding{
+        .{ .delta = .{ .origin = 0 } },
+        .{ .run_length = .{ .src_size = 100 } },
+        .{ .integer_packing = .{ .byte_count = 1, .is_unsigned = false, .src_size = 40 } },
+        .{ .byte_array = .{ .type_code = 1 } },
+    };
+    // The packed bytes are bounded only by the data
+    try std.testing.expectEqual(@as(?LengthBound, null), try checkDeclaredLengths(&chain, .{ .exact = 100 }));
+    try std.testing.expectEqual(@as(?LengthBound, null), try checkDeclaredLengths(&chain, .{ .at_most = 100 }));
+    try std.testing.expectError(ParseError.ColumnLengthMismatch, checkDeclaredLengths(&chain, .{ .exact = 101 }));
+    try std.testing.expectError(ParseError.ColumnLengthMismatch, checkDeclaredLengths(&chain, .{ .exact = 99 }));
+    try std.testing.expectError(ParseError.ColumnLengthMismatch, checkDeclaredLengths(&chain, .{ .at_most = 99 }));
+
+    // 100 values come from at most 100 runs, which are 200 pair values
+    var pairs_chain = chain;
+    pairs_chain[2].integer_packing.src_size = 200;
+    _ = try checkDeclaredLengths(&pairs_chain, .{ .exact = 100 });
+    pairs_chain[2].integer_packing.src_size = 201;
+    try std.testing.expectError(ParseError.ColumnLengthMismatch, checkDeclaredLengths(&pairs_chain, .{ .exact = 100 }));
+
+    // Encodings with one output per input pass the bound on
+    const coordinates = [_]Encoding{
+        .{ .fixed_point = .{ .factor = 1000.0 } },
+        .{ .delta = .{ .origin = 0 } },
+        .{ .byte_array = .{ .type_code = 3 } },
+    };
+    try std.testing.expectEqual(
+        @as(?LengthBound, .{ .exact = 100 }),
+        try checkDeclaredLengths(&coordinates, .{ .exact = 100 }),
+    );
+
+    // Nothing bounds a RunLength below IntegerPacking
+    try std.testing.expectError(ParseError.UnsupportedEncoding, checkDeclaredLengths(&[_]Encoding{
+        .{ .integer_packing = .{ .byte_count = 1, .is_unsigned = false, .src_size = 100 } },
+        .{ .run_length = .{ .src_size = 100 } },
+        .{ .byte_array = .{ .type_code = 1 } },
+    }, .{ .exact = 100 }));
+
+    // ByteArray and StringArray read the column data, so they come last
+    try std.testing.expectError(ParseError.UnsupportedEncoding, checkDeclaredLengths(&[_]Encoding{
+        .{ .byte_array = .{ .type_code = 3 } },
+        .{ .run_length = .{ .src_size = bomb_len } },
+        .{ .byte_array = .{ .type_code = 3 } },
+    }, .{ .exact = 100 }));
+}
+
+test "bcif integer packing rejects a srcSize larger than its input before allocating" {
+    var limited = LimitedAllocator{ .child = std.testing.allocator, .limit = test_allocation_limit };
+    const bytes = [_]u8{ 1, 2 };
+
+    try std.testing.expectError(
+        ParseError.InvalidColumnData,
+        decodeColumn(limited.allocator(), &bytes, &[_]Encoding{
+            .{ .integer_packing = .{ .byte_count = 1, .is_unsigned = false, .src_size = bomb_len } },
+            .{ .byte_array = .{ .type_code = 1 } },
+        }, .{ .at_most = bomb_len }),
+    );
+}
+
+test "parse BinaryCIF with RunLength encoded columns matches the plain encoding" {
+    const allocator = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const rows: []const TestAtomRow = &run_length_test_rows;
+
+    const plain = try buildSeqIdBcif(rows, 1);
+    defer allocator.free(plain);
+    const encoded = try buildEncodedBcif(rows.len, try runLengthAtomSiteColumns(arena_state.allocator(), rows));
+    defer allocator.free(encoded);
+
+    for ([_]bool{ false, true }) |use_auth_chain| {
+        var plain_parser = BcifParser.init(allocator);
+        plain_parser.atom_only = false;
+        plain_parser.use_auth_chain = use_auth_chain;
+        var expected = try plain_parser.parse(plain);
+        defer expected.deinit();
+
+        var parser = BcifParser.init(allocator);
+        parser.atom_only = false;
+        parser.use_auth_chain = use_auth_chain;
+        var input = try parser.parse(encoded);
+        defer input.deinit();
+
+        try expectSameAtoms(expected, input);
+
+        try std.testing.expectEqualSlices(f64, &.{ 10.0, 11.5, 12.125, 13.0, 14.75, -3.25, -3.25 }, input.x);
+        try std.testing.expectEqualSlices(f64, &.{ 20.0, 20.0, 20.0, 21.5, 21.5, -40.0, 250.5 }, input.y);
+        try std.testing.expectEqualSlices(f64, &.{ 30.0, 30.25, 31.0, 31.0, 31.0, 0.0, 0.0 }, input.z);
+        try std.testing.expectEqualSlices(u8, &.{ 7, 6, 6, 7, 6, 8, 8 }, input.element.?);
+        try std.testing.expectEqualStrings("CA", input.atom_name.?[1].slice());
+        try std.testing.expectEqualStrings("GLY", input.residue.?[4].slice());
+        try std.testing.expectEqualStrings("HOH", input.residue.?[6].slice());
+        if (use_auth_chain) {
+            try std.testing.expectEqualSlices(i32, &.{ 11, 11, 11, 12, 12, 201, 202 }, input.residue_num.?);
+            try std.testing.expectEqualStrings("A", input.chain_id.?[6].slice());
+        } else {
+            try std.testing.expectEqualSlices(i32, &.{ 1, 1, 1, 2, 2, 201, 202 }, input.residue_num.?);
+            try std.testing.expectEqualStrings("B", input.chain_id.?[6].slice());
+        }
+    }
+}
+
+test "parse BinaryCIF does not decode atom_site columns it does not use" {
+    const allocator = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const rows: []const TestAtomRow = &run_length_test_rows;
+
+    // The parser reads neither of the added columns. B_iso_or_equiv declares
+    // 20 million values in a category of seven rows, and pdbx_formal_charge
+    // has an encoding chain that cannot be decoded.
+    const used = try runLengthAtomSiteColumns(arena, rows);
+    const columns = try std.mem.concat(arena, TestEncodedColumn, &.{ used, &.{
+        runLengthBombColumn("B_iso_or_equiv", bomb_len),
+        .{ .name = "pdbx_formal_charge", .values = .{ .data = "", .encodings = &.{.{ .delta = .{ .origin = 0 } }} } },
+    } });
+    const source = try buildEncodedBcif(rows.len, columns);
+    defer allocator.free(source);
+    const without_unused = try buildEncodedBcif(rows.len, used);
+    defer allocator.free(without_unused);
+
+    var plain_parser = BcifParser.init(allocator);
+    plain_parser.atom_only = false;
+    var expected = try plain_parser.parse(without_unused);
+    defer expected.deinit();
+
+    var limited = LimitedAllocator{ .child = allocator, .limit = test_allocation_limit };
+    var parser = BcifParser.init(limited.allocator());
+    parser.atom_only = false;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 7), input.atomCount());
+    try expectSameAtoms(expected, input);
+}
+
+/// Parses an `_atom_site` of `run_length_test_rows` in which `replacement`
+/// takes the place of the column of the same name, and expects `expected`.
+/// Large allocations fail, so `expected` must be found before one is made.
+fn expectReplacedColumnError(expected: anyerror, replacement: TestEncodedColumn) !void {
+    const allocator = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const rows: []const TestAtomRow = &run_length_test_rows;
+
+    const columns = try runLengthAtomSiteColumns(arena_state.allocator(), rows);
+    var replaced = false;
+    for (columns) |*column| {
+        if (!std.mem.eql(u8, column.name, replacement.name)) continue;
+        column.* = replacement;
+        replaced = true;
+    }
+    try std.testing.expect(replaced);
+    const source = try buildEncodedBcif(rows.len, columns);
+    defer allocator.free(source);
+
+    var limited = LimitedAllocator{ .child = allocator, .limit = test_allocation_limit };
+    var parser = BcifParser.init(limited.allocator());
+    parser.atom_only = false;
+    try std.testing.expectError(expected, parser.parse(source));
+}
+
+test "parse BinaryCIF rejects a declared length that differs from rowCount before allocating" {
+    const row_count = run_length_test_rows.len;
+    const bomb = runLengthBombColumn("", bomb_len).values;
+
+    // RunLength in the data of a column that the parser reads
+    try expectReplacedColumnError(ParseError.ColumnLengthMismatch, runLengthBombColumn("Cartn_x", bomb_len));
+    try expectReplacedColumnError(ParseError.ColumnLengthMismatch, runLengthBombColumn("label_seq_id", bomb_len));
+    try expectReplacedColumnError(ParseError.ColumnLengthMismatch, runLengthBombColumn("label_seq_id", row_count + 1));
+    try expectReplacedColumnError(ParseError.ColumnLengthMismatch, runLengthBombColumn("label_seq_id", row_count - 1));
+
+    // IntegerPacking
+    try expectReplacedColumnError(ParseError.ColumnLengthMismatch, .{ .name = "label_seq_id", .values = .{
+        .data = &.{ 1, 2 },
+        .encodings = &.{
+            .{ .integer_packing = .{ .byte_count = 1, .is_unsigned = false, .src_size = bomb_len } },
+            .{ .byte_array = .{ .type_code = 1 } },
+        },
+    } });
+
+    // RunLength in a mask
+    try expectReplacedColumnError(ParseError.ColumnLengthMismatch, .{
+        .name = "label_seq_id",
+        .values = .{ .data = &.{ 1, 1, 1, 2, 2, 0, 0 }, .encodings = &.{.{ .byte_array = .{ .type_code = 1 } }} },
+        .mask = bomb,
+    });
+
+    // RunLength in the indices of a string column
+    try expectReplacedColumnError(ParseError.ColumnLengthMismatch, .{ .name = "type_symbol", .values = .{
+        .data = bomb.data,
+        .encodings = &.{.{ .string_array = .{
+            .string_data = "NCO",
+            .offset_data = &.{ 0, 1, 2, 3 },
+            .offset_encoding = &.{.{ .byte_array = .{ .type_code = 4 } }},
+            .data_encoding = bomb.encodings,
+        } }},
+    } });
+
+    // RunLength in the offsets of a string column
+    try expectReplacedColumnError(ParseError.ColumnLengthMismatch, .{ .name = "type_symbol", .values = .{
+        .data = &.{ 0, 1, 1, 0, 1, 2, 2 },
+        .encodings = &.{stringArrayWithOffsets(bomb_len)},
+    } });
+}
+
+/// A StringArray encoding of three one-letter strings whose offsets are
+/// run-length encoded and declared to be `declared` zeros.
+fn stringArrayWithOffsets(comptime declared: usize) Encoding {
+    const offsets = runLengthBombColumn("", declared).values;
+    return .{ .string_array = .{
+        .string_data = "NCO",
+        .offset_data = offsets.data,
+        .offset_encoding = offsets.encodings,
+        .data_encoding = &.{.{ .byte_array = .{ .type_code = 4 } }},
+    } };
+}
+
+test "bcif string arrays bound the declared length of their offsets" {
+    var limited = LimitedAllocator{ .child = std.testing.allocator, .limit = test_allocation_limit };
+    const allocator = limited.allocator();
+    // Seven rows and three bytes of strings allow at most 12 offsets.
+    const indices = [_]u8{ 0, 1, 1, 0, 1, 2, 2 };
+    const max_offsets = indices.len + "NCO".len + 2;
+    const bound = LengthBound{ .exact = indices.len };
+
+    try std.testing.expectError(
+        ParseError.ColumnLengthMismatch,
+        decodeColumn(allocator, &indices, &.{stringArrayWithOffsets(bomb_len)}, bound),
+    );
+    try std.testing.expectError(
+        ParseError.ColumnLengthMismatch,
+        decodeColumn(allocator, &indices, &.{stringArrayWithOffsets(max_offsets + 1)}, bound),
+    );
+
+    // At the limit the offsets are decoded: 12 zeros, so every string is empty
+    var column = try decodeColumn(allocator, &indices, &.{stringArrayWithOffsets(max_offsets)}, bound);
+    defer column.deinit(allocator);
+    try std.testing.expectEqual(indices.len, column.values.len);
+    for (column.values) |value| try std.testing.expectEqualStrings("", value.str);
+}
+
+test "parse BinaryCIF bounds RunLength stages that feed another encoding" {
+    const row_count = run_length_test_rows.len;
+    const bomb = runLengthBombColumn("", bomb_len).values;
+
+    // The outer RunLength has the right length. The inner one decodes to the
+    // [value, count] pairs of the outer one, and seven values come from at
+    // most 14 of those.
+    try expectReplacedColumnError(ParseError.ColumnLengthMismatch, .{ .name = "label_seq_id", .values = .{
+        .data = bomb.data,
+        .encodings = &.{
+            .{ .run_length = .{ .src_size = row_count } },
+            .{ .run_length = .{ .src_size = bomb_len } },
+            .{ .byte_array = .{ .type_code = 3 } },
+        },
+    } });
+    try expectReplacedColumnError(ParseError.ColumnLengthMismatch, .{ .name = "label_seq_id", .values = .{
+        .data = bomb.data,
+        .encodings = &.{
+            .{ .run_length = .{ .src_size = row_count } },
+            .{ .run_length = .{ .src_size = 2 * row_count + 1 } },
+            .{ .byte_array = .{ .type_code = 3 } },
+        },
+    } });
+
+    // A RunLength below IntegerPacking has no bound, and no writer emits one
+    try expectReplacedColumnError(ParseError.UnsupportedEncoding, .{ .name = "label_seq_id", .values = .{
+        .data = bomb.data,
+        .encodings = &.{
+            .{ .integer_packing = .{ .byte_count = 1, .is_unsigned = false, .src_size = row_count } },
+            .{ .run_length = .{ .src_size = bomb_len } },
+            .{ .byte_array = .{ .type_code = 3 } },
+        },
+    } });
 }
