@@ -64,8 +64,10 @@ class TestProcessDirectory:
         n_atoms = dict(zip(result.filenames, result.n_atoms, strict=True))
         lr_area = dict(zip(result.filenames, result.total_sasa, strict=True))
         assert n_atoms == {"ala.pdb": 5, "gly.ent": 4}
-        # Reference values from `zsasa calc --algorithm=lr --classifier=naccess`.
-        assert lr_area["ala.pdb"] == pytest.approx(215.14412396821933, abs=1e-6)
+        # Reference values from `zsasa calc --algorithm=lr --classifier=naccess`
+        # (exact arc angles, the default; --lr-trig=fast gives 215.14412396821933
+        # for ala.pdb, the value of zsasa 0.9.1).
+        assert lr_area["ala.pdb"] == pytest.approx(215.07786201196504, abs=1e-6)
         assert lr_area["gly.ent"] == pytest.approx(188.2086929717762, abs=1e-6)
 
         # Shrake-Rupley gives a different, close area, so the algorithm is honored.

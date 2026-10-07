@@ -46,6 +46,8 @@ pub const Calculation = struct {
     probe_radius: ?f64 = null,
     n_points: ?u32 = null,
     n_slices: ?u32 = null,
+    /// Lee-Richards arc angles: "exact" or "fast"
+    lr_trig: ?[]const u8 = null,
     precision: ?[]const u8 = null,
     include_hydrogens: ?bool = null,
     include_hetatm: ?bool = null,
@@ -277,14 +279,21 @@ fn parseCalculation(table: toml_parser.Table) WorkflowError!Calculation {
     try rejectUnknownFields(table.entries, &.{
         "algorithm",         "threads",        "probe_radius", "n_points", "n_slices",      "precision",
         "include_hydrogens", "include_hetatm", "use_bitmask",  "timing",   "quiet",         "auth_chain",
-        "residue_map",       "per_residue",    "rsa",          "polar",    "validate_only",
+        "residue_map",       "per_residue",    "rsa",          "polar",    "validate_only", "lr_trig",
     });
+    const lr_trig = try optionalString(table.entries, "lr_trig");
+    if (lr_trig) |value| {
+        if (!std.mem.eql(u8, value, "exact") and !std.mem.eql(u8, value, "fast")) {
+            return error.InvalidFieldType;
+        }
+    }
     return .{
         .algorithm = try optionalString(table.entries, "algorithm"),
         .threads = try optionalUsize(table.entries, "threads"),
         .probe_radius = try optionalFloat(table.entries, "probe_radius"),
         .n_points = try optionalU32(table.entries, "n_points"),
         .n_slices = try optionalU32(table.entries, "n_slices"),
+        .lr_trig = lr_trig,
         .precision = try optionalString(table.entries, "precision"),
         .include_hydrogens = try optionalBool(table.entries, "include_hydrogens"),
         .include_hetatm = try optionalBool(table.entries, "include_hetatm"),
@@ -620,6 +629,7 @@ test "parse sectioned calc workflow" {
         \\probe_radius = 1.4
         \\n_points = 128
         \\n_slices = 20
+        \\lr_trig = "fast"
         \\precision = "f64"
         \\use_bitmask = true
         \\include_hydrogens = false
@@ -648,6 +658,7 @@ test "parse sectioned calc workflow" {
     try std.testing.expectEqual(@as(f64, 1.4), workflow.calculation.probe_radius.?);
     try std.testing.expectEqual(@as(u32, 128), workflow.calculation.n_points.?);
     try std.testing.expectEqual(@as(u32, 20), workflow.calculation.n_slices.?);
+    try std.testing.expectEqualStrings("fast", workflow.calculation.lr_trig.?);
     try std.testing.expectEqualStrings("f64", workflow.calculation.precision.?);
     try std.testing.expectEqual(true, workflow.calculation.use_bitmask.?);
     try std.testing.expectEqual(false, workflow.calculation.include_hydrogens.?);
@@ -946,6 +957,48 @@ test "parse legacy flat batch manifest" {
     try std.testing.expectEqual(@as(usize, 1), workflow.jobs.len);
     try std.testing.expectEqualStrings("chain_A", workflow.jobs[0].name);
     try std.testing.expectEqualStrings("A", workflow.jobs[0].chains.?[0]);
+}
+
+test "calculation lr_trig accepts exact and fast, is optional, and rejects anything else" {
+    const allocator = std.testing.allocator;
+    const header =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[calculation]
+        \\algorithm = "lr"
+        \\
+    ;
+
+    {
+        var workflow = try parse(allocator, header ++ "lr_trig = \"exact\"\n");
+        defer workflow.deinit();
+        try std.testing.expectEqualStrings("exact", workflow.calculation.lr_trig.?);
+    }
+    {
+        var workflow = try parse(allocator, header ++ "lr_trig = \"fast\"\n");
+        defer workflow.deinit();
+        try std.testing.expectEqualStrings("fast", workflow.calculation.lr_trig.?);
+    }
+    {
+        var workflow = try parse(allocator, header);
+        defer workflow.deinit();
+        try std.testing.expect(workflow.calculation.lr_trig == null);
+    }
+
+    try std.testing.expectError(error.InvalidFieldType, parse(allocator, header ++ "lr_trig = \"approximate\"\n"));
+    try std.testing.expectError(error.InvalidFieldType, parse(allocator, header ++ "lr_trig = \"\"\n"));
+    try std.testing.expectError(error.InvalidFieldType, parse(allocator, header ++ "lr_trig = true\n"));
+}
+
+test "lr_trig is a [calculation] key only: the legacy root form rejects it" {
+    const input =
+        \\version = 1
+        \\input_dir = "structures"
+        \\algorithm = "lr"
+        \\lr_trig = "fast"
+    ;
+    try std.testing.expectError(error.UnknownField, parse(std.testing.allocator, input));
 }
 
 test "reject duplicate section names" {
