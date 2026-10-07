@@ -21,7 +21,9 @@ For batch mode, `--manifest` is still accepted as a compatibility alias for `--w
 zsasa batch --manifest bsa.toml
 ```
 
-Prefer `--workflow` in new scripts and docs.
+Prefer `--workflow` in new scripts and docs. `--manifest` also reads the older [flat-root manifest layout](#legacy-flat-root-manifests).
+
+Every key a workflow file accepts is listed in the [Key Reference](#key-reference).
 
 ## Calc Workflow Example
 
@@ -420,6 +422,8 @@ Use CLI flags for a single ad hoc chain-filtered batch run:
 zsasa batch structures/ results/ --chain=A
 ```
 
+`--chain` belongs to this non-workflow form: it cannot be combined with `--workflow` (the command stops with `--workflow cannot be combined with --chain`), so put chain selections in the jobs instead.
+
 Use workflow jobs for named, repeatable multi-chain analyses:
 
 ```toml
@@ -485,6 +489,134 @@ sidecar. `atom_identity` is available only for chain-map jobs and requires atom
 areas. Selection-map JSONL also requires `total_area = true`. When
 `metadata = "sidecar"` is set, workflow batch jobs write a `<job>.meta.json`
 file next to `<job>.jsonl` with the effective JSONL and calculation settings.
+
+## Key Reference
+
+A workflow file starts with `version = 1` (required) and an optional `kind = "workflow"`, followed by the sections below. The parser rejects the whole file when it meets an unknown section or key, a repeated section or key, or a value of the wrong type or out of range, and prints `Error reading workflow file '<path>': <name>` with `UnknownField`, `InvalidFieldType`, `UnsupportedVersion` or `InvalidKind`.
+
+The **Used by** column says which command reads the key. `calc` and `batch` accept the keys of the other command and ignore them, so one file can serve both. A value given on the command line overrides the same setting in the file; see [Override Precedence](#override-precedence).
+
+### Top level
+
+| Key | Type | Default | Used by | Description |
+|-----|------|---------|---------|-------------|
+| `version` | integer | required | calc, batch | Must be `1` |
+| `kind` | string | none | calc, batch | If present, must be `"workflow"` |
+
+### `[input]`
+
+| Key | Type | Default | Used by | Description |
+|-----|------|---------|---------|-------------|
+| `path` | string | none | calc | Input structure file. A positional input argument overrides it |
+| `dir` | string | none | batch | Input directory. A positional `input_dir` overrides it |
+| `chain` | string | all chains | calc | Chain filter such as `"A"` or `"A,B"` (`--chain`). In batch workflows chains are chosen per job with `chains` or `chain_map` |
+| `model` | integer ≥ 1 | all models | calc | Model number (`--model`) |
+| `mol` | string | first molecule | calc | Molecule title or 1-based index in a multi-molecule SDF (`--mol`) |
+
+### `[output]` and `[output.jsonl]`
+
+| Key | Type | Default | Used by | Description |
+|-----|------|---------|---------|-------------|
+| `path` | string | `output.json` | calc | Output file. A positional output argument or `-o` overrides it |
+| `dir` | string | none | batch | Output directory; each job writes into its own `<job name>` subdirectory, or to `<job name>.jsonl` for JSONL output. A positional `output_dir` overrides it. A workflow with several jobs requires it; with one job and no directory, JSONL rows go to standard output and `json`/`csv` write no files |
+| `format` | string | `"json"` | calc, batch | `calc`: `json`, `compact`, `csv`, `freesasa` or `rsa`. `batch`: `json`, `compact`, `csv` or `jsonl` |
+
+The `[output.jsonl]` keys apply to batch JSONL output only. See [JSONL Output Options](#jsonl-output-options).
+
+| Key | Type | Default | Used by | Description |
+|-----|------|---------|---------|-------------|
+| `atom_areas` | boolean | `true` | batch | Write the per-atom `atom_areas` array |
+| `atom_identity` | boolean | `false` | batch | Write stable atom identity arrays; `chain_map` jobs only, requires `atom_areas = true` |
+| `total_area` | boolean | `true` | batch | Write `total_area`; selection-map output requires it |
+| `decimals` | integer 0-15 | full precision | batch | Round floating-point values (`--jsonl-decimals`) |
+| `metadata` | string | `"none"` | batch | `"none"` or `"sidecar"` (write `<job>.meta.json`) |
+
+### `[calculation]`
+
+| Key | Type | Default | Used by | Description |
+|-----|------|---------|---------|-------------|
+| `algorithm` | string | `"sr"` | calc, batch | `"sr"` or `"lr"` |
+| `threads` | integer ≥ 0 | `0` (auto) | calc, batch | Worker threads; concurrent file workers in batch |
+| `probe_radius` | number | `1.4` | calc, batch | Probe radius in Å, above 0 and at most 10 |
+| `n_points` | integer | `100` | calc, batch | Test points per atom for SR, 1-10000 |
+| `n_slices` | integer | `20` | calc, batch | Slices per atom diameter for LR, 1-1000 |
+| `precision` | string | `"f64"` | calc, batch | `"f32"` or `"f64"` |
+| `include_hydrogens` | boolean | `false` | calc, batch | Include hydrogen atoms |
+| `include_hetatm` | boolean | `false` | calc, batch | Include HETATM records |
+| `use_bitmask` | boolean | `false` | calc, batch | Bitmask LUT optimization (SR only, `n_points` 1-1024) |
+| `timing` | boolean | `false` | calc, batch | Print the timing breakdown |
+| `quiet` | boolean | `false` | calc, batch | Suppress progress output |
+| `auth_chain` | boolean | `false` | calc, batch | Match chains and number residues by `auth_asym_id` / `auth_seq_id` (mmCIF/BinaryCIF). A job can override it with its own `auth_chain` |
+| `residue_map` | boolean | `false` | batch | Add residue map arrays to JSONL rows (`--residue-map`) |
+| `per_residue` | boolean | `false` | calc | Per-residue aggregation |
+| `rsa` | boolean | `false` | calc | Relative solvent accessibility; implies `per_residue` |
+| `polar` | boolean | `false` | calc | Polar/nonpolar summary; implies `per_residue` |
+| `validate_only` | boolean | `false` | calc | Validate the input without calculating (`--validate`) |
+
+### `[classifier]`
+
+| Key | Type | Default | Used by | Description |
+|-----|------|---------|---------|-------------|
+| `type` | string | as the command line | calc, batch | `"ccd"`, `"protor"`, `"naccess"`, `"oons"` or `"custom"`. Without it the command default applies (`ccd` for structure files) |
+| `config` | string | none | calc, batch | Path of a custom classifier TOML file. Required with `type = "custom"` and not allowed with any other `type` |
+| `ccd` | string | none | calc, batch | External CCD dictionary (CIF, `.gz`/`.zst` or ZSDC). Only with `type = "ccd"` |
+| `sdf` | string or array of strings | none | calc, batch | SDF file or files with bond topology. Only with `type = "ccd"` |
+
+Set `type = "ccd"` whenever `ccd` or `sdf` is given. A file that combines them with another classifier type is rejected with `InvalidClassifierConfig`.
+
+### `[analysis]`
+
+| Key | Type | Default | Used by | Description |
+|-----|------|---------|---------|-------------|
+| `type` | string | required | batch | Must be `"bsa"` |
+| `name` | string | `"bsa"` | batch | Output name: results go to `<name>.jsonl`. Must not contain `/`, `\` or `..` |
+| `partner_a`, `partner_b` | arrays of strings | none | batch | Chain IDs of the two partners. Required unless `chain_map` is set, and not allowed together with it |
+| `chain_map` | string | none | batch | CSV or JSON file with one interface per row, instead of `partner_a`/`partner_b` |
+| `level` | string | `"total"` | batch | `"total"` or `"residue"` |
+| `atom_output` | boolean | `false` | batch | Add atom-level ΔSASA; requires `level = "residue"` |
+
+See [BSA / ΔSASA Analysis](#bsa-analysis) for the output.
+
+### `[[jobs]]`
+
+A batch workflow needs at least one job unless it has an `[analysis]` section (`NoJobs` otherwise). `calc` ignores jobs.
+
+| Key | Type | Default | Used by | Description |
+|-----|------|---------|---------|-------------|
+| `name` | string | required | batch | Job name, unique within the file; used as the output subdirectory or file name, so it must not contain `/`, `\` or `..` |
+| `chains` | array of strings | all chains | batch | Chain IDs to calculate together as one complex |
+| `chain_map` | string | none | batch | Per-file chain map; see [Per-file Chain Maps](#per-file-chain-maps). Not allowed together with `chains` or `auth_chain` |
+| `auth_chain` | boolean | from `[calculation]` | batch | Use author chain IDs for this job |
+
+## Legacy Flat-root Manifests
+
+Batch also reads the older manifest layout, in which the settings sit at the root of the file instead of in sections. It is selected automatically when the root contains any of the flat keys below, and it is read by `--manifest` as well as `--workflow`:
+
+```toml
+version = 1
+input_dir = "examples"
+output_dir = "zig-out/workflow-smoke/legacy"
+format = "jsonl"
+classifier = "ccd"
+n_points = 32
+quiet = true
+
+[[jobs]]
+name = "all"
+```
+
+(`test_data/legacy-batch-manifest.toml` in the repository is a working copy of this file.)
+
+| Flat key | Same as |
+|----------|---------|
+| `input_dir` | `[input] dir` |
+| `output_dir` | `[output] dir` |
+| `format` | `[output] format` |
+| `classifier` | `[classifier] type` (a built-in name) |
+| `ccd`, `sdf` | `[classifier] ccd`, `sdf` |
+| `algorithm`, `threads`, `probe_radius`, `n_points`, `n_slices`, `precision`, `include_hydrogens`, `include_hetatm`, `use_bitmask`, `timing`, `quiet`, `auth_chain`, `residue_map` | the key of the same name in `[calculation]` |
+
+`version` is required, `kind` is optional, and `[[jobs]]` entries work as above. A legacy manifest cannot also contain sections such as `[input]` or `[calculation]`, and it cannot use the keys that only exist in the sectioned layout (`custom` classifiers, `[output.jsonl]`, `[analysis]`, `per_residue`, `rsa`, `polar`, `validate_only`): the file is rejected (`UnknownField`, or `InvalidClassifierConfig` for `classifier = "custom"`). New files should use the sectioned layout.
 
 ## Reference
 
