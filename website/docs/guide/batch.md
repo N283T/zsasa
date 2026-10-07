@@ -14,6 +14,15 @@ zsasa batch structures/ results/
 
 This scans `structures/` for supported input files and writes per-file outputs under `results/`.
 
+Each output file is named after the input stem: `1ubq.pdb` and `1ubq.cif.gz` would both be written to `results/1ubq.json`. If a directory contains inputs that share a stem, batch mode lists the colliding inputs and exits with an error before processing anything, instead of letting one result overwrite another:
+
+```text
+Error: 1 output name is shared by more than one input:
+  1ubq.json <- 1ubq.cif.gz, 1ubq.pdb
+```
+
+Split those inputs into separate directories, or use JSONL output, which keeps one record per input file. SDF and MOL outputs are named per molecule (`stem_molname`), so SDF/MOL files that share a stem are rejected in the same way.
+
 Common options:
 
 ```bash

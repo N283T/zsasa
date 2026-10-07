@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **BSA workflow parallelism and progress**: apply workflow thread counts to concurrent structure-file workers, keep partner and complex SASA calculations single-threaded in the multi-file path, serialize concurrent JSONL rows safely, and report completed structure files through the standard terminal progress display.
+- **Batch output name collisions**: reject directories whose inputs share an output stem (for example `1crn.pdb` and `1crn.cif.gz`) before processing, instead of reporting every file as successful while later results silently overwrite earlier ones. Applies to per-file output from `zsasa batch`, workflow jobs, and `process_directory(output_dir=...)`; JSONL output is unaffected. The C API reports the condition as `ZSASA_ERROR_OUTPUT_NAME_COLLISION`. (#415)
 
 ## [0.9.1] - 2026-07-28
 

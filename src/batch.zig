@@ -1768,6 +1768,7 @@ pub fn runBatchSequential(
         allocator.free(files);
     }
     try validateChainMapInputFormats(files, config);
+    try validateUniqueOutputNames(allocator, files, output_dir, config);
 
     var progress_root: std.Progress.Node = if (shouldShowProgress(config))
         std.Progress.start(io, .{ .root_name = "Processing files", .estimated_total_items = files.len })
@@ -2384,6 +2385,7 @@ pub fn runBatchParallel(
         allocator.free(files);
     }
     try validateChainMapInputFormats(files, config);
+    try validateUniqueOutputNames(allocator, files, output_dir, config);
 
     if (files.len == 0) {
         return BatchResult{
@@ -2704,6 +2706,116 @@ fn validateMappedChainInputFormats(files: []const []const u8, enabled: bool) !vo
             .json, .sdf => return error.UnsupportedChainMapInputFormat,
         }
     }
+}
+
+/// An input file together with the per-file output name it would be written to.
+const OutputNameClaim = struct {
+    /// SDF outputs are named per molecule ("stem_molname"), so they never
+    /// share a name with the output of a non-SDF input.
+    is_sdf: bool,
+    output_name: []const u8,
+    filename: []const u8,
+
+    fn lessThan(_: void, a: OutputNameClaim, b: OutputNameClaim) bool {
+        if (a.is_sdf != b.is_sdf) return !a.is_sdf;
+        return switch (std.mem.order(u8, a.output_name, b.output_name)) {
+            .lt => true,
+            .gt => false,
+            .eq => std.mem.lessThan(u8, a.filename, b.filename),
+        };
+    }
+
+    fn sharesOutputWith(a: OutputNameClaim, b: OutputNameClaim) bool {
+        return a.is_sdf == b.is_sdf and std.mem.eql(u8, a.output_name, b.output_name);
+    }
+};
+
+/// Find the inputs whose per-file output name is shared with another input.
+///
+/// Output names are derived from the input stem, so `1crn.pdb` and
+/// `1crn.cif.gz` both map to `1crn.json`. SDF outputs are named per molecule
+/// and molecule names are only known after parsing, so SDF files that share a
+/// stem are reported as `stem_*.json`.
+///
+/// Returns the colliding claims sorted so that inputs sharing an output name
+/// are adjacent. All returned memory is allocated from `arena`.
+fn findOutputNameCollisions(
+    arena: Allocator,
+    files: []const []const u8,
+    config: BatchConfig,
+) ![]const OutputNameClaim {
+    const ext = getOutputExtension(config.output_format);
+
+    var claims = try std.ArrayListUnmanaged(OutputNameClaim).initCapacity(arena, files.len);
+    for (files) |filename| {
+        // Files without a chain map entry fail before any output is written.
+        if (config.chain_map) |map| {
+            if (map.get(filename) == null) continue;
+        }
+
+        const is_sdf = format_detect.detectInputFormat(filename) == .sdf;
+        const output_name = if (is_sdf) blk: {
+            const pattern = try sdfMoleculeDisplayName(arena, filename, "*", 0);
+            break :blk try std.fmt.allocPrint(arena, "{s}{s}", .{ pattern, ext });
+        } else try replaceExtension(arena, filename, ext);
+
+        claims.appendAssumeCapacity(.{
+            .is_sdf = is_sdf,
+            .output_name = output_name,
+            .filename = filename,
+        });
+    }
+
+    std.mem.sort(OutputNameClaim, claims.items, {}, OutputNameClaim.lessThan);
+
+    var collisions = std.ArrayListUnmanaged(OutputNameClaim).empty;
+    for (claims.items, 0..) |claim, i| {
+        const shares_prev = i > 0 and claim.sharesOutputWith(claims.items[i - 1]);
+        const shares_next = i + 1 < claims.items.len and claim.sharesOutputWith(claims.items[i + 1]);
+        if (shares_prev or shares_next) try collisions.append(arena, claim);
+    }
+    return collisions.items;
+}
+
+/// Reject input sets whose per-file outputs would overwrite each other.
+///
+/// Only applies when one output file is written per input; JSONL output
+/// keeps one record per input and cannot collide.
+fn validateUniqueOutputNames(
+    allocator: Allocator,
+    files: []const []const u8,
+    output_dir: ?[]const u8,
+    config: BatchConfig,
+) !void {
+    if (output_dir == null or config.store_atom_areas) return;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const collisions = try findOutputNameCollisions(arena.allocator(), files, config);
+    if (collisions.len == 0) return;
+
+    var n_names: usize = 0;
+    for (collisions, 0..) |claim, i| {
+        if (i == 0 or !claim.sharesOutputWith(collisions[i - 1])) n_names += 1;
+    }
+
+    std.debug.print("Error: {d} output name{s} shared by more than one input:", .{
+        n_names,
+        if (n_names == 1) " is" else "s are",
+    });
+    for (collisions, 0..) |claim, i| {
+        if (i == 0 or !claim.sharesOutputWith(collisions[i - 1])) {
+            std.debug.print("\n  {s} <- {s}", .{ claim.output_name, claim.filename });
+        } else {
+            std.debug.print(", {s}", .{claim.filename});
+        }
+    }
+    std.debug.print(
+        "\nSplit these inputs into separate directories, or use JSONL output (--format=jsonl) to keep one record per input.\n",
+        .{},
+    );
+    return error.OutputNameCollision;
 }
 
 /// Parse and validate probe radius value
@@ -5101,6 +5213,9 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
     resource_config.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
     if (custom_classifier) |*c| resource_config.custom_classifier = c;
 
+    const files = pre_scanned_files orelse try scanDirectory(allocator, io, input_dir);
+    defer if (pre_scanned_files == null) freeScannedFiles(allocator, files);
+
     var states = try allocator.alloc(WorkflowJobState, workflow.jobs.len);
     var states_initialized: usize = 0;
     errdefer {
@@ -5153,6 +5268,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
                 }
             }
         } else if (output_dir) |out| {
+            try validateUniqueOutputNames(allocator, files, out, config);
             job_output_dir = try workflowPerFileOutputDir(allocator, out, job.name);
             try std.Io.Dir.cwd().createDirPath(io, job_output_dir.?);
         }
@@ -5173,9 +5289,6 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
     for (states) |state| {
         if (!state.config.quiet) std.debug.print("Workflow job: {s}\n", .{state.name});
     }
-
-    const files = pre_scanned_files orelse try scanDirectory(allocator, io, input_dir);
-    defer if (pre_scanned_files == null) freeScannedFiles(allocator, files);
 
     var luts = try BatchLuts.init(allocator, resource_config);
     defer luts.deinit();
@@ -5948,6 +6061,142 @@ test "public batch runners reject single-calc compatibility formats before scann
     ));
 }
 
+test "findOutputNameCollisions groups inputs that share an output name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const files = [_][]const u8{
+        "1crn.cif.gz",
+        "1crn.pdb",
+        "1ubq.cif",
+        "1ubq.cif.zst",
+        "1ubq.pdb",
+        "3hhb.cif.gz",
+    };
+    const collisions = try findOutputNameCollisions(arena.allocator(), &files, .{});
+
+    try std.testing.expectEqual(@as(usize, 5), collisions.len);
+    const expected = [_][2][]const u8{
+        .{ "1crn.json", "1crn.cif.gz" },
+        .{ "1crn.json", "1crn.pdb" },
+        .{ "1ubq.json", "1ubq.cif" },
+        .{ "1ubq.json", "1ubq.cif.zst" },
+        .{ "1ubq.json", "1ubq.pdb" },
+    };
+    for (expected, collisions) |want, got| {
+        try std.testing.expectEqualStrings(want[0], got.output_name);
+        try std.testing.expectEqualStrings(want[1], got.filename);
+    }
+}
+
+test "findOutputNameCollisions uses the output format extension" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const files = [_][]const u8{ "1crn.ent", "1crn.pdb" };
+    const collisions = try findOutputNameCollisions(arena.allocator(), &files, .{ .output_format = .csv });
+
+    try std.testing.expectEqual(@as(usize, 2), collisions.len);
+    try std.testing.expectEqualStrings("1crn.csv", collisions[0].output_name);
+}
+
+test "findOutputNameCollisions accepts distinct stems" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // "1crn.v2.pdb" keeps its inner dot ("1crn.v2.json"), so it does not
+    // collide with "1crn.pdb".
+    const files = [_][]const u8{ "1crn.pdb", "1crn.v2.pdb", "1ubq.cif.gz", "3hhb.json" };
+    const collisions = try findOutputNameCollisions(arena.allocator(), &files, .{});
+
+    try std.testing.expectEqual(@as(usize, 0), collisions.len);
+}
+
+test "findOutputNameCollisions keeps SDF outputs in their own namespace" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // SDF outputs are "stem_molname", so "lig.sdf" does not collide with "lig.pdb".
+    const distinct = [_][]const u8{ "lig.pdb", "lig.sdf" };
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        (try findOutputNameCollisions(arena.allocator(), &distinct, .{})).len,
+    );
+
+    const shared = [_][]const u8{ "lig.mol", "lig.pdb", "lig.sdf.gz" };
+    const collisions = try findOutputNameCollisions(arena.allocator(), &shared, .{});
+    try std.testing.expectEqual(@as(usize, 2), collisions.len);
+    try std.testing.expectEqualStrings("lig_*.json", collisions[0].output_name);
+    try std.testing.expectEqualStrings("lig.mol", collisions[0].filename);
+    try std.testing.expectEqualStrings("lig.sdf.gz", collisions[1].filename);
+}
+
+test "validateUniqueOutputNames only applies to per-file output" {
+    const files = [_][]const u8{ "1crn.cif", "1crn.pdb" };
+
+    // No output directory: nothing is written per file.
+    try validateUniqueOutputNames(std.testing.allocator, &files, null, .{});
+    // JSONL keeps one record per input.
+    try validateUniqueOutputNames(std.testing.allocator, &files, "out", .{
+        .output_format = .jsonl,
+        .store_atom_areas = true,
+    });
+}
+
+test "batch runners reject colliding output names before writing anything" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root_path = root_buf[0..root_len];
+
+    const input_dir = try std.fs.path.join(allocator, &.{ root_path, "input" });
+    defer allocator.free(input_dir);
+    const output_dir = try std.fs.path.join(allocator, &.{ root_path, "output" });
+    defer allocator.free(output_dir);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+
+    const pdb_data =
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N\n" ++
+        "ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C\n" ++
+        "ATOM      3  C   ALA A   1       3.000   0.000   0.000  1.00 20.00           C\n" ++
+        "END\n";
+    for ([_][]const u8{ "tiny.pdb", "tiny.ent", "other.pdb" }) |filename| {
+        const path = try std.fs.path.join(allocator, &.{ input_dir, filename });
+        defer allocator.free(path);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = pdb_data });
+    }
+
+    const config = BatchConfig{
+        .n_threads = 2,
+        .n_points = 8,
+        .quiet = true,
+        .show_progress = false,
+        .classifier_type = .naccess,
+    };
+
+    try std.testing.expectError(
+        error.OutputNameCollision,
+        runBatchSequential(allocator, std.testing.io, input_dir, output_dir, config, null),
+    );
+    try std.testing.expectError(
+        error.OutputNameCollision,
+        runBatchParallel(allocator, std.testing.io, input_dir, output_dir, config, null),
+    );
+    try std.testing.expectError(
+        error.FileNotFound,
+        std.Io.Dir.cwd().access(std.testing.io, output_dir, .{}),
+    );
+
+    // Without per-file output every input is still processed.
+    var result = try runBatchParallel(allocator, std.testing.io, input_dir, null, config, null);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 3), result.total_files);
+    try std.testing.expectEqual(@as(usize, 3), result.successful);
+}
+
 test "CLI auth-chain overrides workflow job auth_chain false" {
     var config = BatchConfig{};
     const args = BatchArgs{ .use_auth_chain = true };
@@ -6242,6 +6491,86 @@ test "workflow file-first keeps existing output layout" {
     defer allocator.free(chain_a_json_content_2);
     try std.testing.expect(std.mem.indexOf(u8, chain_a_json_content, "\"total_area\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, chain_a_json_content_2, "\"total_area\"") != null);
+}
+
+test "workflow rejects colliding per-file output names before creating output" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root_path = root_buf[0..root_len];
+
+    const input_dir = try std.fs.path.join(allocator, &.{ root_path, "input" });
+    defer allocator.free(input_dir);
+    const output_dir = try std.fs.path.join(allocator, &.{ root_path, "output" });
+    defer allocator.free(output_dir);
+    const workflow_path = try std.fs.path.join(allocator, &.{ root_path, "workflow.toml" });
+    defer allocator.free(workflow_path);
+
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+    for ([_][]const u8{ "tiny.pdb", "tiny.ent" }) |filename| {
+        const path = try std.fs.path.join(allocator, &.{ input_dir, filename });
+        defer allocator.free(path);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+            .sub_path = path,
+            .data =
+            \\ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N
+            \\ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C
+            \\END
+            \\
+            ,
+        });
+    }
+
+    inline for (.{ "json", "jsonl" }) |format| {
+        const workflow = try std.fmt.allocPrint(allocator,
+            \\version = 1
+            \\kind = "workflow"
+            \\
+            \\[input]
+            \\dir = "{s}"
+            \\
+            \\[output]
+            \\dir = "{s}"
+            \\format = "{s}"
+            \\
+            \\[calculation]
+            \\n_points = 1
+            \\quiet = true
+            \\
+            \\[classifier]
+            \\type = "naccess"
+            \\
+            \\[[jobs]]
+            \\name = "chain_a"
+            \\chains = ["A"]
+            \\
+        , .{ input_dir, output_dir, format });
+        defer allocator.free(workflow);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
+
+        if (comptime std.mem.eql(u8, format, "json")) {
+            try std.testing.expectError(
+                error.OutputNameCollision,
+                runWorkflow(allocator, std.testing.io, .{ .workflow_path = workflow_path }),
+            );
+            try std.testing.expectError(
+                error.FileNotFound,
+                std.Io.Dir.cwd().access(std.testing.io, output_dir, .{}),
+            );
+        } else {
+            // JSONL keeps one record per input, so the same inputs are accepted.
+            try runWorkflow(allocator, std.testing.io, .{ .workflow_path = workflow_path });
+            const jsonl_path = try std.fs.path.join(allocator, &.{ output_dir, "chain_a.jsonl" });
+            defer allocator.free(jsonl_path);
+            const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, jsonl_path, allocator, .limited(4096));
+            defer allocator.free(content);
+            try std.testing.expect(std.mem.indexOf(u8, content, "\"filename\":\"tiny.pdb\"") != null);
+            try std.testing.expect(std.mem.indexOf(u8, content, "\"filename\":\"tiny.ent\"") != null);
+        }
+    }
 }
 
 test "workflow chain map selects per-file PDB and mmCIF chain complexes" {
