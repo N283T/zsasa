@@ -805,8 +805,9 @@ pub fn printHelp(program_name: []const u8) void {
         \\    {s} calc [OPTIONS] [input] [output.json]
         \\
         \\ARGUMENTS:
-        \\    [input]          Input file (JSON, PDB, or mmCIF format, auto-detected)
-        \\                     Supported: .json, .cif, .mmcif, .pdb, .ent
+        \\    [input]          Input file, format auto-detected from the extension
+        \\                     Supported: .json, .cif, .mmcif, .bcif, .pdb, .ent,
+        \\                     .sdf, .mol, each also as .gz or .zst
         \\                     Optional when --workflow provides [input].path
         \\    [output.json]    Output file (default: output.json)
         \\
@@ -814,7 +815,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --algorithm=ALGO   Algorithm: sr (shrake-rupley), lr (lee-richards)
         \\                       Default: sr
         \\    --classifier=TYPE  Built-in classifier: ccd, protor, naccess, oons
-        \\                       Default: ccd for PDB/mmCIF, none for JSON
+        \\                       Default: ccd for structure files, none for JSON
         \\                       protor uses static ProtOr-compatible radii only
         \\    --ccd=PATH         External CCD dictionary file (.zsdc or .cif[.gz|.zst])
         \\                       Extends CCD coverage for non-standard residues
@@ -863,7 +864,7 @@ pub fn printHelp(program_name: []const u8) void {
         \\    lr, lee-richards   Slice-based method
         \\
         \\CLASSIFIERS:
-        \\    ccd      CCD bond-topology radii (default for PDB/mmCIF)
+        \\    ccd      CCD bond-topology radii (default for structure files)
         \\    protor   Static ProtOr-compatible radii (Tsai et al. 1999)
         \\    naccess  NACCESS-compatible radii
         \\    oons     OONS radii (Ooi et al.)
@@ -871,7 +872,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\OUTPUT FORMATS:
         \\    json     Pretty-printed JSON with indentation
         \\    compact  Single-line JSON (no whitespace)
-        \\    csv      CSV with atom_index,area columns
+        \\    csv      CSV; structure input: chain,residue,resnum,atom_name,x,y,z,radius,area
+        \\             (JSON input without residue info: atom_index,area)
         \\    freesasa FreeSASA-compatible text summary
         \\    rsa      FreeSASA/NACCESS-compatible RSA residue table
         \\

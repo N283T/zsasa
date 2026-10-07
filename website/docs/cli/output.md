@@ -116,9 +116,9 @@ The `traj` subcommand outputs CSV with per-frame total SASA:
 
 ```csv
 frame,step,time,total_sasa
-0,1,1.000,1866.44
-1,2,2.000,1977.96
-2,3,3.000,1884.93
+0,1,1.000,1840.88
+1,2,2.000,1944.47
+2,3,3.000,1848.46
 ...
 ```
 
