@@ -72,19 +72,17 @@ Standard mmCIF files are supported. The parser extracts:
 - `_atom_site.label_seq_id` / `auth_seq_id` - Residue number
 - `_atom_site.pdbx_PDB_ins_code` - Insertion code
 - `_atom_site.pdbx_PDB_model_num` - Model number
-- `_atom_site.label_alt_id` - Alternate location (`--altloc=auto` by default)
+- `_atom_site.label_alt_id` and `_atom_site.occupancy` - Alternate location (see [Alternate Locations](#alternate-locations))
 
 Residue numbers come from `label_seq_id`. Non-polymer residues (waters, ligands, glycans) have no `label_seq_id` and are numbered by `auth_seq_id`, the number they have in the PDB-format file. With `--auth-chain`, every residue is numbered by `auth_seq_id`, so chain IDs, residue numbers and insertion codes together match the PDB-format file; a row without a usable `auth_seq_id` falls back to `label_seq_id`. A residue with neither value is numbered 0. BinaryCIF input follows the same rules.
 
-Alternate-location handling can be controlled with `--altloc=MODE` for mmCIF and BinaryCIF input. `auto` preserves the historical behavior (blank alternate location first, then `A`, then highest occupancy), `none` assumes no non-blank alternate locations and errors if one is found, `all` keeps every alternate, `highest-occupancy` keeps the highest-occupancy atom for each site, and a single ID such as `--altloc=A` keeps blank atoms plus that alternate ID.
-
 ## BinaryCIF Format
 
-BinaryCIF input decodes `_atom_site` for SASA calculation, supports the same `--altloc` policy as mmCIF, and uses embedded `_chem_comp_atom` / `_chem_comp_bond` inline CCD data when `--classifier=ccd` (or the `ccd` default) needs bond topology for non-standard compounds. You can still provide external CCD or SDF topology when the BinaryCIF file does not include component topology.
+BinaryCIF input decodes `_atom_site` for SASA calculation, follows the same [alternate-location](#alternate-locations) rules as mmCIF and PDB input, and uses embedded `_chem_comp_atom` / `_chem_comp_bond` inline CCD data when `--classifier=ccd` (or the `ccd` default) needs bond topology for non-standard compounds. You can still provide external CCD or SDF topology when the BinaryCIF file does not include component topology.
 
 ## PDB Format
 
-Standard PDB format files are supported with ATOM and HETATM records.
+Standard PDB format files are supported with ATOM and HETATM records. The alternate location indicator in column 17 is handled as described in [Alternate Locations](#alternate-locations).
 
 The element of each atom is read from columns 77-78. It decides which atoms are hydrogens (removed unless `--include-hydrogens` is given) and which generic radius an atom gets when the classifier has no entry for it. When those columns are blank or do not hold an element symbol (files written before the element column existed can carry an ID code and line number there), the element is inferred from the atom name in columns 13-16:
 
@@ -93,6 +91,34 @@ The element of each atom is read from columns 77-78. It decides which atoms are 
 - Four-character names fill column 13 whatever their element, so `HG21` or `HD11` is a hydrogen.
 
 Some programs left-justify or center atom names instead (`CA  ` for an alpha carbon). zsasa detects such files and then relies on the names alone: a name starting with H, C, N, O, P or S is that element. In those files a metal or halogen inside a larger residue (`CL1` in a ligand) cannot be told from carbon, so write the element column if you can.
+
+## Alternate Locations {#alternate-locations}
+
+A structure can list several alternate locations (altlocs) for an atom, each with an altloc ID (`A`, `B`, ...) and an occupancy. `--altloc=MODE` chooses which of them are used. It applies to PDB, mmCIF and BinaryCIF input of `calc` and `batch` and to the topology of `traj`, with the same rules for every format. In a [workflow file](../guide/workflows.md#alternate-locations) the setting is `altloc` under `[calculation]`.
+
+| Mode | Atoms kept |
+|------|------------|
+| `auto` (default) | One alternate per atom: altloc `A` if the atom has one, otherwise the alternate with the highest occupancy |
+| `highest-occupancy` | One alternate per atom: the one with the highest occupancy |
+| one ID, such as `B` | The alternates with that ID. An atom that has alternates, but none with this ID, is left out |
+| `all` | Every alternate. Alternates of one atom overlap, so use this only when the input was prepared for it |
+| `none` | The input is expected to have no altloc IDs: reading fails with `UnexpectedAltLoc` when an atom has one |
+
+In every mode:
+
+- Atoms without an altloc ID are always kept. With `auto` and `highest-occupancy`, alternates of an atom that is also listed without an altloc ID are dropped.
+- Equal occupancies are a tie, and the alternate that comes first in the file is kept. This covers 0.50/0.50 pairs and files without occupancies, so exactly one alternate per atom survives.
+- The other filters apply first. Altloc IDs on HETATM records or hydrogens only matter (also for `none`) when those atoms are included.
+
+### Microheterogeneity
+
+At some positions the alternates are different residues: residue 22 of 1EJG is PRO as altloc `A` and SER as altlocs `B` and `C`. Choosing an alternate for each atom name separately would keep atoms of both residues, so zsasa first keeps one residue per position (chain, residue number and insertion code):
+
+- `auto`: the residue that has altloc `A`. Without an `A`, the residue with the highest occupancy.
+- `highest-occupancy`: the residue with the highest occupancy.
+- one ID: the residue that carries the ID.
+
+The occupancy of a residue is the occupancy of its first atom with an altloc ID in the file, and on a tie the residue that comes first is kept. The alternate of each atom is then chosen within the surviving residue by the rules above. Atoms of the position without an altloc ID, such as a backbone N that both residues share, are kept under the residue name they have in the file.
 
 ## SDF/MOL Format
 

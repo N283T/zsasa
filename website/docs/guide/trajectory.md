@@ -93,7 +93,7 @@ The topology must describe exactly the atoms stored in the trajectory, in the sa
 - A multi-model file (for example an NMR ensemble) can be used directly; only its first model is the topology.
 - Solvent, ions and ligands that are part of the trajectory must be listed in the topology, and they are part of the reported SASA. To restrict the calculation to a subset, write a trajectory and topology that contain only those atoms, or use the [MDAnalysis integration](../integrations/mdanalysis.md) with a selection.
 - For residues the classifier does not know, radii fall back to generic atom-name or element-based values, as in `calc`.
-- For mmCIF topologies, `--altloc` selects which alternate locations are kept (default `auto`).
+- `--altloc` selects which [alternate locations](../cli/input.md#alternate-locations) of a PDB or mmCIF topology are kept (default `auto`, one per atom). The trajectory must hold the atoms that remain.
 
 ### Hydrogens
 

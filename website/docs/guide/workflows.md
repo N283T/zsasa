@@ -106,6 +106,17 @@ zsasa batch --workflow bsa.toml
 
 For ordinary PDB, JSON, and unfiltered mmCIF/BinaryCIF workflow batch runs with compatible chain-ID settings, zsasa reuses each parsed input structure across jobs internally. For named chain analyses such as chain A, chain B, and complex AB, list only the jobs you want; eligible runs parse each input structure once and then compute each requested chain selection independently. Some inputs or settings, such as SDF files, per-job `auth_chain` changes, or mmCIF/BinaryCIF workflows with chain filters, use the compatibility job-first path instead so full chain-ID selection matches parser behavior.
 
+## Alternate Locations {#alternate-locations}
+
+Set `altloc` under `[calculation]` to choose which alternate locations are used. It takes the values of the `--altloc` option: `"auto"` (the default), `"none"`, `"all"`, `"highest-occupancy"`, or one altloc ID such as `"B"`.
+
+```toml
+[calculation]
+altloc = "highest-occupancy"
+```
+
+The key applies to `calc --workflow` and to every batch workflow: jobs, chain maps and BSA analysis. `--altloc` on the command line takes precedence over the key, and a value that is not one of the above is rejected when the workflow is read. The modes are described in [Alternate Locations](../cli/input.md#alternate-locations).
+
 ## Per-file Chain Maps
 
 Use a chain map when each structure needs a different chain selection. Set
