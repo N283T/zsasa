@@ -731,6 +731,12 @@ fn applyWorkflowCalculationToCalcArgs(args: *CalcArgs, calculation: workflow_man
     if (!args.auth_chain_explicit) {
         if (calculation.auth_chain) |auth_chain| args.use_auth_chain = auth_chain;
     }
+    if (!args.alt_loc_explicit) {
+        if (calculation.altloc) |setting| {
+            args.alt_loc_mode = setting.mode;
+            args.alt_loc_id = setting.id;
+        }
+    }
     if (!args.per_residue_explicit) {
         if (calculation.per_residue) |per_residue| args.per_residue = per_residue;
     }
@@ -2219,6 +2225,28 @@ test "calc --altloc applies to PDB input as it does to mmCIF input" {
         const none_args = parseArgs(&.{ "zsasa", "calc", "--altloc=none", path }, 2);
         try std.testing.expectError(error.UnexpectedAltLoc, readInputFile(allocator, std.testing.io, path, none_args));
     }
+}
+
+test "calc workflow altloc applies unless --altloc is given" {
+    const calculation = workflow_manifest.Calculation{ .altloc = .{ .mode = .selected, .id = 'B' } };
+
+    var args = parseArgs(&.{ "zsasa", "calc", "input.pdb" }, 2);
+    try applyWorkflowCalculationToCalcArgs(&args, calculation);
+    try std.testing.expectEqual(mmcif_parser.AltLocMode.selected, args.alt_loc_mode);
+    try std.testing.expectEqual(@as(u8, 'B'), args.alt_loc_id);
+
+    var explicit = parseArgs(&.{ "zsasa", "calc", "--altloc=all", "input.pdb" }, 2);
+    try applyWorkflowCalculationToCalcArgs(&explicit, calculation);
+    try std.testing.expectEqual(mmcif_parser.AltLocMode.all, explicit.alt_loc_mode);
+
+    // --altloc=auto is explicit too
+    var explicit_auto = parseArgs(&.{ "zsasa", "calc", "--altloc", "auto", "input.pdb" }, 2);
+    try applyWorkflowCalculationToCalcArgs(&explicit_auto, calculation);
+    try std.testing.expectEqual(mmcif_parser.AltLocMode.auto, explicit_auto.alt_loc_mode);
+
+    var without_key = parseArgs(&.{ "zsasa", "calc", "input.pdb" }, 2);
+    try applyWorkflowCalculationToCalcArgs(&without_key, .{});
+    try std.testing.expectEqual(mmcif_parser.AltLocMode.auto, without_key.alt_loc_mode);
 }
 
 test "calc excludes HETATM by default, also with the CCD classifier" {
