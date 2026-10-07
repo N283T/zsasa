@@ -45,6 +45,7 @@ pub const SdfAtom = struct {
     x: f64,
     y: f64,
     z: f64,
+    /// Deuterium (`D`) and tritium (`T`) are stored as `.H`.
     element: elem.Element,
 };
 
@@ -316,7 +317,7 @@ fn parseV3000Body(
             const x = std.fmt.parseFloat(f64, x_str) catch return error.InvalidFloat;
             const y = std.fmt.parseFloat(f64, y_str) catch return error.InvalidFloat;
             const z = std.fmt.parseFloat(f64, z_str) catch return error.InvalidFloat;
-            const element = elem.fromSymbol(elem_str);
+            const element = elementFromSymbol(elem_str);
 
             atom_list.appendAssumeCapacity(.{ .x = x, .y = y, .z = z, .element = element });
         }
@@ -424,9 +425,25 @@ fn parseAtomLine(line: []const u8) SdfError!SdfAtom {
 
     // Element symbol at columns 31-33 (0-indexed), trimmed
     const element_str = std.mem.trim(u8, line[31..34], " ");
-    const element = elem.fromSymbol(element_str);
+    const element = elementFromSymbol(element_str);
 
     return .{ .x = x, .y = y, .z = z, .element = element };
+}
+
+/// Element of an atom block symbol.
+///
+/// `D` (deuterium) and `T` (tritium) are atom symbols of their own in MOL
+/// files. They are stored as hydrogen, so that they are excluded together
+/// with the other hydrogens and count as hydrogens when radii are derived
+/// from the bond table.
+fn elementFromSymbol(symbol: []const u8) elem.Element {
+    if (symbol.len == 1) {
+        switch (std.ascii.toUpper(symbol[0])) {
+            'D', 'T' => return .H,
+            else => {},
+        }
+    }
+    return elem.fromSymbol(symbol);
 }
 
 /// Parse a V2000 bond line.
@@ -585,7 +602,7 @@ pub fn toStoredComponent(allocator: Allocator, molecule: *const SdfMolecule) !cc
 /// - Residue name = molecule name truncated to 5 chars
 /// - Atom names generated as element + per-element index (C1, C2, O1...)
 /// - Radii default to element VdW radius (classifier will override later)
-/// - When `skip_hydrogens` is true, H atoms are excluded
+/// - When `skip_hydrogens` is true, H atoms (including D and T) are excluded
 pub fn toAtomInput(allocator: Allocator, molecules: []const SdfMolecule, skip_hydrogens: bool) !types.AtomInput {
     // Limit to 26 chains (A-Z)
     const max_chains: usize = @min(molecules.len, 26);
@@ -1684,4 +1701,156 @@ test "parse still rejects a record without a counts line" {
     ));
     // Only blank lines
     try std.testing.expectError(error.EmptySdf, parse(allocator, "\n\n\n\n\n\n"));
+}
+
+const test_ethanol_v2000 =
+    \\ethanol
+    \\     zsasa   3D
+    \\
+    \\  9  8  0  0  0  0  0  0  0  0999 V2000
+    \\    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+    \\    1.5200    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+    \\    2.0800    1.2124    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+    \\   -0.5200    0.9400    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0
+    \\   -0.5200   -0.5100    0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0
+    \\   -0.5200   -0.5100   -0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0
+    \\    1.8800   -0.5100    0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0
+    \\    1.8800   -0.5100   -0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0
+    \\    2.9200    1.2124    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0
+    \\  1  2  1  0  0  0  0
+    \\  1  4  1  0  0  0  0
+    \\  1  5  1  0  0  0  0
+    \\  1  6  1  0  0  0  0
+    \\  2  3  1  0  0  0  0
+    \\  2  7  1  0  0  0  0
+    \\  2  8  1  0  0  0  0
+    \\  3  9  1  0  0  0  0
+    \\M  END
+    \\$$$$
+    \\
+;
+
+const test_ethanol_v3000 =
+    \\ethanol
+    \\     zsasa   3D
+    \\
+    \\  0  0  0  0  0  0  0  0  0  0999 V3000
+    \\M  V30 BEGIN CTAB
+    \\M  V30 COUNTS 9 8 0 0 0
+    \\M  V30 BEGIN ATOM
+    \\M  V30 1 C 0.0000 0.0000 0.0000 0
+    \\M  V30 2 C 1.5200 0.0000 0.0000 0
+    \\M  V30 3 O 2.0800 1.2124 0.0000 0
+    \\M  V30 4 H -0.5200 0.9400 0.0000 0
+    \\M  V30 5 H -0.5200 -0.5100 0.8900 0
+    \\M  V30 6 H -0.5200 -0.5100 -0.8900 0
+    \\M  V30 7 H 1.8800 -0.5100 0.8900 0
+    \\M  V30 8 H 1.8800 -0.5100 -0.8900 0
+    \\M  V30 9 H 2.9200 1.2124 0.0000 0
+    \\M  V30 END ATOM
+    \\M  V30 BEGIN BOND
+    \\M  V30 1 1 1 2
+    \\M  V30 2 1 1 4
+    \\M  V30 3 1 1 5
+    \\M  V30 4 1 1 6
+    \\M  V30 5 1 2 3
+    \\M  V30 6 1 2 7
+    \\M  V30 7 1 2 8
+    \\M  V30 8 1 3 9
+    \\M  V30 END BOND
+    \\M  V30 END CTAB
+    \\M  END
+    \\$$$$
+    \\
+;
+
+/// Parses ethanol with the first `n_renamed` of its hydrogens (the three on
+/// C1 come first) written as `isotope`, and checks which atoms are kept and
+/// the radii derived from the bond table.
+fn expectHydrogenIsotope(ethanol: []const u8, comptime isotope: []const u8, n_renamed: usize) !void {
+    const allocator = std.testing.allocator;
+
+    // " H " matches the V2000 symbol column and the V3000 atom type
+    var source = try allocator.dupe(u8, ethanol);
+    defer allocator.free(source);
+    for (0..n_renamed) |_| {
+        const at = std.mem.find(u8, source, " H ").?;
+        const renamed = try std.mem.concat(allocator, u8, &.{ source[0..at], " " ++ isotope ++ " ", source[at + 3 ..] });
+        allocator.free(source);
+        source = renamed;
+    }
+
+    const molecules = try parse(allocator, source);
+    defer freeMolecules(allocator, molecules);
+    try std.testing.expectEqual(@as(usize, 1), molecules.len);
+    try std.testing.expectEqual(@as(usize, 9), molecules[0].atoms.len);
+    for (molecules[0].atoms[3..]) |atom| try std.testing.expectEqual(elem.Element.H, atom.element);
+
+    // Excluded with the hydrogens: C, C and O are left
+    {
+        var input = try toAtomInput(allocator, molecules, true);
+        defer input.deinit();
+        try std.testing.expectEqual(@as(usize, 3), input.atomCount());
+        try std.testing.expectEqualSlices(u8, &.{ 6, 6, 8 }, input.element.?);
+        const names = input.atom_name.?;
+        try std.testing.expectEqualStrings("C1", names[0].slice());
+        try std.testing.expectEqualStrings("C2", names[1].slice());
+        try std.testing.expectEqualStrings("O1", names[2].slice());
+    }
+
+    // Included with the hydrogens, as hydrogen
+    {
+        var input = try toAtomInput(allocator, molecules, false);
+        defer input.deinit();
+        try std.testing.expectEqual(@as(usize, 9), input.atomCount());
+        const names = input.atom_name.?;
+        for (3..9) |i| {
+            try std.testing.expectEqual(@as(u8, 1), input.element.?[i]);
+            try std.testing.expectEqual(elem.Element.H.vdwRadius(), input.r[i]);
+        }
+        try std.testing.expectEqualStrings("H1", names[3].slice());
+        try std.testing.expectEqualStrings("H6", names[8].slice());
+    }
+
+    // Counted as hydrogens of their carbon: C1 is C4H3 (1.88), not
+    // hydrogen-free (1.61)
+    var stored = try toStoredComponent(allocator, &molecules[0]);
+    defer stored.deinit();
+    const view = stored.view();
+    const derived = try hybridization.deriveComponentProperties(allocator, &view);
+    defer allocator.free(derived);
+    try std.testing.expectEqual(@as(usize, 3), derived.len);
+    try std.testing.expectEqualStrings("C1", derived[0].atomIdSlice());
+    try std.testing.expectEqual(@as(f64, 1.88), derived[0].props.radius);
+    try std.testing.expectEqual(@as(f64, 1.88), derived[1].props.radius);
+    try std.testing.expectEqual(@as(f64, 1.46), derived[2].props.radius);
+}
+
+test "deuterium and tritium are hydrogen" {
+    // One deuterium, and a CD3 group
+    try expectHydrogenIsotope(test_ethanol_v2000, "D", 1);
+    try expectHydrogenIsotope(test_ethanol_v2000, "D", 3);
+    try expectHydrogenIsotope(test_ethanol_v3000, "D", 1);
+    try expectHydrogenIsotope(test_ethanol_v3000, "D", 3);
+    // Tritium
+    try expectHydrogenIsotope(test_ethanol_v2000, "T", 3);
+    try expectHydrogenIsotope(test_ethanol_v3000, "T", 3);
+    // Every hydrogen replaced
+    try expectHydrogenIsotope(test_ethanol_v2000, "D", 6);
+    try expectHydrogenIsotope(test_ethanol_v3000, "D", 6);
+}
+
+test "elementFromSymbol maps D and T to hydrogen only as whole symbols" {
+    try std.testing.expectEqual(elem.Element.H, elementFromSymbol("H"));
+    try std.testing.expectEqual(elem.Element.H, elementFromSymbol("D"));
+    try std.testing.expectEqual(elem.Element.H, elementFromSymbol("T"));
+    try std.testing.expectEqual(elem.Element.H, elementFromSymbol("d"));
+    // Elements whose symbols start with D or T keep their element
+    try std.testing.expectEqual(elem.Element.Dy, elementFromSymbol("Dy"));
+    try std.testing.expectEqual(elem.Element.Ti, elementFromSymbol("Ti"));
+    try std.testing.expectEqual(elem.Element.Tc, elementFromSymbol("Tc"));
+    try std.testing.expectEqual(elem.Element.C, elementFromSymbol("C"));
+    try std.testing.expectEqual(elem.Element.Cl, elementFromSymbol("Cl"));
+    try std.testing.expectEqual(elem.Element.X, elementFromSymbol("R#"));
+    try std.testing.expectEqual(elem.Element.X, elementFromSymbol(""));
 }
