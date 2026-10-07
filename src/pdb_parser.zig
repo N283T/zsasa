@@ -35,6 +35,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const elem = @import("element.zig");
 const input_io = @import("input_io.zig");
+const altloc = @import("altloc.zig");
 const mmap_reader = @import("mmap_reader.zig");
 const compressed = @import("compressed.zig");
 const types = @import("types.zig");
@@ -191,8 +192,13 @@ pub const PdbParser = struct {
             try atom_records.append(self.allocator, atom);
         }
 
+        const keep = try self.resolveAltLocs(atom_records.items);
+        defer if (keep) |flags| self.allocator.free(flags);
+
         for (atom_records.items, 0..) |atom, i| {
-            if (!self.shouldKeepAltLoc(atom_records.items, i)) continue;
+            if (keep) |flags| {
+                if (!flags[i]) continue;
+            }
 
             try appendAtomRecord(
                 self.allocator,
@@ -277,6 +283,19 @@ pub const PdbParser = struct {
         occupancy: f64,
         model_num: ?u32 = null,
         is_hydrogen: bool = false,
+
+        pub fn altLocSite(self: AtomRecord) altloc.Site {
+            return .{
+                .model_num = self.model_num,
+                .chain_id = self.chain_id,
+                .seq = self.residue_num,
+                .insertion_code = self.insertion_code,
+                .residue = self.residue,
+                .atom_name = self.atom_name,
+                .alt_loc = self.alt_loc,
+                .occupancy = self.occupancy,
+            };
+        }
     };
 
     fn appendAtomRecord(
@@ -305,35 +324,11 @@ pub const PdbParser = struct {
         try insertion_code_list.append(allocator, types.FixedString4.fromSlice(atom.insertion_code));
     }
 
-    fn sameAltLocSite(a: AtomRecord, b: AtomRecord) bool {
-        return a.model_num == b.model_num and
-            a.residue_num == b.residue_num and
-            std.mem.eql(u8, a.chain_id, b.chain_id) and
-            std.mem.eql(u8, a.residue, b.residue) and
-            std.mem.eql(u8, a.insertion_code, b.insertion_code) and
-            std.mem.eql(u8, a.atom_name, b.atom_name);
-    }
-
-    fn shouldKeepAltLoc(self: *PdbParser, atoms: []const AtomRecord, index: usize) bool {
-        if (!self.first_alt_loc_only) return true;
-
-        const atom = atoms[index];
-        if (atom.alt_loc == ' ') return true;
-
-        var best_non_preferred: ?usize = null;
-        for (atoms, 0..) |other, other_index| {
-            if (!sameAltLocSite(atom, other)) continue;
-            if (other.alt_loc == ' ') return false;
-            if (other.alt_loc == 'A') return atom.alt_loc == 'A';
-            if (best_non_preferred) |best_index| {
-                if (other.occupancy > atoms[best_index].occupancy) {
-                    best_non_preferred = other_index;
-                }
-            } else {
-                best_non_preferred = other_index;
-            }
-        }
-        return best_non_preferred == index;
+    /// One flag per record, true for the records that survive altLoc
+    /// resolution, or null when all of them do. The caller frees the flags.
+    fn resolveAltLocs(self: *PdbParser, atoms: []const AtomRecord) !?[]bool {
+        if (!self.first_alt_loc_only) return null;
+        return altloc.resolve(AtomRecord, self.allocator, atoms, .{ .mode = .auto });
     }
 
     /// Parse a single ATOM/HETATM record
@@ -1104,6 +1099,42 @@ test "PdbParser altLoc selection is scoped by model" {
     try testing.expectEqual(@as(usize, 2), input.atomCount());
     try testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
     try testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
+}
+
+test "PdbParser resolves the altLocs of a large file in linear time" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // 30,000 residues whose CA has the alternates A and B
+    const n_residues = 30_000;
+    var source = std.ArrayListUnmanaged(u8).empty;
+    defer source.deinit(allocator);
+    for (0..n_residues) |i| {
+        for ("AB", 0..) |alt_loc, k| {
+            var buf: [96]u8 = undefined;
+            try source.appendSlice(allocator, try std.fmt.bufPrint(
+                &buf,
+                "ATOM  {d:>5}  CA {c}ALA {c}{d:>4}    {d:>4}.000{d:>4}.000   0.000  0.50 10.00           C\n",
+                .{ (2 * i + k + 1) % 100_000, alt_loc, "ABCD"[i / 9999], i % 9999 + 1, i % 1000, k },
+            ));
+        }
+    }
+
+    var parser = PdbParser.init(allocator);
+    const start = std.Io.Timestamp.now(testing.io, .awake);
+    var input = try parser.parse(source.items);
+    defer input.deinit();
+    const elapsed_ns = start.untilNow(testing.io, .awake).nanoseconds;
+
+    try testing.expectEqual(@as(usize, n_residues), input.atomCount());
+    for (input.x, input.y, 0..) |x, y, i| {
+        try testing.expectEqual(@as(f64, @floatFromInt(i % 1000)), x);
+        try testing.expectEqual(@as(f64, 0.0), y); // alternate A
+    }
+
+    // A scan over all atoms for every alternate takes about a minute here
+    // in a debug build, and the hash maps a few milliseconds
+    try testing.expect(elapsed_ns < 15 * std.time.ns_per_s);
 }
 
 test "PdbParser atom_only filter (default)" {

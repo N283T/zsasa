@@ -853,8 +853,13 @@ pub const BcifParser = struct {
             try atom_records.append(self.allocator, atom);
         }
 
+        const keep = try self.resolveAltLocs(atom_records.items);
+        defer if (keep) |flags| self.allocator.free(flags);
+
         for (atom_records.items, 0..) |atom, i| {
-            if (!self.shouldKeepAltLoc(atom_records.items, i)) continue;
+            if (keep) |flags| {
+                if (!flags[i]) continue;
+            }
 
             try x_list.append(self.allocator, atom.x);
             try y_list.append(self.allocator, atom.y);
@@ -965,6 +970,23 @@ pub const BcifParser = struct {
         alt_loc: u8,
         occupancy: f64,
         model_num: ?u32,
+
+        /// label_seq_id and auth_seq_id are separate numberings: with auth
+        /// chain IDs a polymer residue and a non-polymer residue can share a
+        /// chain and a number, and they are still different residue positions.
+        pub fn altLocSite(self: AtomRecord) altloc.Site {
+            return .{
+                .model_num = self.model_num,
+                .chain_id = self.chain_id,
+                .seq = self.site_seq,
+                .seq_is_auth = self.site_seq_is_auth,
+                .insertion_code = self.insertion_code,
+                .residue = self.residue,
+                .atom_name = self.atom_name,
+                .alt_loc = self.alt_loc,
+                .occupancy = self.occupancy,
+            };
+        }
     };
 
     fn atomRecordFromRow(self: *BcifParser, decoded: []const DecodedColumn, columns: AtomSiteColumns, row: usize) !AtomRecord {
@@ -1027,75 +1049,14 @@ pub const BcifParser = struct {
         };
     }
 
-    fn sameAltLocSite(a: AtomRecord, b: AtomRecord) bool {
-        // label_seq_id and auth_seq_id are separate numberings: with auth chain
-        // IDs a polymer residue and a non-polymer residue can share a chain and
-        // a number, and they are still different sites.
-        return a.model_num == b.model_num and
-            a.site_seq == b.site_seq and
-            a.site_seq_is_auth == b.site_seq_is_auth and
-            std.mem.eql(u8, a.chain_id, b.chain_id) and
-            std.mem.eql(u8, a.residue, b.residue) and
-            std.mem.eql(u8, a.insertion_code, b.insertion_code) and
-            std.mem.eql(u8, a.atom_name, b.atom_name);
-    }
-
-    fn shouldKeepAltLoc(self: *BcifParser, atoms: []const AtomRecord, index: usize) bool {
-        if (!self.first_alt_loc_only) return true;
-
-        return switch (self.alt_loc_mode) {
-            .all, .none => true,
-            .selected => blk: {
-                const atom = atoms[index];
-                break :blk atom.alt_loc == ' ' or atom.alt_loc == self.alt_loc_id;
-            },
-            .highest_occupancy => shouldKeepHighestOccupancyAltLoc(atoms, index),
-            .auto => shouldKeepAutoAltLoc(atoms, index),
-        };
-    }
-
-    fn shouldKeepAutoAltLoc(atoms: []const AtomRecord, index: usize) bool {
-        const atom = atoms[index];
-        if (atom.alt_loc == ' ') return true;
-
-        var best_non_preferred: ?usize = null;
-        for (atoms, 0..) |other, other_index| {
-            if (!sameAltLocSite(atom, other)) continue;
-            if (other.alt_loc == ' ') return false;
-            if (other.alt_loc == 'A') return atom.alt_loc == 'A';
-            if (best_non_preferred) |best_index| {
-                if (other.occupancy > atoms[best_index].occupancy) {
-                    best_non_preferred = other_index;
-                }
-            } else {
-                best_non_preferred = other_index;
-            }
-        }
-        return best_non_preferred == index;
-    }
-
-    /// Keep the alternate with the highest occupancy at its site. Alternates
-    /// with equal occupancy (a 0.50/0.50 pair, or a file without an occupancy
-    /// column) are a tie, and the one that comes first in the file wins, so
-    /// exactly one alternate per site survives. Atoms without an altLoc are
-    /// always kept, and an alternate that shares its site with one is dropped.
-    fn shouldKeepHighestOccupancyAltLoc(atoms: []const AtomRecord, index: usize) bool {
-        const atom = atoms[index];
-        if (atom.alt_loc == ' ') return true;
-
-        var best: ?usize = null;
-        for (atoms, 0..) |other, other_index| {
-            if (!sameAltLocSite(atom, other)) continue;
-            if (other.alt_loc == ' ') return false;
-            if (best) |best_index| {
-                if (other.occupancy > atoms[best_index].occupancy) {
-                    best = other_index;
-                }
-            } else {
-                best = other_index;
-            }
-        }
-        return best == index;
+    /// One flag per record, true for the records that survive altLoc
+    /// resolution, or null when all of them do. The caller frees the flags.
+    fn resolveAltLocs(self: *BcifParser, atoms: []const AtomRecord) !?[]bool {
+        if (!self.first_alt_loc_only) return null;
+        return altloc.resolve(AtomRecord, self.allocator, atoms, .{
+            .mode = self.alt_loc_mode,
+            .id = self.alt_loc_id,
+        });
     }
 
     fn shouldIncludeAtom(self: *BcifParser, decoded: []const DecodedColumn, columns: AtomSiteColumns, row: usize) bool {
@@ -2227,10 +2188,15 @@ fn packBin(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), value: []co
     if (value.len <= 255) {
         try bytes.append(allocator, 0xc4);
         try bytes.append(allocator, @intCast(value.len));
-    } else {
+    } else if (value.len <= std.math.maxInt(u16)) {
         try bytes.append(allocator, 0xc5);
         var buf: [2]u8 = undefined;
         std.mem.writeInt(u16, &buf, @intCast(value.len), .big);
+        try bytes.appendSlice(allocator, &buf);
+    } else {
+        try bytes.append(allocator, 0xc6);
+        var buf: [4]u8 = undefined;
+        std.mem.writeInt(u32, &buf, @intCast(value.len), .big);
         try bytes.appendSlice(allocator, &buf);
     }
     try bytes.appendSlice(allocator, value);
@@ -2879,6 +2845,51 @@ test "parse BinaryCIF altLoc selection is scoped by model" {
     try std.testing.expectEqual(@as(usize, 2), input.atomCount());
     try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
+}
+
+test "parse BinaryCIF resolves the altLocs of a large file in linear time" {
+    const allocator = std.testing.allocator;
+
+    // 30,000 residues whose CA has the alternates A and B
+    const n_residues = 30_000;
+    const rows = try allocator.alloc(TestAtomRow, 2 * n_residues);
+    defer allocator.free(rows);
+    for (rows, 0..) |*row, i| {
+        row.* = .{
+            .group = "ATOM",
+            .element = "C",
+            .atom = "CA",
+            .residue = "ALA",
+            .chain = "A",
+            .seq = @intCast(i / 2 + 1),
+            .alt = if (i % 2 == 0) "A" else "B",
+            .occupancy = 0.5,
+            .x = @floatFromInt((i / 2) % 1000),
+            .y = @floatFromInt(i % 2),
+        };
+    }
+    const source = try buildAltLocBcif(rows, true);
+    defer allocator.free(source);
+
+    // An arena, because the bookkeeping that std.testing.allocator does for
+    // the allocations of every row would take longer than the parsing
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    var parser = BcifParser.init(arena.allocator());
+    const start = std.Io.Timestamp.now(std.testing.io, .awake);
+    const input = try parser.parse(source);
+    const elapsed_ns = start.untilNow(std.testing.io, .awake).nanoseconds;
+
+    try std.testing.expectEqual(@as(usize, n_residues), input.atomCount());
+    for (input.x, input.y, 0..) |x, y, i| {
+        try std.testing.expectEqual(@as(f64, @floatFromInt(i % 1000)), x);
+        try std.testing.expectEqual(@as(f64, 0.0), y); // alternate A
+    }
+
+    // A scan over all atoms for every alternate takes about a minute here
+    // in a debug build, and the hash maps a few milliseconds
+    try std.testing.expect(elapsed_ns < 15 * std.time.ns_per_s);
 }
 
 test "parse BinaryCIF numbers non-polymer rows by auth_seq_id when label_seq_id is null" {
