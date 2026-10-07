@@ -123,6 +123,7 @@ pub const Component = struct {
 pub const BondAnalysis = struct {
     hybridization: Hybridization,
     heavy_bond_count: u8,
+    /// Valence units used by bonds to heavy atoms (aromatic = 1.5, rounded up).
     heavy_valence_sum: u8,
     h_bond_count: u8,
     has_double: bool,
@@ -164,15 +165,17 @@ fn normalizeElement(type_symbol: []const u8, buf: *[4]u8) u3 {
     return @intCast(len);
 }
 
-/// Convert a BondOrder to its valence contribution (number of valence units consumed).
-fn bondValence(order: BondOrder) u8 {
+/// Valence consumed by a bond, in half units so that an aromatic bond can
+/// count as 1.5 (a ring atom with two aromatic bonds uses 3 valence units,
+/// like one single plus one double bond in the Kekule form).
+fn bondValenceHalves(order: BondOrder) u8 {
     return switch (order) {
-        .single => 1,
-        .double => 2,
-        .triple => 3,
-        .aromatic => 2, // simplified; CCD uses aromatic for ring bonds
-        .delocalized => 2,
-        .unknown => 1,
+        .single => 2,
+        .double => 4,
+        .triple => 6,
+        .aromatic => 3,
+        .delocalized => 4,
+        .unknown => 2,
     };
 }
 
@@ -192,6 +195,8 @@ pub fn analyzeBonds(component: *const Component, atom_idx: u16) BondAnalysis {
         .has_aromatic = false,
     };
 
+    var heavy_valence_halves: u16 = 0;
+
     for (component.bonds) |bond| {
         const neighbor_idx: ?u16 = if (bond.atom_idx_1 == atom_idx)
             bond.atom_idx_2
@@ -208,7 +213,7 @@ pub fn analyzeBonds(component: *const Component, atom_idx: u16) BondAnalysis {
                 result.h_bond_count += 1;
             } else {
                 result.heavy_bond_count += 1;
-                result.heavy_valence_sum += bondValence(bond.order);
+                heavy_valence_halves +|= bondValenceHalves(bond.order);
             }
 
             switch (bond.order) {
@@ -224,6 +229,9 @@ pub fn analyzeBonds(component: *const Component, atom_idx: u16) BondAnalysis {
             }
         }
     }
+
+    // Round a leftover half unit up so that it never implies an extra hydrogen.
+    result.heavy_valence_sum = @intCast(@min((heavy_valence_halves + 1) / 2, std.math.maxInt(u8)));
 
     // Determine hybridization from bond analysis
     if (result.has_triple) {
@@ -242,18 +250,22 @@ pub fn analyzeBonds(component: *const Component, atom_idx: u16) BondAnalysis {
 // =============================================================================
 
 /// Derive ProtOr-compatible VdW radius from element, hybridization, and
-/// implicit hydrogen count.
+/// the number of attached hydrogens.
+///
+/// `h_count` is the total hydrogen count: hydrogens listed in the component
+/// plus those implied by unfilled valence. Only carbon radii depend on it
+/// (C3H0 = 1.61, C3H1 = 1.76, C4H1-3 = 1.88); N, O, S, P and SE do not.
 ///
 /// Returns null for elements not in the ProtOr table.
-pub fn deriveRadius(type_symbol: []const u8, hybridization: Hybridization, implicit_h: u8) ?f64 {
+pub fn deriveRadius(type_symbol: []const u8, hybridization: Hybridization, h_count: u8) ?f64 {
     var buf: [4]u8 = undefined;
     const len = normalizeElement(type_symbol, &buf);
     const elem = buf[0..len];
 
     if (std.mem.eql(u8, elem, "C")) {
         return switch (hybridization) {
-            .sp2 => if (implicit_h == 0) 1.61 else 1.76,
-            .sp3 => if (implicit_h == 0) 1.61 else 1.88,
+            .sp2 => if (h_count == 0) 1.61 else 1.76,
+            .sp3 => if (h_count == 0) 1.61 else 1.88,
             .sp => 1.61,
             .unknown => 1.88,
         };
@@ -321,8 +333,12 @@ fn typicalValence(type_symbol: []const u8) ?u8 {
 /// Compute the number of implicit hydrogens for an atom.
 ///
 /// implicit_h = typical_valence - (heavy_valence_sum + explicit_h_count),
-/// where heavy_valence_sum accounts for bond orders (double=2, triple=3, etc.).
-/// Clamped to 0. Returns 0 if the element has no known typical valence.
+/// where heavy_valence_sum accounts for bond orders (double=2, triple=3,
+/// aromatic=1.5, etc.). Clamped to 0. Returns 0 if the element has no known
+/// typical valence.
+///
+/// This counts only the hydrogens missing from the component; add
+/// `explicit_h_count` to get the total number of attached hydrogens.
 pub fn implicitHCount(type_symbol: []const u8, heavy_valence_sum: u8, explicit_h_count: u8) u8 {
     const valence = typicalValence(type_symbol) orelse return 0;
     const total_valence = @as(u16, heavy_valence_sum) + @as(u16, explicit_h_count);
@@ -339,9 +355,15 @@ pub fn implicitHCount(type_symbol: []const u8, heavy_valence_sum: u8, explicit_h
 ///
 /// For each non-hydrogen atom:
 /// 1. Analyze bonds to determine hybridization
-/// 2. Compute implicit hydrogen count
+/// 2. Count attached hydrogens: those listed in the component (explicit)
+///    plus those implied by unfilled valence (implicit)
 /// 3. Derive ProtOr radius and polarity class
 /// 4. Skip atoms where deriveRadius returns null (unsupported elements)
+///
+/// A component gives the same radii whether it lists its hydrogens (wwPDB
+/// CCD entries, typical SDF files) or omits them, except for atoms with an
+/// unusual valence (e.g. metal-bound carbons), where only listed hydrogens
+/// can be counted reliably.
 ///
 /// Returns an owned slice that the caller must free with the same allocator.
 pub fn deriveComponentProperties(
@@ -364,10 +386,14 @@ pub fn deriveComponentProperties(
             analysis.h_bond_count,
         );
 
+        // Explicit hydrogens fill valence, so implicit_h alone is 0 for a
+        // component that lists them; the radius depends on the total.
+        const h_count = analysis.h_bond_count +| implicit_h;
+
         const radius = deriveRadius(
             atom.typeSymbolSlice(),
             analysis.hybridization,
-            implicit_h,
+            h_count,
         ) orelse continue; // skip unsupported elements
 
         const class = deriveClass(atom.typeSymbolSlice());
@@ -495,6 +521,8 @@ test "analyzeBonds — aromatic atom" {
     const result = analyzeBonds(&comp, 1); // CG
     try std.testing.expectEqual(Hybridization.sp2, result.hybridization);
     try std.testing.expectEqual(@as(u8, 3), result.heavy_bond_count);
+    // One single bond (1) plus two aromatic bonds (1.5 each) fill the valence.
+    try std.testing.expectEqual(@as(u8, 4), result.heavy_valence_sum);
     try std.testing.expectEqual(@as(u8, 0), result.h_bond_count);
     try std.testing.expect(!result.has_double);
     try std.testing.expect(!result.has_triple);
@@ -713,6 +741,195 @@ test "deriveComponentProperties — skips hydrogen atoms and unknown elements" {
     // Only C1 should appear (H1 is hydrogen, FE has no ProtOr radius)
     try std.testing.expectEqual(@as(usize, 1), results.len);
     try std.testing.expectEqualStrings("C1", results[0].atomIdSlice());
+}
+
+/// Test helper: build a component view over the given atoms and bonds.
+fn testComponent(atoms: []const CompAtom, bonds: []const CompBond) Component {
+    return .{
+        .comp_id = .{ 'T', 'S', 'T', 0, 0 },
+        .comp_id_len = 3,
+        .atoms = atoms,
+        .bonds = bonds,
+    };
+}
+
+/// Test helper: shorthand for a bond whose aromatic flag follows its order.
+fn testBond(a: u16, b: u16, order: BondOrder) CompBond {
+    return .{ .atom_idx_1 = a, .atom_idx_2 = b, .order = order, .aromatic = order == .aromatic };
+}
+
+/// Test helper: derive radii for a component and compare them, in atom
+/// order, with `expected` (one entry per non-hydrogen atom).
+fn expectDerivedRadii(
+    atoms: []const CompAtom,
+    bonds: []const CompBond,
+    expected: []const struct { []const u8, f64 },
+) !void {
+    const comp = testComponent(atoms, bonds);
+    const results = try deriveComponentProperties(std.testing.allocator, &comp);
+    defer std.testing.allocator.free(results);
+
+    try std.testing.expectEqual(expected.len, results.len);
+    for (expected, results) |want, got| {
+        try std.testing.expectEqualStrings(want[0], got.atomIdSlice());
+        try std.testing.expectEqual(want[1], got.props.radius);
+    }
+}
+
+test "deriveComponentProperties — ethanol, with and without explicit hydrogens" {
+    // CH3-CH2-OH: both carbons are sp3 with hydrogens (C4H3, C4H2) => 1.88.
+    const expected = [_]struct { []const u8, f64 }{
+        .{ "C1", 1.88 },
+        .{ "C2", 1.88 },
+        .{ "O", 1.46 },
+    };
+
+    // Hydrogens listed, as in wwPDB CCD entries and typical SDF files.
+    const atoms_h = [_]CompAtom{
+        CompAtom.init("C1", "C"), // 0
+        CompAtom.init("C2", "C"), // 1
+        CompAtom.init("O", "O"), // 2
+        CompAtom.init("H11", "H"), // 3
+        CompAtom.init("H12", "H"), // 4
+        CompAtom.init("H13", "H"), // 5
+        CompAtom.init("H21", "H"), // 6
+        CompAtom.init("H22", "H"), // 7
+        CompAtom.init("HO", "H"), // 8
+    };
+    const bonds_h = [_]CompBond{
+        testBond(0, 1, .single),
+        testBond(1, 2, .single),
+        testBond(0, 3, .single),
+        testBond(0, 4, .single),
+        testBond(0, 5, .single),
+        testBond(1, 6, .single),
+        testBond(1, 7, .single),
+        testBond(2, 8, .single),
+    };
+    try expectDerivedRadii(&atoms_h, &bonds_h, &expected);
+
+    // Same heavy atoms without hydrogens.
+    try expectDerivedRadii(atoms_h[0..3], bonds_h[0..2], &expected);
+}
+
+test "deriveComponentProperties — acetic acid, with and without explicit hydrogens" {
+    // CH3-C(=O)-OH: carboxyl C is C3H0 => 1.61, methyl C is C4H3 => 1.88.
+    const expected = [_]struct { []const u8, f64 }{
+        .{ "C", 1.61 },
+        .{ "O", 1.42 },
+        .{ "OXT", 1.46 },
+        .{ "CH3", 1.88 },
+    };
+
+    const atoms_h = [_]CompAtom{
+        CompAtom.init("C", "C"), // 0
+        CompAtom.init("O", "O"), // 1
+        CompAtom.init("OXT", "O"), // 2
+        CompAtom.init("CH3", "C"), // 3
+        CompAtom.init("H1", "H"), // 4
+        CompAtom.init("H2", "H"), // 5
+        CompAtom.init("H3", "H"), // 6
+        CompAtom.init("HXT", "H"), // 7
+    };
+    const bonds_h = [_]CompBond{
+        testBond(0, 1, .double),
+        testBond(0, 2, .single),
+        testBond(0, 3, .single),
+        testBond(3, 4, .single),
+        testBond(3, 5, .single),
+        testBond(3, 6, .single),
+        testBond(2, 7, .single),
+    };
+    try expectDerivedRadii(&atoms_h, &bonds_h, &expected);
+    try expectDerivedRadii(atoms_h[0..4], bonds_h[0..3], &expected);
+}
+
+test "deriveComponentProperties — benzene, with and without explicit hydrogens" {
+    // Every ring carbon is an aromatic CH (C3H1) => 1.76.
+    const expected = [_]struct { []const u8, f64 }{
+        .{ "C1", 1.76 }, .{ "C2", 1.76 }, .{ "C3", 1.76 },
+        .{ "C4", 1.76 }, .{ "C5", 1.76 }, .{ "C6", 1.76 },
+    };
+    const atoms_h = [_]CompAtom{
+        CompAtom.init("C1", "C"), CompAtom.init("C2", "C"), CompAtom.init("C3", "C"),
+        CompAtom.init("C4", "C"), CompAtom.init("C5", "C"), CompAtom.init("C6", "C"),
+        CompAtom.init("H1", "H"), CompAtom.init("H2", "H"), CompAtom.init("H3", "H"),
+        CompAtom.init("H4", "H"), CompAtom.init("H5", "H"), CompAtom.init("H6", "H"),
+    };
+
+    // Kekule form (alternating double/single), as written by the wwPDB CCD.
+    const kekule = [_]CompBond{
+        testBond(0, 1, .double), testBond(1, 2, .single),  testBond(2, 3, .double),
+        testBond(3, 4, .single), testBond(4, 5, .double),  testBond(5, 0, .single),
+        testBond(0, 6, .single), testBond(1, 7, .single),  testBond(2, 8, .single),
+        testBond(3, 9, .single), testBond(4, 10, .single), testBond(5, 11, .single),
+    };
+    try expectDerivedRadii(&atoms_h, &kekule, &expected);
+    try expectDerivedRadii(atoms_h[0..6], kekule[0..6], &expected);
+
+    // Aromatic bond orders (CCD "AROM", SDF bond type 4).
+    const arom = [_]CompBond{
+        testBond(0, 1, .aromatic), testBond(1, 2, .aromatic), testBond(2, 3, .aromatic),
+        testBond(3, 4, .aromatic), testBond(4, 5, .aromatic), testBond(5, 0, .aromatic),
+        testBond(0, 6, .single),   testBond(1, 7, .single),   testBond(2, 8, .single),
+        testBond(3, 9, .single),   testBond(4, 10, .single),  testBond(5, 11, .single),
+    };
+    try expectDerivedRadii(&atoms_h, &arom, &expected);
+    try expectDerivedRadii(atoms_h[0..6], arom[0..6], &expected);
+}
+
+test "deriveComponentProperties — aromatic bond orders, substituted and fused ring atoms" {
+    // Naphthalene skeleton with a methyl group on C1, no hydrogens listed,
+    // all ring bonds aromatic:
+    //   C1  (two aromatic bonds + CM)   => C3H0, 1.61
+    //   C4A, C8A (three aromatic bonds) => C3H0, 1.61
+    //   other ring carbons (two aromatic bonds) => C3H1, 1.76
+    //   CM  (methyl)                    => C4H3, 1.88
+    const atoms = [_]CompAtom{
+        CompAtom.init("C1", "C"), // 0
+        CompAtom.init("C2", "C"), // 1
+        CompAtom.init("C3", "C"), // 2
+        CompAtom.init("C4", "C"), // 3
+        CompAtom.init("C4A", "C"), // 4
+        CompAtom.init("C5", "C"), // 5
+        CompAtom.init("C6", "C"), // 6
+        CompAtom.init("C7", "C"), // 7
+        CompAtom.init("C8", "C"), // 8
+        CompAtom.init("C8A", "C"), // 9
+        CompAtom.init("CM", "C"), // 10
+    };
+    const bonds = [_]CompBond{
+        testBond(0, 1, .aromatic), testBond(1, 2, .aromatic), testBond(2, 3, .aromatic),
+        testBond(3, 4, .aromatic), testBond(4, 5, .aromatic), testBond(5, 6, .aromatic),
+        testBond(6, 7, .aromatic), testBond(7, 8, .aromatic), testBond(8, 9, .aromatic),
+        testBond(9, 0, .aromatic), testBond(4, 9, .aromatic), testBond(0, 10, .single),
+    };
+    try expectDerivedRadii(&atoms, &bonds, &.{
+        .{ "C1", 1.61 },  .{ "C2", 1.76 },  .{ "C3", 1.76 }, .{ "C4", 1.76 },
+        .{ "C4A", 1.61 }, .{ "C5", 1.76 },  .{ "C6", 1.76 }, .{ "C7", 1.76 },
+        .{ "C8", 1.76 },  .{ "C8A", 1.61 }, .{ "CM", 1.88 },
+    });
+}
+
+test "deriveComponentProperties — partially listed hydrogens" {
+    // Polar hydrogens only (common in SDF/PDB-derived files): the hydrogens
+    // missing on carbon are still counted through unfilled valence.
+    const atoms = [_]CompAtom{
+        CompAtom.init("C1", "C"), // 0
+        CompAtom.init("C2", "C"), // 1
+        CompAtom.init("O", "O"), // 2
+        CompAtom.init("HO", "H"), // 3
+    };
+    const bonds = [_]CompBond{
+        testBond(0, 1, .single),
+        testBond(1, 2, .single),
+        testBond(2, 3, .single),
+    };
+    try expectDerivedRadii(&atoms, &bonds, &.{
+        .{ "C1", 1.88 },
+        .{ "C2", 1.88 },
+        .{ "O", 1.46 },
+    });
 }
 
 test "CompAtom init and accessors" {

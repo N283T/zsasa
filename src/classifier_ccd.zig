@@ -1059,6 +1059,96 @@ test "CCD getProperties returns correct struct" {
     try std.testing.expectEqual(AtomClass.apolar, props.?.class);
 }
 
+const ccd_parser = @import("ccd_parser.zig");
+
+test "CCD radii derived from a definition with hydrogens match the hardcoded table (PHE)" {
+    // PHE as written in the wwPDB CCD: hydrogens listed, ring in Kekule form.
+    // Covers sp3 CH/CH2 (1.88), aromatic CH (1.76) and hydrogen-free sp2
+    // carbons (1.61).
+    const source =
+        \\data_PHE
+        \\#
+        \\loop_
+        \\_chem_comp_atom.comp_id
+        \\_chem_comp_atom.atom_id
+        \\_chem_comp_atom.type_symbol
+        \\_chem_comp_atom.pdbx_aromatic_flag
+        \\_chem_comp_atom.pdbx_leaving_atom_flag
+        \\PHE N    N N N
+        \\PHE CA   C N N
+        \\PHE C    C N N
+        \\PHE O    O N N
+        \\PHE CB   C N N
+        \\PHE CG   C Y N
+        \\PHE CD1  C Y N
+        \\PHE CD2  C Y N
+        \\PHE CE1  C Y N
+        \\PHE CE2  C Y N
+        \\PHE CZ   C Y N
+        \\PHE OXT  O N Y
+        \\PHE H    H N N
+        \\PHE H2   H N Y
+        \\PHE HA   H N N
+        \\PHE HB2  H N N
+        \\PHE HB3  H N N
+        \\PHE HD1  H N N
+        \\PHE HD2  H N N
+        \\PHE HE1  H N N
+        \\PHE HE2  H N N
+        \\PHE HZ   H N N
+        \\PHE HXT  H N Y
+        \\#
+        \\loop_
+        \\_chem_comp_bond.comp_id
+        \\_chem_comp_bond.atom_id_1
+        \\_chem_comp_bond.atom_id_2
+        \\_chem_comp_bond.value_order
+        \\_chem_comp_bond.pdbx_aromatic_flag
+        \\PHE N    CA   SING N
+        \\PHE N    H    SING N
+        \\PHE N    H2   SING N
+        \\PHE CA   C    SING N
+        \\PHE CA   CB   SING N
+        \\PHE CA   HA   SING N
+        \\PHE C    O    DOUB N
+        \\PHE C    OXT  SING N
+        \\PHE CB   CG   SING N
+        \\PHE CB   HB2  SING N
+        \\PHE CB   HB3  SING N
+        \\PHE CG   CD1  DOUB Y
+        \\PHE CG   CD2  SING Y
+        \\PHE CD1  CE1  SING Y
+        \\PHE CD1  HD1  SING N
+        \\PHE CD2  CE2  DOUB Y
+        \\PHE CD2  HD2  SING N
+        \\PHE CE1  CZ   DOUB Y
+        \\PHE CE1  HE1  SING N
+        \\PHE CE2  CZ   SING Y
+        \\PHE CE2  HE2  SING N
+        \\PHE CZ   HZ   SING N
+        \\PHE OXT  HXT  SING N
+        \\#
+    ;
+
+    var dict = try ccd_parser.parseCcdData(std.testing.allocator, source, null);
+    defer dict.deinit();
+    const comp = dict.get("PHE").?;
+
+    const derived = try hybridization.deriveComponentProperties(std.testing.allocator, &comp);
+    defer std.testing.allocator.free(derived);
+
+    // No runtime components: getProperties answers from the hardcoded table.
+    var ccd = CcdClassifier.init(std.testing.allocator);
+    defer ccd.deinit();
+
+    try std.testing.expectEqual(@as(usize, 12), derived.len);
+    for (derived) |entry| {
+        const hardcoded = ccd.getProperties("PHE", entry.atomIdSlice()).?;
+        try std.testing.expectEqual(hardcoded.radius, entry.props.radius);
+        try std.testing.expectEqual(hardcoded.class, entry.props.class);
+    }
+}
+
 // =============================================================================
 // E2E tests with real structure files
 // =============================================================================

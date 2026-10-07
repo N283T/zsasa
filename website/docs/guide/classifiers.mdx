@@ -82,8 +82,11 @@ zsasa calc --classifier=naccess structure.cif output.json
 # OONS
 zsasa calc --classifier=oons structure.cif output.json
 
-# CCD (auto-includes HETATM)
+# CCD
 zsasa calc --classifier=ccd structure.cif output.json
+
+# CCD including ligands, ions and waters (HETATM records)
+zsasa calc --classifier=ccd --include-hetatm structure.cif output.json
 
 # CCD with external dictionary (for non-standard residues)
 zsasa calc --classifier=ccd --ccd=components.zsdc structure.cif output.json
@@ -122,7 +125,7 @@ result = calculate_sasa_from_structure(
     classifier=ClassifierType.CCD,
 )
 
-# CCD classifier (auto-includes HETATM)
+# CCD classifier
 result = calculate_sasa_from_structure(
     "protein.cif",
     classifier=ClassifierType.CCD,
@@ -245,9 +248,13 @@ zsasa calc --classifier=ccd --ccd=components.zsdc structure.pdb output.json
 If your PDB file contains only standard amino acids and nucleotides, no external dictionary is needed — the hardcoded table covers all standard residues. For non-standard residues, provide `--ccd=<path>` to get hybridization-aware radii.
 :::
 
-### Auto-Including HETATM
+### HETATM Records
 
-When using `--classifier=ccd`, HETATM records are included automatically without needing `--include-hetatm`. This is because the CCD classifier is specifically designed to handle non-standard residues (ligands, modified amino acids, etc.) that are recorded as HETATM in PDB/mmCIF files.
+HETATM records (ligands, ions, waters) are excluded by default with every classifier, including CCD. Pass `--include-hetatm` (CLI), `include_hetatm = true` (workflow) or `include_hetatm=True` (Python) to include them; the CCD classifier then assigns radii to ligands from their component definitions. Waters are HETATM records too, so including HETATM also counts crystallographic waters.
+
+Modified residues that a file records as HETATM inside a polymer chain (for example selenomethionine, `MSE`) are excluded by default as well, which leaves a gap in the chain. Include HETATM when a structure has such residues.
+
+Versions up to 0.9.1 included HETATM automatically whenever the CCD classifier was active on the command line, which made the default CLI result differ from the Python `process_directory()` default.
 
 ### External CCD Dictionary
 
@@ -299,9 +306,12 @@ The CCD classifier determines van der Waals radii through the following process:
 1. **Parse bond graph** — Extract atoms and bonds from CCD `_chem_comp_atom` / `_chem_comp_bond` loops
 2. **Analyze bonds** — For each non-hydrogen atom, count single, double, and aromatic bonds
 3. **Determine hybridization** — Classify as sp, sp2, or sp3 based on bond pattern
-4. **Map to ProtOr radius** — Each (element, hybridization) pair maps to a specific ProtOr-compatible radius
+4. **Count hydrogens** — Add the hydrogens listed in the component to those implied by unfilled valence
+5. **Map to ProtOr radius** — Each (element, hybridization) pair maps to a specific ProtOr-compatible radius; for carbon the radius also depends on whether it carries any hydrogen
 
-For example, an aromatic CH carbon like PHE CD1 (two aromatic bonds to heavy atoms, one implicit hydrogen) is classified as sp2 with implicit H, receiving a radius of 1.76 Å. A backbone carbonyl carbon (one double bond to O, one single bond to CA, one implicit H) is also sp2 but receives 1.76 Å as well. A typical aliphatic carbon like ALA CB (one single bond to CA, three implicit hydrogens) is sp3, receiving 1.88 Å.
+For example, an aromatic CH carbon like PHE CD1 (two ring bonds to heavy atoms, one hydrogen) is classified as sp2 with a hydrogen, receiving a radius of 1.76 Å. A carboxyl carbon like ASP CG (one double bond to O, two single bonds to heavy atoms, no hydrogen) is also sp2 but receives 1.61 Å. A typical aliphatic carbon like ALA CB (one single bond to CA, three hydrogens) is sp3, receiving 1.88 Å.
+
+The result does not depend on whether the component lists its hydrogens. wwPDB CCD entries and most SDF files list them; a hydrogen-free definition gives the same radii because the missing hydrogens are inferred from the unfilled valence.
 
 ## Supported Residues
 
