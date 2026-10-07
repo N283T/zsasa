@@ -1167,7 +1167,7 @@ fn calculatePreparedInputResult(
     };
     defer sasa_result.deinit();
     result.sasa_time_ns = @intCast(sasa_timer.untilNow(io, .awake).nanoseconds);
-    result.total_sasa = if (T == f64) sasa_result.total_area else @as(f64, @floatCast(sasa_result.total_area));
+    result.total_sasa = sasa_result.total_area;
 
     if (config.store_atom_areas) {
         if (T == f64) {
@@ -1522,7 +1522,7 @@ fn processOneSdfMoleculeInner(
             };
             defer sasa_result.deinit();
             res.sasa_time_ns = @intCast(sasa_timer.untilNow(io, .awake).nanoseconds);
-            total_area = @floatCast(sasa_result.total_area);
+            total_area = sasa_result.total_area;
 
             if (config.store_atom_areas) {
                 const areas_f32 = sasa_result.atom_areas;

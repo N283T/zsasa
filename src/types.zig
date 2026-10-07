@@ -275,7 +275,10 @@ pub fn SasaResultGen(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        total_area: T,
+        /// Sum of `atom_areas`, accumulated in f64 whatever `T` is. An f32
+        /// accumulator loses about seven digits per addition and made the
+        /// total depend on the number of threads.
+        total_area: f64,
         atom_areas: []T,
         allocator: std.mem.Allocator,
 
@@ -301,7 +304,7 @@ pub fn SasaResultGen(comptime T: type) type {
                 areas[i] = @floatCast(area);
             }
             return SasaResultGen(f64){
-                .total_area = @floatCast(self.total_area),
+                .total_area = self.total_area,
                 .atom_areas = areas,
                 .allocator = allocator,
             };

@@ -811,7 +811,7 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
                         setWorkerError(args, "frame {d}: bitmask-f32 failed: {s}", .{ frame_id, @errorName(err) });
                         return;
                     };
-                    total_sasa = @floatCast(result.total_area);
+                    total_sasa = result.total_area;
                     result.deinit();
                 } else if (args.use_bitmask) {
                     const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f32){
@@ -822,14 +822,14 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
                         setWorkerError(args, "frame {d}: bitmask-f32 failed: {s}", .{ frame_id, @errorName(err) });
                         return;
                     };
-                    total_sasa = @floatCast(result.total_area);
+                    total_sasa = result.total_area;
                     result.deinit();
                 } else {
                     var result = shrake_rupley.calculateSasaf32(thread_alloc, input, config) catch |err| {
                         setWorkerError(args, "frame {d}: SR-f32 SASA failed: {s}", .{ frame_id, @errorName(err) });
                         return;
                     };
-                    total_sasa = @floatCast(result.total_area);
+                    total_sasa = result.total_area;
                     result.deinit();
                 }
             } else {
@@ -842,7 +842,7 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
                     setWorkerError(args, "frame {d}: LR-f32 SASA failed: {s}", .{ frame_id, @errorName(err) });
                     return;
                 };
-                total_sasa = @floatCast(result.total_area);
+                total_sasa = result.total_area;
                 result.deinit();
             }
         } else {
@@ -1425,7 +1425,7 @@ fn runSequential(
                             };
                             var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithLutAndCorrection(allocator, frame_input, config, lut, correction);
                             defer result.deinit();
-                            break :blk @floatCast(result.total_area);
+                            break :blk result.total_area;
                         } else if (args.use_bitmask) {
                             const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f32){
                                 .enabled = args.bitmask_correction,
@@ -1433,11 +1433,11 @@ fn runSequential(
                             };
                             var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithCorrection(allocator, frame_input, config, correction);
                             defer result.deinit();
-                            break :blk @floatCast(result.total_area);
+                            break :blk result.total_area;
                         } else {
                             var result = try shrake_rupley.calculateSasaf32(allocator, frame_input, config);
                             defer result.deinit();
-                            break :blk @floatCast(result.total_area);
+                            break :blk result.total_area;
                         }
                     },
                     .lr => {
@@ -1448,7 +1448,7 @@ fn runSequential(
                         };
                         var result = try lee_richards.calculateSasaf32(allocator, frame_input, config);
                         defer result.deinit();
-                        break :blk @floatCast(result.total_area);
+                        break :blk result.total_area;
                     },
                 }
             },

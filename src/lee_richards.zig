@@ -1194,10 +1194,10 @@ pub fn LeeRichardsGen(comptime T: type) type {
         };
 
         /// Worker function for parallel Lee-Richards calculation.
-        fn parallelLeeRichardsWorker(ctx: Self.ParallelContext, chunk_start: usize, chunk_end: usize) T {
+        fn parallelLeeRichardsWorker(ctx: Self.ParallelContext, chunk_start: usize, chunk_end: usize) f64 {
             const arc_buffer = chunkArcBuffer(Self.Arc, ctx.arc_buffers, chunk_start, ctx.chunk_size, ctx.max_arc_buffer_size);
 
-            var chunk_total: T = 0.0;
+            var chunk_total: f64 = 0.0;
 
             for (chunk_start..chunk_end) |i| {
                 const area = Self.atomArea(
@@ -1218,9 +1218,9 @@ pub fn LeeRichardsGen(comptime T: type) type {
             return chunk_total;
         }
 
-        /// Reduce function to sum all chunk totals.
-        fn sumReducer(results: []const T) T {
-            var total: T = 0.0;
+        /// Reduce function to sum all chunk totals (in f64, see `SasaResultGen.total_area`).
+        fn sumReducer(results: []const f64) f64 {
+            var total: f64 = 0.0;
             for (results) |r| {
                 total += r;
             }
@@ -1283,7 +1283,7 @@ pub fn LeeRichardsGen(comptime T: type) type {
             // Calculate SASA for each atom
             const atom_areas = try allocator.alloc(T, n_atoms);
             errdefer allocator.free(atom_areas);
-            var total_area: T = 0.0;
+            var total_area: f64 = 0.0;
 
             // Estimate max neighbors for arc buffer allocation
             var max_neighbors: usize = 0;
@@ -1411,7 +1411,7 @@ pub fn LeeRichardsGen(comptime T: type) type {
             // Run parallel calculation
             const total_area = try thread_pool.parallelFor(
                 Self.ParallelContext,
-                T,
+                f64,
                 allocator,
                 actual_threads,
                 Self.parallelLeeRichardsWorker,
@@ -2743,6 +2743,61 @@ test "tangent circles: areas are continuous across tangency" {
                     }
                 }
             }
+        }
+    }
+}
+
+// =============================================================================
+// f32 totals
+// =============================================================================
+
+/// What `total_area` of an f32 result has to be: the sum of the per-atom
+/// areas accumulated in f64. Also checks that the test can tell the
+/// difference, i.e. that an f32 accumulator gives another value on these
+/// areas, and that their f64 sum does not depend on the order of the
+/// additions, which the comparison across thread counts relies on (the thread
+/// pool adds per-chunk sums).
+fn expectedF32Total(atom_areas: []const f32) !f64 {
+    var forward: f64 = 0.0;
+    var in_f32: f32 = 0.0;
+    for (atom_areas) |area| {
+        forward += area;
+        in_f32 += area;
+    }
+    var backward: f64 = 0.0;
+    var i = atom_areas.len;
+    while (i > 0) : (i -= 1) backward += atom_areas[i - 1];
+
+    try std.testing.expectEqual(forward, backward);
+    try std.testing.expect(@as(f64, in_f32) != forward);
+    return forward;
+}
+
+test "Lee-Richards f32 total_area is the f64 sum of the per-atom areas, for any thread count" {
+    const allocator = std.testing.allocator;
+
+    var x: [error_path_n_atoms]f64 = undefined;
+    var y: [error_path_n_atoms]f64 = undefined;
+    var z: [error_path_n_atoms]f64 = undefined;
+    var r: [error_path_n_atoms]f64 = undefined;
+    fillErrorPathGrid(&x, &y, &z, &r);
+    const input = AtomInput{ .x = &x, .y = &y, .z = &z, .r = &r, .allocator = allocator };
+
+    inline for (.{ TrigMode.exact, TrigMode.fast }) |trig| {
+        const config = LeeRichardsConfigGen(f32){ .n_slices = 20, .probe_radius = 1.4, .trig = trig };
+
+        var sequential = try calculateSasaf32(allocator, input, config);
+        defer sequential.deinit();
+        const expected = try expectedF32Total(sequential.atom_areas);
+        try std.testing.expectEqual(expected, sequential.total_area);
+
+        // One thread takes the direct path of parallelFor, the others go
+        // through the pool with different chunk sizes.
+        for ([_]usize{ 1, 2, 4, 7 }) |n_threads| {
+            var parallel = try calculateSasaParallelf32(allocator, input, config, n_threads);
+            defer parallel.deinit();
+            try std.testing.expectEqualSlices(f32, sequential.atom_areas, parallel.atom_areas);
+            try std.testing.expectEqual(expected, parallel.total_area);
         }
     }
 }
