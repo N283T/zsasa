@@ -98,6 +98,8 @@ Some programs left-justify or center atom names instead (`CA  ` for an alpha car
 
 SDF and MOL files are supported for small-molecule SASA. V2000 and V3000 records are accepted, and batch mode expands multi-molecule SDF files so each molecule is calculated independently. Use `--mol=NAME_OR_INDEX` to select one molecule from a multi-molecule SDF.
 
+In batch mode each molecule is named `stem_title` after the file stem and the molecule title, or `stem_N` when the title is blank; molecules of one file that share a title get their position appended (`stem_title_N`). See [SDF and MOL Output Names](../guide/batch.md#sdf-and-mol-output-names) for the full rules and the characters replaced in output file names.
+
 ## Trajectory Formats
 
 For the `traj` subcommand, the following trajectory formats are supported:
