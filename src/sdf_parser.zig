@@ -32,6 +32,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const elem = @import("element.zig");
 const hybridization = @import("hybridization.zig");
+const classifier = @import("classifier.zig");
 const ccd_parser = @import("ccd_parser.zig");
 const compressed = @import("compressed.zig");
 const types = @import("types.zig");
@@ -765,6 +766,60 @@ pub fn toAtomInput(allocator: Allocator, molecules: []const SdfMolecule, skip_hy
     };
 }
 
+/// How many atoms `applyTopologyRadii` gave a bond-topology radius, and how
+/// many an element-based fallback radius.
+pub const TopologyRadiiCounts = struct {
+    classified: usize = 0,
+    fallback: usize = 0,
+};
+
+/// Give the atoms of an SDF/MOL molecule the CCD classifier's radii for the
+/// molecule's own bond topology.
+///
+/// `input` is the result of `toAtomInput` for one molecule and `component`
+/// the result of `toStoredComponent` for the same molecule. A molecule read
+/// from an SDF/MOL file is its own component definition, so its atoms are
+/// matched to `component` by their generated atom names alone and the
+/// molecule title plays no part: a blank title, a title shared with another
+/// molecule and a title that is also a residue name (`ALA`, `HOH`, `A`) all
+/// give the radii of the bond table. This is what distinguishes it from the
+/// lookup by residue name that structure files need.
+///
+/// An atom without a bond-topology radius (an element outside the ProtOr
+/// table, or a hydrogen) gets the element-based fallback radius of the CCD
+/// classifier, and keeps its radius if there is none.
+pub fn applyTopologyRadii(input: *types.AtomInput, component: *const hybridization.Component) !TopologyRadiiCounts {
+    const allocator = input.allocator;
+    const residues = input.residue orelse return error.MissingClassificationInfo;
+    const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
+
+    const derived = try hybridization.deriveComponentProperties(allocator, component);
+    defer allocator.free(derived);
+
+    // Atom names are unique within a molecule and zero-padded (`AtomNamer`)
+    var radius_by_name: std.AutoHashMapUnmanaged([4]u8, f64) = .empty;
+    defer radius_by_name.deinit(allocator);
+    try radius_by_name.ensureTotalCapacity(allocator, @intCast(derived.len));
+    for (derived) |entry| radius_by_name.putAssumeCapacity(entry.atom_id, entry.props.radius);
+
+    var counts = TopologyRadiiCounts{};
+    for (input.r, atom_names, residues, 0..) |*radius, *atom_name, *residue, i| {
+        if (radius_by_name.get(atom_name.data)) |derived_radius| {
+            radius.* = derived_radius;
+            counts.classified += 1;
+        } else if (classifier.guessFallbackRadius(
+            .ccd,
+            if (input.element) |elements| elements[i] else null,
+            residue.slice(),
+            atom_name.slice(),
+        )) |fallback_radius| {
+            radius.* = fallback_radius;
+            counts.fallback += 1;
+        }
+    }
+    return counts;
+}
+
 // =============================================================================
 // SDF Path List and Component Loading
 // =============================================================================
@@ -792,6 +847,12 @@ pub const SdfPathList = struct {
 /// Reads each SDF file (plain, gzip-compressed, or zstd-compressed), parses molecules, and
 /// converts them to StoredComponents. Duplicate molecule names (truncated
 /// to 5 chars) are skipped to avoid leaking the first entry.
+///
+/// The dictionary is for the residues of a structure file, which are matched
+/// to its entries by residue name. A molecule without a title cannot be
+/// matched to any residue and is skipped with a warning. (An SDF/MOL file
+/// that is itself the input does not go through this dictionary, see
+/// `applyTopologyRadii`.)
 ///
 /// Returns `null` if no valid components were loaded.
 pub fn loadSdfComponents(
@@ -832,9 +893,12 @@ pub fn loadSdfComponents(
         };
         defer freeMolecules(allocator, molecules);
 
-        for (molecules) |mol| {
+        for (molecules, 1..) |mol, mol_number| {
             if (mol.name.len == 0) {
-                if (!quiet) std.debug.print("Warning: SDF molecule has no name, skipping\n", .{});
+                if (!quiet) std.debug.print(
+                    "Warning: molecule {d} of SDF file '{s}' has no title and cannot be matched to a residue name, skipping\n",
+                    .{ mol_number, sdf_path },
+                );
                 continue;
             }
             const stored = toStoredComponent(allocator, &mol) catch |err| {
@@ -2516,4 +2580,134 @@ test "AtomNamer gives every atom of the largest molecule its own name" {
         }
     }
     try std.testing.expectEqual(@as(usize, 65_535), total);
+}
+
+// Heavy atoms of acetonitrile (methyl 1.88, nitrile carbon 1.61, N 1.64) and
+// of acetaldehyde (methyl 1.88, carbonyl carbon 1.76, O 1.42), as V2000
+// bodies. Both are three atoms named C1, C2 and N1 or O1, so the radius of C2
+// tells which bond table was used.
+const test_acetonitrile_body =
+    "  3  2  0  0  0  0  0  0  0  0999 V2000\n" ++
+    "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    1.4600    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    2.6200    0.0000    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "  1  2  1  0  0  0  0\n" ++
+    "  2  3  3  0  0  0  0\n" ++
+    "M  END\n$$$$\n";
+const test_acetaldehyde_body =
+    "  3  2  0  0  0  0  0  0  0  0999 V2000\n" ++
+    "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    1.5000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    2.1000    1.0500    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "  1  2  1  0  0  0  0\n" ++
+    "  2  3  2  0  0  0  0\n" ++
+    "M  END\n$$$$\n";
+
+/// Converts one molecule and classifies it from its own bond topology.
+/// Caller owns the returned input.
+fn classifyOwnTopology(molecule: *const SdfMolecule, skip_hydrogens: bool, counts: *TopologyRadiiCounts) !types.AtomInput {
+    const allocator = std.testing.allocator;
+    const mol_slice: []const SdfMolecule = @as([*]const SdfMolecule, @ptrCast(molecule))[0..1];
+    var input = try toAtomInput(allocator, mol_slice, skip_hydrogens);
+    errdefer input.deinit();
+    var stored = try toStoredComponent(allocator, molecule);
+    defer stored.deinit();
+    const view = stored.view();
+    counts.* = try applyTopologyRadii(&input, &view);
+    return input;
+}
+
+test "applyTopologyRadii gives a molecule the same radii whatever its title is" {
+    const allocator = std.testing.allocator;
+
+    // A title, no title, and titles that are residue names of the built-in
+    // tables: amino acid, water, and nucleotides, which have atoms named C2
+    const titles = [_][]const u8{ "ethanol", "", "   ", "ALA", "HOH", "A", "G", "DT" };
+    const residues = [_][]const u8{ "ethan", "", "", "ALA", "HOH", "A", "G", "DT" };
+
+    for ([_][]const u8{ test_ethanol_v2000, test_ethanol_v3000 }) |ethanol| {
+        for (titles, residues) |title, residue| {
+            const source = try std.mem.concat(allocator, u8, &.{ title, ethanol["ethanol".len..] });
+            defer allocator.free(source);
+            const molecules = try parse(allocator, source);
+            defer freeMolecules(allocator, molecules);
+            try std.testing.expectEqual(@as(usize, 1), molecules.len);
+
+            var counts = TopologyRadiiCounts{};
+
+            // Without hydrogens: every atom has a bond-topology radius
+            {
+                var input = try classifyOwnTopology(&molecules[0], true, &counts);
+                defer input.deinit();
+                try std.testing.expectEqualSlices(f64, &.{ 1.88, 1.88, 1.46 }, input.r);
+                try std.testing.expectEqual(@as(usize, 3), counts.classified);
+                try std.testing.expectEqual(@as(usize, 0), counts.fallback);
+                // The residue name is the title, and is left alone
+                for (input.residue.?) |*name| try std.testing.expectEqualStrings(residue, name.slice());
+            }
+            // With hydrogens: they get the element radius
+            {
+                var input = try classifyOwnTopology(&molecules[0], false, &counts);
+                defer input.deinit();
+                try std.testing.expectEqualSlices(f64, &.{ 1.88, 1.88, 1.46, 1.10, 1.10, 1.10, 1.10, 1.10, 1.10 }, input.r);
+                try std.testing.expectEqual(@as(usize, 3), counts.classified);
+                try std.testing.expectEqual(@as(usize, 6), counts.fallback);
+            }
+        }
+    }
+}
+
+test "applyTopologyRadii uses the bond table of each molecule of a file" {
+    const allocator = std.testing.allocator;
+    const nitrile_radii = [_]f64{ 1.88, 1.61, 1.64 };
+    const aldehyde_radii = [_]f64{ 1.88, 1.76, 1.42 };
+
+    // Two molecules without a title, two with the same title, and one of
+    // each: the titles never decide which bond table an atom is read from
+    const title_pairs = [_][2][]const u8{ .{ "", "" }, .{ "lig", "lig" }, .{ "nitrile", "" }, .{ "", "aldehyde" } };
+    for (title_pairs) |pair| {
+        const source = try std.mem.concat(allocator, u8, &.{
+            pair[0], "\n", test_header_rest, test_acetonitrile_body,
+            pair[1], "\n", test_header_rest, test_acetaldehyde_body,
+        });
+        defer allocator.free(source);
+        const molecules = try parse(allocator, source);
+        defer freeMolecules(allocator, molecules);
+        try std.testing.expectEqual(@as(usize, 2), molecules.len);
+
+        for (molecules, [_][]const f64{ &nitrile_radii, &aldehyde_radii }) |*molecule, expected| {
+            var counts = TopologyRadiiCounts{};
+            var input = try classifyOwnTopology(molecule, true, &counts);
+            defer input.deinit();
+            try std.testing.expectEqualSlices(f64, expected, input.r);
+            try std.testing.expectEqual(@as(usize, 3), counts.classified);
+            try std.testing.expectEqual(@as(usize, 0), counts.fallback);
+        }
+    }
+}
+
+test "applyTopologyRadii falls back to the element where the bond table gives no radius" {
+    const allocator = std.testing.allocator;
+    // Chloromethane with an atom of an unknown element next to it
+    const source = "\n" ++ test_header_rest ++
+        "  3  1  0  0  0  0  0  0  0  0999 V2000\n" ++
+        "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+        "    1.7800    0.0000    0.0000 Cl  0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+        "    9.0000    0.0000    0.0000 R#  0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+        "  1  2  1  0  0  0  0\n" ++
+        "M  END\n$$$$\n";
+    const molecules = try parse(allocator, source);
+    defer freeMolecules(allocator, molecules);
+
+    var counts = TopologyRadiiCounts{};
+    var input = try classifyOwnTopology(&molecules[0], true, &counts);
+    defer input.deinit();
+
+    // Carbon from the bond table, chlorine from its element, and the unknown
+    // element keeps the radius it came with
+    try std.testing.expectEqual(@as(f64, 1.88), input.r[0]);
+    try std.testing.expectEqual(classifier.guessRadiusFromAtomicNumber(17).?, input.r[1]);
+    try std.testing.expectEqual(elem.Element.X.vdwRadius(), input.r[2]);
+    try std.testing.expectEqual(@as(usize, 1), counts.classified);
+    try std.testing.expectEqual(@as(usize, 1), counts.fallback);
 }

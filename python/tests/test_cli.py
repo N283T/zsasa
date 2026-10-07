@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 EXAMPLES_DIR = Path(__file__).parent.parent.parent / "examples"
+TEST_DATA_DIR = Path(__file__).parent.parent.parent / "test_data"
 
 
 def run_zsasa(*args: str) -> subprocess.CompletedProcess[str]:
@@ -62,3 +63,48 @@ class TestCLIEntryPoint:
 
         binary = _find_binary()
         assert Path(binary).exists()
+
+
+class TestSdfClassification:
+    """An SDF/MOL molecule is classified from its own bond topology."""
+
+    @staticmethod
+    def calc_csv(tmp_path: Path, input_file: Path, *args: str) -> tuple[list[list[str]], str]:
+        """Run `calc --format=csv`; return the CSV rows and the progress output."""
+        output_file = tmp_path / f"{input_file.stem}.csv"
+        result = run_zsasa("calc", "--format=csv", *args, str(input_file), str(output_file))
+        assert result.returncode == 0, result.stderr
+        rows = [line.split(",") for line in output_file.read_text().splitlines()]
+        return rows, result.stderr
+
+    @pytest.mark.parametrize("fixture", ["ethanol_v2000.sdf", "ethanol_v3000.sdf"])
+    @pytest.mark.parametrize(
+        ("args", "summary"),
+        [
+            ((), "Classifier 'CCD': 3 atoms classified, 0 fallback"),
+            (("--include-hydrogens",), "Classifier 'CCD': 3 atoms classified, 6 fallback"),
+        ],
+    )
+    def test_blank_title_gives_the_radii_of_the_titled_molecule(
+        self, tmp_path: Path, fixture: str, args: tuple[str, ...], summary: str
+    ):
+        titled_file = TEST_DATA_DIR / fixture
+        lines = titled_file.read_text().split("\n")
+        assert lines[0] == "ethanol"
+        blank_file = tmp_path / f"blank_{fixture}"
+        blank_file.write_text("\n".join(["", *lines[1:]]))
+
+        titled, titled_log = self.calc_csv(tmp_path, titled_file, *args)
+        blank, blank_log = self.calc_csv(tmp_path, blank_file, *args)
+
+        # Both are classified from the bond table, not by element
+        assert summary in titled_log
+        assert summary in blank_log
+
+        # chain,residue,resnum,atom_name,x,y,z,radius,area: only the residue
+        # name (the title) differs
+        assert titled[0][1] == "residue"
+        assert {row[1] for row in titled[1:-1]} == {"ethan"}
+        assert {row[1] for row in blank[1:-1]} == {""}
+        assert [row[:1] + row[2:] for row in titled] == [row[:1] + row[2:] for row in blank]
+        assert [row[7] for row in blank[1:4]] == ["1.880", "1.880", "1.460"]
