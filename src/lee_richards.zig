@@ -45,6 +45,25 @@ pub const LeeRichardsConfig = struct {
 };
 
 /// Arc interval representing a buried portion of a circle
+///
+/// A neighbor circle j covers the arc `[beta - alpha, beta + alpha]` of circle
+/// i, with `cos(alpha) = (Ri'^2 + dij^2 - Rj'^2) / (2 Ri' dij)`. The angles are
+/// then brought into [0, 2 pi] and an arc that crosses 0 is split in two. Two
+/// tangent cases must not reach that step:
+///
+/// - `dij + Ri' = Rj'`: circle i touches circle j from inside and is buried.
+///   Here `cos(alpha) = -1` and `alpha = pi`, the whole circle, but once both
+///   ends are wrapped into [0, 2 pi] they can coincide (`start == end`), and
+///   the neighbor that covers everything covers nothing.
+/// - `dij + Rj' = Ri'`: circle j touches circle i from inside and covers
+///   nothing. Here `cos(alpha) = 1` and `alpha = 0`, and with `beta = 2 pi`
+///   the wrap turns the empty arc `[2 pi, 2 pi]` into `[0, 2 pi]`: full
+///   burial from a neighbor that covers nothing.
+///
+/// `atomArea` therefore treats `dij + Ri' <= Rj'` and `cos(alpha) <= -1` as
+/// buried, `dij + Rj' <= Ri'` and `cos(alpha) >= 1` as no arc (the tests on
+/// `cos(alpha)` catch the pairs that rounding lets past the tests on the
+/// radii), and drops any arc whose two ends are equal before they are wrapped.
 const Arc = struct {
     start: f64, // Start angle (radians)
     end: f64, // End angle (radians)
@@ -261,23 +280,31 @@ fn atomArea(
                     continue;
                 }
 
-                // Check if circle i is completely inside circle j
-                if (dij + Ri_prime < Rj_prime) {
+                // Check if circle i is completely inside circle j (or touches it from inside)
+                if (dij + Ri_prime <= Rj_prime) {
                     is_buried = true;
                     break;
                 }
-                // Check if circle j is completely inside circle i
-                if (dij + Rj_prime < Ri_prime) {
+                // Check if circle j is completely inside circle i (or touches it from inside)
+                if (dij + Rj_prime <= Ri_prime) {
                     continue;
                 }
 
                 // Calculate arc
                 const cos_alpha = (Ri_prime2 + dij * dij - Rj_prime2) / (2.0 * Ri_prime * dij);
+                // Tangent circles that rounding let past the tests above (see `Arc`)
+                if (cos_alpha <= -1.0) {
+                    is_buried = true;
+                    break;
+                }
+                if (cos_alpha >= 1.0) continue;
                 const alpha = batchHalfAngle(trig, cos_alpha);
                 const beta = batchDirection(trig, dy, dx) + std.math.pi;
 
                 var inf = beta - alpha;
                 var sup = beta + alpha;
+                // An arc without width covers nothing (see `Arc`)
+                if (!(inf < sup)) continue;
 
                 while (inf < 0) inf += TWOPI;
                 while (inf >= TWOPI) inf -= TWOPI;
@@ -355,23 +382,31 @@ fn atomArea(
                     continue;
                 }
 
-                // Check if circle i is completely inside circle j
-                if (dij + Ri_prime < Rj_prime) {
+                // Check if circle i is completely inside circle j (or touches it from inside)
+                if (dij + Ri_prime <= Rj_prime) {
                     is_buried = true;
                     break;
                 }
-                // Check if circle j is completely inside circle i
-                if (dij + Rj_prime < Ri_prime) {
+                // Check if circle j is completely inside circle i (or touches it from inside)
+                if (dij + Rj_prime <= Ri_prime) {
                     continue;
                 }
 
                 // Calculate arc
                 const cos_alpha = (Ri_prime2 + dij * dij - Rj_prime2) / (2.0 * Ri_prime * dij);
+                // Tangent circles that rounding let past the tests above (see `Arc`)
+                if (cos_alpha <= -1.0) {
+                    is_buried = true;
+                    break;
+                }
+                if (cos_alpha >= 1.0) continue;
                 const alpha = batchHalfAngle(trig, cos_alpha);
                 const beta = batchDirection(trig, dy, dx) + std.math.pi;
 
                 var inf = beta - alpha;
                 var sup = beta + alpha;
+                // An arc without width covers nothing (see `Arc`)
+                if (!(inf < sup)) continue;
 
                 while (inf < 0) inf += TWOPI;
                 while (inf >= TWOPI) inf -= TWOPI;
@@ -419,18 +454,26 @@ fn atomArea(
                 continue;
             }
 
-            if (dij + Ri_prime < Rj_prime) {
+            if (dij + Ri_prime <= Rj_prime) {
                 is_buried = true;
                 break;
             }
-            if (dij + Rj_prime < Ri_prime) continue;
+            if (dij + Rj_prime <= Ri_prime) continue;
 
             const cos_alpha = (Ri_prime2 + dij * dij - Rj_prime2) / (2.0 * Ri_prime * dij);
+            // Tangent circles that rounding let past the tests above (see `Arc`)
+            if (cos_alpha <= -1.0) {
+                is_buried = true;
+                break;
+            }
+            if (cos_alpha >= 1.0) continue;
             const alpha = std.math.acos(std.math.clamp(cos_alpha, -1.0, 1.0));
             const beta = std.math.atan2(dy, dx) + std.math.pi;
 
             var inf = beta - alpha;
             var sup = beta + alpha;
+            // An arc without width covers nothing (see `Arc`)
+            if (!(inf < sup)) continue;
 
             while (inf < 0) inf += TWOPI;
             while (inf >= TWOPI) inf -= TWOPI;
@@ -730,7 +773,8 @@ pub fn LeeRichardsGen(comptime T: type) type {
 
         const TWOPI_T: T = 2.0 * std.math.pi;
 
-        /// Arc interval representing a buried portion of a circle
+        /// Arc interval representing a buried portion of a circle.
+        /// See the non-generic `Arc` for the handling of tangent circles.
         pub const Arc = struct {
             start: T, // Start angle (radians)
             end: T, // End angle (radians)
@@ -918,23 +962,31 @@ pub fn LeeRichardsGen(comptime T: type) type {
                             continue;
                         }
 
-                        // Check if circle i is completely inside circle j
-                        if (dij + Ri_prime < Rj_prime) {
+                        // Check if circle i is completely inside circle j (or touches it from inside)
+                        if (dij + Ri_prime <= Rj_prime) {
                             is_buried = true;
                             break;
                         }
-                        // Check if circle j is completely inside circle i
-                        if (dij + Rj_prime < Ri_prime) {
+                        // Check if circle j is completely inside circle i (or touches it from inside)
+                        if (dij + Rj_prime <= Ri_prime) {
                             continue;
                         }
 
                         // Calculate arc
                         const cos_alpha = (Ri_prime2 + dij * dij - Rj_prime2) / (2.0 * Ri_prime * dij);
+                        // Tangent circles that rounding let past the tests above (see `Arc`)
+                        if (cos_alpha <= -1.0) {
+                            is_buried = true;
+                            break;
+                        }
+                        if (cos_alpha >= 1.0) continue;
                         const alpha = Self.batchHalfAngle(trig, cos_alpha);
                         const beta = Self.batchDirection(trig, dy, dx) + std.math.pi;
 
                         var inf = beta - alpha;
                         var sup = beta + alpha;
+                        // An arc without width covers nothing (see `Arc`)
+                        if (!(inf < sup)) continue;
 
                         while (inf < 0) inf += Self.TWOPI_T;
                         while (inf >= Self.TWOPI_T) inf -= Self.TWOPI_T;
@@ -1007,18 +1059,26 @@ pub fn LeeRichardsGen(comptime T: type) type {
                             continue;
                         }
 
-                        if (dij + Ri_prime < Rj_prime) {
+                        if (dij + Ri_prime <= Rj_prime) {
                             is_buried = true;
                             break;
                         }
-                        if (dij + Rj_prime < Ri_prime) continue;
+                        if (dij + Rj_prime <= Ri_prime) continue;
 
                         const cos_alpha = (Ri_prime2 + dij * dij - Rj_prime2) / (2.0 * Ri_prime * dij);
+                        // Tangent circles that rounding let past the tests above (see `Arc`)
+                        if (cos_alpha <= -1.0) {
+                            is_buried = true;
+                            break;
+                        }
+                        if (cos_alpha >= 1.0) continue;
                         const alpha = Self.batchHalfAngle(trig, cos_alpha);
                         const beta = Self.batchDirection(trig, dy, dx) + std.math.pi;
 
                         var inf = beta - alpha;
                         var sup = beta + alpha;
+                        // An arc without width covers nothing (see `Arc`)
+                        if (!(inf < sup)) continue;
 
                         while (inf < 0) inf += Self.TWOPI_T;
                         while (inf >= Self.TWOPI_T) inf -= Self.TWOPI_T;
@@ -1067,18 +1127,26 @@ pub fn LeeRichardsGen(comptime T: type) type {
                         continue;
                     }
 
-                    if (dij + Ri_prime < Rj_prime) {
+                    if (dij + Ri_prime <= Rj_prime) {
                         is_buried = true;
                         break;
                     }
-                    if (dij + Rj_prime < Ri_prime) continue;
+                    if (dij + Rj_prime <= Ri_prime) continue;
 
                     const cos_alpha = (Ri_prime2 + dij * dij - Rj_prime2) / (2.0 * Ri_prime * dij);
+                    // Tangent circles that rounding let past the tests above (see `Arc`)
+                    if (cos_alpha <= -1.0) {
+                        is_buried = true;
+                        break;
+                    }
+                    if (cos_alpha >= 1.0) continue;
                     const alpha = std.math.acos(std.math.clamp(cos_alpha, @as(T, -1.0), @as(T, 1.0)));
                     const beta = std.math.atan2(dy, dx) + std.math.pi;
 
                     var inf = beta - alpha;
                     var sup = beta + alpha;
+                    // An arc without width covers nothing (see `Arc`)
+                    if (!(inf < sup)) continue;
 
                     while (inf < 0) inf += Self.TWOPI_T;
                     while (inf >= Self.TWOPI_T) inf -= Self.TWOPI_T;
@@ -2501,5 +2569,180 @@ test "fast mode is selectable, keeps the values of zsasa 0.9.1 and is biased on 
         // f32 fast follows f64 fast, not the exact reference.
         try std.testing.expect(try trig_testing.maxAbsDiff(f32, fast.atom_areas, fast_f32.atom_areas) < trig_testing.f32_tolerance);
         try std.testing.expect(trig_testing.sum(f32, fast_f32.atom_areas) > reference_total * 1.001);
+    }
+}
+
+// =============================================================================
+// Tangent circles
+// =============================================================================
+
+/// The tangent pair of issue #430: with the probe, a sphere of radius 2 at the
+/// origin touches a sphere of radius 3 at (x_large, 0, 0) from inside when
+/// |x_large| = 1. The small atom is buried and the large one fully exposed.
+/// An odd slice count puts a slice through both centers, where the two slice
+/// circles are tangent; in every other slice the small circle lies strictly
+/// inside the large one.
+const tangent_testing = struct {
+    const small_radius = 0.6;
+    const large_radius = 1.6;
+    const probe_radius = 1.4;
+    /// 4 pi (1.6 + 1.4)^2
+    const large_area = 4.0 * std.math.pi * 9.0;
+    const max_padding = 12;
+
+    /// The pair plus `n_padding` atoms of radius 0.1 on the z axis, at
+    /// |z| >= 1.6. With the probe they are neighbors of both atoms of the pair
+    /// but do not reach the plane z = 0, so with one slice they change no area.
+    /// They only move the tangent neighbor between the 8-wide batch, the
+    /// 4-wide batch and the scalar remainder.
+    const System = struct {
+        x: [2 + max_padding]f64 = @splat(0.0),
+        y: [2 + max_padding]f64 = @splat(0.0),
+        z: [2 + max_padding]f64 = @splat(0.0),
+        r: [2 + max_padding]f64 = @splat(0.1),
+        n_atoms: usize,
+
+        fn init(x_large: f64, n_padding: usize) System {
+            std.debug.assert(n_padding <= max_padding);
+            var system = System{ .n_atoms = 2 + n_padding };
+            system.r[0] = small_radius;
+            system.x[1] = x_large;
+            system.r[1] = large_radius;
+            for (0..n_padding) |k| {
+                const height = 1.6 + 0.15 * @as(f64, @floatFromInt(k / 2));
+                system.z[2 + k] = if (k % 2 == 0) height else -height;
+            }
+            return system;
+        }
+
+        fn input(self: *System, allocator: Allocator) AtomInput {
+            const n = self.n_atoms;
+            return .{ .x = self.x[0..n], .y = self.y[0..n], .z = self.z[0..n], .r = self.r[0..n], .allocator = allocator };
+        }
+    };
+
+    /// Areas of the small and the large atom, as f64.
+    fn pairAreas(
+        comptime T: type,
+        allocator: Allocator,
+        input: AtomInput,
+        n_slices: u32,
+        trig: TrigMode,
+        n_threads: ?usize,
+    ) ![2]f64 {
+        const config = LeeRichardsConfigGen(T){ .n_slices = n_slices, .probe_radius = probe_radius, .trig = trig };
+        var result = if (n_threads) |n|
+            try LeeRichardsGen(T).calculateSasaParallel(allocator, input, config, n)
+        else
+            try LeeRichardsGen(T).calculateSasa(allocator, input, config);
+        defer result.deinit();
+        return .{ result.atom_areas[0], result.atom_areas[1] };
+    }
+
+    /// The same through the non-generic f64 entry points.
+    fn pairAreasNonGeneric(allocator: Allocator, input: AtomInput, n_slices: u32, trig: TrigMode, n_threads: ?usize) ![2]f64 {
+        const config = LeeRichardsConfig{ .n_slices = n_slices, .probe_radius = probe_radius, .trig = trig };
+        var result = if (n_threads) |n|
+            try calculateSasaParallel(allocator, input, config, n)
+        else
+            try calculateSasa(allocator, input, config);
+        defer result.deinit();
+        return .{ result.atom_areas[0], result.atom_areas[1] };
+    }
+
+    fn expectBuriedAndExposed(comptime T: type, areas: [2]f64) !void {
+        try std.testing.expectEqual(@as(f64, 0.0), areas[0]);
+        try std.testing.expectApproxEqRel(@as(f64, large_area), areas[1], if (T == f32) 1e-6 else 1e-13);
+    }
+};
+
+test "tangent circles: an atom touching a larger one from inside is buried, the larger one stays exposed" {
+    const allocator = std.testing.allocator;
+
+    inline for (.{ f64, f32 }) |T| {
+        for ([_]f64{ 1.0, -1.0 }) |x_large| {
+            var system = tangent_testing.System.init(x_large, 0);
+            const input = system.input(allocator);
+            // Odd counts have a slice through the centers, where the circles are tangent.
+            for ([_]u32{ 1, 2, 20, 21 }) |n_slices| {
+                for ([_]TrigMode{ .exact, .fast }) |trig| {
+                    for ([_]?usize{ null, 2 }) |n_threads| {
+                        const areas = try tangent_testing.pairAreas(T, allocator, input, n_slices, trig, n_threads);
+                        try tangent_testing.expectBuriedAndExposed(T, areas);
+                    }
+                }
+            }
+        }
+    }
+
+    // The non-generic f64 copy
+    for ([_]f64{ 1.0, -1.0 }) |x_large| {
+        var system = tangent_testing.System.init(x_large, 0);
+        const input = system.input(allocator);
+        for ([_]u32{ 1, 2, 20, 21 }) |n_slices| {
+            for ([_]TrigMode{ .exact, .fast }) |trig| {
+                for ([_]?usize{ null, 2 }) |n_threads| {
+                    const areas = try tangent_testing.pairAreasNonGeneric(allocator, input, n_slices, trig, n_threads);
+                    try tangent_testing.expectBuriedAndExposed(f64, areas);
+                }
+            }
+        }
+    }
+}
+
+test "tangent circles: the tangent neighbor is handled the same in the batches and in the scalar remainder" {
+    const allocator = std.testing.allocator;
+
+    // 1 to 13 neighbors per atom: the tangent neighbor falls in the scalar
+    // remainder, in the 4-wide batch and in the 8-wide batch.
+    for (0..tangent_testing.max_padding + 1) |n_padding| {
+        for ([_]f64{ 1.0, -1.0 }) |x_large| {
+            var system = tangent_testing.System.init(x_large, n_padding);
+            const input = system.input(allocator);
+            for ([_]TrigMode{ .exact, .fast }) |trig| {
+                inline for (.{ f64, f32 }) |T| {
+                    const areas = try tangent_testing.pairAreas(T, allocator, input, 1, trig, null);
+                    try tangent_testing.expectBuriedAndExposed(T, areas);
+                }
+                const areas = try tangent_testing.pairAreasNonGeneric(allocator, input, 1, trig, null);
+                try tangent_testing.expectBuriedAndExposed(f64, areas);
+            }
+        }
+    }
+}
+
+test "tangent circles: areas are continuous across tangency" {
+    const allocator = std.testing.allocator;
+
+    inline for (.{ f64, f32 }) |T| {
+        // Center distances next to 1 in the working precision, and a little further away.
+        const one: T = 1.0;
+        const distances = [_]f64{
+            std.math.nextAfter(T, one, 0.0),
+            std.math.nextAfter(T, one, 2.0),
+            @as(T, 1.0 - 1e-6),
+            @as(T, 1.0 + 1e-6),
+        };
+        for (distances) |distance| {
+            // With one slice (thickness 4, radius 2), a small circle that
+            // sticks out by eps exposes an arc of 2 sqrt(3 eps), and covers an
+            // arc of 2 sqrt(4 eps / 3) of the large circle (thickness 6, radius 3).
+            const eps = @abs(distance - 1.0);
+            const small_bound = 2.0 * 16.0 * @sqrt(3.0 * eps) + 1e-5;
+            const large_bound = 2.0 * 36.0 * @sqrt(4.0 * eps / 3.0) + 1e-4;
+
+            for ([_]f64{ 1.0, -1.0 }) |sign| {
+                var system = tangent_testing.System.init(sign * distance, 0);
+                const input = system.input(allocator);
+                for ([_]u32{ 1, 21 }) |n_slices| {
+                    for ([_]TrigMode{ .exact, .fast }) |trig| {
+                        const areas = try tangent_testing.pairAreas(T, allocator, input, n_slices, trig, null);
+                        try std.testing.expect(areas[0] >= 0.0);
+                        try std.testing.expect(areas[0] < small_bound);
+                        try std.testing.expectApproxEqAbs(@as(f64, tangent_testing.large_area), areas[1], large_bound);
+                    }
+                }
+            }
+        }
     }
 }
