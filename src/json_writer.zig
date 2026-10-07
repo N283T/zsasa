@@ -2202,6 +2202,13 @@ test "sasaResultToCsv empty atoms" {
     try std.testing.expectEqualStrings(expected, csv);
 }
 
+/// Absolute path of `name` inside the temporary directory. Caller frees.
+fn tmpFilePath(allocator: Allocator, tmp: *std.testing.TmpDir, name: []const u8) ![]u8 {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(std.testing.io, &buf);
+    return std.fs.path.join(allocator, &.{ buf[0..len], name });
+}
+
 test "writeSasaResult creates file" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -2218,8 +2225,10 @@ test "writeSasaResult creates file" {
         .allocator = allocator,
     };
 
-    const test_path = "test_output.json";
-    defer std.Io.Dir.cwd().deleteFile(io, test_path) catch {};
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const test_path = try tmpFilePath(allocator, &tmp_dir, "test_output.json");
+    defer allocator.free(test_path);
 
     try writeSasaResult(allocator, io, result, test_path);
 
@@ -2254,8 +2263,10 @@ test "writeSasaResultWithFormat json" {
         .allocator = allocator,
     };
 
-    const test_path = "test_format_json.json";
-    defer std.Io.Dir.cwd().deleteFile(io, test_path) catch {};
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const test_path = try tmpFilePath(allocator, &tmp_dir, "test_format_json.json");
+    defer allocator.free(test_path);
 
     try writeSasaResultWithFormat(allocator, io, result, test_path, .json);
 
@@ -2287,8 +2298,10 @@ test "writeSasaResultWithFormat csv" {
         .allocator = allocator,
     };
 
-    const test_path = "test_format.csv";
-    defer std.Io.Dir.cwd().deleteFile(io, test_path) catch {};
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const test_path = try tmpFilePath(allocator, &tmp_dir, "test_format.csv");
+    defer allocator.free(test_path);
 
     try writeSasaResultWithFormat(allocator, io, result, test_path, .csv);
 
@@ -2319,8 +2332,10 @@ test "writeSasaResult overwrites existing file" {
         .allocator = allocator,
     };
 
-    const test_path = "test_overwrite.json";
-    defer std.Io.Dir.cwd().deleteFile(io, test_path) catch {};
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const test_path = try tmpFilePath(allocator, &tmp_dir, "test_overwrite.json");
+    defer allocator.free(test_path);
 
     // Write first time
     try writeSasaResult(allocator, io, result, test_path);

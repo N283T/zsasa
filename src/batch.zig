@@ -5668,9 +5668,44 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
 // Tests
 // =============================================================================
 
-test "scanDirectory finds json files" {
-    // This test requires a test directory - skip in automated testing
-    // Manual testing: create a directory with .json files and test
+test "scanDirectory returns supported structure files in sorted order" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Written in a scrambled order on purpose; unsupported names and a
+    // directory that merely looks like a structure file must be skipped.
+    const names = [_][]const u8{
+        "e.sdf",
+        "c.json",
+        "readme.md",
+        "b.pdb",
+        "x.xyz",
+        "d.bcif.zst",
+        "UPPER.PDB",
+        "a.cif.gz",
+        "structure.pdb.bak",
+    };
+    for (names) |name| {
+        try tmp_dir.dir.writeFile(io, .{ .sub_path = name, .data = "" });
+    }
+    try tmp_dir.dir.createDir(io, "subdir.pdb", .default_dir);
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(io, &root_buf);
+
+    const files = try scanDirectory(allocator, io, root_buf[0..root_len]);
+    defer {
+        for (files) |f| allocator.free(f);
+        allocator.free(files);
+    }
+
+    const expected = [_][]const u8{ "UPPER.PDB", "a.cif.gz", "b.pdb", "c.json", "d.bcif.zst", "e.sdf" };
+    try std.testing.expectEqual(expected.len, files.len);
+    for (expected, files) |want, got| {
+        try std.testing.expectEqualStrings(want, got);
+    }
 }
 
 fn makeTestAtomInput(allocator: Allocator, chains: []const []const u8) !AtomInput {

@@ -72,14 +72,52 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    // Test step
-    const mod_tests = b.addTest(.{ .root_module = mod });
-    const exe_tests = b.addTest(.{ .root_module = exe.root_module });
+    // Test step.
+    //
+    // Zig runs the tests of every file reachable from a test root, and the
+    // three roots overlap heavily (c_api.zig alone reaches almost every file).
+    // Each test should run exactly once, so the library root stays unfiltered
+    // and the other two roots only run the tests no earlier root reaches:
+    //   - the zsasa module (src/root.zig): dcd.zig and root.zig itself
+    //   - the executable (src/main.zig): calc.zig, traj.zig and main.zig itself
+    // Filters are substring matches on the full test name.
+    // scripts/check_test_partition.py verifies that every test runs in exactly
+    // one artifact, so a new file reachable from only one root cannot silently
+    // lose its tests or run them twice.
+    const all_tests = b.option(
+        bool,
+        "all-tests",
+        "Disable the per-artifact test filters (used by scripts/check_test_partition.py)",
+    ) orelse false;
+    const mod_tests = b.addTest(.{
+        .root_module = mod,
+        .filters = if (all_tests) &.{} else &.{ "dcd.test.", "root.test" },
+    });
+    const exe_tests = b.addTest(.{
+        .root_module = exe.root_module,
+        .filters = if (all_tests) &.{} else &.{ "calc.test.", "traj.test.", "main.test" },
+    });
     const lib_tests = b.addTest(.{ .root_module = lib.root_module });
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(mod_tests).step);
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
     test_step.dependOn(&b.addRunArtifact(lib_tests).step);
+
+    // Install the test executables without running them, so
+    // scripts/check_test_partition.py can list the tests each one contains.
+    const test_bins_step = b.step("test-bins", "Install the test executables to <prefix>/test-bin");
+    const test_bins = [_]struct { name: []const u8, artifact: *std.Build.Step.Compile }{
+        .{ .name = "mod-tests", .artifact = mod_tests },
+        .{ .name = "exe-tests", .artifact = exe_tests },
+        .{ .name = "lib-tests", .artifact = lib_tests },
+    };
+    for (test_bins) |test_bin| {
+        const install = b.addInstallArtifact(test_bin.artifact, .{
+            .dest_dir = .{ .override = .{ .custom = "test-bin" } },
+            .dest_sub_path = test_bin.name,
+        });
+        test_bins_step.dependOn(&install.step);
+    }
 
     // Docs step (zig autodoc)
     const docs_lib = b.addLibrary(.{
