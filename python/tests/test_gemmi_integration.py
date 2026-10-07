@@ -173,6 +173,132 @@ class TestExtractAtoms:
         atoms = extract_atoms_from_model(simple_structure[0])
         assert "n_atoms=5" in repr(atoms)
 
+    def test_extract_deuterium_excluded(self, structure_with_hydrogens):
+        """Deuterium is an isotope of hydrogen and is excluded with it."""
+        residue = structure_with_hydrogens[0]["A"][0]
+        da = gemmi.Atom()
+        da.name = "DA"
+        da.element = gemmi.Element("D")
+        da.pos = gemmi.Position(0.0, 1.0, 0.0)
+        residue.add_atom(da)
+
+        atoms = extract_atoms_from_model(structure_with_hydrogens[0])
+        assert atoms.atom_names == ["CA"]
+
+        with_hydrogens = extract_atoms_from_model(
+            structure_with_hydrogens[0], include_hydrogens=True
+        )
+        assert with_hydrogens.atom_names == ["CA", "HA", "DA"]
+
+
+# =============================================================================
+# Tests for alternate locations
+# =============================================================================
+
+# Residue 2 is PRO as altloc A and SER as altloc B, with a shared N that has no
+# altloc. Residue 3 is LEU as A and ILE as B at equal occupancy. The x
+# coordinate is the atom serial number. The same file is a test fixture of the
+# PDB parser in src/pdb_parser.zig.
+MICROHETEROGENEITY_PDB = """\
+ATOM      1  N   GLY A   1       1.000   0.000   0.000  1.00 10.00           N
+ATOM      2  CA  GLY A   1       2.000   0.000   0.000  1.00 10.00           C
+ATOM      3  N   PRO A   2       3.000   0.000   0.000  1.00 10.00           N
+ATOM      4  CA APRO A   2       4.000   0.000   0.000  0.40 10.00           C
+ATOM      8  CA BSER A   2       8.000   0.000   0.000  0.60 10.00           C
+ATOM      5  CB APRO A   2       5.000   0.000   0.000  0.40 10.00           C
+ATOM      9  CB BSER A   2       9.000   0.000   0.000  0.60 10.00           C
+ATOM      6  CG APRO A   2       6.000   0.000   0.000  0.40 10.00           C
+ATOM     10  OG BSER A   2      10.000   0.000   0.000  0.60 10.00           O
+ATOM      7  CD APRO A   2       7.000   0.000   0.000  0.40 10.00           C
+ATOM     11  N  ALEU A   3      11.000   0.000   0.000  0.50 10.00           N
+ATOM     14  N  BILE A   3      14.000   0.000   0.000  0.50 10.00           N
+ATOM     12  CA ALEU A   3      12.000   0.000   0.000  0.50 10.00           C
+ATOM     15  CA BILE A   3      15.000   0.000   0.000  0.50 10.00           C
+ATOM     13  CD1ALEU A   3      13.000   0.000   0.000  0.50 10.00           C
+ATOM     16  CG2BILE A   3      16.000   0.000   0.000  0.50 10.00           C
+ATOM     17  CD1BILE A   3      17.000   0.000   0.000  0.50 10.00           C
+END
+"""
+
+# CA of residue 1 has the alternates A and B, CB the alternates B and C without
+# an A, and O a 0.50/0.50 tie whose first alternate is C. Water 101 has two
+# alternates. The x coordinate is the atom serial number.
+ALTLOC_PDB = """\
+ATOM      1  N   ALA A   1       1.000   0.000   0.000  1.00 10.00           N
+ATOM      2  CA AALA A   1       2.000   0.000   0.000  0.30 10.00           C
+ATOM      3  CA BALA A   1       3.000   0.000   0.000  0.70 10.00           C
+ATOM      4  CB BALA A   1       4.000   0.000   0.000  0.40 10.00           C
+ATOM      5  CB CALA A   1       5.000   0.000   0.000  0.60 10.00           C
+ATOM      6  O  CALA A   1       6.000   0.000   0.000  0.50 10.00           O
+ATOM      7  O  BALA A   1       7.000   0.000   0.000  0.50 10.00           O
+ATOM      8  DA AALA A   1       8.000   0.000   0.000  0.30 10.00           D
+ATOM      9  DA BALA A   1       9.000   0.000   0.000  0.70 10.00           D
+HETATM   10  O  AHOH A 101      10.000   0.000   0.000  0.50 10.00           O
+HETATM   11  O  BHOH A 101      11.000   0.000   0.000  0.50 10.00           O
+END
+"""
+
+
+class TestAlternateLocations:
+    """One conformer per site, by the rules of ``--altloc=auto``."""
+
+    def test_keeps_one_conformer_per_site(self):
+        """A is preferred, then the highest occupancy, then the first alternate."""
+        structure = gemmi.read_pdb_string(ALTLOC_PDB)
+        atoms = extract_atoms_from_model(structure[0])
+
+        assert atoms.coords[:, 0].tolist() == [1.0, 2.0, 5.0, 6.0]
+        assert atoms.atom_names == ["N", "CA", "CB", "O"]
+
+    def test_filters_apply_before_conformers_are_chosen(self):
+        """HETATM and hydrogen alternates are resolved when they are included."""
+        structure = gemmi.read_pdb_string(ALTLOC_PDB)
+        atoms = extract_atoms_from_model(structure[0], include_hetatm=True, include_hydrogens=True)
+
+        assert atoms.coords[:, 0].tolist() == [1.0, 2.0, 5.0, 6.0, 8.0, 10.0]
+        assert atoms.residue_names == ["ALA"] * 5 + ["HOH"]
+
+    def test_microheterogeneity_keeps_one_residue(self):
+        """Alternates that are different residues do not both survive."""
+        structure = gemmi.read_pdb_string(MICROHETEROGENEITY_PDB)
+        atoms = extract_atoms_from_model(structure[0])
+
+        # PRO (altloc A) at 2 with the shared N, and LEU (altloc A) at 3
+        assert sorted(atoms.coords[:, 0].tolist()) == [
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            5.0,
+            6.0,
+            7.0,
+            11.0,
+            12.0,
+            13.0,
+        ]
+        assert {
+            (number, name)
+            for number, name in zip(atoms.residue_ids, atoms.residue_names, strict=True)
+        } == {(1, "GLY"), (2, "PRO"), (3, "LEU")}
+
+    def test_all_conformers_were_counted_before(self):
+        """The fixtures do hold more atoms than are kept."""
+        structure = gemmi.read_pdb_string(MICROHETEROGENEITY_PDB)
+        assert structure[0].count_atom_sites() == 17
+
+    def test_calculation_uses_the_selected_conformer(self):
+        """SASA is calculated for the kept atoms only."""
+        structure = gemmi.read_pdb_string(MICROHETEROGENEITY_PDB)
+        result = calculate_sasa_from_model(structure[0])
+
+        assert len(result.atom_areas) == 10
+        assert len(result.atom_data) == 10
+
+    def test_structure_without_altlocs_is_unchanged(self, simple_structure):
+        """Nothing is dropped from a structure without alternate locations."""
+        atoms = extract_atoms_from_model(simple_structure[0])
+        assert atoms.atom_names == ["N", "CA", "C", "O", "CB"]
+
 
 # =============================================================================
 # Tests for calculate_sasa_from_model

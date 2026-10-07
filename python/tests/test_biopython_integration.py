@@ -191,6 +191,24 @@ class TestExtractAtoms:
         atoms = extract_atoms_from_model(structure_with_hydrogens[0], include_hydrogens=True)
         assert len(atoms) == 2  # CA + HA
 
+    def test_extract_deuterium_excluded(self):
+        """Deuterium is an isotope of hydrogen and is excluded with it."""
+        sb = _create_structure("deuterium")
+        _add_model(sb)
+        _add_chain(sb, "A")
+        _add_residue(sb, "ALA", 1)
+        _add_atom(sb, "CA", (0.0, 0.0, 0.0), "C", 1)
+        _add_atom(sb, "DA", (1.0, 0.0, 0.0), "D", 2)
+        _add_atom(sb, "HA", (0.0, 1.0, 0.0), "H", 3)
+        model = sb.get_structure()[0]
+
+        assert extract_atoms_from_model(model).atom_names == ["CA"]
+        assert extract_atoms_from_model(model, include_hydrogens=True).atom_names == [
+            "CA",
+            "DA",
+            "HA",
+        ]
+
     def test_atom_data_repr(self, simple_structure):
         """AtomData should have a clean repr."""
         atoms = extract_atoms_from_model(simple_structure[0])
