@@ -60,14 +60,13 @@ These integrations parse structure files through their respective libraries, whi
 ```python
 from zsasa.integrations.gemmi import calculate_sasa_from_structure
 
-# Basic usage (handles altloc, HETATM automatically)
+# Basic usage (polymer atoms only; HETATM and hydrogens are excluded by default)
 result = calculate_sasa_from_structure("complex.cif")
 
-# Exclude ligands and hydrogens
+# Include ligands, ions and waters
 result = calculate_sasa_from_structure(
     "complex.cif",
-    include_hetatm=False,
-    include_hydrogens=False,
+    include_hetatm=True,
 )
 ```
 

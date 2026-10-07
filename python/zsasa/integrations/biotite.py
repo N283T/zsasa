@@ -59,7 +59,7 @@ def _import_biotite():
 def extract_atoms_from_atom_array(
     atom_array: AtomArray,
     *,
-    include_hetatm: bool = True,
+    include_hetatm: bool = False,
     include_hydrogens: bool = False,
 ) -> AtomData:
     """Extract atom data from a Biotite AtomArray.
@@ -123,7 +123,7 @@ def calculate_sasa_from_atom_array(
     n_slices: int = 20,
     probe_radius: float = 1.4,
     n_threads: int = 0,
-    include_hetatm: bool = True,
+    include_hetatm: bool = False,
     include_hydrogens: bool = False,
 ) -> SasaResultWithAtoms:
     """Calculate SASA from a Biotite AtomArray.
@@ -139,7 +139,7 @@ def calculate_sasa_from_atom_array(
         n_slices: Slices per atom (LR algorithm). Default: 20.
         probe_radius: Water probe radius in Angstroms. Default: 1.4.
         n_threads: Number of threads (0 = auto). Default: 0.
-        include_hetatm: Include HETATM records. Default: True.
+        include_hetatm: Include HETATM records. Default: False.
         include_hydrogens: Include hydrogen atoms. Default: False.
 
     Returns:
@@ -211,7 +211,7 @@ def calculate_sasa_from_structure(
     n_slices: int = 20,
     probe_radius: float = 1.4,
     n_threads: int = 0,
-    include_hetatm: bool = True,
+    include_hetatm: bool = False,
     include_hydrogens: bool = False,
 ) -> SasaResultWithAtoms:
     """Calculate SASA from a structure file or Biotite AtomArray/AtomArrayStack.
@@ -228,7 +228,7 @@ def calculate_sasa_from_structure(
         n_slices: Slices per atom (LR algorithm). Default: 20.
         probe_radius: Water probe radius in Angstroms. Default: 1.4.
         n_threads: Number of threads (0 = auto). Default: 0.
-        include_hetatm: Include HETATM records. Default: True.
+        include_hetatm: Include HETATM records. Default: False.
         include_hydrogens: Include hydrogen atoms. Default: False.
 
     Returns:
