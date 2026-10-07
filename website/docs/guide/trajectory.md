@@ -22,7 +22,7 @@ Format is auto-detected from file extension.
 zsasa traj <trajectory> <topology> [OPTIONS]
 ```
 
-The topology file (PDB or mmCIF) provides atom names and radii.
+The topology file (PDB or mmCIF) provides atom names and radii. See [Topology Requirements](#topology-requirements) for how it has to match the trajectory.
 
 ### Example
 
@@ -48,6 +48,9 @@ zsasa traj trajectory.xtc topology.pdb \
 # Exclude hydrogens (included by default)
 zsasa traj trajectory.xtc topology.pdb --no-hydrogens
 
+# Lee-Richards instead of Shrake-Rupley
+zsasa traj trajectory.xtc topology.pdb --algorithm=lr --n-slices=50
+
 # Output to specific file
 zsasa traj trajectory.xtc topology.pdb -o sasa_results.csv
 ```
@@ -56,15 +59,21 @@ zsasa traj trajectory.xtc topology.pdb -o sasa_results.csv
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--stride=N` | Process every Nth frame | `1` |
+| `--stride=N` | Process every Nth frame (N ≥ 1) | `1` |
 | `--start=N` | Start from frame N | `0` |
 | `--end=N` | End at frame N | all |
+| `--algorithm=ALGO` | `sr` (Shrake-Rupley) or `lr` (Lee-Richards) | `sr` |
+| `--n-points=N` | Test points per atom (SR, 1-10000) | `100` |
+| `--n-slices=N` | Slices per atom diameter (LR, 1-1000) | `20` |
+| `--probe-radius=R` | Probe radius in Å (0 < R ≤ 10) | `1.4` |
 | `--classifier=TYPE` | `ccd`, `naccess`, `protor`, `oons` | `naccess` |
 | `--threads=N` | Thread count (0 = auto) | `0` |
 | `--precision=P` | `f32` (fast) or `f64` (precise) | `f32` |
-| `--no-hydrogens` | Exclude hydrogen atoms | included |
+| `--no-hydrogens` | Exclude hydrogen atoms from the calculation | included |
 | `--batch-size=N` | Frames per batch (omit for auto) | auto |
-| `-o, --output=FILE` | Output CSV file | `traj_sasa.csv` |
+| `-o FILE`, `--output=FILE` | Output CSV file | `traj_sasa.csv` |
+
+`--algorithm` and `--precision` are independent: Lee-Richards runs at `f32` by default and at `f64` with `--precision=f64`. See [Commands & Options](../cli/commands.md#trajectory-options) for the full list.
 
 ### Output Format
 
@@ -76,6 +85,23 @@ frame,step,time,total_sasa
 1,2,2.000,1977.96
 2,3,3.000,1884.93
 ```
+
+### Topology Requirements
+
+The topology must describe exactly the atoms stored in the trajectory, in the same order. zsasa reads every `ATOM` and `HETATM` record of the **first model** of the topology file and compares the atom count with the trajectory before any frame is processed.
+
+- A multi-model file (for example an NMR ensemble) can be used directly; only its first model is the topology.
+- Solvent, ions and ligands that are part of the trajectory must be listed in the topology, and they are part of the reported SASA. To restrict the calculation to a subset, write a trajectory and topology that contain only those atoms, or use the [MDAnalysis integration](../integrations/mdanalysis.md) with a selection.
+- For residues the classifier does not know, radii fall back to generic atom-name or element-based values, as in `calc`.
+- For mmCIF topologies, `--altloc` selects which alternate locations are kept (default `auto`).
+
+### Hydrogens
+
+Hydrogens are included by default, because MD trajectories carry explicit hydrogens and the default `naccess` classifier has radii for them. `--no-hydrogens` removes the hydrogen atoms of the topology and skips their coordinates in every frame, so it works on a normal all-atom trajectory: the trajectory and the topology still have to contain the same atoms, hydrogens included. If the trajectory has already been stripped of hydrogens, pass a hydrogen-free topology and leave the option out.
+
+### Failures
+
+All options are checked before the output file is created, so a rejected command never overwrites an existing results file. If reading or calculating a frame fails, zsasa writes the frames completed before it, reports the error and exits with a non-zero status.
 
 ## Python: MDAnalysis Integration
 

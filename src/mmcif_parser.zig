@@ -127,8 +127,17 @@ pub const MmcifParser = struct {
     alt_loc_id: u8 = 'A',
     /// Model number to extract (null = first model or all)
     model_num: ?u32 = null,
+    /// Read only the model of the first `_atom_site` row, whatever its number.
+    /// Files without `pdbx_PDB_model_num` are read in full.
+    first_model_only: bool = false,
     /// Chain IDs to include (null = all chains)
     chain_filter: ?[]const []const u8 = null,
+    /// Optional output for callers that keep hydrogens (`skip_hydrogens = false`)
+    /// but need to know which atoms they are. When set, `parse` replaces the
+    /// list contents with one flag per returned atom: true for the atoms that
+    /// `skip_hydrogens` would drop (hydrogen and deuterium). The list is owned
+    /// by the caller and grown with the parser's allocator.
+    hydrogen_flags: ?*std.ArrayListUnmanaged(bool) = null,
     /// Use auth_asym_id instead of label_asym_id for chain
     use_auth_chain: bool = false,
     /// Parse inline CCD data from `_chem_comp_atom`/`_chem_comp_bond` loops.
@@ -380,6 +389,8 @@ pub const MmcifParser = struct {
         var atom_records = std.ArrayListUnmanaged(AtomRecord).empty;
         defer atom_records.deinit(self.allocator);
         var has_non_blank_alt_loc = false;
+        var first_model: ?[]const u8 = null;
+        if (self.hydrogen_flags) |flags| flags.clearRetainingCapacity();
 
         // Buffer for current row values
         var row_values = try self.allocator.alloc([]const u8, num_cols);
@@ -404,7 +415,8 @@ pub const MmcifParser = struct {
 
                     if (col >= num_cols) {
                         // Complete row - process it
-                        const should_include = try self.shouldIncludeAtom(row_values, columns);
+                        const in_wanted_model = !self.first_model_only or isFirstModelRow(row_values, columns, &first_model);
+                        const should_include = in_wanted_model and try self.shouldIncludeAtom(row_values, columns);
 
                         if (should_include) {
                             const atom = try self.atomRecordFromRow(row_values, columns);
@@ -465,6 +477,7 @@ pub const MmcifParser = struct {
             }
             try residue_num_list.append(self.allocator, atom.residue_num);
             try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(atom.insertion_code));
+            if (self.hydrogen_flags) |flags| try flags.append(self.allocator, atom.is_hydrogen);
         }
 
         // Convert to AtomInput
@@ -532,6 +545,7 @@ pub const MmcifParser = struct {
         alt_loc: u8,
         occupancy: f64,
         model_num: ?u32,
+        is_hydrogen: bool,
     };
 
     fn atomRecordFromRow(self: *MmcifParser, row_values: []const []const u8, columns: AtomSiteColumns) !AtomRecord {
@@ -600,7 +614,26 @@ pub const MmcifParser = struct {
             .alt_loc = alt_loc,
             .occupancy = occupancy,
             .model_num = model_num,
+            .is_hydrogen = self.hydrogen_flags != null and isHydrogenRow(row_values, columns),
         };
+    }
+
+    /// Hydrogen test shared by `skip_hydrogens` and `hydrogen_flags`
+    /// (deuterium D is an isotope of H).
+    fn isHydrogenRow(row_values: []const []const u8, columns: AtomSiteColumns) bool {
+        const col = columns.type_symbol orelse return false;
+        const symbol = row_values[col];
+        return !cif.isNull(symbol) and (std.mem.eql(u8, symbol, "H") or std.mem.eql(u8, symbol, "D"));
+    }
+
+    /// Remember the model of the first atom_site row in `first_model` and
+    /// report whether this row belongs to it.
+    fn isFirstModelRow(row_values: []const []const u8, columns: AtomSiteColumns, first_model: *?[]const u8) bool {
+        const col = columns.pdbx_pdb_model_num orelse return true;
+        const model = row_values[col];
+        if (first_model.*) |first| return std.mem.eql(u8, model, first);
+        first_model.* = model;
+        return true;
     }
 
     fn sameAltLocSite(a: AtomRecord, b: AtomRecord) bool {
@@ -675,13 +708,8 @@ pub const MmcifParser = struct {
         }
 
         // Check hydrogen filter
-        if (self.skip_hydrogens) {
-            if (columns.type_symbol) |col| {
-                const symbol = row_values[col];
-                if (!cif.isNull(symbol) and (std.mem.eql(u8, symbol, "H") or std.mem.eql(u8, symbol, "D"))) {
-                    return false;
-                }
-            }
+        if (self.skip_hydrogens and isHydrogenRow(row_values, columns)) {
+            return false;
         }
 
         // Check model number filter
@@ -1085,6 +1113,78 @@ test "parse mmCIF explicit model selection filters requested model" {
 
     try std.testing.expectEqual(@as(usize, 1), input.atomCount());
     try std.testing.expectEqualStrings("B", input.chain_id.?[0].slice());
+}
+
+test "parse mmCIF first_model_only keeps the first model whatever its number" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.pdbx_PDB_model_num
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\ATOM   1 C CA ALA A 1 7 10.0 20.0 30.0
+        \\HETATM 2 O O  HOH B . 7 12.0 20.0 30.0
+        \\ATOM   3 C CA ALA A 1 8 11.0 21.0 31.0
+        \\HETATM 4 O O  HOH B . 8 13.0 21.0 31.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.atom_only = false;
+    parser.first_model_only = true;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expectEqual(@as(f64, 10.0), input.x[0]);
+    try std.testing.expectEqual(@as(f64, 12.0), input.x[1]);
+}
+
+test "parse mmCIF hydrogen_flags marks the atoms skip_hydrogens would drop" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 N N  ALA 10.0 20.0 30.0
+        \\2 H H  ALA 10.5 20.5 30.5
+        \\3 D D  ALA 11.0 21.0 31.0
+        \\4 C CA ALA 12.0 22.0 32.0
+        \\#
+    ;
+
+    var flags: std.ArrayListUnmanaged(bool) = .empty;
+    defer flags.deinit(allocator);
+
+    var parser = MmcifParser.init(allocator);
+    parser.skip_hydrogens = false;
+    parser.hydrogen_flags = &flags;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 4), input.atomCount());
+    try std.testing.expectEqualSlices(bool, &.{ false, true, true, false }, flags.items);
+
+    // The flags describe the returned atoms, so a second parse replaces them.
+    parser.skip_hydrogens = true;
+    var heavy = try parser.parse(source);
+    defer heavy.deinit();
+    try std.testing.expectEqual(@as(usize, 2), heavy.atomCount());
+    try std.testing.expectEqualSlices(bool, &.{ false, false }, flags.items);
 }
 
 test "parse mmCIF handles quoted atom_site values" {

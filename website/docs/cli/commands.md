@@ -11,7 +11,7 @@ zsasa calc <input> [output] [OPTIONS]
 zsasa calc --workflow <workflow.toml>
 zsasa batch <input_dir> [output_dir] [OPTIONS]
 zsasa batch --workflow <workflow.toml>
-zsasa traj <trajectory> <topology> [output] [OPTIONS]
+zsasa traj <trajectory> <topology> [OPTIONS]
 zsasa compile-dict <input.cif[.gz|.zst]> -o <output.zsdc>
 ```
 
@@ -193,32 +193,34 @@ The `traj` subcommand has additional options specific to trajectory processing.
 | Argument | Description |
 |----------|-------------|
 | `<trajectory>` | Trajectory file (`.xtc`/`.trr` for GROMACS, `.dcd` for NAMD/CHARMM, `.nc`/`.ncdf` for AMBER NetCDF) |
-| `<topology>` | Topology file (PDB or mmCIF) for atom names and radii |
+| `<topology>` | Topology file (PDB or mmCIF) for atom names and radii. It must list the atoms of the trajectory in the same order; see [Notes](#notes) |
 
 ### Options
 
-Most [common options](#common-options) apply, plus the trajectory-specific options below. For trajectory calculations, `--classifier` defaults to `naccess` (not `ccd`); `traj` has no custom config CLI option, so use a built-in classifier.
+The [algorithm](#algorithm-options) and [classifier](#classifier-options) options apply, plus the trajectory-specific options below. For trajectory calculations, `--classifier` defaults to `naccess` (not `ccd`); `traj` has no custom config CLI option, so use a built-in classifier. The structure filters `--chain`, `--model`, `--auth-chain` and `--include-hetatm`, the analysis options and `--format` are not available: `traj` writes the total SASA of all topology atoms per frame, and the output file is always given with `-o`/`--output` (there is no positional output argument).
 
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--precision=P` | Floating-point precision: `f32` or `f64` | `f32` (note: different from calc/batch) |
-| `--no-hydrogens` | Exclude hydrogen atoms | included |
+| `--no-hydrogens` | Exclude hydrogen atoms from the calculation. They stay in the topology and trajectory files and are skipped in every frame | included |
 | `--include-hydrogens` | Include hydrogen atoms (default, for backward compat) | included |
 | `--altloc=MODE` | mmCIF topology alternate-location handling: `auto`, `none`, `all`, `highest-occupancy`, or one ID such as `A` | `auto` |
-| `--stride=N` | Process every Nth frame | `1` |
+| `--stride=N` | Process every Nth frame (N ≥ 1) | `1` |
 | `--start=N` | Start from frame N | `0` |
 | `--end=N` | End at frame N | all |
 | `--batch-size=N` | Frames per batch for parallel processing (omit for auto) | auto |
-| `-o, --output=FILE` | Output CSV file | `traj_sasa.csv` |
+| `-o FILE`, `--output=FILE` | Output CSV file (`-o=FILE` and `--output FILE` are also accepted) | `traj_sasa.csv` |
 
 ### Notes
 
 - Supported trajectory formats: **XTC** and **TRR** (GROMACS), **DCD** (NAMD/CHARMM), and **AMBER NetCDF** (`.nc`, `.ncdf`), auto-detected from extension
 - Coordinates are normalized to Å internally by the ztraj readers before SASA calculation.
-- Hydrogen atoms are **included** by default in trajectory mode; use `--no-hydrogens` to exclude them
-- Topology file provides atom names for radius classification
-- The number of atoms in the trajectory must match the topology
-- Default precision is `f32` (faster for trajectory processing)
+- Hydrogen atoms are **included** by default in trajectory mode; use `--no-hydrogens` to exclude them. The option removes hydrogens from the topology and from every frame, so the trajectory itself must still contain them
+- Topology file provides atom names for radius classification. Every `ATOM` and `HETATM` record of its **first model** is read, in file order; later models of an NMR ensemble are ignored. Solvent, ions and ligands in the topology are therefore part of the calculation
+- The number of atoms in the trajectory must match the topology (before hydrogens are removed)
+- Default precision is `f32` (faster for trajectory processing). `--algorithm` and `--precision` are independent: all four combinations are available
+- Options are validated before the output file is created, so a rejected command leaves an existing output file untouched
+- If reading or calculating a frame fails, the command exits with an error after writing the frames completed before it
 
 ---
 
@@ -366,6 +368,7 @@ zsasa traj trajectory.xtc topology.pdb --algorithm=lr --precision=f64
 | `Invalid algorithm` | Unknown algorithm name |
 | `Invalid classifier` | Unknown classifier name |
 | `Invalid model number` | Model number must be ≥ 1 |
+| `Atom count mismatch` | `traj`: the trajectory and the topology (first model, `ATOM` and `HETATM` records) have different numbers of atoms |
 | `Array lengths do not match` | JSON arrays have different lengths |
 | `Radius must be positive` | Radius ≤ 0 in input |
 | `Coordinate is not finite` | NaN or Inf in coordinates |

@@ -110,21 +110,21 @@ pub const CalcArgs = struct {
 // Parse helper functions
 // =============================================================================
 
-fn validateWorkflowProbeRadius(radius: f64) !f64 {
+pub fn validateWorkflowProbeRadius(radius: f64) !f64 {
     if (radius <= 0 or radius > 10.0 or !std.math.isFinite(radius)) {
         return error.InvalidArgument;
     }
     return radius;
 }
 
-fn validateWorkflowNPoints(n: u32) !u32 {
+pub fn validateWorkflowNPoints(n: u32) !u32 {
     if (n == 0 or n > 10000) {
         return error.InvalidArgument;
     }
     return n;
 }
 
-fn validateWorkflowNSlices(n: u32) !u32 {
+pub fn validateWorkflowNSlices(n: u32) !u32 {
     if (n == 0 or n > 1000) {
         return error.InvalidArgument;
     }

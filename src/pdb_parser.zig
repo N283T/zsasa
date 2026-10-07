@@ -64,8 +64,18 @@ pub const PdbParser = struct {
     first_alt_loc_only: bool = true,
     /// Model number to extract (null = all models)
     model_num: ?u32 = null,
+    /// Read only the first model: stop at the first ENDMDL record, or at a
+    /// second MODEL record. Unlike `model_num` this does not depend on how the
+    /// models are numbered. Files without MODEL records are read in full.
+    first_model_only: bool = false,
     /// Chain IDs to include (null = all chains)
     chain_filter: ?[]const []const u8 = null,
+    /// Optional output for callers that keep hydrogens (`skip_hydrogens = false`)
+    /// but need to know which atoms they are. When set, `parse` replaces the
+    /// list contents with one flag per returned atom: true for the atoms that
+    /// `skip_hydrogens` would drop (hydrogen and deuterium). The list is owned
+    /// by the caller and grown with the parser's allocator.
+    hydrogen_flags: ?*std.ArrayListUnmanaged(bool) = null,
 
     pub fn init(allocator: Allocator) PdbParser {
         return .{ .allocator = allocator };
@@ -114,12 +124,17 @@ pub const PdbParser = struct {
         // the calc CLI's documented `--model` default.
         var current_model: ?u32 = null;
         var in_target_model = true;
+        var seen_model = false;
+        const want_hydrogen_flags = self.hydrogen_flags != null;
+        if (self.hydrogen_flags) |flags| flags.clearRetainingCapacity();
 
         // Parse line by line
         var lines = std.mem.splitScalar(u8, source, '\n');
         while (lines.next()) |line| {
             // Handle MODEL/ENDMDL records
             if (std.mem.startsWith(u8, line, "MODEL")) {
+                if (self.first_model_only and seen_model) break;
+                seen_model = true;
                 current_model = parseModelNumber(line);
                 if (self.model_num) |target| {
                     in_target_model = (current_model == target);
@@ -129,6 +144,7 @@ pub const PdbParser = struct {
                 continue;
             }
             if (std.mem.startsWith(u8, line, "ENDMDL")) {
+                if (self.first_model_only) break;
                 continue;
             }
 
@@ -146,13 +162,15 @@ pub const PdbParser = struct {
             atom.model_num = current_model;
 
             // Hydrogen filtering (also skip deuterium D, an isotope of H)
-            if (self.skip_hydrogens) {
-                if (atom.element == .H) continue;
+            if (self.skip_hydrogens or want_hydrogen_flags) {
+                var is_hydrogen = atom.element == .H;
                 // Check element column for deuterium (element symbol "D" maps to .X)
-                if (line.len >= 78) {
+                if (!is_hydrogen and line.len >= 78) {
                     const elem_sym = std.mem.trim(u8, line[76..78], " ");
-                    if (std.mem.eql(u8, elem_sym, "D")) continue;
+                    is_hydrogen = std.mem.eql(u8, elem_sym, "D");
                 }
+                if (self.skip_hydrogens and is_hydrogen) continue;
+                atom.is_hydrogen = is_hydrogen;
             }
 
             // Chain filtering
@@ -187,6 +205,7 @@ pub const PdbParser = struct {
                 &residue_num_list,
                 &insertion_code_list,
             );
+            if (self.hydrogen_flags) |flags| try flags.append(self.allocator, atom.is_hydrogen);
         }
 
         if (x_list.items.len == 0) {
@@ -254,6 +273,7 @@ pub const PdbParser = struct {
         alt_loc: u8,
         occupancy: f64,
         model_num: ?u32 = null,
+        is_hydrogen: bool = false,
     };
 
     fn appendAtomRecord(
@@ -593,6 +613,88 @@ test "PdbParser explicit model selection filters requested model" {
 
     try testing.expectEqual(@as(usize, 1), input.atomCount());
     try testing.expectEqualStrings("B", input.chain_id.?[0].slice());
+}
+
+test "PdbParser first_model_only stops after the first model whatever its number" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const pdb_content =
+        \\MODEL        7
+        \\ATOM      1  CA  ALA A   1      10.000  20.000  30.000  1.00 10.00           C
+        \\HETATM    2  O   HOH A   2      12.000  20.000  30.000  1.00 10.00           O
+        \\ENDMDL
+        \\MODEL        8
+        \\ATOM      1  CA  ALA A   1      11.000  21.000  31.000  1.00 10.00           C
+        \\HETATM    2  O   HOH A   2      13.000  21.000  31.000  1.00 10.00           O
+        \\ENDMDL
+        \\END
+    ;
+
+    var parser = PdbParser.init(allocator);
+    parser.atom_only = false;
+    parser.first_model_only = true;
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try testing.expectEqual(@as(usize, 2), input.atomCount());
+    try testing.expectEqual(@as(f64, 10.0), input.x[0]);
+    try testing.expectEqual(@as(f64, 12.0), input.x[1]);
+
+    // A second MODEL record ends the first model even without ENDMDL.
+    const unterminated =
+        \\MODEL        1
+        \\ATOM      1  CA  ALA A   1      10.000  20.000  30.000  1.00 10.00           C
+        \\MODEL        2
+        \\ATOM      1  CA  ALA A   1      11.000  21.000  31.000  1.00 10.00           C
+        \\END
+    ;
+    var unterminated_input = try parser.parse(unterminated);
+    defer unterminated_input.deinit();
+    try testing.expectEqual(@as(usize, 1), unterminated_input.atomCount());
+
+    // Without MODEL records the whole file is one model.
+    const single =
+        \\ATOM      1  CA  ALA A   1      10.000  20.000  30.000  1.00 10.00           C
+        \\ATOM      2  CB  ALA A   1      11.000  21.000  31.000  1.00 10.00           C
+        \\END
+    ;
+    var single_input = try parser.parse(single);
+    defer single_input.deinit();
+    try testing.expectEqual(@as(usize, 2), single_input.atomCount());
+}
+
+test "PdbParser hydrogen_flags marks the atoms skip_hydrogens would drop" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const pdb_content =
+        \\ATOM      1  N   ALA A   1      11.104   6.134  -6.504  1.00 11.68           N
+        \\ATOM      2  H   ALA A   1      11.500   6.900  -6.900  1.00 10.00           H
+        \\ATOM      3  D   ALA A   1      12.000   7.000  -5.000  1.00 10.00           D
+        \\ATOM      4  CA  ALA A   1      11.639   6.071  -5.147  1.00  9.13           C
+        \\ATOM      5 1HB  ALA A   1      12.639   6.071  -5.147  1.00  9.13
+        \\END
+    ;
+
+    var flags: std.ArrayListUnmanaged(bool) = .empty;
+    defer flags.deinit(allocator);
+
+    var parser = PdbParser.init(allocator);
+    parser.skip_hydrogens = false;
+    parser.hydrogen_flags = &flags;
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try testing.expectEqual(@as(usize, 5), input.atomCount());
+    try testing.expectEqualSlices(bool, &.{ false, true, true, false, true }, flags.items);
+
+    // The flags describe the returned atoms, so a second parse replaces them.
+    parser.skip_hydrogens = true;
+    var heavy = try parser.parse(pdb_content);
+    defer heavy.deinit();
+    try testing.expectEqual(@as(usize, 2), heavy.atomCount());
+    try testing.expectEqualSlices(bool, &.{ false, false }, flags.items);
 }
 
 test "PdbParser altLoc selection is per atom site and keeps later B-only sites" {
