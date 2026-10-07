@@ -10,14 +10,15 @@
 //!
 //! ## SDF V2000 Record Format (Fixed Width)
 //!
-//! - Line 1:   Molecule name
+//! - Line 1:   Molecule name (may be blank)
 //! - Line 2:   Program/timestamp line (skipped)
 //! - Line 3:   Comment line (skipped)
 //! - Line 4:   Counts line: cols 0-2 = atom count, cols 3-5 = bond count
 //! - Atom block: cols 0-9 = x, 10-19 = y, 20-29 = z, 31-33 = element symbol
 //! - Bond block: cols 0-2 = atom1 (1-based), 3-5 = atom2, 6-8 = bond type
 //! - `M  END` terminates the connection table
-//! - `$$$$` separates molecules in an SDF file
+//! - `$$$$` separates molecules in an SDF file; blank lines after it, before
+//!   the next record or the end of the file, are skipped
 //!
 //! ## Usage
 //!
@@ -105,13 +106,11 @@ pub fn parse(allocator: Allocator, source: []const u8) SdfError![]const SdfMolec
     }
 
     var line_iter = std.mem.splitScalar(u8, source, '\n');
-    var has_content = false;
 
     while (true) {
-        const mol = (try parseSingleMolecule(allocator, &line_iter, &has_content)) orelse break;
+        const mol = (try parseSingleMolecule(allocator, &line_iter)) orelse break;
         try molecules.append(allocator, mol.molecule);
         if (!mol.has_terminator) break;
-        has_content = false;
     }
 
     if (molecules.items.len == 0) return error.EmptySdf;
@@ -142,96 +141,106 @@ const MoleculeResult = struct {
 fn parseSingleMolecule(
     allocator: Allocator,
     line_iter: *std.mem.SplitIterator(u8, .scalar),
-    has_content: *bool,
 ) SdfError!?MoleculeResult {
-    // Find the first non-blank line (molecule name)
+    // Blank lines may follow a `$$$$` separator or end the file, but a blank
+    // line is also a legal title. A blank line is the title of a record when
+    // the fourth line from it is a counts line, and is skipped otherwise.
     while (true) {
-        const first_line_raw = line_iter.next() orelse return null;
-        const first_line = stripCr(first_line_raw);
-
-        if (first_line.len == 0 and !has_content.*) continue;
-        has_content.* = true;
-
-        // Line 1 = molecule name
-        const name = try allocator.dupe(u8, std.mem.trim(u8, first_line, " \t"));
-
-        // Line 2 = program/timestamp (skip)
-        _ = line_iter.next() orelse {
-            allocator.free(name);
-            return null;
-        };
-        // Line 3 = comment (skip)
-        _ = line_iter.next() orelse {
-            allocator.free(name);
-            return null;
-        };
-
-        // Line 4 = counts line
-        const counts_raw = line_iter.next() orelse {
-            allocator.free(name);
-            return null;
-        };
-        const counts_line = stripCr(counts_raw);
-
-        // Check for V3000 — parseV3000Body takes ownership of `name`
-        // (handles cleanup on both success and error), so we must NOT
-        // free `name` here on this path.
-        if (std.mem.find(u8, counts_line, "V3000") != null) {
-            return try parseV3000Body(allocator, name, line_iter);
-        }
-
-        // From this point, `name` is our responsibility on error paths.
-        errdefer allocator.free(name);
-
-        const counts = parseCounts(counts_line) orelse return error.InvalidCountsLine;
-
-        // Parse atom block
-        var atom_list = std.ArrayListUnmanaged(SdfAtom).empty;
-        errdefer atom_list.deinit(allocator);
-        try atom_list.ensureTotalCapacity(allocator, counts.atom_count);
-
-        for (0..counts.atom_count) |_| {
-            const atom_raw = line_iter.next() orelse return error.InvalidAtomLine;
-            const atom_line = stripCr(atom_raw);
-            const atom = try parseAtomLine(atom_line);
-            atom_list.appendAssumeCapacity(atom);
-        }
-
-        // Parse bond block
-        var bond_list = std.ArrayListUnmanaged(SdfBond).empty;
-        errdefer bond_list.deinit(allocator);
-        try bond_list.ensureTotalCapacity(allocator, counts.bond_count);
-
-        for (0..counts.bond_count) |_| {
-            const bond_raw = line_iter.next() orelse return error.InvalidBondLine;
-            const bond_line = stripCr(bond_raw);
-            const bond = try parseBondLine(bond_line, counts.atom_count);
-            bond_list.appendAssumeCapacity(bond);
-        }
-
-        // Skip remaining lines until $$$$ or EOF
-        var found_terminator = false;
-        while (line_iter.next()) |rest_raw| {
-            const rest_line = stripCr(rest_raw);
-            if (std.mem.startsWith(u8, rest_line, "$$$$")) {
-                found_terminator = true;
-                break;
-            }
-        }
-
-        const atoms = try atom_list.toOwnedSlice(allocator);
-        errdefer allocator.free(atoms);
-        const bonds = try bond_list.toOwnedSlice(allocator);
-
-        return .{
-            .molecule = .{
-                .name = name,
-                .atoms = atoms,
-                .bonds = bonds,
-            },
-            .has_terminator = found_terminator,
-        };
+        const line = stripCr(line_iter.peek() orelse return null);
+        if (line.len > 0 or recordStartsAt(line_iter.*)) break;
+        _ = line_iter.next();
     }
+
+    // The header block is exactly three lines, followed by the counts line.
+    // Line 1 = molecule name
+    const title_line = stripCr(line_iter.next() orelse return null);
+    // Line 2 = program/timestamp (skip)
+    _ = line_iter.next() orelse return null;
+    // Line 3 = comment (skip)
+    _ = line_iter.next() orelse return null;
+    // Line 4 = counts line
+    const counts_line = stripCr(line_iter.next() orelse return null);
+
+    const name = try allocator.dupe(u8, std.mem.trim(u8, title_line, " \t"));
+
+    // Check for V3000 — parseV3000Body takes ownership of `name`
+    // (handles cleanup on both success and error), so we must NOT
+    // free `name` here on this path.
+    if (std.mem.find(u8, counts_line, "V3000") != null) {
+        return try parseV3000Body(allocator, name, line_iter);
+    }
+
+    // From this point, `name` is our responsibility on error paths.
+    errdefer allocator.free(name);
+
+    const counts = parseCounts(counts_line) orelse return error.InvalidCountsLine;
+
+    // Parse atom block
+    var atom_list = std.ArrayListUnmanaged(SdfAtom).empty;
+    errdefer atom_list.deinit(allocator);
+    try atom_list.ensureTotalCapacity(allocator, counts.atom_count);
+
+    for (0..counts.atom_count) |_| {
+        const atom_raw = line_iter.next() orelse return error.InvalidAtomLine;
+        const atom_line = stripCr(atom_raw);
+        const atom = try parseAtomLine(atom_line);
+        atom_list.appendAssumeCapacity(atom);
+    }
+
+    // Parse bond block
+    var bond_list = std.ArrayListUnmanaged(SdfBond).empty;
+    errdefer bond_list.deinit(allocator);
+    try bond_list.ensureTotalCapacity(allocator, counts.bond_count);
+
+    for (0..counts.bond_count) |_| {
+        const bond_raw = line_iter.next() orelse return error.InvalidBondLine;
+        const bond_line = stripCr(bond_raw);
+        const bond = try parseBondLine(bond_line, counts.atom_count);
+        bond_list.appendAssumeCapacity(bond);
+    }
+
+    // Skip remaining lines until $$$$ or EOF
+    var found_terminator = false;
+    while (line_iter.next()) |rest_raw| {
+        const rest_line = stripCr(rest_raw);
+        if (std.mem.startsWith(u8, rest_line, "$$$$")) {
+            found_terminator = true;
+            break;
+        }
+    }
+
+    const atoms = try atom_list.toOwnedSlice(allocator);
+    errdefer allocator.free(atoms);
+    const bonds = try bond_list.toOwnedSlice(allocator);
+
+    return .{
+        .molecule = .{
+            .name = name,
+            .atoms = atoms,
+            .bonds = bonds,
+        },
+        .has_terminator = found_terminator,
+    };
+}
+
+/// Whether a record starts at the position of `line_iter`, judged by its
+/// fourth line, which must be the counts line. Only used for a blank line,
+/// to tell a blank title from a stray blank line between records.
+fn recordStartsAt(line_iter: std.mem.SplitIterator(u8, .scalar)) bool {
+    var probe = line_iter;
+    for (0..3) |_| _ = probe.next() orelse return false;
+    const counts_line = stripCr(probe.next() orelse return false);
+
+    if (std.mem.find(u8, counts_line, "V3000") != null) return true;
+    const counts = parseCounts(counts_line) orelse return false;
+    if (std.mem.find(u8, counts_line, "V2000") != null) return true;
+
+    // Without a version tag a title or comment that starts with digits also
+    // reads as two counts, so the line after it has to be an atom line.
+    if (counts.atom_count == 0) return false;
+    const atom_line = stripCr(probe.next() orelse return false);
+    _ = parseAtomLine(atom_line) catch return false;
+    return true;
 }
 
 /// Parse a V3000 molecule body.
@@ -1514,4 +1523,165 @@ test "sdfBondOrder maps all types correctly" {
     try std.testing.expectEqual(hybridization.BondOrder.unknown, sdfBondOrder(5));
     try std.testing.expectEqual(hybridization.BondOrder.unknown, sdfBondOrder(0));
     try std.testing.expectEqual(hybridization.BondOrder.unknown, sdfBondOrder(255));
+}
+
+// Header lines 2 and 3 (program/timestamp and comment) of the test records
+const test_header_rest = "     zsasa   3D\n\n";
+
+// Carbon monoxide as a V2000 body (counts line to `$$$$`), and hydrogen
+// cyanide's heavy atoms as a V3000 body: two atoms and one bond each.
+const test_v2000_body =
+    "  2  1  0  0  0  0  0  0  0  0999 V2000\n" ++
+    "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    1.1300    0.0000    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "  1  2  3  0  0  0  0\n" ++
+    "M  END\n$$$$\n";
+const test_v3000_body =
+    "  0  0  0  0  0  0  0  0  0  0999 V3000\n" ++
+    "M  V30 BEGIN CTAB\n" ++
+    "M  V30 COUNTS 2 1 0 0 0\n" ++
+    "M  V30 BEGIN ATOM\n" ++
+    "M  V30 1 C 0.0000 0.0000 0.0000 0\n" ++
+    "M  V30 2 N 1.1600 0.0000 0.0000 0\n" ++
+    "M  V30 END ATOM\n" ++
+    "M  V30 BEGIN BOND\n" ++
+    "M  V30 1 3 1 2\n" ++
+    "M  V30 END BOND\n" ++
+    "M  V30 END CTAB\n" ++
+    "M  END\n$$$$\n";
+
+const TestRecord = struct {
+    name: []const u8,
+    /// Element of the second atom: O for `test_v2000_body`, N for `test_v3000_body`
+    second: elem.Element,
+};
+
+/// Parses `source` as it is and with CRLF line endings, and expects the given
+/// records, each with the two atoms and one bond of the test bodies.
+fn expectTestRecords(source: []const u8, expected: []const TestRecord) !void {
+    const allocator = std.testing.allocator;
+    const crlf = try std.mem.replaceOwned(u8, allocator, source, "\n", "\r\n");
+    defer allocator.free(crlf);
+
+    for ([_][]const u8{ source, crlf }) |text| {
+        const molecules = try parse(allocator, text);
+        defer freeMolecules(allocator, molecules);
+
+        try std.testing.expectEqual(expected.len, molecules.len);
+        for (expected, molecules) |want, mol| {
+            try std.testing.expectEqualStrings(want.name, mol.name);
+            try std.testing.expectEqual(@as(usize, 2), mol.atoms.len);
+            try std.testing.expectEqual(elem.Element.C, mol.atoms[0].element);
+            try std.testing.expectEqual(want.second, mol.atoms[1].element);
+            try std.testing.expectEqual(@as(usize, 1), mol.bonds.len);
+            try std.testing.expectEqual(hybridization.BondOrder.triple, mol.bonds[0].order);
+        }
+    }
+}
+
+test "parse accepts a blank title" {
+    // RDKit writes a blank first line for a molecule without a name
+    try expectTestRecords(
+        "\n" ++ test_header_rest ++ test_v2000_body,
+        &.{.{ .name = "", .second = .O }},
+    );
+    try expectTestRecords(
+        "\n" ++ test_header_rest ++ test_v3000_body,
+        &.{.{ .name = "", .second = .N }},
+    );
+    // A MOL file: no `$$$$` at the end
+    try expectTestRecords(
+        "\n" ++ test_header_rest ++ test_v2000_body[0 .. test_v2000_body.len - "$$$$\n".len],
+        &.{.{ .name = "", .second = .O }},
+    );
+    // All three header lines blank
+    try expectTestRecords(
+        "\n\n\n" ++ test_v2000_body,
+        &.{.{ .name = "", .second = .O }},
+    );
+}
+
+test "parse accepts a blank title after a $$$$ separator" {
+    // Only the second title is blank
+    try expectTestRecords(
+        "first\n" ++ test_header_rest ++ test_v2000_body ++
+            "\n" ++ test_header_rest ++ test_v2000_body,
+        &.{ .{ .name = "first", .second = .O }, .{ .name = "", .second = .O } },
+    );
+    try expectTestRecords(
+        "first\n" ++ test_header_rest ++ test_v3000_body ++
+            "\n" ++ test_header_rest ++ test_v3000_body,
+        &.{ .{ .name = "first", .second = .N }, .{ .name = "", .second = .N } },
+    );
+    // Every title blank, V2000 and V3000 mixed, and a named record at the end
+    try expectTestRecords(
+        "\n" ++ test_header_rest ++ test_v3000_body ++
+            "\n" ++ test_header_rest ++ test_v2000_body ++
+            "\n" ++ test_header_rest ++ test_v3000_body ++
+            "last\n" ++ test_header_rest ++ test_v2000_body,
+        &.{
+            .{ .name = "", .second = .N },
+            .{ .name = "", .second = .O },
+            .{ .name = "", .second = .N },
+            .{ .name = "last", .second = .O },
+        },
+    );
+}
+
+test "parse skips blank lines between records and at the end of the file" {
+    const first = "first\n" ++ test_header_rest ++ test_v2000_body;
+    const second = "second\n" ++ test_header_rest ++ test_v3000_body;
+    const both = [_]TestRecord{ .{ .name = "first", .second = .O }, .{ .name = "second", .second = .N } };
+
+    // Trailing blank lines after the last `$$$$` are not another record
+    try expectTestRecords(first ++ second ++ "\n", &both);
+    try expectTestRecords(first ++ second ++ "\n\n\n\n\n", &both);
+    // Stray blank lines before the first record and between records
+    try expectTestRecords("\n" ++ first ++ "\n" ++ second, &both);
+    try expectTestRecords("\n\n" ++ first ++ "\n\n" ++ second, &both);
+    try expectTestRecords("\n\n\n\n" ++ first ++ "\n\n\n\n\n" ++ second ++ "\n\n", &both);
+
+    // The fourth line from a stray blank line can be a title made of digits,
+    // which reads as two counts but is not followed by an atom line.
+    try expectTestRecords(
+        first ++ "\n\n\n" ++ "5280343\n" ++ test_header_rest ++ test_v2000_body,
+        &.{ .{ .name = "first", .second = .O }, .{ .name = "5280343", .second = .O } },
+    );
+
+    // A stray blank line before a record whose title is blank: the record
+    // starts at the blank line that has the counts line three lines below it.
+    try expectTestRecords(
+        first ++ "\n" ++ "\n" ++ test_header_rest ++ test_v2000_body,
+        &.{ .{ .name = "first", .second = .O }, .{ .name = "", .second = .O } },
+    );
+}
+
+test "parse accepts a blank title above a counts line without a version tag" {
+    const untagged = "  2  1  0  0  0  0  0  0  0  0  1\n" ++ test_v2000_body["  2  1  0  0  0  0  0  0  0  0999 V2000\n".len..];
+    try expectTestRecords(
+        "\n" ++ test_header_rest ++ untagged ++ "\n" ++ test_header_rest ++ untagged,
+        &.{ .{ .name = "", .second = .O }, .{ .name = "", .second = .O } },
+    );
+}
+
+test "parse still rejects a record without a counts line" {
+    const allocator = std.testing.allocator;
+    const atom_line = "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n";
+
+    // Counts line missing: with a title, and with a blank title
+    try std.testing.expectError(error.InvalidCountsLine, parse(
+        allocator,
+        "mol\n" ++ test_header_rest ++ atom_line ++ atom_line ++ "M  END\n$$$$\n",
+    ));
+    try std.testing.expectError(error.InvalidCountsLine, parse(
+        allocator,
+        "\n" ++ test_header_rest ++ atom_line ++ atom_line ++ "M  END\n$$$$\n",
+    ));
+    // Header one line short
+    try std.testing.expectError(error.InvalidCountsLine, parse(
+        allocator,
+        "mol\n" ++ "     zsasa   3D\n" ++ test_v2000_body,
+    ));
+    // Only blank lines
+    try std.testing.expectError(error.EmptySdf, parse(allocator, "\n\n\n\n\n\n"));
 }
