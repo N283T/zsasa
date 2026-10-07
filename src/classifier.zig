@@ -367,7 +367,8 @@ pub fn guessRadius(element: []const u8) ?f64 {
     return element_radii_map.get(upper[0..trimmed.len]);
 }
 
-/// Extract element symbol from PDB atom name
+/// Extract element symbol from a column-aligned PDB atom name
+/// (for trimmed names, use `extractElementInResidue`).
 /// PDB atom names are 4 characters with specific conventions:
 /// - Columns 13-16 in PDB format
 /// - For most atoms: first char is space, element is inferred from name
@@ -409,10 +410,84 @@ pub fn extractElement(atom_name: []const u8) []const u8 {
     return trimmed[0..1];
 }
 
-/// Get radius by guessing from atom name (extracts element first)
+/// Get radius by guessing from a column-aligned PDB atom name (extracts element first).
+/// A trimmed name has lost the alignment, so "CA" or "HG" is read as the
+/// two-letter element here; use `guessRadiusFromResidueAtom` for trimmed names.
 pub fn guessRadiusFromAtomName(atom_name: []const u8) ?f64 {
     const element = extractElement(atom_name);
     return guessRadius(element);
+}
+
+/// Elements whose atom names carry remoteness and branch suffixes in PDB
+/// nomenclature ("CA", "CD1", "HG21", "NE2", "OG1", "PB", "SD").
+fn hasSuffixedAtomNames(first_char: u8) bool {
+    return switch (std.ascii.toUpper(first_char)) {
+        'H', 'C', 'N', 'O', 'P', 'S' => true,
+        else => false,
+    };
+}
+
+/// Extract element symbol from a trimmed atom name, using the residue name
+/// in place of the column alignment that `extractElement` relies on.
+///
+/// - A monatomic ion is a residue named after its atom, so the whole name is
+///   the element, apart from a charge or oxidation state suffix: "CA" in "CA"
+///   is calcium, "ZN" in "ZN" is zinc, "Na+" in "Na+" is sodium.
+/// - Otherwise a name starting with H, C, N, O, P or S is that element:
+///   "CA" in "ALA" is carbon, "HG2" is hydrogen, "NA" in "HEM" is nitrogen,
+///   "PB" in "ATP" is phosphorus.
+/// - Any other name is a two-letter element if the radius table has one
+///   ("FE", "ZN1", "BR2"), else its first letter.
+///
+/// This is a guess: a metal named like an organic atom in a larger residue
+/// ("CU" in "CUA", "CL1" in a ligand) is misread. Callers that have the
+/// element must use it instead.
+///
+/// **Lifetime note**: Returns a slice into the input `atom_name`.
+pub fn extractElementInResidue(residue: []const u8, atom_name: []const u8) []const u8 {
+    const atom = std.mem.trim(u8, atom_name, " ");
+    if (atom.len == 0) return "";
+
+    if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, residue, " "), atom)) {
+        // Charge or oxidation state suffix: "Na+", "Cl-", "FE2"
+        const symbol = std.mem.trimEnd(u8, atom, "+-0123456789");
+        if (symbol.len == 1 or symbol.len == 2) return symbol;
+    }
+
+    if (!hasSuffixedAtomNames(atom[0]) and atom.len >= 2 and guessRadius(atom[0..2]) != null) {
+        return atom[0..2];
+    }
+
+    return atom[0..1];
+}
+
+/// Get radius by guessing the element from a trimmed atom name and its residue name.
+/// Last resort for atoms that have no element; see `extractElementInResidue`.
+pub fn guessRadiusFromResidueAtom(residue: []const u8, atom_name: []const u8) ?f64 {
+    return guessRadius(extractElementInResidue(residue, atom_name));
+}
+
+/// Get the generic radius for an atom that the tables of built-in classifier
+/// `ct` do not cover.
+///
+/// `atomic_number` is the atom's entry in the input's element column, or null
+/// when the input has no such column. A known element always decides, even if
+/// it has no radius here (the caller then keeps the input radius). The atom
+/// name is the last resort, read only when there is no element column or,
+/// for NACCESS and OONS, when the column holds an unknown element (0).
+/// NACCESS and OONS guessed from the name in that case before they consulted
+/// the element at all; CCD and ProtOr never did and keep the input radius.
+pub fn guessFallbackRadius(
+    ct: ClassifierType,
+    atomic_number: ?u8,
+    residue: []const u8,
+    atom_name: []const u8,
+) ?f64 {
+    if (atomic_number) |z| {
+        const name_decides = z == 0 and (ct == .naccess or ct == .oons);
+        if (!name_decides) return guessRadiusFromAtomicNumber(z);
+    }
+    return guessRadiusFromResidueAtom(residue, atom_name);
 }
 
 // =============================================================================
@@ -676,6 +751,111 @@ test "guessRadiusFromAtomName" {
     try std.testing.expectEqual(@as(?f64, 1.26), guessRadiusFromAtomName("FE  "));
     try std.testing.expectEqual(@as(?f64, 1.39), guessRadiusFromAtomName("ZN  "));
     try std.testing.expectEqual(@as(?f64, 1.90), guessRadiusFromAtomName("SE  "));
+}
+
+test "extractElementInResidue organic atom names are one-letter elements" {
+    // Each of these starts with a two-letter symbol from the radius table
+    // (HG, NA, PB, CD, CA) but is an ordinary atom of its residue.
+    try std.testing.expectEqualStrings("H", extractElementInResidue("SER", "HG"));
+    try std.testing.expectEqualStrings("H", extractElementInResidue("PRO", "HG2"));
+    try std.testing.expectEqualStrings("H", extractElementInResidue("ILE", "HG12"));
+    try std.testing.expectEqualStrings("H", extractElementInResidue("VAL", "HG21"));
+    try std.testing.expectEqualStrings("N", extractElementInResidue("HEM", "NA"));
+    try std.testing.expectEqualStrings("P", extractElementInResidue("ATP", "PB"));
+    try std.testing.expectEqualStrings("C", extractElementInResidue("PCA", "CD"));
+    try std.testing.expectEqualStrings("C", extractElementInResidue("LIG", "CD1"));
+    try std.testing.expectEqualStrings("C", extractElementInResidue("LIG", "CA"));
+    try std.testing.expectEqualStrings("O", extractElementInResidue("LIG", "OG1"));
+    try std.testing.expectEqualStrings("S", extractElementInResidue("LIG", "SD"));
+}
+
+test "extractElementInResidue ion residue named after its atom" {
+    try std.testing.expectEqualStrings("CA", extractElementInResidue("CA", "CA"));
+    try std.testing.expectEqualStrings("ZN", extractElementInResidue("ZN", "ZN"));
+    try std.testing.expectEqualStrings("NA", extractElementInResidue("NA", "NA"));
+    try std.testing.expectEqualStrings("HG", extractElementInResidue("HG", "HG"));
+    try std.testing.expectEqualStrings("CD", extractElementInResidue("CD", "CD"));
+    try std.testing.expectEqualStrings("PB", extractElementInResidue("PB", "PB"));
+    try std.testing.expectEqualStrings("K", extractElementInResidue("K", "K"));
+    // Padding and case do not matter
+    try std.testing.expectEqualStrings("ZN", extractElementInResidue(" ZN", "ZN  "));
+    try std.testing.expectEqualStrings("Zn", extractElementInResidue("ZN", "Zn"));
+    // A charge or oxidation state suffix is not part of the symbol
+    try std.testing.expectEqualStrings("Na", extractElementInResidue("Na+", "Na+"));
+    try std.testing.expectEqualStrings("Cl", extractElementInResidue("Cl-", "Cl-"));
+    try std.testing.expectEqualStrings("FE", extractElementInResidue("FE2", "FE2"));
+    // An ion outside the radius table stays unknown instead of becoming sulfur
+    try std.testing.expectEqualStrings("SR", extractElementInResidue("SR", "SR"));
+    try std.testing.expectEqual(@as(?f64, null), guessRadiusFromResidueAtom("SR", "SR"));
+    // A longer name shared by residue and atom is not an element symbol
+    try std.testing.expectEqualStrings("U", extractElementInResidue("UNK", "UNK"));
+}
+
+test "extractElementInResidue other names" {
+    // Two-letter elements that cannot be mistaken for an organic atom name
+    try std.testing.expectEqualStrings("FE", extractElementInResidue("HEM", "FE"));
+    try std.testing.expectEqualStrings("FE", extractElementInResidue("SF4", "FE1"));
+    try std.testing.expectEqualStrings("ZN", extractElementInResidue("LIG", "ZN1"));
+    try std.testing.expectEqualStrings("BR", extractElementInResidue("LIG", "BR2"));
+    // One-letter elements
+    try std.testing.expectEqualStrings("F", extractElementInResidue("LIG", "F1"));
+    try std.testing.expectEqualStrings("I", extractElementInResidue("LIG", "I"));
+    // Unknown and empty
+    try std.testing.expectEqualStrings("X", extractElementInResidue("LIG", "XX"));
+    try std.testing.expectEqualStrings("", extractElementInResidue("LIG", ""));
+    try std.testing.expectEqualStrings("", extractElementInResidue("", "  "));
+}
+
+test "guessRadiusFromResidueAtom" {
+    // Hydrogen, nitrogen, phosphorus and carbon, not mercury, sodium, lead and cadmium
+    try std.testing.expectEqual(@as(?f64, 1.10), guessRadiusFromResidueAtom("SER", "HG"));
+    try std.testing.expectEqual(@as(?f64, 1.10), guessRadiusFromResidueAtom("VAL", "HG21"));
+    try std.testing.expectEqual(@as(?f64, 1.55), guessRadiusFromResidueAtom("HEM", "NA"));
+    try std.testing.expectEqual(@as(?f64, 1.80), guessRadiusFromResidueAtom("ATP", "PB"));
+    try std.testing.expectEqual(@as(?f64, 1.70), guessRadiusFromResidueAtom("PCA", "CD"));
+    try std.testing.expectEqual(@as(?f64, 1.70), guessRadiusFromResidueAtom("LIG", "CD1"));
+    try std.testing.expectEqual(@as(?f64, 1.70), guessRadiusFromResidueAtom("LIG", "CA"));
+
+    // Ions
+    try std.testing.expectEqual(@as(?f64, 2.31), guessRadiusFromResidueAtom("CA", "CA"));
+    try std.testing.expectEqual(@as(?f64, 1.39), guessRadiusFromResidueAtom("ZN", "ZN"));
+    try std.testing.expectEqual(@as(?f64, 2.27), guessRadiusFromResidueAtom("NA", "NA"));
+    try std.testing.expectEqual(@as(?f64, 1.55), guessRadiusFromResidueAtom("HG", "HG"));
+
+    try std.testing.expectEqual(@as(?f64, 1.26), guessRadiusFromResidueAtom("HEM", "FE"));
+    try std.testing.expectEqual(@as(?f64, null), guessRadiusFromResidueAtom("LIG", "XX"));
+}
+
+test "guessFallbackRadius element decides over atom name" {
+    // The element column wins whatever the atom name looks like
+    for ([_]ClassifierType{ .naccess, .oons, .protor, .ccd }) |ct| {
+        try std.testing.expectEqual(@as(?f64, 1.10), guessFallbackRadius(ct, 1, "SER", "HG"));
+        try std.testing.expectEqual(@as(?f64, 1.10), guessFallbackRadius(ct, 1, "VAL", "HG21"));
+        try std.testing.expectEqual(@as(?f64, 1.55), guessFallbackRadius(ct, 7, "HEM", "NA"));
+        try std.testing.expectEqual(@as(?f64, 1.80), guessFallbackRadius(ct, 15, "ATP", "PB"));
+        try std.testing.expectEqual(@as(?f64, 1.70), guessFallbackRadius(ct, 6, "PCA", "CD"));
+        try std.testing.expectEqual(@as(?f64, 1.75), guessFallbackRadius(ct, 17, "LIG", "CL1"));
+        try std.testing.expectEqual(@as(?f64, 1.40), guessFallbackRadius(ct, 29, "CUA", "CU1"));
+        try std.testing.expectEqual(@as(?f64, 1.55), guessFallbackRadius(ct, 80, "HG", "HG"));
+
+        // A known element without a radius is not replaced by a name guess (Si, not S)
+        try std.testing.expectEqual(@as(?f64, null), guessFallbackRadius(ct, 14, "LIG", "SI1"));
+    }
+}
+
+test "guessFallbackRadius atom name is the last resort" {
+    // No element column
+    for ([_]ClassifierType{ .naccess, .oons, .protor, .ccd }) |ct| {
+        try std.testing.expectEqual(@as(?f64, 1.10), guessFallbackRadius(ct, null, "SER", "HG"));
+        try std.testing.expectEqual(@as(?f64, 1.39), guessFallbackRadius(ct, null, "ZN", "ZN"));
+        try std.testing.expectEqual(@as(?f64, null), guessFallbackRadius(ct, null, "LIG", "XX"));
+    }
+
+    // Unknown element in the column: NACCESS and OONS only
+    try std.testing.expectEqual(@as(?f64, 1.39), guessFallbackRadius(.naccess, 0, "ZN", "ZN"));
+    try std.testing.expectEqual(@as(?f64, 1.39), guessFallbackRadius(.oons, 0, "ZN", "ZN"));
+    try std.testing.expectEqual(@as(?f64, null), guessFallbackRadius(.protor, 0, "ZN", "ZN"));
+    try std.testing.expectEqual(@as(?f64, null), guessFallbackRadius(.ccd, 0, "ZN", "ZN"));
 }
 
 test "guessRadiusFromAtomicNumber common elements" {

@@ -11,7 +11,13 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from zsasa.classifier import ClassificationResult, ClassifierType, classify_atoms, guess_radius
+from zsasa.classifier import (
+    AtomClass,
+    ClassificationResult,
+    ClassifierType,
+    classify_atoms,
+    guess_radius,
+)
 from zsasa.sasa import SasaResult
 
 __all__ = [
@@ -98,6 +104,10 @@ def classify_atom_data(
     available. If neither the classifier nor element fallback can assign a
     radius, a ValueError identifies the problematic atom instead of allowing a
     NaN radius to reach the native calculator.
+
+    NACCESS and OONS guess a radius from the atom name for atoms outside their
+    tables (hydrogens, ligands). The element is more reliable than that guess,
+    so it replaces the guess whenever it is known.
     """
     classification = classify_atoms(
         atom_data.residue_names,
@@ -105,14 +115,19 @@ def classify_atom_data(
         classifier,
     )
 
-    missing = np.nonzero(~np.isfinite(classification.radii))[0]
-    for index in missing:
+    missing = ~np.isfinite(classification.radii)
+    if classifier in (ClassifierType.NACCESS, ClassifierType.OONS):
+        # Every table entry has a polarity class, so UNKNOWN marks a guess.
+        missing |= classification.classes == AtomClass.UNKNOWN
+
+    for index in np.nonzero(missing)[0]:
         element = atom_data.elements[index].strip()
         radius = guess_radius(element) if element else None
-        if radius is None:
+        if radius is not None:
+            classification.radii[index] = radius
+        elif not np.isfinite(classification.radii[index]):
             identifier = _format_atom_identifier(atom_data, int(index))
             msg = f"Unknown radius for {identifier} (element={element!r})"
             raise ValueError(msg)
-        classification.radii[index] = radius
 
     return classification

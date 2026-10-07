@@ -1109,7 +1109,7 @@ fn applyClassifier(
                 // Keep original radius
                 new_radii[i] = input.r[i];
             }
-        } else if (classifier.guessRadiusFromAtomName(atom_names[i].slice())) |r| {
+        } else if (classifier.guessRadiusFromResidueAtom(residues[i].slice(), atom_names[i].slice())) |r| {
             // Fall back to atom name-based radius
             new_radii[i] = r;
             fallback_count += 1;
@@ -1207,17 +1207,13 @@ fn applyBuiltinClassifier(
         if (maybe_radius) |r| {
             new_radii[i] = r;
             classified_count += 1;
-        } else if (input.element) |elements| {
-            // Fall back to element-based radius
-            if (classifier.guessRadiusFromAtomicNumber(elements[i])) |r| {
-                new_radii[i] = r;
-                fallback_count += 1;
-            } else {
-                // Keep original radius
-                new_radii[i] = input.r[i];
-            }
-        } else if (classifier.guessRadiusFromAtomName(atom_names[i].slice())) |r| {
-            // Fall back to atom name-based radius
+        } else if (classifier.guessFallbackRadius(
+            ct,
+            if (input.element) |elements| elements[i] else null,
+            residues[i].slice(),
+            atom_names[i].slice(),
+        )) |r| {
+            // Fall back to element-based radius, or atom name-based without an element
             new_radii[i] = r;
             fallback_count += 1;
         } else {
@@ -2206,6 +2202,68 @@ test "calc excludes HETATM by default, also with the CCD classifier" {
     try std.testing.expectEqual(@as(usize, 1), try readAtomAreasLenFromJson(allocator, default_out));
     try std.testing.expectEqual(@as(usize, 1), try readAtomAreasLenFromJson(allocator, explicit_out));
     try std.testing.expectEqual(@as(usize, 2), try readAtomAreasLenFromJson(allocator, hetatm_out));
+}
+
+test "NACCESS and OONS take the element of unlisted atoms from the element column" {
+    const allocator = std.testing.allocator;
+
+    // Atom names that start with a two-letter element symbol. The last line
+    // has no element column.
+    const pdb_content =
+        \\ATOM      1  HG  SER A   1      10.000   0.000   0.000  1.00 20.00           H
+        \\ATOM      2 HG21 VAL A   2      20.000   0.000   0.000  1.00 20.00           H
+        \\ATOM      3  CD1 LEU A   3      30.000   0.000   0.000  1.00 20.00           C
+        \\HETATM    4  NA  HEM A   4      40.000   0.000   0.000  1.00 20.00           N
+        \\HETATM    5 FE   HEM A   4      50.000   0.000   0.000  1.00 20.00          FE
+        \\HETATM    6  PB  ATP A   5      60.000   0.000   0.000  1.00 20.00           P
+        \\HETATM    7  CD  PCA A   6      70.000   0.000   0.000  1.00 20.00           C
+        \\HETATM    8 ZN    ZN A   7      80.000   0.000   0.000  1.00 20.00          ZN
+        \\HETATM    9 HG    HG A   8      90.000   0.000   0.000  1.00 20.00          HG
+        \\HETATM   10 ZN    ZN A   9     100.000   0.000   0.000  1.00 20.00
+        \\END
+    ;
+    // H, H, (LEU CD1 from the table), N, Fe, P, C, Zn, Hg, Zn
+    const expected_fallback = [_]?f64{ 1.10, 1.10, null, 1.55, 1.26, 1.80, 1.70, 1.39, 1.55, 1.39 };
+
+    for ([_]ClassifierType{ .naccess, .oons }) |ct| {
+        var parser = pdb_parser.PdbParser.init(allocator);
+        parser.atom_only = false;
+        parser.skip_hydrogens = false;
+        var input = try parser.parse(pdb_content);
+        defer input.deinit();
+
+        try applyBuiltinClassifier(&input, ct, null, null, null, true);
+
+        try std.testing.expectEqual(expected_fallback.len, input.atomCount());
+        for (expected_fallback, 0..) |expected, i| {
+            if (expected) |r| try std.testing.expectEqual(r, input.r[i]);
+        }
+        const leu_cd1: f64 = if (ct == .naccess) 1.87 else 2.00;
+        try std.testing.expectEqual(leu_cd1, input.r[2]);
+    }
+}
+
+test "classifiers guess the element from residue and atom name without an element field" {
+    const allocator = std.testing.allocator;
+
+    const json_content =
+        \\{"x": [0, 10, 20, 30, 40, 50, 60], "y": [0, 0, 0, 0, 0, 0, 0], "z": [0, 0, 0, 0, 0, 0, 0],
+        \\ "r": [9, 9, 9, 9, 9, 9, 9],
+        \\ "residue": ["LIG", "HEM", "ATP", "LIG", "ZN", "NA", "LIG"],
+        \\ "atom_name": ["HG", "NA", "PB", "CD1", "ZN", "NA", "XX"]}
+    ;
+    // H, N, P, C, Zn, Na, and the input radius for the unknown name
+    const expected = [_]f64{ 1.10, 1.55, 1.80, 1.70, 1.39, 2.27, 9.0 };
+
+    for ([_]ClassifierType{ .naccess, .oons, .protor, .ccd }) |ct| {
+        var input = try json_parser.parseAtomInput(allocator, json_content);
+        defer input.deinit();
+        try std.testing.expect(input.element == null);
+
+        try applyBuiltinClassifier(&input, ct, null, null, null, true);
+
+        try std.testing.expectEqualSlices(f64, &expected, input.r);
+    }
 }
 
 test "per-chain summaries prefer full chain IDs over truncated prefixes" {

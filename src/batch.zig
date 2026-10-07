@@ -801,19 +801,14 @@ fn applyBuiltinClassifier(
             .oons => classifier_oons.getRadius(residues[i].slice(), atom_names[i].slice()),
         };
 
-        if (maybe_radius) |r| {
-            new_radii[i] = r;
-        } else if (input.element) |elements| {
-            if (classifier.guessRadiusFromAtomicNumber(elements[i])) |r| {
-                new_radii[i] = r;
-            } else {
-                new_radii[i] = input.r[i];
-            }
-        } else if (classifier.guessRadiusFromAtomName(atom_names[i].slice())) |r| {
-            new_radii[i] = r;
-        } else {
-            new_radii[i] = input.r[i];
-        }
+        // Not in the tables: element-based radius, atom name-based without an
+        // element, else the input radius
+        new_radii[i] = maybe_radius orelse classifier.guessFallbackRadius(
+            ct,
+            if (input.element) |elements| elements[i] else null,
+            residues[i].slice(),
+            atom_names[i].slice(),
+        ) orelse input.r[i];
     }
 
     input.allocator.free(input.r);
@@ -843,7 +838,7 @@ fn applyCustomClassifier(input: *AtomInput, custom_classifier: *const classifier
             } else {
                 new_radii[i] = input.r[i];
             }
-        } else if (classifier.guessRadiusFromAtomName(atom_names[i].slice())) |r| {
+        } else if (classifier.guessRadiusFromResidueAtom(residues[i].slice(), atom_names[i].slice())) |r| {
             new_radii[i] = r;
             fallback_count += 1;
         } else {
@@ -6377,6 +6372,35 @@ test "batch mmCIF CCD classifier uses inline CCD while ProtOr skips it" {
     try std.testing.expect(protor_parsed.inlineCcdPtr() == null);
     try applyBuiltinClassifier(&protor_parsed.input, .protor, null, protor_parsed.inlineCcdPtr(), null);
     try std.testing.expect(protor_parsed.input.r[1] != 1.64);
+}
+
+test "batch NACCESS and OONS take the element of unlisted atoms from the element column" {
+    const allocator = std.testing.allocator;
+
+    // Atom names that start with a two-letter element symbol
+    const pdb_content =
+        \\ATOM      1  HG  SER A   1      10.000   0.000   0.000  1.00 20.00           H
+        \\ATOM      2 HG21 VAL A   2      20.000   0.000   0.000  1.00 20.00           H
+        \\HETATM    3  NA  HEM A   3      30.000   0.000   0.000  1.00 20.00           N
+        \\HETATM    4  PB  ATP A   4      40.000   0.000   0.000  1.00 20.00           P
+        \\HETATM    5  CD  PCA A   5      50.000   0.000   0.000  1.00 20.00           C
+        \\HETATM    6 ZN    ZN A   6      60.000   0.000   0.000  1.00 20.00          ZN
+        \\END
+    ;
+    // H, H, N, P, C, Zn
+    const expected = [_]f64{ 1.10, 1.10, 1.55, 1.80, 1.70, 1.39 };
+
+    for ([_]ClassifierType{ .naccess, .oons }) |ct| {
+        var parser = pdb_parser.PdbParser.init(allocator);
+        parser.atom_only = false;
+        parser.skip_hydrogens = false;
+        var input = try parser.parse(pdb_content);
+        defer input.deinit();
+
+        try applyBuiltinClassifier(&input, ct, null, null, null);
+
+        try std.testing.expectEqualSlices(f64, &expected, input.r);
+    }
 }
 
 test "resolveBatchThreadCount allows explicit overcommit for IO-bound runs" {

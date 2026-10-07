@@ -20,7 +20,7 @@ Classifiers assign van der Waals radii and polarity classes to atoms based on re
 
 1. **Residue-specific match**: Exact match of (residue name, atom name) pair
 2. **ANY fallback**: Generic atom definitions shared across residues (NACCESS and OONS only)
-3. **Element estimation**: Estimate radius from element symbol if no match found
+3. **Element estimation**: Generic radius of the atom's element if no match found. The element comes from the input; see [Handling Unknown Atoms](#handling-unknown-atoms)
 
 ## Classifier Comparison
 
@@ -31,7 +31,7 @@ All classifiers use united-atom radii (implicit hydrogens) — heavy atom radii 
 :::warning[Explicit hydrogens and united-atom radii]
 CCD and ProtOr use **united-atom** radii where heavy atom radii already include the contribution of implicit hydrogens (e.g., C sp3 with 3 implicit H = 1.88 Å). Using `--include-hydrogens` with CCD/ProtOr causes double-counting and inaccurate SASA values. A warning is printed if this combination is detected.
 
-For **MD trajectories** with explicit hydrogens, use `zsasa traj` which defaults to NACCESS. NACCESS handles explicit H atoms via element-based fallback (H = 1.10 Å).
+For **MD trajectories** with explicit hydrogens, use `zsasa traj` which defaults to NACCESS. NACCESS has no hydrogen entries, so every explicit H atom gets the element-based fallback radius (H = 1.10 Å), whatever its name (`H`, `HA`, `HG21`, ...).
 :::
 
 | Element | Context | ProtOr / CCD | NACCESS | OONS | Polarity |
@@ -338,7 +338,18 @@ With an external CCD dictionary or inline CCD data from mmCIF files, the CCD cla
 When a classifier cannot find a matching (residue, atom name) pair:
 
 1. NACCESS/OONS check the `ANY` fallback entries
-2. If still unmatched, the element is extracted from the atom name and a generic van der Waals radius is assigned
+2. If still unmatched, the atom gets the generic van der Waals radius of its element. The element is read from the input: the element column of a PDB file (or, where that is missing, the [atom name columns](../cli/input.md#pdb-format)), `type_symbol` of mmCIF/BinaryCIF, or the `element` field of JSON
+3. Only when there is no element to read is it guessed from the residue and atom names: JSON input without an `element` field, or, for NACCESS/OONS, an atom whose element is unknown
+
+The CLI reports both groups, for example `Classifier 'NACCESS': 154 atoms classified, 150 fallback` for a 20-residue peptide with 150 explicit hydrogens.
+
+The name-based guess in step 3 follows PDB naming:
+
+- A name starting with H, C, N, O, P or S is that element: `HG21` is hydrogen, `CD1` is carbon, `NA` in `HEM` is nitrogen, `PB` in `ATP` is phosphorus
+- A monatomic ion is a residue named after its atom: `ZN` in `ZN` is zinc, `NA` in `NA` is sodium
+- Other names are read as a two-letter element where one exists (`FE`, `BR1`)
+
+It cannot recognize a metal or halogen named like an organic atom inside a larger residue (`CU1` in `CUA`, `CL1` in a ligand), so supply the element whenever the input format allows it. The Python functions `classify_atoms` and `get_radius` take no element and use the same guess for NACCESS and OONS.
 
 The CCD classifier avoids this element fallback for non-standard residues by deriving hybridization-aware radii from CCD bond topology. To maximize coverage:
 - Use `zsasa calc --classifier=ccd` with mmCIF input when inline CCD categories are present

@@ -349,7 +349,11 @@ const residue_atoms = std.StaticStringMap(AtomType).initComptime(.{
 // =============================================================================
 
 /// Get radius for an atom using NACCESS classification.
-/// Lookup order: residue-specific -> ANY fallback -> element guess -> null
+/// Lookup order: residue-specific -> ANY fallback -> null
+///
+/// Null means the atom is not in the NACCESS tables (hydrogens, ligands). The
+/// caller then falls back to the element, which it knows better than the atom
+/// name does; see `classifier.guessFallbackRadius`.
 pub fn getRadius(residue: []const u8, atom: []const u8) ?f64 {
     const key = makeKeyRuntime(residue, atom);
 
@@ -364,8 +368,7 @@ pub fn getRadius(residue: []const u8, atom: []const u8) ?f64 {
         return t.radius;
     }
 
-    // Fall back to element-based guessing
-    return classifier.guessRadiusFromAtomName(atom);
+    return null;
 }
 
 /// Get class for an atom using NACCESS classification.
@@ -388,7 +391,7 @@ pub fn getClass(residue: []const u8, atom: []const u8) AtomClass {
 }
 
 /// Get both radius and class for an atom.
-/// Lookup order: residue-specific -> ANY fallback -> element guess (radius only)
+/// Lookup order: residue-specific -> ANY fallback -> null (caller uses element fallback)
 pub fn getProperties(residue: []const u8, atom: []const u8) ?AtomProperties {
     const key = makeKeyRuntime(residue, atom);
 
@@ -401,11 +404,6 @@ pub fn getProperties(residue: []const u8, atom: []const u8) ?AtomProperties {
     const any_key = makeKeyRuntime("ANY", atom);
     if (any_atoms.get(&any_key)) |t| {
         return AtomProperties{ .radius = t.radius, .class = t.class };
-    }
-
-    // Fall back to element-based guessing (class will be unknown)
-    if (classifier.guessRadiusFromAtomName(atom)) |radius| {
-        return AtomProperties{ .radius = radius, .class = .unknown };
     }
 
     return null;
@@ -510,16 +508,28 @@ test "NACCESS nucleotide bases" {
     try std.testing.expectEqual(@as(?f64, 1.80), getRadius("DT", "C7"));
 }
 
-test "NACCESS element fallback" {
-    // Unknown atom should fall back to element-based guessing
-    const radius = getRadius("ALA", "XX");
-    // XX doesn't match any known atom, and X isn't a known element
-    try std.testing.expectEqual(@as(?f64, null), radius);
+test "NACCESS atoms outside the tables are left to the caller" {
+    try std.testing.expectEqual(@as(?f64, null), getRadius("ALA", "XX"));
 
-    // Hydrogen should fall back to element guess
-    const h_radius = getRadius("ALA", "H");
-    try std.testing.expect(h_radius != null);
-    try std.testing.expectEqual(@as(f64, 1.10), h_radius.?);
+    // Hydrogens are not in the NACCESS tables
+    try std.testing.expectEqual(@as(?f64, null), getRadius("ALA", "H"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("ALA", "HA"));
+
+    // Names that start with a two-letter element symbol must not be guessed
+    // as mercury, sodium, lead or cadmium here: the caller has the element.
+    try std.testing.expectEqual(@as(?f64, null), getRadius("SER", "HG"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("PRO", "HG2"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("ILE", "HG12"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("VAL", "HG21"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("HEM", "NA"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("ATP", "PB"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("PCA", "CD"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("LIG", "CD1"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("LIG", "CD2"));
+
+    // Ions
+    try std.testing.expectEqual(@as(?f64, null), getRadius("ZN", "ZN"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("NA", "NA"));
 }
 
 test "NACCESS getProperties" {
@@ -528,15 +538,10 @@ test "NACCESS getProperties" {
     try std.testing.expectEqual(@as(f64, 1.87), props.?.radius);
     try std.testing.expectEqual(AtomClass.apolar, props.?.class);
 
-    // With element fallback
-    const h_props = getProperties("ALA", "H");
-    try std.testing.expect(h_props != null);
-    try std.testing.expectEqual(@as(f64, 1.10), h_props.?.radius);
-    try std.testing.expectEqual(AtomClass.unknown, h_props.?.class);
-
-    // Unknown
-    const unknown = getProperties("XXX", "ZZZ");
-    try std.testing.expectEqual(@as(?AtomProperties, null), unknown);
+    // Not in the tables
+    try std.testing.expectEqual(@as(?AtomProperties, null), getProperties("ALA", "H"));
+    try std.testing.expectEqual(@as(?AtomProperties, null), getProperties("SER", "HG"));
+    try std.testing.expectEqual(@as(?AtomProperties, null), getProperties("XXX", "ZZZ"));
 }
 
 // =============================================================================

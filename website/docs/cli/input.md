@@ -84,6 +84,14 @@ BinaryCIF input decodes `_atom_site` for SASA calculation, supports the same `--
 
 Standard PDB format files are supported with ATOM and HETATM records.
 
+The element of each atom is read from columns 77-78. It decides which atoms are hydrogens (removed unless `--include-hydrogens` is given) and which generic radius an atom gets when the classifier has no entry for it. When those columns are blank or do not hold an element symbol (files written before the element column existed can carry an ID code and line number there), the element is inferred from the atom name in columns 13-16:
+
+- An ion is a residue named after its atom: `CA` in residue `CA` is calcium, `HG` in residue `HG` is mercury.
+- Otherwise the columns decide. A name that starts in column 14 is a one-letter element (` CA ` is an alpha carbon, ` NA ` in a heme is nitrogen, ` HG ` is a hydrogen), and a name that starts in column 13 begins with a two-letter element (`FE  `, `ZN  `, `CL1 `, `SE  `).
+- Four-character names fill column 13 whatever their element, so `HG21` or `HD11` is a hydrogen.
+
+Some programs left-justify or center atom names instead (`CA  ` for an alpha carbon). zsasa detects such files and then relies on the names alone: a name starting with H, C, N, O, P or S is that element. In those files a metal or halogen inside a larger residue (`CL1` in a ligand) cannot be told from carbon, so write the element column if you can.
+
 ## SDF/MOL Format
 
 SDF and MOL files are supported for small-molecule SASA. V2000 and V3000 records are accepted, and batch mode expands multi-molecule SDF files so each molecule is calculated independently. Use `--mol=NAME_OR_INDEX` to select one molecule from a multi-molecule SDF.

@@ -260,7 +260,11 @@ fn makeKeyRuntime(residue: []const u8, atom: []const u8) [9]u8 {
 }
 
 /// Get radius for a (residue, atom) pair
-/// Lookup order: residue-specific → ANY fallback → element guess
+/// Lookup order: residue-specific → ANY fallback → null
+///
+/// Null means the atom is not in the OONS tables (hydrogens, ligands). The
+/// caller then falls back to the element, which it knows better than the atom
+/// name does; see `classifier.guessFallbackRadius`.
 pub fn getRadius(residue: []const u8, atom: []const u8) ?f64 {
     // Try residue-specific first
     const key = makeKeyRuntime(residue, atom);
@@ -274,8 +278,7 @@ pub fn getRadius(residue: []const u8, atom: []const u8) ?f64 {
         return t.radius;
     }
 
-    // Fall back to element guess
-    return classifier.guessRadiusFromAtomName(atom);
+    return null;
 }
 
 /// Get polarity class for a (residue, atom) pair
@@ -296,6 +299,7 @@ pub fn getClass(residue: []const u8, atom: []const u8) AtomClass {
 }
 
 /// Get both radius and class
+/// Lookup order: residue-specific → ANY fallback → null (caller uses element fallback)
 pub fn getProperties(residue: []const u8, atom: []const u8) ?AtomProperties {
     // Try residue-specific first
     const key = makeKeyRuntime(residue, atom);
@@ -307,11 +311,6 @@ pub fn getProperties(residue: []const u8, atom: []const u8) ?AtomProperties {
     const any_key = makeKeyRuntime("ANY", atom);
     if (any_atoms.get(&any_key)) |t| {
         return AtomProperties{ .radius = t.radius, .class = t.class };
-    }
-
-    // Try element guess for radius only
-    if (classifier.guessRadiusFromAtomName(atom)) |r| {
-        return AtomProperties{ .radius = r, .class = .unknown };
     }
 
     return null;
@@ -395,11 +394,27 @@ test "OONS water" {
     try std.testing.expectEqual(AtomClass.polar, getClass("HOH", "O"));
 }
 
-test "OONS element-based fallback" {
-    // Unknown residue - should use element guess
-    const r = getRadius("UNK", "FE");
-    try std.testing.expect(r != null);
-    try std.testing.expectApproxEqAbs(@as(f64, 1.26), r.?, 0.001); // Fe element
+test "OONS atoms outside the tables are left to the caller" {
+    try std.testing.expectEqual(@as(?f64, null), getRadius("UNK", "FE"));
+
+    // Hydrogens are not in the OONS tables
+    try std.testing.expectEqual(@as(?f64, null), getRadius("ALA", "H"));
+
+    // Names that start with a two-letter element symbol must not be guessed
+    // as mercury, sodium, lead or cadmium here: the caller has the element.
+    try std.testing.expectEqual(@as(?f64, null), getRadius("SER", "HG"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("PRO", "HG2"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("ILE", "HG12"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("VAL", "HG21"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("HEM", "NA"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("ATP", "PB"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("PCA", "CD"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("LIG", "CD1"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("LIG", "CD2"));
+
+    // Ions
+    try std.testing.expectEqual(@as(?f64, null), getRadius("ZN", "ZN"));
+    try std.testing.expectEqual(@as(?f64, null), getRadius("NA", "NA"));
 }
 
 test "OONS getProperties" {
@@ -407,4 +422,8 @@ test "OONS getProperties" {
     try std.testing.expect(props != null);
     try std.testing.expectApproxEqAbs(@as(f64, 1.75), props.?.radius, 0.001);
     try std.testing.expectEqual(AtomClass.apolar, props.?.class);
+
+    // Not in the tables
+    try std.testing.expectEqual(@as(?AtomProperties, null), getProperties("ALA", "H"));
+    try std.testing.expectEqual(@as(?AtomProperties, null), getProperties("SER", "HG"));
 }

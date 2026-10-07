@@ -1391,15 +1391,21 @@ export fn zsasa_calc_lr(
 // =============================================================================
 
 // Internal helper: get radius by classifier type
+//
+// This API has no element argument. For NACCESS and OONS an atom outside the
+// tables (hydrogens, ligands) gets a radius guessed from its residue and atom
+// name; CCD and ProtOr return null.
 fn getRadiusByClassifier(classifier_type: c_int, residue: []const u8, atom: []const u8) ?f64 {
     return switch (classifier_type) {
-        ZSASA_CLASSIFIER_NACCESS => classifier_naccess.getRadius(residue, atom),
+        ZSASA_CLASSIFIER_NACCESS => classifier_naccess.getRadius(residue, atom) orelse
+            classifier.guessRadiusFromResidueAtom(residue, atom),
         ZSASA_CLASSIFIER_PROTOR, ZSASA_CLASSIFIER_CCD => blk: {
             var ccd = classifier_ccd.CcdClassifier.init(std.heap.page_allocator);
             defer ccd.deinit();
             break :blk ccd.getRadius(residue, atom);
         },
-        ZSASA_CLASSIFIER_OONS => classifier_oons.getRadius(residue, atom),
+        ZSASA_CLASSIFIER_OONS => classifier_oons.getRadius(residue, atom) orelse
+            classifier.guessRadiusFromResidueAtom(residue, atom),
         else => null,
     };
 }
@@ -1436,6 +1442,14 @@ fn atomClassToInt(atom_class: classifier.AtomClass) c_int {
 ///
 /// Returns:
 ///   Radius in Angstroms, or NaN if atom is not found in classifier.
+///
+/// NACCESS and OONS have no entries for hydrogens or ligands. For those atoms
+/// the element is guessed from the names, because no element can be passed
+/// here: a name starting with H, C, N, O, P or S is that element ("HG" is
+/// hydrogen, "NA" in "HEM" is nitrogen), and an ion is recognized by a
+/// residue name equal to its atom name ("ZN" in "ZN"). Callers that know the
+/// element should use zsasa_guess_radius for atoms whose class is
+/// ZSASA_ATOM_CLASS_UNKNOWN.
 export fn zsasa_classifier_get_radius(
     classifier_type: c_int,
     residue: [*:0]const u8,
@@ -1494,6 +1508,8 @@ export fn zsasa_guess_radius(
 ///              Following PDB conventions:
 ///              - Leading space indicates single-char element (e.g., " CA " = Carbon alpha)
 ///              - No leading space may indicate 2-char element (e.g., "FE  " = Iron)
+///              Pass the name with its column padding: a trimmed "CA" or "HG"
+///              is read as calcium or mercury.
 ///
 /// Returns:
 ///   Radius in Angstroms, or NaN if element cannot be determined.
@@ -1516,6 +1532,7 @@ export fn zsasa_guess_radius_from_atom_name(
 ///   n_atoms: Number of atoms
 ///   radii_out: Output buffer for radii (pre-allocated, n_atoms elements)
 ///              NaN is written for atoms not found in classifier
+///              (see zsasa_classifier_get_radius for NACCESS and OONS)
 ///   classes_out: Output buffer for classes (pre-allocated, n_atoms elements)
 ///                Can be NULL if classes are not needed
 ///
@@ -2105,6 +2122,45 @@ test "zsasa_classifier_get_radius ProtoR" {
 test "zsasa_classifier_get_radius OONS" {
     const ca_radius = zsasa_classifier_get_radius(ZSASA_CLASSIFIER_OONS, "ALA", "CA");
     try std.testing.expect(ca_radius > 1.0 and ca_radius < 3.0);
+}
+
+test "zsasa_classifier_get_radius NACCESS/OONS atoms outside the tables" {
+    for ([_]c_int{ ZSASA_CLASSIFIER_NACCESS, ZSASA_CLASSIFIER_OONS }) |ct| {
+        // Hydrogen, not mercury
+        try std.testing.expectApproxEqAbs(1.10, zsasa_classifier_get_radius(ct, "ALA", "H"), 1e-9);
+        try std.testing.expectApproxEqAbs(1.10, zsasa_classifier_get_radius(ct, "SER", "HG"), 1e-9);
+        try std.testing.expectApproxEqAbs(1.10, zsasa_classifier_get_radius(ct, "PRO", "HG2"), 1e-9);
+        try std.testing.expectApproxEqAbs(1.10, zsasa_classifier_get_radius(ct, "ILE", "HG12"), 1e-9);
+        try std.testing.expectApproxEqAbs(1.10, zsasa_classifier_get_radius(ct, "VAL", "HG21"), 1e-9);
+        // Nitrogen, not sodium
+        try std.testing.expectApproxEqAbs(1.55, zsasa_classifier_get_radius(ct, "HEM", "NA"), 1e-9);
+        // Phosphorus, not lead
+        try std.testing.expectApproxEqAbs(1.80, zsasa_classifier_get_radius(ct, "ATP", "PB"), 1e-9);
+        // Carbon, not cadmium
+        try std.testing.expectApproxEqAbs(1.70, zsasa_classifier_get_radius(ct, "PCA", "CD"), 1e-9);
+        try std.testing.expectApproxEqAbs(1.70, zsasa_classifier_get_radius(ct, "LIG", "CD1"), 1e-9);
+        try std.testing.expectApproxEqAbs(1.70, zsasa_classifier_get_radius(ct, "LIG", "CD2"), 1e-9);
+
+        // An ion is a residue named after its atom
+        try std.testing.expectApproxEqAbs(1.39, zsasa_classifier_get_radius(ct, "ZN", "ZN"), 1e-9);
+        try std.testing.expectApproxEqAbs(2.27, zsasa_classifier_get_radius(ct, "NA", "NA"), 1e-9);
+        try std.testing.expectApproxEqAbs(1.55, zsasa_classifier_get_radius(ct, "HG", "HG"), 1e-9);
+        try std.testing.expectApproxEqAbs(1.58, zsasa_classifier_get_radius(ct, "CD", "CD"), 1e-9);
+        try std.testing.expectApproxEqAbs(1.26, zsasa_classifier_get_radius(ct, "HEM", "FE"), 1e-9);
+
+        // Guessed radii have no polarity class
+        try std.testing.expectEqual(ZSASA_ATOM_CLASS_UNKNOWN, zsasa_classifier_get_class(ct, "SER", "HG"));
+    }
+
+    // Table entries are not affected by the guess
+    try std.testing.expectApproxEqAbs(1.87, zsasa_classifier_get_radius(ZSASA_CLASSIFIER_NACCESS, "ARG", "CD"), 1e-9);
+    try std.testing.expectApproxEqAbs(1.76, zsasa_classifier_get_radius(ZSASA_CLASSIFIER_NACCESS, "PHE", "CD1"), 1e-9);
+    try std.testing.expectApproxEqAbs(2.00, zsasa_classifier_get_radius(ZSASA_CLASSIFIER_OONS, "ARG", "CD"), 1e-9);
+    try std.testing.expectApproxEqAbs(1.75, zsasa_classifier_get_radius(ZSASA_CLASSIFIER_OONS, "PHE", "CD1"), 1e-9);
+
+    // CCD and ProtOr do not guess
+    try std.testing.expect(std.math.isNan(zsasa_classifier_get_radius(ZSASA_CLASSIFIER_CCD, "LIG", "HG")));
+    try std.testing.expect(std.math.isNan(zsasa_classifier_get_radius(ZSASA_CLASSIFIER_PROTOR, "LIG", "HG")));
 }
 
 test "zsasa_classifier_get_radius invalid classifier" {
