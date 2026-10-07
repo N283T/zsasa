@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+{{head}}
+</head>
+<body>
+{{nav}}
+<div class="wrap doc">
+  <aside class="side" aria-label="Documentation">
+{{sidebar}}
+  </aside>
+  <main class="article" id="main">
+    <p class="crumbs label">{{crumbs}}</p>
+    <article class="prose">
+{{content}}
+    </article>
+    <a class="edit ext" href="{{edit}}">Edit this page</a>
+    <nav class="pager" aria-label="Pagination">{{pager}}</nav>
+  </main>
+  <aside class="toc" aria-label="On this page">
+    <span class="label">On this page</span>
+    <ul>
+{{toc}}
+    </ul>
+  </aside>
+</div>
+{{footer}}
+{{scripts}}
+</body>
+</html>
