@@ -72,6 +72,8 @@ Standard mmCIF files are supported. The parser extracts:
 - `_atom_site.pdbx_PDB_model_num` - Model number
 - `_atom_site.label_alt_id` - Alternate location (`--altloc=auto` by default)
 
+Residue numbers come from `label_seq_id`. Non-polymer residues (waters, ligands, glycans) have no `label_seq_id` and are numbered by `auth_seq_id`, the number they have in the PDB-format file. With `--auth-chain` they are numbered 0 instead: they then share a chain ID with a polymer, and its `label_seq_id` numbers can equal their `auth_seq_id`. A residue with neither value is numbered 0. BinaryCIF input follows the same rules.
+
 Alternate-location handling can be controlled with `--altloc=MODE` for mmCIF and BinaryCIF input. `auto` preserves the historical behavior (blank alternate location first, then `A`, then highest occupancy), `none` assumes no non-blank alternate locations and errors if one is found, `all` keeps every alternate, `highest-occupancy` keeps the highest-occupancy atom for each site, and a single ID such as `--altloc=A` keeps blank atoms plus that alternate ID.
 
 ## BinaryCIF Format
