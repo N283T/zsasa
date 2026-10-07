@@ -1060,6 +1060,15 @@ test "toStoredComponent — ethanol molecule" {
     try std.testing.expectEqualStrings("C2", stored.atoms[1].atomIdSlice());
     try std.testing.expectEqualStrings("O1", stored.atoms[2].atomIdSlice());
     try std.testing.expectEqualStrings("H1", stored.atoms[3].atomIdSlice());
+
+    // Radii derived from the bond table: the hydrogens listed in the SDF
+    // make both carbons sp3 CHn (1.88), not hydrogen-free (1.61).
+    const derived = try hybridization.deriveComponentProperties(allocator, &view);
+    defer allocator.free(derived);
+    try std.testing.expectEqual(@as(usize, 3), derived.len);
+    try std.testing.expectEqual(@as(f64, 1.88), derived[0].props.radius); // C1
+    try std.testing.expectEqual(@as(f64, 1.88), derived[1].props.radius); // C2
+    try std.testing.expectEqual(@as(f64, 1.46), derived[2].props.radius); // O1
 }
 
 test "toAtomInput — two molecules get separate chains" {
