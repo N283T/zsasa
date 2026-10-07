@@ -426,32 +426,31 @@ test "readAtomInputFromFile with real file" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const path = "examples/input_1a0q.json";
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.writeFile(io, .{
+        .sub_path = "atoms.json",
+        .data =
+        \\{"x": [27.234, 26.259, 25.5],
+        \\ "y": [14.262, 13.883, 12.7],
+        \\ "z": [5.595, 6.312, 7.0],
+        \\ "r": [1.7, 1.55, 1.52]}
+        ,
+    });
 
-    // Check if file exists
-    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch {
-        // File doesn't exist, skip test
-        return error.SkipZigTest;
-    };
-    file.close(io);
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(io, &root_buf);
+    const path = try std.fs.path.join(allocator, &.{ root_buf[0..root_len], "atoms.json" });
+    defer allocator.free(path);
 
     var input = try readAtomInputFromFile(allocator, io, path);
     defer input.deinit();
 
-    // Verify we got 3183 atoms as expected
-    try std.testing.expectEqual(@as(usize, 3183), input.atomCount());
-
-    // Verify some values match the file
-    try std.testing.expectApproxEqAbs(@as(f64, 27.234), input.x[0], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f64, 26.259), input.x[1], 0.001);
-
-    // Verify all arrays are valid
-    for (input.x, 0..) |_, i| {
-        _ = input.x[i];
-        _ = input.y[i];
-        _ = input.z[i];
-        _ = input.r[i];
-    }
+    try std.testing.expectEqual(@as(usize, 3), input.atomCount());
+    try std.testing.expectEqualSlices(f64, &.{ 27.234, 26.259, 25.5 }, input.x);
+    try std.testing.expectEqualSlices(f64, &.{ 14.262, 13.883, 12.7 }, input.y);
+    try std.testing.expectEqualSlices(f64, &.{ 5.595, 6.312, 7.0 }, input.z);
+    try std.testing.expectEqualSlices(f64, &.{ 1.7, 1.55, 1.52 }, input.r);
 }
 
 test "readAtomInputFromFile nonexistent file" {
