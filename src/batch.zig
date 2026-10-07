@@ -935,6 +935,13 @@ fn applyBuiltinClassifier(
     input.r = new_radii;
 }
 
+/// Apply the CCD classifier to one SDF/MOL molecule: radii from the
+/// molecule's own bond topology (`sdf_parser.applyTopologyRadii`).
+fn applySdfTopologyClassifier(input: *AtomInput, own_component: *const ccd_parser.StoredComponent) !void {
+    const view = own_component.view();
+    _ = try sdf_parser.applyTopologyRadii(input, &view);
+}
+
 /// Apply custom classifier to replace radii based on residue/atom names.
 fn applyCustomClassifier(input: *AtomInput, custom_classifier: *const classifier.Classifier, quiet: bool) !void {
     const n = input.atomCount();
@@ -1370,47 +1377,19 @@ fn processOneSdfMolecule(
     };
     defer input.deinit();
 
-    // Build CCD component dict for this molecule's bond topology
-    var sdf_dict: ?ccd_parser.ComponentDict = null;
-    if (classifierUsesCcdResources(config.classifier_type) and molecule.name.len > 0) {
-        const stored = sdf_parser.toStoredComponent(arena, molecule) catch |err| blk: {
+    // The CCD classifier takes the radii of the molecule from its own bond
+    // topology, whatever its title is (it may be blank)
+    var sdf_component: ?ccd_parser.StoredComponent = null;
+    if (classifierUsesCcdResources(config.classifier_type)) {
+        sdf_component = sdf_parser.toStoredComponent(arena, molecule) catch |err| blk: {
             logWarning("{s}: failed to build SDF component: {s}", .{ display_name, @errorName(err) });
             break :blk null;
         };
-        if (stored) |s| {
-            var dict = ccd_parser.ComponentDict.init(arena);
-            const comp_id_str = molecule.name[0..@min(molecule.name.len, 5)];
-            const dict_key = arena.dupe(u8, comp_id_str) catch |err| {
-                logWarning("{s}: SDF component registration failed: {s}", .{ display_name, @errorName(err) });
-                var mut_s = s;
-                mut_s.deinit();
-                dict.deinit();
-                sdf_dict = null;
-                // fall through to classifier without SDF dict
-                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
-            };
-            dict.owned_keys.append(arena, dict_key) catch |err| {
-                logWarning("{s}: SDF component registration failed: {s}", .{ display_name, @errorName(err) });
-                arena.free(dict_key);
-                var mut_s = s;
-                mut_s.deinit();
-                dict.deinit();
-                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
-            };
-            dict.components.put(arena, dict_key, s) catch |err| {
-                logWarning("{s}: SDF component registration failed: {s}", .{ display_name, @errorName(err) });
-                var mut_s = s;
-                mut_s.deinit();
-                dict.deinit();
-                return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, null);
-            };
-            sdf_dict = dict;
-        }
     }
-    defer if (sdf_dict) |*d| d.deinit();
+    defer if (sdf_component) |*c| c.deinit();
 
-    const sdf_ccd_ptr: ?*const ccd_parser.ComponentDict = if (sdf_dict) |*d| d else null;
-    return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, sdf_ccd_ptr);
+    const sdf_component_ptr: ?*const ccd_parser.StoredComponent = if (sdf_component) |*c| c else null;
+    return processOneSdfMoleculeInner(arena, io, result_allocator, &result, &input, output_dir, display_name, config, n_threads, lut_f64, lut_f32, coarse_lut_f64, fine_lut_f64, coarse_lut_f32, fine_lut_f32, sdf_component_ptr);
 }
 
 /// Inner helper: apply classifier, run SASA, write output for a single SDF molecule.
@@ -1430,7 +1409,7 @@ fn processOneSdfMoleculeInner(
     fine_lut_f64: ?*const bitmask_lut.BitmaskLut,
     coarse_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
     fine_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
-    sdf_ccd: ?*const ccd_parser.ComponentDict,
+    sdf_component: ?*const ccd_parser.StoredComponent,
 ) FileResult {
     var res = result.*;
 
@@ -1445,9 +1424,14 @@ fn processOneSdfMoleculeInner(
         }
     } else if (config.classifier_type) |ct| {
         if (input.hasClassificationInfo()) {
-            // Merge SDF-derived dict with external CCD if available
-            const effective_sdf_ccd = sdf_ccd orelse config.sdf_ccd;
-            applyBuiltinClassifier(input, ct, effective_sdf_ccd, null, config.external_ccd) catch |err| {
+            // The molecule is its own component definition: its atoms are
+            // matched to its own bond topology, not looked up by residue
+            // name, so --sdf and --ccd have nothing to add.
+            const classified: anyerror!void = if (sdf_component) |own_component|
+                applySdfTopologyClassifier(input, own_component)
+            else
+                applyBuiltinClassifier(input, ct, config.sdf_ccd, null, config.external_ccd);
+            classified catch |err| {
                 res.status = .err;
                 res.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
                 return res;
@@ -6425,8 +6409,7 @@ test "isUnsafeFileNameByte replaces Windows reserved characters only on Windows"
 }
 
 /// One-atom V2000 record with the given title line, for output naming tests.
-/// A blank title is written as a single space: the parser skips empty lines
-/// in front of a record.
+/// A title of a single space is a blank title, like an empty line.
 fn testSdfRecord(comptime title: []const u8) []const u8 {
     return title ++ "\n" ++
         "  zsasa\n" ++
@@ -9410,4 +9393,87 @@ test "BatchConfig progress respects show_progress and quiet" {
     try std.testing.expect(shouldShowProgress(.{}));
     try std.testing.expect(!shouldShowProgress(.{ .show_progress = false }));
     try std.testing.expect(!shouldShowProgress(.{ .quiet = true }));
+}
+
+const test_topology_header_rest = "  zsasa\n\n";
+
+// Heavy atoms of acetonitrile (radii 1.88, 1.61, 1.64) and of acetaldehyde
+// (1.88, 1.76, 1.42), as V2000 records without the title line. Both have
+// atoms C1 and C2, with a different radius for C2; the element fallback
+// would give 1.70 to every carbon. The atoms are 50 A apart, so each one is
+// fully exposed and its area gives its radius.
+const test_topology_acetonitrile = test_topology_header_rest ++
+    "  3  2  0  0  0  0  0  0  0  0999 V2000\n" ++
+    "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "   50.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "  100.0000    0.0000    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "  1  2  1  0  0  0  0\n  2  3  3  0  0  0  0\n" ++
+    "M  END\n$$$$\n";
+const test_topology_acetaldehyde = test_topology_header_rest ++
+    "  3  2  0  0  0  0  0  0  0  0999 V2000\n" ++
+    "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "   50.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "  100.0000    0.0000    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "  1  2  1  0  0  0  0\n  2  3  2  0  0  0  0\n" ++
+    "M  END\n$$$$\n";
+
+/// Expects the per-molecule CSV output `name` below the sandbox root to hold
+/// one fully exposed atom for each of `radii`.
+fn expectExposedAtomRadii(sandbox: NamingSandbox, name: []const u8, radii: []const f64) !void {
+    const allocator = std.testing.allocator;
+    const file_path = try sandbox.path(name);
+    defer allocator.free(file_path);
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, file_path, allocator, .limited(64 * 1024));
+    defer allocator.free(content);
+
+    var lines = std.mem.tokenizeScalar(u8, content, '\n');
+    try std.testing.expectEqualStrings("atom_index,area", lines.next().?);
+    for (radii) |radius| {
+        const line = lines.next().?;
+        const area = try std.fmt.parseFloat(f64, line[std.mem.findScalar(u8, line, ',').? + 1 ..]);
+        const probe_radius = 1.4;
+        const exposed = 4.0 * std.math.pi * (radius + probe_radius) * (radius + probe_radius);
+        try std.testing.expectApproxEqAbs(exposed, area, 1e-5);
+    }
+    try std.testing.expect(std.mem.startsWith(u8, lines.next().?, "total,"));
+    try std.testing.expectEqual(@as(?[]const u8, null), lines.next());
+}
+
+test "batch classifies every SDF molecule from its own bond topology, with or without a title" {
+    const allocator = std.testing.allocator;
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+
+    // The same two molecules with titles, without a title, with the same
+    // title, with a title that is a residue name of the built-in table, and
+    // without a title next to a titled molecule
+    try sandbox.writeInput("named.sdf", "nitrile\n" ++ test_topology_acetonitrile ++ "aldehyde\n" ++ test_topology_acetaldehyde);
+    try sandbox.writeInput("unnamed.sdf", "\n" ++ test_topology_acetonitrile ++ "\n" ++ test_topology_acetaldehyde);
+    try sandbox.writeInput("same.sdf", "lig\n" ++ test_topology_acetonitrile ++ "lig\n" ++ test_topology_acetaldehyde);
+    try sandbox.writeInput("residue.sdf", "A\n" ++ test_topology_acetonitrile ++ "ALA\n" ++ test_topology_acetaldehyde);
+    try sandbox.writeInput("mixed.sdf", "\n" ++ test_topology_acetonitrile ++ "aldehyde\n" ++ test_topology_acetaldehyde ++ "\n" ++ test_topology_acetonitrile);
+
+    const nitrile_outputs = [_][]const u8{ "named_nitrile.csv", "unnamed_1.csv", "same_lig_1.csv", "residue_A.csv", "mixed_1.csv", "mixed_3.csv" };
+    const aldehyde_outputs = [_][]const u8{ "named_aldehyde.csv", "unnamed_2.csv", "same_lig_2.csv", "residue_ALA.csv", "mixed_aldehyde.csv" };
+
+    inline for (test_naming_threads) |n_threads| {
+        const out_name = std.fmt.comptimePrint("csv{d}", .{n_threads});
+        const output_dir = try sandbox.path(out_name);
+        defer allocator.free(output_dir);
+
+        var config = NamingSandbox.config(n_threads);
+        config.output_format = .csv;
+        var result = try runBatch(allocator, std.testing.io, sandbox.input_dir, output_dir, config, null);
+        defer result.deinit();
+        try std.testing.expectEqual(@as(usize, 11), result.total_files);
+        try std.testing.expectEqual(@as(usize, 11), result.successful);
+
+        // The radii of each molecule's bond table, not the element fallback
+        inline for (nitrile_outputs) |name| {
+            try expectExposedAtomRadii(sandbox, out_name ++ "/" ++ name, &.{ 1.88, 1.61, 1.64 });
+        }
+        inline for (aldehyde_outputs) |name| {
+            try expectExposedAtomRadii(sandbox, out_name ++ "/" ++ name, &.{ 1.88, 1.76, 1.42 });
+        }
+    }
 }
