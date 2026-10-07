@@ -14,6 +14,8 @@ The input format is auto-detected from the file extension.
 | `.pdb`, `.pdb.gz`, `.pdb.zst`, `.PDB`, `.ent`, `.ent.gz`, `.ent.zst`, `.ENT` | PDB |
 | `.sdf`, `.sdf.gz`, `.sdf.zst`, `.mol`, `.mol.gz`, `.mol.zst` | SDF/MOL small molecules |
 
+`.gz` inputs may hold several concatenated gzip members, as produced by `cat a.gz b.gz` or by `bgzip` (BGZF). All members are decompressed and joined, and the CRC32 and size of each member are verified. A `.gz` file with trailing bytes that are not a gzip member, including zero padding, is rejected as corrupt.
+
 ## JSON Format
 
 Minimal JSON input with coordinates and radii:

@@ -44,7 +44,7 @@ JSONL is especially useful when you want to concatenate, filter, or process resu
 Successful JSONL rows include `status: "ok"` plus the result fields:
 
 ```json
-{"status":"ok","filename":"1ubq.pdb","total_area":5656.6511885225,"atom_areas":[0,6.759702080876085]}
+{"status":"ok","filename":"1ubq.pdb","total_area":4834.716264864688,"atom_areas":[17.420005600449258,16.223284994102602]}
 ```
 
 Failed structures are emitted as `status: "err"` rows instead of being available only in the batch summary:

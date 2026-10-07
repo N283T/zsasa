@@ -110,21 +110,21 @@ pub const CalcArgs = struct {
 // Parse helper functions
 // =============================================================================
 
-fn validateWorkflowProbeRadius(radius: f64) !f64 {
+pub fn validateWorkflowProbeRadius(radius: f64) !f64 {
     if (radius <= 0 or radius > 10.0 or !std.math.isFinite(radius)) {
         return error.InvalidArgument;
     }
     return radius;
 }
 
-fn validateWorkflowNPoints(n: u32) !u32 {
+pub fn validateWorkflowNPoints(n: u32) !u32 {
     if (n == 0 or n > 10000) {
         return error.InvalidArgument;
     }
     return n;
 }
 
-fn validateWorkflowNSlices(n: u32) !u32 {
+pub fn validateWorkflowNSlices(n: u32) !u32 {
     if (n == 0 or n > 1000) {
         return error.InvalidArgument;
     }
@@ -1402,11 +1402,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
         if (effective_args.config_path == null and input_format != .json) .ccd else null;
     effective_args.classifier_type = if (effective_args.validate_only) null else effective_classifier;
 
-    // CCD classifier implies HETATM inclusion (the whole point is classifying non-standard residues)
     if (effective_classifier) |ct| {
-        if (ct == .ccd and !effective_args.include_hetatm) {
-            effective_args.include_hetatm = true;
-        }
         // CCD/ProtOr use united-atom radii (implicit H) — warn if explicit H included
         if ((ct == .ccd or ct == .protor) and effective_args.include_hydrogens and !effective_args.quiet) {
             std.debug.print("Warning: --include-hydrogens with CCD classifier may give inaccurate results\n", .{});
@@ -2162,7 +2158,7 @@ fn readAtomAreasLenFromJson(allocator: std.mem.Allocator, path: []const u8) !usi
     return parsed.value.object.get("atom_areas").?.array.items.len;
 }
 
-test "calc default CCD includes HETATM like explicit CCD" {
+test "calc excludes HETATM by default, also with the CCD classifier" {
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -2177,6 +2173,8 @@ test "calc default CCD includes HETATM like explicit CCD" {
     defer allocator.free(default_out);
     const explicit_out = try std.fs.path.join(allocator, &.{ root, "explicit.json" });
     defer allocator.free(explicit_out);
+    const hetatm_out = try std.fs.path.join(allocator, &.{ root, "hetatm.json" });
+    defer allocator.free(hetatm_out);
 
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = pdb_path, .data = "ATOM      1  N   GLY A   1       0.000   0.000   0.000  1.00 20.00           N  \n" ++
         "HETATM    2  O   HOH A   2      20.000   0.000   0.000  1.00 20.00           O  \n" ++
@@ -2197,9 +2195,18 @@ test "calc default CCD includes HETATM like explicit CCD" {
         .classifier_type = .ccd,
         .quiet = true,
     });
+    try run(allocator, std.testing.io, .{
+        .input_path = pdb_path,
+        .output_path = hetatm_out,
+        .n_threads = 1,
+        .n_points = 8,
+        .include_hetatm = true,
+        .quiet = true,
+    });
 
-    try std.testing.expectEqual(@as(usize, 2), try readAtomAreasLenFromJson(allocator, default_out));
-    try std.testing.expectEqual(@as(usize, 2), try readAtomAreasLenFromJson(allocator, explicit_out));
+    try std.testing.expectEqual(@as(usize, 1), try readAtomAreasLenFromJson(allocator, default_out));
+    try std.testing.expectEqual(@as(usize, 1), try readAtomAreasLenFromJson(allocator, explicit_out));
+    try std.testing.expectEqual(@as(usize, 2), try readAtomAreasLenFromJson(allocator, hetatm_out));
 }
 
 test "per-chain summaries prefer full chain IDs over truncated prefixes" {
