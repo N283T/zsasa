@@ -826,7 +826,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --workflow=PATH    TOML workflow file for input, output, calculation, and classifier settings
         \\    --chain=ID         Filter by chain ID (e.g., --chain=A or --chain=A,B,C)
         \\                       Default: label_asym_id (mmCIF standard)
-        \\    --auth-chain       Use auth_asym_id instead of label_asym_id
+        \\    --auth-chain       Use auth_asym_id for chain IDs and auth_seq_id for
+        \\                       residue numbers instead of the label IDs (mmCIF/BCIF)
         \\    --altloc=MODE      mmCIF/BCIF alternate-location handling: auto, none, all,
         \\                       highest-occupancy, or a single ID like A (default: auto)
         \\    --include-hydrogens Include hydrogen atoms (default: excluded)

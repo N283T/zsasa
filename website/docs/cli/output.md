@@ -137,7 +137,7 @@ Chain  Res    Num       SASA  Atoms
     A  ALA      3      45.67      5
 ```
 
-For mmCIF and BinaryCIF input, [mmCIF Format](input.md#mmcif-format) describes where residue numbers come from. With `--auth-chain`, the non-polymer residues of a chain are all numbered 0 and share one row.
+For mmCIF and BinaryCIF input, residue numbers are `label_seq_id` values by default and `auth_seq_id` values with `--auth-chain`; see [mmCIF Format](input.md#mmcif-format).
 
 ### RSA Calculation (`--rsa`)
 

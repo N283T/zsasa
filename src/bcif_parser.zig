@@ -636,6 +636,8 @@ pub const BcifParser = struct {
     alt_loc_id: u8 = 'A',
     model_num: ?u32 = null,
     chain_filter: ?[]const []const u8 = null,
+    /// Use auth_asym_id instead of label_asym_id for chain, and auth_seq_id
+    /// instead of label_seq_id for residue numbers
     use_auth_chain: bool = false,
     parse_inline_ccd: bool = true,
     inline_ccd: ?ccd_parser.ComponentDict = null,
@@ -899,12 +901,15 @@ pub const BcifParser = struct {
         // with neither value gets 0.
         const label_seq = scalarSeqId(decoded, columns.label_seq_id, row);
         const site_seq = label_seq orelse scalarSeqId(decoded, columns.auth_seq_id, row) orelse 0;
-        // `site_seq` is the reported residue number, except with auth chain
-        // IDs. There a non-polymer residue shares its chain with a polymer
-        // numbered by label_seq_id, and reporting an auth_seq_id equal to one
-        // of those numbers would merge the two residues in per-residue output,
-        // so with auth chain IDs a row without a label_seq_id keeps 0.
-        const residue_num = if (self.use_auth_chain and columns.label_seq_id != null) label_seq orelse 0 else site_seq;
+        // With auth chain IDs every row is numbered by auth_seq_id, the number
+        // that identifies a residue within an auth chain. Keeping label_seq_id
+        // for polymer rows there could give a polymer residue and a water the
+        // same chain and number. A row without a usable auth_seq_id falls back
+        // to `site_seq`.
+        const residue_num = if (self.use_auth_chain)
+            scalarSeqId(decoded, columns.auth_seq_id, row) orelse site_seq
+        else
+            site_seq;
         const insertion_code = if (columns.getInsCodeCol()) |ins_col| scalarString(decoded[ins_col], row) orelse "" else "";
         const alt_loc: u8 = if (columns.label_alt_id) |alt_col| blk: {
             const alt_id = scalarString(decoded[alt_col], row) orelse "";
@@ -2341,11 +2346,11 @@ test "parse BinaryCIF altLoc selection keeps waters apart when label_seq_id is n
     try std.testing.expectEqualSlices(i32, &.{ 1, 1, 1, 1, 101, 102, 103, 104 }, input.residue_num.?);
 }
 
-test "parse BinaryCIF auth chains keep non-polymer residue number 0 and separate altLoc sites" {
-    // With auth chain IDs the polymer GLY (label_seq_id 2) and the free GLY
-    // ligand (auth_seq_id 2) share chain A, residue name and number, so the
-    // ligand and the waters are reported as residue 0. They are still
-    // separate altLoc sites.
+test "parse BinaryCIF auth chains report auth_seq_id and separate altLoc sites" {
+    // With auth chain IDs every row is numbered by auth_seq_id. The polymer
+    // GLY (label_seq_id 2, auth_seq_id 12) and the free GLY ligand
+    // (auth_seq_id 2) share chain A and residue name, and the ligand's number
+    // equals the polymer's label_seq_id. They are still separate altLoc sites.
     const rows = [_]TestAtomRow{
         .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 2, .auth_seq = 12, .x = 1.0 },
         .{ .group = "HETATM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "B", .auth_chain = "A", .seq = null, .auth_seq = 2, .alt = "A", .x = 2.0 },
@@ -2366,7 +2371,214 @@ test "parse BinaryCIF auth chains keep non-polymer residue number 0 and separate
 
     // Only the B alternates of the ligand and of water 102 are dropped.
     try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0, 5.0, 7.0 }, input.x);
-    try std.testing.expectEqualSlices(i32, &.{ 2, 0, 0, 0, 0 }, input.residue_num.?);
+    try std.testing.expectEqualSlices(i32, &.{ 12, 2, 101, 102, 103 }, input.residue_num.?);
+}
+
+test "parse BinaryCIF auth chains fall back to label_seq_id without a usable auth_seq_id" {
+    const rows = [_]TestAtomRow{
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 5, .auth_seq = 25, .x = 1.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "A", .seq = 6, .auth_seq = null, .x = 2.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "B", .auth_chain = "A", .seq = null, .auth_seq = null, .x = 3.0 },
+    };
+
+    // Mask value 1 is '.', 2 is '?'.
+    for ([_]u8{ 1, 2 }) |null_mask| {
+        const source = try buildSeqIdBcif(&rows, null_mask);
+        defer std.testing.allocator.free(source);
+
+        var parser = BcifParser.init(std.testing.allocator);
+        parser.atom_only = false;
+        parser.use_auth_chain = true;
+        var input = try parser.parse(source);
+        defer input.deinit();
+
+        // A null auth_seq_id falls back to label_seq_id, and a row with
+        // neither number gets 0.
+        try std.testing.expectEqualSlices(i32, &.{ 25, 6, 0 }, input.residue_num.?);
+    }
+
+    // Without an auth_seq_id column every row keeps label_seq_id.
+    const label_only_source = try buildMinimalBcif(.{ .include_alt_later_b_only = true });
+    defer std.testing.allocator.free(label_only_source);
+
+    var label_only_parser = BcifParser.init(std.testing.allocator);
+    label_only_parser.use_auth_chain = true;
+    var label_only_input = try label_only_parser.parse(label_only_source);
+    defer label_only_input.deinit();
+
+    try std.testing.expectEqualSlices(i32, &.{ 1, 2 }, label_only_input.residue_num.?);
+}
+
+test "parse BinaryCIF auth chains keep a water apart from a polymer residue with its label number" {
+    // The polymer GLY has label_seq_id 21 and auth_seq_id 1. Water 21 shares
+    // its auth chain, so label numbering for the polymer would make them
+    // one residue in per-residue output.
+    const rows = [_]TestAtomRow{
+        .{ .group = "ATOM", .element = "N", .atom = "N", .residue = "GLY", .chain = "A", .seq = 21, .auth_seq = 1, .x = 1.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 21, .auth_seq = 1, .x = 2.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "C", .residue = "GLY", .chain = "A", .seq = 21, .auth_seq = 1, .x = 3.0 },
+        .{ .group = "ATOM", .element = "O", .atom = "O", .residue = "GLY", .chain = "A", .seq = 21, .auth_seq = 1, .x = 4.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "B", .auth_chain = "A", .seq = null, .auth_seq = 21, .x = 5.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "B", .auth_chain = "A", .seq = null, .auth_seq = 22, .x = 6.0 },
+    };
+    const source = try buildSeqIdBcif(&rows, 1);
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.atom_only = false;
+    parser.use_auth_chain = true;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqualSlices(i32, &.{ 1, 1, 1, 1, 21, 22 }, input.residue_num.?);
+
+    const atom_areas = [_]f64{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+    var residues = try @import("analysis.zig").aggregateByResidue(std.testing.allocator, input, &atom_areas);
+    defer residues.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), residues.residues.len);
+    try std.testing.expectEqualStrings("GLY", residues.residues[0].residue_name.slice());
+    try std.testing.expectEqual(@as(i32, 1), residues.residues[0].residue_num);
+    try std.testing.expectEqual(@as(usize, 4), residues.residues[0].atom_count);
+    try std.testing.expectEqualStrings("HOH", residues.residues[1].residue_name.slice());
+    try std.testing.expectEqual(@as(i32, 21), residues.residues[1].residue_num);
+    try std.testing.expectEqual(@as(usize, 1), residues.residues[1].atom_count);
+    try std.testing.expectEqual(@as(i32, 22), residues.residues[2].residue_num);
+}
+
+/// Residues 10, 10A and 10B: one auth_seq_id, three insertion codes, and
+/// label_seq_id 10, 11 and 12. Residue 10A has two alternates.
+const insertion_code_rows = [_]TestAtomRow{
+    .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 10, .auth_seq = 10, .x = 1.0 },
+    .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 11, .auth_seq = 10, .ins_code = "A", .alt = "A", .x = 2.0 },
+    .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 11, .auth_seq = 10, .ins_code = "A", .alt = "B", .x = 3.0 },
+    .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 12, .auth_seq = 10, .ins_code = "B", .x = 4.0 },
+};
+
+test "parse BinaryCIF keeps insertion-code residues apart with label and auth numbering" {
+    const source = try buildSeqIdBcif(&insertion_code_rows, 1);
+    defer std.testing.allocator.free(source);
+
+    for ([_]bool{ false, true }) |use_auth_chain| {
+        var parser = BcifParser.init(std.testing.allocator);
+        parser.use_auth_chain = use_auth_chain;
+        var input = try parser.parse(source);
+        defer input.deinit();
+
+        // Only the B alternate of residue 10A is dropped.
+        try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0 }, input.x);
+        const expected_nums: []const i32 = if (use_auth_chain) &.{ 10, 10, 10 } else &.{ 10, 11, 12 };
+        try std.testing.expectEqualSlices(i32, expected_nums, input.residue_num.?);
+        try std.testing.expectEqualStrings("", input.insertion_code.?[0].slice());
+        try std.testing.expectEqualStrings("A", input.insertion_code.?[1].slice());
+        try std.testing.expectEqualStrings("B", input.insertion_code.?[2].slice());
+
+        const atom_areas = [_]f64{ 1.0, 1.0, 1.0 };
+        var residues = try @import("analysis.zig").aggregateByResidue(std.testing.allocator, input, &atom_areas);
+        defer residues.deinit();
+        try std.testing.expectEqual(@as(usize, 3), residues.residues.len);
+    }
+}
+
+/// Writes the rows as mmCIF text with the same columns as `buildSeqIdBcif`.
+fn buildSeqIdMmcif(rows: []const TestAtomRow) ![]u8 {
+    const allocator = std.testing.allocator;
+    var text = std.ArrayListUnmanaged(u8).empty;
+    errdefer text.deinit(allocator);
+
+    try text.appendSlice(allocator,
+        \\data_TEST
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.auth_seq_id
+        \\_atom_site.pdbx_PDB_ins_code
+        \\_atom_site.label_alt_id
+        \\_atom_site.pdbx_PDB_model_num
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\_atom_site.auth_asym_id
+        \\
+    );
+    for (rows) |row| {
+        var label_buf: [16]u8 = undefined;
+        var auth_buf: [16]u8 = undefined;
+        const label_seq = if (row.seq) |seq| try std.fmt.bufPrint(&label_buf, "{d}", .{seq}) else ".";
+        const auth_seq = if (row.auth_seq) |seq| try std.fmt.bufPrint(&auth_buf, "{d}", .{seq}) else ".";
+        const line = try std.fmt.allocPrint(allocator, "{s} {s} {s} {s} {s} {s} {s} {s} {s} {d} {d} {d} {d} {s}\n", .{
+            row.group,
+            row.element,
+            row.atom,
+            row.residue,
+            row.chain,
+            label_seq,
+            auth_seq,
+            if (row.ins_code.len == 0) "?" else row.ins_code,
+            if (row.alt.len == 0) "." else row.alt,
+            row.model,
+            row.x,
+            row.y,
+            row.z,
+            TestAtomRow.authChainValue(row),
+        });
+        defer allocator.free(line);
+        try text.appendSlice(allocator, line);
+    }
+    try text.appendSlice(allocator, "#\n");
+
+    return text.toOwnedSlice(allocator);
+}
+
+test "parse BinaryCIF and mmCIF agree on residue numbers with label and auth chains" {
+    const rows = [_]TestAtomRow{
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 2, .auth_seq = 12, .x = 1.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "A", .seq = 3, .auth_seq = null, .x = 2.0 },
+        .{ .group = "HETATM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "B", .auth_chain = "A", .seq = null, .auth_seq = 2, .alt = "A", .x = 3.0 },
+        .{ .group = "HETATM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "B", .auth_chain = "A", .seq = null, .auth_seq = 2, .alt = "B", .x = 4.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "C", .auth_chain = "A", .seq = null, .auth_seq = 101, .x = 5.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "C", .auth_chain = "A", .seq = null, .auth_seq = 102, .alt = "A", .x = 6.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "C", .auth_chain = "A", .seq = null, .auth_seq = 102, .alt = "B", .x = 7.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "C", .auth_chain = "A", .seq = null, .auth_seq = null, .x = 8.0 },
+    } ++ insertion_code_rows;
+
+    const bcif_source = try buildSeqIdBcif(&rows, 1);
+    defer std.testing.allocator.free(bcif_source);
+    const mmcif_source = try buildSeqIdMmcif(&rows);
+    defer std.testing.allocator.free(mmcif_source);
+
+    for ([_]bool{ false, true }) |use_auth_chain| {
+        var bcif = BcifParser.init(std.testing.allocator);
+        bcif.atom_only = false;
+        bcif.use_auth_chain = use_auth_chain;
+        var bcif_input = try bcif.parse(bcif_source);
+        defer bcif_input.deinit();
+
+        var mmcif = @import("mmcif_parser.zig").MmcifParser.init(std.testing.allocator);
+        mmcif.atom_only = false;
+        mmcif.use_auth_chain = use_auth_chain;
+        var mmcif_input = try mmcif.parse(mmcif_source);
+        defer mmcif_input.deinit();
+
+        const expected_nums: []const i32 = if (use_auth_chain)
+            &.{ 12, 3, 2, 101, 102, 0, 10, 10, 10 }
+        else
+            &.{ 2, 3, 2, 101, 102, 0, 10, 11, 12 };
+        try std.testing.expectEqualSlices(i32, expected_nums, bcif_input.residue_num.?);
+        try std.testing.expectEqualSlices(i32, expected_nums, mmcif_input.residue_num.?);
+        try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 3.0, 5.0, 6.0, 8.0, 1.0, 2.0, 4.0 }, bcif_input.x);
+        try std.testing.expectEqualSlices(f64, bcif_input.x, mmcif_input.x);
+        for (bcif_input.chain_id.?, mmcif_input.chain_id.?) |bcif_chain, mmcif_chain| {
+            try std.testing.expectEqualStrings(bcif_chain.slice(), mmcif_chain.slice());
+        }
+        for (bcif_input.insertion_code.?, mmcif_input.insertion_code.?) |bcif_ins, mmcif_ins| {
+            try std.testing.expectEqualStrings(bcif_ins.slice(), mmcif_ins.slice());
+        }
+    }
 }
 
 test "parse BinaryCIF numbers a row 0 when label_seq_id and auth_seq_id are both null" {
