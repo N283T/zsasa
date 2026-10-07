@@ -116,9 +116,9 @@ The `traj` subcommand outputs CSV with per-frame total SASA:
 
 ```csv
 frame,step,time,total_sasa
-0,1,1.000,1866.44
-1,2,2.000,1977.96
-2,3,3.000,1884.93
+0,1,1.000,1840.88
+1,2,2.000,1944.47
+2,3,3.000,1848.46
 ...
 ```
 
@@ -181,5 +181,6 @@ Classifies residues and shows SASA breakdown. Automatically enables `--per-resid
 Polar/Nonpolar SASA:
   Polar:       2345.67 Å² ( 45.2%) - 42 residues
   Nonpolar:    2845.23 Å² ( 54.8%) - 58 residues
-  Unknown:        0.00 Å² (  0.0%) -  0 residues
 ```
+
+An `Unknown` line (`Unknown:  <area> Å² - <n> residues (excluded from %)`) is added only when the structure has non-standard residues with SASA; the percentages leave them out.

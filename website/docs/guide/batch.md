@@ -12,7 +12,7 @@ Use batch mode when you need to calculate SASA for many structure files with the
 zsasa batch structures/ results/
 ```
 
-This scans `structures/` for supported input files and writes per-file outputs under `results/`.
+This scans `structures/` for supported input files (`.pdb`, `.ent`, `.cif`, `.mmcif`, `.bcif`, `.json`, `.sdf`, `.mol` and their `.gz`/`.zst` variants; see [Input Formats](../cli/input.md)) and writes per-file outputs under `results/`.
 
 Each output file is named after the input stem: `1ubq.pdb` and `1ubq.cif.gz` would both be written to `results/1ubq.json`. If two inputs would write the same output file, batch mode lists them and exits with an error before processing anything, instead of letting one result overwrite another:
 
@@ -57,7 +57,7 @@ Common options:
 
 ```bash
 zsasa batch structures/ results/ --threads=8 --format=json
-zsasa batch structures/ results/ --format=jsonl --output=results.jsonl
+zsasa batch structures/ --format=jsonl --output=results.jsonl
 zsasa batch structures/ results/ --classifier=ccd --ccd=components.zsdc
 ```
 
@@ -66,8 +66,10 @@ zsasa batch structures/ results/ --classifier=ccd --ccd=components.zsdc
 For large datasets, prefer JSONL because each structure result is written as one line and can be streamed by downstream tools:
 
 ```bash
-zsasa batch structures/ results/ --format=jsonl --output=results.jsonl
+zsasa batch structures/ --format=jsonl --output=results.jsonl
 ```
+
+With `--format=jsonl` the output path names the one JSONL file: give it as `-o`/`--output` or as the second positional argument (`zsasa batch structures/ results.jsonl --format=jsonl`). With both, `--output` wins and the positional path is ignored. With neither, the rows go to standard output.
 
 JSONL is especially useful when you want to concatenate, filter, or process results incrementally.
 
@@ -80,7 +82,7 @@ Successful JSONL rows include `status: "ok"` plus the result fields:
 Failed structures are emitted as `status: "err"` rows instead of being available only in the batch summary:
 
 ```json
-{"status":"err","filename":"bad.pdb","error":"read/parse failed: InvalidFormat"}
+{"status":"err","filename":"bad.pdb","error":"read/parse failed: NoAtomsFound"}
 ```
 
 Parallel JSONL is streamed in completion order for throughput; input-order output is not currently guaranteed.
@@ -170,7 +172,7 @@ Adaptive mode is currently available for `zsasa batch` only. It requires `--use-
 Add `--residue-map` to include compact residue-level arrays in each JSONL row:
 
 ```bash
-zsasa batch structures/ results/ \
+zsasa batch structures/ \
   --format=jsonl \
   --output=results.jsonl \
   --residue-map

@@ -24,7 +24,7 @@ Paper-era benchmarks cover FreeSASA agreement, proteome-scale batch throughput, 
 - **Batch & trajectory**: Proteome-scale directory processing, MD trajectory analysis
 - **Python bindings**: NumPy, Gemmi, BioPython, Biotite, MDTraj, MDAnalysis
 - **Four classifiers**: ProtOr, NACCESS, OONS, and CCD (bond-topology-based radii for any chemical component)
-- **High performance**: SIMD, multi-threading, f64/f32 selectable, zero dependencies
+- **High performance**: SIMD, multi-threading, f64/f32 selectable, no runtime dependencies (the trajectory readers come from the first-party [`ztraj`](https://github.com/N283T/ztraj) Zig package, fetched at build time)
 - **Cross-platform**: Linux, macOS, Windows (pre-built wheels on PyPI)
 
 ## Quick Start

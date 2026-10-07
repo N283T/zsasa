@@ -83,9 +83,9 @@ def process_directory(
 ) -> BatchDirResult:
     """Process all supported structure files in a directory for SASA calculation.
 
-    Supported formats: PDB (.pdb), mmCIF (.cif, .mmcif), BinaryCIF (.bcif),
-    PDB/ENT (.ent), JSON (.json), and their gzip- or zstd-compressed variants
-    (.gz, .zst).
+    Supported formats: PDB (.pdb, .ent), mmCIF (.cif, .mmcif), BinaryCIF (.bcif),
+    JSON (.json), SDF/MOL (.sdf, .mol), and their gzip- or zstd-compressed
+    variants (.gz, .zst).
 
     Args:
         input_dir: Path to directory containing structure files.

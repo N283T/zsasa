@@ -61,7 +61,7 @@ zsasa traj trajectory.xtc topology.pdb -o sasa_results.csv
 |--------|-------------|---------|
 | `--stride=N` | Process every Nth frame (N ≥ 1) | `1` |
 | `--start=N` | Start from frame N | `0` |
-| `--end=N` | End at frame N | all |
+| `--end=N` | End at frame N (inclusive) | all |
 | `--algorithm=ALGO` | `sr` (Shrake-Rupley) or `lr` (Lee-Richards) | `sr` |
 | `--n-points=N` | Test points per atom (SR, 1-10000) | `100` |
 | `--n-slices=N` | Slices per atom diameter (LR, 1-1000) | `20` |
@@ -69,8 +69,13 @@ zsasa traj trajectory.xtc topology.pdb -o sasa_results.csv
 | `--classifier=TYPE` | `ccd`, `naccess`, `protor`, `oons` | `naccess` |
 | `--threads=N` | Thread count (0 = auto) | `0` |
 | `--precision=P` | `f32` (fast) or `f64` (precise) | `f32` |
-| `--no-hydrogens` | Exclude hydrogen atoms from the calculation | included |
+| `--no-hydrogens` | Exclude hydrogen atoms from the calculation (`--exclude-hydrogens` is a synonym) | included |
+| `--include-hydrogens` | Include hydrogen atoms (the default) | included |
+| `--ccd=PATH`, `--sdf=PATH` | External CCD dictionary and SDF bond topology for the `ccd` classifier | none |
+| `--use-bitmask` | [Bitmask LUT optimization](algorithms.mdx#bitmask-lut-optimization) (SR only, `--n-points` 1-1024) | off |
+| `--bitmask-lut-mode=MODE`, `--bitmask-correction`, `--bitmask-correction-coeff=V` | Bitmask variants; see [Algorithms](algorithms.mdx#experimental-bias-correction) | `single`, off, `0.020` |
 | `--batch-size=N` | Frames per batch (omit for auto) | auto |
+| `-q, --quiet` | Suppress progress output | off |
 | `-o FILE`, `--output=FILE` | Output CSV file | `traj_sasa.csv` |
 
 `--algorithm` and `--precision` are independent: Lee-Richards runs at `f32` by default and at `f64` with `--precision=f64`. See [Commands & Options](../cli/commands.md#trajectory-options) for the full list.
@@ -81,10 +86,12 @@ CSV with per-frame total SASA:
 
 ```csv
 frame,step,time,total_sasa
-0,1,1.000,1866.44
-1,2,2.000,1977.96
-2,3,3.000,1884.93
+0,1,1.000,1840.88
+1,2,2.000,1944.47
+2,3,3.000,1848.46
 ```
+
+These are the first frames of `test_data/1l2y.xtc` with `test_data/1l2y.pdb` as topology, at the defaults (NACCESS classifier, 100 test points, `f32`).
 
 ### Topology Requirements
 

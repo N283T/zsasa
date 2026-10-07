@@ -7,7 +7,8 @@ Thank you for your interest in contributing to zsasa!
 ### Prerequisites
 
 - **Zig 0.16.0+** - Required for building the project
-- **Python 3.11+** - Required for benchmarks and Python bindings
+- **Python 3.11+** - Required for the Python bindings
+- **Python 3.12+** and [uv](https://docs.astral.sh/uv/) - Required for the benchmark scripts
 - **FreeSASA C** (optional) - For benchmark comparisons
 
 ### Getting the Source
@@ -52,11 +53,10 @@ pytest tests/ -v
 
 Note: Requires Zig 0.16.0+ to be installed. The build hook compiles the library with ReleaseFast optimization.
 
-For benchmark scripts:
+The benchmark scripts in `benchmarks/scripts/` (for example `bench.py`, `bench_batch.py`, `bench_md.py`) are `uv` scripts that declare their own dependencies and require Python 3.12+:
 
 ```bash
-cd benchmarks/scripts
-./run.py --help
+./benchmarks/scripts/bench.py --help
 ```
 
 ## Code Style
@@ -123,7 +123,7 @@ src/
 ├── types.zig          # Core data structures (AtomInput, SasaResult)
 ├── shrake_rupley.zig  # Shrake-Rupley algorithm (SIMD, multi-threaded)
 ├── lee_richards.zig   # Lee-Richards algorithm (SIMD, multi-threaded)
-├── classifier*.zig    # Atom classifiers (NACCESS, ProtOr, OONS)
+├── classifier*.zig    # Atom classifiers (NACCESS, ProtOr, OONS, CCD)
 ├── json_parser.zig    # JSON input parsing
 ├── pdb_parser.zig     # PDB format parsing
 ├── mmcif_parser.zig   # mmCIF format parsing

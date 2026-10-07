@@ -206,7 +206,8 @@ class SASAAnalysis:
         start : int, optional
             First frame to analyze (default: 0).
         stop : int, optional
-            Last frame to analyze (default: None, meaning last frame).
+            Stop before this frame (default: None, meaning run through the
+            last frame).
         step : int, optional
             Step between frames (default: 1).
         probe_radius : float, optional
@@ -372,7 +373,8 @@ def compute_sasa(
     start : int, optional
         First frame to analyze (default: 0).
     stop : int, optional
-        Last frame to analyze (default: None).
+        Stop before this frame (default: None, meaning run through the last
+        frame).
     step : int, optional
         Step between frames (default: 1).
     probe_radius : float, optional

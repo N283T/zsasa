@@ -17,7 +17,7 @@ Example:
     >>> # Classify atoms
     >>> from zsasa import classify_atoms, get_radius
     >>> result = classify_atoms(["ALA", "ALA"], ["CA", "O"])
-    >>> print(result.radii)  # [1.87, 1.4]
+    >>> print(result.radii)  # [1.88 1.42] (default CCD classifier)
 
 Integrations:
     For structure file support, use the gemmi integration:

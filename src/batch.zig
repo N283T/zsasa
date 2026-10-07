@@ -3421,7 +3421,9 @@ pub fn printHelp(program_name: []const u8) void {
         \\    {s} batch [OPTIONS] <input_dir> [output_dir]
         \\
         \\ARGUMENTS:
-        \\    <input_dir>     Directory containing structure files (PDB, mmCIF, JSON)
+        \\    <input_dir>     Directory containing structure files
+        \\                    Supported: .json, .cif, .mmcif, .bcif, .pdb, .ent,
+        \\                    .sdf, .mol, each also as .gz or .zst
         \\    [output_dir]    Optional output directory (default: no file output)
         \\
         \\OPTIONS:
