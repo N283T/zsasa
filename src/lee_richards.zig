@@ -1806,13 +1806,10 @@ test "calculateSasa - a stray distant atom does not change the other areas" {
     // The atom in the middle of the block is buried, so the block is a real test
     try std.testing.expect(compact.atom_areas[13] < compact.atom_areas[0]);
 
-    // The stray atom changes the grid, hence the order of each neighbor list, but not the
-    // neighbors themselves. The arcs are sorted before they are merged, so at most the last
-    // bits can move.
-    for (0..n_compact) |i| {
-        try std.testing.expectApproxEqRel(compact.atom_areas[i], stray.atom_areas[i], 1e-10);
-        try std.testing.expectApproxEqRel(compact_f32.atom_areas[i], stray_f32.atom_areas[i], 1e-4);
-    }
+    // The stray atom extends the neighbor grid without changing its cells, so every other
+    // atom keeps the same neighbor list and gets exactly the same area.
+    try std.testing.expectEqualSlices(f64, compact.atom_areas, stray.atom_areas[0..n_compact]);
+    try std.testing.expectEqualSlices(f32, compact_f32.atom_areas, stray_f32.atom_areas[0..n_compact]);
     try std.testing.expectApproxEqRel(isolated, stray.atom_areas[n_compact], 1e-12);
     try std.testing.expectApproxEqRel(@as(f32, @floatCast(isolated)), stray_f32.atom_areas[n_compact], 1e-6);
 }

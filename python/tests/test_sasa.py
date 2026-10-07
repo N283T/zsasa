@@ -119,7 +119,8 @@ class TestTwoAtoms:
         assert result.atom_areas == pytest.approx([single_area, single_area], rel=1e-12)
         assert result.total_area == pytest.approx(2 * single_area, rel=1e-12)
 
-    def test_stray_atom_does_not_change_other_areas(self):
+    @pytest.mark.parametrize("algorithm", ["sr", "lr"])
+    def test_stray_atom_does_not_change_other_areas(self, algorithm):
         """A distant atom leaves the areas of a compact group unchanged (#428)."""
         rng = np.random.default_rng(428)
         coords = rng.uniform(0.0, 12.0, size=(60, 3))
@@ -127,8 +128,8 @@ class TestTwoAtoms:
         stray_coords = np.vstack([coords, [[9999.999, 9999.999, 9999.999]]])
         stray_radii = np.append(radii, 1.7)
 
-        compact = calculate_sasa(coords, radii, n_threads=1)
-        stray = calculate_sasa(stray_coords, stray_radii, n_threads=1)
+        compact = calculate_sasa(coords, radii, algorithm=algorithm, n_threads=1)
+        stray = calculate_sasa(stray_coords, stray_radii, algorithm=algorithm, n_threads=1)
 
         np.testing.assert_array_equal(stray.atom_areas[:-1], compact.atom_areas)
         assert stray.atom_areas[-1] == pytest.approx(4 * np.pi * 3.1**2, rel=1e-12)
