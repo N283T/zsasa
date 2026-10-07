@@ -60,7 +60,7 @@ pub const CalcArgs = struct {
     chain_filter: ?[]const u8 = null, // Chain filter (e.g., "A" or "A,B,C")
     model_num: ?u32 = null, // Model number for NMR structures
     use_auth_chain: bool = false, // Use auth_asym_id instead of label_asym_id
-    alt_loc_mode: mmcif_parser.AltLocMode = .auto, // Alternate-location handling for mmCIF
+    alt_loc_mode: mmcif_parser.AltLocMode = .auto, // Alternate-location handling (PDB, mmCIF, BinaryCIF)
     alt_loc_id: u8 = 'A', // Selected altLoc ID for --altloc=<ID>
     include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
     include_hetatm: bool = false, // Include HETATM records (default: exclude)
@@ -828,8 +828,9 @@ pub fn printHelp(program_name: []const u8) void {
         \\                       Default: label_asym_id (mmCIF standard)
         \\    --auth-chain       Use auth_asym_id for chain IDs and auth_seq_id for
         \\                       residue numbers instead of the label IDs (mmCIF/BCIF)
-        \\    --altloc=MODE      mmCIF/BCIF alternate-location handling: auto, none, all,
-        \\                       highest-occupancy, or a single ID like A (default: auto)
+        \\    --altloc=MODE      Alternate-location handling (PDB/mmCIF/BCIF): auto, none,
+        \\                       all, highest-occupancy, or a single ID like A
+        \\                       (default: auto)
         \\    --include-hydrogens Include hydrogen atoms (default: excluded)
         \\    --include-hetatm   Include HETATM records (default: excluded)
         \\    --model=N          Model number for NMR structures (default: all)
@@ -997,6 +998,8 @@ fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, arg
             parser.model_num = args.model_num;
             parser.skip_hydrogens = !args.include_hydrogens;
             parser.atom_only = !args.include_hetatm;
+            parser.alt_loc_mode = args.alt_loc_mode;
+            parser.alt_loc_id = args.alt_loc_id;
 
             // Parse chain filter if specified
             var chain_filter_slice: ?[]const []const u8 = null;
@@ -2152,6 +2155,70 @@ fn readAtomAreasLenFromJson(allocator: std.mem.Allocator, path: []const u8) !usi
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
     defer parsed.deinit();
     return parsed.value.object.get("atom_areas").?.array.items.len;
+}
+
+test "calc --altloc applies to PDB input as it does to mmCIF input" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "altloc.pdb", .data =
+        \\ATOM      1  N   ALA A   1       1.000   0.000   0.000  1.00 10.00           N
+        \\ATOM      2  CA AALA A   1       2.000   0.000   0.000  0.30 10.00           C
+        \\ATOM      3  CA BALA A   1       3.000   0.000   0.000  0.70 10.00           C
+        \\ATOM      4  C   ALA A   1       4.000   0.000   0.000  1.00 10.00           C
+        \\END
+        \\
+    });
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "altloc.cif", .data =
+        \\data_ALTLOC
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\_atom_site.occupancy
+        \\ATOM N N  . ALA A 1 1.000 0.000 0.000 1.00
+        \\ATOM C CA A ALA A 1 2.000 0.000 0.000 0.30
+        \\ATOM C CA B ALA A 1 3.000 0.000 0.000 0.70
+        \\ATOM C C  . ALA A 1 4.000 0.000 0.000 1.00
+        \\#
+        \\
+    });
+    const pdb_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "altloc.pdb", allocator);
+    defer allocator.free(pdb_path);
+    const cif_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "altloc.cif", allocator);
+    defer allocator.free(cif_path);
+
+    // CA has the alternates A (0.30) and B (0.70)
+    const Case = struct { flag: []const u8, x: []const f64 };
+    const cases = [_]Case{
+        .{ .flag = "--altloc=auto", .x = &.{ 1, 2, 4 } },
+        .{ .flag = "--altloc=all", .x = &.{ 1, 2, 3, 4 } },
+        .{ .flag = "--altloc=A", .x = &.{ 1, 2, 4 } },
+        .{ .flag = "--altloc=B", .x = &.{ 1, 3, 4 } },
+        .{ .flag = "--altloc=C", .x = &.{ 1, 4 } },
+        .{ .flag = "--altloc=highest-occupancy", .x = &.{ 1, 3, 4 } },
+    };
+    for ([_][]const u8{ pdb_path, cif_path }) |path| {
+        for (cases) |case| {
+            const args = parseArgs(&.{ "zsasa", "calc", case.flag, path }, 2);
+            var result = try readInputFile(allocator, std.testing.io, path, args);
+            defer result.deinitCcd();
+            defer result.input.deinit();
+            try std.testing.expectEqualSlices(f64, case.x, result.input.x);
+        }
+
+        // `none` exists to fail fast
+        const none_args = parseArgs(&.{ "zsasa", "calc", "--altloc=none", path }, 2);
+        try std.testing.expectError(error.UnexpectedAltLoc, readInputFile(allocator, std.testing.io, path, none_args));
+    }
 }
 
 test "calc excludes HETATM by default, also with the CCD classifier" {

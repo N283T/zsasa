@@ -149,7 +149,7 @@ pub const TrajArgs = struct {
     start_frame: u32 = 0, // Start frame
     end_frame: ?u32 = null, // End frame (null = all)
     include_hydrogens: bool = true, // Include hydrogen atoms (default: include for MD trajectories)
-    alt_loc_mode: mmcif_parser.AltLocMode = .auto, // Alternate-location handling for mmCIF topology
+    alt_loc_mode: mmcif_parser.AltLocMode = .auto, // Alternate-location handling for the topology
     alt_loc_id: u8 = 'A',
     batch_size: u32 = 0, // Frames per batch for parallel processing (0 = auto)
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
@@ -534,8 +534,9 @@ pub fn printHelp(program_name: []const u8) void {
         \\                       in the topology and trajectory files (default: included)
         \\    --include-hydrogens
         \\                       Include hydrogen atoms (default, for backward compat)
-        \\    --altloc=MODE      mmCIF topology alternate-location handling: auto, none,
-        \\                       all, highest-occupancy, or a single ID like A (default: auto)
+        \\    --altloc=MODE      Topology alternate-location handling (PDB/mmCIF): auto,
+        \\                       none, all, highest-occupancy, or a single ID like A
+        \\                       (default: auto)
         \\    --use-bitmask      Use bitmask LUT optimization for SR algorithm
         \\                       (n-points must be 1..1024)
         \\    --bitmask-lut-mode=MODE
@@ -1029,6 +1030,8 @@ fn loadTopology(allocator: Allocator, io: std.Io, path: []const u8, args: TrajAr
             parser.skip_hydrogens = false;
             parser.first_model_only = true;
             parser.hydrogen_flags = flags_out;
+            parser.alt_loc_mode = args.alt_loc_mode;
+            parser.alt_loc_id = args.alt_loc_id;
             break :blk try parser.parseFile(io, path);
         },
         .mmcif => blk: {
@@ -2140,6 +2143,68 @@ test "traj run: --no-hydrogens equals a run on a hydrogen-free topology and traj
         .n_points = 64,
         .n_threads = 1,
     }, "mismatch.csv"));
+}
+
+test "traj --altloc applies to PDB topologies as it does to mmCIF topologies" {
+    var ws = TestWorkspace.init();
+    defer ws.deinit();
+
+    const pdb_path = try ws.write("altloc.pdb",
+        \\ATOM      1  N   ALA A   1       1.000   0.000   0.000  1.00 10.00           N
+        \\ATOM      2  CA AALA A   1       2.000   0.000   0.000  0.30 10.00           C
+        \\ATOM      3  CA BALA A   1       3.000   0.000   0.000  0.70 10.00           C
+        \\ATOM      4  C   ALA A   1       4.000   0.000   0.000  1.00 10.00           C
+        \\END
+        \\
+    );
+    const cif_path = try ws.write("altloc.cif",
+        \\data_ALTLOC
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\_atom_site.occupancy
+        \\ATOM N N  . ALA A 1 1.000 0.000 0.000 1.00
+        \\ATOM C CA A ALA A 1 2.000 0.000 0.000 0.30
+        \\ATOM C CA B ALA A 1 3.000 0.000 0.000 0.70
+        \\ATOM C C  . ALA A 1 4.000 0.000 0.000 1.00
+        \\#
+        \\
+    );
+
+    // CA has the alternates A (0.30) and B (0.70)
+    const Case = struct { flag: []const u8, x: []const f64 };
+    const cases = [_]Case{
+        .{ .flag = "--altloc=auto", .x = &.{ 1, 2, 4 } },
+        .{ .flag = "--altloc=all", .x = &.{ 1, 2, 3, 4 } },
+        .{ .flag = "--altloc=A", .x = &.{ 1, 2, 4 } },
+        .{ .flag = "--altloc=B", .x = &.{ 1, 3, 4 } },
+        .{ .flag = "--altloc=C", .x = &.{ 1, 4 } },
+        .{ .flag = "--altloc=highest-occupancy", .x = &.{ 1, 3, 4 } },
+    };
+    for ([_][]const u8{ pdb_path, cif_path }) |path| {
+        for (cases) |case| {
+            const args = parseArgs(&.{ "zsasa", "traj", case.flag, "traj.xtc", path }, 2);
+            var topology = try loadTopology(std.testing.allocator, std.testing.io, path, args);
+            defer topology.deinit();
+            try std.testing.expectEqualSlices(f64, case.x, topology.atoms.x);
+            try std.testing.expectEqual(case.x.len, topology.n_file_atoms);
+        }
+
+        // `none` exists to fail fast
+        const none_args = parseArgs(&.{ "zsasa", "traj", "--altloc=none", "traj.xtc", path }, 2);
+        try std.testing.expectError(
+            error.UnexpectedAltLoc,
+            loadTopology(std.testing.allocator, std.testing.io, path, none_args),
+        );
+    }
 }
 
 test "traj run: multi-model, HETATM and mmCIF topologies map onto the trajectory" {
