@@ -51,39 +51,27 @@ RustSASA relies on `pdbtbx`; the benchmark input preparation had to normalize la
 
 FreeSASA has no native directory mode. The current pinned batch benchmarks therefore use `freesasa_batch`, a thin wrapper around the pinned FreeSASA C API, so that comparisons are multi-file workloads rather than shell loops.
 
-Representative 10-thread batch results at 128 points:
+Results at 10 threads and 128 sphere points, from the `zsasa` 0.9.0 suite:
 
-| Workload | zsasa mode | Runtime | Throughput | RSS | Speedup vs FreeSASA batch |
-| --- | --- | ---: | ---: | ---: | ---: |
-| *E. coli* AFDB, 4,370 structures | f64 | 4.411 s | 991 str/s | 45.5 MiB | 2.94× |
-| *E. coli* AFDB, 4,370 structures | bitmask f32 | 1.481 s | 2,951 str/s | 45.1 MiB | 8.77× |
-| Human AFDB, 23,586 structures | f64 | 45.508 s | 518 str/s | 82.3 MiB | 2.94× |
-| Human AFDB, 23,586 structures | bitmask f32 | 13.814 s | 1,707 str/s | 79.5 MiB | 9.70× |
+<div data-chart="batch/bars"></div>
 
-See [Batch Processing Benchmarks](benchmarks/batch.md) for full tables and the legacy SwissProt note.
+See [Batch Processing Benchmarks](benchmarks/batch.md) for full tables, thread scaling, and the mmCIF and SwissProt runs.
 
 ## Single-file stress behavior
 
-The current pinned single-file suite uses eight curated structures up to 4,506,416 atoms. On the largest assembly, `zsasa` completed in 4.696 s in f64 mode and 3.788 s in bitmask f64 mode at 100 points and 10 threads. The same normalized input took 191.876 s with FreeSASA and 8.731 s with RustSASA.
+The single-file suite uses eight curated structures up to 4,506,416 atoms, at 100 sphere points and 10 threads.
 
-| Workload | Mode | Runtime | RSS | Speedup vs FreeSASA |
-| --- | --- | ---: | ---: | ---: |
-| 9fqr, 4.5M atoms | zsasa f64 | 4.696 s | 1,615 MiB | 40.9× |
-| 9fqr, 4.5M atoms | zsasa bitmask f64 | 3.788 s | 1,616 MiB | 50.6× |
+<div data-table="single/t10-pdb"></div>
 
-See [Single-File Stress Benchmarks](benchmarks/single-file.md).
+Two of the large ratios are parser outliers rather than kernel scaling: FreeSASA on 8rbs and RustSASA on 5vyc. See [Single-File Stress Benchmarks](benchmarks/single-file.md) for the caveats.
 
 ## MD trajectory support
 
 `zsasa` provides native CLI trajectory processing and Python integrations. The benchmarked CLI path streams frames, keeping peak memory close to the current-frame working set. RustSASA trajectory support is represented by mdsasa-bolt, which uses an MDAnalysis front-end and can materialize much more trajectory data in memory.
 
-Representative 10-thread trajectory results at 100 points:
+Results at 10 threads and 128 sphere points:
 
-| Workload | zsasa mode | Runtime | Frames/s | RSS | Speedup |
-| --- | --- | ---: | ---: | ---: | --- |
-| 5wvo_C, 1,001 frames | CLI bitmask f32 | 0.839 s | 1,194 | 22.6 MiB | 27.8× vs MDTraj |
-| 6sup_A, 1,001 frames | CLI bitmask f32 | 6.949 s | 144 | 115.9 MiB | 132× vs MDTraj |
-| 5vz0_A, 10,001 frames | CLI bitmask f32 | 38.056 s | 263 | 64.6 MiB | 86.5× vs mdsasa-bolt |
+<div data-chart="md/bars"></div>
 
 See [MD Trajectory Benchmarks](benchmarks/md.md).
 
@@ -104,7 +92,7 @@ Zig has not yet reached version 1.0. The language may introduce breaking changes
 
 ### Benchmark scope
 
-The current benchmark benchmark claims come from one consumer laptop and pinned comparator versions. Absolute runtimes will vary across hardware. Use the relative comparisons and the documented benchmark settings when interpreting the results.
+The benchmark claims come from one consumer laptop and pinned comparator versions. Absolute runtimes will vary across hardware. Use the relative comparisons and the documented benchmark settings when interpreting the results.
 
 ## Links
 

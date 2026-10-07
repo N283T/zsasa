@@ -4,10 +4,6 @@ sidebar_position: 1
 
 # zsasa
 
-<p align="center">
-  <img src="/zsasa/img/logo.svg" alt="zsasa logo" width="420" />
-</p>
-
 High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 The current benchmark suite covers FreeSASA agreement, proteome-scale batch throughput, large single structures, and low-memory MD trajectory analysis.
 

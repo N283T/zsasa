@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+{{head}}
+</head>
+<body>
+{{nav}}
+<main id="main">
+
+  <section class="hero">
+    <div class="wrap hero__grid">
+      <div>
+        <span class="tag">// SASA engine · Zig · v{{version}}</span>
+        <h1><span>Surface area</span><span class="y">at proteome</span><span class="o">scale.</span></h1>
+        <p class="hero__lede">
+          zsasa computes solvent accessible surface area for structures, complexes and MD trajectories.
+          <strong>{{fact:human_structures}} human AlphaFold structures in {{fact:human_runtime}}&nbsp;s</strong> on a laptop, in under {{fact:human_rss_ceil}}&nbsp;MiB.
+        </p>
+        <div class="hero__cta">
+          <a class="cut" href="{{doc:getting-started}}">Get started <span class="arrow">→</span></a>
+          <a class="cut cut--ghost" href="https://doi.org/10.64898/2026.06.29.733683">Read the preprint</a>
+        </div>
+        <div class="hud">
+          <div><b>{{fact:ecoli_speedup}}<i>×</i></b><span class="label">vs FreeSASA batch</span></div>
+          <div><b>{{fact:ecoli_throughput}}</b><span class="label">structures / s</span></div>
+          <div><b>{{fact:ecoli_rss}}<i>MiB</i></b><span class="label">peak RSS</span></div>
+        </div>
+        <p class="hud__note">
+          <i>E.&nbsp;coli</i> AlphaFold proteome, {{fact:ecoli_structures}} structures. zsasa 0.9.0, bitmask f32, 10 threads, Apple M4.
+          <a href="{{doc:benchmarks/index}}">Methods</a>
+        </p>
+      </div>
+
+      <div class="surface">
+        <canvas id="surface" role="img" aria-label="Rotating dot surface of ubiquitin: every dot is a point the solvent probe can reach."></canvas>
+        <i class="bk bk--tl"></i><i class="bk bk--tr"></i><i class="bk bk--bl"></i><i class="bk bk--br"></i>
+        <div class="readout readout--tl label">Target <b>1UBQ</b><br>Atoms <b>602</b><br>Probe <b>1.4 Å</b></div>
+        <div class="readout readout--br label">Exposed <b data-exposed>–</b><br>Test points <b data-total>–</b><br>Scan <b data-scan>–</b></div>
+      </div>
+    </div>
+    <div class="strip label">
+      <div class="wrap">
+        <span>Shrake–Rupley</span><span>Lee–Richards</span><span>f64 / f32 / bitmask</span>
+        <span>mmCIF · PDB · XTC · DCD</span><span>CLI · Python · Zig</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="wrap sec__grid">
+      <header class="sec__head">
+        <span class="tag">// 01 · Interfaces</span>
+        <h2>One engine, from the shell or from Python.</h2>
+        <p>
+          The same Zig core backs a standalone CLI and NumPy-based Python bindings.
+          Wheels ship for Linux, macOS and Windows.
+        </p>
+        <a class="more" href="{{doc:cli/commands}}">CLI reference →</a><br>
+        <a class="more" href="{{doc:python-api/index}}" style="margin-top:8px">Python API →</a>
+      </header>
+      <div>
+        <span class="sub label">Install</span>
+        <div class="tabs" data-tabs style="margin:0">
+          <div class="tabs__list" role="tablist" aria-label="Install">
+            <button type="button" role="tab" aria-selected="true">pip</button>
+            <button type="button" role="tab" aria-selected="false" tabindex="-1">uv</button>
+            <button type="button" role="tab" aria-selected="false" tabindex="-1">curl</button>
+            <button type="button" role="tab" aria-selected="false" tabindex="-1">nix</button>
+          </div>
+          <div class="tabs__panel" role="tabpanel">
+<!--code:bash-->
+pip install zsasa
+<!--/code-->
+          </div>
+          <div class="tabs__panel" role="tabpanel" hidden>
+<!--code:bash-->
+uv add zsasa
+<!--/code-->
+          </div>
+          <div class="tabs__panel" role="tabpanel" hidden>
+<!--code:bash-->
+curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | sh
+<!--/code-->
+          </div>
+          <div class="tabs__panel" role="tabpanel" hidden>
+<!--code:bash-->
+nix run github:N283T/zsasa -- calc structure.cif output.json
+<!--/code-->
+          </div>
+        </div>
+
+        <span class="sub label">Use</span>
+        <div class="tabs" data-tabs style="margin:0">
+          <div class="tabs__list" role="tablist" aria-label="Interface">
+            <button type="button" role="tab" aria-selected="true">CLI</button>
+            <button type="button" role="tab" aria-selected="false" tabindex="-1">Python</button>
+            <button type="button" role="tab" aria-selected="false" tabindex="-1">Python + Gemmi</button>
+          </div>
+          <div class="tabs__panel" role="tabpanel">
+<!--code:bash-->
+# One structure
+zsasa calc 1ubq.pdb out.json
+
+# A directory of structures
+zsasa batch structures/ results/
+
+# An MD trajectory
+zsasa traj trajectory.xtc topology.pdb --stride=10
+<!--/code-->
+<!--code:text-->
+Classifier 'CCD': 660 atoms classified, 0 fallback
+Calculated SASA for 660 atoms
+Total area: 5656.65 Å²
+<!--/code-->
+            <p>Output of the first command on <code>examples/1ubq.pdb</code>.</p>
+          </div>
+          <div class="tabs__panel" role="tabpanel" hidden>
+<!--code:python-->
+import numpy as np
+from zsasa import calculate_sasa
+
+coords = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+radii = np.array([1.5, 1.5])
+
+result = calculate_sasa(coords, radii)
+print(f"Total SASA: {result.total_area:.2f} Å²")
+print(f"Per-atom: {result.atom_areas}")
+<!--/code-->
+          </div>
+          <div class="tabs__panel" role="tabpanel" hidden>
+<!--code:python-->
+from zsasa.integrations.gemmi import calculate_sasa_from_structure
+
+result = calculate_sasa_from_structure("protein.cif")
+
+print(f"Total: {result.total_area:.1f} Å²")
+print(f"Polar: {result.polar_area:.1f} Å²")
+print(f"Apolar: {result.apolar_area:.1f} Å²")
+<!--/code-->
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="wrap sec__grid">
+      <header class="sec__head">
+        <span class="tag">// 02 · Method</span>
+        <h2>What gets measured.</h2>
+        <p>
+          Inflate every atom by the radius of a water-sized probe, 1.4&nbsp;Å. The part of each inflated
+          sphere that no neighbour covers is where solvent can reach. Shrake–Rupley estimates that area
+          by testing points on each sphere.
+        </p>
+        <p>The figure runs the same test live, on one plane through ubiquitin. Drag the ruler to move the plane.</p>
+        <a class="more" href="{{doc:guide/algorithms}}">Algorithms →</a>
+      </header>
+      <figure style="margin:0">
+        <div class="viewer">
+          <i class="bk bk--tl"></i><i class="bk bk--br"></i>
+          <div class="viewer__bar">
+            <span class="label">Fig. 1 — <b>1UBQ</b> cross-section</span>
+            <span class="label">z = <b class="num" data-z>+0.0 Å</b></span>
+          </div>
+          <canvas id="slice" role="img" aria-label="Animated cross-section through ubiquitin. Orange points mark where the solvent probe can touch the molecule; grey points are buried."></canvas>
+          <div class="viewer__foot">
+            <div><span class="label">Atoms in plane</span><span class="num" data-atoms>–</span></div>
+            <div><span class="label">Exposed points</span><span class="num" data-pts>–</span></div>
+            <div><span class="label">Accessible contour</span><span class="num" data-len>–</span></div>
+          </div>
+          <label class="viewer__scrub">
+            <span class="label">Plane</span>
+            <input type="range" min="0" max="1000" value="500" data-scrub aria-label="Position of the cutting plane">
+          </label>
+        </div>
+        <figcaption class="viewer__cap">
+          <span class="legend">exposed</span><span class="legend legend--buried">buried</span><span class="legend legend--atom">van der Waals section</span><br>
+          Computed in your browser from the 602 heavy atoms of ubiquitin, with element radii for illustration.
+        </figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="wrap sec__grid">
+      <header class="sec__head">
+        <span class="tag">// 03 · Throughput</span>
+        <h2>Faster, in a fraction of the memory.</h2>
+        <p>
+          Whole AlphaFold proteomes, timed end to end: parsing, SASA and output. Exact f64 and f32 modes target matched Shrake–Rupley outputs;
+          bitmask modes are a throughput-oriented approximation with a validated envelope.
+        </p>
+        <a class="more" href="{{doc:benchmarks/batch}}">Batch benchmarks →</a>
+      </header>
+      <div>
+        <div data-chart="batch/bars"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="wrap sec__grid">
+      <header class="sec__head">
+        <span class="tag">// 04 · Capabilities</span>
+        <h2>Built for whole datasets.</h2>
+        <p>The same engine handles one structure, a proteome directory, or an MD trajectory.</p>
+        <a class="more" href="{{doc:guide/choosing-tool}}">Guides →</a>
+      </header>
+      <div class="feat">
+        <div>
+          <span class="tag">Algorithms</span>
+          <h3>Shrake–&#8288;Rupley and Lee–&#8288;Richards</h3>
+          <p>Shrake–Rupley is fast and recommended; Lee–Richards is the precise alternative. Both run in f64 or f32.</p>
+        </div>
+        <div>
+          <span class="tag">Formats</span>
+          <h3>mmCIF, PDB, JSON, XTC, DCD</h3>
+          <p>Structure files in, JSON or CSV out. Trajectories with automatic unit conversion.</p>
+        </div>
+        <div>
+          <span class="tag">Radii</span>
+          <h3>CCD-aware classification</h3>
+          <p>Hybridization-based radii for any chemical component, plus ProtOr, NACCESS, OONS and custom TOML tables.</p>
+        </div>
+        <div>
+          <span class="tag">Analysis</span>
+          <h3>Per-residue, RSA, polarity</h3>
+          <p>Residue aggregation, relative accessibility and polar / nonpolar partitioning without extra tooling.</p>
+        </div>
+        <div>
+          <span class="tag">Scale</span>
+          <h3>Batch and trajectory native</h3>
+          <p>Directory batch processing and streaming MD analysis are subcommands, not shell loops.</p>
+        </div>
+        <div>
+          <span class="tag">Platforms</span>
+          <h3>Linux, macOS, Windows</h3>
+          <p>A CLI binary, a Python package on PyPI, and a Zig library with interactive autodoc.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="wrap sec__grid">
+      <header class="sec__head">
+        <span class="tag">// 05 · Python ecosystem</span>
+        <h2>Works with the parser you already use.</h2>
+        <p>The integration modules share a consistent interface across libraries.</p>
+        <a class="more" href="{{doc:integrations/index}}">Integrations overview →</a>
+      </header>
+      <ul class="integ">
+        <li><a href="{{doc:integrations/gemmi}}"><b>Gemmi</b><span>Fast mmCIF and PDB parsing, large files</span><i>→</i></a></li>
+        <li><a href="{{doc:integrations/biopython}}"><b>BioPython</b><span>Structure objects from existing BioPython workflows</span><i>→</i></a></li>
+        <li><a href="{{doc:integrations/biotite}}"><b>Biotite</b><span>AtomArray objects, PDB, mmCIF and BinaryCIF</span><i>→</i></a></li>
+        <li><a href="{{doc:integrations/mdtraj}}"><b>MDTraj</b><span>MD trajectory SASA: XTC, TRR, DCD</span><i>→</i></a></li>
+        <li><a href="{{doc:integrations/mdanalysis}}"><b>MDAnalysis</b><span>Follows the AnalysisBase pattern</span><i>→</i></a></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="wrap sec__grid">
+      <header class="sec__head">
+        <span class="tag">// 06 · Citation</span>
+        <h2>Cite zsasa.</h2>
+        <p>If zsasa is part of your research, please cite the bioRxiv preprint.</p>
+        <a class="more ext" href="https://doi.org/10.64898/2026.06.29.733683">Read the preprint</a>
+      </header>
+      <div class="cite">
+        <blockquote>
+          zsasa: a Zig-based engine for high-throughput solvent accessible surface area at proteome scale
+          <footer>Nagae, T.; Tomii, K. <i>bioRxiv</i> 2026. doi:10.64898/2026.06.29.733683</footer>
+        </blockquote>
+<!--code:bibtex-->
+@article{Nagae2026zsasa,
+  author  = {Nagae, Tsubasa and Tomii, Kentaro},
+  title   = {zsasa: a Zig-based engine for high-throughput solvent accessible surface area at proteome scale},
+  journal = {bioRxiv},
+  year    = {2026},
+  doi     = {10.64898/2026.06.29.733683}
+}
+<!--/code-->
+      </div>
+    </div>
+  </section>
+
+</main>
+{{footer}}
+<script src="{{root}}assets/charts.js" defer></script>
+<script src="{{root}}assets/ubq.js" defer></script>
+<script src="{{root}}assets/surface.js" defer></script>
+<script src="{{root}}assets/slice.js" defer></script>
+</body>
+</html>

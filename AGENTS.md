@@ -14,7 +14,7 @@ Key areas:
 
 - `src/` — Zig library, CLI, parsers, algorithms, C ABI, and tests.
 - `python/` — Python package and tests for the Zig-backed bindings.
-- `website/` — Docusaurus documentation site.
+- `website/` — documentation site: Markdown docs, hand-written HTML/CSS/JS, and a small Python builder (`website/build.py`).
 - `docs/` and `plans/` — design docs and implementation notes.
 - `benchmarks/` — benchmark and validation scripts/data.
 - `examples/` and `test_data/` — small fixtures used by docs, tests, and smoke checks.
@@ -25,7 +25,7 @@ Key areas:
 - Do not commit directly to `main`; create a feature/fix/docs branch before committing.
 - Preserve existing public CLI, JSON/CSV output, C ABI, and Python API behavior unless the task explicitly changes them.
 - Do not delete tracked fixtures, generated reference data, or docs without explicit user approval.
-- Avoid committing local build artifacts and caches such as `zig-out/`, `.zig-cache/`, `result`, `website/node_modules/`, and Python caches.
+- Avoid committing local build artifacts and caches such as `zig-out/`, `.zig-cache/`, `result`, `website/dist/`, and Python caches.
 - If changing behavior, update relevant docs, examples, and tests in the same change.
 
 ## Build and Test Commands
@@ -55,10 +55,10 @@ pytest tests/ -v
 Documentation site checks, when touching `website/` or documentation build plumbing:
 
 ```bash
-cd website
-npm ci
-npm run build
+uv run website/build.py
 ```
+
+The build fails on broken internal links, missing heading anchors, and unknown chart or table references. Benchmark charts are drawn from `website/data/benchmarks/*.json`; regenerate those with `website/scripts/export_benchmarks.py` (see `website/README.md`) rather than editing them by hand.
 
 Use the narrowest checks that cover the changed surface area. If a check is skipped, say why.
 
@@ -115,7 +115,6 @@ Before opening a release PR:
   git grep -n '<current-version>' -- \
     ':(exclude)CHANGELOG.md' \
     ':(exclude)*.lock' \
-    ':(exclude)website/package-lock.json' \
     ':(exclude)zig-out/'
   ```
 

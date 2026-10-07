@@ -51,7 +51,7 @@ scripts/.venv/
 scripts/uv.lock
 python/uv.lock
 
-# Benchmark results (raw data — plots are copied to website/static/assets/)
+# Benchmark results (raw data — the website charts use website/data/benchmarks/)
 benchmarks/results/
 
 # Benchmark dataset (test JSON files)
