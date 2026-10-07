@@ -1831,3 +1831,117 @@ test "bitmask calculateSasaf32 - single atom" {
     try std.testing.expectEqual(@as(usize, 1), result.atom_areas.len);
     try std.testing.expectApproxEqRel(expected_area, result.total_area, 0.02);
 }
+
+// =============================================================================
+// Thread spawn failure (thread quota reached while the pool is starting)
+// =============================================================================
+
+/// Number of atoms in `fillSpawnFailureGrid`: enough for calculateSasaParallel
+/// to split the work into several chunks (the minimum chunk size is 64).
+const spawn_failure_n_atoms = 400;
+
+/// Fill a grid of overlapping atoms.
+fn fillSpawnFailureGrid(x: []f64, y: []f64, z: []f64, r: []f64) void {
+    for (x, y, z, r, 0..) |*xi, *yi, *zi, *ri, i| {
+        xi.* = @as(f64, @floatFromInt(i % 8)) * 3.0;
+        yi.* = @as(f64, @floatFromInt((i / 8) % 8)) * 3.0;
+        zi.* = @as(f64, @floatFromInt(i / 64)) * 3.0;
+        ri.* = 1.2 + @as(f64, @floatFromInt(i % 5)) * 0.1;
+    }
+}
+
+test "bitmask calculateSasaParallel - spawn failure after K workers matches sequential" {
+    const allocator = std.testing.allocator;
+
+    var x: [spawn_failure_n_atoms]f64 = undefined;
+    var y: [spawn_failure_n_atoms]f64 = undefined;
+    var z: [spawn_failure_n_atoms]f64 = undefined;
+    var r: [spawn_failure_n_atoms]f64 = undefined;
+    fillSpawnFailureGrid(&x, &y, &z, &r);
+    const input = AtomInput{ .x = &x, .y = &y, .z = &z, .r = &r, .allocator = allocator };
+
+    const config = Config{ .n_points = 128, .probe_radius = 1.4 };
+    const config_f32 = ConfigGen(f32){ .n_points = 128, .probe_radius = 1.4 };
+
+    var sequential = try calculateSasa(allocator, input, config);
+    defer sequential.deinit();
+    var sequential_f32 = try calculateSasaf32(allocator, input, config_f32);
+    defer sequential_f32.deinit();
+
+    // K == n_threads is the run without a failure.
+    const n_threads = 4;
+    for (0..n_threads + 1) |k| {
+        {
+            thread_pool.testing.spawns_until_failure = k;
+            defer thread_pool.testing.spawns_until_failure = null;
+
+            var parallel = try calculateSasaParallel(allocator, input, config, n_threads);
+            defer parallel.deinit();
+
+            // No worker may outlive the call: its buffers are already freed.
+            try std.testing.expectEqual(@as(usize, 0), thread_pool.testing.live_workers.load(.monotonic));
+            try std.testing.expectEqualSlices(f64, sequential.atom_areas, parallel.atom_areas);
+            try std.testing.expectApproxEqRel(sequential.total_area, parallel.total_area, 1e-12);
+        }
+        {
+            thread_pool.testing.spawns_until_failure = k;
+            defer thread_pool.testing.spawns_until_failure = null;
+
+            var parallel = try calculateSasaParallelf32(allocator, input, config_f32, n_threads);
+            defer parallel.deinit();
+
+            try std.testing.expectEqual(@as(usize, 0), thread_pool.testing.live_workers.load(.monotonic));
+            try std.testing.expectEqualSlices(f32, sequential_f32.atom_areas, parallel.atom_areas);
+            try std.testing.expectApproxEqRel(sequential_f32.total_area, parallel.total_area, 1e-5);
+        }
+    }
+}
+
+test "adaptive bitmask parallel - spawn failure after K workers matches sequential" {
+    const allocator = std.testing.allocator;
+    const Bitmask = ShrakeRupleyBitmaskGen(f64);
+
+    var x: [spawn_failure_n_atoms]f64 = undefined;
+    var y: [spawn_failure_n_atoms]f64 = undefined;
+    var z: [spawn_failure_n_atoms]f64 = undefined;
+    var r: [spawn_failure_n_atoms]f64 = undefined;
+    fillSpawnFailureGrid(&x, &y, &z, &r);
+    const input = AtomInput{ .x = &x, .y = &y, .z = &z, .r = &r, .allocator = allocator };
+
+    var coarse_lut = try BitmaskLut.init(allocator, 64);
+    defer coarse_lut.deinit();
+    var fine_lut = try BitmaskLut.init(allocator, 256);
+    defer fine_lut.deinit();
+
+    const config = Config{ .n_points = 256, .probe_radius = 1.4 };
+    const adaptive = Bitmask.AdaptiveConfig{
+        .coarse_points = 64,
+        .fine_points = 256,
+        .low = 0.05,
+        .high = 0.95,
+    };
+
+    var sequential = try Bitmask.calculateSasaAdaptiveWithLuts(allocator, input, config, adaptive, &coarse_lut, &fine_lut);
+    defer sequential.deinit();
+
+    const n_threads = 4;
+    for (0..n_threads + 1) |k| {
+        thread_pool.testing.spawns_until_failure = k;
+        defer thread_pool.testing.spawns_until_failure = null;
+
+        var parallel = try Bitmask.calculateSasaAdaptiveParallelWithLuts(
+            allocator,
+            input,
+            config,
+            adaptive,
+            n_threads,
+            &coarse_lut,
+            &fine_lut,
+        );
+        defer parallel.deinit();
+
+        try std.testing.expectEqual(@as(usize, 0), thread_pool.testing.live_workers.load(.monotonic));
+        try std.testing.expectEqualSlices(f64, sequential.atom_areas, parallel.atom_areas);
+        try std.testing.expectApproxEqRel(sequential.total_area, parallel.total_area, 1e-12);
+    }
+}
