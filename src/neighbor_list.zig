@@ -5,7 +5,96 @@ const Vec3 = types.Vec3;
 const Vec3Gen = types.Vec3Gen;
 const Allocator = std.mem.Allocator;
 
-/// Compute cell index from position coordinates
+/// Smallest cell budget of a grid, whatever the atom count. A small or sparse selection (a few
+/// ions in a simulation box, a ligand, two domains far apart) legitimately has far more cells
+/// than atoms, so the budget must not shrink with the atom count. 2^21 cells is 16 MB of
+/// transient memory and covers a box of about 845 Å per side at a typical cell size of 6.6 Å.
+const min_grid_cells: usize = 1 << 21;
+
+/// Additional cell budget per atom for large systems. A compact structure needs about one cell
+/// per atom or fewer, so this only limits systems whose bounding box is mostly empty. At 8 bytes
+/// per cell the grid then stays smaller than the neighbor list built from it.
+const grid_cells_per_atom: usize = 16;
+
+/// Maximum number of grid cells for `n_atoms` atoms.
+fn maxGridCells(n_atoms: usize) usize {
+    return @max(min_grid_cells, n_atoms *| grid_cells_per_atom);
+}
+
+/// Cell size and per-axis cell counts of a grid.
+fn GridShape(comptime T: type) type {
+    return struct {
+        cell_size: T,
+        nx: usize,
+        ny: usize,
+        nz: usize,
+    };
+}
+
+/// Choose the cell size and cell counts for a bounding box with the given extents.
+///
+/// When `ceil(extent / min_cell_size)` cells per axis fit in `max_cells`, that grid is returned
+/// unchanged. Otherwise the cell size is increased until the grid fits. A cell only has to be
+/// at least as large as the interaction cutoff, so a larger cell finds exactly the same
+/// neighbor pairs; it only puts more candidates in each cell.
+///
+/// The returned counts satisfy `nx * ny * nz <= max_cells`, so the product cannot overflow.
+/// Returns `error.CoordinateRangeTooLarge` when an extent is infinite or NaN, which is how
+/// non-finite coordinates and coordinate ranges wider than `T` can represent show up here.
+fn fitGrid(
+    comptime T: type,
+    extent: [3]T,
+    min_cell_size: T,
+    max_cells: usize,
+) error{CoordinateRangeTooLarge}!GridShape(T) {
+    var max_extent: T = 0.0;
+    for (extent) |e| {
+        if (!std.math.isFinite(e)) return error.CoordinateRangeTooLarge;
+        max_extent = @max(max_extent, e);
+    }
+
+    // Integers up to 2^52 are exact in f64, so the comparisons and casts below are exact.
+    const budget: f64 = @min(@as(f64, @floatFromInt(@max(1, max_cells))), 0x1p52);
+
+    // No single axis can have more cells than the whole budget.
+    const axis_floor = max_extent / @as(T, @floatCast(budget));
+
+    var cell_size = min_cell_size;
+    while (true) {
+        var counts: [3]f64 = undefined;
+        var total: f64 = 1.0;
+        for (extent, &counts) |e, *count| {
+            count.* = @max(1.0, @ceil(e / cell_size));
+            total *= count.*;
+        }
+        if (total <= budget) {
+            return .{
+                .cell_size = cell_size,
+                .nx = @intFromFloat(counts[0]),
+                .ny = @intFromFloat(counts[1]),
+                .nz = @intFromFloat(counts[2]),
+            };
+        }
+
+        // Jump to the per-axis bound first. From there on every count is finite, even when
+        // the requested cell size is tiny compared with the extent.
+        if (cell_size < axis_floor) {
+            cell_size = axis_floor;
+            continue;
+        }
+
+        // Grow by the cube root of the excess. A flat or linear box needs several passes,
+        // because an axis that is already one cell cannot shrink; the 1% floor guarantees
+        // progress, and at `max_extent` the grid is a single cell.
+        const growth: T = @floatCast(@max(std.math.cbrt(total / budget), 1.01));
+        cell_size = @min(cell_size * growth, max_extent);
+    }
+}
+
+/// Compute cell index from position coordinates.
+///
+/// The position must lie inside the bounding box the grid was built from, so that each
+/// quotient is at most the cell count of its axis and the float-to-integer casts are in range.
 fn computeCellIndex(
     comptime T: type,
     x: T,
@@ -44,13 +133,27 @@ pub fn CellListGen(comptime T: type) type {
 
         /// Build spatial grid from atom positions
         /// cell_size should be >= 2 * (max_radius + probe_radius) for correctness
+        ///
+        /// The grid uses `cell_size` unless the bounding box of the atoms would then need more
+        /// cells than `maxGridCells` allows; in that case the cells are made larger (see
+        /// `fitGrid`), and the `cell_size` field holds the size actually used.
         pub fn init(
             allocator: Allocator,
             positions: []const Vec,
             cell_size: T,
         ) !Self {
+            return initWithMaxCells(allocator, positions, cell_size, maxGridCells(positions.len));
+        }
+
+        /// Same as `init` with an explicit cell budget.
+        fn initWithMaxCells(
+            allocator: Allocator,
+            positions: []const Vec,
+            min_cell_size: T,
+            max_cells: usize,
+        ) !Self {
             if (positions.len == 0) return error.NoAtoms;
-            if (cell_size <= 0.0) return error.InvalidCellSize;
+            if (min_cell_size <= 0.0) return error.InvalidCellSize;
 
             // Compute bounding box
             var x_min = positions[0].x;
@@ -70,17 +173,24 @@ pub fn CellListGen(comptime T: type) type {
             }
 
             // Add padding to avoid edge cases
-            x_min -= cell_size;
-            y_min -= cell_size;
-            z_min -= cell_size;
-            x_max += cell_size;
-            y_max += cell_size;
-            z_max += cell_size;
+            x_min -= min_cell_size;
+            y_min -= min_cell_size;
+            z_min -= min_cell_size;
+            x_max += min_cell_size;
+            y_max += min_cell_size;
+            z_max += min_cell_size;
 
-            // Calculate grid dimensions (minimum 1 cell)
-            const nx: usize = @max(1, @as(usize, @ceil((x_max - x_min) / cell_size)));
-            const ny: usize = @max(1, @as(usize, @ceil((y_max - y_min) / cell_size)));
-            const nz: usize = @max(1, @as(usize, @ceil((z_max - z_min) / cell_size)));
+            // Calculate grid dimensions (minimum 1 cell), bounded by the cell budget
+            const shape = try fitGrid(
+                T,
+                .{ x_max - x_min, y_max - y_min, z_max - z_min },
+                min_cell_size,
+                max_cells,
+            );
+            const cell_size = shape.cell_size;
+            const nx = shape.nx;
+            const ny = shape.ny;
+            const nz = shape.nz;
             const n_cells = nx * ny * nz;
 
             // Pass 1: count atoms per cell
@@ -272,6 +382,17 @@ pub fn NeighborListGen(comptime T: type) type {
             radii: []const T,
             probe_radius: T,
         ) !Self {
+            return initWithMaxCells(allocator, positions, radii, probe_radius, maxGridCells(positions.len));
+        }
+
+        /// Same as `init` with an explicit cell budget for the underlying grid.
+        fn initWithMaxCells(
+            allocator: Allocator,
+            positions: []const Vec,
+            radii: []const T,
+            probe_radius: T,
+            max_cells: usize,
+        ) !Self {
             const n_atoms = positions.len;
             if (n_atoms == 0) return error.NoAtoms;
             std.debug.assert(radii.len == n_atoms);
@@ -285,7 +406,7 @@ pub fn NeighborListGen(comptime T: type) type {
 
             const cell_size = 2.0 * (max_radius + probe_radius);
 
-            var cell_list = try CellListT.init(allocator, positions, cell_size);
+            var cell_list = try CellListT.initWithMaxCells(allocator, positions, cell_size, max_cells);
             defer cell_list.deinit();
 
             // Pass 1: count neighbor pairs
@@ -597,4 +718,351 @@ test "CellList - invalid cell_size" {
     // Negative cell_size
     const result2 = CellList.init(allocator, positions, -1.0);
     try std.testing.expectError(error.InvalidCellSize, result2);
+}
+
+// Grid bounds (issue #428)
+
+/// Check a neighbor list against an all-pairs search: same neighbor sets, no self entries
+/// and no duplicates. The all-pairs relation is symmetric, so this also checks symmetry.
+fn expectMatchesBruteForce(
+    comptime T: type,
+    neighbor_list: NeighborListGen(T),
+    positions: []const Vec3Gen(T),
+    radii: []const T,
+    probe_radius: T,
+) !void {
+    const allocator = std.testing.allocator;
+    const n_atoms = positions.len;
+    const listed = try allocator.alloc(bool, n_atoms);
+    defer allocator.free(listed);
+
+    for (0..n_atoms) |i| {
+        @memset(listed, false);
+        for (neighbor_list.getNeighbors(i)) |j| {
+            try std.testing.expect(j != i);
+            try std.testing.expect(!listed[j]);
+            listed[j] = true;
+        }
+        for (0..n_atoms) |j| {
+            const dx = positions[i].x - positions[j].x;
+            const dy = positions[i].y - positions[j].y;
+            const dz = positions[i].z - positions[j].z;
+            const cutoff = radii[i] + radii[j] + 2.0 * probe_radius;
+            const expected = i != j and dx * dx + dy * dy + dz * dz < cutoff * cutoff;
+            try std.testing.expectEqual(expected, listed[j]);
+        }
+    }
+}
+
+/// Fill `positions` with clusters of atoms around the given centers and `radii` with
+/// protein-like radii. Deterministic for a given seed.
+fn fillClusters(
+    comptime T: type,
+    seed: u64,
+    centers: []const Vec3Gen(T),
+    spread: T,
+    positions: []Vec3Gen(T),
+    radii: []T,
+) void {
+    var prng = std.Random.DefaultPrng.init(seed);
+    const random = prng.random();
+    for (positions, radii, 0..) |*pos, *r, i| {
+        const center = centers[i % centers.len];
+        pos.* = .{
+            .x = center.x + spread * random.float(T),
+            .y = center.y + spread * random.float(T),
+            .z = center.z + spread * random.float(T),
+        };
+        r.* = 1.2 + 0.8 * random.float(T);
+    }
+}
+
+test "fitGrid - a grid within the budget is returned unchanged" {
+    inline for (.{ f32, f64 }) |T| {
+        const shape = try fitGrid(T, .{ 64.5, 33.0, 6.6 }, 6.6, maxGridCells(1));
+        try std.testing.expectEqual(@as(T, 6.6), shape.cell_size);
+        try std.testing.expectEqual(@as(usize, 10), shape.nx);
+        try std.testing.expectEqual(@as(usize, 5), shape.ny);
+        try std.testing.expectEqual(@as(usize, 1), shape.nz);
+
+        // A degenerate box still gets one cell per axis
+        const point = try fitGrid(T, .{ 0.0, 0.0, 0.0 }, 6.6, 1);
+        try std.testing.expectEqual(@as(usize, 1), point.nx * point.ny * point.nz);
+    }
+}
+
+test "fitGrid - an oversized grid gets larger cells that fit the budget" {
+    const extents = [_][3]f64{
+        .{ 2000.0, 2000.0, 2000.0 }, // cube
+        .{ 3.4e10, 3.4e10, 10.4 }, // flat: issue #428 overflow input
+        .{ 1.0e7, 12.4, 12.4 }, // linear
+        .{ 1.0e30, 1.0e30, 1.0e30 },
+        .{ 1.0e300, 5.0, 1.0e-300 },
+        .{ 123.0, 4567.0, 89012.0 },
+    };
+    const budgets = [_]usize{ 1, 2, 7, 64, 1000, min_grid_cells, std.math.maxInt(usize) };
+
+    inline for (.{ f32, f64 }) |T| {
+        for (extents) |extent_f64| {
+            if (T == f32 and extent_f64[0] > std.math.floatMax(f32)) continue;
+            const extent = [3]T{ @floatCast(extent_f64[0]), @floatCast(extent_f64[1]), @floatCast(extent_f64[2]) };
+            for (budgets) |budget| {
+                for ([_]T{ 6.2, 1.0e-30 }) |min_cell_size| {
+                    const shape = try fitGrid(T, extent, min_cell_size, budget);
+                    try std.testing.expect(std.math.isFinite(shape.cell_size));
+                    try std.testing.expect(shape.cell_size >= min_cell_size);
+                    try std.testing.expect(shape.nx >= 1 and shape.ny >= 1 and shape.nz >= 1);
+
+                    const n_cells = try std.math.mul(usize, try std.math.mul(usize, shape.nx, shape.ny), shape.nz);
+                    try std.testing.expect(n_cells <= budget);
+
+                    // The cells still cover the whole box
+                    try std.testing.expect(@as(T, @floatFromInt(shape.nx)) * shape.cell_size >= extent[0] * 0.999);
+                    try std.testing.expect(@as(T, @floatFromInt(shape.ny)) * shape.cell_size >= extent[1] * 0.999);
+                    try std.testing.expect(@as(T, @floatFromInt(shape.nz)) * shape.cell_size >= extent[2] * 0.999);
+                }
+            }
+        }
+    }
+}
+
+test "fitGrid - cells are not enlarged much more than the budget requires" {
+    // 100^3 cells requested, 1000 allowed: the ideal answer is 10 cells per axis.
+    const shape = try fitGrid(f64, .{ 600.0, 600.0, 600.0 }, 6.0, 1000);
+    const n_cells = shape.nx * shape.ny * shape.nz;
+    try std.testing.expect(n_cells <= 1000);
+    try std.testing.expect(n_cells >= 700);
+}
+
+test "fitGrid - non-finite extent is an error" {
+    inline for (.{ f32, f64 }) |T| {
+        const inf = std.math.inf(T);
+        const nan = std.math.nan(T);
+        try std.testing.expectError(error.CoordinateRangeTooLarge, fitGrid(T, .{ inf, 1.0, 1.0 }, 6.2, 1000));
+        try std.testing.expectError(error.CoordinateRangeTooLarge, fitGrid(T, .{ 1.0, nan, 1.0 }, 6.2, 1000));
+        try std.testing.expectError(error.CoordinateRangeTooLarge, fitGrid(T, .{ 1.0, 1.0, -inf }, 6.2, 1000));
+    }
+}
+
+test "CellList - grid size is bounded for far-apart atoms" {
+    const allocator = std.testing.allocator;
+
+    // Issue #428: 2^32 x 2^32 x 3 cells of 8 Å; the product used to wrap around.
+    const positions = &[_]Vec3{
+        Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 },
+        Vec3{ .x = 34359738352.0, .y = 34359738352.0, .z = 0.0 },
+    };
+
+    var cell_list = try CellList.init(allocator, positions, 8.0);
+    defer cell_list.deinit();
+
+    const n_cells = cell_list.nx * cell_list.ny * cell_list.nz;
+    try std.testing.expect(n_cells <= maxGridCells(positions.len));
+    try std.testing.expectEqual(n_cells + 1, cell_list.cell_offsets.len);
+    try std.testing.expect(cell_list.cell_size > 8.0);
+    try std.testing.expectEqual(@as(u32, 2), cell_list.cell_offsets[n_cells]);
+}
+
+test "CellList - compact structure keeps the requested cell size" {
+    const allocator = std.testing.allocator;
+
+    var positions: [200]Vec3 = undefined;
+    var radii: [200]f64 = undefined;
+    fillClusters(f64, 1, &.{.{ .x = 10.0, .y = -5.0, .z = 3.0 }}, 40.0, &positions, &radii);
+
+    var cell_list = try CellList.init(allocator, &positions, 6.6);
+    defer cell_list.deinit();
+
+    try std.testing.expectEqual(@as(f64, 6.6), cell_list.cell_size);
+}
+
+test "NeighborList - far-apart atoms have no neighbors" {
+    const allocator = std.testing.allocator;
+
+    inline for (.{ f32, f64 }) |T| {
+        const cases = [_][2]Vec3Gen(T){
+            // Issue #428: cell count overflow
+            .{ .{ .x = 0.0, .y = 0.0, .z = 0.0 }, .{ .x = 34359738352.0, .y = 34359738352.0, .z = 0.0 } },
+            // Issue #428: hundreds of MB for two atoms
+            .{ .{ .x = 0.0, .y = 0.0, .z = 0.0 }, .{ .x = 2000.0, .y = 2000.0, .z = 2000.0 } },
+            .{ .{ .x = -1.0e30, .y = 0.0, .z = 0.0 }, .{ .x = 1.0e30, .y = 1.0e30, .z = 1.0e30 } },
+        };
+        for (cases) |positions| {
+            var neighbor_list = try NeighborListGen(T).init(allocator, &positions, &.{ 2.6, 2.6 }, 1.4);
+            defer neighbor_list.deinit();
+
+            try std.testing.expectEqual(@as(usize, 0), neighbor_list.getNeighbors(0).len);
+            try std.testing.expectEqual(@as(usize, 0), neighbor_list.getNeighbors(1).len);
+        }
+    }
+}
+
+test "NeighborList - extreme coordinates" {
+    const allocator = std.testing.allocator;
+
+    // f64 holds 1e300 and the distance to it: two isolated atoms.
+    {
+        const positions = &[_]Vec3{
+            Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 },
+            Vec3{ .x = 1.0e300, .y = -1.0e300, .z = 1.0e300 },
+        };
+        var neighbor_list = try NeighborList.init(allocator, positions, &.{ 1.7, 1.7 }, 1.4);
+        defer neighbor_list.deinit();
+        try std.testing.expectEqual(@as(usize, 0), neighbor_list.getNeighbors(0).len);
+        try std.testing.expectEqual(@as(usize, 0), neighbor_list.getNeighbors(1).len);
+    }
+
+    // The width of this range overflows f64.
+    {
+        const max = std.math.floatMax(f64);
+        const positions = &[_]Vec3{
+            Vec3{ .x = -max, .y = 0.0, .z = 0.0 },
+            Vec3{ .x = max, .y = 0.0, .z = 0.0 },
+        };
+        try std.testing.expectError(
+            error.CoordinateRangeTooLarge,
+            NeighborList.init(allocator, positions, &.{ 1.7, 1.7 }, 1.4),
+        );
+    }
+
+    // 1e300 becomes infinite when the f32 paths cast it.
+    {
+        const Vec3f32 = Vec3Gen(f32);
+        const positions = &[_]Vec3f32{
+            Vec3f32{ .x = 0.0, .y = 0.0, .z = 0.0 },
+            Vec3f32{ .x = @floatCast(@as(f64, 1.0e300)), .y = 0.0, .z = 0.0 },
+        };
+        try std.testing.expectError(
+            error.CoordinateRangeTooLarge,
+            NeighborListf32.init(allocator, positions, &.{ 1.7, 1.7 }, 1.4),
+        );
+    }
+
+    // A radius too large for the cell size to be finite.
+    {
+        const positions = &[_]Vec3{
+            Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 },
+            Vec3{ .x = 5.0, .y = 0.0, .z = 0.0 },
+        };
+        try std.testing.expectError(
+            error.CoordinateRangeTooLarge,
+            NeighborList.init(allocator, positions, &.{ std.math.floatMax(f64), 1.7 }, 1.4),
+        );
+    }
+}
+
+test "NeighborList - sparse clusters match brute force" {
+    const allocator = std.testing.allocator;
+
+    inline for (.{ f32, f64 }) |T| {
+        const Vec = Vec3Gen(T);
+        // Clusters far apart along every axis, plus two that touch each other.
+        const centers = [_]Vec{
+            .{ .x = 0.0, .y = 0.0, .z = 0.0 },
+            .{ .x = 5000.0, .y = 0.0, .z = 0.0 },
+            .{ .x = -3000.0, .y = 4000.0, .z = 8000.0 },
+            .{ .x = 5008.0, .y = 3.0, .z = -4.0 },
+            .{ .x = 9999.999, .y = 9999.999, .z = 9999.999 },
+        };
+        var positions: [300]Vec = undefined;
+        var radii: [300]T = undefined;
+        fillClusters(T, 428, &centers, 14.0, &positions, &radii);
+
+        var neighbor_list = try NeighborListGen(T).init(allocator, &positions, &radii, 1.4);
+        defer neighbor_list.deinit();
+        try expectMatchesBruteForce(T, neighbor_list, &positions, &radii, 1.4);
+
+        // The clusters are dense enough for this to be a real test.
+        var total: usize = 0;
+        for (0..positions.len) |i| total += neighbor_list.getNeighbors(i).len;
+        try std.testing.expect(total > positions.len * 4);
+    }
+}
+
+test "NeighborList - any cell budget gives the brute-force neighbors" {
+    const allocator = std.testing.allocator;
+
+    inline for (.{ f32, f64 }) |T| {
+        const Vec = Vec3Gen(T);
+        const layouts = [_][]const Vec{
+            // Compact
+            &.{.{ .x = 0.0, .y = 0.0, .z = 0.0 }},
+            // Linear, flat and diagonal arrangements of clusters
+            &.{ .{ .x = 0.0, .y = 0.0, .z = 0.0 }, .{ .x = 60.0, .y = 0.0, .z = 0.0 }, .{ .x = 130.0, .y = 0.0, .z = 0.0 } },
+            &.{ .{ .x = 0.0, .y = 0.0, .z = 0.0 }, .{ .x = 0.0, .y = 70.0, .z = 90.0 }, .{ .x = 0.0, .y = -80.0, .z = 20.0 } },
+            &.{ .{ .x = -50.0, .y = -50.0, .z = -50.0 }, .{ .x = 0.0, .y = 0.0, .z = 0.0 }, .{ .x = 75.0, .y = 75.0, .z = 75.0 } },
+        };
+        var positions: [160]Vec = undefined;
+        var radii: [160]T = undefined;
+
+        for (layouts, 0..) |centers, layout_idx| {
+            fillClusters(T, 1000 + layout_idx, centers, 18.0, &positions, &radii);
+            for ([_]usize{ 1, 2, 5, 27, 100, 999, 20_000, min_grid_cells }) |max_cells| {
+                var neighbor_list = try NeighborListGen(T).initWithMaxCells(allocator, &positions, &radii, 1.4, max_cells);
+                defer neighbor_list.deinit();
+                try expectMatchesBruteForce(T, neighbor_list, &positions, &radii, 1.4);
+            }
+        }
+    }
+}
+
+test "NeighborList - symmetry with a bounded grid" {
+    const allocator = std.testing.allocator;
+
+    // Two clusters far enough apart that the grid cells are enlarged.
+    const centers = [_]Vec3{
+        .{ .x = 0.0, .y = 0.0, .z = 0.0 },
+        .{ .x = 4000.0, .y = -4000.0, .z = 4000.0 },
+    };
+    var positions: [120]Vec3 = undefined;
+    var radii: [120]f64 = undefined;
+    fillClusters(f64, 7, &centers, 12.0, &positions, &radii);
+
+    var neighbor_list = try NeighborList.init(allocator, &positions, &radii, 1.4);
+    defer neighbor_list.deinit();
+
+    var n_pairs: usize = 0;
+    for (0..positions.len) |i| {
+        for (neighbor_list.getNeighbors(i)) |j| {
+            try std.testing.expect(std.mem.indexOfScalar(u32, neighbor_list.getNeighbors(j), @intCast(i)) != null);
+            n_pairs += 1;
+        }
+    }
+    try std.testing.expect(n_pairs > 0);
+}
+
+test "NeighborList - a stray distant atom does not change the other neighbor sets" {
+    const allocator = std.testing.allocator;
+
+    inline for (.{ f32, f64 }) |T| {
+        const Vec = Vec3Gen(T);
+        const n_compact = 150;
+        var positions: [n_compact + 1]Vec = undefined;
+        var radii: [n_compact + 1]T = undefined;
+        fillClusters(T, 99, &.{.{ .x = 12.0, .y = 34.0, .z = 56.0 }}, 22.0, positions[0..n_compact], radii[0..n_compact]);
+        positions[n_compact] = .{ .x = 9999.999, .y = 9999.999, .z = 9999.999 };
+        radii[n_compact] = 1.7;
+
+        var compact = try NeighborListGen(T).init(allocator, positions[0..n_compact], radii[0..n_compact], 1.4);
+        defer compact.deinit();
+        var with_stray = try NeighborListGen(T).init(allocator, &positions, &radii, 1.4);
+        defer with_stray.deinit();
+
+        try std.testing.expectEqual(@as(usize, 0), with_stray.getNeighbors(n_compact).len);
+
+        const sorted_a = try allocator.alloc(u32, n_compact);
+        defer allocator.free(sorted_a);
+        const sorted_b = try allocator.alloc(u32, n_compact);
+        defer allocator.free(sorted_b);
+        for (0..n_compact) |i| {
+            const a = compact.getNeighbors(i);
+            const b = with_stray.getNeighbors(i);
+            try std.testing.expectEqual(a.len, b.len);
+            @memcpy(sorted_a[0..a.len], a);
+            @memcpy(sorted_b[0..b.len], b);
+            std.mem.sort(u32, sorted_a[0..a.len], {}, std.sort.asc(u32));
+            std.mem.sort(u32, sorted_b[0..b.len], {}, std.sort.asc(u32));
+            try std.testing.expectEqualSlices(u32, sorted_a[0..a.len], sorted_b[0..b.len]);
+        }
+    }
 }

@@ -1831,3 +1831,155 @@ test "bitmask calculateSasaf32 - single atom" {
     try std.testing.expectEqual(@as(usize, 1), result.atom_areas.len);
     try std.testing.expectApproxEqRel(expected_area, result.total_area, 0.02);
 }
+
+// Far-apart atoms (issue #428): the neighbor grid used to be sized by the bounding box.
+
+test "bitmask calculateSasa - far-apart atoms are isolated spheres" {
+    const allocator = std.testing.allocator;
+
+    // A second atom far from one at the origin. The dense grid of the first case had more
+    // cells than a usize can count; the second needed hundreds of MB.
+    const cases = [_]struct { position: [3]f64, radius: f64 }{
+        .{ .position = .{ 34359738352.0, 34359738352.0, 0.0 }, .radius = 2.6 },
+        .{ .position = .{ 2000.0, 2000.0, 2000.0 }, .radius = 1.7 },
+    };
+    const config = Config{ .n_points = 64, .probe_radius = 1.4 };
+    const config_f32 = ConfigGen(f32){ .n_points = 64, .probe_radius = 1.4 };
+
+    for (cases) |case| {
+        var x = [_]f64{ 0.0, case.position[0] };
+        var y = [_]f64{ 0.0, case.position[1] };
+        var z = [_]f64{ 0.0, case.position[2] };
+        var r = [_]f64{ case.radius, case.radius };
+        const input = AtomInput{
+            .x = &x,
+            .y = &y,
+            .z = &z,
+            .r = &r,
+            .allocator = allocator,
+        };
+        const expected = 4.0 * std.math.pi * (case.radius + 1.4) * (case.radius + 1.4);
+        const expected_f32: f32 = @floatCast(expected);
+
+        var sequential = try calculateSasa(allocator, input, config);
+        defer sequential.deinit();
+        var parallel = try calculateSasaParallel(allocator, input, config, 4);
+        defer parallel.deinit();
+        var sequential_f32 = try calculateSasaf32(allocator, input, config_f32);
+        defer sequential_f32.deinit();
+        var parallel_f32 = try calculateSasaParallelf32(allocator, input, config_f32, 4);
+        defer parallel_f32.deinit();
+
+        for (0..2) |i| {
+            try std.testing.expectApproxEqRel(expected, sequential.atom_areas[i], 1e-12);
+            try std.testing.expectApproxEqRel(expected, parallel.atom_areas[i], 1e-12);
+            try std.testing.expectApproxEqRel(expected_f32, sequential_f32.atom_areas[i], 1e-6);
+            try std.testing.expectApproxEqRel(expected_f32, parallel_f32.atom_areas[i], 1e-6);
+        }
+    }
+}
+
+test "bitmask calculateSasa - extreme finite coordinates" {
+    const allocator = std.testing.allocator;
+
+    const config = Config{ .n_points = 64, .probe_radius = 1.4 };
+    const config_f32 = ConfigGen(f32){ .n_points = 64, .probe_radius = 1.4 };
+    const expected = 4.0 * std.math.pi * 3.1 * 3.1;
+
+    var x = [_]f64{ 0.0, 1.0e30 };
+    var y = [_]f64{ 0.0, -1.0e30 };
+    var z = [_]f64{ 0.0, 1.0e30 };
+    var r = [_]f64{ 1.7, 1.7 };
+    const input = AtomInput{
+        .x = &x,
+        .y = &y,
+        .z = &z,
+        .r = &r,
+        .allocator = allocator,
+    };
+
+    // 1e30 is representable in both precisions: two isolated spheres
+    {
+        var result = try calculateSasa(allocator, input, config);
+        defer result.deinit();
+        var result_f32 = try calculateSasaf32(allocator, input, config_f32);
+        defer result_f32.deinit();
+        for (0..2) |i| {
+            try std.testing.expectApproxEqRel(expected, result.atom_areas[i], 1e-12);
+            try std.testing.expectApproxEqRel(@as(f32, @floatCast(expected)), result_f32.atom_areas[i], 1e-6);
+        }
+    }
+
+    // 1e300 is representable in f64 only: f32 reports an error instead of building a grid
+    // from infinite coordinates
+    x[1] = 1.0e300;
+    y[1] = -1.0e300;
+    z[1] = 1.0e300;
+    {
+        var result = try calculateSasa(allocator, input, config);
+        defer result.deinit();
+        for (0..2) |i| {
+            try std.testing.expectApproxEqRel(expected, result.atom_areas[i], 1e-12);
+        }
+        try std.testing.expectError(error.CoordinateRangeTooLarge, calculateSasaf32(allocator, input, config_f32));
+        try std.testing.expectError(error.CoordinateRangeTooLarge, calculateSasaParallelf32(allocator, input, config_f32, 4));
+    }
+}
+
+test "bitmask calculateSasa - a stray distant atom does not change the other areas" {
+    const allocator = std.testing.allocator;
+
+    // A 3 x 3 x 3 block of overlapping atoms, then one atom at a sentinel coordinate
+    const n_compact = 27;
+    var x: [n_compact + 1]f64 = undefined;
+    var y: [n_compact + 1]f64 = undefined;
+    var z: [n_compact + 1]f64 = undefined;
+    var r: [n_compact + 1]f64 = undefined;
+    for (0..n_compact) |i| {
+        x[i] = @as(f64, @floatFromInt(i % 3)) * 2.9;
+        y[i] = @as(f64, @floatFromInt((i / 3) % 3)) * 3.1;
+        z[i] = @as(f64, @floatFromInt(i / 9)) * 2.7;
+        r[i] = 1.2 + @as(f64, @floatFromInt(i % 5)) * 0.15;
+    }
+    x[n_compact] = 9999.999;
+    y[n_compact] = 9999.999;
+    z[n_compact] = 9999.999;
+    r[n_compact] = 1.7;
+
+    const compact_input = AtomInput{
+        .x = x[0..n_compact],
+        .y = y[0..n_compact],
+        .z = z[0..n_compact],
+        .r = r[0..n_compact],
+        .allocator = allocator,
+    };
+    const stray_input = AtomInput{
+        .x = &x,
+        .y = &y,
+        .z = &z,
+        .r = &r,
+        .allocator = allocator,
+    };
+    const config = Config{ .n_points = 64, .probe_radius = 1.4 };
+    const config_f32 = ConfigGen(f32){ .n_points = 64, .probe_radius = 1.4 };
+    const isolated = 4.0 * std.math.pi * 3.1 * 3.1;
+
+    var compact = try calculateSasa(allocator, compact_input, config);
+    defer compact.deinit();
+    var stray = try calculateSasa(allocator, stray_input, config);
+    defer stray.deinit();
+    var compact_f32 = try calculateSasaf32(allocator, compact_input, config_f32);
+    defer compact_f32.deinit();
+    var stray_f32 = try calculateSasaf32(allocator, stray_input, config_f32);
+    defer stray_f32.deinit();
+
+    // The atom in the middle of the block is buried, so the block is a real test
+    try std.testing.expect(compact.atom_areas[13] < compact.atom_areas[0]);
+
+    // The stray atom changes the grid, hence the order of each neighbor list, but not the
+    // neighbors themselves. ORing the occlusion masks does not depend on that order.
+    try std.testing.expectEqualSlices(f64, compact.atom_areas, stray.atom_areas[0..n_compact]);
+    try std.testing.expectEqualSlices(f32, compact_f32.atom_areas, stray_f32.atom_areas[0..n_compact]);
+    try std.testing.expectApproxEqRel(isolated, stray.atom_areas[n_compact], 1e-12);
+    try std.testing.expectApproxEqRel(@as(f32, @floatCast(isolated)), stray_f32.atom_areas[n_compact], 1e-6);
+}
