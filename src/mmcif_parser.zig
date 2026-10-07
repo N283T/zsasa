@@ -1711,6 +1711,90 @@ test "parse mmCIF altLoc selection is scoped by model" {
     try std.testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
 }
 
+test "parse mmCIF altLoc keeps one residue where alternates are different residues" {
+    // Residue 2 is PRO as altLoc A and SER as altLoc B, with a shared N that
+    // has no altLoc. Residue 3 is LEU as A and ILE as B at equal occupancy.
+    // The x coordinate is the atom's row number.
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.occupancy
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1  N N   GLY A 1 . 1.00 1.0  0.0 0.0
+        \\2  C CA  GLY A 1 . 1.00 2.0  0.0 0.0
+        \\3  N N   PRO A 2 . 1.00 3.0  0.0 0.0
+        \\4  C CA  PRO A 2 A 0.40 4.0  0.0 0.0
+        \\5  C CB  PRO A 2 A 0.40 5.0  0.0 0.0
+        \\6  C CG  PRO A 2 A 0.40 6.0  0.0 0.0
+        \\7  C CD  PRO A 2 A 0.40 7.0  0.0 0.0
+        \\8  C CA  SER A 2 B 0.60 8.0  0.0 0.0
+        \\9  C CB  SER A 2 B 0.60 9.0  0.0 0.0
+        \\10 O OG  SER A 2 B 0.60 10.0 0.0 0.0
+        \\11 N N   LEU A 3 A 0.50 11.0 0.0 0.0
+        \\12 C CA  LEU A 3 A 0.50 12.0 0.0 0.0
+        \\13 C CD1 LEU A 3 A 0.50 13.0 0.0 0.0
+        \\14 N N   ILE A 3 B 0.50 14.0 0.0 0.0
+        \\15 C CA  ILE A 3 B 0.50 15.0 0.0 0.0
+        \\16 C CG2 ILE A 3 B 0.50 16.0 0.0 0.0
+        \\17 C CD1 ILE A 3 B 0.50 17.0 0.0 0.0
+        \\#
+    ;
+
+    const Case = struct {
+        mode: AltLocMode,
+        id: u8 = 'A',
+        x: []const f64,
+        /// Residue names at positions 2 (apart from the shared N) and 3
+        residues: [2][]const u8,
+    };
+    const cases = [_]Case{
+        // A is preferred
+        .{ .mode = .auto, .x = &.{ 1, 2, 3, 4, 5, 6, 7, 11, 12, 13 }, .residues = .{ "PRO", "LEU" } },
+        .{ .mode = .selected, .id = 'A', .x = &.{ 1, 2, 3, 4, 5, 6, 7, 11, 12, 13 }, .residues = .{ "PRO", "LEU" } },
+        .{ .mode = .selected, .id = 'B', .x = &.{ 1, 2, 3, 8, 9, 10, 14, 15, 16, 17 }, .residues = .{ "SER", "ILE" } },
+        // SER has the higher occupancy, and LEU comes first in a tie
+        .{ .mode = .highest_occupancy, .x = &.{ 1, 2, 3, 8, 9, 10, 11, 12, 13 }, .residues = .{ "SER", "LEU" } },
+    };
+    for (cases) |case| {
+        var parser = MmcifParser.init(std.testing.allocator);
+        parser.alt_loc_mode = case.mode;
+        parser.alt_loc_id = case.id;
+        var input = try parser.parse(source);
+        defer input.deinit();
+
+        try std.testing.expectEqualSlices(f64, case.x, input.x);
+        for (input.x, input.residue_num.?, input.residue.?) |x, residue_num, residue| {
+            if (residue_num == 1 or x == 3.0) continue;
+            try std.testing.expectEqualStrings(case.residues[@intCast(residue_num - 2)], residue.slice());
+        }
+    }
+
+    // A site without the selected ID loses its alternates, as before
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .selected;
+    parser.alt_loc_id = 'C';
+    var selected_c = try parser.parse(source);
+    defer selected_c.deinit();
+    try std.testing.expectEqualSlices(f64, &.{ 1, 2, 3 }, selected_c.x);
+
+    parser.alt_loc_mode = .all;
+    var all = try parser.parse(source);
+    defer all.deinit();
+    try std.testing.expectEqual(@as(usize, 17), all.atomCount());
+
+    parser.alt_loc_mode = .none;
+    try std.testing.expectError(ParseError.UnexpectedAltLoc, parser.parse(source));
+}
+
 test "parse mmCIF resolves the altLocs of a large file in linear time" {
     const allocator = std.testing.allocator;
 

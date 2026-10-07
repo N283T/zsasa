@@ -1101,6 +1101,45 @@ test "PdbParser altLoc selection is scoped by model" {
     try testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
 }
 
+/// Residue 2 is PRO as altLoc A and SER as altLoc B, with a shared N that has
+/// no altLoc. Residue 3 is LEU as A and ILE as B at equal occupancy. The atoms
+/// of the alternates are interleaved, as in wwPDB files, and the x coordinate
+/// is the atom serial number.
+const microheterogeneity_pdb =
+    \\ATOM      1  N   GLY A   1       1.000   0.000   0.000  1.00 10.00           N
+    \\ATOM      2  CA  GLY A   1       2.000   0.000   0.000  1.00 10.00           C
+    \\ATOM      3  N   PRO A   2       3.000   0.000   0.000  1.00 10.00           N
+    \\ATOM      4  CA APRO A   2       4.000   0.000   0.000  0.40 10.00           C
+    \\ATOM      8  CA BSER A   2       8.000   0.000   0.000  0.60 10.00           C
+    \\ATOM      5  CB APRO A   2       5.000   0.000   0.000  0.40 10.00           C
+    \\ATOM      9  CB BSER A   2       9.000   0.000   0.000  0.60 10.00           C
+    \\ATOM      6  CG APRO A   2       6.000   0.000   0.000  0.40 10.00           C
+    \\ATOM     10  OG BSER A   2      10.000   0.000   0.000  0.60 10.00           O
+    \\ATOM      7  CD APRO A   2       7.000   0.000   0.000  0.40 10.00           C
+    \\ATOM     11  N  ALEU A   3      11.000   0.000   0.000  0.50 10.00           N
+    \\ATOM     14  N  BILE A   3      14.000   0.000   0.000  0.50 10.00           N
+    \\ATOM     12  CA ALEU A   3      12.000   0.000   0.000  0.50 10.00           C
+    \\ATOM     15  CA BILE A   3      15.000   0.000   0.000  0.50 10.00           C
+    \\ATOM     13  CD1ALEU A   3      13.000   0.000   0.000  0.50 10.00           C
+    \\ATOM     16  CG2BILE A   3      16.000   0.000   0.000  0.50 10.00           C
+    \\ATOM     17  CD1BILE A   3      17.000   0.000   0.000  0.50 10.00           C
+    \\END
+;
+
+test "PdbParser altLoc keeps one residue where alternates are different residues" {
+    const testing = std.testing;
+
+    var parser = PdbParser.init(testing.allocator);
+    var input = try parser.parse(microheterogeneity_pdb);
+    defer input.deinit();
+
+    // A is preferred: PRO at 2 and LEU at 3
+    try testing.expectEqualSlices(f64, &.{ 1, 2, 3, 4, 5, 6, 7, 11, 12, 13 }, input.x);
+    for (input.residue_num.?, input.residue.?) |residue_num, residue| {
+        try testing.expectEqualStrings(([_][]const u8{ "GLY", "PRO", "LEU" })[@intCast(residue_num - 1)], residue.slice());
+    }
+}
+
 test "PdbParser resolves the altLocs of a large file in linear time" {
     const testing = std.testing;
     const allocator = testing.allocator;

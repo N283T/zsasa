@@ -2847,6 +2847,78 @@ test "parse BinaryCIF altLoc selection is scoped by model" {
     try std.testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
 }
 
+test "parse BinaryCIF altLoc keeps one residue where alternates are different residues" {
+    // Residue 2 is PRO as altLoc A and SER as altLoc B, with a shared N that
+    // has no altLoc. Residue 3 is LEU as A and ILE as B at equal occupancy.
+    // The x coordinate is the atom's row number.
+    const rows = [_]TestAtomRow{
+        .{ .group = "ATOM", .element = "N", .atom = "N", .residue = "GLY", .chain = "A", .seq = 1, .x = 1.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 1, .x = 2.0 },
+        .{ .group = "ATOM", .element = "N", .atom = "N", .residue = "PRO", .chain = "A", .seq = 2, .x = 3.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "PRO", .chain = "A", .seq = 2, .alt = "A", .occupancy = 0.4, .x = 4.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CB", .residue = "PRO", .chain = "A", .seq = 2, .alt = "A", .occupancy = 0.4, .x = 5.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CG", .residue = "PRO", .chain = "A", .seq = 2, .alt = "A", .occupancy = 0.4, .x = 6.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CD", .residue = "PRO", .chain = "A", .seq = 2, .alt = "A", .occupancy = 0.4, .x = 7.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "SER", .chain = "A", .seq = 2, .alt = "B", .occupancy = 0.6, .x = 8.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CB", .residue = "SER", .chain = "A", .seq = 2, .alt = "B", .occupancy = 0.6, .x = 9.0 },
+        .{ .group = "ATOM", .element = "O", .atom = "OG", .residue = "SER", .chain = "A", .seq = 2, .alt = "B", .occupancy = 0.6, .x = 10.0 },
+        .{ .group = "ATOM", .element = "N", .atom = "N", .residue = "LEU", .chain = "A", .seq = 3, .alt = "A", .occupancy = 0.5, .x = 11.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "LEU", .chain = "A", .seq = 3, .alt = "A", .occupancy = 0.5, .x = 12.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CD1", .residue = "LEU", .chain = "A", .seq = 3, .alt = "A", .occupancy = 0.5, .x = 13.0 },
+        .{ .group = "ATOM", .element = "N", .atom = "N", .residue = "ILE", .chain = "A", .seq = 3, .alt = "B", .occupancy = 0.5, .x = 14.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ILE", .chain = "A", .seq = 3, .alt = "B", .occupancy = 0.5, .x = 15.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CG2", .residue = "ILE", .chain = "A", .seq = 3, .alt = "B", .occupancy = 0.5, .x = 16.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CD1", .residue = "ILE", .chain = "A", .seq = 3, .alt = "B", .occupancy = 0.5, .x = 17.0 },
+    };
+    const source = try buildAltLocBcif(&rows, true);
+    defer std.testing.allocator.free(source);
+
+    const Case = struct {
+        mode: altloc.AltLocMode,
+        id: u8 = 'A',
+        x: []const f64,
+        /// Residue names at positions 2 (apart from the shared N) and 3
+        residues: [2][]const u8,
+    };
+    const cases = [_]Case{
+        // A is preferred
+        .{ .mode = .auto, .x = &.{ 1, 2, 3, 4, 5, 6, 7, 11, 12, 13 }, .residues = .{ "PRO", "LEU" } },
+        .{ .mode = .selected, .id = 'A', .x = &.{ 1, 2, 3, 4, 5, 6, 7, 11, 12, 13 }, .residues = .{ "PRO", "LEU" } },
+        .{ .mode = .selected, .id = 'B', .x = &.{ 1, 2, 3, 8, 9, 10, 14, 15, 16, 17 }, .residues = .{ "SER", "ILE" } },
+        // SER has the higher occupancy, and LEU comes first in a tie
+        .{ .mode = .highest_occupancy, .x = &.{ 1, 2, 3, 8, 9, 10, 11, 12, 13 }, .residues = .{ "SER", "LEU" } },
+    };
+    for (cases) |case| {
+        var parser = BcifParser.init(std.testing.allocator);
+        parser.alt_loc_mode = case.mode;
+        parser.alt_loc_id = case.id;
+        var input = try parser.parse(source);
+        defer input.deinit();
+
+        try std.testing.expectEqualSlices(f64, case.x, input.x);
+        for (input.x, input.residue_num.?, input.residue.?) |x, residue_num, residue| {
+            if (residue_num == 1 or x == 3.0) continue;
+            try std.testing.expectEqualStrings(case.residues[@intCast(residue_num - 2)], residue.slice());
+        }
+    }
+
+    // A site without the selected ID loses its alternates, as before
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .selected;
+    parser.alt_loc_id = 'C';
+    var selected_c = try parser.parse(source);
+    defer selected_c.deinit();
+    try std.testing.expectEqualSlices(f64, &.{ 1, 2, 3 }, selected_c.x);
+
+    parser.alt_loc_mode = .all;
+    var all = try parser.parse(source);
+    defer all.deinit();
+    try std.testing.expectEqual(@as(usize, 17), all.atomCount());
+
+    parser.alt_loc_mode = .none;
+    try std.testing.expectError(ParseError.UnexpectedAltLoc, parser.parse(source));
+}
+
 test "parse BinaryCIF resolves the altLocs of a large file in linear time" {
     const allocator = std.testing.allocator;
 

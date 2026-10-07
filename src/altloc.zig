@@ -12,22 +12,38 @@
 //!
 //! ## Rules
 //!
-//! Atoms without an altLoc ID are never dropped. For the alternates of an
-//! atom site:
+//! Atoms without an altLoc ID are never dropped. `all` keeps every alternate
+//! too, and `none` expects the caller to reject alternates while it reads
+//! them. The other modes decide in two steps.
 //!
-//! - `auto`: whichever comes first in the file, an atom without an altLoc or
-//!   an alternate A, decides. The first drops every alternate of the site, the
-//!   second keeps the alternates A. A site with neither keeps the alternate
-//!   with the highest occupancy.
-//! - `highest_occupancy`: the alternate with the highest occupancy is kept,
-//!   unless the site also has an atom without an altLoc, which drops every
-//!   alternate.
-//! - `selected`: the alternates with the selected ID are kept.
-//! - `all` keeps everything, and `none` expects the caller to reject
-//!   alternates while it reads them.
+//! 1. One residue per residue position. With microheterogeneity the
+//!    alternates of a position belong to different residues (SER as altLoc A
+//!    and PRO as altLoc B), and keeping an alternate of each atom name would
+//!    superimpose them. So when the alternates of a position carry more than
+//!    one residue name, one residue survives and the alternates of the others
+//!    are dropped:
+//!    - `auto`: the residue of the first alternate A. Without an alternate A,
+//!      the residue with the highest occupancy.
+//!    - `highest_occupancy`: the residue with the highest occupancy.
+//!    - `selected`: only alternates with the selected ID count, so the
+//!      residue that carries the ID survives. If several do, the first one.
 //!
-//! Equal occupancies are a tie, and the alternate that comes first in the
-//! file wins it.
+//!    The occupancy of a residue is the occupancy of its first alternate in
+//!    the file.
+//!
+//! 2. One alternate per atom site, among the alternates of the surviving
+//!    residue:
+//!    - `auto`: whichever comes first in the file, an atom without an altLoc
+//!      or an alternate A, decides. The first drops every alternate of the
+//!      site, the second keeps the alternates A. A site with neither keeps
+//!      the alternate with the highest occupancy.
+//!    - `highest_occupancy`: the alternate with the highest occupancy is
+//!      kept, unless the site also has an atom without an altLoc, which drops
+//!      every alternate.
+//!    - `selected`: the alternates with the selected ID are kept.
+//!
+//! Equal occupancies are a tie, and the residue or alternate that comes first
+//! in the file wins it.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -41,7 +57,8 @@ pub const AltLocMode = enum {
     all,
     /// Keep blank altLocs and the selected altLoc ID.
     selected,
-    /// Keep the highest-occupancy alternate for each atom site.
+    /// Keep the highest-occupancy residue for each residue position and the
+    /// highest-occupancy alternate for each of its atom sites.
     highest_occupancy,
 };
 
@@ -94,8 +111,9 @@ pub const Site = struct {
 /// Returns one flag per record, true for the records to keep, or null when
 /// every record is kept. The caller owns the returned slice.
 ///
-/// Runs in time linear in the number of records: the atom sites are found
-/// through hash maps, and the records of a site do not have to be contiguous.
+/// Runs in time linear in the number of records: residue positions, residues
+/// and atom sites are found through hash maps, and their records do not have
+/// to be contiguous.
 pub fn resolve(
     comptime Record: type,
     allocator: Allocator,
@@ -116,16 +134,10 @@ pub fn resolve(
     errdefer allocator.free(keep);
     @memset(keep, true);
 
-    if (setting.mode == .selected) {
-        for (records, keep) |record, *flag| {
-            const alt_loc = record.altLocSite().alt_loc;
-            flag.* = alt_loc == ' ' or alt_loc == setting.id;
-        }
-        return keep;
-    }
-
     var positions = PositionIndex{};
     defer positions.deinit(allocator);
+    var position_states = std.ArrayListUnmanaged(PositionState).empty;
+    defer position_states.deinit(allocator);
     var residues = ChildMap.empty;
     defer residues.deinit(allocator);
     var sites = ChildMap.empty;
@@ -138,22 +150,49 @@ pub fn resolve(
     const group_of = try allocator.alloc(u32, records.len);
     defer allocator.free(group_of);
 
-    // Pass 1: the residue positions and residues that hold alternates.
-    for (records, group_of) |record, *group| {
+    // Pass 1: the residue positions and residues that hold alternates, and
+    // the residue that survives at each position.
+    for (records, group_of, keep) |record, *group, *flag| {
         const site = record.altLocSite();
         if (site.alt_loc == ' ') continue;
+        if (setting.mode == .selected and site.alt_loc != setting.id) {
+            flag.* = false;
+            continue;
+        }
 
         const position = try positions.getOrPut(allocator, PositionKey.of(site));
-        group.* = try getOrPutChild(allocator, &residues, .{ .parent = position, .name = site.residue });
+        if (position == position_states.items.len) try position_states.append(allocator, .{});
+        const n_residues = residues.count();
+        const residue = try getOrPutChild(allocator, &residues, .{ .parent = position, .name = site.residue });
+        position_states.items[position].add(setting.mode, site, residue, residue == n_residues);
+        group.* = residue;
     }
 
-    // Pass 2: what each atom site holds. Atoms without an altLoc take part
-    // when their residue has alternates, and they can come before them.
-    for (records, group_of, 0..) |record, *group, i| {
+    const survives = try allocator.alloc(bool, residues.count());
+    defer allocator.free(survives);
+    @memset(survives, false);
+    for (position_states.items) |state| survives[state.residue] = true;
+
+    if (setting.mode == .selected) {
+        for (records, group_of, keep) |record, residue, *flag| {
+            if (record.altLocSite().alt_loc == ' ' or !flag.*) continue;
+            flag.* = survives[residue];
+        }
+        return keep;
+    }
+
+    // Pass 2: what each atom site of a surviving residue holds. Atoms
+    // without an altLoc take part when their residue has alternates, and
+    // they can come before them.
+    for (records, group_of, keep, 0..) |record, *group, *flag, i| {
         const site = record.altLocSite();
-        const residue = if (site.alt_loc != ' ')
-            group.*
-        else blk: {
+        const residue = if (site.alt_loc != ' ') blk: {
+            if (!survives[group.*]) {
+                flag.* = false;
+                continue;
+            }
+            break :blk group.*;
+        } else blk: {
             const position = positions.get(PositionKey.of(site)) orelse continue;
             break :blk residues.get(.{ .parent = position, .name = site.residue }) orelse continue;
         };
@@ -167,7 +206,7 @@ pub fn resolve(
     // Pass 3: keep the alternate that its atom site settled on.
     for (records, group_of, keep, 0..) |record, site_index, *flag, i| {
         const alt_loc = record.altLocSite().alt_loc;
-        if (alt_loc == ' ') continue;
+        if (alt_loc == ' ' or !flag.*) continue;
         flag.* = site_states.items[site_index].keeps(alt_loc, @intCast(i));
     }
 
@@ -175,6 +214,32 @@ pub fn resolve(
 }
 
 const none_index = std.math.maxInt(u32);
+
+/// The residue that survives at one residue position.
+const PositionState = struct {
+    residue: u32 = none_index,
+    /// Occupancy of `residue`: that of its first alternate in the file.
+    occupancy: f64 = 0.0,
+    /// `auto` mode: `residue` holds the first alternate A of the position,
+    /// and no other residue displaces it.
+    has_alt_a: bool = false,
+
+    /// `site` is an alternate of `residue`, the first one in the file when
+    /// `is_first_of_residue`. In `selected` mode it has the selected ID.
+    fn add(self: *PositionState, mode: AltLocMode, site: Site, residue: u32, is_first_of_residue: bool) void {
+        if (self.has_alt_a) return;
+        if (mode == .auto and site.alt_loc == 'A') {
+            self.residue = residue;
+            self.has_alt_a = true;
+            return;
+        }
+        if (!is_first_of_residue) return;
+        if (self.residue == none_index or (mode != .selected and site.occupancy > self.occupancy)) {
+            self.residue = residue;
+            self.occupancy = site.occupancy;
+        }
+    }
+};
 
 /// What the atoms of one atom site amount to.
 const SiteState = struct {
@@ -363,16 +428,43 @@ fn sameAtomSite(a: Site, b: Site) bool {
         std.mem.eql(u8, a.atom_name, b.atom_name);
 }
 
-/// The rules of the module documentation, written as a scan over all records
+/// Name of the residue that survives at the residue position of `atom`,
+/// found by a scan over all records.
+fn referenceResidue(records: []const TestRecord, setting: AltLocSetting, atom: Site) []const u8 {
+    var seen: [8][]const u8 = undefined;
+    var n_seen: usize = 0;
+    var best: ?Site = null;
+    for (records) |record| {
+        const other = record.site;
+        if (other.alt_loc == ' ' or !PositionKey.of(atom).eql(PositionKey.of(other))) continue;
+        if (setting.mode == .selected and other.alt_loc != setting.id) continue;
+        if (setting.mode == .auto and other.alt_loc == 'A') return other.residue;
+
+        // Only the first alternate of a residue counts
+        const is_first = for (seen[0..n_seen]) |name| {
+            if (std.mem.eql(u8, name, other.residue)) break false;
+        } else true;
+        if (!is_first) continue;
+        seen[n_seen] = other.residue;
+        n_seen += 1;
+
+        if (best == null or (setting.mode != .selected and other.occupancy > best.?.occupancy)) best = other;
+    }
+    return best.?.residue;
+}
+
+/// The rules of the module documentation, written as scans over all records
 /// for every alternate. Quadratic, and independent of the hash maps.
 fn referenceKeeps(records: []const TestRecord, setting: AltLocSetting, index: usize) bool {
     const atom = records[index].site;
     if (atom.alt_loc == ' ') return true;
     switch (setting.mode) {
         .all, .none => return true,
-        .selected => return atom.alt_loc == setting.id,
+        .selected => if (atom.alt_loc != setting.id) return false,
         .auto, .highest_occupancy => {},
     }
+    if (!std.mem.eql(u8, atom.residue, referenceResidue(records, setting, atom))) return false;
+    if (setting.mode == .selected) return true;
 
     var best: ?usize = null;
     for (records, 0..) |other_record, other_index| {
@@ -505,6 +597,96 @@ test "resolve keeps every atom without an altLoc that shares a site" {
     }
 }
 
+test "resolve keeps one residue where alternates are different residues" {
+    // Position 2 is PRO as altLoc A and SER as altLoc B, with a shared N that
+    // has no altLoc. Position 3 is ILE as B and VAL as C, with no alternate A.
+    const records = [_]TestRecord{
+        testRecord(2, "PRO", "N", ' ', 1.0),
+        testRecord(2, "PRO", "CA", 'A', 0.4),
+        testRecord(2, "PRO", "CD", 'A', 0.4),
+        testRecord(2, "SER", "CA", 'B', 0.6),
+        testRecord(2, "SER", "OG", 'B', 0.6),
+        testRecord(3, "ILE", "CA", 'B', 0.3),
+        testRecord(3, "ILE", "CD1", 'B', 0.3),
+        testRecord(3, "VAL", "CA", 'C', 0.7),
+        testRecord(3, "VAL", "CG1", 'C', 0.7),
+    };
+
+    // A, then the highest occupancy
+    try expectKept(.{ .mode = .auto }, &records, &.{ true, true, true, false, false, false, false, true, true });
+    try expectKept(.{ .mode = .highest_occupancy }, &records, &.{ true, false, false, true, true, false, false, true, true });
+    // The residue that carries the ID, or none
+    try expectKept(.{ .mode = .selected, .id = 'A' }, &records, &.{ true, true, true, false, false, false, false, false, false });
+    try expectKept(.{ .mode = .selected, .id = 'B' }, &records, &.{ true, false, false, true, true, true, true, false, false });
+    try expectKept(.{ .mode = .selected, .id = 'C' }, &records, &.{ true, false, false, false, false, false, false, true, true });
+}
+
+test "resolve compares residues by their first alternate and keeps the first on a tie" {
+    const tie = [_]TestRecord{
+        testRecord(1, "LEU", "CA", 'B', 0.5),
+        testRecord(1, "LEU", "CB", 'B', 0.5),
+        testRecord(1, "ILE", "CA", 'C', 0.5),
+        testRecord(1, "ILE", "CB", 'C', 0.5),
+    };
+    // Only the first alternate of a residue counts: 0.4 against 0.5
+    const first_alternate = [_]TestRecord{
+        testRecord(1, "LEU", "CA", 'B', 0.4),
+        testRecord(1, "LEU", "CB", 'B', 0.9),
+        testRecord(1, "ILE", "CA", 'C', 0.5),
+        testRecord(1, "ILE", "CB", 'C', 0.1),
+    };
+    for ([_]AltLocMode{ .auto, .highest_occupancy }) |mode| {
+        try expectKept(.{ .mode = mode }, &tie, &.{ true, true, false, false });
+        try expectKept(.{ .mode = mode }, &first_alternate, &.{ false, false, true, true });
+    }
+}
+
+test "resolve keeps one residue whose atoms are not contiguous" {
+    // The atoms of the two residues alternate, as in PDB-format files, and
+    // the alternate A that decides for PRO comes last
+    const records = [_]TestRecord{
+        testRecord(2, "SER", "CA", 'B', 0.6),
+        testRecord(2, "PRO", "CA", 'C', 0.2),
+        testRecord(2, "SER", "CB", 'B', 0.6),
+        testRecord(2, "PRO", "CB", 'C', 0.2),
+        testRecord(2, "SER", "OG", 'B', 0.6),
+        testRecord(2, "PRO", "CG", 'A', 0.2),
+    };
+    try expectKept(.{ .mode = .auto }, &records, &.{ false, true, false, true, false, true });
+    try expectKept(.{ .mode = .highest_occupancy }, &records, &.{ true, false, true, false, true, false });
+}
+
+test "resolve chooses among the alternates of the surviving residue" {
+    // SER has two conformers of its own next to PRO
+    const records = [_]TestRecord{
+        testRecord(2, "PRO", "CA", 'A', 0.5),
+        testRecord(2, "SER", "CA", 'B', 0.2),
+        testRecord(2, "SER", "CA", 'C', 0.3),
+        testRecord(2, "SER", "OG", 'B', 0.2),
+        testRecord(2, "SER", "OG", 'C', 0.3),
+    };
+    try expectKept(.{ .mode = .auto }, &records, &.{ true, false, false, false, false });
+    try expectKept(.{ .mode = .highest_occupancy }, &records, &.{ true, false, false, false, false });
+    try expectKept(.{ .mode = .selected, .id = 'C' }, &records, &.{ false, false, true, false, true });
+
+    // Without PRO, each atom site of SER keeps its best alternate
+    try expectKept(.{ .mode = .auto }, records[1..], &.{ false, true, false, true });
+}
+
+test "resolve leaves residues without alternates alone" {
+    // Two residues without altLocs share chain and number (a file without
+    // chain IDs), next to a residue with alternates at the same position
+    const records = [_]TestRecord{
+        testRecord(1, "ALA", "CA", ' ', 1.0),
+        testRecord(1, "GLY", "CA", ' ', 1.0),
+        testRecord(1, "SER", "CA", 'A', 0.5),
+        testRecord(1, "PRO", "CA", 'B', 0.5),
+    };
+    for ([_]AltLocMode{ .auto, .highest_occupancy }) |mode| {
+        try expectKept(.{ .mode = mode }, &records, &.{ true, true, true, false });
+    }
+}
+
 test "resolve tells residue positions apart" {
     const base = testRecord(1, "ALA", "CA", 'B', 0.5).site;
     var other_model = base;
@@ -540,7 +722,7 @@ test "resolve matches the reference rules on random records" {
     // Few distinct values, so that sites collide in every way
     const chains = [_][]const u8{ "", "A", "B" };
     const insertion_codes = [_][]const u8{ "", "A" };
-    const residues = [_][]const u8{ "ALA", "SER" };
+    const residues = [_][]const u8{ "ALA", "SER", "PRO" };
     const atom_names = [_][]const u8{ "N", "CA", "CB" };
     const alt_locs = [_]u8{ ' ', ' ', 'A', 'B', 'C' };
     const occupancies = [_]f64{ 0.0, 0.3, 0.5, 0.7 };
@@ -610,6 +792,8 @@ test "resolve reads every record a constant number of times" {
         one_site,
         /// 100 residues whose atoms are interleaved, with four alternates each
         interleaved,
+        /// One residue position with n/2 residue names of two atoms each
+        one_position,
     };
 
     for (std.enums.values(Shape)) |shape| {
@@ -636,6 +820,11 @@ test "resolve reads every record a constant number of times" {
                     record.site.atom_name = &names[i / 400];
                     record.site.alt_loc = "BCDE"[(i / 100) % 4];
                 },
+                .one_position => {
+                    record.site.residue = &names[i / 2];
+                    record.site.atom_name = if (i % 2 == 0) "CA" else "CB";
+                    record.site.alt_loc = 'B';
+                },
             }
         }
 
@@ -654,6 +843,7 @@ test "resolve reads every record a constant number of times" {
                 .one_residue => n / 2,
                 .one_site => 1,
                 .interleaved => n / 4,
+                .one_position => 2,
             }), n_kept);
         }
     }
