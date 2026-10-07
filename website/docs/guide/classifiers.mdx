@@ -299,9 +299,12 @@ The CCD classifier determines van der Waals radii through the following process:
 1. **Parse bond graph** — Extract atoms and bonds from CCD `_chem_comp_atom` / `_chem_comp_bond` loops
 2. **Analyze bonds** — For each non-hydrogen atom, count single, double, and aromatic bonds
 3. **Determine hybridization** — Classify as sp, sp2, or sp3 based on bond pattern
-4. **Map to ProtOr radius** — Each (element, hybridization) pair maps to a specific ProtOr-compatible radius
+4. **Count hydrogens** — Add the hydrogens listed in the component to those implied by unfilled valence
+5. **Map to ProtOr radius** — Each (element, hybridization) pair maps to a specific ProtOr-compatible radius; for carbon the radius also depends on whether it carries any hydrogen
 
-For example, an aromatic CH carbon like PHE CD1 (two aromatic bonds to heavy atoms, one implicit hydrogen) is classified as sp2 with implicit H, receiving a radius of 1.76 Å. A backbone carbonyl carbon (one double bond to O, one single bond to CA, one implicit H) is also sp2 but receives 1.76 Å as well. A typical aliphatic carbon like ALA CB (one single bond to CA, three implicit hydrogens) is sp3, receiving 1.88 Å.
+For example, an aromatic CH carbon like PHE CD1 (two ring bonds to heavy atoms, one hydrogen) is classified as sp2 with a hydrogen, receiving a radius of 1.76 Å. A carboxyl carbon like ASP CG (one double bond to O, two single bonds to heavy atoms, no hydrogen) is also sp2 but receives 1.61 Å. A typical aliphatic carbon like ALA CB (one single bond to CA, three hydrogens) is sp3, receiving 1.88 Å.
+
+The result does not depend on whether the component lists its hydrogens. wwPDB CCD entries and most SDF files list them; a hydrogen-free definition gives the same radii because the missing hydrogens are inferred from the unfilled valence.
 
 ## Supported Residues
 
