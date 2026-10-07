@@ -12,6 +12,8 @@ class ClassifierType(IntEnum):
     CCD = 3      # CCD-based radii (default)
 ```
 
+`PROTOR` is a separate value, not an alias of `CCD`: it selects the static ProtOr-compatible table without any CCD resource parsing. `get_radius` and `classify_atoms` have no CCD dictionary to read, so they give `CCD` and `PROTOR` the same hardcoded ProtOr radii (atoms outside the table return `None` or `NaN`). The CCD bond-topology analysis for ligands and modified residues runs in the CLI and in `process_directory`.
+
 ## AtomClass
 
 ```python
@@ -56,9 +58,11 @@ result = classify_atoms(
     ["CA", "O", "N"],
     ClassifierType.CCD
 )
-print(result.radii)   # [1.87, 1.4, 1.65]
-print(result.classes) # [1, 0, 0] (APOLAR, POLAR, POLAR)
+print(result.radii)   # [1.88 1.42 1.64]
+print(result.classes) # [1 0 0] (APOLAR, POLAR, POLAR)
 ```
+
+The values above are the CCD (ProtOr) radii. With `ClassifierType.NACCESS` the same atoms give `[1.87 1.4 1.65]`.
 
 ## ClassificationResult
 
@@ -73,8 +77,8 @@ class ClassificationResult:
 
 | Function | Description |
 |----------|-------------|
-| `get_radius(residue, atom, classifier)` | Get radius for a specific atom |
-| `get_atom_class(residue, atom, classifier)` | Get polarity class for an atom |
+| `get_radius(residue, atom, classifier_type=ClassifierType.CCD)` | Get radius for a specific atom, or `None` if the classifier does not know it |
+| `get_atom_class(residue, atom, classifier_type=ClassifierType.CCD)` | Get polarity class for an atom |
 | `guess_radius(element)` | Guess radius from element symbol |
 | `guess_radius_from_atom_name(atom_name)` | Guess radius from a column-padded PDB atom name (`" CA "` is carbon, `"CA  "` is calcium) |
 

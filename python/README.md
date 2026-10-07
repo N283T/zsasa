@@ -43,7 +43,7 @@ print(f"Total: {result.total_area:.1f} Å²")
 ## Features
 
 - **Two algorithms**: Shrake-Rupley and Lee-Richards, with bitmask LUT optimization
-- **Selectable precision**: f64 (default) or f32
+- **Selectable precision**: `calculate_sasa_batch` takes `precision="f64"` (default) or `"f32"`
 - **Multi-threading**: Automatic parallelization
 - **Atom classification**: CCD, ProtOr, NACCESS, and OONS classifiers
 - **Analysis**: Per-residue aggregation, RSA, polar/nonpolar classification
