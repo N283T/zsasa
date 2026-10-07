@@ -1288,7 +1288,7 @@ fn parseInlineCcdAtoms(
 
     var decoded = try allocator.alloc(DecodedColumn, raw_columns.len);
     var decoded_count: usize = 0;
-    errdefer {
+    defer {
         for (decoded[0..decoded_count]) |*column| column.deinit(allocator);
         allocator.free(decoded);
     }
@@ -1296,10 +1296,6 @@ fn parseInlineCcdAtoms(
         decoded[decoded_count] = try decodeBcifColumn(allocator, column);
         decoded_count += 1;
         if (decoded[decoded_count - 1].values.len != row_count) return ParseError.ColumnLengthMismatch;
-    }
-    defer {
-        for (decoded[0..decoded_count]) |*column| column.deinit(allocator);
-        allocator.free(decoded);
     }
 
     var row: usize = 0;
@@ -1340,7 +1336,7 @@ fn parseInlineCcdBonds(
 
     var decoded = try allocator.alloc(DecodedColumn, raw_columns.len);
     var decoded_count: usize = 0;
-    errdefer {
+    defer {
         for (decoded[0..decoded_count]) |*column| column.deinit(allocator);
         allocator.free(decoded);
     }
@@ -1348,10 +1344,6 @@ fn parseInlineCcdBonds(
         decoded[decoded_count] = try decodeBcifColumn(allocator, column);
         decoded_count += 1;
         if (decoded[decoded_count - 1].values.len != row_count) return ParseError.ColumnLengthMismatch;
-    }
-    defer {
-        for (decoded[0..decoded_count]) |*column| column.deinit(allocator);
-        allocator.free(decoded);
     }
 
     var row: usize = 0;
@@ -1384,8 +1376,10 @@ fn getOrCreateCcdBuilder(
 ) !*BcifCcdBuilder {
     const gop = try builders.getOrPut(allocator, comp_id);
     if (!gop.found_existing) {
-        const key = try allocator.dupe(u8, comp_id);
-        gop.key_ptr.* = key;
+        // Until the key is duplicated the entry borrows `comp_id` and its
+        // value is undefined, so it must not survive a failed allocation.
+        errdefer builders.removeByPtr(gop.key_ptr);
+        gop.key_ptr.* = try allocator.dupe(u8, comp_id);
         gop.value_ptr.* = .{};
     }
     return gop.value_ptr;
@@ -2074,6 +2068,26 @@ test "parse BinaryCIF with inline CCD data" {
     try std.testing.expectEqual(@as(u16, 0), comp.bonds[0].atom_idx_1);
     try std.testing.expectEqual(@as(u16, 1), comp.bonds[0].atom_idx_2);
     try std.testing.expectEqual(.double, comp.bonds[0].order);
+}
+
+fn parseInlineCcdAndDeinitForAllocationFailure(allocator: Allocator, root: MsgValue) !void {
+    var dict = try parseInlineCcd(allocator, root);
+    defer dict.deinit();
+}
+
+test "parseInlineCcd cleans up exactly once on allocation failure" {
+    const source = try buildMinimalBcifWithInlineCcd();
+    defer std.testing.allocator.free(source);
+
+    var reader = MsgReader.init(std.testing.allocator, source);
+    const root = try reader.readValue();
+    defer freeMsgValue(std.testing.allocator, root);
+
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        parseInlineCcdAndDeinitForAllocationFailure,
+        .{root},
+    );
 }
 
 test "parse BinaryCIF can skip inline CCD data" {
