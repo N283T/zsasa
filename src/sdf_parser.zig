@@ -244,9 +244,41 @@ fn recordStartsAt(line_iter: std.mem.SplitIterator(u8, .scalar)) bool {
     return true;
 }
 
+/// One line of a V3000 connection table, as `V3000Reader` classifies it.
+const V3000Line = union(enum) {
+    /// Payload of an `M  V30 ` line (the text after the prefix).
+    v30: []const u8,
+    /// `M  END`: the end of the connection table.
+    end,
+    /// `$$$$`: the end of the record.
+    terminator,
+    /// Any other line.
+    other,
+};
+
+/// Reads the lines of a V3000 connection table.
+const V3000Reader = struct {
+    line_iter: *std.mem.SplitIterator(u8, .scalar),
+
+    /// Returns the next line, or `null` at the end of the input.
+    fn next(self: *V3000Reader) ?V3000Line {
+        const line = stripCr(self.line_iter.next() orelse return null);
+        const trimmed = std.mem.trimStart(u8, line, " ");
+        if (std.mem.startsWith(u8, trimmed, "M  END")) return .end;
+        if (std.mem.startsWith(u8, trimmed, "$$$$")) return .terminator;
+        if (std.mem.startsWith(u8, trimmed, "M  V30 ")) return .{ .v30 = trimmed["M  V30 ".len..] };
+        return .other;
+    }
+};
+
 /// Parse a V3000 molecule body.
 /// The line iterator is positioned just after the counts line (which contained "V3000").
 /// We expect `M  V30 BEGIN CTAB`, `M  V30 COUNTS ...`, ATOM/BOND blocks, and `M  END`.
+///
+/// Atoms are read only between `BEGIN ATOM` and `END ATOM` and bonds only
+/// between `BEGIN BOND` and `END BOND`; the connection table ends at `M  END`
+/// (or at `$$$$`, for a record without one). A molecule may have no atom
+/// block at all: `COUNTS 0 0` gives a molecule without atoms.
 fn parseV3000Body(
     allocator: Allocator,
     name: []const u8,
@@ -254,111 +286,79 @@ fn parseV3000Body(
 ) SdfError!MoleculeResult {
     errdefer allocator.free(name);
 
-    // Helper: strip "M  V30 " prefix from a line and return the payload, or null.
-    const stripV30 = struct {
-        fn strip(line: []const u8) ?[]const u8 {
-            const trimmed = std.mem.trimStart(u8, line, " ");
-            if (std.mem.startsWith(u8, trimmed, "M  V30 ")) {
-                return trimmed["M  V30 ".len..];
-            }
-            return null;
-        }
-    }.strip;
+    var reader = V3000Reader{ .line_iter = line_iter };
 
-    // Read lines until we get COUNTS
-    var atom_count: u16 = 0;
-    var bond_count: u16 = 0;
-    var found_counts = false;
+    // COUNTS only sizes the lists: the atoms and bonds actually present must
+    // match it, so a body that disagrees with its header is an error instead
+    // of a write past the reserved capacity.
+    var counts: ?Counts = null;
+    var atom_list = std.ArrayListUnmanaged(SdfAtom).empty;
+    errdefer atom_list.deinit(allocator);
+    var bond_list = std.ArrayListUnmanaged(SdfBond).empty;
+    errdefer bond_list.deinit(allocator);
 
-    while (line_iter.next()) |raw_line| {
-        const line = stripCr(raw_line);
-        if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " "), "M  END")) break;
+    var block: enum { none, atom, bond } = .none;
+    var found_terminator = false;
 
-        if (stripV30(line)) |payload| {
-            if (std.mem.startsWith(u8, payload, "COUNTS ")) {
+    while (reader.next()) |line| {
+        const payload = switch (line) {
+            .v30 => |text| text,
+            .end => break,
+            .terminator => {
+                found_terminator = true;
+                break;
+            },
+            .other => continue,
+        };
+
+        switch (block) {
+            .none => if (std.mem.startsWith(u8, payload, "COUNTS ")) {
                 // Parse "COUNTS natoms nbonds ..."
                 var tok = std.mem.tokenizeScalar(u8, payload, ' ');
                 _ = tok.next(); // skip "COUNTS"
                 const na = tok.next() orelse return error.InvalidCountsLine;
                 const nb = tok.next() orelse return error.InvalidCountsLine;
-                atom_count = std.fmt.parseInt(u16, na, 10) catch return error.InvalidInteger;
-                bond_count = std.fmt.parseInt(u16, nb, 10) catch return error.InvalidInteger;
-                found_counts = true;
+                const atom_count = std.fmt.parseInt(u16, na, 10) catch return error.InvalidInteger;
+                const bond_count = std.fmt.parseInt(u16, nb, 10) catch return error.InvalidInteger;
+                try atom_list.ensureTotalCapacity(allocator, atom_count);
+                try bond_list.ensureTotalCapacity(allocator, bond_count);
+                counts = .{ .atom_count = atom_count, .bond_count = bond_count };
             } else if (std.mem.startsWith(u8, payload, "BEGIN ATOM")) {
-                break; // proceed to atom parsing
-            }
-        }
-    }
+                if (counts == null) return error.InvalidCountsLine;
+                block = .atom;
+            } else if (std.mem.startsWith(u8, payload, "BEGIN BOND")) {
+                if (counts == null) return error.InvalidCountsLine;
+                block = .bond;
+            },
+            .atom => {
+                if (std.mem.startsWith(u8, payload, "END ATOM")) {
+                    block = .none;
+                    continue;
+                }
+                if (atom_list.items.len >= counts.?.atom_count) return error.InvalidV3000;
 
-    if (!found_counts) return error.InvalidCountsLine;
+                // "index element x y z charge [...]"
+                var tok = std.mem.tokenizeScalar(u8, payload, ' ');
+                _ = tok.next() orelse return error.InvalidAtomLine; // index (skip)
+                const elem_str = tok.next() orelse return error.InvalidAtomLine;
+                const x_str = tok.next() orelse return error.InvalidAtomLine;
+                const y_str = tok.next() orelse return error.InvalidAtomLine;
+                const z_str = tok.next() orelse return error.InvalidAtomLine;
+                // charge and remaining fields are ignored
 
-    // Parse ATOM block. COUNTS only sizes the lists: the atoms and bonds
-    // actually present must match it, so a body that disagrees with its
-    // header is an error instead of a write past the reserved capacity.
-    var atom_list = std.ArrayListUnmanaged(SdfAtom).empty;
-    errdefer atom_list.deinit(allocator);
-    try atom_list.ensureTotalCapacity(allocator, atom_count);
+                const x = std.fmt.parseFloat(f64, x_str) catch return error.InvalidFloat;
+                const y = std.fmt.parseFloat(f64, y_str) catch return error.InvalidFloat;
+                const z = std.fmt.parseFloat(f64, z_str) catch return error.InvalidFloat;
+                const element = elementFromSymbol(elem_str);
 
-    while (line_iter.next()) |raw_line| {
-        const line = stripCr(raw_line);
-        if (stripV30(line)) |payload| {
-            if (std.mem.startsWith(u8, payload, "END ATOM")) break;
-            if (atom_list.items.len == atom_count) return error.InvalidV3000;
-
-            // "index element x y z charge [...]"
-            var tok = std.mem.tokenizeScalar(u8, payload, ' ');
-            _ = tok.next() orelse return error.InvalidAtomLine; // index (skip)
-            const elem_str = tok.next() orelse return error.InvalidAtomLine;
-            const x_str = tok.next() orelse return error.InvalidAtomLine;
-            const y_str = tok.next() orelse return error.InvalidAtomLine;
-            const z_str = tok.next() orelse return error.InvalidAtomLine;
-            // charge and remaining fields are ignored
-
-            const x = std.fmt.parseFloat(f64, x_str) catch return error.InvalidFloat;
-            const y = std.fmt.parseFloat(f64, y_str) catch return error.InvalidFloat;
-            const z = std.fmt.parseFloat(f64, z_str) catch return error.InvalidFloat;
-            const element = elementFromSymbol(elem_str);
-
-            atom_list.appendAssumeCapacity(.{ .x = x, .y = y, .z = z, .element = element });
-        }
-    }
-    if (atom_list.items.len != atom_count) return error.InvalidV3000;
-
-    // Look for BEGIN BOND (there may be lines between END ATOM and BEGIN BOND)
-    var bond_list = std.ArrayListUnmanaged(SdfBond).empty;
-    errdefer bond_list.deinit(allocator);
-    try bond_list.ensureTotalCapacity(allocator, bond_count);
-
-    // We may have already consumed "BEGIN ATOM"... now scan for "BEGIN BOND"
-    var in_bond_block = false;
-    var found_terminator = false;
-    while (line_iter.next()) |raw_line| {
-        const line = stripCr(raw_line);
-        if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " "), "M  END")) {
-            // Reached M  END — no bond block or we're done
-            break;
-        }
-        if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " "), "$$$$")) {
-            // Terminator found before M  END
-            found_terminator = true;
-            break;
-        }
-
-        if (stripV30(line)) |payload| {
-            if (std.mem.startsWith(u8, payload, "BEGIN BOND")) {
-                in_bond_block = true;
-                continue;
-            }
-            if (std.mem.startsWith(u8, payload, "END BOND")) {
-                in_bond_block = false;
-                continue;
-            }
-            if (std.mem.startsWith(u8, payload, "END CTAB")) {
-                continue;
-            }
-
-            if (in_bond_block) {
-                if (bond_list.items.len == bond_count) return error.InvalidV3000;
+                atom_list.appendAssumeCapacity(.{ .x = x, .y = y, .z = z, .element = element });
+            },
+            .bond => {
+                if (std.mem.startsWith(u8, payload, "END BOND")) {
+                    block = .none;
+                    continue;
+                }
+                if (bond_list.items.len >= counts.?.bond_count) return error.InvalidV3000;
 
                 // "index bondtype atom1 atom2 [...]"
                 var tok = std.mem.tokenizeScalar(u8, payload, ' ');
@@ -380,10 +380,16 @@ fn parseV3000Body(
                     .atom_idx_2 = idx2_raw - 1,
                     .order = sdfBondOrder(bond_type),
                 });
-            }
+            },
         }
     }
-    if (bond_list.items.len != bond_count) return error.InvalidV3000;
+
+    const declared = counts orelse return error.InvalidCountsLine;
+    // A block that is still open was cut off by `M  END`, `$$$$` or the end
+    // of the input.
+    if (block != .none) return error.InvalidV3000;
+    if (atom_list.items.len != declared.atom_count) return error.InvalidV3000;
+    if (bond_list.items.len != declared.bond_count) return error.InvalidV3000;
 
     // Skip remaining lines until $$$$ or EOF
     while (!found_terminator) {
@@ -1853,4 +1859,150 @@ test "elementFromSymbol maps D and T to hydrogen only as whole symbols" {
     try std.testing.expectEqual(elem.Element.Cl, elementFromSymbol("Cl"));
     try std.testing.expectEqual(elem.Element.X, elementFromSymbol("R#"));
     try std.testing.expectEqual(elem.Element.X, elementFromSymbol(""));
+}
+
+// V3000 records without atoms: with no atom block at all, and with an empty
+// atom block.
+const test_v3000_empty_body =
+    "  0  0  0  0  0  0  0  0  0  0999 V3000\n" ++
+    "M  V30 BEGIN CTAB\n" ++
+    "M  V30 COUNTS 0 0 0 0 0\n" ++
+    "M  V30 END CTAB\n" ++
+    "M  END\n$$$$\n";
+const test_v3000_empty_block_body =
+    "  0  0  0  0  0  0  0  0  0  0999 V3000\n" ++
+    "M  V30 BEGIN CTAB\n" ++
+    "M  V30 COUNTS 0 0 0 0 0\n" ++
+    "M  V30 BEGIN ATOM\n" ++
+    "M  V30 END ATOM\n" ++
+    "M  V30 END CTAB\n" ++
+    "M  END\n$$$$\n";
+
+/// Parses `source` as it is and with CRLF line endings, and expects molecules
+/// with the given names and atom counts.
+fn expectAtomCounts(source: []const u8, expected: []const struct { []const u8, usize }) !void {
+    const allocator = std.testing.allocator;
+    const crlf = try std.mem.replaceOwned(u8, allocator, source, "\n", "\r\n");
+    defer allocator.free(crlf);
+
+    for ([_][]const u8{ source, crlf }) |text| {
+        const molecules = try parse(allocator, text);
+        defer freeMolecules(allocator, molecules);
+
+        try std.testing.expectEqual(expected.len, molecules.len);
+        for (expected, molecules) |want, mol| {
+            try std.testing.expectEqualStrings(want[0], mol.name);
+            try std.testing.expectEqual(want[1], mol.atoms.len);
+        }
+    }
+}
+
+test "parse V3000 molecule without atoms does not read into the next record" {
+    const first = "first\n" ++ test_header_rest ++ test_v3000_body;
+    const last = "last\n" ++ test_header_rest ++ test_v3000_body;
+
+    for ([_][]const u8{ test_v3000_empty_body, test_v3000_empty_block_body }) |empty_body| {
+        const empty = try std.mem.concat(std.testing.allocator, u8, &.{ "empty\n", test_header_rest, empty_body });
+        defer std.testing.allocator.free(empty);
+
+        // Between two molecules, first, last, and alone
+        const between = try std.mem.concat(std.testing.allocator, u8, &.{ first, empty, last });
+        defer std.testing.allocator.free(between);
+        try expectAtomCounts(between, &.{ .{ "first", 2 }, .{ "empty", 0 }, .{ "last", 2 } });
+
+        const leading = try std.mem.concat(std.testing.allocator, u8, &.{ empty, first, last });
+        defer std.testing.allocator.free(leading);
+        try expectAtomCounts(leading, &.{ .{ "empty", 0 }, .{ "first", 2 }, .{ "last", 2 } });
+
+        const trailing = try std.mem.concat(std.testing.allocator, u8, &.{ first, last, empty });
+        defer std.testing.allocator.free(trailing);
+        try expectAtomCounts(trailing, &.{ .{ "first", 2 }, .{ "last", 2 }, .{ "empty", 0 } });
+
+        try expectAtomCounts(empty, &.{.{ "empty", 0 }});
+
+        // Followed by a V2000 record, whose atom lines are not V3000 lines
+        const before_v2000 = try std.mem.concat(std.testing.allocator, u8, &.{ empty, "last\n", test_header_rest, test_v2000_body });
+        defer std.testing.allocator.free(before_v2000);
+        try expectAtomCounts(before_v2000, &.{ .{ "empty", 0 }, .{ "last", 2 } });
+    }
+
+    // The molecules next to an empty one are complete
+    const allocator = std.testing.allocator;
+    const molecules = try parse(allocator, first ++ "empty\n" ++ test_header_rest ++ test_v3000_empty_body ++ last);
+    defer freeMolecules(allocator, molecules);
+    try std.testing.expectEqual(@as(usize, 3), molecules.len);
+    try std.testing.expectEqual(@as(usize, 0), molecules[1].atoms.len);
+    try std.testing.expectEqual(@as(usize, 0), molecules[1].bonds.len);
+    for ([_]usize{ 0, 2 }) |i| {
+        try std.testing.expectEqual(elem.Element.C, molecules[i].atoms[0].element);
+        try std.testing.expectEqual(elem.Element.N, molecules[i].atoms[1].element);
+        try std.testing.expectApproxEqAbs(@as(f64, 1.16), molecules[i].atoms[1].x, 1e-9);
+        try std.testing.expectEqual(@as(usize, 1), molecules[i].bonds.len);
+    }
+
+    // An empty molecule gives no atoms, and the others keep theirs
+    var empty_input = try toAtomInput(allocator, molecules[1..2], false);
+    defer empty_input.deinit();
+    try std.testing.expectEqual(@as(usize, 0), empty_input.atomCount());
+    var all_input = try toAtomInput(allocator, molecules, false);
+    defer all_input.deinit();
+    try std.testing.expectEqual(@as(usize, 4), all_input.atomCount());
+    try std.testing.expectEqualStrings("A", all_input.chain_id.?[1].slice());
+    try std.testing.expectEqualStrings("C", all_input.chain_id.?[2].slice());
+
+    var stored = try toStoredComponent(allocator, &molecules[1]);
+    defer stored.deinit();
+    try std.testing.expectEqual(@as(usize, 0), stored.atoms.len);
+}
+
+test "parse V3000 reads atoms and bonds only inside their blocks" {
+    const allocator = std.testing.allocator;
+    const header = "mol\n" ++ test_header_rest ++ "  0  0  0  0  0  0  0  0  0  0999 V3000\nM  V30 BEGIN CTAB\n";
+    const atoms = "M  V30 BEGIN ATOM\nM  V30 1 C 0 0 0 0\nM  V30 2 N 1.16 0 0 0\nM  V30 END ATOM\n";
+    const bonds = "M  V30 BEGIN BOND\nM  V30 1 3 1 2\nM  V30 END BOND\n";
+    const end = "M  V30 END CTAB\nM  END\n$$$$\n";
+
+    // Lines of other blocks, before, between and after the atom and bond
+    // blocks, are neither atoms nor bonds
+    const sgroup = "M  V30 BEGIN SGROUP\nM  V30 1 SUP 0 ATOMS=(2 1 2) LABEL=CN\nM  V30 END SGROUP\n";
+    const collection = "M  V30 BEGIN COLLECTION\nM  V30 MDLV30/STEABS ATOMS=(1 1)\nM  V30 END COLLECTION\n";
+    try expectAtomCounts(
+        header ++ "M  V30 COUNTS 2 1 1 0 0\n" ++ collection ++ atoms ++ sgroup ++ bonds ++ collection ++ end,
+        &.{.{ "mol", 2 }},
+    );
+
+    // The bond block may come without an atom block only when it is empty
+    try expectAtomCounts(
+        header ++ "M  V30 COUNTS 0 0 0 0 0\nM  V30 BEGIN BOND\nM  V30 END BOND\n" ++ end,
+        &.{.{ "mol", 0 }},
+    );
+    try std.testing.expectError(error.BondIndexOutOfRange, parse(
+        allocator,
+        header ++ "M  V30 COUNTS 0 1 0 0 0\n" ++ bonds ++ end,
+    ));
+
+    // An atom block that is not closed before `M  END`, `$$$$` or the end of
+    // the input is an error, with and without a record after it
+    const next = "next\n" ++ test_header_rest ++ test_v3000_body;
+    const open_atoms = header ++ "M  V30 COUNTS 2 0 0 0 0\nM  V30 BEGIN ATOM\nM  V30 1 C 0 0 0 0\nM  V30 2 N 1.16 0 0 0\n";
+    try std.testing.expectError(error.InvalidV3000, parse(allocator, open_atoms));
+    try std.testing.expectError(error.InvalidV3000, parse(allocator, open_atoms ++ "M  END\n$$$$\n"));
+    try std.testing.expectError(error.InvalidV3000, parse(allocator, open_atoms ++ "M  END\n$$$$\n" ++ next));
+    try std.testing.expectError(error.InvalidV3000, parse(allocator, open_atoms ++ "$$$$\n" ++ next));
+    // The same for a bond block
+    const open_bonds = header ++ "M  V30 COUNTS 2 1 0 0 0\n" ++ atoms ++ "M  V30 BEGIN BOND\nM  V30 1 3 1 2\n";
+    try std.testing.expectError(error.InvalidV3000, parse(allocator, open_bonds));
+    try std.testing.expectError(error.InvalidV3000, parse(allocator, open_bonds ++ "M  END\n$$$$\n" ++ next));
+    try std.testing.expectError(error.InvalidV3000, parse(allocator, open_bonds ++ "$$$$\n" ++ next));
+
+    // Atoms of the next record do not make up for atoms that are missing
+    try std.testing.expectError(error.InvalidV3000, parse(
+        allocator,
+        header ++ "M  V30 COUNTS 2 1 0 0 0\n" ++ end ++ next,
+    ));
+
+    // An atom or bond block needs a COUNTS line before it
+    try std.testing.expectError(error.InvalidCountsLine, parse(allocator, header ++ atoms ++ bonds ++ end));
+    try std.testing.expectError(error.InvalidCountsLine, parse(allocator, header ++ bonds ++ end));
+    try std.testing.expectError(error.InvalidCountsLine, parse(allocator, header ++ end));
 }
