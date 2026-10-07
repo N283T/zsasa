@@ -172,13 +172,13 @@ class TestExtractAtoms:
         assert atoms.chain_ids == ["A"] * 5
 
     def test_extract_hetatm_included(self, structure_with_hetatm):
-        """Should include HETATM by default."""
-        atoms = extract_atoms_from_model(structure_with_hetatm[0])
+        """Should include HETATM when requested."""
+        atoms = extract_atoms_from_model(structure_with_hetatm[0], include_hetatm=True)
         assert len(atoms) == 2  # CA + water O
 
     def test_extract_hetatm_excluded(self, structure_with_hetatm):
-        """Should exclude HETATM when requested."""
-        atoms = extract_atoms_from_model(structure_with_hetatm[0], include_hetatm=False)
+        """Should exclude HETATM by default."""
+        atoms = extract_atoms_from_model(structure_with_hetatm[0])
         assert len(atoms) == 1  # Only CA
 
     def test_extract_hydrogens_excluded(self, structure_with_hydrogens):
