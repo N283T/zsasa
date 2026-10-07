@@ -21,7 +21,7 @@ The Python bindings provide:
 - **Per-residue aggregation**: Aggregate atom SASA to residue level
 - **Directory batch processing**: Process entire directories of structure files
 - **Library integrations**: gemmi, BioPython, Biotite, MDTraj, MDAnalysis (see [Integrations](../integrations/))
-- **Trajectory-file guidance**: use [pyztraj](https://github.com/N283T/ztraj) for direct Python trajectory I/O and trajectory-native analysis; `zsasa.xtc` is retained for legacy compatibility
+- **Trajectory-file guidance**: use [pyztraj](https://github.com/N283T/ztraj) for direct Python trajectory I/O and trajectory-native analysis; `zsasa.xtc` and `zsasa.dcd` are retained for legacy compatibility
 
 ## Contents
 
@@ -30,7 +30,7 @@ The Python bindings provide:
 | [Core API](core.md) | `calculate_sasa`, batch API, directory processing |
 | [Classifier](classifier.md) | Atom classification, RSA calculation |
 | [Analysis](analysis.md) | Per-residue aggregation, examples |
-| [Legacy Native XTC Reader](xtc.md) | Compatibility XTC reader; prefer pyztraj for new trajectory-file workflows |
+| [Legacy Native XTC Reader](xtc.md) | Compatibility XTC and DCD readers and trajectory SASA functions (`zsasa.xtc`, `zsasa.dcd`); prefer pyztraj for new trajectory-file workflows |
 
 For structure file parsing and MD trajectory integrations, see [Integrations](../integrations/).
 
@@ -182,7 +182,7 @@ Returns the library version string.
 
 ```python
 from zsasa import get_version
-print(get_version())  # e.g., "0.6.0"
+print(get_version())  # e.g., "0.9.1"
 ```
 
 ---

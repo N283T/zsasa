@@ -26,9 +26,13 @@ class ClassifierType(IntEnum):
     """Available classifier types for atom radius assignment.
 
     Attributes:
-        CCD: CCD-based radii (default). Hardcoded ProtOr radii + runtime CCD
-             analysis for non-standard residues via bond topology.
-        PROTOR: Alias for CCD. Kept for backward compatibility.
+        CCD: CCD-based radii (default). Hardcoded ProtOr radii, plus runtime CCD
+             bond-topology analysis for non-standard residues where a CCD
+             dictionary is available (the CLI and ``process_directory``).
+             ``get_radius`` and ``classify_atoms`` only use the hardcoded table.
+        PROTOR: Static ProtOr-compatible radii without CCD resource parsing. A
+             separate value, not an alias of CCD; for ``get_radius`` and
+             ``classify_atoms`` it returns the same radii as CCD.
         NACCESS: NACCESS-compatible radii.
         OONS: Ooi, Oobatake, Nemethy, Scheraga radii.
     """
@@ -80,6 +84,8 @@ def get_radius(
     Example:
         >>> from zsasa import get_radius, ClassifierType
         >>> get_radius("ALA", "CA")
+        1.88
+        >>> get_radius("ALA", "CA", ClassifierType.NACCESS)
         1.87
         >>> get_radius("ALA", "XX")  # Unknown atom
         None
@@ -238,7 +244,7 @@ def classify_atoms(
         ...     ["CA", "O", "N"],
         ... )
         >>> result.radii
-        array([1.87, 1.4 , 1.65])
+        array([1.88, 1.42, 1.64])
     """
     ffi, lib = _get_lib()
 

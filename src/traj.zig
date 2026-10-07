@@ -512,7 +512,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\
         \\ARGUMENTS:
         \\    <trajectory> Trajectory file (.xtc, .trr, .dcd, .nc, or .ncdf)
-        \\    <topology>   Topology file (PDB or mmCIF) for atom names and radii.
+        \\    <topology>   Topology file (PDB or mmCIF, optionally .gz or .zst) for atom
+        \\                 names and radii.
         \\                 Must list the atoms of the trajectory in the same order:
         \\                 all ATOM and HETATM records of its first model are read.
         \\
