@@ -1745,6 +1745,84 @@ test "calculateSasaParallelf32 - same as sequential f32" {
     }
 }
 
+// =============================================================================
+// Thread spawn failure (thread quota reached while the pool is starting)
+// =============================================================================
+
+/// Number of atoms in `fillSpawnFailureGrid`: enough for calculateSasaParallel
+/// to split the work into several chunks (the minimum chunk size is 64).
+const spawn_failure_n_atoms = 400;
+
+/// Fill a grid of overlapping atoms.
+fn fillSpawnFailureGrid(x: []f64, y: []f64, z: []f64, r: []f64) void {
+    for (x, y, z, r, 0..) |*xi, *yi, *zi, *ri, i| {
+        xi.* = @as(f64, @floatFromInt(i % 8)) * 3.0;
+        yi.* = @as(f64, @floatFromInt((i / 8) % 8)) * 3.0;
+        zi.* = @as(f64, @floatFromInt(i / 64)) * 3.0;
+        ri.* = 1.2 + @as(f64, @floatFromInt(i % 5)) * 0.1;
+    }
+}
+
+test "calculateSasaParallel - spawn failure after K workers matches sequential" {
+    const allocator = std.testing.allocator;
+
+    var x: [spawn_failure_n_atoms]f64 = undefined;
+    var y: [spawn_failure_n_atoms]f64 = undefined;
+    var z: [spawn_failure_n_atoms]f64 = undefined;
+    var r: [spawn_failure_n_atoms]f64 = undefined;
+    fillSpawnFailureGrid(&x, &y, &z, &r);
+    const input = AtomInput{ .x = &x, .y = &y, .z = &z, .r = &r, .allocator = allocator };
+
+    const config = Config{ .n_points = 100, .probe_radius = 1.4 };
+
+    var sequential = try calculateSasa(allocator, input, config);
+    defer sequential.deinit();
+
+    // K == n_threads is the run without a failure.
+    const n_threads = 4;
+    for (0..n_threads + 1) |k| {
+        thread_pool.testing.spawns_until_failure = k;
+        defer thread_pool.testing.spawns_until_failure = null;
+
+        var parallel = try calculateSasaParallel(allocator, input, config, n_threads);
+        defer parallel.deinit();
+
+        // No worker may outlive the call: its buffers are already freed.
+        try std.testing.expectEqual(@as(usize, 0), thread_pool.testing.live_workers.load(.monotonic));
+        try std.testing.expectEqualSlices(f64, sequential.atom_areas, parallel.atom_areas);
+        try std.testing.expectApproxEqRel(sequential.total_area, parallel.total_area, 1e-12);
+    }
+}
+
+test "calculateSasaParallelf32 - spawn failure after K workers matches sequential" {
+    const allocator = std.testing.allocator;
+
+    var x: [spawn_failure_n_atoms]f64 = undefined;
+    var y: [spawn_failure_n_atoms]f64 = undefined;
+    var z: [spawn_failure_n_atoms]f64 = undefined;
+    var r: [spawn_failure_n_atoms]f64 = undefined;
+    fillSpawnFailureGrid(&x, &y, &z, &r);
+    const input = AtomInput{ .x = &x, .y = &y, .z = &z, .r = &r, .allocator = allocator };
+
+    const config = ConfigGen(f32){ .n_points = 100, .probe_radius = 1.4 };
+
+    var sequential = try calculateSasaf32(allocator, input, config);
+    defer sequential.deinit();
+
+    const n_threads = 4;
+    for (0..n_threads + 1) |k| {
+        thread_pool.testing.spawns_until_failure = k;
+        defer thread_pool.testing.spawns_until_failure = null;
+
+        var parallel = try calculateSasaParallelf32(allocator, input, config, n_threads);
+        defer parallel.deinit();
+
+        try std.testing.expectEqual(@as(usize, 0), thread_pool.testing.live_workers.load(.monotonic));
+        try std.testing.expectEqualSlices(f32, sequential.atom_areas, parallel.atom_areas);
+        try std.testing.expectApproxEqRel(sequential.total_area, parallel.total_area, 1e-5);
+    }
+}
+
 // Far-apart atoms (issue #428): the neighbor grid used to be sized by the bounding box.
 
 test "calculateSasa - far-apart atoms are isolated spheres" {

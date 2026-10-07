@@ -35,6 +35,7 @@ Core Zig checks:
 ```bash
 zig fmt --check src/
 zig build test
+python3 scripts/check_test_partition.py   # each test runs in exactly one artifact; see CONTRIBUTING.md
 zig build -Doptimize=ReleaseFast
 ./zig-out/bin/zsasa --help
 ./zig-out/bin/zsasa --version

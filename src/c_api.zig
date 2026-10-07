@@ -3191,12 +3191,101 @@ test "zsasa_batch_dir_process null error_code" {
     try std.testing.expect(handle == null);
 }
 
-test "zsasa_batch_dir_process with test_data" {
-    var error_code: c_int = ZSASA_OK;
+/// One file of a batch-directory test fixture.
+const BatchFixtureFile = struct {
+    name: []const u8,
+    data: []const u8,
+};
 
-    // Process test_data directory (contains 1l2y.pdb)
+/// Write `files` into the temporary directory and return its absolute path as a
+/// null-terminated string, ready to hand to `zsasa_batch_dir_process`.
+/// The caller frees the result with `std.testing.allocator`.
+fn writeBatchFixtureDir(tmp: *std.testing.TmpDir, files: []const BatchFixtureFile) ![:0]u8 {
+    for (files) |file| {
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = file.name, .data = file.data });
+    }
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(std.testing.io, &buf);
+    return std.testing.allocator.dupeZ(u8, buf[0..len]);
+}
+
+/// Index of the result entry whose filename is `name`, or null.
+fn findBatchDirFile(handle: ?*anyopaque, name: []const u8) ?usize {
+    for (0..zsasa_batch_dir_get_total_files(handle)) |i| {
+        const filename = zsasa_batch_dir_get_filename(handle, i) orelse continue;
+        if (std.mem.eql(u8, std.mem.span(filename), name)) return i;
+    }
+    return null;
+}
+
+/// Assert that `name` is a successful result with `n_atoms` atoms and the given total SASA.
+fn expectBatchDirFile(handle: ?*anyopaque, name: []const u8, n_atoms: usize, sasa: f64) !void {
+    const i = findBatchDirFile(handle, name) orelse {
+        std.debug.print("batch result has no entry named {s}\n", .{name});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expectEqual(@as(c_int, 1), zsasa_batch_dir_get_status(handle, i));
+    try std.testing.expectEqual(n_atoms, zsasa_batch_dir_get_n_atoms(handle, i));
+    try std.testing.expectApproxEqAbs(sasa, zsasa_batch_dir_get_total_sasa(handle, i), 1e-6);
+}
+
+// Small inputs for the batch directory tests. The reference SASA values below
+// were computed once with `zsasa calc --classifier=naccess` (probe 1.4 A,
+// 100 test points for SR, 20 slices for LR, hydrogens and HETATM excluded).
+const batch_fixture_ala_pdb =
+    "ATOM      1  N   ALA A   1      -0.966   0.493   1.500  1.00  0.00           N\n" ++
+    "ATOM      2  CA  ALA A   1       0.257   0.418   0.692  1.00  0.00           C\n" ++
+    "ATOM      3  C   ALA A   1      -0.094   0.017  -0.716  1.00  0.00           C\n" ++
+    "ATOM      4  O   ALA A   1      -1.056  -0.682  -0.923  1.00  0.00           O\n" ++
+    "ATOM      5  CB  ALA A   1       1.204  -0.620   1.296  1.00  0.00           C\n" ++
+    "END\n";
+const batch_fixture_gly_ent =
+    "ATOM      1  N   GLY A   1      10.000  10.000  10.000  1.00  0.00           N\n" ++
+    "ATOM      2  CA  GLY A   1      11.450  10.000  10.000  1.00  0.00           C\n" ++
+    "ATOM      3  C   GLY A   1      11.980  11.420  10.000  1.00  0.00           C\n" ++
+    "ATOM      4  O   GLY A   1      11.230  12.390  10.000  1.00  0.00           O\n" ++
+    "END\n";
+const batch_fixture_ethanol_sdf =
+    "ethanol\n" ++
+    "     zsasa   3D\n" ++
+    "\n" ++
+    "  9  8  0  0  0  0  0  0  0  0999 V2000\n" ++
+    "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    1.5200    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    2.0800    1.2124    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "   -0.5200    0.9400    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "   -0.5200   -0.5100    0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "   -0.5200   -0.5100   -0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    1.8800   -0.5100    0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    1.8800   -0.5100   -0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    2.9200    1.2124    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "  1  2  1  0  0  0  0\n" ++
+    "  1  4  1  0  0  0  0\n" ++
+    "  1  5  1  0  0  0  0\n" ++
+    "  1  6  1  0  0  0  0\n" ++
+    "  2  3  1  0  0  0  0\n" ++
+    "  2  7  1  0  0  0  0\n" ++
+    "  2  8  1  0  0  0  0\n" ++
+    "  3  9  1  0  0  0  0\n" ++
+    "M  END\n" ++
+    "$$$$\n";
+
+const batch_fixture_files = [_]BatchFixtureFile{
+    .{ .name = "ala.pdb", .data = batch_fixture_ala_pdb },
+    .{ .name = "gly.ent", .data = batch_fixture_gly_ent },
+    .{ .name = "ethanol.sdf", .data = batch_fixture_ethanol_sdf },
+    .{ .name = "notes.txt", .data = "not a structure file\n" },
+};
+
+test "zsasa_batch_dir_process with small directory" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const input_dir = try writeBatchFixtureDir(&tmp_dir, &batch_fixture_files);
+    defer std.testing.allocator.free(input_dir);
+
+    var error_code: c_int = -999;
     const handle = zsasa_batch_dir_process(
-        "test_data",
+        input_dir,
         null, // no file output
         ZSASA_ALGORITHM_SR,
         100,
@@ -3207,38 +3296,20 @@ test "zsasa_batch_dir_process with test_data" {
         0, // exclude HETATM
         &error_code,
     );
-
-    // test_data may or may not have supported structure files
-    if (handle == null) {
-        // If batch failed (e.g., no supported files), that's fine
-        return;
-    }
+    try std.testing.expect(handle != null);
     defer zsasa_batch_dir_free(handle);
-
     try std.testing.expectEqual(ZSASA_OK, error_code);
 
+    // notes.txt is not a supported structure file and is skipped.
     const total = zsasa_batch_dir_get_total_files(handle);
-    try std.testing.expect(total > 0);
+    try std.testing.expectEqual(@as(usize, 3), total);
+    try std.testing.expectEqual(@as(usize, 3), zsasa_batch_dir_get_successful(handle));
+    try std.testing.expectEqual(@as(usize, 0), zsasa_batch_dir_get_failed(handle));
+    try std.testing.expect(findBatchDirFile(handle, "notes.txt") == null);
 
-    const successful = zsasa_batch_dir_get_successful(handle);
-    try std.testing.expect(successful > 0);
-
-    // Check per-file results
-    for (0..total) |i| {
-        const filename = zsasa_batch_dir_get_filename(handle, i);
-        try std.testing.expect(filename != null);
-
-        const status = zsasa_batch_dir_get_status(handle, i);
-        if (status == 1) {
-            // Successful file should have positive SASA and atoms
-            const n_atoms = zsasa_batch_dir_get_n_atoms(handle, i);
-            try std.testing.expect(n_atoms > 0);
-
-            const sasa = zsasa_batch_dir_get_total_sasa(handle, i);
-            try std.testing.expect(sasa > 0.0);
-            try std.testing.expect(!std.math.isNan(sasa));
-        }
-    }
+    try expectBatchDirFile(handle, "ala.pdb", 5, 214.19937915667546);
+    try expectBatchDirFile(handle, "gly.ent", 4, 185.4280955820519);
+    try expectBatchDirFile(handle, "ethanol_ethanol", 3, 169.50525994296797);
 
     // Out-of-bounds access returns safe sentinels
     try std.testing.expect(zsasa_batch_dir_get_filename(handle, total) == null);
@@ -3248,10 +3319,14 @@ test "zsasa_batch_dir_process with test_data" {
 }
 
 test "zsasa_batch_dir_process with LR algorithm" {
-    var error_code: c_int = ZSASA_OK;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const input_dir = try writeBatchFixtureDir(&tmp_dir, batch_fixture_files[0..2]);
+    defer std.testing.allocator.free(input_dir);
 
-    const handle = zsasa_batch_dir_process(
-        "test_data",
+    var error_code: c_int = -999;
+    const lr = zsasa_batch_dir_process(
+        input_dir,
         null,
         ZSASA_ALGORITHM_LR,
         20, // n_slices for LR
@@ -3262,42 +3337,106 @@ test "zsasa_batch_dir_process with LR algorithm" {
         0,
         &error_code,
     );
-
-    if (handle == null) return;
-    defer zsasa_batch_dir_free(handle);
-
+    try std.testing.expect(lr != null);
+    defer zsasa_batch_dir_free(lr);
     try std.testing.expectEqual(ZSASA_OK, error_code);
 
-    const successful = zsasa_batch_dir_get_successful(handle);
-    try std.testing.expect(successful > 0);
+    try std.testing.expectEqual(@as(usize, 2), zsasa_batch_dir_get_total_files(lr));
+    try std.testing.expectEqual(@as(usize, 2), zsasa_batch_dir_get_successful(lr));
+    try std.testing.expectEqual(@as(usize, 0), zsasa_batch_dir_get_failed(lr));
 
-    // LR should produce similar results to SR
-    for (0..zsasa_batch_dir_get_total_files(handle)) |i| {
-        if (zsasa_batch_dir_get_status(handle, i) == 1) {
-            const sasa = zsasa_batch_dir_get_total_sasa(handle, i);
-            try std.testing.expect(sasa > 0.0);
-        }
-    }
-}
+    // Reference values from `zsasa calc --algorithm=lr --classifier=naccess`.
+    try expectBatchDirFile(lr, "ala.pdb", 5, 215.14412396821933);
+    try expectBatchDirFile(lr, "gly.ent", 4, 188.2086929717762);
 
-test "zsasa_batch_dir_process classifier_type -1 uses input radii" {
-    var error_code: c_int = ZSASA_OK;
-
-    const handle = zsasa_batch_dir_process(
-        "test_data",
+    // Shrake-Rupley on the same directory gives a different (but close) area,
+    // so the algorithm argument is really honored.
+    const sr = zsasa_batch_dir_process(
+        input_dir,
         null,
         ZSASA_ALGORITHM_SR,
         100,
         1.4,
+        1,
+        ZSASA_CLASSIFIER_NACCESS,
+        0,
+        0,
+        &error_code,
+    );
+    try std.testing.expect(sr != null);
+    defer zsasa_batch_dir_free(sr);
+    try std.testing.expectEqual(ZSASA_OK, error_code);
+
+    // Reference values from `zsasa calc --algorithm=sr --classifier=naccess`.
+    try expectBatchDirFile(sr, "ala.pdb", 5, 215.8249020274959);
+    try expectBatchDirFile(sr, "gly.ent", 4, 187.0015182803052);
+    for ([_][]const u8{ "ala.pdb", "gly.ent" }) |name| {
+        const lr_area = zsasa_batch_dir_get_total_sasa(lr, findBatchDirFile(lr, name).?);
+        const sr_area = zsasa_batch_dir_get_total_sasa(sr, findBatchDirFile(sr, name).?);
+        try std.testing.expect(@abs(lr_area - sr_area) > 0.1);
+        try std.testing.expect(@abs(lr_area - sr_area) < 0.02 * sr_area);
+    }
+}
+
+/// Total area of atoms that are far enough apart to be isolated spheres:
+/// the sum of 4 pi (r + probe)^2.
+fn isolatedSpheresArea(radii: []const f64, probe: f64) f64 {
+    var total: f64 = 0;
+    for (radii) |r| total += 4.0 * std.math.pi * (r + probe) * (r + probe);
+    return total;
+}
+
+test "zsasa_batch_dir_process classifier_type -1 uses input radii" {
+    // Atoms 100 A apart never touch, so each one exposes its whole sphere.
+    // A JSON file carries explicit radii. In a PDB file the radii come from the
+    // parser (the element's van der Waals radius), which differs from the
+    // NACCESS values a classifier would assign to the same atoms.
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const input_dir = try writeBatchFixtureDir(&tmp_dir, &.{
+        .{
+            .name = "radii.json",
+            .data = "{\"x\":[0.0,100.0],\"y\":[0.0,0.0],\"z\":[0.0,0.0],\"r\":[1.5,2.0]}",
+        },
+        .{
+            .name = "isolated.pdb",
+            .data = "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\n" ++
+                "ATOM      2  C   ALA A   1     100.000   0.000   0.000  1.00  0.00           C\n" ++
+                "ATOM      3  O   ALA A   1     200.000   0.000   0.000  1.00  0.00           O\n" ++
+                "END\n",
+        },
+    });
+    defer std.testing.allocator.free(input_dir);
+
+    const probe: f64 = 1.4;
+    const json_area = isolatedSpheresArea(&.{ 1.5, 2.0 }, probe);
+    const input_radii_area = isolatedSpheresArea(&.{ 1.55, 1.70, 1.52 }, probe); // N, C, O van der Waals
+    const naccess_area = isolatedSpheresArea(&.{ 1.65, 1.76, 1.40 }, probe); // ALA N, C, O
+
+    var error_code: c_int = -999;
+    const handle = zsasa_batch_dir_process(
+        input_dir,
+        null,
+        ZSASA_ALGORITHM_SR,
+        100,
+        probe,
         1,
         -1, // use radii from input files
         0,
         0,
         &error_code,
     );
-
-    if (handle == null) return;
+    try std.testing.expect(handle != null);
     defer zsasa_batch_dir_free(handle);
-
     try std.testing.expectEqual(ZSASA_OK, error_code);
+
+    try std.testing.expectEqual(@as(usize, 2), zsasa_batch_dir_get_total_files(handle));
+    try std.testing.expectEqual(@as(usize, 2), zsasa_batch_dir_get_successful(handle));
+    try std.testing.expectEqual(@as(usize, 0), zsasa_batch_dir_get_failed(handle));
+    try expectBatchDirFile(handle, "radii.json", 2, json_area);
+    try expectBatchDirFile(handle, "isolated.pdb", 3, input_radii_area);
+
+    // Guard against a vacuous comparison: the NACCESS classifier would give the
+    // PDB file another area, so matching the input radii proves no classifier ran.
+    try std.testing.expect(@abs(naccess_area - input_radii_area) > 1.0);
 }
