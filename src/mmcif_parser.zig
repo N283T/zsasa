@@ -697,16 +697,28 @@ pub const MmcifParser = struct {
         return best_non_preferred == index;
     }
 
+    /// Keep the alternate with the highest occupancy at its site. Alternates
+    /// with equal occupancy (a 0.50/0.50 pair, or a file without an occupancy
+    /// column) are a tie, and the one that comes first in the file wins, so
+    /// exactly one alternate per site survives. Atoms without an altLoc are
+    /// always kept, and an alternate that shares its site with one is dropped.
     fn shouldKeepHighestOccupancyAltLoc(atoms: []const AtomRecord, index: usize) bool {
         const atom = atoms[index];
-        var best_index = index;
+        if (atom.alt_loc == ' ') return true;
+
+        var best: ?usize = null;
         for (atoms, 0..) |other, other_index| {
             if (!sameAltLocSite(atom, other)) continue;
-            if (other.occupancy > atoms[best_index].occupancy) {
-                best_index = other_index;
+            if (other.alt_loc == ' ') return false;
+            if (best) |best_index| {
+                if (other.occupancy > atoms[best_index].occupancy) {
+                    best = other_index;
+                }
+            } else {
+                best = other_index;
             }
         }
-        return best_index == index;
+        return best == index;
     }
 
     /// Check if an atom should be included based on filters
@@ -1570,6 +1582,110 @@ test "parse mmCIF altLoc highest occupancy mode ignores A preference" {
 
     try std.testing.expectEqual(@as(usize, 1), input.atomCount());
     try std.testing.expectApproxEqAbs(@as(f64, 11.0), input.x[0], 0.001);
+}
+
+test "parse mmCIF altLoc highest occupancy mode keeps the first alternate of a tie" {
+    // CA of residue 1 is a 0.50/0.50 pair, CB a three-way tie, and CA of
+    // residue 2 a tie whose first alternate is B.
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.occupancy
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 N N  ALA A 1 . 1.00 1.0 0.0 0.0
+        \\2 C CA ALA A 1 A 0.50 2.0 0.0 0.0
+        \\3 C CA ALA A 1 B 0.50 3.0 0.0 0.0
+        \\4 C CB ALA A 1 A 0.33 4.0 0.0 0.0
+        \\5 C CB ALA A 1 B 0.33 5.0 0.0 0.0
+        \\6 C CB ALA A 1 C 0.33 6.0 0.0 0.0
+        \\7 C C  ALA A 1 . 1.00 7.0 0.0 0.0
+        \\8 C CA GLY A 2 B 0.50 8.0 0.0 0.0
+        \\9 C CA GLY A 2 A 0.50 9.0 0.0 0.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .highest_occupancy;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0, 7.0, 8.0 }, input.x);
+
+    // `auto` prefers A wherever it comes in the file
+    parser.alt_loc_mode = .auto;
+    var auto_input = try parser.parse(source);
+    defer auto_input.deinit();
+
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0, 7.0, 9.0 }, auto_input.x);
+}
+
+test "parse mmCIF altLoc highest occupancy mode keeps one alternate without an occupancy column" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 N N  ALA A 1 . 1.0 0.0 0.0
+        \\2 C CA ALA A 1 B 2.0 0.0 0.0
+        \\3 C CA ALA A 1 A 3.0 0.0 0.0
+        \\4 C C  ALA A 1 . 4.0 0.0 0.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .highest_occupancy;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0 }, input.x);
+}
+
+test "parse mmCIF altLoc highest occupancy mode keeps every atom without an altLoc" {
+    // Two chains without chain IDs repeat the residue number, so their atoms
+    // share a site. They are not alternates of each other.
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.occupancy
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C CA ALA 1 . 1.00 1.0 0.0 0.0
+        \\2 C CB ALA 1 A 0.50 2.0 0.0 0.0
+        \\3 C CB ALA 1 B 0.50 3.0 0.0 0.0
+        \\4 C CA ALA 1 . 0.80 4.0 0.0 0.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .highest_occupancy;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0 }, input.x);
 }
 
 test "parse mmCIF altLoc selection is per atom site and keeps later B-only sites" {

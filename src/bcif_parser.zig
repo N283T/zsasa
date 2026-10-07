@@ -1074,16 +1074,28 @@ pub const BcifParser = struct {
         return best_non_preferred == index;
     }
 
+    /// Keep the alternate with the highest occupancy at its site. Alternates
+    /// with equal occupancy (a 0.50/0.50 pair, or a file without an occupancy
+    /// column) are a tie, and the one that comes first in the file wins, so
+    /// exactly one alternate per site survives. Atoms without an altLoc are
+    /// always kept, and an alternate that shares its site with one is dropped.
     fn shouldKeepHighestOccupancyAltLoc(atoms: []const AtomRecord, index: usize) bool {
         const atom = atoms[index];
-        var best_index = index;
+        if (atom.alt_loc == ' ') return true;
+
+        var best: ?usize = null;
         for (atoms, 0..) |other, other_index| {
             if (!sameAltLocSite(atom, other)) continue;
-            if (other.occupancy > atoms[best_index].occupancy) {
-                best_index = other_index;
+            if (other.alt_loc == ' ') return false;
+            if (best) |best_index| {
+                if (other.occupancy > atoms[best_index].occupancy) {
+                    best = other_index;
+                }
+            } else {
+                best = other_index;
             }
         }
-        return best_index == index;
+        return best == index;
     }
 
     fn shouldIncludeAtom(self: *BcifParser, decoded: []const DecodedColumn, columns: AtomSiteColumns, row: usize) bool {
@@ -1987,6 +1999,8 @@ const TestAtomRow = struct {
     /// auth_asym_id; defaults to `chain`.
     auth_chain: ?[]const u8 = null,
     ins_code: []const u8 = "",
+    /// Written only by `buildAltLocBcif`.
+    occupancy: f32 = 1.0,
 
     fn groupValue(row: TestAtomRow) []const u8 {
         return row.group;
@@ -2035,6 +2049,9 @@ const TestAtomRow = struct {
     }
     fn zValue(row: TestAtomRow) f32 {
         return row.z;
+    }
+    fn occupancyValue(row: TestAtomRow) f32 {
+        return row.occupancy;
     }
 };
 
@@ -2485,6 +2502,21 @@ fn runLengthAtomSiteColumns(arena: Allocator, rows: []const TestAtomRow) ![]Test
     });
 }
 
+/// Builds a file with the columns of `runLengthAtomSiteColumns` and, with
+/// `with_occupancy`, an occupancy column stored with three decimals.
+fn buildAltLocBcif(rows: []const TestAtomRow, with_occupancy: bool) ![]u8 {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var columns = std.ArrayListUnmanaged(TestEncodedColumn).empty;
+    try columns.appendSlice(arena, try runLengthAtomSiteColumns(arena, rows));
+    if (with_occupancy) {
+        try columns.append(arena, try runLengthFloatColumn(arena, "occupancy", rows, TestAtomRow.occupancyValue));
+    }
+    return buildEncodedBcif(rows.len, columns.items);
+}
+
 /// Rows with runs of equal values in every column, a null label_seq_id on
 /// the waters, and coordinates that three decimals store exactly.
 const run_length_test_rows = [_]TestAtomRow{
@@ -2748,6 +2780,92 @@ test "parse BinaryCIF altLoc selected ID keeps requested alternate" {
     try std.testing.expectEqual(@as(usize, 2), input.atomCount());
     try std.testing.expectApproxEqAbs(@as(f64, 12.0), input.x[0], 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
+}
+
+test "parse BinaryCIF altLoc highest occupancy mode keeps the first alternate of a tie" {
+    // CA of residue 1 is a 0.50/0.50 pair, CB a three-way tie, and CA of
+    // residue 2 a tie whose first alternate is B.
+    const rows = [_]TestAtomRow{
+        .{ .group = "ATOM", .element = "N", .atom = "N", .residue = "ALA", .chain = "A", .seq = 1, .x = 1.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "A", .seq = 1, .alt = "A", .occupancy = 0.5, .x = 2.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "A", .seq = 1, .alt = "B", .occupancy = 0.5, .x = 3.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CB", .residue = "ALA", .chain = "A", .seq = 1, .alt = "A", .occupancy = 0.33, .x = 4.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CB", .residue = "ALA", .chain = "A", .seq = 1, .alt = "B", .occupancy = 0.33, .x = 5.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CB", .residue = "ALA", .chain = "A", .seq = 1, .alt = "C", .occupancy = 0.33, .x = 6.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "C", .residue = "ALA", .chain = "A", .seq = 1, .x = 7.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 2, .alt = "B", .occupancy = 0.5, .x = 8.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 2, .alt = "A", .occupancy = 0.5, .x = 9.0 },
+    };
+    const source = try buildAltLocBcif(&rows, true);
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .highest_occupancy;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0, 7.0, 8.0 }, input.x);
+
+    // `auto` prefers A wherever it comes in the file
+    parser.alt_loc_mode = .auto;
+    var auto_input = try parser.parse(source);
+    defer auto_input.deinit();
+
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0, 7.0, 9.0 }, auto_input.x);
+}
+
+test "parse BinaryCIF altLoc highest occupancy mode ignores A preference" {
+    const rows = [_]TestAtomRow{
+        .{ .group = "ATOM", .element = "C", .atom = "CB", .residue = "ALA", .chain = "A", .seq = 1, .alt = "A", .occupancy = 0.4, .x = 10.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CB", .residue = "ALA", .chain = "A", .seq = 1, .alt = "B", .occupancy = 0.7, .x = 11.0 },
+    };
+    const source = try buildAltLocBcif(&rows, true);
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .highest_occupancy;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqualSlices(f64, &.{11.0}, input.x);
+}
+
+test "parse BinaryCIF altLoc highest occupancy mode keeps one alternate without an occupancy column" {
+    const rows = [_]TestAtomRow{
+        .{ .group = "ATOM", .element = "N", .atom = "N", .residue = "ALA", .chain = "A", .seq = 1, .x = 1.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "A", .seq = 1, .alt = "B", .x = 2.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "A", .seq = 1, .alt = "A", .x = 3.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "C", .residue = "ALA", .chain = "A", .seq = 1, .x = 4.0 },
+    };
+    const source = try buildAltLocBcif(&rows, false);
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .highest_occupancy;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0 }, input.x);
+}
+
+test "parse BinaryCIF altLoc highest occupancy mode keeps every atom without an altLoc" {
+    // The two CA atoms share a site (same chain, residue number and name)
+    // and are not alternates of each other.
+    const rows = [_]TestAtomRow{
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "A", .seq = 1, .x = 1.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CB", .residue = "ALA", .chain = "A", .seq = 1, .alt = "A", .occupancy = 0.5, .x = 2.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CB", .residue = "ALA", .chain = "A", .seq = 1, .alt = "B", .occupancy = 0.5, .x = 3.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "A", .seq = 1, .occupancy = 0.8, .x = 4.0 },
+    };
+    const source = try buildAltLocBcif(&rows, true);
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .highest_occupancy;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0 }, input.x);
 }
 
 test "parse BinaryCIF altLoc selection is scoped by model" {
