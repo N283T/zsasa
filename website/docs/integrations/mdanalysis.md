@@ -66,6 +66,8 @@ def run(
     algorithm: Literal["sr", "lr"] = "sr",
     n_slices: int = 20,
     n_threads: int = 0,
+    chunk_size: int | None = None,
+    store_atom_areas: bool = True,
     use_bitmask: bool = False,
     bitmask_correction: bool = False,
     bitmask_correction_coeff: float | None = None,
@@ -77,13 +79,15 @@ def run(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `start` | `int` | `0` | First frame to analyze |
-| `stop` | `int` | `None` | Last frame (None = last) |
+| `stop` | `int \| None` | `None` | Stop before this frame (None = run through the last frame) |
 | `step` | `int` | `1` | Step between frames |
 | `probe_radius` | `float` | `1.4` | Probe radius in Å |
 | `n_points` | `int` | `960` | Test points per atom (SR) |
 | `algorithm` | `"sr"` or `"lr"` | `"sr"` | Algorithm to use |
 | `n_slices` | `int` | `20` | Slices per atom (LR) |
 | `n_threads` | `int` | `0` | Threads (0 = auto) |
+| `chunk_size` | `int \| None` | `None` | Frames per native batch (must be positive). `None` processes all selected frames in one batch; a smaller value lowers peak memory |
+| `store_atom_areas` | `bool` | `True` | Keep per-atom SASA in `results.atom_area`. With `False`, only the totals and per-residue sums are kept and `results.atom_area` is `None` |
 | `use_bitmask` | `bool` | `False` | Use [bitmask LUT optimization](../guide/algorithms.mdx#bitmask-lut-optimization) (SR only, n_points must be 1..1024) |
 | `bitmask_correction` | `bool` | `False` | Experimental exposed-fraction correction for bitmask quantization bias; requires `use_bitmask=True` |
 | `bitmask_correction_coeff` | `float \| None` | `None` | Override the experimental correction coefficient (`None` uses library default) |
@@ -96,7 +100,7 @@ After calling `run()`, results are available in the `results` attribute:
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `atom_area` | `NDArray[float32]` | Per-atom SASA, shape `(n_frames, n_atoms)` |
+| `atom_area` | `NDArray[float32] \| None` | Per-atom SASA, shape `(n_frames, n_atoms)`; `None` when `run()` was called with `store_atom_areas=False` |
 | `residue_area` | `NDArray[float32]` | Per-residue SASA, shape `(n_frames, n_residues)` |
 | `total_area` | `NDArray[float32]` | Total SASA, shape `(n_frames,)` |
 | `mean_total_area` | `float` | Mean total SASA across all frames |
@@ -140,12 +144,15 @@ def compute_sasa(
     algorithm: Literal["sr", "lr"] = "sr",
     n_slices: int = 20,
     n_threads: int = 0,
+    chunk_size: int | None = None,
     mode: Literal["atom", "residue", "total"] = "atom",
     use_bitmask: bool = False,
     bitmask_correction: bool = False,
     bitmask_correction_coeff: float | None = None,
 ) -> NDArray[np.float32]
 ```
+
+`chunk_size` has the same meaning as in `run()`. Per-atom areas are only kept for `mode="atom"`, so `"residue"` and `"total"` need less memory.
 
 **Returns:** SASA values in Å².
 

@@ -14,7 +14,7 @@ The input format is auto-detected from the file extension.
 | `.pdb`, `.pdb.gz`, `.pdb.zst`, `.PDB`, `.ent`, `.ent.gz`, `.ent.zst`, `.ENT` | PDB |
 | `.sdf`, `.sdf.gz`, `.sdf.zst`, `.mol`, `.mol.gz`, `.mol.zst` | SDF/MOL small molecules |
 
-`.gz` inputs may hold several concatenated gzip members, as produced by `cat a.gz b.gz` or by `bgzip` (BGZF). All members are decompressed and joined, and the CRC32 and size of each member are verified. A `.gz` file with trailing bytes that are not a gzip member, including zero padding, is rejected as corrupt.
+`.gz` inputs may hold several concatenated gzip members, as produced by `cat a.gz b.gz` or by `bgzip` (BGZF). All members are decompressed and joined, and the CRC32 and size of each member are verified. A `.gz` file with trailing bytes that are not a gzip member, including zero padding, is rejected as corrupt, and so is a file that ends inside a member, such as an incomplete download.
 
 ## JSON Format
 
@@ -122,7 +122,15 @@ The occupancy of a residue is the occupancy of its first atom with an altloc ID 
 
 ## SDF/MOL Format
 
-SDF and MOL files are supported for small-molecule SASA. V2000 and V3000 records are accepted, and batch mode expands multi-molecule SDF files so each molecule is calculated independently. Use `--mol=NAME_OR_INDEX` to select one molecule from a multi-molecule SDF.
+SDF and MOL files are supported for small-molecule SASA. V2000 and V3000 records are accepted (V3000 lines continued with a trailing `-` are joined), and batch mode expands multi-molecule SDF files so each molecule is calculated independently. Use `--mol=NAME_OR_INDEX` to select one molecule from a multi-molecule SDF.
+
+The first line of a record is the molecule title. It may be blank, which is what RDKit writes for a molecule without a name; select such a molecule by its 1-based index. Blank lines after a `$$$$` separator and at the end of the file are skipped.
+
+Hydrogens are excluded unless `--include-hydrogens` is given. Deuterium and tritium atoms (symbols `D` and `T`) are hydrogens: they are excluded and included together with `H` atoms.
+
+With the default `ccd` classifier, the radii of an SDF or MOL molecule are derived from its own bond table. The title plays no part in this: a molecule without a title, or with a title that is also a residue name such as `ALA`, is classified like any other, and every molecule of a file uses its own bond table. `--sdf` and `--ccd` describe the residues of PDB, mmCIF and BinaryCIF structures and are not consulted for SDF or MOL input.
+
+SDF and MOL files do not name their atoms. zsasa names each atom of a molecule after its element and a per-element counter in file order (`C1`, `C2`, `O1`, `Cl1`); these names appear in CSV and other per-atom output. A name has at most four characters, so the counter continues in base 36 with a leading letter where decimal digits no longer fit: `CA00` follows `C999` and `ClA0` follows `Cl99`.
 
 In batch mode each molecule is named `stem_title` after the file stem and the molecule title, or `stem_N` when the title is blank; molecules of one file that share a title get their position appended (`stem_title_N`). See [SDF and MOL Output Names](../guide/batch.md#sdf-and-mol-output-names) for the full rules and the characters replaced in output file names.
 

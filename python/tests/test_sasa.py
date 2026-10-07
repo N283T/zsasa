@@ -86,6 +86,63 @@ class TestTwoAtoms:
         single_area = 4 * np.pi * (1.5 + 1.4) ** 2
         assert abs(result.total_area - 2 * single_area) < 1.0
 
+    @pytest.mark.parametrize(
+        ("far_atom", "radius"),
+        [
+            # 2^22 x 2^21 x 2^21 neighbor-grid cells: the count wrapped around (SIGSEGV)
+            ([(2**22 - 2) * 4.0, (2**21 - 2) * 4.0, (2**21 - 2) * 4.0], 0.6),
+            ([34359738352.0, 34359738352.0, 0.0], 2.6),
+            # Hundreds of MB for two atoms
+            ([2000.0, 2000.0, 2000.0], 1.7),
+            ([9999.999, 9999.999, 9999.999], 1.7),
+            ([1e30, -1e30, 1e30], 1.7),
+            ([1e300, -1e300, 1e300], 1.7),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "options",
+        [
+            {"algorithm": "sr"},
+            {"algorithm": "lr"},
+            {"algorithm": "sr", "use_bitmask": True},
+        ],
+    )
+    @pytest.mark.parametrize("n_threads", [1, 4])
+    def test_far_apart_atoms_are_isolated_spheres(self, far_atom, radius, options, n_threads):
+        """Atoms far apart must not make the neighbor grid grow with the box (#428)."""
+        coords = np.array([[0.0, 0.0, 0.0], far_atom])
+        radii = np.array([radius, radius])
+
+        result = calculate_sasa(coords, radii, n_threads=n_threads, **options)
+
+        single_area = 4 * np.pi * (radius + 1.4) ** 2
+        assert result.atom_areas == pytest.approx([single_area, single_area], rel=1e-12)
+        assert result.total_area == pytest.approx(2 * single_area, rel=1e-12)
+
+    @pytest.mark.parametrize("algorithm", ["sr", "lr"])
+    def test_stray_atom_does_not_change_other_areas(self, algorithm):
+        """A distant atom leaves the areas of a compact group unchanged (#428)."""
+        rng = np.random.default_rng(428)
+        coords = rng.uniform(0.0, 12.0, size=(60, 3))
+        radii = rng.uniform(1.2, 2.0, size=60)
+        stray_coords = np.vstack([coords, [[9999.999, 9999.999, 9999.999]]])
+        stray_radii = np.append(radii, 1.7)
+
+        compact = calculate_sasa(coords, radii, algorithm=algorithm, n_threads=1)
+        stray = calculate_sasa(stray_coords, stray_radii, algorithm=algorithm, n_threads=1)
+
+        np.testing.assert_array_equal(stray.atom_areas[:-1], compact.atom_areas)
+        assert stray.atom_areas[-1] == pytest.approx(4 * np.pi * 3.1**2, rel=1e-12)
+
+    def test_coordinate_range_beyond_float64(self):
+        """A finite range whose width overflows float64 is an error, not a crash (#428)."""
+        largest = np.finfo(np.float64).max
+        coords = np.array([[-largest, 0.0, 0.0], [largest, 0.0, 0.0]])
+        radii = np.array([1.7, 1.7])
+
+        with pytest.raises(ValueError, match="Invalid input"):
+            calculate_sasa(coords, radii, n_threads=1)
+
 
 class TestParameters:
     """Tests for parameter variations."""

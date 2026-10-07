@@ -15,7 +15,7 @@ zsasa provides two main interfaces. The right choice depends on your input data 
 | Structure needs processing | Experimental structures with altloc, ligands, waters, multiple models | **Python integrations** |
 | Combining with other tools | BioPython, Gemmi, MDAnalysis pipelines | **Python integrations** |
 | Batch processing of clean files | Directory of AlphaFold/ESMFold structures | **CLI** |
-| MD trajectory (quick analysis) | XTC/DCD files, no atom selection needed | **CLI `traj`** |
+| MD trajectory (quick analysis) | XTC/TRR/DCD/NetCDF files, no atom selection needed | **CLI `traj`** |
 | MD trajectory (atom selections) | Trajectories requiring `select="protein"` etc. | **Python** (MDAnalysis/MDTraj) |
 
 ## CLI: Pre-processed Structures
@@ -39,7 +39,7 @@ zsasa batch structures/ results/
 
 For repeated batch analyses with shared settings or named chain-complex jobs, prefer [Workflow Files](workflows.md). Workflow TOML files keep calculation, output, classifier, and per-job settings together so analyses are easier to rerun and review.
 
-The CLI supports basic filtering (`--chain`, `--model`, `--altloc`, `--include-hetatm`, `--include-hydrogens`), but has limitations:
+The CLI supports basic filtering (`--chain`, `--model` for `calc`, `--altloc`, `--include-hetatm`, `--include-hydrogens`), but has limitations:
 - **Altloc** — one rule for the whole file: `--altloc` keeps altloc `A` or the highest occupancy (`auto`, the default), the highest occupancy, one altloc ID, or every alternate (see [Alternate Locations](../cli/input.md#alternate-locations)). There is no per-residue choice
 - **HETATM** — all-or-nothing (`--include-hetatm`), no granular control (e.g., keep ligands but remove waters)
 - **No programmatic control** — cannot combine with other analysis libraries

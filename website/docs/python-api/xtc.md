@@ -1,13 +1,13 @@
 # Legacy Native XTC Reader
 
-The `zsasa.xtc` module provides a standalone XTC trajectory reader kept for compatibility with existing zsasa users. For new Python workflows that read trajectory files directly, prefer [pyztraj](https://github.com/N283T/ztraj), which centralizes trajectory I/O and trajectory-native analysis across XTC, TRR, DCD, and AMBER NetCDF.
+The `zsasa.xtc` module provides a standalone XTC trajectory reader kept for compatibility with existing zsasa users; the `zsasa.dcd` module offers the same API for DCD files (see [DCD](#dcd-zsasadcd)). For new Python workflows that read trajectory files directly, prefer [pyztraj](https://github.com/N283T/ztraj), which centralizes trajectory I/O and trajectory-native analysis across XTC, TRR, DCD, and AMBER NetCDF.
 
 ## When to Use
 
 | Use Case | Recommended Module |
 |----------|-------------------|
 | Direct trajectory-file I/O or trajectory-native analysis | `pyztraj` |
-| Existing code already using `zsasa.xtc` | `zsasa.xtc` |
+| Existing code already using `zsasa.xtc` or `zsasa.dcd` | `zsasa.xtc` / `zsasa.dcd` |
 | Need MDTraj/MDAnalysis ecosystem objects | `zsasa.mdtraj` or `zsasa.mdanalysis` |
 
 ## Compatibility Status
@@ -219,6 +219,108 @@ result = compute_sasa_trajectory("trajectory.xtc", radii)
 
 ---
 
+## compute_sasa_trajectory_summary
+
+Memory-efficient variant of `compute_sasa_trajectory`: frames are read and processed in chunks, and the per-atom SASA arrays are discarded after the per-frame totals (and optional per-residue sums) have been accumulated. Use it for long trajectories when you do not need per-atom values.
+
+```python
+def compute_sasa_trajectory_summary(
+    xtc_path: str | Path,
+    radii: NDArray[np.floating] | list[float],
+    *,
+    atom_to_residue: NDArray[np.integer] | list[int] | None = None,
+    probe_radius: float = 1.4,
+    n_points: int = 100,
+    algorithm: Literal["sr", "lr"] = "sr",
+    n_slices: int = 20,
+    n_threads: int = 0,
+    start: int = 0,
+    stop: int | None = None,
+    step: int = 1,
+    chunk_size: int = 16,
+    use_bitmask: bool = False,
+    bitmask_correction: bool = False,
+    bitmask_correction_coeff: float | None = None,
+) -> TrajectorySasaSummaryResult
+```
+
+It takes the parameters of [`compute_sasa_trajectory`](#compute_sasa_trajectory) and two more:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `atom_to_residue` | `array-like of int \| None` | `None` | Residue index of each atom, shape `(n_atoms,)`, non-negative. When given, per-residue SASA is returned too. The indices are remapped to consecutive columns in ascending order of the original index |
+| `chunk_size` | `int` | `16` | Frames processed per native batch (must be positive). Only one chunk of per-atom areas is held in memory at a time |
+
+**Returns:** `TrajectorySasaSummaryResult`
+
+**Raises:**
+- `ValueError`: If `radii` does not match the trajectory atoms, `chunk_size` is not positive, `atom_to_residue` has the wrong shape or negative values, or no frame is selected
+
+### TrajectorySasaSummaryResult
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `total_areas` | `NDArray[float32]` | Total SASA per frame, shape (n_frames,) in Å² |
+| `steps` | `NDArray[int32]` | Step numbers for each frame |
+| `times` | `NDArray[float32]` | Time values in picoseconds |
+| `residue_areas` | `NDArray[float32] \| None` | Per-residue SASA, shape (n_frames, n_residues) in Å²; `None` without `atom_to_residue` |
+
+Properties: `n_frames` and `n_residues` (`0` when `residue_areas` is `None`).
+
+```python
+import numpy as np
+from zsasa.xtc import compute_sasa_trajectory_summary
+
+radii = np.full(304, 1.7)
+atom_to_residue = np.repeat(np.arange(19), 16)[:304]  # one residue index per atom
+
+result = compute_sasa_trajectory_summary(
+    "trajectory.xtc", radii, atom_to_residue=atom_to_residue, chunk_size=8
+)
+print(result.total_areas.shape)     # (n_frames,)
+print(result.residue_areas.shape)   # (n_frames, n_residues)
+```
+
+---
+
+## DCD: zsasa.dcd
+
+`zsasa.dcd` provides the same reader and SASA functions for DCD files (NAMD/CHARMM). Unlike XTC, DCD coordinates are already in **Angstroms**, so no unit conversion is applied.
+
+```python
+from zsasa.dcd import (
+    DcdFrame,
+    DcdReader,
+    compute_sasa_trajectory,
+    compute_sasa_trajectory_summary,
+)
+```
+
+| Name | Description |
+|------|-------------|
+| `DcdReader(path)` | Frame reader with the same interface as `XtcReader`: `natoms`, `read_frame()`, `close()`, iteration and context-manager use. Raises `FileNotFoundError` if the file cannot be opened |
+| `DcdFrame` | One frame: `step`, `time`, `coords` (`NDArray[float32]`, (n_atoms, 3), Å), `unitcell` (six doubles, or `None` when the file has none) and the `natoms` property |
+| `compute_sasa_trajectory(dcd_path, radii, ...)` | Same parameters and `TrajectorySasaResult` as the XTC function; `dcd_path` replaces `xtc_path` |
+| `compute_sasa_trajectory_summary(dcd_path, radii, ...)` | Same parameters and `TrajectorySasaSummaryResult` as the XTC function, including `atom_to_residue` and `chunk_size` |
+
+`TrajectorySasaResult` and `TrajectorySasaSummaryResult` are the classes of `zsasa.xtc`.
+
+```python
+import numpy as np
+from zsasa.dcd import DcdReader, compute_sasa_trajectory
+
+with DcdReader("trajectory.dcd") as reader:
+    print(reader.natoms)
+    frame = reader.read_frame()
+    print(frame.step, frame.coords.shape)
+
+radii = np.full(304, 1.7)
+result = compute_sasa_trajectory("trajectory.dcd", radii, step=2)
+print(result.total_areas)
+```
+
+---
+
 ## TrajectorySasaResult
 
 Result container for trajectory SASA calculation.
@@ -246,7 +348,7 @@ Result container for trajectory SASA calculation.
 | Feature | pyztraj | zsasa.xtc | zsasa.mdtraj | zsasa.mdanalysis |
 |---------|---------|-----------|--------------|------------------|
 | Dependencies | pyztraj | None (only NumPy) | mdtraj | MDAnalysis |
-| Trajectory formats | XTC, TRR, DCD, AMBER NetCDF | XTC only | Many (XTC, TRR, DCD, ...) | Many |
+| Trajectory formats | XTC, TRR, DCD, AMBER NetCDF | XTC only (`zsasa.dcd` for DCD) | Many (XTC, TRR, DCD, ...) | Many |
 | Topology support | From ztraj loaders | Manual radii | From topology | From topology |
 | Atom selection | Yes | No | Yes | Yes |
 | Status | Preferred for direct trajectory files | Legacy compatibility | Ecosystem integration | Ecosystem integration |
