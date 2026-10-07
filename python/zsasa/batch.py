@@ -91,7 +91,9 @@ def process_directory(
         input_dir: Path to directory containing structure files.
         output_dir: Optional path for per-file output. None = no file output.
             Output files are named after the input stem, so inputs that share
-            a stem (``1crn.pdb`` and ``1crn.cif``) are rejected.
+            a stem (``1crn.pdb`` and ``1crn.cif``) are rejected. Names are
+            compared without regard to ASCII case. An SDF/MOL molecule is
+            named ``stem_title`` in ``filenames`` and written under that name.
         algorithm: Algorithm to use: "sr" (Shrake-Rupley) or "lr" (Lee-Richards).
         n_points: Number of test points per atom (SR only; ignored for LR).
             Default: 100.
@@ -184,7 +186,8 @@ def process_directory(
         elif ec == ZSASA_ERROR_OUTPUT_NAME_COLLISION:
             msg = (
                 f"Several inputs in {input_dir} map to the same output file name "
-                "(same stem, different extension); split them into separate directories"
+                "(for example the same stem with different extensions, or names that "
+                "differ only in case); split them into separate directories"
             )
             raise ValueError(msg)
         else:

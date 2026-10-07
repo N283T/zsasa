@@ -15,9 +15,6 @@ const NeighborListGen = neighbor_list_mod.NeighborListGen;
 
 const TWOPI: f64 = 2.0 * std.math.pi;
 
-/// Thread-safe allocator for parallel workers
-const thread_safe_allocator = std.heap.page_allocator;
-
 /// Configuration for Lee-Richards algorithm
 pub const LeeRichardsConfig = struct {
     /// Number of slices per atom diameter
@@ -71,6 +68,7 @@ pub fn calculateSasa(
 
     // Calculate SASA for each atom
     const atom_areas = try allocator.alloc(f64, n_atoms);
+    errdefer allocator.free(atom_areas);
     var total_area: f64 = 0.0;
 
     // Estimate max neighbors for arc buffer allocation
@@ -462,8 +460,9 @@ fn sortArcs(arcs: []Arc) void {
 }
 
 /// Context for parallel Lee-Richards calculation workers.
-/// Thread safety: All fields are read-only except `atom_areas` which has
-/// disjoint write access (each thread writes to different indices).
+/// Thread safety: All fields are read-only except `atom_areas` and
+/// `arc_buffers`, which have disjoint write access (each chunk writes to its
+/// own atom indices and to its own slice of `arc_buffers`).
 const ParallelContext = struct {
     x: []const f64,
     y: []const f64,
@@ -472,19 +471,44 @@ const ParallelContext = struct {
     neighbor_list: *const NeighborList,
     n_slices: u32,
     max_arc_buffer_size: usize,
+    /// Scratch space for all chunks: `max_arc_buffer_size` arcs per chunk.
+    arc_buffers: []Arc,
+    /// Chunk size handed to the thread pool, used to find a chunk's slice.
+    chunk_size: usize,
     atom_areas: []f64,
 };
+
+/// Allocate the arc scratch space of a parallel run: one buffer per chunk the
+/// thread pool will hand out. Allocating it up front leaves the workers with
+/// nothing to allocate, so they cannot fail part-way through the atoms.
+fn allocArcBuffers(
+    comptime ArcT: type,
+    allocator: Allocator,
+    n_atoms: usize,
+    chunk_size: usize,
+    max_arc_buffer_size: usize,
+) Allocator.Error![]ArcT {
+    const n_chunks = thread_pool.chunkCount(n_atoms, chunk_size);
+    const total = std.math.mul(usize, n_chunks, max_arc_buffer_size) catch return error.OutOfMemory;
+    return allocator.alloc(ArcT, total);
+}
+
+/// The slice of `arc_buffers` that belongs to the chunk starting at `chunk_start`.
+fn chunkArcBuffer(
+    comptime ArcT: type,
+    arc_buffers: []ArcT,
+    chunk_start: usize,
+    chunk_size: usize,
+    max_arc_buffer_size: usize,
+) []ArcT {
+    const offset = (chunk_start / chunk_size) * max_arc_buffer_size;
+    return arc_buffers[offset..][0..max_arc_buffer_size];
+}
 
 /// Worker function for parallel Lee-Richards calculation.
 /// Processes atoms from chunk_start to chunk_end.
 fn parallelLeeRichardsWorker(ctx: ParallelContext, chunk_start: usize, chunk_end: usize) f64 {
-    // Allocate arc buffer for this chunk (thread-safe allocator)
-    const arc_buffer = thread_safe_allocator.alloc(Arc, ctx.max_arc_buffer_size) catch {
-        // Log error - this is very unlikely with page_allocator but shouldn't fail silently
-        std.log.err("Lee-Richards worker: allocation failed for chunk {d}-{d}", .{ chunk_start, chunk_end });
-        return 0.0;
-    };
-    defer thread_safe_allocator.free(arc_buffer);
+    const arc_buffer = chunkArcBuffer(Arc, ctx.arc_buffers, chunk_start, ctx.chunk_size, ctx.max_arc_buffer_size);
 
     var chunk_total: f64 = 0.0;
 
@@ -576,6 +600,15 @@ pub fn calculateSasaParallel(
     // Each neighbor can create up to 2 arcs (when crossing 0)
     const max_arc_buffer_size = (max_neighbors + 1) * 2;
 
+    // Chunk size heuristic:
+    // - Minimum 64 atoms per chunk to amortize thread overhead
+    // - Target 4 chunks per thread for load balancing
+    const chunk_size = @max(64, n_atoms / (actual_threads * 4));
+
+    // Allocate the arc buffers of all chunks before any worker starts
+    const arc_buffers = try allocArcBuffers(Arc, allocator, n_atoms, chunk_size, max_arc_buffer_size);
+    defer allocator.free(arc_buffers);
+
     // Allocate result arrays
     const atom_areas = try allocator.alloc(f64, n_atoms);
     errdefer allocator.free(atom_areas);
@@ -589,13 +622,10 @@ pub fn calculateSasaParallel(
         .neighbor_list = &neighbor_list,
         .n_slices = config.n_slices,
         .max_arc_buffer_size = max_arc_buffer_size,
+        .arc_buffers = arc_buffers,
+        .chunk_size = chunk_size,
         .atom_areas = atom_areas,
     };
-
-    // Chunk size heuristic:
-    // - Minimum 64 atoms per chunk to amortize thread overhead
-    // - Target 4 chunks per thread for load balancing
-    const chunk_size = @max(64, n_atoms / (actual_threads * 4));
 
     // Run parallel calculation
     const total_area = try thread_pool.parallelFor(
@@ -1017,17 +1047,16 @@ pub fn LeeRichardsGen(comptime T: type) type {
             neighbor_list: *const NList,
             n_slices: u32,
             max_arc_buffer_size: usize,
+            /// Scratch space for all chunks: `max_arc_buffer_size` arcs per chunk.
+            arc_buffers: []Self.Arc,
+            /// Chunk size handed to the thread pool, used to find a chunk's slice.
+            chunk_size: usize,
             atom_areas: []T,
         };
 
         /// Worker function for parallel Lee-Richards calculation.
         fn parallelLeeRichardsWorker(ctx: Self.ParallelContext, chunk_start: usize, chunk_end: usize) T {
-            // Allocate arc buffer for this chunk (thread-safe allocator)
-            const arc_buffer = thread_safe_allocator.alloc(Self.Arc, ctx.max_arc_buffer_size) catch {
-                std.log.err("Lee-Richards worker: allocation failed for chunk {d}-{d}", .{ chunk_start, chunk_end });
-                return 0.0;
-            };
-            defer thread_safe_allocator.free(arc_buffer);
+            const arc_buffer = chunkArcBuffer(Self.Arc, ctx.arc_buffers, chunk_start, ctx.chunk_size, ctx.max_arc_buffer_size);
 
             var chunk_total: T = 0.0;
 
@@ -1113,6 +1142,7 @@ pub fn LeeRichardsGen(comptime T: type) type {
 
             // Calculate SASA for each atom
             const atom_areas = try allocator.alloc(T, n_atoms);
+            errdefer allocator.free(atom_areas);
             var total_area: T = 0.0;
 
             // Estimate max neighbors for arc buffer allocation
@@ -1211,6 +1241,13 @@ pub fn LeeRichardsGen(comptime T: type) type {
             }
             const max_arc_buffer_size = (max_neighbors + 1) * 2;
 
+            // Chunk size heuristic
+            const chunk_size = @max(64, n_atoms / (actual_threads * 4));
+
+            // Allocate the arc buffers of all chunks before any worker starts
+            const arc_buffers = try allocArcBuffers(Self.Arc, allocator, n_atoms, chunk_size, max_arc_buffer_size);
+            defer allocator.free(arc_buffers);
+
             // Allocate result arrays
             const atom_areas = try allocator.alloc(T, n_atoms);
             errdefer allocator.free(atom_areas);
@@ -1224,11 +1261,10 @@ pub fn LeeRichardsGen(comptime T: type) type {
                 .neighbor_list = &neighbor_list,
                 .n_slices = config.n_slices,
                 .max_arc_buffer_size = max_arc_buffer_size,
+                .arc_buffers = arc_buffers,
+                .chunk_size = chunk_size,
                 .atom_areas = atom_areas,
             };
-
-            // Chunk size heuristic
-            const chunk_size = @max(64, n_atoms / (actual_threads * 4));
 
             // Run parallel calculation
             const total_area = try thread_pool.parallelFor(
@@ -1660,4 +1696,176 @@ test "calculateSasaParallelf32 - same as sequential f32" {
             1e-4,
         );
     }
+}
+
+// =============================================================================
+// Error paths: thread spawn failure and allocation failure
+// =============================================================================
+
+/// Number of atoms in `fillErrorPathGrid`: enough for calculateSasaParallel to
+/// split the work into several chunks (the minimum chunk size is 64).
+const error_path_n_atoms = 400;
+
+/// Fill a grid of overlapping atoms.
+fn fillErrorPathGrid(x: []f64, y: []f64, z: []f64, r: []f64) void {
+    for (x, y, z, r, 0..) |*xi, *yi, *zi, *ri, i| {
+        xi.* = @as(f64, @floatFromInt(i % 8)) * 3.0;
+        yi.* = @as(f64, @floatFromInt((i / 8) % 8)) * 3.0;
+        zi.* = @as(f64, @floatFromInt(i / 64)) * 3.0;
+        ri.* = 1.2 + @as(f64, @floatFromInt(i % 5)) * 0.1;
+    }
+}
+
+test "chunkArcBuffer gives every chunk of the pool its own slice" {
+    const allocator = std.testing.allocator;
+    const buffer_size = 6;
+
+    const cases = [_]struct { n_atoms: usize, chunk_size: usize }{
+        .{ .n_atoms = 1, .chunk_size = 64 },
+        .{ .n_atoms = 64, .chunk_size = 64 },
+        .{ .n_atoms = 65, .chunk_size = 64 },
+        .{ .n_atoms = 400, .chunk_size = 64 },
+        .{ .n_atoms = 1000, .chunk_size = 100 },
+    };
+
+    for (cases) |case| {
+        const arc_buffers = try allocArcBuffers(Arc, allocator, case.n_atoms, case.chunk_size, buffer_size);
+        defer allocator.free(arc_buffers);
+
+        // Walk the chunks the way ThreadPool.workerLoop hands them out.
+        var n_chunks: usize = 0;
+        var chunk_start: usize = 0;
+        while (chunk_start < case.n_atoms) : (chunk_start += case.chunk_size) {
+            const arc_buffer = chunkArcBuffer(Arc, arc_buffers, chunk_start, case.chunk_size, buffer_size);
+            try std.testing.expectEqual(@as(usize, buffer_size), arc_buffer.len);
+            try std.testing.expectEqual(arc_buffers.ptr + n_chunks * buffer_size, arc_buffer.ptr);
+            n_chunks += 1;
+        }
+        try std.testing.expectEqual(n_chunks * buffer_size, arc_buffers.len);
+    }
+}
+
+test "calculateSasaParallel - spawn failure after K workers matches serial" {
+    const allocator = std.testing.allocator;
+
+    var x: [error_path_n_atoms]f64 = undefined;
+    var y: [error_path_n_atoms]f64 = undefined;
+    var z: [error_path_n_atoms]f64 = undefined;
+    var r: [error_path_n_atoms]f64 = undefined;
+    fillErrorPathGrid(&x, &y, &z, &r);
+    const input = AtomInput{ .x = &x, .y = &y, .z = &z, .r = &r, .allocator = allocator };
+
+    const config = LeeRichardsConfig{ .n_slices = 20, .probe_radius = 1.4 };
+
+    var serial = try calculateSasa(allocator, input, config);
+    defer serial.deinit();
+
+    // K == n_threads is the run without a failure.
+    const n_threads = 4;
+    for (0..n_threads + 1) |k| {
+        thread_pool.testing.spawns_until_failure = k;
+        defer thread_pool.testing.spawns_until_failure = null;
+
+        var parallel = try calculateSasaParallel(allocator, input, config, n_threads);
+        defer parallel.deinit();
+
+        // No worker may outlive the call: its buffers are already freed.
+        try std.testing.expectEqual(@as(usize, 0), thread_pool.testing.live_workers.load(.monotonic));
+        try std.testing.expectEqualSlices(f64, serial.atom_areas, parallel.atom_areas);
+        try std.testing.expectApproxEqRel(serial.total_area, parallel.total_area, 1e-12);
+    }
+}
+
+test "calculateSasaParallelf32 - spawn failure after K workers matches serial" {
+    const allocator = std.testing.allocator;
+
+    var x: [error_path_n_atoms]f64 = undefined;
+    var y: [error_path_n_atoms]f64 = undefined;
+    var z: [error_path_n_atoms]f64 = undefined;
+    var r: [error_path_n_atoms]f64 = undefined;
+    fillErrorPathGrid(&x, &y, &z, &r);
+    const input = AtomInput{ .x = &x, .y = &y, .z = &z, .r = &r, .allocator = allocator };
+
+    const config = LeeRichardsConfigGen(f32){ .n_slices = 20, .probe_radius = 1.4 };
+
+    var serial = try calculateSasaf32(allocator, input, config);
+    defer serial.deinit();
+
+    const n_threads = 4;
+    for (0..n_threads + 1) |k| {
+        thread_pool.testing.spawns_until_failure = k;
+        defer thread_pool.testing.spawns_until_failure = null;
+
+        var parallel = try calculateSasaParallelf32(allocator, input, config, n_threads);
+        defer parallel.deinit();
+
+        try std.testing.expectEqual(@as(usize, 0), thread_pool.testing.live_workers.load(.monotonic));
+        try std.testing.expectEqualSlices(f32, serial.atom_areas, parallel.atom_areas);
+        try std.testing.expectApproxEqRel(serial.total_area, parallel.total_area, 1e-5);
+    }
+}
+
+/// Test bodies for `std.testing.checkAllAllocationFailures`. `n_threads` selects
+/// the entry point: null for calculateSasa, a count for calculateSasaParallel.
+/// A run that succeeds must return the reference areas, so an allocation
+/// failure can neither leak nor be swallowed into a partly computed result.
+const AllocationFailure = struct {
+    fn runF64(allocator: Allocator, input: AtomInput, n_threads: ?usize, expected: []const f64) !void {
+        const config = LeeRichardsConfig{ .n_slices = 20, .probe_radius = 1.4 };
+        var result = if (n_threads) |n|
+            try calculateSasaParallel(allocator, input, config, n)
+        else
+            try calculateSasa(allocator, input, config);
+        defer result.deinit();
+        try std.testing.expectEqualSlices(f64, expected, result.atom_areas);
+    }
+
+    fn runF32(allocator: Allocator, input: AtomInput, n_threads: ?usize, expected: []const f32) !void {
+        const config = LeeRichardsConfigGen(f32){ .n_slices = 20, .probe_radius = 1.4 };
+        var result = if (n_threads) |n|
+            try calculateSasaParallelf32(allocator, input, config, n)
+        else
+            try calculateSasaf32(allocator, input, config);
+        defer result.deinit();
+        try std.testing.expectEqualSlices(f32, expected, result.atom_areas);
+    }
+};
+
+test "calculateSasa and calculateSasaParallel - every allocation failure is reported without a leak" {
+    const allocator = std.testing.allocator;
+
+    var x: [error_path_n_atoms]f64 = undefined;
+    var y: [error_path_n_atoms]f64 = undefined;
+    var z: [error_path_n_atoms]f64 = undefined;
+    var r: [error_path_n_atoms]f64 = undefined;
+    fillErrorPathGrid(&x, &y, &z, &r);
+    const input = AtomInput{ .x = &x, .y = &y, .z = &z, .r = &r, .allocator = allocator };
+
+    var expected = try calculateSasa(allocator, input, .{ .n_slices = 20, .probe_radius = 1.4 });
+    defer expected.deinit();
+    const areas: []const f64 = expected.atom_areas;
+
+    try std.testing.checkAllAllocationFailures(allocator, AllocationFailure.runF64, .{ input, null, areas });
+    // One thread takes the direct path of parallelFor, four go through the pool.
+    try std.testing.checkAllAllocationFailures(allocator, AllocationFailure.runF64, .{ input, 1, areas });
+    try std.testing.checkAllAllocationFailures(allocator, AllocationFailure.runF64, .{ input, 4, areas });
+}
+
+test "calculateSasaf32 and calculateSasaParallelf32 - every allocation failure is reported without a leak" {
+    const allocator = std.testing.allocator;
+
+    var x: [error_path_n_atoms]f64 = undefined;
+    var y: [error_path_n_atoms]f64 = undefined;
+    var z: [error_path_n_atoms]f64 = undefined;
+    var r: [error_path_n_atoms]f64 = undefined;
+    fillErrorPathGrid(&x, &y, &z, &r);
+    const input = AtomInput{ .x = &x, .y = &y, .z = &z, .r = &r, .allocator = allocator };
+
+    var expected = try calculateSasaf32(allocator, input, .{ .n_slices = 20, .probe_radius = 1.4 });
+    defer expected.deinit();
+    const areas: []const f32 = expected.atom_areas;
+
+    try std.testing.checkAllAllocationFailures(allocator, AllocationFailure.runF32, .{ input, null, areas });
+    try std.testing.checkAllAllocationFailures(allocator, AllocationFailure.runF32, .{ input, 1, areas });
+    try std.testing.checkAllAllocationFailures(allocator, AllocationFailure.runF32, .{ input, 4, areas });
 }

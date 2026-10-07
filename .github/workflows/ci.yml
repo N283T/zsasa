@@ -76,6 +76,9 @@ jobs:
       - name: Run tests
         run: zig build test
 
+      - name: Check every test runs in exactly one artifact
+        run: python3 scripts/check_test_partition.py
+
       - name: Build Release
         run: zig build -Doptimize=ReleaseFast
 

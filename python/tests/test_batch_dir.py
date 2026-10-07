@@ -13,6 +13,23 @@ from zsasa import BatchDirResult, ClassifierType, process_directory
 # test_data/ lives at the project root
 TEST_DATA_DIR = Path(__file__).parent.parent.parent / "test_data"
 
+# Tiny structures for tests that must stay fast (e.g. Lee-Richards).
+SMALL_ALA_PDB = (
+    "ATOM      1  N   ALA A   1      -0.966   0.493   1.500  1.00  0.00           N\n"
+    "ATOM      2  CA  ALA A   1       0.257   0.418   0.692  1.00  0.00           C\n"
+    "ATOM      3  C   ALA A   1      -0.094   0.017  -0.716  1.00  0.00           C\n"
+    "ATOM      4  O   ALA A   1      -1.056  -0.682  -0.923  1.00  0.00           O\n"
+    "ATOM      5  CB  ALA A   1       1.204  -0.620   1.296  1.00  0.00           C\n"
+    "END\n"
+)
+SMALL_GLY_PDB = (
+    "ATOM      1  N   GLY A   1      10.000  10.000  10.000  1.00  0.00           N\n"
+    "ATOM      2  CA  GLY A   1      11.450  10.000  10.000  1.00  0.00           C\n"
+    "ATOM      3  C   GLY A   1      11.980  11.420  10.000  1.00  0.00           C\n"
+    "ATOM      4  O   GLY A   1      11.230  12.390  10.000  1.00  0.00           O\n"
+    "END\n"
+)
+
 
 class TestProcessDirectory:
     """Tests for process_directory()."""
@@ -30,15 +47,34 @@ class TestProcessDirectory:
         assert len(result.total_sasa) == result.total_files
         assert len(result.status) == result.total_files
 
-    def test_process_directory_lr(self) -> None:
-        """Process test_data with LR algorithm."""
-        result = process_directory(TEST_DATA_DIR, algorithm="lr")
+    def test_process_directory_lr(self, tmp_path: Path) -> None:
+        """LR on a small directory matches `zsasa calc --algorithm=lr` and differs from SR.
 
-        assert result.successful > 0
-        for i in range(result.total_files):
-            if result.status[i] == 1:
-                assert result.total_sasa[i] > 0.0
-                assert result.n_atoms[i] > 0
+        test_data/1l2y.pdb (38 NMR models superimposed into 11,552 atoms) takes
+        seconds with Lee-Richards, so this uses two tiny structures instead.
+        """
+        (tmp_path / "ala.pdb").write_text(SMALL_ALA_PDB)
+        (tmp_path / "gly.ent").write_text(SMALL_GLY_PDB)
+
+        result = process_directory(tmp_path, algorithm="lr", classifier=ClassifierType.NACCESS)
+
+        assert result.total_files == 2
+        assert result.successful == 2
+        assert result.failed == 0
+        n_atoms = dict(zip(result.filenames, result.n_atoms, strict=True))
+        lr_area = dict(zip(result.filenames, result.total_sasa, strict=True))
+        assert n_atoms == {"ala.pdb": 5, "gly.ent": 4}
+        # Reference values from `zsasa calc --algorithm=lr --classifier=naccess`.
+        assert lr_area["ala.pdb"] == pytest.approx(215.14412396821933, abs=1e-6)
+        assert lr_area["gly.ent"] == pytest.approx(188.2086929717762, abs=1e-6)
+
+        # Shrake-Rupley gives a different, close area, so the algorithm is honored.
+        sr = process_directory(tmp_path, algorithm="sr", classifier=ClassifierType.NACCESS)
+        sr_area = dict(zip(sr.filenames, sr.total_sasa, strict=True))
+        assert sr_area["ala.pdb"] == pytest.approx(215.8249020274959, abs=1e-6)
+        assert sr_area["gly.ent"] == pytest.approx(187.0015182803052, abs=1e-6)
+        for name, area in lr_area.items():
+            assert abs(area - sr_area[name]) > 0.1
 
     def test_process_directory_nonexistent(self) -> None:
         """FileNotFoundError for a non-existent path."""
