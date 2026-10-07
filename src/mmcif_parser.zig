@@ -99,11 +99,6 @@ const AtomSiteColumns = struct {
         return self.label_asym_id orelse self.auth_asym_id;
     }
 
-    /// Get residue sequence number column (prefer label over auth)
-    fn getResSeqCol(self: AtomSiteColumns) ?usize {
-        return self.label_seq_id orelse self.auth_seq_id;
-    }
-
     /// Get insertion code column
     fn getInsCodeCol(self: AtomSiteColumns) ?usize {
         return self.pdbx_pdb_ins_code;
@@ -138,7 +133,8 @@ pub const MmcifParser = struct {
     /// `skip_hydrogens` would drop (hydrogen and deuterium). The list is owned
     /// by the caller and grown with the parser's allocator.
     hydrogen_flags: ?*std.ArrayListUnmanaged(bool) = null,
-    /// Use auth_asym_id instead of label_asym_id for chain
+    /// Use auth_asym_id instead of label_asym_id for chain, and auth_seq_id
+    /// instead of label_seq_id for residue numbers
     use_auth_chain: bool = false,
     /// Parse inline CCD data from `_chem_comp_atom`/`_chem_comp_bond` loops.
     /// Disable this when the caller will not use inline CCD resources.
@@ -541,6 +537,11 @@ pub const MmcifParser = struct {
         residue: []const u8,
         chain_id: []const u8,
         residue_num: i32,
+        /// Residue number that tells altLoc sites apart. Unlike `residue_num`
+        /// it does not depend on the chain ID choice (see `atomRecordFromRow`).
+        site_seq: i32,
+        /// True when `site_seq` is not a label_seq_id.
+        site_seq_is_auth: bool,
         insertion_code: []const u8,
         alt_loc: u8,
         occupancy: f64,
@@ -576,10 +577,21 @@ pub const MmcifParser = struct {
             break :blk if (cif.isNull(chain)) "" else chain;
         } else "";
 
-        const residue_num = if (columns.getResSeqCol()) |seq_col| blk: {
-            const seq_str = row_values[seq_col];
-            break :blk if (cif.isNull(seq_str)) 0 else std.fmt.parseInt(i32, seq_str, 10) catch 0;
-        } else 0;
+        // label_seq_id is null ('.' or '?') on every non-polymer row (waters,
+        // ligands, glycans); auth_seq_id, together with pdbx_PDB_ins_code,
+        // identifies those residues. Rows that have a label_seq_id keep it,
+        // and a row with neither value gets 0.
+        const label_seq = parseSeqId(row_values, columns.label_seq_id);
+        const site_seq = label_seq orelse parseSeqId(row_values, columns.auth_seq_id) orelse 0;
+        // With auth chain IDs every row is numbered by auth_seq_id, the number
+        // that identifies a residue within an auth chain. Keeping label_seq_id
+        // for polymer rows there could give a polymer residue and a water the
+        // same chain and number. A row without a usable auth_seq_id falls back
+        // to `site_seq`.
+        const residue_num = if (self.use_auth_chain)
+            parseSeqId(row_values, columns.auth_seq_id) orelse site_seq
+        else
+            site_seq;
 
         const insertion_code = if (columns.getInsCodeCol()) |ins_col| blk: {
             const ins_code = row_values[ins_col];
@@ -610,6 +622,8 @@ pub const MmcifParser = struct {
             .residue = residue,
             .chain_id = chain_id,
             .residue_num = residue_num,
+            .site_seq = site_seq,
+            .site_seq_is_auth = label_seq == null,
             .insertion_code = insertion_code,
             .alt_loc = alt_loc,
             .occupancy = occupancy,
@@ -637,8 +651,12 @@ pub const MmcifParser = struct {
     }
 
     fn sameAltLocSite(a: AtomRecord, b: AtomRecord) bool {
+        // label_seq_id and auth_seq_id are separate numberings: with auth chain
+        // IDs a polymer residue and a non-polymer residue can share a chain and
+        // a number, and they are still different sites.
         return a.model_num == b.model_num and
-            a.residue_num == b.residue_num and
+            a.site_seq == b.site_seq and
+            a.site_seq_is_auth == b.site_seq_is_auth and
             std.mem.eql(u8, a.chain_id, b.chain_id) and
             std.mem.eql(u8, a.residue, b.residue) and
             std.mem.eql(u8, a.insertion_code, b.insertion_code) and
@@ -783,6 +801,14 @@ fn parseFloat(s: []const u8) !f64 {
     return std.fmt.parseFloat(f64, s[0..end]) catch {
         return ParseError.InvalidCoordinate;
     };
+}
+
+/// Parse a seq ID column value. Returns null when the column is absent or the
+/// value is CIF null ('.' or '?') or not an integer.
+fn parseSeqId(row_values: []const []const u8, col: ?usize) ?i32 {
+    const seq_str = row_values[col orelse return null];
+    if (cif.isNull(seq_str)) return null;
+    return std.fmt.parseInt(i32, seq_str, 10) catch null;
 }
 
 /// Case-insensitive string comparison
@@ -1606,6 +1632,305 @@ test "parse mmCIF altLoc selection is scoped by model" {
     try std.testing.expectEqual(@as(usize, 2), input.atomCount());
     try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
+}
+
+test "parse mmCIF numbers non-polymer rows by auth_seq_id when label_seq_id is null" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.pdbx_PDB_ins_code
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\_atom_site.auth_seq_id
+        \\ATOM   N N  GLY A 5 ? 10.0 20.0 30.0 25
+        \\ATOM   C CA GLY A 5 ? 11.0 20.0 30.0 25
+        \\ATOM   N N  ALA A 6 ? 12.0 20.0 30.0 26
+        \\HETATM C C1 NAG B . ? 13.0 20.0 30.0 301
+        \\HETATM O O  HOH C . ? 14.0 20.0 30.0 101
+        \\HETATM O O  HOH C ? ? 15.0 20.0 30.0 102
+        \\HETATM O O  HOH C . A 16.0 20.0 30.0 102
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.atom_only = false;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    // Polymer rows keep label_seq_id (5, 6), not auth_seq_id (25, 26).
+    try std.testing.expectEqualSlices(i32, &.{ 5, 5, 6, 301, 101, 102, 102 }, input.residue_num.?);
+    try std.testing.expectEqualStrings("", input.insertion_code.?[5].slice());
+    try std.testing.expectEqualStrings("A", input.insertion_code.?[6].slice());
+}
+
+test "parse mmCIF altLoc selection keeps waters apart when label_seq_id is null" {
+    // Water 101 has no altLoc, 102 has A and B, 103 only B, 104 only C. They
+    // share a chain and a null label_seq_id, and are four different residues.
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\_atom_site.occupancy
+        \\_atom_site.auth_seq_id
+        \\ATOM   N N  . GLY A 1 1.0 0.0 0.0 1.00 1
+        \\ATOM   C CA . GLY A 1 2.0 0.0 0.0 1.00 1
+        \\ATOM   C C  . GLY A 1 3.0 0.0 0.0 1.00 1
+        \\ATOM   O O  . GLY A 1 4.0 0.0 0.0 1.00 1
+        \\HETATM O O  . HOH B . 5.0 0.0 0.0 1.00 101
+        \\HETATM O O  A HOH B . 6.0 0.0 0.0 0.60 102
+        \\HETATM O O  B HOH B . 7.0 0.0 0.0 0.40 102
+        \\HETATM O O  B HOH B . 8.0 0.0 0.0 0.50 103
+        \\HETATM O O  C HOH B . 9.0 0.0 0.0 0.50 104
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.atom_only = false;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    // Only the B alternate of water 102 is dropped.
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 9.0 }, input.x);
+    try std.testing.expectEqualSlices(i32, &.{ 1, 1, 1, 1, 101, 102, 103, 104 }, input.residue_num.?);
+}
+
+test "parse mmCIF auth chains report auth_seq_id and separate altLoc sites" {
+    // With auth chain IDs every row is numbered by auth_seq_id. The polymer
+    // GLY (label_seq_id 2, auth_seq_id 12) and the free GLY ligand
+    // (auth_seq_id 2) share chain A and residue name, and the ligand's number
+    // equals the polymer's label_seq_id. They are still separate altLoc sites.
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\_atom_site.occupancy
+        \\_atom_site.auth_seq_id
+        \\_atom_site.auth_asym_id
+        \\ATOM   C CA . GLY A 2 1.0 0.0 0.0 1.00 12  A
+        \\HETATM C CA A GLY B . 2.0 0.0 0.0 0.60 2   A
+        \\HETATM C CA B GLY B . 3.0 0.0 0.0 0.40 2   A
+        \\HETATM O O  . HOH C . 4.0 0.0 0.0 1.00 101 A
+        \\HETATM O O  A HOH C . 5.0 0.0 0.0 0.60 102 A
+        \\HETATM O O  B HOH C . 6.0 0.0 0.0 0.40 102 A
+        \\HETATM O O  B HOH C . 7.0 0.0 0.0 0.50 103 A
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.atom_only = false;
+    parser.use_auth_chain = true;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    // Only the B alternates of the ligand and of water 102 are dropped.
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0, 5.0, 7.0 }, input.x);
+    try std.testing.expectEqualSlices(i32, &.{ 12, 2, 101, 102, 103 }, input.residue_num.?);
+}
+
+test "parse mmCIF auth chains fall back to label_seq_id without a usable auth_seq_id" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\_atom_site.auth_seq_id
+        \\_atom_site.auth_asym_id
+        \\ATOM   C CA GLY A 5 1.0 0.0 0.0 25 A
+        \\ATOM   C CA ALA A 6 2.0 0.0 0.0 ?  A
+        \\ATOM   C CA SER A 7 3.0 0.0 0.0 .  A
+        \\ATOM   C CA THR A 8 4.0 0.0 0.0 8x A
+        \\HETATM O O  HOH B . 5.0 0.0 0.0 ?  A
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.atom_only = false;
+    parser.use_auth_chain = true;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    // Null and non-integer auth_seq_id values fall back to label_seq_id, and
+    // a row with neither number gets 0.
+    try std.testing.expectEqualSlices(i32, &.{ 25, 6, 7, 8, 0 }, input.residue_num.?);
+
+    // Without an auth_seq_id column every row keeps label_seq_id.
+    const label_only_source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\_atom_site.auth_asym_id
+        \\C CA GLY 5 1.0 0.0 0.0 A
+        \\C CA ALA 6 2.0 0.0 0.0 A
+        \\#
+    ;
+    var label_only_input = try parser.parse(label_only_source);
+    defer label_only_input.deinit();
+
+    try std.testing.expectEqualSlices(i32, &.{ 5, 6 }, label_only_input.residue_num.?);
+}
+
+test "parse mmCIF auth chains keep a water apart from a polymer residue with its label number" {
+    // The polymer GLY has label_seq_id 21 and auth_seq_id 1. Water 21 shares
+    // its auth chain, so label numbering for the polymer would make them
+    // one residue in per-residue output.
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\_atom_site.auth_seq_id
+        \\_atom_site.auth_asym_id
+        \\ATOM   N N  GLY A 21 1.0 0.0 0.0 1  A
+        \\ATOM   C CA GLY A 21 2.0 0.0 0.0 1  A
+        \\ATOM   C C  GLY A 21 3.0 0.0 0.0 1  A
+        \\ATOM   O O  GLY A 21 4.0 0.0 0.0 1  A
+        \\HETATM O O  HOH B .  5.0 0.0 0.0 21 A
+        \\HETATM O O  HOH B .  6.0 0.0 0.0 22 A
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.atom_only = false;
+    parser.use_auth_chain = true;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqualSlices(i32, &.{ 1, 1, 1, 1, 21, 22 }, input.residue_num.?);
+
+    const atom_areas = [_]f64{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+    var residues = try @import("analysis.zig").aggregateByResidue(std.testing.allocator, input, &atom_areas);
+    defer residues.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), residues.residues.len);
+    try std.testing.expectEqualStrings("GLY", residues.residues[0].residue_name.slice());
+    try std.testing.expectEqual(@as(i32, 1), residues.residues[0].residue_num);
+    try std.testing.expectEqual(@as(usize, 4), residues.residues[0].atom_count);
+    try std.testing.expectEqualStrings("HOH", residues.residues[1].residue_name.slice());
+    try std.testing.expectEqual(@as(i32, 21), residues.residues[1].residue_num);
+    try std.testing.expectEqual(@as(usize, 1), residues.residues[1].atom_count);
+    try std.testing.expectEqual(@as(i32, 22), residues.residues[2].residue_num);
+}
+
+test "parse mmCIF keeps insertion-code residues apart with label and auth numbering" {
+    // Residues 10, 10A and 10B: one auth_seq_id, three insertion codes, and
+    // label_seq_id 10, 11 and 12. Residue 10A has two alternates.
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.pdbx_PDB_ins_code
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\_atom_site.occupancy
+        \\_atom_site.auth_seq_id
+        \\_atom_site.auth_asym_id
+        \\ATOM C CA . GLY A 10 ? 1.0 0.0 0.0 1.00 10 A
+        \\ATOM C CA A GLY A 11 A 2.0 0.0 0.0 0.60 10 A
+        \\ATOM C CA B GLY A 11 A 3.0 0.0 0.0 0.40 10 A
+        \\ATOM C CA . GLY A 12 B 4.0 0.0 0.0 1.00 10 A
+        \\#
+    ;
+
+    for ([_]bool{ false, true }) |use_auth_chain| {
+        var parser = MmcifParser.init(std.testing.allocator);
+        parser.use_auth_chain = use_auth_chain;
+        var input = try parser.parse(source);
+        defer input.deinit();
+
+        // Only the B alternate of residue 10A is dropped.
+        try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0 }, input.x);
+        const expected_nums: []const i32 = if (use_auth_chain) &.{ 10, 10, 10 } else &.{ 10, 11, 12 };
+        try std.testing.expectEqualSlices(i32, expected_nums, input.residue_num.?);
+        try std.testing.expectEqualStrings("", input.insertion_code.?[0].slice());
+        try std.testing.expectEqualStrings("A", input.insertion_code.?[1].slice());
+        try std.testing.expectEqualStrings("B", input.insertion_code.?[2].slice());
+
+        const atom_areas = [_]f64{ 1.0, 1.0, 1.0 };
+        var residues = try @import("analysis.zig").aggregateByResidue(std.testing.allocator, input, &atom_areas);
+        defer residues.deinit();
+        try std.testing.expectEqual(@as(usize, 3), residues.residues.len);
+    }
+}
+
+test "parse mmCIF numbers a row 0 when label_seq_id and auth_seq_id are both null" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\_atom_site.auth_seq_id
+        \\HETATM O O HOH B . 1.0 0.0 0.0 ?
+        \\HETATM O O HOH B ? 2.0 0.0 0.0 .
+        \\HETATM O O HOH B . 3.0 0.0 0.0 7
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.atom_only = false;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    // The fallback is per row: only the rows without any number get 0.
+    try std.testing.expectEqualSlices(i32, &.{ 0, 0, 7 }, input.residue_num.?);
 }
 
 test "parse with hydrogen filter (default skip_hydrogens=true)" {

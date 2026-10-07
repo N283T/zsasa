@@ -584,10 +584,6 @@ const AtomSiteColumns = struct {
         return self.label_asym_id orelse self.auth_asym_id;
     }
 
-    fn getResSeqCol(self: AtomSiteColumns) ?usize {
-        return self.label_seq_id orelse self.auth_seq_id;
-    }
-
     fn getInsCodeCol(self: AtomSiteColumns) ?usize {
         return self.pdbx_pdb_ins_code;
     }
@@ -640,6 +636,8 @@ pub const BcifParser = struct {
     alt_loc_id: u8 = 'A',
     model_num: ?u32 = null,
     chain_filter: ?[]const []const u8 = null,
+    /// Use auth_asym_id instead of label_asym_id for chain, and auth_seq_id
+    /// instead of label_seq_id for residue numbers
     use_auth_chain: bool = false,
     parse_inline_ccd: bool = true,
     inline_ccd: ?ccd_parser.ComponentDict = null,
@@ -871,6 +869,11 @@ pub const BcifParser = struct {
         residue: []const u8,
         chain_id: []const u8,
         residue_num: i32,
+        /// Residue number that tells altLoc sites apart. Unlike `residue_num`
+        /// it does not depend on the chain ID choice (see `atomRecordFromRow`).
+        site_seq: i32,
+        /// True when `site_seq` is not a label_seq_id.
+        site_seq_is_auth: bool,
         insertion_code: []const u8,
         alt_loc: u8,
         occupancy: f64,
@@ -892,10 +895,21 @@ pub const BcifParser = struct {
         const atom_name = if (columns.getAtomNameCol()) |atom_col| scalarString(decoded[atom_col], row) orelse "X" else "X";
         const residue = if (columns.getResNameCol()) |res_col| scalarString(decoded[res_col], row) orelse "UNK" else "UNK";
         const chain_id = if (columns.getChainCol(self.use_auth_chain)) |chain_col| scalarString(decoded[chain_col], row) orelse "" else "";
-        const residue_num = if (columns.getResSeqCol()) |seq_col| blk: {
-            const seq = scalarInt(decoded[seq_col], row) orelse 0;
-            break :blk std.math.cast(i32, seq) orelse 0;
-        } else 0;
+        // label_seq_id is null on every non-polymer row (waters, ligands,
+        // glycans); auth_seq_id, together with pdbx_PDB_ins_code, identifies
+        // those residues. Rows that have a label_seq_id keep it, and a row
+        // with neither value gets 0.
+        const label_seq = scalarSeqId(decoded, columns.label_seq_id, row);
+        const site_seq = label_seq orelse scalarSeqId(decoded, columns.auth_seq_id, row) orelse 0;
+        // With auth chain IDs every row is numbered by auth_seq_id, the number
+        // that identifies a residue within an auth chain. Keeping label_seq_id
+        // for polymer rows there could give a polymer residue and a water the
+        // same chain and number. A row without a usable auth_seq_id falls back
+        // to `site_seq`.
+        const residue_num = if (self.use_auth_chain)
+            scalarSeqId(decoded, columns.auth_seq_id, row) orelse site_seq
+        else
+            site_seq;
         const insertion_code = if (columns.getInsCodeCol()) |ins_col| scalarString(decoded[ins_col], row) orelse "" else "";
         const alt_loc: u8 = if (columns.label_alt_id) |alt_col| blk: {
             const alt_id = scalarString(decoded[alt_col], row) orelse "";
@@ -917,6 +931,8 @@ pub const BcifParser = struct {
             .residue = residue,
             .chain_id = chain_id,
             .residue_num = residue_num,
+            .site_seq = site_seq,
+            .site_seq_is_auth = label_seq == null,
             .insertion_code = insertion_code,
             .alt_loc = alt_loc,
             .occupancy = occupancy,
@@ -925,8 +941,12 @@ pub const BcifParser = struct {
     }
 
     fn sameAltLocSite(a: AtomRecord, b: AtomRecord) bool {
+        // label_seq_id and auth_seq_id are separate numberings: with auth chain
+        // IDs a polymer residue and a non-polymer residue can share a chain and
+        // a number, and they are still different sites.
         return a.model_num == b.model_num and
-            a.residue_num == b.residue_num and
+            a.site_seq == b.site_seq and
+            a.site_seq_is_auth == b.site_seq_is_auth and
             std.mem.eql(u8, a.chain_id, b.chain_id) and
             std.mem.eql(u8, a.residue, b.residue) and
             std.mem.eql(u8, a.insertion_code, b.insertion_code) and
@@ -1445,6 +1465,13 @@ fn scalarInt(column: DecodedColumn, row: usize) ?i64 {
     };
 }
 
+/// Read a seq ID column value. Returns null when the column is absent or the
+/// value is masked as null, not an integer, or out of the i32 range.
+fn scalarSeqId(decoded: []const DecodedColumn, col: ?usize, row: usize) ?i32 {
+    const seq = scalarInt(decoded[col orelse return null], row) orelse return null;
+    return std.math.cast(i32, seq);
+}
+
 fn isNull(column: DecodedColumn, row: usize) bool {
     const nulls = column.nulls orelse return false;
     if (row >= nulls.len) return true;
@@ -1613,24 +1640,7 @@ fn buildMinimalBcif(options: BuildBcifOptions) ![]u8 {
     var bytes = std.ArrayListUnmanaged(u8).empty;
     errdefer bytes.deinit(allocator);
 
-    try packMapHeader(allocator, &bytes, 3);
-    try packStr(allocator, &bytes, "version");
-    try packStr(allocator, &bytes, "0.3.0");
-    try packStr(allocator, &bytes, "encoder");
-    try packStr(allocator, &bytes, "zsasa-test");
-    try packStr(allocator, &bytes, "dataBlocks");
-    try packArrayHeader(allocator, &bytes, 1);
-    try packMapHeader(allocator, &bytes, 2);
-    try packStr(allocator, &bytes, "header");
-    try packStr(allocator, &bytes, "TEST");
-    try packStr(allocator, &bytes, "categories");
-    try packArrayHeader(allocator, &bytes, 1);
-    try packMapHeader(allocator, &bytes, 3);
-    try packStr(allocator, &bytes, "name");
-    try packStr(allocator, &bytes, "_atom_site");
-    try packStr(allocator, &bytes, "rowCount");
-    try packInt(allocator, &bytes, @intCast(rows.items.len));
-    try packStr(allocator, &bytes, "columns");
+    try packAtomSiteFileHeader(allocator, &bytes, rows.items.len);
 
     var column_count: usize = 9;
     if (!options.omit_z) column_count += 1;
@@ -1650,6 +1660,58 @@ fn buildMinimalBcif(options: BuildBcifOptions) ![]u8 {
     try packFloatColumn(allocator, &bytes, "Cartn_y", rows.items, TestAtomRow.yValue);
     if (!options.omit_z) try packFloatColumn(allocator, &bytes, "Cartn_z", rows.items, TestAtomRow.zValue);
     if (!options.omit_chain) try packStringColumn(allocator, &bytes, "auth_asym_id", rows.items, TestAtomRow.chainValue);
+
+    return bytes.toOwnedSlice(allocator);
+}
+
+/// Packs everything up to the column array of a file whose only category is
+/// `_atom_site`.
+fn packAtomSiteFileHeader(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), row_count: usize) !void {
+    try packMapHeader(allocator, bytes, 3);
+    try packStr(allocator, bytes, "version");
+    try packStr(allocator, bytes, "0.3.0");
+    try packStr(allocator, bytes, "encoder");
+    try packStr(allocator, bytes, "zsasa-test");
+    try packStr(allocator, bytes, "dataBlocks");
+    try packArrayHeader(allocator, bytes, 1);
+    try packMapHeader(allocator, bytes, 2);
+    try packStr(allocator, bytes, "header");
+    try packStr(allocator, bytes, "TEST");
+    try packStr(allocator, bytes, "categories");
+    try packArrayHeader(allocator, bytes, 1);
+    try packMapHeader(allocator, bytes, 3);
+    try packStr(allocator, bytes, "name");
+    try packStr(allocator, bytes, "_atom_site");
+    try packStr(allocator, bytes, "rowCount");
+    try packInt(allocator, bytes, @intCast(row_count));
+    try packStr(allocator, bytes, "columns");
+}
+
+/// Builds an atom_site category with masked `label_seq_id` and `auth_seq_id`
+/// columns and separate label and auth chain IDs, as real files have for
+/// non-polymer rows. `null_mask` is the mask value written for null seq IDs:
+/// 1 for '.', 2 for '?'.
+fn buildSeqIdBcif(rows: []const TestAtomRow, null_mask: u8) ![]u8 {
+    const allocator = std.testing.allocator;
+    var bytes = std.ArrayListUnmanaged(u8).empty;
+    errdefer bytes.deinit(allocator);
+
+    try packAtomSiteFileHeader(allocator, &bytes, rows.len);
+    try packArrayHeader(allocator, &bytes, 14);
+    try packStringColumn(allocator, &bytes, "group_PDB", rows, TestAtomRow.groupValue);
+    try packStringColumn(allocator, &bytes, "type_symbol", rows, TestAtomRow.elementValue);
+    try packStringColumn(allocator, &bytes, "label_atom_id", rows, TestAtomRow.atomValue);
+    try packStringColumn(allocator, &bytes, "label_comp_id", rows, TestAtomRow.residueValue);
+    try packStringColumn(allocator, &bytes, "label_asym_id", rows, TestAtomRow.chainValue);
+    try packMaskedIntColumn(allocator, &bytes, "label_seq_id", rows, TestAtomRow.labelSeqValue, null_mask);
+    try packMaskedIntColumn(allocator, &bytes, "auth_seq_id", rows, TestAtomRow.authSeqValue, null_mask);
+    try packStringColumn(allocator, &bytes, "pdbx_PDB_ins_code", rows, TestAtomRow.insCodeValue);
+    try packStringColumn(allocator, &bytes, "label_alt_id", rows, TestAtomRow.altValue);
+    try packIntColumn(allocator, &bytes, "pdbx_PDB_model_num", rows, TestAtomRow.modelValue, false);
+    try packFloatColumn(allocator, &bytes, "Cartn_x", rows, TestAtomRow.xValue);
+    try packFloatColumn(allocator, &bytes, "Cartn_y", rows, TestAtomRow.yValue);
+    try packFloatColumn(allocator, &bytes, "Cartn_z", rows, TestAtomRow.zValue);
+    try packStringColumn(allocator, &bytes, "auth_asym_id", rows, TestAtomRow.authChainValue);
 
     return bytes.toOwnedSlice(allocator);
 }
@@ -1804,12 +1866,18 @@ const TestAtomRow = struct {
     atom: []const u8,
     residue: []const u8,
     chain: []const u8,
-    seq: i32,
+    /// label_seq_id; null is written as a masked (null) value.
+    seq: ?i32,
     x: f32,
-    y: f32,
-    z: f32,
-    model: i32,
+    y: f32 = 0.0,
+    z: f32 = 0.0,
+    model: i32 = 1,
     alt: []const u8 = "",
+    /// auth_seq_id; null is written as a masked (null) value.
+    auth_seq: ?i32 = null,
+    /// auth_asym_id; defaults to `chain`.
+    auth_chain: ?[]const u8 = null,
+    ins_code: []const u8 = "",
 
     fn groupValue(row: TestAtomRow) []const u8 {
         return row.group;
@@ -1833,7 +1901,19 @@ const TestAtomRow = struct {
         return row.alt;
     }
     fn seqValue(row: TestAtomRow) i32 {
+        return row.seq.?;
+    }
+    fn labelSeqValue(row: TestAtomRow) ?i32 {
         return row.seq;
+    }
+    fn authSeqValue(row: TestAtomRow) ?i32 {
+        return row.auth_seq;
+    }
+    fn authChainValue(row: TestAtomRow) []const u8 {
+        return row.auth_chain orelse row.chain;
+    }
+    fn insCodeValue(row: TestAtomRow) []const u8 {
+        return row.ins_code;
     }
     fn modelValue(row: TestAtomRow) i32 {
         return row.model;
@@ -1888,6 +1968,34 @@ fn packIntColumn(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), name:
     try packArrayHeader(allocator, bytes, 1);
     try packByteArrayEncoding(allocator, bytes, 3);
     if (null_first) try packNullFirstMask(allocator, bytes, rows.len);
+}
+
+/// Packs an Int32 column with a mask. Null values are stored as 0 and flagged
+/// with `null_mask` (1 for '.', 2 for '?').
+fn packMaskedIntColumn(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), name: []const u8, rows: []const TestAtomRow, comptime get: fn (TestAtomRow) ?i32, null_mask: u8) !void {
+    var data = std.ArrayListUnmanaged(u8).empty;
+    defer data.deinit(allocator);
+    var mask = std.ArrayListUnmanaged(u8).empty;
+    defer mask.deinit(allocator);
+    for (rows) |row| {
+        const value = get(row);
+        var buf: [4]u8 = undefined;
+        std.mem.writeInt(i32, &buf, value orelse 0, .little);
+        try data.appendSlice(allocator, &buf);
+        try mask.append(allocator, if (value == null) null_mask else 0);
+    }
+    try packColumnHeaderWithFieldCount(allocator, bytes, name, 3);
+    try packEncodedDataMapHeader(allocator, bytes);
+    try packBin(allocator, bytes, data.items);
+    try packStr(allocator, bytes, "encoding");
+    try packArrayHeader(allocator, bytes, 1);
+    try packByteArrayEncoding(allocator, bytes, 3);
+    try packStr(allocator, bytes, "mask");
+    try packEncodedDataMapHeader(allocator, bytes);
+    try packBin(allocator, bytes, mask.items);
+    try packStr(allocator, bytes, "encoding");
+    try packArrayHeader(allocator, bytes, 1);
+    try packByteArrayEncoding(allocator, bytes, 4);
 }
 
 fn packFloatColumn(allocator: Allocator, bytes: *std.ArrayListUnmanaged(u8), name: []const u8, rows: []const TestAtomRow, comptime get: fn (TestAtomRow) f32) !void {
@@ -2195,6 +2303,318 @@ test "parse BinaryCIF altLoc selection is scoped by model" {
     try std.testing.expectEqual(@as(usize, 2), input.atomCount());
     try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
+}
+
+test "parse BinaryCIF numbers non-polymer rows by auth_seq_id when label_seq_id is null" {
+    const rows = [_]TestAtomRow{
+        .{ .group = "ATOM", .element = "N", .atom = "N", .residue = "GLY", .chain = "A", .seq = 5, .auth_seq = 25, .x = 10.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 5, .auth_seq = 25, .x = 11.0 },
+        .{ .group = "ATOM", .element = "N", .atom = "N", .residue = "ALA", .chain = "A", .seq = 6, .auth_seq = 26, .x = 12.0 },
+        .{ .group = "HETATM", .element = "C", .atom = "C1", .residue = "NAG", .chain = "B", .seq = null, .auth_seq = 301, .x = 13.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "C", .seq = null, .auth_seq = 101, .x = 14.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "C", .seq = null, .auth_seq = 102, .x = 15.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "C", .seq = null, .auth_seq = 102, .ins_code = "A", .x = 16.0 },
+    };
+
+    // Mask value 1 is '.', 2 is '?'.
+    for ([_]u8{ 1, 2 }) |null_mask| {
+        const source = try buildSeqIdBcif(&rows, null_mask);
+        defer std.testing.allocator.free(source);
+
+        var parser = BcifParser.init(std.testing.allocator);
+        parser.atom_only = false;
+        var input = try parser.parse(source);
+        defer input.deinit();
+
+        // Polymer rows keep label_seq_id (5, 6), not auth_seq_id (25, 26).
+        try std.testing.expectEqualSlices(i32, &.{ 5, 5, 6, 301, 101, 102, 102 }, input.residue_num.?);
+        try std.testing.expectEqualStrings("", input.insertion_code.?[5].slice());
+        try std.testing.expectEqualStrings("A", input.insertion_code.?[6].slice());
+    }
+}
+
+test "parse BinaryCIF altLoc selection keeps waters apart when label_seq_id is null" {
+    // Water 101 has no altLoc, 102 has A and B, 103 only B, 104 only C. They
+    // share a chain and a null label_seq_id, and are four different residues.
+    const rows = [_]TestAtomRow{
+        .{ .group = "ATOM", .element = "N", .atom = "N", .residue = "GLY", .chain = "A", .seq = 1, .auth_seq = 1, .x = 1.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 1, .auth_seq = 1, .x = 2.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "C", .residue = "GLY", .chain = "A", .seq = 1, .auth_seq = 1, .x = 3.0 },
+        .{ .group = "ATOM", .element = "O", .atom = "O", .residue = "GLY", .chain = "A", .seq = 1, .auth_seq = 1, .x = 4.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "B", .seq = null, .auth_seq = 101, .x = 5.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "B", .seq = null, .auth_seq = 102, .alt = "A", .x = 6.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "B", .seq = null, .auth_seq = 102, .alt = "B", .x = 7.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "B", .seq = null, .auth_seq = 103, .alt = "B", .x = 8.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "B", .seq = null, .auth_seq = 104, .alt = "C", .x = 9.0 },
+    };
+    const source = try buildSeqIdBcif(&rows, 1);
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.atom_only = false;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    // Only the B alternate of water 102 is dropped.
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 9.0 }, input.x);
+    try std.testing.expectEqualSlices(i32, &.{ 1, 1, 1, 1, 101, 102, 103, 104 }, input.residue_num.?);
+}
+
+test "parse BinaryCIF auth chains report auth_seq_id and separate altLoc sites" {
+    // With auth chain IDs every row is numbered by auth_seq_id. The polymer
+    // GLY (label_seq_id 2, auth_seq_id 12) and the free GLY ligand
+    // (auth_seq_id 2) share chain A and residue name, and the ligand's number
+    // equals the polymer's label_seq_id. They are still separate altLoc sites.
+    const rows = [_]TestAtomRow{
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 2, .auth_seq = 12, .x = 1.0 },
+        .{ .group = "HETATM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "B", .auth_chain = "A", .seq = null, .auth_seq = 2, .alt = "A", .x = 2.0 },
+        .{ .group = "HETATM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "B", .auth_chain = "A", .seq = null, .auth_seq = 2, .alt = "B", .x = 3.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "C", .auth_chain = "A", .seq = null, .auth_seq = 101, .x = 4.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "C", .auth_chain = "A", .seq = null, .auth_seq = 102, .alt = "A", .x = 5.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "C", .auth_chain = "A", .seq = null, .auth_seq = 102, .alt = "B", .x = 6.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "C", .auth_chain = "A", .seq = null, .auth_seq = 103, .alt = "B", .x = 7.0 },
+    };
+    const source = try buildSeqIdBcif(&rows, 1);
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.atom_only = false;
+    parser.use_auth_chain = true;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    // Only the B alternates of the ligand and of water 102 are dropped.
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0, 5.0, 7.0 }, input.x);
+    try std.testing.expectEqualSlices(i32, &.{ 12, 2, 101, 102, 103 }, input.residue_num.?);
+}
+
+test "parse BinaryCIF auth chains fall back to label_seq_id without a usable auth_seq_id" {
+    const rows = [_]TestAtomRow{
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 5, .auth_seq = 25, .x = 1.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "A", .seq = 6, .auth_seq = null, .x = 2.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "B", .auth_chain = "A", .seq = null, .auth_seq = null, .x = 3.0 },
+    };
+
+    // Mask value 1 is '.', 2 is '?'.
+    for ([_]u8{ 1, 2 }) |null_mask| {
+        const source = try buildSeqIdBcif(&rows, null_mask);
+        defer std.testing.allocator.free(source);
+
+        var parser = BcifParser.init(std.testing.allocator);
+        parser.atom_only = false;
+        parser.use_auth_chain = true;
+        var input = try parser.parse(source);
+        defer input.deinit();
+
+        // A null auth_seq_id falls back to label_seq_id, and a row with
+        // neither number gets 0.
+        try std.testing.expectEqualSlices(i32, &.{ 25, 6, 0 }, input.residue_num.?);
+    }
+
+    // Without an auth_seq_id column every row keeps label_seq_id.
+    const label_only_source = try buildMinimalBcif(.{ .include_alt_later_b_only = true });
+    defer std.testing.allocator.free(label_only_source);
+
+    var label_only_parser = BcifParser.init(std.testing.allocator);
+    label_only_parser.use_auth_chain = true;
+    var label_only_input = try label_only_parser.parse(label_only_source);
+    defer label_only_input.deinit();
+
+    try std.testing.expectEqualSlices(i32, &.{ 1, 2 }, label_only_input.residue_num.?);
+}
+
+test "parse BinaryCIF auth chains keep a water apart from a polymer residue with its label number" {
+    // The polymer GLY has label_seq_id 21 and auth_seq_id 1. Water 21 shares
+    // its auth chain, so label numbering for the polymer would make them
+    // one residue in per-residue output.
+    const rows = [_]TestAtomRow{
+        .{ .group = "ATOM", .element = "N", .atom = "N", .residue = "GLY", .chain = "A", .seq = 21, .auth_seq = 1, .x = 1.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 21, .auth_seq = 1, .x = 2.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "C", .residue = "GLY", .chain = "A", .seq = 21, .auth_seq = 1, .x = 3.0 },
+        .{ .group = "ATOM", .element = "O", .atom = "O", .residue = "GLY", .chain = "A", .seq = 21, .auth_seq = 1, .x = 4.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "B", .auth_chain = "A", .seq = null, .auth_seq = 21, .x = 5.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "B", .auth_chain = "A", .seq = null, .auth_seq = 22, .x = 6.0 },
+    };
+    const source = try buildSeqIdBcif(&rows, 1);
+    defer std.testing.allocator.free(source);
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.atom_only = false;
+    parser.use_auth_chain = true;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqualSlices(i32, &.{ 1, 1, 1, 1, 21, 22 }, input.residue_num.?);
+
+    const atom_areas = [_]f64{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+    var residues = try @import("analysis.zig").aggregateByResidue(std.testing.allocator, input, &atom_areas);
+    defer residues.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), residues.residues.len);
+    try std.testing.expectEqualStrings("GLY", residues.residues[0].residue_name.slice());
+    try std.testing.expectEqual(@as(i32, 1), residues.residues[0].residue_num);
+    try std.testing.expectEqual(@as(usize, 4), residues.residues[0].atom_count);
+    try std.testing.expectEqualStrings("HOH", residues.residues[1].residue_name.slice());
+    try std.testing.expectEqual(@as(i32, 21), residues.residues[1].residue_num);
+    try std.testing.expectEqual(@as(usize, 1), residues.residues[1].atom_count);
+    try std.testing.expectEqual(@as(i32, 22), residues.residues[2].residue_num);
+}
+
+/// Residues 10, 10A and 10B: one auth_seq_id, three insertion codes, and
+/// label_seq_id 10, 11 and 12. Residue 10A has two alternates.
+const insertion_code_rows = [_]TestAtomRow{
+    .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 10, .auth_seq = 10, .x = 1.0 },
+    .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 11, .auth_seq = 10, .ins_code = "A", .alt = "A", .x = 2.0 },
+    .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 11, .auth_seq = 10, .ins_code = "A", .alt = "B", .x = 3.0 },
+    .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 12, .auth_seq = 10, .ins_code = "B", .x = 4.0 },
+};
+
+test "parse BinaryCIF keeps insertion-code residues apart with label and auth numbering" {
+    const source = try buildSeqIdBcif(&insertion_code_rows, 1);
+    defer std.testing.allocator.free(source);
+
+    for ([_]bool{ false, true }) |use_auth_chain| {
+        var parser = BcifParser.init(std.testing.allocator);
+        parser.use_auth_chain = use_auth_chain;
+        var input = try parser.parse(source);
+        defer input.deinit();
+
+        // Only the B alternate of residue 10A is dropped.
+        try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0 }, input.x);
+        const expected_nums: []const i32 = if (use_auth_chain) &.{ 10, 10, 10 } else &.{ 10, 11, 12 };
+        try std.testing.expectEqualSlices(i32, expected_nums, input.residue_num.?);
+        try std.testing.expectEqualStrings("", input.insertion_code.?[0].slice());
+        try std.testing.expectEqualStrings("A", input.insertion_code.?[1].slice());
+        try std.testing.expectEqualStrings("B", input.insertion_code.?[2].slice());
+
+        const atom_areas = [_]f64{ 1.0, 1.0, 1.0 };
+        var residues = try @import("analysis.zig").aggregateByResidue(std.testing.allocator, input, &atom_areas);
+        defer residues.deinit();
+        try std.testing.expectEqual(@as(usize, 3), residues.residues.len);
+    }
+}
+
+/// Writes the rows as mmCIF text with the same columns as `buildSeqIdBcif`.
+fn buildSeqIdMmcif(rows: []const TestAtomRow) ![]u8 {
+    const allocator = std.testing.allocator;
+    var text = std.ArrayListUnmanaged(u8).empty;
+    errdefer text.deinit(allocator);
+
+    try text.appendSlice(allocator,
+        \\data_TEST
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.auth_seq_id
+        \\_atom_site.pdbx_PDB_ins_code
+        \\_atom_site.label_alt_id
+        \\_atom_site.pdbx_PDB_model_num
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\_atom_site.auth_asym_id
+        \\
+    );
+    for (rows) |row| {
+        var label_buf: [16]u8 = undefined;
+        var auth_buf: [16]u8 = undefined;
+        const label_seq = if (row.seq) |seq| try std.fmt.bufPrint(&label_buf, "{d}", .{seq}) else ".";
+        const auth_seq = if (row.auth_seq) |seq| try std.fmt.bufPrint(&auth_buf, "{d}", .{seq}) else ".";
+        const line = try std.fmt.allocPrint(allocator, "{s} {s} {s} {s} {s} {s} {s} {s} {s} {d} {d} {d} {d} {s}\n", .{
+            row.group,
+            row.element,
+            row.atom,
+            row.residue,
+            row.chain,
+            label_seq,
+            auth_seq,
+            if (row.ins_code.len == 0) "?" else row.ins_code,
+            if (row.alt.len == 0) "." else row.alt,
+            row.model,
+            row.x,
+            row.y,
+            row.z,
+            TestAtomRow.authChainValue(row),
+        });
+        defer allocator.free(line);
+        try text.appendSlice(allocator, line);
+    }
+    try text.appendSlice(allocator, "#\n");
+
+    return text.toOwnedSlice(allocator);
+}
+
+test "parse BinaryCIF and mmCIF agree on residue numbers with label and auth chains" {
+    const rows = [_]TestAtomRow{
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "A", .seq = 2, .auth_seq = 12, .x = 1.0 },
+        .{ .group = "ATOM", .element = "C", .atom = "CA", .residue = "ALA", .chain = "A", .seq = 3, .auth_seq = null, .x = 2.0 },
+        .{ .group = "HETATM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "B", .auth_chain = "A", .seq = null, .auth_seq = 2, .alt = "A", .x = 3.0 },
+        .{ .group = "HETATM", .element = "C", .atom = "CA", .residue = "GLY", .chain = "B", .auth_chain = "A", .seq = null, .auth_seq = 2, .alt = "B", .x = 4.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "C", .auth_chain = "A", .seq = null, .auth_seq = 101, .x = 5.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "C", .auth_chain = "A", .seq = null, .auth_seq = 102, .alt = "A", .x = 6.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "C", .auth_chain = "A", .seq = null, .auth_seq = 102, .alt = "B", .x = 7.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "C", .auth_chain = "A", .seq = null, .auth_seq = null, .x = 8.0 },
+    } ++ insertion_code_rows;
+
+    const bcif_source = try buildSeqIdBcif(&rows, 1);
+    defer std.testing.allocator.free(bcif_source);
+    const mmcif_source = try buildSeqIdMmcif(&rows);
+    defer std.testing.allocator.free(mmcif_source);
+
+    for ([_]bool{ false, true }) |use_auth_chain| {
+        var bcif = BcifParser.init(std.testing.allocator);
+        bcif.atom_only = false;
+        bcif.use_auth_chain = use_auth_chain;
+        var bcif_input = try bcif.parse(bcif_source);
+        defer bcif_input.deinit();
+
+        var mmcif = @import("mmcif_parser.zig").MmcifParser.init(std.testing.allocator);
+        mmcif.atom_only = false;
+        mmcif.use_auth_chain = use_auth_chain;
+        var mmcif_input = try mmcif.parse(mmcif_source);
+        defer mmcif_input.deinit();
+
+        const expected_nums: []const i32 = if (use_auth_chain)
+            &.{ 12, 3, 2, 101, 102, 0, 10, 10, 10 }
+        else
+            &.{ 2, 3, 2, 101, 102, 0, 10, 11, 12 };
+        try std.testing.expectEqualSlices(i32, expected_nums, bcif_input.residue_num.?);
+        try std.testing.expectEqualSlices(i32, expected_nums, mmcif_input.residue_num.?);
+        try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 3.0, 5.0, 6.0, 8.0, 1.0, 2.0, 4.0 }, bcif_input.x);
+        try std.testing.expectEqualSlices(f64, bcif_input.x, mmcif_input.x);
+        for (bcif_input.chain_id.?, mmcif_input.chain_id.?) |bcif_chain, mmcif_chain| {
+            try std.testing.expectEqualStrings(bcif_chain.slice(), mmcif_chain.slice());
+        }
+        for (bcif_input.insertion_code.?, mmcif_input.insertion_code.?) |bcif_ins, mmcif_ins| {
+            try std.testing.expectEqualStrings(bcif_ins.slice(), mmcif_ins.slice());
+        }
+    }
+}
+
+test "parse BinaryCIF numbers a row 0 when label_seq_id and auth_seq_id are both null" {
+    const rows = [_]TestAtomRow{
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "B", .seq = null, .auth_seq = null, .x = 1.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "B", .seq = null, .auth_seq = null, .x = 2.0 },
+        .{ .group = "HETATM", .element = "O", .atom = "O", .residue = "HOH", .chain = "B", .seq = null, .auth_seq = 7, .x = 3.0 },
+    };
+
+    // Mask value 1 is '.', 2 is '?'.
+    for ([_]u8{ 1, 2 }) |null_mask| {
+        const source = try buildSeqIdBcif(&rows, null_mask);
+        defer std.testing.allocator.free(source);
+
+        var parser = BcifParser.init(std.testing.allocator);
+        parser.atom_only = false;
+        var input = try parser.parse(source);
+        defer input.deinit();
+
+        // The fallback is per row: only the rows without any number get 0.
+        try std.testing.expectEqualSlices(i32, &.{ 0, 0, 7 }, input.residue_num.?);
+    }
 }
 
 test "parse BinaryCIF applies filters" {

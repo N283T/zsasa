@@ -167,7 +167,7 @@ zsasa batch structures/ results/ --chain=A
 zsasa batch structures/ results/ --auth-chain --chain=A
 ```
 
-Use `--chain` for label/asym chain IDs. Add `--auth-chain` as a boolean modifier when the `--chain` value should match author-provided chain IDs in mmCIF inputs.
+Use `--chain` for label/asym chain IDs. Add `--auth-chain` as a boolean modifier when the `--chain` value should match author-provided chain IDs in mmCIF inputs. With `--auth-chain`, reported residue numbers are author-provided too (`auth_seq_id`).
 
 For named multi-job runs such as chain A, chain B, and AB complex calculations, use [Workflow Files](workflows.md) instead of repeating shell commands.
 

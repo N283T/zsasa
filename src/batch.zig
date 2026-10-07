@@ -3426,7 +3426,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --workflow=PATH     TOML workflow file with one or more named batch jobs
         \\    --manifest=PATH     Compatibility alias for --workflow
         \\    --chain=ID          Filter by chain ID for non-workflow batch (e.g. A or A,B)
-        \\    --auth-chain        Use auth_asym_id instead of label_asym_id for mmCIF chain matching
+        \\    --auth-chain        Use auth_asym_id instead of label_asym_id for mmCIF chain matching,
+        \\                        and auth_seq_id instead of label_seq_id for residue numbers
         \\    --af-model-fast     Use an experimental AlphaFold-model mmCIF fast parser
         \\                        with multi-chain metadata and safe generic fallback
         \\    --altloc=MODE       mmCIF/BCIF alternate-location handling: auto, none, all,

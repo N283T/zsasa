@@ -291,11 +291,11 @@ fn parseAtomRow(fields: []const []const u8, layout: AtomSiteLayout) !AtomRow {
     const element_enum = elem.fromSymbol(element_value);
     if (element_enum == .X or element_enum == .H) return ParseError.UnsupportedLayout;
 
+    // A null label_seq_id is numbered by auth_seq_id, which only the generic
+    // mmCIF parser reads.
     const residue_number_value = fields[layout.residue_num.?];
-    const residue_number: i32 = if (isNullValue(residue_number_value))
-        0
-    else
-        std.fmt.parseInt(i32, residue_number_value, 10) catch return ParseError.InvalidResidueNumber;
+    if (isNullValue(residue_number_value)) return ParseError.UnsupportedLayout;
+    const residue_number = std.fmt.parseInt(i32, residue_number_value, 10) catch return ParseError.InvalidResidueNumber;
 
     const insertion_value = if (layout.insertion_code) |index| fields[index] else "?";
     if (!isNullValue(insertion_value) and insertion_value.len > 4) return ParseError.UnsupportedLayout;
@@ -484,6 +484,30 @@ test "rejects alternate locations as unsupported fast layout" {
         \\_atom_site.Cartn_y
         \\_atom_site.Cartn_z
         \\ATOM 1 C CA A GLY A 1 ? 1.0 2.0 3.0
+        \\#
+    ;
+
+    try std.testing.expectError(ParseError.UnsupportedLayout, parse(std.testing.allocator, source));
+}
+
+test "rejects null label_seq_id as unsupported fast layout" {
+    const source =
+        \\data_AF_NULL_SEQ
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.pdbx_PDB_ins_code
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\_atom_site.auth_seq_id
+        \\ATOM 1 C CA . GLY A . ? 1.0 2.0 3.0 7
         \\#
     ;
 

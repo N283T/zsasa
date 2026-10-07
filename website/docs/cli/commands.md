@@ -143,7 +143,7 @@ See [Classifiers](../guide/classifiers.mdx) for detailed classifier documentatio
 |--------|-------------|---------|
 | `--chain=ID` | Filter by chain ID (e.g., `A` or `A,B,C`) | all chains |
 | `--model=N` | Model number for NMR structures (≥1) | all models |
-| `--auth-chain` | Use auth_asym_id instead of label_asym_id | label_asym_id |
+| `--auth-chain` | Use auth_asym_id for chain IDs and auth_seq_id for residue numbers (mmCIF/BinaryCIF) | label_asym_id, label_seq_id |
 | `--altloc=MODE` | mmCIF/BinaryCIF alternate-location handling: `auto`, `none`, `all`, `highest-occupancy`, or one ID such as `A` | `auto` |
 | `--include-hydrogens` | Include hydrogen atoms (calc/batch default: excluded) | excluded |
 | `--no-hydrogens` | Exclude hydrogen atoms (traj default: included) | — |

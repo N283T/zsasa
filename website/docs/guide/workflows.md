@@ -218,7 +218,10 @@ currently applies only to `chain_map` jobs and requires `atom_areas = true`.
 
 For mmCIF and BinaryCIF, `label` matches `_atom_site.label_asym_id` and `auth`
 matches `_atom_site.auth_asym_id`. PDB has one chain-ID field, so `label` and
-`auth` select the same value for PDB input.
+`auth` select the same value for PDB input. The choice also sets the residue
+numbers in residue-level and atom-level output: `label_seq_id` with `label`
+(`auth_seq_id` for waters and ligands, which have no `label_seq_id`) and
+`auth_seq_id` with `auth`.
 
 Filenames must be basenames that exactly match files in the input directory,
 including their structure and compression extensions. Every discovered
