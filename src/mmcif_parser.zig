@@ -114,7 +114,8 @@ pub const MmcifParser = struct {
     /// Skip hydrogen atoms
     /// Default: true (matches FreeSASA/RustSASA behavior)
     skip_hydrogens: bool = true,
-    /// Filter to include only first alternate location
+    /// Select alternate locations according to `alt_loc_mode`. When false,
+    /// every alternate is kept (`alt_loc_mode = .none` still rejects them).
     first_alt_loc_only: bool = true,
     /// Alternate-location handling policy for mmCIF atom_site rows.
     alt_loc_mode: AltLocMode = .auto,

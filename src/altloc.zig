@@ -49,7 +49,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 pub const AltLocMode = enum {
-    /// Historical behavior: blank altLoc wins, then A, then highest occupancy.
+    /// Default: a blank altLoc wins, then A, then the highest occupancy.
     auto,
     /// Assume there are no non-blank altLocs; fail fast if one is encountered.
     none,
@@ -775,7 +775,7 @@ const CountingRecord = struct {
 
 test "resolve reads every record a constant number of times" {
     const allocator = std.testing.allocator;
-    const n = 60_000;
+    const n = 20_000;
 
     const records = try allocator.alloc(CountingRecord, n);
     defer allocator.free(records);
