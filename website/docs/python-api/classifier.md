@@ -76,7 +76,9 @@ class ClassificationResult:
 | `get_radius(residue, atom, classifier)` | Get radius for a specific atom |
 | `get_atom_class(residue, atom, classifier)` | Get polarity class for an atom |
 | `guess_radius(element)` | Guess radius from element symbol |
-| `guess_radius_from_atom_name(atom_name)` | Guess radius from PDB atom name |
+| `guess_radius_from_atom_name(atom_name)` | Guess radius from a column-padded PDB atom name (`" CA "` is carbon, `"CA  "` is calcium) |
+
+`classify_atoms` and `get_radius` take no element. With `NACCESS` and `OONS`, atoms outside the tables (hydrogens, ligands) have class `UNKNOWN` and a radius guessed from the residue and atom names; see [Handling Unknown Atoms](../guide/classifiers.mdx#handling-unknown-atoms). When you know the element, use `guess_radius(element)` for those atoms, as the structure-library integrations do.
 
 ---
 

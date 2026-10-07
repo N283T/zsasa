@@ -347,6 +347,53 @@ class TestGetRadius:
         assert get_radius("UNK", "CA") is None
         assert get_radius("UNK", "O") is None
 
+    @pytest.mark.parametrize("classifier", [ClassifierType.NACCESS, ClassifierType.OONS])
+    @pytest.mark.parametrize(
+        ("residue", "atom", "expected"),
+        [
+            # Hydrogen, not mercury
+            ("ALA", "H", 1.10),
+            ("SER", "HG", 1.10),
+            ("PRO", "HG2", 1.10),
+            ("ILE", "HG12", 1.10),
+            ("VAL", "HG21", 1.10),
+            # Nitrogen, not sodium
+            ("HEM", "NA", 1.55),
+            # Phosphorus, not lead
+            ("ATP", "PB", 1.80),
+            # Carbon, not cadmium
+            ("PCA", "CD", 1.70),
+            ("LIG", "CD1", 1.70),
+            ("LIG", "CD2", 1.70),
+        ],
+    )
+    def test_get_radius_unlisted_atom_is_not_a_metal(self, classifier, residue, atom, expected):
+        """Atom names starting with a metal symbol are ordinary atoms of their residue."""
+        assert get_radius(residue, atom, classifier) == pytest.approx(expected, abs=1e-9)
+
+    @pytest.mark.parametrize("classifier", [ClassifierType.NACCESS, ClassifierType.OONS])
+    @pytest.mark.parametrize(
+        ("residue", "atom", "expected"),
+        [
+            ("ZN", "ZN", 1.39),
+            ("NA", "NA", 2.27),
+            ("HG", "HG", 1.55),
+            ("CD", "CD", 1.58),
+            ("PB", "PB", 2.02),
+            ("HEM", "FE", 1.26),
+        ],
+    )
+    def test_get_radius_ion(self, classifier, residue, atom, expected):
+        """An ion is a residue named after its atom; FE is never an organic atom name."""
+        assert get_radius(residue, atom, classifier) == pytest.approx(expected, abs=1e-9)
+
+    def test_get_radius_table_entries_unchanged(self):
+        """Residues that list CD, CD1 or HG-like names keep their table radii."""
+        assert get_radius("ARG", "CD", ClassifierType.NACCESS) == pytest.approx(1.87, abs=1e-9)
+        assert get_radius("PHE", "CD1", ClassifierType.NACCESS) == pytest.approx(1.76, abs=1e-9)
+        assert get_radius("ARG", "CD", ClassifierType.OONS) == pytest.approx(2.00, abs=1e-9)
+        assert get_radius("PHE", "CD1", ClassifierType.OONS) == pytest.approx(1.75, abs=1e-9)
+
 
 class TestGetAtomClass:
     """Tests for get_atom_class function."""
@@ -470,6 +517,18 @@ class TestClassifyAtoms:
         assert result.radii[0] == pytest.approx(1.87, abs=0.01)
         assert np.isnan(result.radii[1])
         assert result.classes[1] == AtomClass.UNKNOWN
+
+    @pytest.mark.parametrize("classifier", [ClassifierType.NACCESS, ClassifierType.OONS])
+    def test_unlisted_atoms_are_guessed_from_residue_and_atom_name(self, classifier):
+        """NACCESS/OONS guess hydrogens and ligand atoms without reading them as metals."""
+        result = classify_atoms(
+            ["SER", "VAL", "HEM", "ATP", "PCA", "ZN", "NA"],
+            ["HG", "HG21", "NA", "PB", "CD", "ZN", "NA"],
+            classifier,
+        )
+
+        np.testing.assert_allclose(result.radii, [1.10, 1.10, 1.55, 1.80, 1.70, 1.39, 2.27])
+        assert all(c == AtomClass.UNKNOWN for c in result.classes)
 
     def test_without_classes(self):
         """Should work without computing classes."""
