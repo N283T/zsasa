@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const workflow_manifest = @import("workflow_manifest.zig");
 const chain_map = @import("chain_map.zig");
 const types = @import("types.zig");
@@ -232,27 +233,139 @@ fn replaceExtension(allocator: Allocator, filename: []const u8, new_ext: []const
     return std.fmt.allocPrint(allocator, "{s}{s}", .{ base, new_ext });
 }
 
-/// Build a display name for an SDF molecule in batch results.
-/// Strips the SDF file extension to produce "stem_molname" or "stem_N" format.
-/// This ensures `replaceExtension` produces unique output filenames.
-fn sdfMoleculeDisplayName(allocator: Allocator, filename: []const u8, mol_name: []const u8, mol_idx: usize) ![]const u8 {
-    // Strip extension (.sdf, .sdf.gz, .sdf.zst, .mol, .mol.gz, .mol.zst) to get stem.
+/// Stem of an SDF/MOL input file name: the name without its compression and
+/// format extensions ("lig.v2.sdf.gz" -> "lig.v2").
+fn sdfFileStem(filename: []const u8) []const u8 {
     var base = filename;
     if (compressed.isGzip(base)) {
         base = base[0 .. base.len - 3];
     } else if (compressed.isZstd(base)) {
         base = base[0 .. base.len - 4];
     }
-    const stem = if (std.mem.findScalarLast(u8, base, '.')) |dot_idx|
+    return if (std.mem.findScalarLast(u8, base, '.')) |dot_idx|
         base[0..dot_idx]
     else
         base;
+}
 
-    if (mol_name.len > 0) {
-        return std.fmt.allocPrint(allocator, "{s}_{s}", .{ stem, mol_name });
-    } else {
-        return std.fmt.allocPrint(allocator, "{s}_{d}", .{ stem, mol_idx + 1 });
+/// Whether `c` cannot be used in a file name component. Path separators and
+/// control characters are replaced on every platform so that output names do
+/// not depend on where the batch runs; the other characters Windows reserves
+/// are only replaced there, where such a name cannot be created anyway.
+fn isUnsafeFileNameByte(c: u8, os_tag: std.Target.Os.Tag) bool {
+    return switch (c) {
+        '/', '\\' => true,
+        '<', '>', ':', '"', '|', '?', '*' => os_tag == .windows,
+        else => std.ascii.isControl(c),
+    };
+}
+
+/// Per-file output name of an SDF molecule: its display name with every byte
+/// that cannot be part of a file name replaced by '_', followed by `ext`.
+///
+/// The extension is appended, never substituted for a "previous extension",
+/// so dots in the file stem or the molecule title are kept. The result holds
+/// no path separator and always ends in `ext`, so it is never "", "." or "..":
+/// joined to the output directory it cannot name anything outside of it.
+fn sdfMoleculeOutputName(allocator: Allocator, display_name: []const u8, ext: []const u8) ![]u8 {
+    const name = try std.mem.concat(allocator, u8, &.{ display_name, ext });
+    for (name[0..display_name.len]) |*c| {
+        if (isUnsafeFileNameByte(c.*, builtin.os.tag)) c.* = '_';
     }
+    return name;
+}
+
+/// What a per-file output is named after.
+const OutputNameSource = enum {
+    /// An input file name; its extension is replaced ("1ubq.cif.gz" -> "1ubq.json").
+    input_file,
+    /// The display name of an SDF molecule; see `sdfMoleculeOutputName`.
+    sdf_molecule,
+};
+
+/// Name of the per-file output written for `name`. The collision check and
+/// the writer both go through this function, so they agree on every name.
+fn perFileOutputName(allocator: Allocator, source: OutputNameSource, name: []const u8, ext: []const u8) ![]const u8 {
+    return switch (source) {
+        .input_file => replaceExtension(allocator, name, ext),
+        .sdf_molecule => sdfMoleculeOutputName(allocator, name, ext),
+    };
+}
+
+/// Build the display names of the molecules of one SDF/MOL file, in file
+/// order. A display name is the `filename` of the molecule in batch results
+/// and JSONL rows, and its per-file output is named after it.
+///
+/// - A molecule is named "stem_title", or "stem_N" (N = 1-based position in
+///   the file) when its title is blank.
+/// - When that name is shared by several molecules of the file, each of them
+///   gets its position appended: "stem_title_N".
+/// - While the result is still the name of another molecule of the file,
+///   "_N" is appended again: titles "x", "x", "x_2" give "stem_x_1",
+///   "stem_x_2_2" and "stem_x_2".
+///
+/// Names are compared as the output names they produce and without regard to
+/// ASCII case, so the per-file outputs of one file never overwrite each other,
+/// also on a case-insensitive filesystem. A molecule whose name is unique in
+/// this sense always keeps the plain "stem_title" or "stem_N". Titles are kept
+/// verbatim: display names are not file names, see `sdfMoleculeOutputName`.
+///
+/// Caller owns the returned slice and every name in it.
+fn sdfMoleculeDisplayNames(
+    allocator: Allocator,
+    filename: []const u8,
+    molecules: []const sdf_parser.SdfMolecule,
+) ![][]const u8 {
+    var scratch_arena = std.heap.ArenaAllocator.init(allocator);
+    defer scratch_arena.deinit();
+    const scratch = scratch_arena.allocator();
+
+    const stem = sdfFileStem(filename);
+
+    // Plain names, and how many molecules share each of them.
+    const plain = try scratch.alloc([]const u8, molecules.len);
+    const plain_keys = try scratch.alloc([]const u8, molecules.len);
+    var key_counts = std.StringHashMapUnmanaged(usize).empty;
+    for (molecules, 0..) |mol, i| {
+        plain[i] = if (mol.name.len > 0)
+            try std.fmt.allocPrint(scratch, "{s}_{s}", .{ stem, mol.name })
+        else
+            try std.fmt.allocPrint(scratch, "{s}_{d}", .{ stem, i + 1 });
+        plain_keys[i] = try sdfMoleculeNameKey(scratch, plain[i]);
+        const entry = try key_counts.getOrPutValue(scratch, plain_keys[i], 0);
+        entry.value_ptr.* += 1;
+    }
+
+    const names = try allocator.alloc([]const u8, molecules.len);
+    var n_names: usize = 0;
+    errdefer {
+        for (names[0..n_names]) |name| allocator.free(name);
+        allocator.free(names);
+    }
+
+    for (plain, plain_keys, 0..) |plain_name, plain_key, i| {
+        var name = plain_name;
+        if (key_counts.get(plain_key).? > 1) {
+            // A name ending in this molecule's position cannot equal that of
+            // another shared name, only the plain name of a unique molecule.
+            while (true) {
+                name = try std.fmt.allocPrint(scratch, "{s}_{d}", .{ name, i + 1 });
+                const count = key_counts.get(try sdfMoleculeNameKey(scratch, name)) orelse break;
+                if (count != 1) break;
+            }
+        }
+        names[i] = try allocator.dupe(u8, name);
+        n_names += 1;
+    }
+    return names;
+}
+
+/// Key under which two SDF molecule display names produce the same per-file
+/// output: the output name without extension, in ASCII lower case.
+fn sdfMoleculeNameKey(allocator: Allocator, display_name: []const u8) ![]const u8 {
+    const key = try sdfMoleculeOutputName(allocator, display_name, "");
+    for (key) |*c| c.* = std.ascii.toLower(c.*);
+    return key;
 }
 
 /// Generic SASA calculation dispatcher.
@@ -345,18 +458,21 @@ fn calculateSasaDispatch(
 
 /// Write SASA result to output file
 /// Handles f32 -> f64 conversion for consistent output format
+/// `name` is an input file name or an SDF molecule display name, as told by
+/// `name_source`; the output file name is derived by `perFileOutputName`.
 fn writeSasaOutput(
     comptime T: type,
     allocator: Allocator,
     io: std.Io,
     result: *const SasaResultGen(T),
     output_dir: []const u8,
-    filename: []const u8,
+    name_source: OutputNameSource,
+    name: []const u8,
     format: OutputFormat,
 ) !void {
     try validateBatchOutputFormat(format);
 
-    const output_filename = try replaceExtension(allocator, filename, getOutputExtension(format));
+    const output_filename = try perFileOutputName(allocator, name_source, name, getOutputExtension(format));
     defer allocator.free(output_filename);
     const output_path = try std.fs.path.join(allocator, &.{ output_dir, output_filename });
 
@@ -1083,7 +1199,7 @@ fn calculatePreparedInputResult(
 
     if (output_dir) |out_dir| {
         if (!config.store_atom_areas) {
-            writeSasaOutput(T, arena, io, &sasa_result, out_dir, filename, config.output_format) catch |err| {
+            writeSasaOutput(T, arena, io, &sasa_result, out_dir, .input_file, filename, config.output_format) catch |err| {
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
                 return result;
@@ -1215,8 +1331,8 @@ fn processOneFile(
 }
 
 /// Process a single SDF molecule and return result.
-/// The molecule is provided as a pre-parsed slice of 1 element.
-/// `display_name` is used as the filename in the result (e.g., "file.sdf:methane").
+/// `display_name` is used as the filename in the result and names the
+/// per-file output (see `sdfMoleculeDisplayNames`).
 fn processOneSdfMolecule(
     arena: Allocator,
     io: std.Io,
@@ -1376,7 +1492,7 @@ fn processOneSdfMoleculeInner(
 
             if (output_dir) |out_dir| {
                 if (!config.store_atom_areas) {
-                    writeSasaOutput(f64, arena, io, &sasa_result, out_dir, display_name, config.output_format) catch |err| {
+                    writeSasaOutput(f64, arena, io, &sasa_result, out_dir, .sdf_molecule, display_name, config.output_format) catch |err| {
                         res.status = .err;
                         res.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
                         return res;
@@ -1429,7 +1545,7 @@ fn processOneSdfMoleculeInner(
 
             if (output_dir) |out_dir| {
                 if (!config.store_atom_areas) {
-                    writeSasaOutput(f32, arena, io, &sasa_result, out_dir, display_name, config.output_format) catch |err| {
+                    writeSasaOutput(f32, arena, io, &sasa_result, out_dir, .sdf_molecule, display_name, config.output_format) catch |err| {
                         res.status = .err;
                         res.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
                         return res;
@@ -1751,22 +1867,26 @@ pub fn runBatchSequential(
 ) !BatchResult {
     try validateBatchOutputFormat(config.output_format);
 
-    // Start total timer
-    var total_timer = std.Io.Timestamp.now(io, .awake);
+    var prepared = try prepareBatch(allocator, io, input_dir, output_dir, config);
+    defer prepared.deinit(allocator);
 
-    // Scan directory for files
-    var scan_timer = std.Io.Timestamp.now(io, .awake);
-    const files = try scanDirectory(allocator, io, input_dir);
-    const scan_time_ns: u64 = @intCast(scan_timer.untilNow(io, .awake).nanoseconds);
-    defer {
-        for (files) |f| allocator.free(f);
-        allocator.free(files);
-    }
-    try validateChainMapInputFormats(files, config);
-    try validateUniqueOutputNames(allocator, files, output_dir, config);
+    return runPreparedSequential(allocator, io, input_dir, output_dir, config, jsonl_output_path, &prepared);
+}
+
+/// Process the work items of a prepared batch one after another.
+fn runPreparedSequential(
+    allocator: Allocator,
+    io: std.Io,
+    input_dir: []const u8,
+    output_dir: ?[]const u8,
+    config: BatchConfig,
+    jsonl_output_path: ?[]const u8,
+    prepared: *const PreparedBatch,
+) !BatchResult {
+    const work_items = prepared.work.items.items;
 
     var progress_root: std.Progress.Node = if (shouldShowProgress(config))
-        std.Progress.start(io, .{ .root_name = "Processing files", .estimated_total_items = files.len })
+        std.Progress.start(io, .{ .root_name = "Processing files", .estimated_total_items = work_items.len })
     else
         .none;
     defer progress_root.end();
@@ -1790,11 +1910,12 @@ pub fn runBatchSequential(
         if (jsonl_file) |f| f.close(io);
     };
 
-    // Use ArrayList for results (SDF files may expand into multiple entries)
+    // One result per work item (SDF files expand into one item per molecule)
     var results_list = std.ArrayListUnmanaged(FileResult).empty;
     defer results_list.deinit(allocator);
+    try results_list.ensureTotalCapacity(allocator, work_items.len);
 
-    // Process each file
+    // Process each item
     var total_sasa_time_ns: u64 = 0;
     var total_read_parse_time_ns: u64 = 0;
     var total_classifier_time_ns: u64 = 0;
@@ -1806,7 +1927,7 @@ pub fn runBatchSequential(
     var luts = try BatchLuts.init(allocator, config);
     defer luts.deinit();
 
-    // Use arena allocator for each file (reset between files)
+    // Use arena allocator for each item (reset between items)
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -1818,194 +1939,49 @@ pub fn runBatchSequential(
     else
         null;
 
-    var total_items: usize = 0;
-
     var process_timer = std.Io.Timestamp.now(io, .awake);
-    for (files) |filename| {
-        const format = format_detect.detectInputFormat(filename);
+    for (work_items) |item| {
+        const name_copy = try allocator.dupe(u8, item.display_name);
 
-        if (format == .sdf) {
-            // SDF: parse and process each molecule individually
-            const input_path = std.fs.path.join(arena.allocator(), &.{ input_dir, filename }) catch |err| {
-                const filename_copy = try allocator.dupe(u8, filename);
-                try results_list.append(allocator, FileResult{
-                    .filename = filename_copy,
-                    .n_atoms = 0,
-                    .sasa_time_ns = 0,
-                    .total_sasa = 0,
-                    .status = .err,
-                    .error_msg = std.fmt.allocPrint(allocator, "path join failed: {s}", .{@errorName(err)}) catch null,
-                });
-                failed += 1;
-                total_items += 1;
-                _ = arena.reset(.retain_capacity);
-                continue;
-            };
+        var result = processWorkItem(
+            arena.allocator(),
+            io,
+            allocator,
+            input_dir,
+            output_dir,
+            item,
+            name_copy,
+            config,
+            luts.f64Ptr(),
+            luts.f32Ptr(),
+            luts.coarseF64Ptr(),
+            luts.fineF64Ptr(),
+            luts.coarseF32Ptr(),
+            luts.fineF32Ptr(),
+        );
 
-            const source = if (compressed.isCompressed(input_path))
-                compressed.read(arena.allocator(), input_path) catch |err| {
-                    const filename_copy = try allocator.dupe(u8, filename);
-                    try results_list.append(allocator, FileResult{
-                        .filename = filename_copy,
-                        .n_atoms = 0,
-                        .sasa_time_ns = 0,
-                        .total_sasa = 0,
-                        .status = .err,
-                        .error_msg = std.fmt.allocPrint(allocator, "read failed: {s}", .{@errorName(err)}) catch null,
-                    });
-                    failed += 1;
-                    total_items += 1;
-                    _ = arena.reset(.retain_capacity);
-                    continue;
-                }
-            else file_blk: {
-                const f = std.Io.Dir.cwd().openFile(io, input_path, .{}) catch |err| {
-                    const filename_copy = try allocator.dupe(u8, filename);
-                    try results_list.append(allocator, FileResult{
-                        .filename = filename_copy,
-                        .n_atoms = 0,
-                        .sasa_time_ns = 0,
-                        .total_sasa = 0,
-                        .status = .err,
-                        .error_msg = std.fmt.allocPrint(allocator, "open failed: {s}", .{@errorName(err)}) catch null,
-                    });
-                    failed += 1;
-                    total_items += 1;
-                    _ = arena.reset(.retain_capacity);
-                    continue;
-                };
-                defer f.close(io);
-                var read_buf_seq: [65536]u8 = undefined;
-                var file_r_seq = f.reader(io, &read_buf_seq);
-                break :file_blk file_r_seq.interface.allocRemaining(arena.allocator(), .unlimited) catch |err| {
-                    const filename_copy = try allocator.dupe(u8, filename);
-                    try results_list.append(allocator, FileResult{
-                        .filename = filename_copy,
-                        .n_atoms = 0,
-                        .sasa_time_ns = 0,
-                        .total_sasa = 0,
-                        .status = .err,
-                        .error_msg = std.fmt.allocPrint(allocator, "read failed: {s}", .{@errorName(err)}) catch null,
-                    });
-                    failed += 1;
-                    total_items += 1;
-                    _ = arena.reset(.retain_capacity);
-                    continue;
-                };
-            };
-
-            const molecules = sdf_parser.parse(arena.allocator(), source) catch |err| {
-                const filename_copy = try allocator.dupe(u8, filename);
-                try results_list.append(allocator, FileResult{
-                    .filename = filename_copy,
-                    .n_atoms = 0,
-                    .sasa_time_ns = 0,
-                    .total_sasa = 0,
-                    .status = .err,
-                    .error_msg = std.fmt.allocPrint(allocator, "SDF parse failed: {s}", .{@errorName(err)}) catch null,
-                });
-                failed += 1;
-                total_items += 1;
-                _ = arena.reset(.retain_capacity);
-                continue;
-            };
-
-            // Process each molecule individually
-            for (molecules, 0..) |*mol, mol_idx| {
-                // Build display name: "stem_molname" or "stem_N"
-                const display_name = sdfMoleculeDisplayName(allocator, filename, mol.name, mol_idx) catch |err| blk: {
-                    logWarning("{s}: molecule {d} display name failed ({s}), using filename", .{ filename, mol_idx, @errorName(err) });
-                    break :blk try allocator.dupe(u8, filename);
-                };
-
-                var mol_result = processOneSdfMolecule(
-                    arena.allocator(),
-                    io,
-                    allocator,
-                    display_name,
-                    mol,
-                    output_dir,
-                    config,
-                    1, // single-threaded
-                    luts.f64Ptr(),
-                    luts.f32Ptr(),
-                    luts.coarseF64Ptr(),
-                    luts.fineF64Ptr(),
-                    luts.coarseF32Ptr(),
-                    luts.fineF32Ptr(),
-                );
-                mol_result.filename = display_name;
-
-                if (mol_result.status == .ok) {
-                    successful += 1;
-                    total_sasa_time_ns += mol_result.sasa_time_ns;
-                    total_read_parse_time_ns += mol_result.read_parse_time_ns;
-                    total_classifier_time_ns += mol_result.classifier_time_ns;
-                } else {
-                    failed += 1;
-                }
-
-                // Stream JSONL output
-                if (jsonl_writer) |*w| {
-                    var write_timer: std.Io.Timestamp = undefined;
-                    if (config.profile_stages) write_timer = std.Io.Timestamp.now(io, .awake);
-                    try writeJsonlResult(w, arena.allocator(), &mol_result, jsonlOptions(config));
-                    if (config.profile_stages) total_jsonl_write_time_ns += @intCast(write_timer.untilNow(io, .awake).nanoseconds);
-                }
-                mol_result.atom_areas = null;
-                mol_result.residue_map = null;
-
-                try results_list.append(allocator, mol_result);
-                total_items += 1;
-            }
-
-            _ = arena.reset(.retain_capacity);
+        if (result.status == .ok) {
+            successful += 1;
+            total_sasa_time_ns += result.sasa_time_ns;
+            total_read_parse_time_ns += result.read_parse_time_ns;
+            total_classifier_time_ns += result.classifier_time_ns;
         } else {
-            // Non-SDF: existing logic
-            const filename_copy = try allocator.dupe(u8, filename);
-
-            var result = processOneFile(
-                arena.allocator(),
-                io,
-                allocator,
-                input_dir,
-                output_dir,
-                filename,
-                config,
-                1, // single-threaded
-                luts.f64Ptr(),
-                luts.f32Ptr(),
-                luts.coarseF64Ptr(),
-                luts.fineF64Ptr(),
-                luts.coarseF32Ptr(),
-                luts.fineF32Ptr(),
-            );
-            result.filename = filename_copy;
-
-            if (result.status == .ok) {
-                successful += 1;
-                total_sasa_time_ns += result.sasa_time_ns;
-                total_read_parse_time_ns += result.read_parse_time_ns;
-                total_classifier_time_ns += result.classifier_time_ns;
-            } else {
-                failed += 1;
-            }
-
-            // Stream JSONL output
-            if (jsonl_writer) |*w| {
-                var write_timer: std.Io.Timestamp = undefined;
-                if (config.profile_stages) write_timer = std.Io.Timestamp.now(io, .awake);
-                try writeJsonlResult(w, arena.allocator(), &result, jsonlOptions(config));
-                if (config.profile_stages) total_jsonl_write_time_ns += @intCast(write_timer.untilNow(io, .awake).nanoseconds);
-            }
-            result.atom_areas = null;
-            result.residue_map = null;
-
-            try results_list.append(allocator, result);
-            total_items += 1;
-
-            _ = arena.reset(.retain_capacity);
+            failed += 1;
         }
+
+        // Stream JSONL output
+        if (jsonl_writer) |*w| {
+            var write_timer: std.Io.Timestamp = undefined;
+            if (config.profile_stages) write_timer = std.Io.Timestamp.now(io, .awake);
+            try writeJsonlResult(w, arena.allocator(), &result, jsonlOptions(config));
+            if (config.profile_stages) total_jsonl_write_time_ns += @intCast(write_timer.untilNow(io, .awake).nanoseconds);
+        }
+        result.atom_areas = null;
+        result.residue_map = null;
+
+        results_list.appendAssumeCapacity(result);
+
+        _ = arena.reset(.retain_capacity);
 
         if (progress_node) |node| {
             node.completeOne();
@@ -2013,15 +1989,16 @@ pub fn runBatchSequential(
     }
 
     const process_time_ns: u64 = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
-    const total_time_ns: u64 = @intCast(total_timer.untilNow(io, .awake).nanoseconds);
+    const total_time_ns: u64 = @intCast(prepared.total_timer.untilNow(io, .awake).nanoseconds);
 
     return BatchResult{
-        .total_files = total_items,
+        .total_files = work_items.len,
         .successful = successful,
         .failed = failed,
         .total_sasa_time_ns = total_sasa_time_ns,
         .total_time_ns = total_time_ns,
-        .scan_time_ns = scan_time_ns,
+        .scan_time_ns = prepared.scan_time_ns,
+        .build_items_time_ns = prepared.build_items_time_ns,
         .process_time_ns = process_time_ns,
         .read_parse_time_ns = total_read_parse_time_ns,
         .classifier_time_ns = total_classifier_time_ns,
@@ -2031,12 +2008,41 @@ pub fn runBatchSequential(
     };
 }
 
-/// A work item for parallel batch processing.
+/// A work item for batch processing.
 /// Represents either a plain file or a specific molecule within an SDF file.
 const WorkItem = struct {
     filename: []const u8, // Original filename in the input directory
-    display_name: []const u8, // Display name for results (e.g., "file.sdf:water")
-    mol_idx: ?usize, // If non-null, SDF molecule index (0-based) within pre-parsed molecules
+    display_name: []const u8, // Name in results: the filename, or "stem_molname" for an SDF molecule
+    /// Pre-parsed molecule of an SDF input (owned by `BatchWork`), null for other inputs.
+    molecule: ?*const sdf_parser.SdfMolecule = null,
+    /// 0-based position of `molecule` in its file.
+    mol_idx: usize = 0,
+    /// Set when an SDF input could not be read or parsed. The item then only
+    /// reports this error, under the file name.
+    load_error: ?anyerror = null,
+
+    fn outputNameSource(self: WorkItem) OutputNameSource {
+        return if (self.molecule != null) .sdf_molecule else .input_file;
+    }
+};
+
+/// The work items of a batch run together with the parsed SDF molecules they
+/// point to. SDF inputs are read and parsed once, when the items are built:
+/// molecule names are needed to check the output names before anything is
+/// calculated, and the runners then process those same molecules.
+const BatchWork = struct {
+    items: std.ArrayListUnmanaged(WorkItem) = .empty,
+    sdf_molecules: std.ArrayListUnmanaged([]const sdf_parser.SdfMolecule) = .empty,
+
+    fn deinit(self: *BatchWork, allocator: Allocator) void {
+        for (self.items.items) |item| {
+            // The display name of a plain file is the file name itself.
+            if (item.display_name.ptr != item.filename.ptr) allocator.free(item.display_name);
+        }
+        self.items.deinit(allocator);
+        for (self.sdf_molecules.items) |molecules| sdf_parser.freeMolecules(allocator, molecules);
+        self.sdf_molecules.deinit(allocator);
+    }
 };
 
 fn resolveBatchThreadCount(config_threads: usize, cpu_count: usize) usize {
@@ -2053,6 +2059,7 @@ fn joinSpawnedThreads(threads: []std.Thread, spawned_count: usize) void {
 
 /// Shared context for parallel workers
 const ParallelContext = struct {
+    /// Read-only for workers, including the SDF molecules the items point to.
     work_items: []const WorkItem,
     input_dir: []const u8,
     output_dir: ?[]const u8,
@@ -2070,10 +2077,72 @@ const ParallelContext = struct {
     fine_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
     jsonl_stream: ?*JsonlStreamWriter,
     io: std.Io,
-    /// Pre-parsed SDF data: keyed by filename, each entry is the parsed source bytes.
-    /// Workers read these (read-only) to avoid re-parsing the same SDF file.
-    sdf_sources: std.StringHashMapUnmanaged([]const u8),
 };
+
+/// Process one work item and return its result under `result_name`.
+/// Allocations follow `processOneFile`; SASA runs single-threaded.
+fn processWorkItem(
+    arena: Allocator,
+    io: std.Io,
+    result_allocator: Allocator,
+    input_dir: []const u8,
+    output_dir: ?[]const u8,
+    item: WorkItem,
+    result_name: []const u8,
+    config: BatchConfig,
+    lut_f64: ?*const bitmask_lut.BitmaskLut,
+    lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+    coarse_lut_f64: ?*const bitmask_lut.BitmaskLut,
+    fine_lut_f64: ?*const bitmask_lut.BitmaskLut,
+    coarse_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+    fine_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32),
+) FileResult {
+    var result = if (item.load_error) |err|
+        FileResult{
+            .filename = result_name,
+            .n_atoms = 0,
+            .sasa_time_ns = 0,
+            .total_sasa = 0,
+            .status = .err,
+            .error_msg = std.fmt.allocPrint(result_allocator, "read/parse failed: {s}", .{@errorName(err)}) catch null,
+        }
+    else if (item.molecule) |molecule|
+        processOneSdfMolecule(
+            arena,
+            io,
+            result_allocator,
+            item.display_name,
+            molecule,
+            output_dir,
+            config,
+            1, // single-threaded SASA per molecule
+            lut_f64,
+            lut_f32,
+            coarse_lut_f64,
+            fine_lut_f64,
+            coarse_lut_f32,
+            fine_lut_f32,
+        )
+    else
+        processOneFile(
+            arena,
+            io,
+            result_allocator,
+            input_dir,
+            output_dir,
+            item.filename,
+            config,
+            1, // single-threaded SASA per file
+            lut_f64,
+            lut_f32,
+            coarse_lut_f64,
+            fine_lut_f64,
+            coarse_lut_f32,
+            fine_lut_f32,
+        );
+    result.filename = result_name;
+    return result;
+}
 
 /// Worker thread function for parallel batch processing
 fn parallelWorker(ctx: *ParallelContext) void {
@@ -2122,118 +2191,39 @@ fn parallelWorker(ctx: *ParallelContext) void {
             continue;
         };
 
-        if (work.mol_idx) |mol_idx| {
-            // SDF molecule: re-parse from pre-loaded source on thread-local arena
-            const source = ctx.sdf_sources.get(work.filename) orelse {
-                ctx.results[item_idx] = FileResult{
-                    .filename = name_copy,
-                    .n_atoms = 0,
-                    .sasa_time_ns = 0,
-                    .total_sasa = 0,
-                    .status = .err,
-                    .error_msg = ctx.result_allocator.dupe(u8, "SDF source not found") catch null,
-                };
-                _ = ctx.processed_count.fetchAdd(1, .release);
-                _ = arena.reset(.retain_capacity);
-                continue;
-            };
+        var result = processWorkItem(
+            arena.allocator(),
+            ctx.io,
+            ctx.result_allocator,
+            ctx.input_dir,
+            ctx.output_dir,
+            work,
+            name_copy,
+            ctx.config,
+            ctx.lut_f64,
+            ctx.lut_f32,
+            ctx.coarse_lut_f64,
+            ctx.fine_lut_f64,
+            ctx.coarse_lut_f32,
+            ctx.fine_lut_f32,
+        );
 
-            const molecules = sdf_parser.parse(arena.allocator(), source) catch {
-                ctx.results[item_idx] = FileResult{
-                    .filename = name_copy,
-                    .n_atoms = 0,
-                    .sasa_time_ns = 0,
-                    .total_sasa = 0,
-                    .status = .err,
-                    .error_msg = ctx.result_allocator.dupe(u8, "SDF re-parse failed") catch null,
-                };
-                _ = ctx.processed_count.fetchAdd(1, .release);
-                _ = arena.reset(.retain_capacity);
-                continue;
-            };
+        // Store result (thread-safe: each index is unique)
+        ctx.results[item_idx] = result;
 
-            if (mol_idx >= molecules.len) {
-                ctx.results[item_idx] = FileResult{
-                    .filename = name_copy,
-                    .n_atoms = 0,
-                    .sasa_time_ns = 0,
-                    .total_sasa = 0,
-                    .status = .err,
-                    .error_msg = ctx.result_allocator.dupe(u8, "SDF molecule index out of range") catch null,
-                };
-                _ = ctx.processed_count.fetchAdd(1, .release);
-                _ = arena.reset(.retain_capacity);
-                continue;
+        // Stream JSONL output (atom_areas on arena, valid until reset)
+        if (ctx.jsonl_stream) |stream| {
+            var write_timer: std.Io.Timestamp = undefined;
+            if (ctx.config.profile_stages) write_timer = std.Io.Timestamp.now(ctx.io, .awake);
+            stream.writeResult(arena.allocator(), &result);
+            if (ctx.config.profile_stages) {
+                const elapsed: u64 = @intCast(write_timer.untilNow(ctx.io, .awake).nanoseconds);
+                _ = ctx.jsonl_write_time_ns.fetchAdd(elapsed, .monotonic);
             }
-
-            var result = processOneSdfMolecule(
-                arena.allocator(),
-                ctx.io,
-                ctx.result_allocator,
-                name_copy,
-                &molecules[mol_idx],
-                ctx.output_dir,
-                ctx.config,
-                1, // single-threaded SASA per molecule
-                ctx.lut_f64,
-                ctx.lut_f32,
-                ctx.coarse_lut_f64,
-                ctx.fine_lut_f64,
-                ctx.coarse_lut_f32,
-                ctx.fine_lut_f32,
-            );
-            result.filename = name_copy;
-
-            ctx.results[item_idx] = result;
-
-            if (ctx.jsonl_stream) |stream| {
-                var write_timer: std.Io.Timestamp = undefined;
-                if (ctx.config.profile_stages) write_timer = std.Io.Timestamp.now(ctx.io, .awake);
-                stream.writeResult(arena.allocator(), &result);
-                if (ctx.config.profile_stages) {
-                    const elapsed: u64 = @intCast(write_timer.untilNow(ctx.io, .awake).nanoseconds);
-                    _ = ctx.jsonl_write_time_ns.fetchAdd(elapsed, .monotonic);
-                }
-            }
-            ctx.results[item_idx].atom_areas = null;
-            ctx.results[item_idx].residue_map = null;
-        } else {
-            // Non-SDF file: existing logic
-            var result = processOneFile(
-                arena.allocator(),
-                ctx.io,
-                ctx.result_allocator,
-                ctx.input_dir,
-                ctx.output_dir,
-                work.filename,
-                ctx.config,
-                1, // single-threaded SASA per file
-                ctx.lut_f64,
-                ctx.lut_f32,
-                ctx.coarse_lut_f64,
-                ctx.fine_lut_f64,
-                ctx.coarse_lut_f32,
-                ctx.fine_lut_f32,
-            );
-            result.filename = name_copy;
-
-            // Store result (thread-safe: each index is unique)
-            ctx.results[item_idx] = result;
-
-            // Stream JSONL output (atom_areas on arena, valid until reset)
-            if (ctx.jsonl_stream) |stream| {
-                var write_timer: std.Io.Timestamp = undefined;
-                if (ctx.config.profile_stages) write_timer = std.Io.Timestamp.now(ctx.io, .awake);
-                stream.writeResult(arena.allocator(), &result);
-                if (ctx.config.profile_stages) {
-                    const elapsed: u64 = @intCast(write_timer.untilNow(ctx.io, .awake).nanoseconds);
-                    _ = ctx.jsonl_write_time_ns.fetchAdd(elapsed, .monotonic);
-                }
-            }
-            // Clear arena-owned payloads after streaming.
-            ctx.results[item_idx].atom_areas = null;
-            ctx.results[item_idx].residue_map = null;
         }
+        // Clear arena-owned payloads after streaming.
+        ctx.results[item_idx].atom_areas = null;
+        ctx.results[item_idx].residue_map = null;
 
         // Update progress counter (.release pairs with .acquire in progress monitor)
         _ = ctx.processed_count.fetchAdd(1, .release);
@@ -2244,116 +2234,126 @@ fn parallelWorker(ctx: *ParallelContext) void {
 }
 
 /// Build work items from file list, expanding SDF files into per-molecule items.
-/// Returns the work items and a map of SDF sources (caller must free both).
+/// Caller must release the result with `BatchWork.deinit`.
 fn buildWorkItems(
     allocator: Allocator,
     io: std.Io,
     files: []const []const u8,
     input_dir: []const u8,
-) !struct { items: []WorkItem, sdf_sources: std.StringHashMapUnmanaged([]const u8) } {
-    var items = std.ArrayListUnmanaged(WorkItem).empty;
-    errdefer {
-        for (items.items) |item| {
-            // Only free if display_name was separately allocated (not same as filename)
-            if (item.display_name.ptr != item.filename.ptr) {
-                allocator.free(item.display_name);
-            }
-        }
-        items.deinit(allocator);
-    }
-
-    var sdf_sources = std.StringHashMapUnmanaged([]const u8){};
-    errdefer {
-        var it = sdf_sources.valueIterator();
-        while (it.next()) |v| allocator.free(v.*);
-        sdf_sources.deinit(allocator);
-    }
+) !BatchWork {
+    var work = BatchWork{};
+    errdefer work.deinit(allocator);
 
     for (files) |filename| {
-        const format = format_detect.detectInputFormat(filename);
-        if (format == .sdf) {
-            // Read and parse SDF to count molecules
-            const input_path = try std.fs.path.join(allocator, &.{ input_dir, filename });
-            defer allocator.free(input_path);
+        if (format_detect.detectInputFormat(filename) != .sdf) {
+            try work.items.append(allocator, .{ .filename = filename, .display_name = filename });
+            continue;
+        }
 
-            const source = if (compressed.isCompressed(input_path))
-                compressed.read(allocator, input_path) catch |err| {
-                    // If read fails, add a single error item
-                    logWarning("{s}: failed to read SDF (compressed): {s}", .{ filename, @errorName(err) });
-                    try items.append(allocator, .{
-                        .filename = filename,
-                        .display_name = filename,
-                        .mol_idx = null,
-                    });
-                    continue;
-                }
-            else file_blk: {
-                const f = std.Io.Dir.cwd().openFile(io, input_path, .{}) catch |err| {
-                    logWarning("{s}: failed to open SDF: {s}", .{ filename, @errorName(err) });
-                    try items.append(allocator, .{
-                        .filename = filename,
-                        .display_name = filename,
-                        .mol_idx = null,
-                    });
-                    continue;
-                };
-                defer f.close(io);
-                var read_buf_build: [65536]u8 = undefined;
-                var file_r_build = f.reader(io, &read_buf_build);
-                break :file_blk file_r_build.interface.allocRemaining(allocator, .unlimited) catch |err| {
-                    logWarning("{s}: failed to read SDF: {s}", .{ filename, @errorName(err) });
-                    try items.append(allocator, .{
-                        .filename = filename,
-                        .display_name = filename,
-                        .mol_idx = null,
-                    });
-                    continue;
-                };
-            };
+        // Read and parse the SDF file. A file that cannot be loaded becomes a
+        // single item that reports the error.
+        const input_path = try std.fs.path.join(allocator, &.{ input_dir, filename });
+        defer allocator.free(input_path);
 
-            const molecules = sdf_parser.parse(allocator, source) catch |err| {
-                logWarning("{s}: failed to parse SDF: {s}", .{ filename, @errorName(err) });
-                allocator.free(source);
-                try items.append(allocator, .{
-                    .filename = filename,
-                    .display_name = filename,
-                    .mol_idx = null,
-                });
+        const source = if (compressed.isCompressed(input_path))
+            compressed.read(allocator, input_path) catch |err| {
+                logWarning("{s}: failed to read SDF (compressed): {s}", .{ filename, @errorName(err) });
+                try work.items.append(allocator, .{ .filename = filename, .display_name = filename, .load_error = err });
+                continue;
+            }
+        else file_blk: {
+            const f = std.Io.Dir.cwd().openFile(io, input_path, .{}) catch |err| {
+                logWarning("{s}: failed to open SDF: {s}", .{ filename, @errorName(err) });
+                try work.items.append(allocator, .{ .filename = filename, .display_name = filename, .load_error = err });
                 continue;
             };
-            defer sdf_parser.freeMolecules(allocator, molecules);
-
-            // Store the source for workers to re-parse
-            sdf_sources.put(allocator, filename, source) catch |err| {
-                allocator.free(source);
-                return err;
+            defer f.close(io);
+            var read_buf_build: [65536]u8 = undefined;
+            var file_r_build = f.reader(io, &read_buf_build);
+            break :file_blk file_r_build.interface.allocRemaining(allocator, .unlimited) catch |err| {
+                logWarning("{s}: failed to read SDF: {s}", .{ filename, @errorName(err) });
+                try work.items.append(allocator, .{ .filename = filename, .display_name = filename, .load_error = err });
+                continue;
             };
+        };
+        // Parsed molecules do not refer to the source text.
+        defer allocator.free(source);
 
-            // Create one work item per molecule
-            for (molecules, 0..) |mol, mol_idx| {
-                const display_name = sdfMoleculeDisplayName(allocator, filename, mol.name, mol_idx) catch |err| blk: {
-                    logWarning("{s}: molecule {d} display name failed ({s}), using filename", .{ filename, mol_idx, @errorName(err) });
-                    break :blk try allocator.dupe(u8, filename);
-                };
+        const molecules = sdf_parser.parse(allocator, source) catch |err| {
+            logWarning("{s}: failed to parse SDF: {s}", .{ filename, @errorName(err) });
+            try work.items.append(allocator, .{ .filename = filename, .display_name = filename, .load_error = err });
+            continue;
+        };
+        work.sdf_molecules.append(allocator, molecules) catch |err| {
+            sdf_parser.freeMolecules(allocator, molecules);
+            return err;
+        };
 
-                try items.append(allocator, .{
-                    .filename = filename,
-                    .display_name = display_name,
-                    .mol_idx = mol_idx,
-                });
-            }
-        } else {
-            try items.append(allocator, .{
+        // Create one work item per molecule
+        try work.items.ensureUnusedCapacity(allocator, molecules.len);
+        const display_names = try sdfMoleculeDisplayNames(allocator, filename, molecules);
+        defer allocator.free(display_names);
+        for (molecules, display_names, 0..) |*mol, display_name, mol_idx| {
+            work.items.appendAssumeCapacity(.{
                 .filename = filename,
-                .display_name = filename,
-                .mol_idx = null,
+                .display_name = display_name,
+                .molecule = mol,
+                .mol_idx = mol_idx,
             });
         }
     }
 
+    return work;
+}
+
+/// The inputs of a batch run after scanning and validation.
+const PreparedBatch = struct {
+    files: [][]const u8,
+    work: BatchWork,
+    total_timer: std.Io.Timestamp,
+    scan_time_ns: u64,
+    build_items_time_ns: u64,
+
+    fn deinit(self: *PreparedBatch, allocator: Allocator) void {
+        self.work.deinit(allocator);
+        freeScannedFiles(allocator, self.files);
+    }
+};
+
+/// Scan `input_dir`, expand the inputs into work items and validate them.
+///
+/// Both runners start here. Nothing is calculated and the output directory is
+/// not created yet, so a batch that is rejected leaves nothing behind.
+fn prepareBatch(
+    allocator: Allocator,
+    io: std.Io,
+    input_dir: []const u8,
+    output_dir: ?[]const u8,
+    config: BatchConfig,
+) !PreparedBatch {
+    // Start total timer
+    const total_timer = std.Io.Timestamp.now(io, .awake);
+
+    // Scan directory for files
+    const scan_timer = std.Io.Timestamp.now(io, .awake);
+    const files = try scanDirectory(allocator, io, input_dir);
+    errdefer freeScannedFiles(allocator, files);
+    const scan_time_ns: u64 = @intCast(scan_timer.untilNow(io, .awake).nanoseconds);
+    try validateChainMapInputFormats(files, config);
+
+    // Build work items (expanding SDF files into per-molecule items)
+    const build_timer = std.Io.Timestamp.now(io, .awake);
+    var work = try buildWorkItems(allocator, io, files, input_dir);
+    errdefer work.deinit(allocator);
+    const build_items_time_ns: u64 = @intCast(build_timer.untilNow(io, .awake).nanoseconds);
+    try validateUniqueOutputNames(allocator, work.items.items, output_dir, config);
+
     return .{
-        .items = try items.toOwnedSlice(allocator),
-        .sdf_sources = sdf_sources,
+        .files = files,
+        .work = work,
+        .total_timer = total_timer,
+        .scan_time_ns = scan_time_ns,
+        .build_items_time_ns = build_items_time_ns,
     };
 }
 
@@ -2368,56 +2368,21 @@ pub fn runBatchParallel(
 ) !BatchResult {
     try validateBatchOutputFormat(config.output_format);
 
-    // Start total timer
-    var total_timer = std.Io.Timestamp.now(io, .awake);
+    var prepared = try prepareBatch(allocator, io, input_dir, output_dir, config);
+    defer prepared.deinit(allocator);
+    const work_items = prepared.work.items.items;
 
-    // Scan directory for files
-    var scan_timer = std.Io.Timestamp.now(io, .awake);
-    const files = try scanDirectory(allocator, io, input_dir);
-    const scan_time_ns: u64 = @intCast(scan_timer.untilNow(io, .awake).nanoseconds);
-    defer {
-        for (files) |f| allocator.free(f);
-        allocator.free(files);
-    }
-    try validateChainMapInputFormats(files, config);
-    try validateUniqueOutputNames(allocator, files, output_dir, config);
-
-    if (files.len == 0) {
+    if (work_items.len == 0) {
         return BatchResult{
             .total_files = 0,
             .successful = 0,
             .failed = 0,
             .total_sasa_time_ns = 0,
-            .total_time_ns = @intCast(total_timer.untilNow(io, .awake).nanoseconds),
-            .scan_time_ns = scan_time_ns,
+            .total_time_ns = @intCast(prepared.total_timer.untilNow(io, .awake).nanoseconds),
+            .scan_time_ns = prepared.scan_time_ns,
             .file_results = try allocator.alloc(FileResult, 0),
             .allocator = allocator,
         };
-    }
-
-    // Create output directory if specified
-    if (output_dir) |out_dir| {
-        try std.Io.Dir.cwd().createDirPath(io, out_dir);
-    }
-
-    // Build work items (expanding SDF files into per-molecule items)
-    var build_timer = std.Io.Timestamp.now(io, .awake);
-    var build_result = try buildWorkItems(allocator, io, files, input_dir);
-    const build_items_time_ns: u64 = @intCast(build_timer.untilNow(io, .awake).nanoseconds);
-    const work_items = build_result.items;
-    defer {
-        for (work_items) |item| {
-            // Free display names that were allocated (not the same pointer as filename)
-            if (item.display_name.ptr != item.filename.ptr) {
-                allocator.free(item.display_name);
-            }
-        }
-        allocator.free(work_items);
-    }
-    defer {
-        var it = build_result.sdf_sources.valueIterator();
-        while (it.next()) |v| allocator.free(v.*);
-        build_result.sdf_sources.deinit(allocator);
     }
 
     // Determine thread count
@@ -2427,7 +2392,12 @@ pub fn runBatchParallel(
 
     // For single item or single thread, use sequential
     if (work_items.len == 1 or n_threads <= 1) {
-        return runBatchSequential(allocator, io, input_dir, output_dir, config, jsonl_output_path);
+        return runPreparedSequential(allocator, io, input_dir, output_dir, config, jsonl_output_path, &prepared);
+    }
+
+    // Create output directory if specified
+    if (output_dir) |out_dir| {
+        try std.Io.Dir.cwd().createDirPath(io, out_dir);
     }
 
     // Allocate results (one per work item)
@@ -2480,7 +2450,6 @@ pub fn runBatchParallel(
         .fine_lut_f32 = luts.fineF32Ptr(),
         .jsonl_stream = jsonl_stream_ptr,
         .io = io,
-        .sdf_sources = build_result.sdf_sources,
     };
 
     // Spawn worker threads
@@ -2541,7 +2510,7 @@ pub fn runBatchParallel(
         if (stream.hasError()) return error.JsonlWriteFailed;
     }
 
-    const total_time_ns: u64 = @intCast(total_timer.untilNow(io, .awake).nanoseconds);
+    const total_time_ns: u64 = @intCast(prepared.total_timer.untilNow(io, .awake).nanoseconds);
 
     return BatchResult{
         .total_files = work_items.len,
@@ -2549,8 +2518,8 @@ pub fn runBatchParallel(
         .failed = failed,
         .total_sasa_time_ns = total_sasa_time_ns,
         .total_time_ns = total_time_ns,
-        .scan_time_ns = scan_time_ns,
-        .build_items_time_ns = build_items_time_ns,
+        .scan_time_ns = prepared.scan_time_ns,
+        .build_items_time_ns = prepared.build_items_time_ns,
         .process_time_ns = process_time_ns,
         .read_parse_time_ns = total_read_parse_time_ns,
         .classifier_time_ns = total_classifier_time_ns,
@@ -2705,61 +2674,65 @@ fn validateMappedChainInputFormats(files: []const []const u8, enabled: bool) !vo
     }
 }
 
-/// An input file together with the per-file output name it would be written to.
+/// A per-file output together with the input it would be written for.
 const OutputNameClaim = struct {
-    /// SDF outputs are named per molecule ("stem_molname"), so they never
-    /// share a name with the output of a non-SDF input.
-    is_sdf: bool,
     output_name: []const u8,
     filename: []const u8,
+    /// 1-based position of the molecule in `filename` for an SDF molecule
+    /// output, null for the single output of any other input.
+    molecule: ?usize = null,
 
     fn lessThan(_: void, a: OutputNameClaim, b: OutputNameClaim) bool {
-        if (a.is_sdf != b.is_sdf) return !a.is_sdf;
-        return switch (std.mem.order(u8, a.output_name, b.output_name)) {
-            .lt => true,
-            .gt => false,
-            .eq => std.mem.lessThan(u8, a.filename, b.filename),
+        const orders = [_]std.math.Order{
+            std.ascii.orderIgnoreCase(a.output_name, b.output_name),
+            std.mem.order(u8, a.output_name, b.output_name),
+            std.mem.order(u8, a.filename, b.filename),
         };
+        for (orders) |order| {
+            if (order != .eq) return order == .lt;
+        }
+        return (a.molecule orelse 0) < (b.molecule orelse 0);
     }
 
+    /// Output names are compared without regard to ASCII case: names that
+    /// differ only in case are one file on a case-insensitive filesystem (the
+    /// macOS and Windows defaults). On a case-sensitive filesystem this
+    /// rejects inputs that could be written side by side, deliberately, so
+    /// that a batch gives the same answer everywhere.
     fn sharesOutputWith(a: OutputNameClaim, b: OutputNameClaim) bool {
-        return a.is_sdf == b.is_sdf and std.mem.eql(u8, a.output_name, b.output_name);
+        return std.ascii.eqlIgnoreCase(a.output_name, b.output_name);
     }
 };
 
-/// Find the inputs whose per-file output name is shared with another input.
+/// Find the work items whose per-file output name is shared with another item.
 ///
-/// Output names are derived from the input stem, so `1crn.pdb` and
-/// `1crn.cif.gz` both map to `1crn.json`. SDF outputs are named per molecule
-/// and molecule names are only known after parsing, so SDF files that share a
-/// stem are reported as `stem_*.json`.
+/// The names compared are the ones the runners write (`perFileOutputName`):
+/// `1crn.pdb` and `1crn.cif.gz` both map to `1crn.json`, and an SDF molecule
+/// output such as `lig_1.json` can equal the output of `lig_1.pdb` or of a
+/// molecule in another SDF file. Items that fail before writing an output
+/// (no chain map entry, unreadable SDF input) claim nothing.
 ///
 /// Returns the colliding claims sorted so that inputs sharing an output name
 /// are adjacent. All returned memory is allocated from `arena`.
 fn findOutputNameCollisions(
     arena: Allocator,
-    files: []const []const u8,
+    items: []const WorkItem,
     config: BatchConfig,
 ) ![]const OutputNameClaim {
     const ext = getOutputExtension(config.output_format);
 
-    var claims = try std.ArrayListUnmanaged(OutputNameClaim).initCapacity(arena, files.len);
-    for (files) |filename| {
+    var claims = try std.ArrayListUnmanaged(OutputNameClaim).initCapacity(arena, items.len);
+    for (items) |item| {
+        if (item.load_error != null) continue;
         // Files without a chain map entry fail before any output is written.
         if (config.chain_map) |map| {
-            if (map.get(filename) == null) continue;
+            if (map.get(item.filename) == null) continue;
         }
 
-        const is_sdf = format_detect.detectInputFormat(filename) == .sdf;
-        const output_name = if (is_sdf) blk: {
-            const pattern = try sdfMoleculeDisplayName(arena, filename, "*", 0);
-            break :blk try std.fmt.allocPrint(arena, "{s}{s}", .{ pattern, ext });
-        } else try replaceExtension(arena, filename, ext);
-
         claims.appendAssumeCapacity(.{
-            .is_sdf = is_sdf,
-            .output_name = output_name,
-            .filename = filename,
+            .output_name = try perFileOutputName(arena, item.outputNameSource(), item.display_name, ext),
+            .filename = item.filename,
+            .molecule = if (item.molecule != null) item.mol_idx + 1 else null,
         });
     }
 
@@ -2774,13 +2747,13 @@ fn findOutputNameCollisions(
     return collisions.items;
 }
 
-/// Reject input sets whose per-file outputs would overwrite each other.
+/// Reject work items whose per-file outputs would overwrite each other.
 ///
-/// Only applies when one output file is written per input; JSONL output
-/// keeps one record per input and cannot collide.
+/// Only applies when one output file is written per item; JSONL output
+/// keeps one record per item and cannot collide.
 fn validateUniqueOutputNames(
     allocator: Allocator,
-    files: []const []const u8,
+    items: []const WorkItem,
     output_dir: ?[]const u8,
     config: BatchConfig,
 ) !void {
@@ -2789,30 +2762,85 @@ fn validateUniqueOutputNames(
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const collisions = try findOutputNameCollisions(arena.allocator(), files, config);
+    const collisions = try findOutputNameCollisions(arena.allocator(), items, config);
     if (collisions.len == 0) return;
+
+    std.debug.print("{s}", .{try formatOutputNameCollisions(arena.allocator(), collisions)});
+    return error.OutputNameCollision;
+}
+
+/// Describe `collisions` (as returned by `findOutputNameCollisions`) for the
+/// user: one line per shared output name, listing the inputs that claim it.
+fn formatOutputNameCollisions(allocator: Allocator, collisions: []const OutputNameClaim) ![]u8 {
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    defer aw.deinit();
+    const w = &aw.writer;
 
     var n_names: usize = 0;
     for (collisions, 0..) |claim, i| {
         if (i == 0 or !claim.sharesOutputWith(collisions[i - 1])) n_names += 1;
     }
-
-    std.debug.print("Error: {d} output name{s} shared by more than one input:", .{
+    try w.print("Error: {d} output name{s} shared by more than one input:", .{
         n_names,
         if (n_names == 1) " is" else "s are",
     });
-    for (collisions, 0..) |claim, i| {
-        if (i == 0 or !claim.sharesOutputWith(collisions[i - 1])) {
-            std.debug.print("\n  {s} <- {s}", .{ claim.output_name, claim.filename });
-        } else {
-            std.debug.print(", {s}", .{claim.filename});
+
+    var group_start: usize = 0;
+    while (group_start < collisions.len) {
+        var group_end = group_start + 1;
+        while (group_end < collisions.len and collisions[group_end].sharesOutputWith(collisions[group_start])) {
+            group_end += 1;
+        }
+        const group = collisions[group_start..group_end];
+        group_start = group_end;
+
+        // Claims are sorted, so equal spellings of the name are adjacent.
+        var n_spellings: usize = 1;
+        for (group[1..], group[0 .. group.len - 1]) |claim, prev| {
+            if (!std.mem.eql(u8, claim.output_name, prev.output_name)) n_spellings += 1;
+        }
+
+        try w.print("\n  {s} <- ", .{group[0].output_name});
+        for (group, 0..) |claim, i| {
+            if (i > 0) try w.writeAll(", ");
+            try w.writeAll(claim.filename);
+            if (claim.molecule) |n| try w.print(" (molecule {d})", .{n});
+        }
+        if (n_spellings == group.len) {
+            try w.writeAll(" (the output names differ only in case)");
+        } else if (n_spellings > 1) {
+            try w.writeAll(" (some of the output names differ only in case)");
         }
     }
-    std.debug.print(
+    try w.writeAll(
         "\nSplit these inputs into separate directories, or use JSONL output (--format=jsonl) to keep one record per input.\n",
-        .{},
     );
-    return error.OutputNameCollision;
+    return aw.toOwnedSlice();
+}
+
+/// `validateUniqueOutputNames` for a runner that writes one output per input
+/// file whatever its format (the file-first workflow runner, which does not
+/// expand SDF files into molecules).
+fn validateUniqueFileOutputNames(
+    allocator: Allocator,
+    files: []const []const u8,
+    output_dir: ?[]const u8,
+    config: BatchConfig,
+) !void {
+    if (output_dir == null or config.store_atom_areas) return;
+
+    const items = try plainWorkItems(allocator, files);
+    defer allocator.free(items);
+    return validateUniqueOutputNames(allocator, items, output_dir, config);
+}
+
+/// One work item per file, without expanding SDF files. Caller frees the slice.
+fn plainWorkItems(allocator: Allocator, files: []const []const u8) ![]WorkItem {
+    const items = try allocator.alloc(WorkItem, files.len);
+    for (files, items) |filename, *item| {
+        item.* = .{ .filename = filename, .display_name = filename };
+    }
+    return items;
 }
 
 /// Parse and validate probe radius value
@@ -5262,7 +5290,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
                 }
             }
         } else if (output_dir) |out| {
-            try validateUniqueOutputNames(allocator, files, out, config);
+            try validateUniqueFileOutputNames(allocator, files, out, config);
             job_output_dir = try workflowPerFileOutputDir(allocator, out, job.name);
             try std.Io.Dir.cwd().createDirPath(io, job_output_dir.?);
         }
@@ -6097,7 +6125,8 @@ test "findOutputNameCollisions groups inputs that share an output name" {
         "1ubq.pdb",
         "3hhb.cif.gz",
     };
-    const collisions = try findOutputNameCollisions(arena.allocator(), &files, .{});
+    const items = try plainWorkItems(arena.allocator(), &files);
+    const collisions = try findOutputNameCollisions(arena.allocator(), items, .{});
 
     try std.testing.expectEqual(@as(usize, 5), collisions.len);
     const expected = [_][2][]const u8{
@@ -6118,7 +6147,8 @@ test "findOutputNameCollisions uses the output format extension" {
     defer arena.deinit();
 
     const files = [_][]const u8{ "1crn.ent", "1crn.pdb" };
-    const collisions = try findOutputNameCollisions(arena.allocator(), &files, .{ .output_format = .csv });
+    const items = try plainWorkItems(arena.allocator(), &files);
+    const collisions = try findOutputNameCollisions(arena.allocator(), items, .{ .output_format = .csv });
 
     try std.testing.expectEqual(@as(usize, 2), collisions.len);
     try std.testing.expectEqualStrings("1crn.csv", collisions[0].output_name);
@@ -6131,40 +6161,772 @@ test "findOutputNameCollisions accepts distinct stems" {
     // "1crn.v2.pdb" keeps its inner dot ("1crn.v2.json"), so it does not
     // collide with "1crn.pdb".
     const files = [_][]const u8{ "1crn.pdb", "1crn.v2.pdb", "1ubq.cif.gz", "3hhb.json" };
-    const collisions = try findOutputNameCollisions(arena.allocator(), &files, .{});
+    const items = try plainWorkItems(arena.allocator(), &files);
+    const collisions = try findOutputNameCollisions(arena.allocator(), items, .{});
 
     try std.testing.expectEqual(@as(usize, 0), collisions.len);
 }
 
-test "findOutputNameCollisions keeps SDF outputs in their own namespace" {
+test "findOutputNameCollisions compares names without regard to ASCII case" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    // SDF outputs are "stem_molname", so "lig.sdf" does not collide with "lig.pdb".
-    const distinct = [_][]const u8{ "lig.pdb", "lig.sdf" };
+    const files = [_][]const u8{ "PROT.pdb", "other.pdb", "prot.cif.gz", "x.cif", "x.ent", "X.pdb" };
+    const items = try plainWorkItems(arena.allocator(), &files);
+    const collisions = try findOutputNameCollisions(arena.allocator(), items, .{});
+
+    try std.testing.expectEqual(@as(usize, 5), collisions.len);
+    const expected = [_][2][]const u8{
+        .{ "PROT.json", "PROT.pdb" },
+        .{ "prot.json", "prot.cif.gz" },
+        .{ "X.json", "X.pdb" },
+        .{ "x.json", "x.cif" },
+        .{ "x.json", "x.ent" },
+    };
+    for (expected, collisions) |want, got| {
+        try std.testing.expectEqualStrings(want[0], got.output_name);
+        try std.testing.expectEqualStrings(want[1], got.filename);
+    }
+
+    // The message says when case is the only difference.
+    const message = try formatOutputNameCollisions(arena.allocator(), collisions);
+    try std.testing.expectEqualStrings(
+        "Error: 2 output names are shared by more than one input:\n" ++
+            "  PROT.json <- PROT.pdb, prot.cif.gz (the output names differ only in case)\n" ++
+            "  X.json <- X.pdb, x.cif, x.ent (some of the output names differ only in case)\n" ++
+            "Split these inputs into separate directories, or use JSONL output (--format=jsonl) to keep one record per input.\n",
+        message,
+    );
+
+    const same = [_][]const u8{ "1crn.cif.gz", "1crn.pdb" };
+    const same_items = try plainWorkItems(arena.allocator(), &same);
+    const same_message = try formatOutputNameCollisions(
+        arena.allocator(),
+        try findOutputNameCollisions(arena.allocator(), same_items, .{}),
+    );
+    try std.testing.expectEqualStrings(
+        "Error: 1 output name is shared by more than one input:\n" ++
+            "  1crn.json <- 1crn.cif.gz, 1crn.pdb\n" ++
+            "Split these inputs into separate directories, or use JSONL output (--format=jsonl) to keep one record per input.\n",
+        same_message,
+    );
+}
+
+test "findOutputNameCollisions compares the real names of SDF molecule outputs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const mol = sdf_parser.SdfMolecule{ .name = "", .atoms = &.{}, .bonds = &.{} };
+    const sdf_item = struct {
+        fn make(molecule: *const sdf_parser.SdfMolecule, filename: []const u8, display_name: []const u8, mol_idx: usize) WorkItem {
+            return .{ .filename = filename, .display_name = display_name, .molecule = molecule, .mol_idx = mol_idx };
+        }
+    }.make;
+
+    // Molecules of SDF files that share a stem only collide when their names do.
+    const distinct = [_]WorkItem{
+        sdf_item(&mol, "lig.mol", "lig_one", 0),
+        .{ .filename = "lig.pdb", .display_name = "lig.pdb" },
+        sdf_item(&mol, "lig.sdf", "lig_two", 0),
+        sdf_item(&mol, "lig.sdf", "lig_three", 1),
+    };
     try std.testing.expectEqual(
         @as(usize, 0),
         (try findOutputNameCollisions(arena.allocator(), &distinct, .{})).len,
     );
 
-    const shared = [_][]const u8{ "lig.mol", "lig.pdb", "lig.sdf.gz" };
-    const collisions = try findOutputNameCollisions(arena.allocator(), &shared, .{});
-    try std.testing.expectEqual(@as(usize, 2), collisions.len);
-    try std.testing.expectEqualStrings("lig_*.json", collisions[0].output_name);
-    try std.testing.expectEqualStrings("lig.mol", collisions[0].filename);
-    try std.testing.expectEqualStrings("lig.sdf.gz", collisions[1].filename);
+    // An SDF molecule output can equal a non-SDF output or the output of a
+    // molecule in another SDF file. The separator in "a/b" is replaced.
+    const clashing = [_]WorkItem{
+        sdf_item(&mol, "lig.mol", "lig_same", 0),
+        sdf_item(&mol, "lig.sdf", "lig_1", 0),
+        sdf_item(&mol, "lig.sdf", "lig_Same", 1),
+        sdf_item(&mol, "lig.sdf", "lig_a/b", 2),
+        .{ .filename = "lig_1.pdb", .display_name = "lig_1.pdb" },
+        .{ .filename = "lig_a_b.cif", .display_name = "lig_a_b.cif" },
+        // An SDF file that could not be loaded writes nothing.
+        .{ .filename = "lig_1.sdf", .display_name = "lig_1.sdf", .load_error = error.InvalidCountsLine },
+    };
+    const collisions = try findOutputNameCollisions(arena.allocator(), &clashing, .{});
+    try std.testing.expectEqualStrings(
+        "Error: 3 output names are shared by more than one input:\n" ++
+            "  lig_1.json <- lig.sdf (molecule 1), lig_1.pdb\n" ++
+            "  lig_a_b.json <- lig.sdf (molecule 3), lig_a_b.cif\n" ++
+            "  lig_Same.json <- lig.sdf (molecule 2), lig.mol (molecule 1) (the output names differ only in case)\n" ++
+            "Split these inputs into separate directories, or use JSONL output (--format=jsonl) to keep one record per input.\n",
+        try formatOutputNameCollisions(arena.allocator(), collisions),
+    );
+}
+
+fn expectSdfDisplayNames(filename: []const u8, titles: []const []const u8, expected: []const []const u8) !void {
+    const allocator = std.testing.allocator;
+    const molecules = try allocator.alloc(sdf_parser.SdfMolecule, titles.len);
+    defer allocator.free(molecules);
+    for (titles, molecules) |title, *mol| mol.* = .{ .name = title, .atoms = &.{}, .bonds = &.{} };
+
+    const names = try sdfMoleculeDisplayNames(allocator, filename, molecules);
+    defer {
+        for (names) |name| allocator.free(name);
+        allocator.free(names);
+    }
+
+    try std.testing.expectEqual(expected.len, names.len);
+    for (expected, names) |want, got| try std.testing.expectEqualStrings(want, got);
+}
+
+test "sdfMoleculeDisplayNames keeps the names of molecules that do not clash" {
+    // "stem_title", or "stem_N" for a blank title.
+    try expectSdfDisplayNames(
+        "two_molecules.sdf",
+        &.{ "methane", "", "water" },
+        &.{ "two_molecules_methane", "two_molecules_2", "two_molecules_water" },
+    );
+    // Only the format (and compression) extension is removed from the stem,
+    // and titles are kept verbatim.
+    try expectSdfDisplayNames("lig.v2.sdf.gz", &.{ "a.b", "c/d" }, &.{ "lig.v2_a.b", "lig.v2_c/d" });
+    try expectSdfDisplayNames("lig.mol.zst", &.{"x"}, &.{"lig_x"});
+    // A title shared by other molecules does not affect a unique one.
+    try expectSdfDisplayNames("c.sdf", &.{ "x", "y", "x" }, &.{ "c_x_1", "c_y", "c_x_3" });
+}
+
+test "sdfMoleculeDisplayNames appends the position to names that clash" {
+    try expectSdfDisplayNames("dup.sdf", &.{ "ethanol", "ethanol" }, &.{ "dup_ethanol_1", "dup_ethanol_2" });
+
+    // The result must not be the name of another molecule: "_N" is appended
+    // until it is not, and the molecule with the unique title keeps its name.
+    try expectSdfDisplayNames("c.sdf", &.{ "x", "x", "x_2" }, &.{ "c_x_1", "c_x_2_2", "c_x_2" });
+    try expectSdfDisplayNames(
+        "c.sdf",
+        &.{ "x", "x", "x_2", "x_2_2" },
+        &.{ "c_x_1", "c_x_2_2_2", "c_x_2", "c_x_2_2" },
+    );
+    try expectSdfDisplayNames(
+        "c.sdf",
+        &.{ "x", "x", "x_1", "x_1" },
+        &.{ "c_x_1", "c_x_2", "c_x_1_3", "c_x_1_4" },
+    );
+
+    // A blank title is named by position, which can be another molecule's title.
+    try expectSdfDisplayNames("c.sdf", &.{ "2", "" }, &.{ "c_2_1", "c_2_2" });
+
+    // Names that would be written to one file clash too: the same name in a
+    // different case, or with a different unsafe character.
+    try expectSdfDisplayNames("c.sdf", &.{ "Ethanol", "ethanol" }, &.{ "c_Ethanol_1", "c_ethanol_2" });
+    try expectSdfDisplayNames(
+        "c.sdf",
+        &.{ "a/b", "a_b", "a\\b", "ab" },
+        &.{ "c_a/b_1", "c_a_b_2", "c_a\\b_3", "c_ab" },
+    );
+}
+
+test "sdfMoleculeOutputName appends the extension and replaces unsafe characters" {
+    const allocator = std.testing.allocator;
+    const cases = [_][2][]const u8{
+        .{ "two_molecules_methane", "two_molecules_methane.json" },
+        // Dots in the stem or the title are not an extension.
+        .{ "lig.v2_methane", "lig.v2_methane.json" },
+        .{ "lig_v1.5", "lig_v1.5.json" },
+        .{ "lig_.", "lig_..json" },
+        .{ "lig_..", "lig_...json" },
+        // Path separators and control characters.
+        .{ "lig_a/b", "lig_a_b.json" },
+        .{ "lig_c\\d", "lig_c_d.json" },
+        .{ "lig_../../escape", "lig_.._.._escape.json" },
+        .{ "lig_/etc/passwd", "lig__etc_passwd.json" },
+        .{ "lig_a\x00b\tc\x7fd\r", "lig_a_b_c_d_.json" },
+        // Never "", "." or "..", whatever the display name is.
+        .{ "", ".json" },
+        .{ ".", "..json" },
+        .{ "..", "...json" },
+        .{ "/", "_.json" },
+    };
+    for (cases) |case| {
+        const name = try sdfMoleculeOutputName(allocator, case[0], ".json");
+        defer allocator.free(name);
+        try std.testing.expectEqualStrings(case[1], name);
+        try std.testing.expect(std.mem.findAny(u8, name, "/\\") == null);
+
+        const via_source = try perFileOutputName(allocator, .sdf_molecule, case[0], ".json");
+        defer allocator.free(via_source);
+        try std.testing.expectEqualStrings(case[1], via_source);
+    }
+
+    // Input file names keep their naming: the extension is replaced.
+    const file_cases = [_][2][]const u8{
+        .{ "1ubq.pdb", "1ubq.csv" },
+        .{ "1ubq.cif.gz", "1ubq.csv" },
+        .{ "1crn.v2.pdb", "1crn.v2.csv" },
+    };
+    for (file_cases) |case| {
+        const name = try perFileOutputName(allocator, .input_file, case[0], ".csv");
+        defer allocator.free(name);
+        try std.testing.expectEqualStrings(case[1], name);
+    }
+}
+
+test "isUnsafeFileNameByte replaces Windows reserved characters only on Windows" {
+    for ("/\\\x00\x01\n\t\x1f\x7f") |c| {
+        try std.testing.expect(isUnsafeFileNameByte(c, .linux));
+        try std.testing.expect(isUnsafeFileNameByte(c, .macos));
+        try std.testing.expect(isUnsafeFileNameByte(c, .windows));
+    }
+    for ("<>:\"|?*") |c| {
+        try std.testing.expect(!isUnsafeFileNameByte(c, .linux));
+        try std.testing.expect(!isUnsafeFileNameByte(c, .macos));
+        try std.testing.expect(isUnsafeFileNameByte(c, .windows));
+    }
+    for ("aZ09._- ()[]+,=@~\xc3\xa9") |c| {
+        try std.testing.expect(!isUnsafeFileNameByte(c, .linux));
+        try std.testing.expect(!isUnsafeFileNameByte(c, .windows));
+    }
+}
+
+/// One-atom V2000 record with the given title line, for output naming tests.
+/// A blank title is written as a single space: the parser skips empty lines
+/// in front of a record.
+fn testSdfRecord(comptime title: []const u8) []const u8 {
+    return title ++ "\n" ++
+        "  zsasa\n" ++
+        "\n" ++
+        "  1  0  0  0  0  0  0  0  0  0999 V2000\n" ++
+        "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+        "M  END\n" ++
+        "$$$$\n";
+}
+
+const test_naming_pdb =
+    "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N\n" ++
+    "ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C\n" ++
+    "ATOM      3  C   ALA A   1       3.000   0.000   0.000  1.00 20.00           C\n" ++
+    "END\n";
+
+/// Thread counts for output naming tests: 1 runs the sequential runner, 4
+/// the parallel one (for more than one work item).
+const test_naming_threads = [_]usize{ 1, 4 };
+
+/// A temporary directory with an "input" directory for output naming tests.
+const NamingSandbox = struct {
+    tmp: std.testing.TmpDir,
+    root: []const u8,
+    input_dir: []const u8,
+
+    fn init() !NamingSandbox {
+        const allocator = std.testing.allocator;
+        var tmp = std.testing.tmpDir(.{ .iterate = true });
+        errdefer tmp.cleanup();
+
+        var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const root_len = try tmp.dir.realPath(std.testing.io, &root_buf);
+        const root = try allocator.dupe(u8, root_buf[0..root_len]);
+        errdefer allocator.free(root);
+        const input_dir = try std.fs.path.join(allocator, &.{ root, "input" });
+        errdefer allocator.free(input_dir);
+        try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+
+        return .{ .tmp = tmp, .root = root, .input_dir = input_dir };
+    }
+
+    fn deinit(self: *NamingSandbox) void {
+        std.testing.allocator.free(self.input_dir);
+        std.testing.allocator.free(self.root);
+        self.tmp.cleanup();
+    }
+
+    /// Absolute path of `name` below the sandbox root. Caller frees.
+    fn path(self: NamingSandbox, name: []const u8) ![]u8 {
+        return std.fs.path.join(std.testing.allocator, &.{ self.root, name });
+    }
+
+    fn writeInput(self: NamingSandbox, name: []const u8, data: []const u8) !void {
+        const file_path = try std.fs.path.join(std.testing.allocator, &.{ self.input_dir, name });
+        defer std.testing.allocator.free(file_path);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = file_path, .data = data });
+    }
+
+    fn config(n_threads: usize) BatchConfig {
+        return .{ .n_threads = n_threads, .n_points = 8, .quiet = true, .show_progress = false };
+    }
+
+    /// Run a batch over the input directory, writing per-file JSON output to
+    /// the directory `out_name` below the sandbox root.
+    fn run(self: NamingSandbox, n_threads: usize, out_name: []const u8) !BatchResult {
+        const output_dir = try self.path(out_name);
+        defer std.testing.allocator.free(output_dir);
+        return runBatch(std.testing.allocator, std.testing.io, self.input_dir, output_dir, config(n_threads), null);
+    }
+
+    /// Run a batch over the input directory in JSONL mode and return the
+    /// `filename` of every row, sorted. Caller frees with `freeNames`.
+    fn runJsonl(self: NamingSandbox, n_threads: usize) ![][]const u8 {
+        const allocator = std.testing.allocator;
+        const jsonl_path = try self.path("results.jsonl");
+        defer allocator.free(jsonl_path);
+
+        var jsonl_config = config(n_threads);
+        jsonl_config.output_format = .jsonl;
+        jsonl_config.store_atom_areas = true;
+        var result = try runBatch(allocator, std.testing.io, self.input_dir, null, jsonl_config, jsonl_path);
+        defer result.deinit();
+
+        const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, jsonl_path, allocator, .limited(64 * 1024));
+        defer allocator.free(content);
+        try std.Io.Dir.cwd().deleteFile(std.testing.io, jsonl_path);
+
+        var names = std.ArrayListUnmanaged([]const u8).empty;
+        errdefer freeNames(names.items);
+        var lines = std.mem.tokenizeScalar(u8, content, '\n');
+        while (lines.next()) |line| {
+            const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+            defer parsed.deinit();
+            try std.testing.expectEqualStrings("ok", parsed.value.object.get("status").?.string);
+            const name = try allocator.dupe(u8, parsed.value.object.get("filename").?.string);
+            errdefer allocator.free(name);
+            try names.append(allocator, name);
+        }
+        std.mem.sort([]const u8, names.items, {}, stringLessThan);
+        return names.toOwnedSlice(allocator);
+    }
+
+    fn freeNames(names: []const []const u8) void {
+        for (names) |name| std.testing.allocator.free(name);
+        std.testing.allocator.free(names);
+    }
+
+    fn stringLessThan(_: void, a: []const u8, b: []const u8) bool {
+        return std.mem.lessThan(u8, a, b);
+    }
+
+    /// Expect the sandbox to hold exactly `expected`: every file and
+    /// directory below the root, in any order, directories with a trailing
+    /// '/'. Nothing may have been written anywhere else.
+    fn expectTree(self: NamingSandbox, expected: []const []const u8) !void {
+        const allocator = std.testing.allocator;
+
+        var actual = std.ArrayListUnmanaged([]const u8).empty;
+        defer {
+            for (actual.items) |entry| allocator.free(entry);
+            actual.deinit(allocator);
+        }
+        var walker = try self.tmp.dir.walk(allocator);
+        defer walker.deinit();
+        while (try walker.next(std.testing.io)) |entry| {
+            const line = try std.fmt.allocPrint(allocator, "{s}{s}", .{
+                entry.path,
+                if (entry.kind == .directory) "/" else "",
+            });
+            errdefer allocator.free(line);
+            if (std.fs.path.sep != '/') std.mem.replaceScalar(u8, line, std.fs.path.sep, '/');
+            try actual.append(allocator, line);
+        }
+        std.mem.sort([]const u8, actual.items, {}, stringLessThan);
+
+        const wanted = try allocator.dupe([]const u8, expected);
+        defer allocator.free(wanted);
+        std.mem.sort([]const u8, wanted, {}, stringLessThan);
+
+        const actual_text = try std.mem.join(allocator, "\n", actual.items);
+        defer allocator.free(actual_text);
+        const wanted_text = try std.mem.join(allocator, "\n", wanted);
+        defer allocator.free(wanted_text);
+        try std.testing.expectEqualStrings(wanted_text, actual_text);
+    }
+};
+
+fn expectResultNames(result: BatchResult, expected: []const []const u8) !void {
+    try std.testing.expectEqual(expected.len, result.total_files);
+    try std.testing.expectEqual(expected.len, result.successful);
+    try std.testing.expectEqual(@as(usize, 0), result.failed);
+    for (expected, result.file_results) |want, got| {
+        try std.testing.expectEqualStrings(want, got.filename);
+    }
+}
+
+test "batch keeps the names of an SDF file whose titles are distinct" {
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("two_molecules.sdf", comptime testSdfRecord("methane") ++ testSdfRecord(" ") ++ testSdfRecord("water"));
+    try sandbox.writeInput("tiny.pdb", test_naming_pdb);
+
+    const names = [_][]const u8{ "tiny.pdb", "two_molecules_methane", "two_molecules_2", "two_molecules_water" };
+    inline for (test_naming_threads) |n_threads| {
+        var result = try sandbox.run(n_threads, std.fmt.comptimePrint("out{d}", .{n_threads}));
+        defer result.deinit();
+        try expectResultNames(result, &names);
+
+        const jsonl_names = try sandbox.runJsonl(n_threads);
+        defer NamingSandbox.freeNames(jsonl_names);
+        try std.testing.expectEqual(names.len, jsonl_names.len);
+        for ([_][]const u8{ "tiny.pdb", "two_molecules_2", "two_molecules_methane", "two_molecules_water" }, jsonl_names) |want, got| {
+            try std.testing.expectEqualStrings(want, got);
+        }
+    }
+    try sandbox.expectTree(&.{
+        "input/",
+        "input/tiny.pdb",
+        "input/two_molecules.sdf",
+        "out1/",
+        "out1/tiny.json",
+        "out1/two_molecules_2.json",
+        "out1/two_molecules_methane.json",
+        "out1/two_molecules_water.json",
+        "out4/",
+        "out4/tiny.json",
+        "out4/two_molecules_2.json",
+        "out4/two_molecules_methane.json",
+        "out4/two_molecules_water.json",
+    });
+}
+
+test "batch gives SDF molecules with the same title their own output and JSONL name" {
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("dup.sdf", comptime testSdfRecord("ethanol") ++ testSdfRecord("ethanol"));
+    try sandbox.writeInput("c.sdf", comptime testSdfRecord("x") ++ testSdfRecord("x") ++ testSdfRecord("x_2"));
+
+    const names = [_][]const u8{ "c_x_1", "c_x_2_2", "c_x_2", "dup_ethanol_1", "dup_ethanol_2" };
+    inline for (test_naming_threads) |n_threads| {
+        var result = try sandbox.run(n_threads, std.fmt.comptimePrint("out{d}", .{n_threads}));
+        defer result.deinit();
+        try expectResultNames(result, &names);
+
+        const jsonl_names = try sandbox.runJsonl(n_threads);
+        defer NamingSandbox.freeNames(jsonl_names);
+        try std.testing.expectEqual(names.len, jsonl_names.len);
+        for ([_][]const u8{ "c_x_1", "c_x_2", "c_x_2_2", "dup_ethanol_1", "dup_ethanol_2" }, jsonl_names) |want, got| {
+            try std.testing.expectEqualStrings(want, got);
+        }
+    }
+    try sandbox.expectTree(&.{
+        "input/",
+        "input/c.sdf",
+        "input/dup.sdf",
+        "out1/",
+        "out1/c_x_1.json",
+        "out1/c_x_2.json",
+        "out1/c_x_2_2.json",
+        "out1/dup_ethanol_1.json",
+        "out1/dup_ethanol_2.json",
+        "out4/",
+        "out4/c_x_1.json",
+        "out4/c_x_2.json",
+        "out4/c_x_2_2.json",
+        "out4/dup_ethanol_1.json",
+        "out4/dup_ethanol_2.json",
+    });
+}
+
+test "batch keeps dots of SDF stems and titles in output names" {
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("lig.v2.sdf", comptime testSdfRecord("methane") ++ testSdfRecord("water") ++ testSdfRecord("v1.5"));
+    try sandbox.writeInput("lig.sdf", comptime testSdfRecord("v1.5") ++ testSdfRecord("v1.6"));
+
+    const names = [_][]const u8{ "lig_v1.5", "lig_v1.6", "lig.v2_methane", "lig.v2_water", "lig.v2_v1.5" };
+    inline for (test_naming_threads) |n_threads| {
+        var result = try sandbox.run(n_threads, std.fmt.comptimePrint("out{d}", .{n_threads}));
+        defer result.deinit();
+        try expectResultNames(result, &names);
+    }
+    try sandbox.expectTree(&.{
+        "input/",
+        "input/lig.sdf",
+        "input/lig.v2.sdf",
+        "out1/",
+        "out1/lig_v1.5.json",
+        "out1/lig_v1.6.json",
+        "out1/lig.v2_methane.json",
+        "out1/lig.v2_water.json",
+        "out1/lig.v2_v1.5.json",
+        "out4/",
+        "out4/lig_v1.5.json",
+        "out4/lig_v1.6.json",
+        "out4/lig.v2_methane.json",
+        "out4/lig.v2_water.json",
+        "out4/lig.v2_v1.5.json",
+    });
+}
+
+test "batch never writes an SDF title with path separators outside the output directory" {
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("lig.sdf", comptime testSdfRecord("a/b") ++ testSdfRecord("c\\d") ++ testSdfRecord("..") ++
+        testSdfRecord("../../escape") ++ testSdfRecord(".") ++ testSdfRecord("/abs") ++ testSdfRecord("../input/lig.sdf"));
+
+    // Results and JSONL rows keep the title as written.
+    const names = [_][]const u8{ "lig_a/b", "lig_c\\d", "lig_..", "lig_../../escape", "lig_.", "lig_/abs", "lig_../input/lig.sdf" };
+    inline for (test_naming_threads) |n_threads| {
+        var result = try sandbox.run(n_threads, std.fmt.comptimePrint("out{d}", .{n_threads}));
+        defer result.deinit();
+        try expectResultNames(result, &names);
+
+        const jsonl_names = try sandbox.runJsonl(n_threads);
+        defer NamingSandbox.freeNames(jsonl_names);
+        try std.testing.expectEqual(names.len, jsonl_names.len);
+        for ([_][]const u8{ "lig_.", "lig_..", "lig_../../escape", "lig_../input/lig.sdf", "lig_/abs", "lig_a/b", "lig_c\\d" }, jsonl_names) |want, got| {
+            try std.testing.expectEqualStrings(want, got);
+        }
+    }
+
+    // The input file is intact and every output is a file directly in its
+    // output directory.
+    const input_path = try sandbox.path("input/lig.sdf");
+    defer std.testing.allocator.free(input_path);
+    const input_content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, input_path, std.testing.allocator, .limited(64 * 1024));
+    defer std.testing.allocator.free(input_content);
+    try std.testing.expect(std.mem.startsWith(u8, input_content, "a/b\n"));
+
+    try sandbox.expectTree(&.{
+        "input/",
+        "input/lig.sdf",
+        "out1/",
+        "out1/lig_a_b.json",
+        "out1/lig_c_d.json",
+        "out1/lig_...json",
+        "out1/lig_.._.._escape.json",
+        "out1/lig_..json",
+        "out1/lig__abs.json",
+        "out1/lig_.._input_lig.sdf.json",
+        "out4/",
+        "out4/lig_a_b.json",
+        "out4/lig_c_d.json",
+        "out4/lig_...json",
+        "out4/lig_.._.._escape.json",
+        "out4/lig_..json",
+        "out4/lig__abs.json",
+        "out4/lig_.._input_lig.sdf.json",
+    });
+}
+
+test "batch rejects output names that differ only in case" {
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("PROT.pdb", test_naming_pdb);
+    try sandbox.writeInput("prot.ent", test_naming_pdb);
+
+    inline for (test_naming_threads) |n_threads| {
+        try std.testing.expectError(error.OutputNameCollision, sandbox.run(n_threads, "out"));
+
+        // JSONL output keeps one record per input.
+        const jsonl_names = try sandbox.runJsonl(n_threads);
+        defer NamingSandbox.freeNames(jsonl_names);
+        try std.testing.expectEqual(@as(usize, 2), jsonl_names.len);
+        try std.testing.expectEqualStrings("PROT.pdb", jsonl_names[0]);
+        try std.testing.expectEqualStrings("prot.ent", jsonl_names[1]);
+    }
+    try sandbox.expectTree(&.{ "input/", "input/PROT.pdb", "input/prot.ent" });
+}
+
+test "batch rejects an SDF molecule output that equals a non-SDF output" {
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    // The unnamed molecule is written to "lig_1.json", and so is "lig_1.pdb".
+    try sandbox.writeInput("lig.sdf", comptime testSdfRecord(" ") ++ testSdfRecord("water"));
+    try sandbox.writeInput("lig_1.pdb", test_naming_pdb);
+
+    inline for (test_naming_threads) |n_threads| {
+        try std.testing.expectError(error.OutputNameCollision, sandbox.run(n_threads, "out"));
+    }
+    try sandbox.expectTree(&.{ "input/", "input/lig.sdf", "input/lig_1.pdb" });
+}
+
+test "batch accepts SDF files that share a stem unless their molecules clash" {
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("lig.sdf", comptime testSdfRecord("one") ++ testSdfRecord("two"));
+    try sandbox.writeInput("lig.mol", comptime testSdfRecord("three"));
+
+    inline for (test_naming_threads) |n_threads| {
+        var result = try sandbox.run(n_threads, std.fmt.comptimePrint("out{d}", .{n_threads}));
+        defer result.deinit();
+        try expectResultNames(result, &.{ "lig_three", "lig_one", "lig_two" });
+    }
+    try sandbox.expectTree(&.{
+        "input/",
+        "input/lig.mol",
+        "input/lig.sdf",
+        "out1/",
+        "out1/lig_one.json",
+        "out1/lig_three.json",
+        "out1/lig_two.json",
+        "out4/",
+        "out4/lig_one.json",
+        "out4/lig_three.json",
+        "out4/lig_two.json",
+    });
+
+    // "lig.mol" now holds a molecule named like one of "lig.sdf".
+    try sandbox.writeInput("lig.mol", comptime testSdfRecord("two"));
+    inline for (test_naming_threads) |n_threads| {
+        try std.testing.expectError(error.OutputNameCollision, sandbox.run(n_threads, "rejected"));
+    }
+    try std.testing.expectError(
+        error.FileNotFound,
+        sandbox.tmp.dir.access(std.testing.io, "rejected", .{}),
+    );
+}
+
+test "batch reports an SDF file that cannot be parsed and lets it claim no output name" {
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    // "bad.sdf" would be expanded to "bad_1.json" if it could be parsed.
+    try sandbox.writeInput("bad.sdf", "broken\n\n\nnot a counts line\n");
+    try sandbox.writeInput("bad_1.pdb", test_naming_pdb);
+    try sandbox.writeInput("lig.sdf", comptime testSdfRecord("one"));
+
+    inline for (test_naming_threads) |n_threads| {
+        var result = try sandbox.run(n_threads, std.fmt.comptimePrint("out{d}", .{n_threads}));
+        defer result.deinit();
+        try std.testing.expectEqual(@as(usize, 3), result.total_files);
+        try std.testing.expectEqual(@as(usize, 2), result.successful);
+        try std.testing.expectEqual(@as(usize, 1), result.failed);
+        try std.testing.expectEqualStrings("bad.sdf", result.file_results[0].filename);
+        try std.testing.expectEqualStrings("read/parse failed: InvalidCountsLine", result.file_results[0].error_msg.?);
+        try std.testing.expectEqualStrings("bad_1.pdb", result.file_results[1].filename);
+        try std.testing.expectEqualStrings("lig_one", result.file_results[2].filename);
+    }
+    try sandbox.expectTree(&.{
+        "input/",
+        "input/bad.sdf",
+        "input/bad_1.pdb",
+        "input/lig.sdf",
+        "out1/",
+        "out1/bad_1.json",
+        "out1/lig_one.json",
+        "out4/",
+        "out4/bad_1.json",
+        "out4/lig_one.json",
+    });
+}
+
+test "workflow job writes per-molecule SDF outputs and rejects collisions" {
+    const allocator = std.testing.allocator;
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("dup.sdf", comptime testSdfRecord("x") ++ testSdfRecord("x") ++ testSdfRecord("a/b"));
+    try sandbox.writeInput("lig.v2.sdf", comptime testSdfRecord("v1.5"));
+
+    const output_dir = try sandbox.path("output");
+    defer allocator.free(output_dir);
+    const workflow_path = try sandbox.path("workflow.toml");
+    defer allocator.free(workflow_path);
+    const workflow = try std.fmt.allocPrint(allocator,
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "{s}"
+        \\
+        \\[output]
+        \\dir = "{s}"
+        \\format = "json"
+        \\
+        \\[calculation]
+        \\n_points = 8
+        \\quiet = true
+        \\
+        \\[[jobs]]
+        \\name = "all"
+        \\
+    , .{ sandbox.input_dir, output_dir });
+    defer allocator.free(workflow);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
+
+    inline for (test_naming_threads) |n_threads| {
+        try runWorkflow(allocator, std.testing.io, .{
+            .workflow_path = workflow_path,
+            .n_threads = n_threads,
+            .threads_explicit = true,
+        });
+        try sandbox.expectTree(&.{
+            "input/",
+            "input/dup.sdf",
+            "input/lig.v2.sdf",
+            "output/",
+            "output/all/",
+            "output/all/dup_a_b.json",
+            "output/all/dup_x_1.json",
+            "output/all/dup_x_2.json",
+            "output/all/lig.v2_v1.5.json",
+            "workflow.toml",
+        });
+        try sandbox.tmp.dir.deleteTree(std.testing.io, "output");
+    }
+
+    // "dup_x_1.pdb" claims the output of the first molecule of "dup.sdf": the
+    // job is rejected before its output directory is created.
+    try sandbox.writeInput("dup_x_1.pdb", test_naming_pdb);
+    inline for (test_naming_threads) |n_threads| {
+        try runWorkflow(allocator, std.testing.io, .{
+            .workflow_path = workflow_path,
+            .n_threads = n_threads,
+            .threads_explicit = true,
+        });
+        try sandbox.expectTree(&.{
+            "input/",
+            "input/dup.sdf",
+            "input/dup_x_1.pdb",
+            "input/lig.v2.sdf",
+            "workflow.toml",
+        });
+    }
+}
+
+test "workflow rejects per-file output names that differ only in case" {
+    const allocator = std.testing.allocator;
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("PROT.pdb", test_naming_pdb);
+    try sandbox.writeInput("prot.ent", test_naming_pdb);
+
+    const output_dir = try sandbox.path("output");
+    defer allocator.free(output_dir);
+    const workflow_path = try sandbox.path("workflow.toml");
+    defer allocator.free(workflow_path);
+    const workflow = try std.fmt.allocPrint(allocator,
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "{s}"
+        \\
+        \\[output]
+        \\dir = "{s}"
+        \\format = "json"
+        \\
+        \\[calculation]
+        \\n_points = 8
+        \\quiet = true
+        \\
+        \\[classifier]
+        \\type = "naccess"
+        \\
+        \\[[jobs]]
+        \\name = "chain_a"
+        \\chains = ["A"]
+        \\
+    , .{ sandbox.input_dir, output_dir });
+    defer allocator.free(workflow);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
+
+    try std.testing.expectError(
+        error.OutputNameCollision,
+        runWorkflow(allocator, std.testing.io, .{ .workflow_path = workflow_path }),
+    );
+    try sandbox.expectTree(&.{ "input/", "input/PROT.pdb", "input/prot.ent", "workflow.toml" });
 }
 
 test "validateUniqueOutputNames only applies to per-file output" {
     const files = [_][]const u8{ "1crn.cif", "1crn.pdb" };
+    const items = try plainWorkItems(std.testing.allocator, &files);
+    defer std.testing.allocator.free(items);
 
     // No output directory: nothing is written per file.
-    try validateUniqueOutputNames(std.testing.allocator, &files, null, .{});
+    try validateUniqueOutputNames(std.testing.allocator, items, null, .{});
+    try validateUniqueFileOutputNames(std.testing.allocator, &files, null, .{});
     // JSONL keeps one record per input.
-    try validateUniqueOutputNames(std.testing.allocator, &files, "out", .{
-        .output_format = .jsonl,
-        .store_atom_areas = true,
-    });
+    const jsonl_config = BatchConfig{ .output_format = .jsonl, .store_atom_areas = true };
+    try validateUniqueOutputNames(std.testing.allocator, items, "out", jsonl_config);
+    try validateUniqueFileOutputNames(std.testing.allocator, &files, "out", jsonl_config);
 }
 
 test "batch runners reject colliding output names before writing anything" {

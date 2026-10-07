@@ -14,14 +14,44 @@ zsasa batch structures/ results/
 
 This scans `structures/` for supported input files and writes per-file outputs under `results/`.
 
-Each output file is named after the input stem: `1ubq.pdb` and `1ubq.cif.gz` would both be written to `results/1ubq.json`. If a directory contains inputs that share a stem, batch mode lists the colliding inputs and exits with an error before processing anything, instead of letting one result overwrite another:
+Each output file is named after the input stem: `1ubq.pdb` and `1ubq.cif.gz` would both be written to `results/1ubq.json`. If two inputs would write the same output file, batch mode lists them and exits with an error before processing anything, instead of letting one result overwrite another:
 
 ```text
 Error: 1 output name is shared by more than one input:
   1ubq.json <- 1ubq.cif.gz, 1ubq.pdb
 ```
 
-Split those inputs into separate directories, or use JSONL output, which keeps one record per input file. SDF and MOL outputs are named per molecule (`stem_molname`), so SDF/MOL files that share a stem are rejected in the same way.
+Output names are compared without regard to ASCII case, because names that differ only in case are one file on the default macOS and Windows filesystems. `PROT.pdb` and `prot.cif.gz` are rejected on every platform, also where both files could be written, and the message says that case is the only difference:
+
+```text
+Error: 1 output name is shared by more than one input:
+  PROT.json <- PROT.pdb, prot.cif.gz (the output names differ only in case)
+```
+
+Split those inputs into separate directories, or use JSONL output, which keeps one record per input.
+
+### SDF and MOL Output Names
+
+An SDF or MOL file is expanded into one result per molecule. Each molecule gets a name made of the file stem and the molecule title. This name is the `filename` of the molecule in JSONL rows and in `process_directory()` results, and the per-file output is named after it.
+
+| Molecule | Name |
+|----------|------|
+| Has a title | `stem_title` |
+| Title is blank | `stem_N`, where `N` is the position of the molecule in the file, starting at 1 |
+| Shares that name with other molecules of the file | `stem_title_N` for each of them |
+
+`dup.sdf` with two molecules titled `ethanol` gives `dup_ethanol_1` and `dup_ethanol_2`. If a name with the position appended is still the name of another molecule of the file, `_N` is appended again: the titles `x`, `x` and `x_2` in `c.sdf` give `c_x_1`, `c_x_2_2` and `c_x_2`. A molecule whose name is not shared always keeps the plain `stem_title` or `stem_N`.
+
+The stem is the file name without `.sdf` or `.mol` (and `.gz` or `.zst`). The output file is the molecule name with the output extension appended, so dots in the stem or the title are kept: the molecule `v1.5` in `lig.v2.sdf` is written to `lig.v2_v1.5.json`.
+
+A title is used in a file name, so characters that cannot be part of one are replaced by `_` in the output file name: `/`, `\` and control characters on every platform, and `< > : " | ? *` on Windows. The molecule `a/b` in `lig.sdf` is written to `lig_a_b.json`, and no title can write outside the output directory. The `filename` in JSONL rows and API results keeps the title as written (`lig_a/b`). Two names count as shared when they would be written to the same file, so titles that differ only in ASCII case or only in a replaced character also get their position appended (`Ethanol` and `ethanol` in `c.sdf` give `c_Ethanol_1` and `c_ethanol_2`).
+
+Molecule outputs take part in the collision check with their real names. `lig.sdf` and `lig.mol` can be processed together as long as their molecules have different names, while an unnamed first molecule in `lig.sdf` collides with `lig_1.pdb`:
+
+```text
+Error: 1 output name is shared by more than one input:
+  lig_1.json <- lig.sdf (molecule 1), lig_1.pdb
+```
 
 Common options:
 
