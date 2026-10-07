@@ -15,6 +15,7 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ### Changed
 
+- **HETATM records are excluded by default at every entry point (breaking)**: the CLI no longer includes HETATM automatically when the CCD classifier is active, and the gemmi, BioPython and Biotite integrations now default to `include_hetatm=False`. Previously the default result depended on the entry point: `zsasa calc`/`batch` with the default classifier counted ligands, ions and waters, while `process_directory()` did not (1ubq: 5656.65 vs 4834.72 Å²). Modified residues recorded as HETATM inside a chain (for example `MSE`) are excluded too. Pass `--include-hetatm`, `include_hetatm = true` (workflow) or `include_hetatm=True` (Python) to get the earlier CLI behavior. (#431)
 - **Selection-map tail scheduling**: claim ordinary multi-selection chain-map files in deterministic longest-processing-time-first order using selection count, while preserving generic batch, BSA, and legacy one-row map ordering.
 
 ### Fixed

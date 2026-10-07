@@ -44,7 +44,7 @@ Biotite uses `atom_array` instead of `model`:
 | `n_slices` | `int` | `20` | Slices (LR) |
 | `probe_radius` | `float` | `1.4` | Probe radius in Å |
 | `n_threads` | `int` | `0` | Threads (0 = auto) |
-| `include_hetatm` | `bool` | `True` | Include HETATM records |
+| `include_hetatm` | `bool` | `False` | Include HETATM records |
 | `include_hydrogens` | `bool` | `False` | Include hydrogen atoms |
 | `model_index` | `int` | `0` | Model index (NMR) |
 
