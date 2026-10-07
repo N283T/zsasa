@@ -2425,10 +2425,6 @@ pub fn runBatchParallel(
         build_result.sdf_sources.deinit(allocator);
     }
 
-    // Allocate results (one per work item)
-    const file_results = try allocator.alloc(FileResult, work_items.len);
-    errdefer allocator.free(file_results);
-
     // Determine thread count
     const cpu_count = std.Thread.getCpuCount() catch 1;
     const n_threads = resolveBatchThreadCount(config.n_threads, cpu_count);
@@ -2436,9 +2432,12 @@ pub fn runBatchParallel(
 
     // For single item or single thread, use sequential
     if (work_items.len == 1 or n_threads <= 1) {
-        allocator.free(file_results);
         return runBatchSequential(allocator, io, input_dir, output_dir, config, jsonl_output_path);
     }
+
+    // Allocate results (one per work item)
+    const file_results = try allocator.alloc(FileResult, work_items.len);
+    errdefer allocator.free(file_results);
 
     // Build bitmask LUT once (if enabled)
     var luts = try BatchLuts.init(allocator, config);
@@ -2493,32 +2492,35 @@ pub fn runBatchParallel(
     const threads = try allocator.alloc(std.Thread, actual_threads);
     defer allocator.free(threads);
 
-    var process_timer = std.Io.Timestamp.now(io, .awake);
-    var spawned_count: usize = 0;
-    errdefer joinSpawnedThreads(threads, spawned_count);
-    for (threads) |*thread| {
-        thread.* = try std.Thread.spawn(.{}, parallelWorker, .{&ctx});
-        spawned_count += 1;
-    }
-
     var progress_root: std.Progress.Node = if (shouldShowProgress(config))
         std.Progress.start(io, .{ .root_name = "Processing items", .estimated_total_items = work_items.len })
     else
         .none;
     defer progress_root.end();
 
-    // Progress monitoring (optional)
-    if (shouldShowProgress(config)) {
-        while (ctx.processed_count.load(.acquire) < work_items.len) {
-            const processed = ctx.processed_count.load(.acquire);
-            progress_root.setCompletedItems(processed);
-            std.Io.sleep(io, .fromMilliseconds(50), .awake) catch {}; // 50ms update interval
+    var process_timer = std.Io.Timestamp.now(io, .awake);
+    {
+        // Scoped so a later error cannot join the same threads again.
+        var spawned_count: usize = 0;
+        errdefer joinSpawnedThreads(threads, spawned_count);
+        for (threads) |*thread| {
+            thread.* = try std.Thread.spawn(.{}, parallelWorker, .{&ctx});
+            spawned_count += 1;
         }
-        progress_root.setCompletedItems(work_items.len);
-    }
 
-    // Wait for all threads to complete
-    joinSpawnedThreads(threads, spawned_count);
+        // Progress monitoring (optional)
+        if (shouldShowProgress(config)) {
+            while (ctx.processed_count.load(.acquire) < work_items.len) {
+                const processed = ctx.processed_count.load(.acquire);
+                progress_root.setCompletedItems(processed);
+                std.Io.sleep(io, .fromMilliseconds(50), .awake) catch {}; // 50ms update interval
+            }
+            progress_root.setCompletedItems(work_items.len);
+        }
+
+        // Wait for all threads to complete
+        joinSpawnedThreads(threads, spawned_count);
+    }
     const process_time_ns: u64 = @intCast(process_timer.untilNow(io, .awake).nanoseconds);
 
     // Aggregate results
@@ -5215,7 +5217,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
 
     var states = try allocator.alloc(WorkflowJobState, workflow.jobs.len);
     var states_initialized: usize = 0;
-    errdefer {
+    defer {
         for (states[0..states_initialized]) |*state| state.deinit(allocator);
         allocator.free(states);
     }
@@ -5277,10 +5279,6 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
         };
         states_initialized += 1;
     }
-    defer {
-        for (states) |*state| state.deinit(allocator);
-        allocator.free(states);
-    }
 
     for (states) |state| {
         if (!state.config.quiet) std.debug.print("Workflow job: {s}\n", .{state.name});
@@ -5293,7 +5291,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
     if (file_threads > 1 and files.len > 1) {
         var runtimes = try allocator.alloc(WorkflowJobRuntime, states.len);
         var runtimes_initialized: usize = 0;
-        errdefer {
+        defer {
             for (runtimes[0..runtimes_initialized]) |*runtime| runtime.close(io);
             allocator.free(runtimes);
         }
@@ -5312,10 +5310,6 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
                 }
             }
             runtimes_initialized += 1;
-        }
-        defer {
-            for (runtimes) |*runtime| runtime.close(io);
-            allocator.free(runtimes);
         }
 
         var ctx = WorkflowParallelContext{
@@ -5338,13 +5332,16 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
 
         const threads = try allocator.alloc(std.Thread, file_threads);
         defer allocator.free(threads);
-        var spawned_count: usize = 0;
-        errdefer joinSpawnedThreads(threads, spawned_count);
-        for (threads) |*thread| {
-            thread.* = try std.Thread.spawn(.{}, workflowParallelWorker, .{&ctx});
-            spawned_count += 1;
+        {
+            // Scoped so a later error cannot join the same threads again.
+            var spawned_count: usize = 0;
+            errdefer joinSpawnedThreads(threads, spawned_count);
+            for (threads) |*thread| {
+                thread.* = try std.Thread.spawn(.{}, workflowParallelWorker, .{&ctx});
+                spawned_count += 1;
+            }
+            joinSpawnedThreads(threads, spawned_count);
         }
-        joinSpawnedThreads(threads, spawned_count);
 
         var successful: usize = 0;
         var failed: usize = 0;
@@ -6193,6 +6190,46 @@ test "batch runners reject colliding output names before writing anything" {
     try std.testing.expectEqual(@as(usize, 3), result.successful);
 }
 
+test "runBatchParallel reports sequential fallback errors without freeing results twice" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root_path = root_buf[0..root_len];
+
+    const input_dir = try std.fs.path.join(allocator, &.{ root_path, "input" });
+    defer allocator.free(input_dir);
+    const input_path = try std.fs.path.join(allocator, &.{ input_dir, "tiny.pdb" });
+    defer allocator.free(input_path);
+    const jsonl_path = try std.fs.path.join(allocator, &.{ root_path, "missing-dir", "results.jsonl" });
+    defer allocator.free(jsonl_path);
+
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = input_path,
+        .data =
+        \\ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N
+        \\ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C
+        \\END
+        \\
+        ,
+    });
+
+    // A single work item makes the parallel runner hand over to the
+    // sequential one, which then fails to create the JSONL file.
+    try std.testing.expectError(error.FileNotFound, runBatchParallel(allocator, std.testing.io, input_dir, null, .{
+        .n_threads = 4,
+        .n_points = 8,
+        .quiet = true,
+        .show_progress = false,
+        .output_format = .jsonl,
+        .store_atom_areas = true,
+        .classifier_type = .naccess,
+    }, jsonl_path));
+}
+
 test "CLI auth-chain overrides workflow job auth_chain false" {
     var config = BatchConfig{};
     const args = BatchArgs{ .use_auth_chain = true };
@@ -6567,6 +6604,75 @@ test "workflow rejects colliding per-file output names before creating output" {
             try std.testing.expect(std.mem.indexOf(u8, content, "\"filename\":\"tiny.ent\"") != null);
         }
     }
+}
+
+test "workflow reports errors raised after job setup without freeing job states twice" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root_path = root_buf[0..root_len];
+
+    const input_dir = try std.fs.path.join(allocator, &.{ root_path, "input" });
+    defer allocator.free(input_dir);
+    const output_dir = try std.fs.path.join(allocator, &.{ root_path, "output" });
+    defer allocator.free(output_dir);
+    const workflow_path = try std.fs.path.join(allocator, &.{ root_path, "workflow.toml" });
+    defer allocator.free(workflow_path);
+
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+    for ([_][]const u8{ "tiny.pdb", "tiny2.pdb" }) |filename| {
+        const path = try std.fs.path.join(allocator, &.{ input_dir, filename });
+        defer allocator.free(path);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+            .sub_path = path,
+            .data =
+            \\ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N
+            \\ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C
+            \\END
+            \\
+            ,
+        });
+    }
+
+    // The bitmask LUT is built after every job state has been set up, and
+    // rejects point counts above its supported range.
+    const workflow = try std.fmt.allocPrint(allocator,
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "{s}"
+        \\
+        \\[output]
+        \\dir = "{s}"
+        \\format = "jsonl"
+        \\
+        \\[calculation]
+        \\n_points = 2000
+        \\use_bitmask = true
+        \\quiet = true
+        \\
+        \\[classifier]
+        \\type = "naccess"
+        \\
+        \\[[jobs]]
+        \\name = "chain_a"
+        \\chains = ["A"]
+        \\
+        \\[[jobs]]
+        \\name = "all"
+        \\
+    , .{ input_dir, output_dir });
+    defer allocator.free(workflow);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
+
+    try std.testing.expectError(
+        error.UnsupportedNPoints,
+        runWorkflow(allocator, std.testing.io, .{ .workflow_path = workflow_path }),
+    );
 }
 
 test "workflow chain map selects per-file PDB and mmCIF chain complexes" {
