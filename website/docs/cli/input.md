@@ -102,6 +102,8 @@ The first line of a record is the molecule title. It may be blank, which is what
 
 Hydrogens are excluded unless `--include-hydrogens` is given. Deuterium and tritium atoms (symbols `D` and `T`) are hydrogens: they are excluded and included together with `H` atoms.
 
+SDF and MOL files do not name their atoms. zsasa names each atom of a molecule after its element and a per-element counter in file order (`C1`, `C2`, `O1`, `Cl1`); these names appear in CSV and other per-atom output. A name has at most four characters, so the counter continues in base 36 with a leading letter where decimal digits no longer fit: `CA00` follows `C999` and `ClA0` follows `Cl99`.
+
 In batch mode each molecule is named `stem_title` after the file stem and the molecule title, or `stem_N` when the title is blank; molecules of one file that share a title get their position appended (`stem_title_N`). See [SDF and MOL Output Names](../guide/batch.md#sdf-and-mol-output-names) for the full rules and the characters replaced in output file names.
 
 ## Trajectory Formats

@@ -539,55 +539,101 @@ fn stripCr(line: []const u8) []const u8 {
 // Conversion Functions
 // =============================================================================
 
-/// Generate atom names like "C1", "C2", "O1" by appending a per-element counter
-/// to the element symbol. Writes the result into a FixedString4-compatible [4]u8
-/// and returns the length.
-fn formatAtomName(symbol_str: []const u8, counter: u16, buf: *[4]u8) u3 {
-    // Format counter as decimal (up to 3 digits for 4-char limit)
-    var num_buf: [3]u8 = undefined;
-    const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{counter}) catch "";
+/// Generates the atom names of one molecule: the element symbol followed by
+/// a per-element counter (`C1`, `C2`, `O1`, ...), unique within the molecule.
+///
+/// A name has at most four characters: that is the size of an atom name in
+/// `types.AtomInput` and of `hybridization.CompAtom.atom_id`, and the
+/// classifier looks atoms up by the first four characters of their name. The
+/// counter therefore has three characters after a one-letter symbol and two
+/// after a two-letter symbol. It is written
+///
+/// 1. in decimal while that fits: `C1` to `C999`, `Cl1` to `Cl99`;
+/// 2. then, as in hybrid-36, as a base-36 number of the full width whose
+///    first digit is a letter: `CA00` to `CZZZ` for carbons 1,000 to 34,695,
+///    `ClA0` to `ClZZ` for chlorines 100 to 1,035. No element symbol has an
+///    upper-case second letter, so these are not names of another element;
+/// 3. past that, the name has no element symbol: it is a four-digit base-36
+///    number whose first digit is a decimal digit (`0000`, `0001`, ...),
+///    counted over all such atoms of the molecule. That is enough for every
+///    atom of a molecule with up to 466,560 of them, more than the 65,535
+///    atoms a bond can refer to.
+const AtomNamer = struct {
+    /// Atoms named so far, by atomic number.
+    element_counts: [119]u16 = @splat(0),
+    /// Atoms named without their element symbol (case 3).
+    unprefixed_count: u32 = 0,
 
-    const total_len = @min(symbol_str.len + num_str.len, 4);
-    buf.* = .{ 0, 0, 0, 0 };
+    const base36_digits = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
-    const sym_copy: usize = @min(symbol_str.len, 4);
-    for (symbol_str[0..sym_copy], 0..) |c, i| {
-        buf[i] = c;
+    /// Names the next atom of the molecule.
+    ///
+    /// Every atom has to be passed, in file order, including atoms that are
+    /// left out of the result: an atom then has the same name in
+    /// `toAtomInput` and in `toStoredComponent`.
+    fn next(self: *AtomNamer, element: elem.Element) types.FixedString4 {
+        const sym = element.symbol();
+        std.debug.assert(sym.len == 1 or sym.len == 2);
+
+        const count = &self.element_counts[element.atomicNumber()];
+        count.* +|= 1;
+
+        var name = types.FixedString4{ .len = 4 };
+        @memcpy(name.data[0..sym.len], sym);
+        const counter = name.data[sym.len..];
+
+        // Number of decimal and of base-36 counters that fit in the width
+        const decimal_count: u32 = if (counter.len == 3) 1000 else 100;
+        const base36_count: u32 = if (counter.len == 3) 36 * 36 * 36 else 36 * 36;
+        const lettered_start = base36_count / 36 * 10; // "A00" or "A0"
+
+        if (count.* < decimal_count) {
+            const digits = std.fmt.bufPrint(counter, "{d}", .{count.*}) catch unreachable;
+            name.len = @intCast(sym.len + digits.len);
+            return name;
+        }
+        const lettered = lettered_start + (count.* - decimal_count);
+        if (lettered < base36_count) {
+            writeBase36(counter, lettered);
+            return name;
+        }
+        writeBase36(&name.data, self.unprefixed_count);
+        self.unprefixed_count += 1;
+        return name;
     }
-    const remaining = 4 - sym_copy;
-    const num_copy = @min(num_str.len, remaining);
-    for (num_str[0..num_copy], 0..) |c, i| {
-        buf[sym_copy + i] = c;
-    }
 
-    return @intCast(total_len);
-}
+    /// Writes `value` in base 36, right-aligned and zero-padded to `buf.len`.
+    fn writeBase36(buf: []u8, value: u32) void {
+        var rest = value;
+        var i = buf.len;
+        while (i > 0) {
+            i -= 1;
+            buf[i] = base36_digits[rest % 36];
+            rest /= 36;
+        }
+    }
+};
 
 /// Convert an SdfMolecule to a StoredComponent for the CCD classifier.
 ///
 /// - `comp_id` = molecule name truncated to 5 chars
-/// - Atom names are generated as element symbol + per-element counter (C1, C2, O1...)
+/// - Atom names are generated as element symbol + per-element counter
+///   (C1, C2, O1...), see `AtomNamer`
 /// - Bond indices and orders are preserved from the SDF data
 /// - Caller must call `.deinit()` on the returned StoredComponent.
 pub fn toStoredComponent(allocator: Allocator, molecule: *const SdfMolecule) !ccd_parser.StoredComponent {
-    // Build per-element counters for atom naming
     const atoms = try allocator.alloc(hybridization.CompAtom, molecule.atoms.len);
     errdefer allocator.free(atoms);
 
-    // Element counter: keyed by element enum value
-    var element_counts: [119]u16 = .{0} ** 119;
+    var namer = AtomNamer{};
 
     for (molecule.atoms, 0..) |sdf_atom, i| {
         const sym = sdf_atom.element.symbol();
-        const elem_idx = sdf_atom.element.atomicNumber();
-        element_counts[elem_idx] += 1;
-
-        var name_buf: [4]u8 = undefined;
-        const name_len = formatAtomName(sym, element_counts[elem_idx], &name_buf);
+        const name = namer.next(sdf_atom.element);
 
         atoms[i] = hybridization.CompAtom{
-            .atom_id = name_buf,
-            .atom_id_len = name_len,
+            .atom_id = name.data,
+            .atom_id_len = @intCast(name.len),
             .type_symbol = .{ 0, 0, 0, 0 },
             .type_symbol_len = 0,
             .aromatic = false,
@@ -634,7 +680,8 @@ pub fn toStoredComponent(allocator: Allocator, molecule: *const SdfMolecule) !cc
 ///
 /// - Each molecule becomes one chain (A, B, C... up to Z, max 26)
 /// - Residue name = molecule name truncated to 5 chars
-/// - Atom names generated as element + per-element index (C1, C2, O1...)
+/// - Atom names generated as element + per-element index (C1, C2, O1...),
+///   the same names as in `toStoredComponent`
 /// - Radii default to element VdW radius (classifier will override later)
 /// - When `skip_hydrogens` is true, H atoms (including D and T) are excluded
 pub fn toAtomInput(allocator: Allocator, molecules: []const SdfMolecule, skip_hydrogens: bool) !types.AtomInput {
@@ -680,28 +727,20 @@ pub fn toAtomInput(allocator: Allocator, molecules: []const SdfMolecule, skip_hy
         const res_name = types.FixedString5.fromSlice(mol.name[0..@min(mol.name.len, 5)]);
         const empty_insertion = types.FixedString4.fromSlice("");
 
-        // Per-element counters for atom naming (reset per molecule)
-        var element_counts: [119]u16 = .{0} ** 119;
+        // Atom names are unique per molecule. Skipped hydrogens are named
+        // too, so that the other atoms keep the names of the component.
+        var namer = AtomNamer{};
 
         for (mol.atoms) |atom| {
+            const name = namer.next(atom.element);
             if (skip_hydrogens and atom.element == .H) continue;
-
-            const sym = atom.element.symbol();
-            const elem_idx = atom.element.atomicNumber();
-            element_counts[elem_idx] += 1;
-
-            var name_buf: [4]u8 = undefined;
-            const name_len = formatAtomName(sym, element_counts[elem_idx], &name_buf);
 
             x[idx] = atom.x;
             y[idx] = atom.y;
             z[idx] = atom.z;
             r[idx] = atom.element.vdwRadius();
             residue[idx] = res_name;
-            atom_name[idx] = .{
-                .data = name_buf,
-                .len = name_len,
-            };
+            atom_name[idx] = name;
             element_arr[idx] = atom.element.atomicNumber();
             chain_id[idx] = chain;
             residue_num[idx] = 1;
@@ -1311,7 +1350,7 @@ test "toAtomInput — skip hydrogens" {
     try std.testing.expectEqual(@as(u8, 6), elements[1]); // C
     try std.testing.expectEqual(@as(u8, 8), elements[2]); // O
 
-    // Atom names should be C1, C2, O1 (H counter not incremented)
+    // Atom names should be C1, C2, O1
     const names = input.atom_name.?;
     try std.testing.expectEqualStrings("C1", names[0].slice());
     try std.testing.expectEqualStrings("C2", names[1].slice());
@@ -2194,4 +2233,287 @@ test "parse V3000 rejects a continued line without a continuation" {
         allocator,
         open_atom ++ "$$$$\n" ++ "next\n" ++ test_header_rest ++ test_v3000_body,
     ));
+}
+
+const classifier_ccd = @import("classifier_ccd.zig");
+
+/// Builds a V3000 molecule that is an unbranched chain of `n` atoms of
+/// `element`. Bond `i` (1-based) joins atoms `i` and `i + 1` and is single,
+/// except for the bonds listed in `orders` as `{ i, bond type }`.
+fn buildV3000Chain(
+    allocator: Allocator,
+    name: []const u8,
+    element: []const u8,
+    n: usize,
+    orders: []const struct { usize, u8 },
+) ![]u8 {
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    errdefer aw.deinit();
+    const writer = &aw.writer;
+
+    try writer.print("{s}\n     zsasa   3D\n\n  0  0  0  0  0  0  0  0  0  0999 V3000\n", .{name});
+    try writer.print("M  V30 BEGIN CTAB\nM  V30 COUNTS {d} {d} 0 0 0\nM  V30 BEGIN ATOM\n", .{ n, n - 1 });
+    for (0..n) |i| {
+        try writer.print("M  V30 {d} {s} {d}.5000 0.0000 0.0000 0\n", .{ i + 1, element, i });
+    }
+    try writer.writeAll("M  V30 END ATOM\nM  V30 BEGIN BOND\n");
+    for (1..n) |i| {
+        var order: u8 = 1;
+        for (orders) |entry| {
+            if (entry[0] == i) order = entry[1];
+        }
+        try writer.print("M  V30 {d} {d} {d} {d}\n", .{ i, order, i, i + 1 });
+    }
+    try writer.writeAll("M  V30 END BOND\nM  V30 END CTAB\nM  END\n$$$$\n");
+
+    return aw.toOwnedSlice();
+}
+
+/// Radii that the CCD classifier gives the atoms of `molecule` when it looks
+/// them up by the names of `toAtomInput`, after checking that those names are
+/// unique and are the names of `toStoredComponent`. Caller frees the result.
+fn classifiedRadii(allocator: Allocator, molecule: *const SdfMolecule, names_out: *[]types.FixedString4) ![]?f64 {
+    const mol_slice: []const SdfMolecule = @as([*]const SdfMolecule, @ptrCast(molecule))[0..1];
+    var input = try toAtomInput(allocator, mol_slice, true);
+    defer input.deinit();
+    var stored = try toStoredComponent(allocator, molecule);
+    defer stored.deinit();
+
+    const names = input.atom_name.?;
+    var seen = std.StringHashMapUnmanaged(void).empty;
+    defer seen.deinit(allocator);
+    var heavy: usize = 0;
+    for (stored.atoms, molecule.atoms) |*comp_atom, sdf_atom| {
+        try std.testing.expect(!seen.contains(comp_atom.atomIdSlice()));
+        try seen.put(allocator, comp_atom.atomIdSlice(), {});
+        if (sdf_atom.element == .H) continue;
+        try std.testing.expectEqualStrings(comp_atom.atomIdSlice(), names[heavy].slice());
+        heavy += 1;
+    }
+    try std.testing.expectEqual(heavy, names.len);
+
+    var clf = classifier_ccd.CcdClassifier.init(allocator);
+    defer clf.deinit();
+    const view = stored.view();
+    try clf.addComponent(&view);
+
+    const radii = try allocator.alloc(?f64, names.len);
+    errdefer allocator.free(radii);
+    for (radii, names, input.residue.?) |*radius, *atom_name, *residue| {
+        radius.* = clf.getRadius(residue.slice(), atom_name.slice());
+    }
+    names_out.* = try allocator.dupe(types.FixedString4, names);
+    return radii;
+}
+
+test "atom names stay unique past 999 atoms of one element" {
+    const allocator = std.testing.allocator;
+
+    // 1,050 carbons: a triple bond between atoms 1000 and 1001 (sp, 1.61)
+    // and a double bond between atoms 1049 and 1050 (sp2 with hydrogens,
+    // 1.76). Every other carbon is sp3 with hydrogens (1.88).
+    const source = try buildV3000Chain(allocator, "chain", "C", 1050, &.{ .{ 1000, 3 }, .{ 1049, 2 } });
+    defer allocator.free(source);
+    const molecules = try parse(allocator, source);
+    defer freeMolecules(allocator, molecules);
+    try std.testing.expectEqual(@as(usize, 1050), molecules[0].atoms.len);
+
+    var names: []types.FixedString4 = &.{};
+    const radii = try classifiedRadii(allocator, &molecules[0], &names);
+    defer allocator.free(radii);
+    defer allocator.free(names);
+
+    try std.testing.expectEqual(@as(usize, 1050), radii.len);
+    for (radii, 1..) |radius, serial| {
+        const expected: f64 = switch (serial) {
+            1000, 1001 => 1.61,
+            1049, 1050 => 1.76,
+            else => 1.88,
+        };
+        try std.testing.expectEqual(@as(?f64, expected), radius);
+    }
+
+    try std.testing.expectEqualStrings("C1", names[0].slice());
+    try std.testing.expectEqualStrings("C10", names[9].slice());
+    try std.testing.expectEqualStrings("C999", names[998].slice());
+    try std.testing.expectEqualStrings("CA00", names[999].slice());
+    try std.testing.expectEqualStrings("CA01", names[1000].slice());
+    try std.testing.expectEqualStrings("CA1E", names[1049].slice());
+}
+
+test "atom names stay unique past 99 atoms of a two-letter element" {
+    const allocator = std.testing.allocator;
+
+    // A carbon chain as above with 120 selenium atoms after it: the 100th
+    // selenium is not named like the 10th, and no selenium like a carbon.
+    const carbons = 1010;
+    const total = carbons + 120;
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    defer aw.deinit();
+    const writer = &aw.writer;
+    try writer.writeAll("mixed\n     zsasa   3D\n\n  0  0  0  0  0  0  0  0  0  0999 V3000\n");
+    try writer.print("M  V30 BEGIN CTAB\nM  V30 COUNTS {d} {d} 0 0 0\nM  V30 BEGIN ATOM\n", .{ total, total - 1 });
+    for (0..total) |i| {
+        try writer.print("M  V30 {d} {s} {d}.5000 0.0000 0.0000 0\n", .{ i + 1, if (i < carbons) "C" else "Se", i });
+    }
+    try writer.writeAll("M  V30 END ATOM\nM  V30 BEGIN BOND\n");
+    for (1..total) |i| {
+        // A triple bond between carbons 1000 and 1001
+        try writer.print("M  V30 {d} {d} {d} {d}\n", .{ i, @as(u8, if (i == 1000) 3 else 1), i, i + 1 });
+    }
+    try writer.writeAll("M  V30 END BOND\nM  V30 END CTAB\nM  END\n$$$$\n");
+
+    const molecules = try parse(allocator, aw.written());
+    defer freeMolecules(allocator, molecules);
+
+    var names: []types.FixedString4 = &.{};
+    const radii = try classifiedRadii(allocator, &molecules[0], &names);
+    defer allocator.free(radii);
+    defer allocator.free(names);
+
+    try std.testing.expectEqual(@as(usize, total), radii.len);
+    for (radii, 1..) |radius, serial| {
+        const expected: f64 = switch (serial) {
+            1000, 1001 => 1.61,
+            // Including the last carbon, which is bonded to selenium
+            1...999, 1002...carbons => 1.88,
+            else => 1.90,
+        };
+        try std.testing.expectEqual(@as(?f64, expected), radius);
+    }
+
+    try std.testing.expectEqualStrings("Se1", names[carbons].slice());
+    try std.testing.expectEqualStrings("Se10", names[carbons + 9].slice());
+    try std.testing.expectEqualStrings("Se99", names[carbons + 98].slice());
+    try std.testing.expectEqualStrings("SeA0", names[carbons + 99].slice());
+    try std.testing.expectEqualStrings("SeA1", names[carbons + 100].slice());
+    try std.testing.expectEqualStrings("SeAK", names[carbons + 119].slice());
+}
+
+test "atom names of a small molecule are the element symbol and a decimal counter" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\small
+        \\     zsasa   3D
+        \\
+        \\ 12  0  0  0  0  0  0  0  0  0999 V2000
+        \\    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    2.0000    0.0000    0.0000 Cl  0  0  0  0  0  0  0  0  0  0  0  0
+        \\    4.0000    0.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    6.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+        \\    8.0000    0.0000    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+        \\   10.0000    0.0000    0.0000 Br  0  0  0  0  0  0  0  0  0  0  0  0
+        \\   12.0000    0.0000    0.0000 Cl  0  0  0  0  0  0  0  0  0  0  0  0
+        \\   14.0000    0.0000    0.0000 R#  0  0  0  0  0  0  0  0  0  0  0  0
+        \\   16.0000    0.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0
+        \\   18.0000    0.0000    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+        \\   20.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+        \\   22.0000    0.0000    0.0000 Fe  0  0  0  0  0  0  0  0  0  0  0  0
+        \\M  END
+        \\$$$$
+    ;
+    const molecules = try parse(allocator, source);
+    defer freeMolecules(allocator, molecules);
+
+    const all = [_][]const u8{ "C1", "Cl1", "H1", "C2", "O1", "Br1", "Cl2", "X1", "H2", "N1", "C3", "Fe1" };
+    const heavy = [_][]const u8{ "C1", "Cl1", "C2", "O1", "Br1", "Cl2", "X1", "N1", "C3", "Fe1" };
+
+    var stored = try toStoredComponent(allocator, &molecules[0]);
+    defer stored.deinit();
+    try std.testing.expectEqual(all.len, stored.atoms.len);
+    for (all, stored.atoms) |want, *atom| try std.testing.expectEqualStrings(want, atom.atomIdSlice());
+
+    var with_h = try toAtomInput(allocator, molecules, false);
+    defer with_h.deinit();
+    try std.testing.expectEqual(all.len, with_h.atomCount());
+    for (all, with_h.atom_name.?) |want, *name| try std.testing.expectEqualStrings(want, name.slice());
+
+    var without_h = try toAtomInput(allocator, molecules, true);
+    defer without_h.deinit();
+    try std.testing.expectEqual(heavy.len, without_h.atomCount());
+    for (heavy, without_h.atom_name.?) |want, *name| try std.testing.expectEqualStrings(want, name.slice());
+}
+
+test "AtomNamer switches to base 36 and then drops the element symbol" {
+    var namer = AtomNamer{};
+    var last = types.FixedString4{};
+
+    // One-letter symbol: three characters for the counter
+    for (1..34_697) |count| {
+        last = namer.next(.C);
+        switch (count) {
+            1 => try std.testing.expectEqualStrings("C1", last.slice()),
+            99 => try std.testing.expectEqualStrings("C99", last.slice()),
+            100 => try std.testing.expectEqualStrings("C100", last.slice()),
+            999 => try std.testing.expectEqualStrings("C999", last.slice()),
+            1000 => try std.testing.expectEqualStrings("CA00", last.slice()),
+            1035 => try std.testing.expectEqualStrings("CA0Z", last.slice()),
+            1036 => try std.testing.expectEqualStrings("CA10", last.slice()),
+            34_695 => try std.testing.expectEqualStrings("CZZZ", last.slice()),
+            34_696 => try std.testing.expectEqualStrings("0000", last.slice()),
+            else => {},
+        }
+    }
+
+    // Two-letter symbol: two characters. Atoms without a symbol share one
+    // counter, which the carbon above has started.
+    for (1..1038) |count| {
+        last = namer.next(.Cl);
+        switch (count) {
+            1 => try std.testing.expectEqualStrings("Cl1", last.slice()),
+            99 => try std.testing.expectEqualStrings("Cl99", last.slice()),
+            100 => try std.testing.expectEqualStrings("ClA0", last.slice()),
+            135 => try std.testing.expectEqualStrings("ClAZ", last.slice()),
+            136 => try std.testing.expectEqualStrings("ClB0", last.slice()),
+            1035 => try std.testing.expectEqualStrings("ClZZ", last.slice()),
+            1036 => try std.testing.expectEqualStrings("0001", last.slice()),
+            1037 => try std.testing.expectEqualStrings("0002", last.slice()),
+            else => {},
+        }
+    }
+    last = namer.next(.C);
+    try std.testing.expectEqualStrings("0003", last.slice());
+
+    // Other elements are not affected
+    last = namer.next(.Ca);
+    try std.testing.expectEqualStrings("Ca1", last.slice());
+    last = namer.next(.X);
+    try std.testing.expectEqualStrings("X1", last.slice());
+}
+
+test "AtomNamer gives every atom of the largest molecule its own name" {
+    const allocator = std.testing.allocator;
+
+    // 65,535 atoms, the most a bond can refer to. Carbon and the two-letter
+    // elements that start with C all run out of names with their symbol, and
+    // so does hydrogen.
+    const elements = [_]elem.Element{ .C, .Cl, .Ca, .Co, .Cu, .Cs, .Cd, .Cr, .H, .N, .X };
+    const counts = [_]usize{ 36_000, 1100, 1100, 1100, 1100, 1100, 1100, 1100, 20_000, 1035, 800 };
+
+    var seen = std.AutoHashMapUnmanaged([4]u8, void).empty;
+    defer seen.deinit(allocator);
+    try seen.ensureTotalCapacity(allocator, 65_535);
+
+    var namer = AtomNamer{};
+    var remaining = counts;
+    var total: usize = 0;
+    // Interleave the elements, as a file would
+    var any = true;
+    while (any) {
+        any = false;
+        for (elements, &remaining) |element, *left| {
+            if (left.* == 0) continue;
+            left.* -= 1;
+            any = true;
+            total += 1;
+
+            const name = namer.next(element);
+            try std.testing.expect(name.len >= 2 and name.len <= 4);
+            // Unused bytes are zero, so the array identifies the name
+            for (name.data[name.len..]) |c| try std.testing.expectEqual(@as(u8, 0), c);
+            const entry = seen.getOrPutAssumeCapacity(name.data);
+            try std.testing.expect(!entry.found_existing);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 65_535), total);
 }
