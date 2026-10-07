@@ -196,6 +196,26 @@ pub fn fromSymbol(symbol_str: []const u8) Element {
     return singleLetterElement(upper[0]);
 }
 
+/// Parse a string that must be exactly an element symbol (case-insensitive).
+/// Unlike `fromSymbol`, nothing is trimmed, there is no fallback to the first
+/// letter, and spaces, digits or other characters are rejected.
+/// Returns null if the string is not a known symbol.
+pub fn fromSymbolExact(symbol: []const u8) ?Element {
+    if (symbol.len == 1) {
+        const element = singleLetterElement(std.ascii.toUpper(symbol[0]));
+        return if (element == .X) null else element;
+    }
+    if (symbol.len != 2) return null;
+
+    const upper = [2]u8{ std.ascii.toUpper(symbol[0]), std.ascii.toUpper(symbol[1]) };
+    for (element_names_upper, 0..) |name, i| {
+        if (name.len == 2 and name[0] == upper[0] and name[1] == upper[1]) {
+            return @enumFromInt(i);
+        }
+    }
+    return null;
+}
+
 /// Helper function for single-letter element lookup
 fn singleLetterElement(c: u8) Element {
     return switch (c) {
@@ -346,6 +366,32 @@ test "fromSymbol unknown" {
     try std.testing.expectEqual(Element.X, fromSymbol("   "));
     try std.testing.expectEqual(Element.X, fromSymbol("Xx"));
     try std.testing.expectEqual(Element.X, fromSymbol("??"));
+}
+
+test "fromSymbolExact" {
+    try std.testing.expectEqual(@as(?Element, .C), fromSymbolExact("C"));
+    try std.testing.expectEqual(@as(?Element, .K), fromSymbolExact("k"));
+    try std.testing.expectEqual(@as(?Element, .Fe), fromSymbolExact("FE"));
+    try std.testing.expectEqual(@as(?Element, .Fe), fromSymbolExact("Fe"));
+    try std.testing.expectEqual(@as(?Element, .Ca), fromSymbolExact("CA"));
+    try std.testing.expectEqual(@as(?Element, .Hg), fromSymbolExact("HG"));
+
+    // Agrees with fromSymbol for every symbol
+    for (element_names[1..]) |name| {
+        try std.testing.expectEqual(@as(?Element, fromSymbol(name)), fromSymbolExact(name));
+    }
+
+    // No first-letter fallback, no spaces, no digits, no unknown symbols
+    try std.testing.expectEqual(@as(?Element, null), fromSymbolExact("CB"));
+    try std.testing.expectEqual(@as(?Element, null), fromSymbolExact(" C"));
+    try std.testing.expectEqual(@as(?Element, null), fromSymbolExact("N "));
+    try std.testing.expectEqual(@as(?Element, null), fromSymbolExact("C1"));
+    try std.testing.expectEqual(@as(?Element, null), fromSymbolExact("12"));
+    try std.testing.expectEqual(@as(?Element, null), fromSymbolExact("D"));
+    try std.testing.expectEqual(@as(?Element, null), fromSymbolExact("X"));
+    try std.testing.expectEqual(@as(?Element, null), fromSymbolExact(""));
+    try std.testing.expectEqual(@as(?Element, null), fromSymbolExact("  "));
+    try std.testing.expectEqual(@as(?Element, null), fromSymbolExact("CAA"));
 }
 
 test "fromAtomicNumber" {

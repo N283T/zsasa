@@ -68,6 +68,15 @@ def get_radius(
     Returns:
         Radius in Angstroms, or None if atom is not found in classifier.
 
+    Note:
+        NACCESS and OONS have no entries for hydrogens or ligands. For those
+        atoms the element is guessed from the names: a name starting with
+        H, C, N, O, P or S is that element ("HG" is hydrogen, "NA" in "HEM"
+        is nitrogen), and an ion is recognized by a residue name equal to its
+        atom name ("ZN" in "ZN"). A metal named like an organic atom inside a
+        larger residue cannot be recognized this way, so prefer
+        ``guess_radius(element)`` when the element is known.
+
     Example:
         >>> from zsasa import get_radius, ClassifierType
         >>> get_radius("ALA", "CA")
@@ -149,6 +158,9 @@ def guess_radius_from_atom_name(atom_name: str) -> float | None:
     - Leading space indicates single-char element (e.g., " CA " = Carbon alpha)
     - No leading space may indicate 2-char element (e.g., "FE  " = Iron)
 
+    Pass the name with its column padding: a trimmed "CA" or "HG" is read as
+    calcium or mercury.
+
     Args:
         atom_name: PDB-style atom name (e.g., " CA ", "FE  ").
 
@@ -212,7 +224,9 @@ def classify_atoms(
 
     Returns:
         ClassificationResult with radii and classes arrays.
-        Unknown atoms have NaN radius and UNKNOWN class.
+        Unknown atoms have NaN radius and UNKNOWN class. With NACCESS and
+        OONS, atoms outside the tables have UNKNOWN class and a radius
+        guessed from the names where possible (see get_radius).
 
     Raises:
         ValueError: If residues and atoms have different lengths.
