@@ -96,7 +96,7 @@ Some programs left-justify or center atom names instead (`CA  ` for an alpha car
 
 ## SDF/MOL Format
 
-SDF and MOL files are supported for small-molecule SASA. V2000 and V3000 records are accepted, and batch mode expands multi-molecule SDF files so each molecule is calculated independently. Use `--mol=NAME_OR_INDEX` to select one molecule from a multi-molecule SDF.
+SDF and MOL files are supported for small-molecule SASA. V2000 and V3000 records are accepted (V3000 lines continued with a trailing `-` are joined), and batch mode expands multi-molecule SDF files so each molecule is calculated independently. Use `--mol=NAME_OR_INDEX` to select one molecule from a multi-molecule SDF.
 
 The first line of a record is the molecule title. It may be blank, which is what RDKit writes for a molecule without a name; select such a molecule by its 1-based index. Blank lines after a `$$$$` separator and at the end of the file are skipped.
 

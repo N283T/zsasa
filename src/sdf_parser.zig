@@ -246,7 +246,8 @@ fn recordStartsAt(line_iter: std.mem.SplitIterator(u8, .scalar)) bool {
 
 /// One line of a V3000 connection table, as `V3000Reader` classifies it.
 const V3000Line = union(enum) {
-    /// Payload of an `M  V30 ` line (the text after the prefix).
+    /// Payload of an `M  V30 ` line (the text after the prefix), with its
+    /// continuation lines joined. Valid until the next call to `next`.
     v30: []const u8,
     /// `M  END`: the end of the connection table.
     end,
@@ -257,17 +258,42 @@ const V3000Line = union(enum) {
 };
 
 /// Reads the lines of a V3000 connection table.
+///
+/// A V3000 line that ends in `-` continues on the next `M  V30 ` line: the
+/// dash is dropped and the payload of the next line follows it directly.
 const V3000Reader = struct {
     line_iter: *std.mem.SplitIterator(u8, .scalar),
+    /// Holds a line joined from its continuation lines.
+    joined: std.ArrayListUnmanaged(u8) = .empty,
+
+    const prefix = "M  V30 ";
+
+    fn deinit(self: *V3000Reader, allocator: Allocator) void {
+        self.joined.deinit(allocator);
+    }
 
     /// Returns the next line, or `null` at the end of the input.
-    fn next(self: *V3000Reader) ?V3000Line {
+    fn next(self: *V3000Reader, allocator: Allocator) SdfError!?V3000Line {
         const line = stripCr(self.line_iter.next() orelse return null);
         const trimmed = std.mem.trimStart(u8, line, " ");
         if (std.mem.startsWith(u8, trimmed, "M  END")) return .end;
         if (std.mem.startsWith(u8, trimmed, "$$$$")) return .terminator;
-        if (std.mem.startsWith(u8, trimmed, "M  V30 ")) return .{ .v30 = trimmed["M  V30 ".len..] };
-        return .other;
+        if (!std.mem.startsWith(u8, trimmed, prefix)) return .other;
+
+        var payload = trimmed[prefix.len..];
+        if (!std.mem.endsWith(u8, payload, "-")) return .{ .v30 = payload };
+
+        self.joined.clearRetainingCapacity();
+        while (std.mem.endsWith(u8, payload, "-")) {
+            try self.joined.appendSlice(allocator, payload[0 .. payload.len - 1]);
+            // The line that continues it has to be a V3000 line as well
+            const next_line = stripCr(self.line_iter.next() orelse return error.InvalidV3000);
+            const next_trimmed = std.mem.trimStart(u8, next_line, " ");
+            if (!std.mem.startsWith(u8, next_trimmed, prefix)) return error.InvalidV3000;
+            payload = next_trimmed[prefix.len..];
+        }
+        try self.joined.appendSlice(allocator, payload);
+        return .{ .v30 = self.joined.items };
     }
 };
 
@@ -278,7 +304,8 @@ const V3000Reader = struct {
 /// Atoms are read only between `BEGIN ATOM` and `END ATOM` and bonds only
 /// between `BEGIN BOND` and `END BOND`; the connection table ends at `M  END`
 /// (or at `$$$$`, for a record without one). A molecule may have no atom
-/// block at all: `COUNTS 0 0` gives a molecule without atoms.
+/// block at all: `COUNTS 0 0` gives a molecule without atoms. Continued lines
+/// are joined before they are read, in every block.
 fn parseV3000Body(
     allocator: Allocator,
     name: []const u8,
@@ -287,6 +314,7 @@ fn parseV3000Body(
     errdefer allocator.free(name);
 
     var reader = V3000Reader{ .line_iter = line_iter };
+    defer reader.deinit(allocator);
 
     // COUNTS only sizes the lists: the atoms and bonds actually present must
     // match it, so a body that disagrees with its header is an error instead
@@ -300,7 +328,7 @@ fn parseV3000Body(
     var block: enum { none, atom, bond } = .none;
     var found_terminator = false;
 
-    while (reader.next()) |line| {
+    while (try reader.next(allocator)) |line| {
         const payload = switch (line) {
             .v30 => |text| text,
             .end => break,
@@ -2005,4 +2033,165 @@ test "parse V3000 reads atoms and bonds only inside their blocks" {
     try std.testing.expectError(error.InvalidCountsLine, parse(allocator, header ++ atoms ++ bonds ++ end));
     try std.testing.expectError(error.InvalidCountsLine, parse(allocator, header ++ bonds ++ end));
     try std.testing.expectError(error.InvalidCountsLine, parse(allocator, header ++ end));
+}
+
+/// Parses a V3000 record made of `ctab` (the lines between `BEGIN CTAB` and
+/// `END CTAB`), as it is and with CRLF line endings, and expects the atoms
+/// and the bond of `test_v3000_body`.
+fn expectV3000Cyanide(comptime ctab: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const source = "mol\n" ++ test_header_rest ++ "  0  0  0  0  0  0  0  0  0  0999 V3000\n" ++
+        "M  V30 BEGIN CTAB\n" ++ ctab ++ "M  V30 END CTAB\nM  END\n$$$$\n" ++
+        "next\n" ++ test_header_rest ++ test_v2000_body;
+    const crlf = try std.mem.replaceOwned(u8, allocator, source, "\n", "\r\n");
+    defer allocator.free(crlf);
+
+    for ([_][]const u8{ source, crlf }) |text| {
+        const molecules = try parse(allocator, text);
+        defer freeMolecules(allocator, molecules);
+
+        try std.testing.expectEqual(@as(usize, 2), molecules.len);
+        const mol = molecules[0];
+        try std.testing.expectEqualStrings("mol", mol.name);
+        try std.testing.expectEqual(@as(usize, 2), mol.atoms.len);
+        try std.testing.expectEqual(elem.Element.C, mol.atoms[0].element);
+        try std.testing.expectEqual(@as(f64, 0.0), mol.atoms[0].x);
+        try std.testing.expectEqual(elem.Element.N, mol.atoms[1].element);
+        try std.testing.expectEqual(@as(f64, 1.16), mol.atoms[1].x);
+        try std.testing.expectEqual(@as(f64, 0.25), mol.atoms[1].y);
+        try std.testing.expectEqual(@as(f64, -0.5), mol.atoms[1].z);
+        try std.testing.expectEqual(@as(usize, 1), mol.bonds.len);
+        try std.testing.expectEqual(@as(u16, 0), mol.bonds[0].atom_idx_1);
+        try std.testing.expectEqual(@as(u16, 1), mol.bonds[0].atom_idx_2);
+        try std.testing.expectEqual(hybridization.BondOrder.triple, mol.bonds[0].order);
+
+        // The record after it starts where it should
+        try std.testing.expectEqualStrings("next", molecules[1].name);
+        try std.testing.expectEqual(@as(usize, 2), molecules[1].atoms.len);
+    }
+}
+
+const test_v3000_counts = "M  V30 COUNTS 2 1 0 0 0\n";
+const test_v3000_atoms =
+    "M  V30 BEGIN ATOM\n" ++
+    "M  V30 1 C 0.0000 0.0000 0.0000 0\n" ++
+    "M  V30 2 N 1.1600 0.2500 -0.5000 0\n" ++
+    "M  V30 END ATOM\n";
+const test_v3000_bonds = "M  V30 BEGIN BOND\nM  V30 1 3 1 2\nM  V30 END BOND\n";
+
+test "parse V3000 joins continuation lines in the atom block" {
+    // Not continued, for reference
+    try expectV3000Cyanide(test_v3000_counts ++ test_v3000_atoms ++ test_v3000_bonds);
+
+    // Continued between two fields
+    try expectV3000Cyanide(test_v3000_counts ++
+        "M  V30 BEGIN ATOM\n" ++
+        "M  V30 1 C 0.0000 0.0000 0.0000 0\n" ++
+        "M  V30 2 N 1.1600 0.2500 -\n" ++
+        "M  V30 -0.5000 0\n" ++
+        "M  V30 END ATOM\n" ++ test_v3000_bonds);
+    // Continued inside a field: the two parts are joined without a space
+    try expectV3000Cyanide(test_v3000_counts ++
+        "M  V30 BEGIN ATOM\n" ++
+        "M  V30 1 C 0.0000 0.0000 0.0000 0\n" ++
+        "M  V30 2 N 1.16-\n" ++
+        "M  V30 00 0.2500 -0.5000 0\n" ++
+        "M  V30 END ATOM\n" ++ test_v3000_bonds);
+    // Continued over several lines, in the first and in the last atom
+    try expectV3000Cyanide(test_v3000_counts ++
+        "M  V30 BEGIN ATOM\n" ++
+        "M  V30 1 -\n" ++
+        "M  V30 C -\n" ++
+        "M  V30 0.0000 0.0000 -\n" ++
+        "M  V30 0.0000 0\n" ++
+        "M  V30 2 N 1.1600 0.2500 -0.5000 0 -\n" ++
+        "M  V30 CFG=0 -\n" ++
+        "M  V30 MASS=15\n" ++
+        "M  V30 END ATOM\n" ++ test_v3000_bonds);
+}
+
+test "parse V3000 joins continuation lines in the bond block and elsewhere" {
+    // Bond block
+    try expectV3000Cyanide(test_v3000_counts ++ test_v3000_atoms ++
+        "M  V30 BEGIN BOND\n" ++
+        "M  V30 1 3 -\n" ++
+        "M  V30 1 2\n" ++
+        "M  V30 END BOND\n");
+    try expectV3000Cyanide(test_v3000_counts ++ test_v3000_atoms ++
+        "M  V30 BEGIN BOND\n" ++
+        "M  V30 1 -\n" ++
+        "M  V30 3 1 -\n" ++
+        "M  V30 2 CFG=0\n" ++
+        "M  V30 END BOND\n");
+    // COUNTS line
+    try expectV3000Cyanide("M  V30 COUNTS 2 -\n" ++ "M  V30 1 0 0 0\n" ++ test_v3000_atoms ++ test_v3000_bonds);
+    // Block delimiters
+    try expectV3000Cyanide(test_v3000_counts ++
+        "M  V30 BEGIN -\n" ++
+        "M  V30 ATOM\n" ++
+        "M  V30 1 C 0.0000 0.0000 0.0000 0\n" ++
+        "M  V30 2 N 1.1600 0.2500 -0.5000 0\n" ++
+        "M  V30 END AT-\n" ++
+        "M  V30 OM\n" ++ test_v3000_bonds);
+    // A block that is not read: its continuation line is not a new line,
+    // whatever it looks like
+    try expectV3000Cyanide(test_v3000_counts ++ test_v3000_atoms ++
+        "M  V30 BEGIN SGROUP\n" ++
+        "M  V30 1 SUP 0 ATOMS=(2 1 2) LABEL=-\n" ++
+        "M  V30 BEGIN BOND\n" ++
+        "M  V30 END SGROUP\n" ++ test_v3000_bonds);
+}
+
+test "parse V3000 does not read a continuation line as another atom or bond" {
+    const allocator = std.testing.allocator;
+    const header = "mol\n" ++ test_header_rest ++ "  0  0  0  0  0  0  0  0  0  0999 V3000\nM  V30 BEGIN CTAB\n";
+    const end = "M  V30 END CTAB\nM  END\n$$$$\n";
+
+    // The second line continues atom 2. It is not a third atom: the molecule
+    // has the two atoms that COUNTS declares...
+    const phantom_atom =
+        "M  V30 BEGIN ATOM\n" ++
+        "M  V30 1 C 0.0000 0.0000 0.0000 0\n" ++
+        "M  V30 2 N 1.1600 0.2500 -0.5000 0 -\n" ++
+        "M  V30 3 Fe 9.0000 9.0000 9.0000 0\n" ++
+        "M  V30 END ATOM\n";
+    try expectV3000Cyanide(test_v3000_counts ++ phantom_atom ++ test_v3000_bonds);
+    // ...and a COUNTS line that declares three is wrong
+    try std.testing.expectError(error.InvalidV3000, parse(
+        allocator,
+        header ++ "M  V30 COUNTS 3 1 0 0 0\n" ++ phantom_atom ++ test_v3000_bonds ++ end,
+    ));
+
+    // The same for a bond
+    const phantom_bond =
+        "M  V30 BEGIN BOND\n" ++
+        "M  V30 1 3 1 2 -\n" ++
+        "M  V30 2 1 2 1\n" ++
+        "M  V30 END BOND\n";
+    try expectV3000Cyanide(test_v3000_counts ++ test_v3000_atoms ++ phantom_bond);
+    try std.testing.expectError(error.InvalidV3000, parse(
+        allocator,
+        header ++ "M  V30 COUNTS 2 2 0 0 0\n" ++ test_v3000_atoms ++ phantom_bond ++ end,
+    ));
+}
+
+test "parse V3000 rejects a continued line without a continuation" {
+    const allocator = std.testing.allocator;
+    const header = "mol\n" ++ test_header_rest ++ "  0  0  0  0  0  0  0  0  0  0999 V3000\nM  V30 BEGIN CTAB\n";
+    const open_atom = header ++ test_v3000_counts ++
+        "M  V30 BEGIN ATOM\n" ++
+        "M  V30 1 C 0.0000 0.0000 0.0000 0\n" ++
+        "M  V30 2 N 1.1600 0.2500 -\n";
+
+    // End of the input, with and without a final newline
+    try std.testing.expectError(error.InvalidV3000, parse(allocator, open_atom));
+    try std.testing.expectError(error.InvalidV3000, parse(allocator, open_atom[0 .. open_atom.len - 1]));
+    // A line that is not a V3000 line
+    try std.testing.expectError(error.InvalidV3000, parse(allocator, open_atom ++ "M  END\n$$$$\n"));
+    try std.testing.expectError(error.InvalidV3000, parse(allocator, open_atom ++ "-0.5000 0\nM  V30 END ATOM\n"));
+    try std.testing.expectError(error.InvalidV3000, parse(allocator, open_atom ++ "\nM  V30 -0.5000 0\nM  V30 END ATOM\n"));
+    try std.testing.expectError(error.InvalidV3000, parse(
+        allocator,
+        open_atom ++ "$$$$\n" ++ "next\n" ++ test_header_rest ++ test_v3000_body,
+    ));
 }
