@@ -181,5 +181,6 @@ Classifies residues and shows SASA breakdown. Automatically enables `--per-resid
 Polar/Nonpolar SASA:
   Polar:       2345.67 Å² ( 45.2%) - 42 residues
   Nonpolar:    2845.23 Å² ( 54.8%) - 58 residues
-  Unknown:        0.00 Å² (  0.0%) -  0 residues
 ```
+
+An `Unknown` line (`Unknown:  <area> Å² - <n> residues (excluded from %)`) is added only when the structure has non-standard residues with SASA; the percentages leave them out.
