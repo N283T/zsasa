@@ -431,7 +431,8 @@ fn hasSuffixedAtomNames(first_char: u8) bool {
 /// in place of the column alignment that `extractElement` relies on.
 ///
 /// - A monatomic ion is a residue named after its atom, so the whole name is
-///   the element: "CA" in "CA" is calcium, "ZN" in "ZN" is zinc.
+///   the element, apart from a charge or oxidation state suffix: "CA" in "CA"
+///   is calcium, "ZN" in "ZN" is zinc, "Na+" in "Na+" is sodium.
 /// - Otherwise a name starting with H, C, N, O, P or S is that element:
 ///   "CA" in "ALA" is carbon, "HG2" is hydrogen, "NA" in "HEM" is nitrogen,
 ///   "PB" in "ATP" is phosphorus.
@@ -447,8 +448,10 @@ pub fn extractElementInResidue(residue: []const u8, atom_name: []const u8) []con
     const atom = std.mem.trim(u8, atom_name, " ");
     if (atom.len == 0) return "";
 
-    if (atom.len <= 2 and std.ascii.eqlIgnoreCase(std.mem.trim(u8, residue, " "), atom)) {
-        return atom;
+    if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, residue, " "), atom)) {
+        // Charge or oxidation state suffix: "Na+", "Cl-", "FE2"
+        const symbol = std.mem.trimEnd(u8, atom, "+-0123456789");
+        if (symbol.len == 1 or symbol.len == 2) return symbol;
     }
 
     if (!hasSuffixedAtomNames(atom[0]) and atom.len >= 2 and guessRadius(atom[0..2]) != null) {
@@ -777,9 +780,15 @@ test "extractElementInResidue ion residue named after its atom" {
     // Padding and case do not matter
     try std.testing.expectEqualStrings("ZN", extractElementInResidue(" ZN", "ZN  "));
     try std.testing.expectEqualStrings("Zn", extractElementInResidue("ZN", "Zn"));
+    // A charge or oxidation state suffix is not part of the symbol
+    try std.testing.expectEqualStrings("Na", extractElementInResidue("Na+", "Na+"));
+    try std.testing.expectEqualStrings("Cl", extractElementInResidue("Cl-", "Cl-"));
+    try std.testing.expectEqualStrings("FE", extractElementInResidue("FE2", "FE2"));
     // An ion outside the radius table stays unknown instead of becoming sulfur
     try std.testing.expectEqualStrings("SR", extractElementInResidue("SR", "SR"));
     try std.testing.expectEqual(@as(?f64, null), guessRadiusFromResidueAtom("SR", "SR"));
+    // A longer name shared by residue and atom is not an element symbol
+    try std.testing.expectEqualStrings("U", extractElementInResidue("UNK", "UNK"));
 }
 
 test "extractElementInResidue other names" {

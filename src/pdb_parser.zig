@@ -115,6 +115,9 @@ pub const PdbParser = struct {
         var current_model: ?u32 = null;
         var in_target_model = true;
 
+        // Only consulted for atoms without a usable element column
+        var name_alignment = NameAlignment{ .source = source };
+
         // Parse line by line
         var lines = std.mem.splitScalar(u8, source, '\n');
         while (lines.next()) |line| {
@@ -142,7 +145,7 @@ pub const PdbParser = struct {
             if (self.atom_only and is_hetatm) continue;
 
             // Parse atom record
-            var atom = try self.parseAtomRecord(line) orelse continue;
+            var atom = try self.parseAtomRecord(line, &name_alignment) orelse continue;
             atom.model_num = current_model;
 
             // Hydrogen filtering (also skip deuterium D, an isotope of H)
@@ -314,7 +317,7 @@ pub const PdbParser = struct {
     }
 
     /// Parse a single ATOM/HETATM record
-    fn parseAtomRecord(self: *PdbParser, line: []const u8) !?AtomRecord {
+    fn parseAtomRecord(self: *PdbParser, line: []const u8, name_alignment: *NameAlignment) !?AtomRecord {
         _ = self;
 
         // Minimum line length for coordinates (column 54)
@@ -325,19 +328,15 @@ pub const PdbParser = struct {
         const y = parseCoordinate(line[38..46]) orelse return null;
         const z = parseCoordinate(line[46..54]) orelse return null;
 
-        // Extract element (try columns 77-78 first, then infer from atom name)
-        const element_symbol = if (line.len >= 78)
-            std.mem.trim(u8, line[76..78], " ")
-        else
-            "";
-
         const atom_name_raw = if (line.len >= 16) line[12..16] else "    ";
         const atom_name = std.mem.trim(u8, atom_name_raw, " ");
+        const residue_raw = if (line.len >= 20) line[17..20] else "   ";
+        const residue = std.mem.trim(u8, residue_raw, " ");
 
-        const element = if (element_symbol.len > 0)
-            elem.fromSymbol(element_symbol)
-        else
-            inferElementFromAtomName(atom_name_raw);
+        // Extract element (try columns 77-78 first, then infer from atom name)
+        const element_field = if (line.len >= 78) line[76..78] else "";
+        const element = parseElementField(element_field) orelse
+            inferElementFromAtomName(atom_name_raw, residue, name_alignment.isColumnAligned());
 
         const radius = element.vdwRadius();
 
@@ -347,8 +346,6 @@ pub const PdbParser = struct {
             std.fmt.parseFloat(f64, std.mem.trim(u8, line[54..60], " ")) catch 0.0
         else
             0.0;
-        const residue_raw = if (line.len >= 20) line[17..20] else "   ";
-        const residue = std.mem.trim(u8, residue_raw, " ");
 
         // Chain ID (column 22, 0-indexed 21) - return slice into line
         const chain_id: []const u8 = if (line.len > 21 and line[21] != ' ')
@@ -443,32 +440,115 @@ fn parseModelNumber(line: []const u8) ?u32 {
     return std.fmt.parseInt(u32, num_str, 10) catch null;
 }
 
-/// Infer element from PDB atom name field (columns 13-16)
-/// Following FreeSASA's approach:
-/// - Position 13-14 (0-indexed 12-13): element symbol for standard atoms
-/// - First letter after leading digit/space is typically the element
-fn inferElementFromAtomName(atom_name: []const u8) elem.Element {
-    if (atom_name.len < 2) return .X;
+/// Read the element symbol field (columns 77-78).
+///
+/// Returns null when the field is blank or is not an element symbol, so the
+/// caller infers the element from the atom name instead. Files written before
+/// the element column existed can carry other text there (an ID code and line
+/// number in columns 73-80).
+fn parseElementField(field: []const u8) ?elem.Element {
+    const symbol = std.mem.trim(u8, field, " ");
+    if (elem.fromSymbolExact(symbol)) |element| return element;
 
-    // Check first character
-    const first = atom_name[0];
-    const second = atom_name[1];
+    // "D" (deuterium) and "X" (unknown atom) are valid entries that have no
+    // Element of their own
+    if (symbol.len == 1) {
+        const c = std.ascii.toUpper(symbol[0]);
+        if (c == 'D' or c == 'X') return .X;
+    }
+    return null;
+}
 
-    // Standard PDB: element symbol is at positions 13-14 (right-justified for 1-char elements)
-    // " CA " -> C (alpha carbon)
-    // " N  " -> N
-    // "FE  " -> Fe (iron)
-    // "1HB " -> H (hydrogen with digit prefix)
+/// Element symbol for name-based inference. Transactinides never occur in
+/// structures, while their symbols collide with common atom names (SG, NH,
+/// DB, DS, HS, CN).
+fn elementFromNamePrefix(prefix: []const u8) ?elem.Element {
+    const element = elem.fromSymbolExact(prefix) orelse return null;
+    return if (element.atomicNumber() >= elem.Element.Rf.atomicNumber()) null else element;
+}
 
-    if (first == ' ' or (first >= '0' and first <= '9')) {
-        // Single-letter element at position 2
-        return elem.fromSymbol(&[_]u8{second});
+/// Elements whose atom names carry remoteness and branch suffixes in PDB
+/// nomenclature ("CA", "CD1", "HG21", "NE2", "OG1", "PB", "SD").
+/// Same rule as `classifier.extractElementInResidue`.
+fn hasSuffixedAtomNames(first_char: u8) bool {
+    return switch (std.ascii.toUpper(first_char)) {
+        'H', 'C', 'N', 'O', 'P', 'S' => true,
+        else => false,
+    };
+}
+
+/// Whether the atom names of a PDB source follow the column rule, in which an
+/// element symbol is right-justified in columns 13-14: " CA " is an alpha
+/// carbon and "CA  " is calcium. Files that left-justify or center their names
+/// break the rule, and their columns must not be read that way.
+///
+/// The whole source is scanned once, on first use, so files with an element
+/// column never pay for it.
+const NameAlignment = struct {
+    source: []const u8,
+    column_aligned: ?bool = null,
+
+    fn isColumnAligned(self: *NameAlignment) bool {
+        if (self.column_aligned == null) {
+            self.column_aligned = atomNamesAreColumnAligned(self.source);
+        }
+        return self.column_aligned.?;
+    }
+};
+
+/// A name of up to three characters that starts in column 13 must begin with
+/// a two-letter element symbol. One that does not ("N   ", "CB  ", "OG1 ")
+/// shows that the file does not follow the column rule.
+fn atomNamesAreColumnAligned(source: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |line| {
+        if (line.len < 16) continue;
+        if (!std.mem.startsWith(u8, line, "ATOM  ") and !std.mem.startsWith(u8, line, "HETATM")) continue;
+
+        const name = line[12..16];
+        // Names from column 14 and four-character names say nothing
+        if (!std.ascii.isAlphabetic(name[0]) or name[3] != ' ') continue;
+        if (elementFromNamePrefix(name[0..2]) == null) return false;
+    }
+    return true;
+}
+
+/// Infer element from the PDB atom name field (columns 13-16) for an atom
+/// without a usable element column.
+///
+/// - A monatomic ion is a residue named after its atom: "CA" in "CA" is
+///   calcium, "HG" in "HG" is mercury, "Na+" in "Na+" is sodium.
+/// - In a column-aligned file (see `NameAlignment`) the columns decide:
+///   " CA ", " NA " and "1HB " are one-letter elements, while "CA  ", "FE  "
+///   and "CL1 " start with a two-letter element.
+/// - Four-character names fill column 13 whatever their element ("HG21",
+///   "HO5'"), and the names of a file that is not column-aligned carry no
+///   column information. For both, a name starting with H, C, N, O, P or S is
+///   that element, and any other name is a two-letter element if there is one.
+fn inferElementFromAtomName(name_field: []const u8, residue: []const u8, column_aligned: bool) elem.Element {
+    const trimmed = std.mem.trim(u8, name_field, " ");
+
+    if (std.ascii.eqlIgnoreCase(trimmed, std.mem.trim(u8, residue, " "))) {
+        // Charge or oxidation state suffix: "Na+", "Cl-", "FE2"
+        const symbol = std.mem.trimEnd(u8, trimmed, "+-0123456789");
+        if (elementFromNamePrefix(symbol)) |element| return element;
     }
 
-    // Two-letter element (e.g., FE, CA for calcium in HETATM)
-    // But be careful: CA in ATOM records is carbon-alpha, not calcium
-    // For safety, just use first letter
-    return elem.fromSymbol(&[_]u8{first});
+    // Old-style hydrogen names carry a leading digit ("1HB ", "2HG1")
+    const name = std.mem.trimStart(u8, trimmed, "0123456789");
+    if (name.len == 0) return .X;
+
+    const one_letter = elem.fromSymbolExact(name[0..1]) orelse .X;
+    const two_letter = if (name.len >= 2) elementFromNamePrefix(name[0..2]) else null;
+
+    const fills_all_columns = name_field.len >= 4 and name_field[3] != ' ';
+    if (column_aligned and !fills_all_columns) {
+        const starts_in_column_13 = std.ascii.isAlphabetic(name_field[0]);
+        return if (starts_in_column_13) two_letter orelse one_letter else one_letter;
+    }
+
+    if (hasSuffixedAtomNames(name[0])) return one_letter;
+    return two_letter orelse one_letter;
 }
 
 // Tests
@@ -496,14 +576,280 @@ test "parseCoordinate" {
     try testing.expect(parseCoordinate("-9999.99") != null);
 }
 
-test "inferElementFromAtomName" {
+test "parseElementField" {
+    const testing = std.testing;
+    const E = elem.Element;
+
+    try testing.expectEqual(@as(?E, .C), parseElementField(" C"));
+    try testing.expectEqual(@as(?E, .C), parseElementField("C "));
+    try testing.expectEqual(@as(?E, .Fe), parseElementField("FE"));
+    try testing.expectEqual(@as(?E, .Fe), parseElementField("Fe"));
+    try testing.expectEqual(@as(?E, .Hg), parseElementField("HG"));
+
+    // Deuterium and unknown atoms keep their unknown element
+    try testing.expectEqual(@as(?E, .X), parseElementField(" D"));
+    try testing.expectEqual(@as(?E, .X), parseElementField(" X"));
+
+    // Blank or not an element symbol: the atom name decides
+    try testing.expectEqual(@as(?E, null), parseElementField(""));
+    try testing.expectEqual(@as(?E, null), parseElementField("  "));
+    try testing.expectEqual(@as(?E, null), parseElementField(" 1"));
+    try testing.expectEqual(@as(?E, null), parseElementField("12"));
+    try testing.expectEqual(@as(?E, null), parseElementField("C1"));
+    try testing.expectEqual(@as(?E, null), parseElementField("1+"));
+    try testing.expectEqual(@as(?E, null), parseElementField("QQ"));
+}
+
+test "inferElementFromAtomName column-aligned names" {
+    const testing = std.testing;
+    const E = elem.Element;
+
+    // Names from column 14, and old-style hydrogens with a leading digit
+    try testing.expectEqual(E.C, inferElementFromAtomName(" CA ", "ALA", true));
+    try testing.expectEqual(E.N, inferElementFromAtomName(" N  ", "ALA", true));
+    try testing.expectEqual(E.O, inferElementFromAtomName(" O  ", "ALA", true));
+    try testing.expectEqual(E.C, inferElementFromAtomName(" CD1", "LEU", true));
+    try testing.expectEqual(E.C, inferElementFromAtomName(" CD ", "PRO", true));
+    try testing.expectEqual(E.H, inferElementFromAtomName(" HG ", "SER", true));
+    try testing.expectEqual(E.N, inferElementFromAtomName(" NA ", "HEM", true));
+    try testing.expectEqual(E.C, inferElementFromAtomName(" CAA", "HEM", true));
+    try testing.expectEqual(E.P, inferElementFromAtomName(" PB ", "ATP", true));
+    try testing.expectEqual(E.K, inferElementFromAtomName(" K  ", "K", true));
+    try testing.expectEqual(E.H, inferElementFromAtomName("1HB ", "ALA", true));
+
+    // Two-letter elements start in column 13
+    try testing.expectEqual(E.Fe, inferElementFromAtomName("FE  ", "HEM", true));
+    try testing.expectEqual(E.Zn, inferElementFromAtomName("ZN  ", "ZN", true));
+    try testing.expectEqual(E.Ca, inferElementFromAtomName("CA  ", "CA", true));
+    try testing.expectEqual(E.Na, inferElementFromAtomName("NA  ", "NA", true));
+    try testing.expectEqual(E.Cl, inferElementFromAtomName("CL  ", "CL", true));
+    try testing.expectEqual(E.Mg, inferElementFromAtomName("MG  ", "MG", true));
+    try testing.expectEqual(E.Mn, inferElementFromAtomName("MN  ", "MN", true));
+    try testing.expectEqual(E.Cu, inferElementFromAtomName("CU  ", "CU", true));
+    try testing.expectEqual(E.Cd, inferElementFromAtomName("CD  ", "CD", true));
+    try testing.expectEqual(E.Br, inferElementFromAtomName("BR  ", "BR", true));
+    try testing.expectEqual(E.Hg, inferElementFromAtomName("HG  ", "HG", true));
+    try testing.expectEqual(E.Ho, inferElementFromAtomName("HO  ", "HO", true));
+    // ... also inside a larger residue
+    try testing.expectEqual(E.Se, inferElementFromAtomName("SE  ", "MSE", true));
+    try testing.expectEqual(E.Hg, inferElementFromAtomName("HG  ", "MMC", true));
+    try testing.expectEqual(E.Cu, inferElementFromAtomName("CU1 ", "CUA", true));
+    try testing.expectEqual(E.Cl, inferElementFromAtomName("CL1 ", "LIG", true));
+    try testing.expectEqual(E.Br, inferElementFromAtomName("BR1 ", "LIG", true));
+    try testing.expectEqual(E.Na, inferElementFromAtomName("Na+ ", "Na+", true));
+
+    // Four-character names fill column 13 whatever their element
+    try testing.expectEqual(E.H, inferElementFromAtomName("HG21", "VAL", true));
+    try testing.expectEqual(E.H, inferElementFromAtomName("HG12", "ILE", true));
+    try testing.expectEqual(E.H, inferElementFromAtomName("HD11", "LEU", true));
+    try testing.expectEqual(E.H, inferElementFromAtomName("HE21", "GLN", true));
+    try testing.expectEqual(E.H, inferElementFromAtomName("HH11", "ARG", true));
+    try testing.expectEqual(E.H, inferElementFromAtomName("HO5'", "A", true));
+    try testing.expectEqual(E.H, inferElementFromAtomName("2HG1", "VAL", true));
+    try testing.expectEqual(E.C, inferElementFromAtomName("CA1B", "LIG", true));
+    try testing.expectEqual(E.N, inferElementFromAtomName("NA1B", "LIG", true));
+    try testing.expectEqual(E.Fe, inferElementFromAtomName("FE1A", "LIG", true));
+
+    // An ion is recognized even where a name is misplaced
+    try testing.expectEqual(E.Ca, inferElementFromAtomName(" CA ", "CA", true));
+    try testing.expectEqual(E.Zn, inferElementFromAtomName(" ZN ", "ZN", true));
+
+    // Unknown
+    try testing.expectEqual(E.X, inferElementFromAtomName(" D  ", "ALA", true));
+    try testing.expectEqual(E.X, inferElementFromAtomName("    ", "ALA", true));
+    try testing.expectEqual(E.X, inferElementFromAtomName(" 12 ", "ALA", true));
+}
+
+test "inferElementFromAtomName names without column alignment" {
+    const testing = std.testing;
+    const E = elem.Element;
+
+    // Left-justified names of ordinary atoms are not metals
+    try testing.expectEqual(E.C, inferElementFromAtomName("CA  ", "ALA", false));
+    try testing.expectEqual(E.N, inferElementFromAtomName("N   ", "ALA", false));
+    try testing.expectEqual(E.C, inferElementFromAtomName("CD1 ", "LEU", false));
+    try testing.expectEqual(E.C, inferElementFromAtomName("CE  ", "LYS", false));
+    try testing.expectEqual(E.N, inferElementFromAtomName("NE2 ", "HIS", false));
+    try testing.expectEqual(E.S, inferElementFromAtomName("SG  ", "CYS", false));
+    try testing.expectEqual(E.H, inferElementFromAtomName("HG  ", "SER", false));
+    try testing.expectEqual(E.H, inferElementFromAtomName("HE1 ", "HIS", false));
+    try testing.expectEqual(E.N, inferElementFromAtomName("NA  ", "HEM", false));
+    try testing.expectEqual(E.P, inferElementFromAtomName("PB  ", "ATP", false));
+
+    // Ions and names that cannot be an organic atom
+    try testing.expectEqual(E.Ca, inferElementFromAtomName("CA  ", "CA", false));
+    try testing.expectEqual(E.Na, inferElementFromAtomName("NA  ", "NA", false));
+    try testing.expectEqual(E.Hg, inferElementFromAtomName("HG  ", "HG", false));
+    try testing.expectEqual(E.Zn, inferElementFromAtomName("ZN  ", "ZN", false));
+    try testing.expectEqual(E.Fe, inferElementFromAtomName("FE  ", "HEM", false));
+    try testing.expectEqual(E.Fe, inferElementFromAtomName(" FE ", "HEM", false));
+    try testing.expectEqual(E.Br, inferElementFromAtomName("BR1 ", "LIG", false));
+}
+
+test "atomNamesAreColumnAligned" {
     const testing = std.testing;
 
-    try testing.expectEqual(elem.Element.C, inferElementFromAtomName(" CA "));
-    try testing.expectEqual(elem.Element.N, inferElementFromAtomName(" N  "));
-    try testing.expectEqual(elem.Element.O, inferElementFromAtomName(" O  "));
-    try testing.expectEqual(elem.Element.H, inferElementFromAtomName("1HB "));
-    try testing.expectEqual(elem.Element.F, inferElementFromAtomName("FE  ")); // Will be F, not Fe
+    try testing.expect(atomNamesAreColumnAligned(
+        \\ATOM      1  N   SER A   1       5.000   0.000   0.000  1.00 20.00
+        \\ATOM      2  CA  SER A   1      10.000   0.000   0.000  1.00 20.00
+        \\ATOM      3  OG  SER A   1      15.000   0.000   0.000  1.00 20.00
+        \\ATOM      4 HG21 VAL A   2      20.000   0.000   0.000  1.00 20.00
+        \\ATOM      5 1HB  ALA A   3      25.000   0.000   0.000  1.00 20.00
+        \\HETATM    6 FE   HEM A   4      30.000   0.000   0.000  1.00 20.00
+        \\HETATM    7 CL1  LIG A   5      35.000   0.000   0.000  1.00 20.00
+        \\END
+    ));
+
+    // Left-justified names
+    try testing.expect(!atomNamesAreColumnAligned(
+        \\ATOM      1 N    SER A   1       5.000   0.000   0.000  1.00 20.00
+        \\ATOM      2 CA   SER A   1      10.000   0.000   0.000  1.00 20.00
+        \\END
+    ));
+
+    // Centered names: three-character names start in column 13
+    try testing.expect(!atomNamesAreColumnAligned(
+        \\ATOM      1  N   THR A   1       5.000   0.000   0.000  1.00 20.00
+        \\ATOM      2  CA  THR A   1      10.000   0.000   0.000  1.00 20.00
+        \\ATOM      3 OG1  THR A   1      15.000   0.000   0.000  1.00 20.00
+        \\END
+    ));
+
+    // SG is a sulfur, not seaborgium
+    try testing.expect(!atomNamesAreColumnAligned(
+        \\ATOM      1 SG   CYS A   1       5.000   0.000   0.000  1.00 20.00
+        \\END
+    ));
+}
+
+/// Parse `pdb_content` with HETATM records and compare the element symbols.
+fn expectParsedElements(pdb_content: []const u8, skip_hydrogens: bool, expected: []const []const u8) !void {
+    var parser = PdbParser.init(std.testing.allocator);
+    parser.atom_only = false;
+    parser.skip_hydrogens = skip_hydrogens;
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try std.testing.expectEqual(expected.len, input.atomCount());
+    for (expected, input.element.?, input.atom_name.?, input.r) |symbol, atomic_number, atom_name, radius| {
+        const element = elem.fromAtomicNumber(atomic_number);
+        std.testing.expectEqualStrings(symbol, element.symbol()) catch |err| {
+            std.debug.print("atom name: '{s}'\n", .{atom_name.slice()});
+            return err;
+        };
+        try std.testing.expectEqual(element.vdwRadius(), radius);
+    }
+}
+
+test "PdbParser infers ions and ligand atoms without an element column" {
+    const pdb_content =
+        \\HETATM    1 NA    NA A   1       5.000   0.000   0.000  1.00 20.00
+        \\HETATM    2 CL    CL A   2      10.000   0.000   0.000  1.00 20.00
+        \\HETATM    3 ZN    ZN A   3      15.000   0.000   0.000  1.00 20.00
+        \\HETATM    4 MG    MG A   4      20.000   0.000   0.000  1.00 20.00
+        \\HETATM    5 MN    MN A   5      25.000   0.000   0.000  1.00 20.00
+        \\HETATM    6 CU    CU A   6      30.000   0.000   0.000  1.00 20.00
+        \\HETATM    7 CD    CD A   7      35.000   0.000   0.000  1.00 20.00
+        \\HETATM    8 CA    CA A   8      40.000   0.000   0.000  1.00 20.00
+        \\HETATM    9  K     K A   9      45.000   0.000   0.000  1.00 20.00
+        \\HETATM   10 FE   HEM A  10      50.000   0.000   0.000  1.00 20.00
+        \\HETATM   11  NA  HEM A  10      55.000   0.000   0.000  1.00 20.00
+        \\HETATM   12  CAA HEM A  10      60.000   0.000   0.000  1.00 20.00
+        \\HETATM   13 SE   MSE A  11      65.000   0.000   0.000  1.00 20.00
+        \\HETATM   14  CA  MSE A  11      70.000   0.000   0.000  1.00 20.00
+        \\HETATM   15  PB  ATP A  12      75.000   0.000   0.000  1.00 20.00
+        \\HETATM   16 BR1  LIG A  13      80.000   0.000   0.000  1.00 20.00
+        \\HETATM   17 CL1  LIG A  13      85.000   0.000   0.000  1.00 20.00
+        \\HETATM   18  CD1 LIG A  13      90.000   0.000   0.000  1.00 20.00
+        \\END
+    ;
+    try expectParsedElements(pdb_content, true, &.{
+        "Na", "Cl", "Zn", "Mg", "Mn", "Cu", "Cd", "Ca", "K",
+        "Fe", "N",  "C",  "Se", "C",  "P",  "Br", "Cl", "C",
+    });
+}
+
+test "PdbParser hydrogen filter without an element column keeps mercury and holmium" {
+    const pdb_content =
+        \\ATOM      1  N   SER A   1       5.000   0.000   0.000  1.00 20.00
+        \\ATOM      2  H   SER A   1      10.000   0.000   0.000  1.00 20.00
+        \\ATOM      3  CA  SER A   1      15.000   0.000   0.000  1.00 20.00
+        \\ATOM      4  HA  SER A   1      20.000   0.000   0.000  1.00 20.00
+        \\ATOM      5  HG  SER A   1      25.000   0.000   0.000  1.00 20.00
+        \\ATOM      6 HG21 VAL A   2      30.000   0.000   0.000  1.00 20.00
+        \\ATOM      7 1HB  ALA A   3      35.000   0.000   0.000  1.00 20.00
+        \\ATOM      8 2HG1 VAL A   2      40.000   0.000   0.000  1.00 20.00
+        \\ATOM      9 HO5'   A A   4      45.000   0.000   0.000  1.00 20.00
+        \\HETATM   10 HG    HG A   5      50.000   0.000   0.000  1.00 20.00
+        \\HETATM   11 HO    HO A   6      55.000   0.000   0.000  1.00 20.00
+        \\HETATM   12 HG   MMC A   7      60.000   0.000   0.000  1.00 20.00
+        \\END
+    ;
+    // Default: the seven hydrogens are removed, the metals stay
+    try expectParsedElements(pdb_content, true, &.{ "N", "C", "Hg", "Ho", "Hg" });
+    try expectParsedElements(pdb_content, false, &.{
+        "N", "H", "C", "H", "H", "H", "H", "H", "H", "Hg", "Ho", "Hg",
+    });
+}
+
+test "PdbParser ignores an ID code and line number in the element columns" {
+    // Columns 73-80 of files written before the element column existed
+    const pdb_content =
+        \\ATOM      1  N   SER A   1       5.000   0.000   0.000  1.00 20.00      1ABC 101
+        \\ATOM      2  CA  SER A   1      10.000   0.000   0.000  1.00 20.00      1ABC 102
+        \\ATOM      3  HA  SER A   1      15.000   0.000   0.000  1.00 20.00      1ABC 103
+        \\ATOM      4  OG  SER A   1      20.000   0.000   0.000  1.00 20.00      1ABC 104
+        \\ATOM      5  HG  SER A   1      25.000   0.000   0.000  1.00 20.00      1ABC 105
+        \\HETATM    6 ZN    ZN A   2      30.000   0.000   0.000  1.00 20.00      1ABC1106
+        \\HETATM    7 FE   HEM A   3      35.000   0.000   0.000  1.00 20.00      1ABC 107
+        \\END
+    ;
+    try expectParsedElements(pdb_content, true, &.{ "N", "C", "O", "Zn", "Fe" });
+    try expectParsedElements(pdb_content, false, &.{ "N", "C", "H", "O", "H", "Zn", "Fe" });
+}
+
+test "PdbParser left-justified names without an element column" {
+    const pdb_content =
+        \\ATOM      1 N    SER A   1       5.000   0.000   0.000  1.00 20.00
+        \\ATOM      2 CA   SER A   1      10.000   0.000   0.000  1.00 20.00
+        \\ATOM      3 HA   SER A   1      15.000   0.000   0.000  1.00 20.00
+        \\ATOM      4 OG   SER A   1      20.000   0.000   0.000  1.00 20.00
+        \\ATOM      5 HG   SER A   1      25.000   0.000   0.000  1.00 20.00
+        \\ATOM      6 CD1  LEU A   2      30.000   0.000   0.000  1.00 20.00
+        \\ATOM      7 NE2  HIS A   3      35.000   0.000   0.000  1.00 20.00
+        \\ATOM      8 SG   CYS A   4      40.000   0.000   0.000  1.00 20.00
+        \\HETATM    9 CA    CA A   5      45.000   0.000   0.000  1.00 20.00
+        \\HETATM   10 FE   HEM A   6      50.000   0.000   0.000  1.00 20.00
+        \\HETATM   11 NA   HEM A   6      55.000   0.000   0.000  1.00 20.00
+        \\HETATM   12 NA    NA A   7      60.000   0.000   0.000  1.00 20.00
+        \\END
+    ;
+    // Alpha carbon, gamma hydrogen and heme nitrogen, not calcium, mercury and sodium
+    try expectParsedElements(pdb_content, false, &.{
+        "N", "C", "H", "O", "H", "C", "N", "S", "Ca", "Fe", "N", "Na",
+    });
+    try expectParsedElements(pdb_content, true, &.{
+        "N", "C", "O", "C", "N", "S", "Ca", "Fe", "N", "Na",
+    });
+}
+
+test "PdbParser element column decides whatever the atom name" {
+    // Names that would be read differently without the element column, in
+    // both alignments, and the deuterium and unknown symbols
+    const pdb_content =
+        \\ATOM      1 CA   ALA A   1       5.000   0.000   0.000  1.00 20.00           C
+        \\ATOM      2 HG   SER A   2      10.000   0.000   0.000  1.00 20.00           H
+        \\HETATM    3  CA   CA A   3      15.000   0.000   0.000  1.00 20.00          CA
+        \\HETATM    4  HG   HG A   4      20.000   0.000   0.000  1.00 20.00          HG
+        \\HETATM    5 CL1  LIG A   5      25.000   0.000   0.000  1.00 20.00           C
+        \\HETATM    6 FE   HEM A   6      30.000   0.000   0.000  1.00 20.00          Fe
+        \\ATOM      7  DA  ALA A   1      35.000   0.000   0.000  1.00 20.00           D
+        \\HETATM    8  C1  UNL A   7      40.000   0.000   0.000  1.00 20.00           X
+        \\END
+    ;
+    try expectParsedElements(pdb_content, false, &.{ "C", "H", "Ca", "Hg", "C", "Fe", "X", "X" });
+    // Hydrogen and deuterium are removed by default
+    try expectParsedElements(pdb_content, true, &.{ "C", "Ca", "Hg", "C", "Fe", "X" });
 }
 
 test "PdbParser basic" {

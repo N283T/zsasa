@@ -328,7 +328,7 @@ With an external CCD dictionary or inline CCD data from mmCIF files, the CCD cla
 When a classifier cannot find a matching (residue, atom name) pair:
 
 1. NACCESS/OONS check the `ANY` fallback entries
-2. If still unmatched, the atom gets the generic van der Waals radius of its element. The element is read from the input: the element column of a PDB file, `type_symbol` of mmCIF/BinaryCIF, or the `element` field of JSON
+2. If still unmatched, the atom gets the generic van der Waals radius of its element. The element is read from the input: the element column of a PDB file (or, where that is missing, the [atom name columns](../cli/input.md#pdb-format)), `type_symbol` of mmCIF/BinaryCIF, or the `element` field of JSON
 3. Only when there is no element to read is it guessed from the residue and atom names: JSON input without an `element` field, or, for NACCESS/OONS, an atom whose element is unknown
 
 The CLI reports both groups, for example `Classifier 'NACCESS': 154 atoms classified, 150 fallback` for a 20-residue peptide with 150 explicit hydrogens.
