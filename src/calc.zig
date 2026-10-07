@@ -902,12 +902,13 @@ const ReadResult = struct {
     input: types.AtomInput,
     bcif: ?bcif_parser.BcifParser = null,
     mmcif: ?mmcif_parser.MmcifParser = null,
-    sdf_ccd: ?ccd_parser.ComponentDict = null, // Auto-registered SDF bond topology
+    /// Bond topology of the molecule that was read from an SDF/MOL input
+    sdf_component: ?ccd_parser.StoredComponent = null,
 
     fn deinitCcd(self: *ReadResult) void {
         if (self.bcif) |*p| p.deinitCcd();
         if (self.mmcif) |*p| p.deinitCcd();
-        if (self.sdf_ccd) |*d| d.deinit();
+        if (self.sdf_component) |*c| c.deinit();
     }
 };
 
@@ -1029,53 +1030,18 @@ fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, arg
             const mol_idx = selectMolecule(molecules, args.mol_selector, args.quiet);
             const selected = molecules[mol_idx .. mol_idx + 1];
 
-            const input_result = try sdf_parser.toAtomInput(allocator, selected, !args.include_hydrogens);
+            var input_result = try sdf_parser.toAtomInput(allocator, selected, !args.include_hydrogens);
 
             if (!calcArgsUseCcdResources(args)) {
                 break :blk .{ .input = input_result };
             }
+            errdefer input_result.deinit();
 
-            // Build CCD component dict from selected molecule's bond topology
-            var sdf_dict = ccd_parser.ComponentDict.init(allocator);
-            errdefer sdf_dict.deinit();
-            var has_components = false;
-            for (selected) |mol| {
-                if (mol.name.len == 0) continue;
-                const stored = sdf_parser.toStoredComponent(allocator, &mol) catch continue;
-                const comp_id_str = mol.name[0..@min(mol.name.len, 5)];
-
-                // Skip if already registered (avoid StoredComponent leak from duplicate names)
-                if (sdf_dict.components.get(comp_id_str) != null) {
-                    var s = stored;
-                    s.deinit();
-                    continue;
-                }
-
-                const dict_key = allocator.dupe(u8, comp_id_str) catch {
-                    var s = stored;
-                    s.deinit();
-                    continue;
-                };
-                sdf_dict.owned_keys.append(allocator, dict_key) catch {
-                    allocator.free(dict_key);
-                    var s = stored;
-                    s.deinit();
-                    continue;
-                };
-                sdf_dict.components.put(allocator, dict_key, stored) catch {
-                    var s = stored;
-                    s.deinit();
-                    continue;
-                };
-                has_components = true;
-            }
-
+            // The CCD classifier takes the radii of the molecule from its
+            // own bond topology, whatever its title is (it may be blank)
             break :blk .{
                 .input = input_result,
-                .sdf_ccd = if (has_components) sdf_dict else null_blk: {
-                    sdf_dict.deinit();
-                    break :null_blk null;
-                },
+                .sdf_component = try sdf_parser.toStoredComponent(allocator, &selected[0]),
             };
         },
     };
@@ -1234,6 +1200,30 @@ fn applyBuiltinClassifier(
             ct.name(),
             classified_count,
             fallback_count,
+        });
+    }
+}
+
+/// Apply the CCD classifier to an SDF/MOL input: radii from the molecule's
+/// own bond topology (`sdf_parser.applyTopologyRadii`).
+fn applySdfTopologyClassifier(
+    input: *types.AtomInput,
+    own_component: *const ccd_parser.StoredComponent,
+    sdf_option_given: bool,
+    quiet: bool,
+) !void {
+    const view = own_component.view();
+    const counts = try sdf_parser.applyTopologyRadii(input, &view);
+
+    if (!quiet) {
+        if (sdf_option_given) {
+            std.debug.print("Note: --sdf is not used for SDF/MOL input; the molecule is classified from its own bond topology\n", .{});
+        }
+        std.debug.print("CCD: radii derived from the bond topology of the SDF/MOL molecule\n", .{});
+        std.debug.print("Classifier '{s}': {d} atoms classified, {d} fallback\n", .{
+            ClassifierType.ccd.name(),
+            counts.classified,
+            counts.fallback,
         });
     }
 }
@@ -1555,17 +1545,23 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
             }
             defer if (sdf_ccd) |*d| d.deinit();
 
-            // SDF auto-components (from SDF input file) + explicit --sdf components
-            const sdf_auto_ptr: ?*const ccd_parser.ComponentDict = if (read_result.sdf_ccd != null) &read_result.sdf_ccd.? else null;
-            const sdf_explicit_ptr: ?*const ccd_parser.ComponentDict = if (sdf_ccd != null) &sdf_ccd.? else null;
-            // Explicit --sdf takes priority over auto-detected
-            const sdf_ccd_ptr = sdf_explicit_ptr orelse sdf_auto_ptr;
-
+            const sdf_ccd_ptr: ?*const ccd_parser.ComponentDict = if (sdf_ccd != null) &sdf_ccd.? else null;
             const ext_ccd_ptr: ?*const ccd_parser.ComponentDict = if (ext_ccd != null) &ext_ccd.? else null;
-            applyBuiltinClassifier(&input, ct, sdf_ccd_ptr, inline_ccd, ext_ccd_ptr, effective_args.quiet) catch |err| {
-                std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
-                std.process.exit(1);
-            };
+
+            if (read_result.sdf_component) |*own_component| {
+                // SDF/MOL input: the molecule is its own component definition.
+                // Its atoms are matched to its own bond topology, not looked
+                // up by residue name, so --sdf and --ccd have nothing to add.
+                applySdfTopologyClassifier(&input, own_component, sdf_ccd_ptr != null, effective_args.quiet) catch |err| {
+                    std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
+                    std.process.exit(1);
+                };
+            } else {
+                applyBuiltinClassifier(&input, ct, sdf_ccd_ptr, inline_ccd, ext_ccd_ptr, effective_args.quiet) catch |err| {
+                    std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
+                    std.process.exit(1);
+                };
+            }
         }
     }
     time_classify = @intCast(timer.untilNow(io, .awake).nanoseconds);
@@ -2506,4 +2502,237 @@ test "calc workflow rejects zero model number" {
     var args = CalcArgs{};
 
     try std.testing.expectError(error.InvalidArgument, applyWorkflowToCalcArgs(&args, workflow));
+}
+
+const test_sdf_header_rest = "     zsasa   3D\n\n";
+
+// Ethanol with its hydrogens, as the body of a V2000 and of a V3000 record
+// (everything after the title line).
+const test_sdf_ethanol_v2000 = test_sdf_header_rest ++
+    "  9  8  0  0  0  0  0  0  0  0999 V2000\n" ++
+    "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    1.5200    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    2.0800    1.2124    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "   -0.5200    0.9400    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "   -0.5200   -0.5100    0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "   -0.5200   -0.5100   -0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    1.8800   -0.5100    0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    1.8800   -0.5100   -0.8900 H   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    2.9200    1.2124    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "  1  2  1  0  0  0  0\n  1  4  1  0  0  0  0\n  1  5  1  0  0  0  0\n  1  6  1  0  0  0  0\n" ++
+    "  2  3  1  0  0  0  0\n  2  7  1  0  0  0  0\n  2  8  1  0  0  0  0\n  3  9  1  0  0  0  0\n" ++
+    "M  END\n$$$$\n";
+const test_sdf_ethanol_v3000 = test_sdf_header_rest ++
+    "  0  0  0  0  0  0  0  0  0  0999 V3000\n" ++
+    "M  V30 BEGIN CTAB\nM  V30 COUNTS 9 8 0 0 0\nM  V30 BEGIN ATOM\n" ++
+    "M  V30 1 C 0.0000 0.0000 0.0000 0\n" ++
+    "M  V30 2 C 1.5200 0.0000 0.0000 0\n" ++
+    "M  V30 3 O 2.0800 1.2124 0.0000 0\n" ++
+    "M  V30 4 H -0.5200 0.9400 0.0000 0\n" ++
+    "M  V30 5 H -0.5200 -0.5100 0.8900 0\n" ++
+    "M  V30 6 H -0.5200 -0.5100 -0.8900 0\n" ++
+    "M  V30 7 H 1.8800 -0.5100 0.8900 0\n" ++
+    "M  V30 8 H 1.8800 -0.5100 -0.8900 0\n" ++
+    "M  V30 9 H 2.9200 1.2124 0.0000 0\n" ++
+    "M  V30 END ATOM\nM  V30 BEGIN BOND\n" ++
+    "M  V30 1 1 1 2\nM  V30 2 1 1 4\nM  V30 3 1 1 5\nM  V30 4 1 1 6\n" ++
+    "M  V30 5 1 2 3\nM  V30 6 1 2 7\nM  V30 7 1 2 8\nM  V30 8 1 3 9\n" ++
+    "M  V30 END BOND\nM  V30 END CTAB\nM  END\n$$$$\n";
+
+// Heavy atoms of acetonitrile (radii 1.88, 1.61, 1.64) and of acetaldehyde
+// (1.88, 1.76, 1.42): both have atoms C1 and C2, with a different radius for
+// C2. The element fallback would give 1.70 to every carbon.
+const test_sdf_acetonitrile = test_sdf_header_rest ++
+    "  3  2  0  0  0  0  0  0  0  0999 V2000\n" ++
+    "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    1.4600    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    2.6200    0.0000    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "  1  2  1  0  0  0  0\n  2  3  3  0  0  0  0\n" ++
+    "M  END\n$$$$\n";
+const test_sdf_acetaldehyde = test_sdf_header_rest ++
+    "  3  2  0  0  0  0  0  0  0  0999 V2000\n" ++
+    "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    1.5000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "    2.1000    1.0500    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+    "  1  2  1  0  0  0  0\n  2  3  2  0  0  0  0\n" ++
+    "M  END\n$$$$\n";
+
+/// Writes SDF files to a temporary directory and runs `calc` on them.
+const SdfCalcSandbox = struct {
+    tmp: std.testing.TmpDir,
+    root_buf: [std.fs.max_path_bytes]u8 = undefined,
+    root_len: usize = 0,
+
+    fn init(self: *SdfCalcSandbox) !void {
+        self.tmp = std.testing.tmpDir(.{});
+        errdefer self.tmp.cleanup();
+        self.root_len = try self.tmp.dir.realPath(std.testing.io, &self.root_buf);
+    }
+
+    fn deinit(self: *SdfCalcSandbox) void {
+        self.tmp.cleanup();
+    }
+
+    fn path(self: *const SdfCalcSandbox, name: []const u8) ![]u8 {
+        return std.fs.path.join(std.testing.allocator, &.{ self.root_buf[0..self.root_len], name });
+    }
+
+    fn write(self: *const SdfCalcSandbox, name: []const u8, data: []const u8) !void {
+        const file_path = try self.path(name);
+        defer std.testing.allocator.free(file_path);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = file_path, .data = data });
+    }
+
+    /// Runs `calc` on the file `name` with CSV output and `args` (the paths,
+    /// the format and the sampling are set here) and returns the CSV with
+    /// the residue column emptied, so that outputs of molecules that differ
+    /// only in their title compare equal. Caller frees.
+    fn csv(self: *const SdfCalcSandbox, name: []const u8, args: CalcArgs) ![]u8 {
+        const allocator = std.testing.allocator;
+        const input_path = try self.path(name);
+        defer allocator.free(input_path);
+        const output_path = try self.path("out.csv");
+        defer allocator.free(output_path);
+
+        var run_args = args;
+        run_args.input_path = input_path;
+        run_args.output_path = output_path;
+        run_args.output_format = .csv;
+        run_args.n_threads = 1;
+        run_args.n_points = 20;
+        run_args.quiet = true;
+        try run(allocator, std.testing.io, run_args);
+
+        const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(64 * 1024));
+        defer allocator.free(content);
+
+        // chain,residue,resnum,...: drop the second field of every line
+        var out = std.ArrayListUnmanaged(u8).empty;
+        errdefer out.deinit(allocator);
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            const first = std.mem.findScalar(u8, line, ',').?;
+            const second = std.mem.findScalarPos(u8, line, first + 1, ',').?;
+            try out.appendSlice(allocator, line[0 .. first + 1]);
+            try out.appendSlice(allocator, line[second..]);
+            try out.append(allocator, '\n');
+        }
+        return out.toOwnedSlice(allocator);
+    }
+
+    /// Expects the atom names and radii of a CSV returned by `csv`.
+    fn expectRadii(csv_text: []const u8, expected: []const struct { []const u8, []const u8 }) !void {
+        var lines = std.mem.tokenizeScalar(u8, csv_text, '\n');
+        _ = lines.next().?; // header
+        for (expected) |want| {
+            // chain,,resnum,atom_name,x,y,z,radius,area
+            var fields = std.mem.splitScalar(u8, lines.next().?, ',');
+            var values: [9][]const u8 = undefined;
+            for (&values) |*value| value.* = fields.next().?;
+            try std.testing.expectEqualStrings(want[0], values[3]);
+            try std.testing.expectEqualStrings(want[1], values[7]);
+        }
+        // Only the total row is left
+        try std.testing.expect(std.mem.startsWith(u8, lines.next().?, ",,,,,,,,"));
+        try std.testing.expectEqual(@as(?[]const u8, null), lines.next());
+    }
+};
+
+const test_ethanol_radii = [_]struct { []const u8, []const u8 }{ .{ "C1", "1.880" }, .{ "C2", "1.880" }, .{ "O1", "1.460" } };
+const test_acetonitrile_radii = [_]struct { []const u8, []const u8 }{ .{ "C1", "1.880" }, .{ "C2", "1.610" }, .{ "N1", "1.640" } };
+const test_acetaldehyde_radii = [_]struct { []const u8, []const u8 }{ .{ "C1", "1.880" }, .{ "C2", "1.760" }, .{ "O1", "1.420" } };
+
+test "calc classifies an SDF molecule without a title like the same molecule with one" {
+    const allocator = std.testing.allocator;
+    var sandbox: SdfCalcSandbox = undefined;
+    try sandbox.init();
+    defer sandbox.deinit();
+
+    try sandbox.write("named_v2000.sdf", "ethanol\n" ++ test_sdf_ethanol_v2000);
+    try sandbox.write("named_v3000.sdf", "ethanol\n" ++ test_sdf_ethanol_v3000);
+    try sandbox.write("blank_v2000.sdf", "\n" ++ test_sdf_ethanol_v2000);
+    try sandbox.write("blank_v3000.sdf", "\n" ++ test_sdf_ethanol_v3000);
+    try sandbox.write("spaces.sdf", "   \n" ++ test_sdf_ethanol_v2000);
+
+    for ([_]bool{ false, true }) |include_hydrogens| {
+        const args = CalcArgs{ .include_hydrogens = include_hydrogens };
+        const named = try sandbox.csv("named_v2000.sdf", args);
+        defer allocator.free(named);
+        if (!include_hydrogens) try SdfCalcSandbox.expectRadii(named, &test_ethanol_radii);
+
+        // Same radii and the same areas, atom by atom
+        for ([_][]const u8{ "named_v3000.sdf", "blank_v2000.sdf", "blank_v3000.sdf", "spaces.sdf" }) |name| {
+            const other = try sandbox.csv(name, args);
+            defer allocator.free(other);
+            try std.testing.expectEqualStrings(named, other);
+        }
+    }
+}
+
+test "calc classifies every SDF molecule from its own bond topology" {
+    const allocator = std.testing.allocator;
+    var sandbox: SdfCalcSandbox = undefined;
+    try sandbox.init();
+    defer sandbox.deinit();
+
+    // Two different molecules without a title, with the same title, and one
+    // of each
+    try sandbox.write("unnamed.sdf", "\n" ++ test_sdf_acetonitrile ++ "\n" ++ test_sdf_acetaldehyde);
+    try sandbox.write("same.sdf", "lig\n" ++ test_sdf_acetonitrile ++ "lig\n" ++ test_sdf_acetaldehyde);
+    try sandbox.write("named_first.sdf", "nitrile\n" ++ test_sdf_acetonitrile ++ "\n" ++ test_sdf_acetaldehyde);
+    try sandbox.write("unnamed_first.sdf", "\n" ++ test_sdf_acetonitrile ++ "aldehyde\n" ++ test_sdf_acetaldehyde);
+
+    for ([_][]const u8{ "unnamed.sdf", "same.sdf", "named_first.sdf", "unnamed_first.sdf" }) |name| {
+        const first = try sandbox.csv(name, .{ .mol_selector = "1" });
+        defer allocator.free(first);
+        try SdfCalcSandbox.expectRadii(first, &test_acetonitrile_radii);
+
+        const second = try sandbox.csv(name, .{ .mol_selector = "2" });
+        defer allocator.free(second);
+        try SdfCalcSandbox.expectRadii(second, &test_acetaldehyde_radii);
+
+        // The first molecule is the default
+        const default = try sandbox.csv(name, .{});
+        defer allocator.free(default);
+        try std.testing.expectEqualStrings(first, default);
+    }
+
+    // Selected by title
+    const by_title = try sandbox.csv("unnamed_first.sdf", .{ .mol_selector = "aldehyde" });
+    defer allocator.free(by_title);
+    try SdfCalcSandbox.expectRadii(by_title, &test_acetaldehyde_radii);
+}
+
+test "calc does not read an SDF molecule's title as a residue name" {
+    const allocator = std.testing.allocator;
+    var sandbox: SdfCalcSandbox = undefined;
+    try sandbox.init();
+    defer sandbox.deinit();
+
+    // Residue names of the built-in table. The nucleotides have atoms named
+    // C2 and N1, with radii that are not those of acetonitrile.
+    inline for (.{ "ALA", "HOH", "A", "G", "DT" }) |title| {
+        try sandbox.write(title ++ ".sdf", title ++ "\n" ++ test_sdf_acetonitrile);
+        const text = try sandbox.csv(title ++ ".sdf", .{});
+        defer allocator.free(text);
+        try SdfCalcSandbox.expectRadii(text, &test_acetonitrile_radii);
+    }
+
+    // --sdf supplies ligand definitions for structure files. It does not
+    // replace the bond table of an SDF input, whether or not it has a
+    // molecule of the same title.
+    try sandbox.write("nitrile.sdf", "lig\n" ++ test_sdf_acetonitrile);
+    try sandbox.write("blank.sdf", "\n" ++ test_sdf_acetonitrile);
+    try sandbox.write("dictionary.sdf", "lig\n" ++ test_sdf_acetaldehyde ++ "other\n" ++ test_sdf_acetaldehyde);
+    const dictionary_path = try sandbox.path("dictionary.sdf");
+    defer allocator.free(dictionary_path);
+    var with_dictionary = CalcArgs{ .classifier_type = .ccd, .sdf_explicit = true };
+    try with_dictionary.sdf_paths.append(dictionary_path);
+
+    for ([_][]const u8{ "nitrile.sdf", "blank.sdf" }) |name| {
+        const text = try sandbox.csv(name, with_dictionary);
+        defer allocator.free(text);
+        try SdfCalcSandbox.expectRadii(text, &test_acetonitrile_radii);
+    }
 }

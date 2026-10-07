@@ -147,9 +147,14 @@ pub const DerivedAtomEntry = struct {
 // =============================================================================
 
 /// Check if a type_symbol represents hydrogen (case-insensitive).
+/// Deuterium (`D`) and tritium (`T`) are hydrogen isotopes and count as
+/// hydrogen, as in the structure parsers.
 fn isHydrogen(type_symbol: []const u8) bool {
     if (type_symbol.len == 1) {
-        return type_symbol[0] == 'H' or type_symbol[0] == 'h';
+        return switch (std.ascii.toUpper(type_symbol[0])) {
+            'H', 'D', 'T' => true,
+            else => false,
+        };
     }
     return false;
 }
@@ -810,6 +815,50 @@ test "deriveComponentProperties — ethanol, with and without explicit hydrogens
 
     // Same heavy atoms without hydrogens.
     try expectDerivedRadii(atoms_h[0..3], bonds_h[0..2], &expected);
+}
+
+test "deriveComponentProperties — deuterium and tritium count as hydrogen" {
+    // CD3-CD2-OT: the same radii as ethanol, and no entry for D or T atoms.
+    const atoms = [_]CompAtom{
+        CompAtom.init("C1", "C"), // 0
+        CompAtom.init("C2", "C"), // 1
+        CompAtom.init("O", "O"), // 2
+        CompAtom.init("D11", "D"), // 3
+        CompAtom.init("D12", "D"), // 4
+        CompAtom.init("D13", "d"), // 5
+        CompAtom.init("D21", "D"), // 6
+        CompAtom.init("D22", "D"), // 7
+        CompAtom.init("TO", "T"), // 8
+    };
+    const bonds = [_]CompBond{
+        testBond(0, 1, .single),
+        testBond(1, 2, .single),
+        testBond(0, 3, .single),
+        testBond(0, 4, .single),
+        testBond(0, 5, .single),
+        testBond(1, 6, .single),
+        testBond(1, 7, .single),
+        testBond(2, 8, .single),
+    };
+    try expectDerivedRadii(&atoms, &bonds, &.{
+        .{ "C1", 1.88 },
+        .{ "C2", 1.88 },
+        .{ "O", 1.46 },
+    });
+
+    const analysis = analyzeBonds(&testComponent(&atoms, &bonds), 0);
+    try std.testing.expectEqual(@as(u8, 3), analysis.h_bond_count);
+    try std.testing.expectEqual(@as(u8, 1), analysis.heavy_bond_count);
+
+    // Elements whose symbols start with D or T are not hydrogen: the carbon
+    // bonded to titanium keeps a heavy-atom bond.
+    const ti_atoms = [_]CompAtom{
+        CompAtom.init("C1", "C"), // 0
+        CompAtom.init("TI", "TI"), // 1
+    };
+    const ti_analysis = analyzeBonds(&testComponent(&ti_atoms, &.{testBond(0, 1, .single)}), 0);
+    try std.testing.expectEqual(@as(u8, 0), ti_analysis.h_bond_count);
+    try std.testing.expectEqual(@as(u8, 1), ti_analysis.heavy_bond_count);
 }
 
 test "deriveComponentProperties — acetic acid, with and without explicit hydrogens" {
