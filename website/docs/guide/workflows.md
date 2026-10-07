@@ -558,6 +558,7 @@ The `[output.jsonl]` keys apply to batch JSONL output only. See [JSONL Output Op
 | `timing` | boolean | `false` | calc, batch | Print the timing breakdown |
 | `quiet` | boolean | `false` | calc, batch | Suppress progress output |
 | `auth_chain` | boolean | `false` | calc, batch | Match chains and number residues by `auth_asym_id` / `auth_seq_id` (mmCIF/BinaryCIF). A job can override it with its own `auth_chain` |
+| `altloc` | string | `"auto"` | calc, batch | Alternate-location handling: `"auto"`, `"none"`, `"all"`, `"highest-occupancy"` or one altloc ID such as `"A"`; see [Alternate Locations](../cli/input.md#alternate-locations). `--altloc` on the command line takes precedence |
 | `residue_map` | boolean | `false` | batch | Add residue map arrays to JSONL rows (`--residue-map`) |
 | `per_residue` | boolean | `false` | calc | Per-residue aggregation |
 | `rsa` | boolean | `false` | calc | Relative solvent accessibility; implies `per_residue` |
