@@ -16,6 +16,11 @@ from typing import NamedTuple
 
 REPO = "https://github.com/N283T/zsasa"
 VERSION_RE = re.compile(r"^v?(\d+\.\d+\.\d+)$")
+CONDA_RECIPE = "packaging/conda-forge/meta.yaml"
+# Checksums of release assets only exist after the publish workflow has run.
+# Until scripts/update_packaging_checksums.py fills them in, the recipe carries
+# this marker instead of the checksums of the previous release.
+PENDING_CHECKSUM = "PENDING-update_packaging_checksums.py"
 
 
 class BumpResult(NamedTuple):
@@ -99,6 +104,23 @@ def bump_fixed_version_files(root: Path, old: str, new: str, release_date: str) 
         if path.read_text() != original:
             changed.append(rel)
     return changed
+
+
+def reset_conda_checksums(root: Path) -> None:
+    """Replace the recipe's checksums with a marker and restart the build number.
+
+    After the version bump the recipe's URLs point at the new release, so the old
+    checksums would look valid but fail the download check.
+    """
+    path = root.joinpath(CONDA_RECIPE)
+    text = path.read_text()
+    text, count = re.subn(r"^(\s*sha256:\s*)\S+", rf"\g<1>{PENDING_CHECKSUM}", text, flags=re.MULTILINE)
+    if count == 0:
+        raise RuntimeError(f"{path}: no sha256 entries found")
+    text, count = re.subn(r"^(\s*number:\s*)\d+", r"\g<1>0", text, count=1, flags=re.MULTILINE)
+    if count == 0:
+        raise RuntimeError(f"{path}: no build number found")
+    path.write_text(text)
 
 
 def find_next_heading(lines: list[str], start: int, prefix: str) -> int:
@@ -193,6 +215,7 @@ def run(
     if old == version:
         raise RuntimeError(f"release version is already {version}")
     changed = bump_fixed_version_files(root, old, version, release_date)
+    reset_conda_checksums(root)
     changed.extend(promote_changelog(root, version, tag, old, release_date, allow_empty_notes=allow_empty_notes))
     stale = collect_stale_refs(root, old)
     if stale:
@@ -222,7 +245,11 @@ def main(argv: list[str] | None = None) -> int:
     print("Changed files:")
     for rel in result.changed_files:
         print(f"  {rel}")
-    print("Note: packaging/aur/PKGBUILD is intentionally not bumped before release asset checksums exist.")
+    print(
+        f"Note: the checksums in {CONDA_RECIPE} are marked {PENDING_CHECKSUM!r} and packaging/aur/ is left at the previous\n"
+        "release, because release asset checksums only exist once the publish workflow has run. After the release is\n"
+        f"published, run: scripts/update_packaging_checksums.py {result.version}"
+    )
     return 0
 
 
