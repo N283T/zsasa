@@ -2192,6 +2192,105 @@ test "zsasa_calc_sr_batch_bitmask_f32 basic" {
     try std.testing.expect(atom_areas[0] > 100.0 and atom_areas[0] < 110.0);
 }
 
+/// Two overlapping atoms, so both are partly buried, and a third far away
+/// from them, so it is fully exposed.
+const corrected_test_x = [_]f64{ 0.0, 2.5, 50.0 };
+const corrected_test_radii = [_]f64{ 1.7, 1.7, 1.7 };
+const corrected_test_probe = 1.4;
+const corrected_test_sphere = 4.0 * std.math.pi * (1.7 + corrected_test_probe) * (1.7 + corrected_test_probe);
+const corrected_test_points = 8;
+
+test "zsasa_calc_sr_bitmask_corrected moves the exposed fraction of buried atoms only" {
+    const y = [_]f64{ 0.0, 0.0, 0.0 };
+    const z = [_]f64{ 0.0, 0.0, 0.0 };
+
+    var plain: [3]f64 = undefined;
+    var plain_total: f64 = 0.0;
+    try std.testing.expectEqual(ZSASA_OK, zsasa_calc_sr_bitmask(&corrected_test_x, &y, &z, &corrected_test_radii, 3, corrected_test_points, corrected_test_probe, 1, &plain, &plain_total));
+    // The test would prove nothing if the atoms were not partly buried.
+    try std.testing.expect(plain[0] > 0.0 and plain[0] < 0.9 * corrected_test_sphere);
+
+    // Each area is the uncorrected exposed fraction run through the correction.
+    const coeff = 0.05;
+    var corrected: [3]f64 = undefined;
+    var corrected_total: f64 = 0.0;
+    try std.testing.expectEqual(ZSASA_OK, zsasa_calc_sr_bitmask_corrected(&corrected_test_x, &y, &z, &corrected_test_radii, 3, corrected_test_points, corrected_test_probe, 1, coeff, &corrected, &corrected_total));
+    var sum: f64 = 0.0;
+    for (plain, corrected) |before, after| {
+        const fraction = before / corrected_test_sphere;
+        const expected = corrected_test_sphere * shrake_rupley_bitmask.applyBitmaskCorrection(f64, fraction, coeff);
+        try std.testing.expectApproxEqRel(expected, after, 1e-9);
+        sum += after;
+    }
+    try std.testing.expect(corrected[0] > plain[0] and corrected[1] > plain[1]);
+    try std.testing.expectApproxEqRel(corrected_test_sphere, corrected[2], 1e-12);
+    try std.testing.expectApproxEqRel(sum, corrected_total, 1e-12);
+
+    // The threaded path gives the same values.
+    var threaded: [3]f64 = undefined;
+    var threaded_total: f64 = 0.0;
+    try std.testing.expectEqual(ZSASA_OK, zsasa_calc_sr_bitmask_corrected(&corrected_test_x, &y, &z, &corrected_test_radii, 3, corrected_test_points, corrected_test_probe, 2, coeff, &threaded, &threaded_total));
+    try std.testing.expectEqualSlices(f64, &corrected, &threaded);
+    try std.testing.expectApproxEqRel(corrected_total, threaded_total, 1e-12);
+}
+
+test "zsasa_calc_sr_bitmask_corrected rejects bad arguments" {
+    const y = [_]f64{ 0.0, 0.0, 0.0 };
+    const z = [_]f64{ 0.0, 0.0, 0.0 };
+    var areas: [3]f64 = undefined;
+    var total: f64 = 0.0;
+
+    for ([_]f64{ -0.01, std.math.nan(f64), std.math.inf(f64) }) |coeff| {
+        try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, zsasa_calc_sr_bitmask_corrected(&corrected_test_x, &y, &z, &corrected_test_radii, 3, corrected_test_points, corrected_test_probe, 1, coeff, &areas, &total));
+    }
+    try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, zsasa_calc_sr_bitmask_corrected(&corrected_test_x, &y, &z, &corrected_test_radii, 0, corrected_test_points, corrected_test_probe, 1, 0.02, &areas, &total));
+    try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, zsasa_calc_sr_bitmask_corrected(&corrected_test_x, &y, &z, &corrected_test_radii, 3, corrected_test_points, 0.0, 1, 0.02, &areas, &total));
+    try std.testing.expectEqual(ZSASA_ERROR_UNSUPPORTED_N_POINTS, zsasa_calc_sr_bitmask_corrected(&corrected_test_x, &y, &z, &corrected_test_radii, 3, 2000, corrected_test_probe, 1, 0.02, &areas, &total));
+}
+
+test "corrected bitmask batch exports apply the correction to every frame" {
+    // Frame 1 is frame 0 shifted, so both frames must give the same areas.
+    const coordinates = [_]f32{
+        0.0,  0.0, 0.0, 2.5,  0.0, 0.0, 50.0, 0.0, 0.0,
+        10.0, 5.0, 5.0, 12.5, 5.0, 5.0, 60.0, 5.0, 5.0,
+    };
+    const radii = [_]f32{ 1.7, 1.7, 1.7 };
+
+    const BatchFn = *const fn ([*]const f32, usize, usize, [*]const f32, u32, f32, usize, [*]f32) callconv(.c) c_int;
+    const CorrectedFn = *const fn ([*]const f32, usize, usize, [*]const f32, u32, f32, usize, f64, [*]f32) callconv(.c) c_int;
+    const variants = [_]struct { plain: BatchFn, corrected: CorrectedFn }{
+        .{ .plain = &zsasa_calc_sr_batch_bitmask, .corrected = &zsasa_calc_sr_batch_bitmask_corrected },
+        .{ .plain = &zsasa_calc_sr_batch_bitmask_f32, .corrected = &zsasa_calc_sr_batch_bitmask_f32_corrected },
+    };
+    const sphere: f32 = @floatCast(corrected_test_sphere);
+
+    for (variants) |variant| {
+        var plain: [6]f32 = undefined;
+        try std.testing.expectEqual(ZSASA_OK, variant.plain(&coordinates, 2, 3, &radii, corrected_test_points, corrected_test_probe, 1, &plain));
+        // The test would prove nothing if the atoms were not partly buried.
+        try std.testing.expect(plain[0] > 0.0 and plain[0] < 0.9 * sphere);
+
+        const coeff = 0.05;
+        var corrected: [6]f32 = undefined;
+        try std.testing.expectEqual(ZSASA_OK, variant.corrected(&coordinates, 2, 3, &radii, corrected_test_points, corrected_test_probe, 1, coeff, &corrected));
+        for (plain, corrected) |before, after| {
+            const expected = sphere * shrake_rupley_bitmask.applyBitmaskCorrection(f32, before / sphere, coeff);
+            try std.testing.expectApproxEqRel(expected, after, 1e-4);
+        }
+        for (0..3) |atom| {
+            try std.testing.expectApproxEqRel(corrected[atom], corrected[3 + atom], 1e-4);
+        }
+        try std.testing.expect(corrected[0] > plain[0] and corrected[1] > plain[1]);
+        try std.testing.expectApproxEqRel(sphere, corrected[2], 1e-4);
+
+        // The coefficient is validated like the other arguments.
+        for ([_]f64{ -0.01, std.math.nan(f64), std.math.inf(f64) }) |bad| {
+            try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, variant.corrected(&coordinates, 2, 3, &radii, corrected_test_points, corrected_test_probe, 1, bad, &corrected));
+        }
+        try std.testing.expectEqual(ZSASA_ERROR_UNSUPPORTED_N_POINTS, variant.corrected(&coordinates, 2, 3, &radii, 2000, corrected_test_probe, 1, 0.02, &corrected));
+    }
+}
+
 test "calcErrorCode separates out-of-memory from calculation errors" {
     try std.testing.expectEqual(ZSASA_ERROR_OUT_OF_MEMORY, calcErrorCode(error.OutOfMemory));
     try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, calcErrorCode(error.CoordinateRangeTooLarge));
@@ -2802,7 +2901,6 @@ test "zsasa_dcd_open and close" {
     var error_code: c_int = 0;
 
     const handle = zsasa_dcd_open("test_data/1l2y.dcd", &natoms, &error_code);
-    if (handle == null and error_code == ZSASA_ERROR_INVALID_INPUT) return; // Skip if not available
     try std.testing.expect(handle != null);
     try std.testing.expectEqual(ZSASA_OK, error_code);
     try std.testing.expectEqual(@as(i32, 304), natoms);
@@ -2826,7 +2924,6 @@ test "zsasa_dcd_read_frame" {
     var error_code: c_int = 0;
 
     const handle = zsasa_dcd_open("test_data/1l2y.dcd", &natoms, &error_code);
-    if (handle == null and error_code == ZSASA_ERROR_INVALID_INPUT) return;
     try std.testing.expect(handle != null);
     defer zsasa_dcd_close(handle);
 
@@ -2852,7 +2949,6 @@ test "zsasa_dcd_read_all_frames" {
     var error_code: c_int = 0;
 
     const handle = zsasa_dcd_open("test_data/1l2y.dcd", &natoms, &error_code);
-    if (handle == null and error_code == ZSASA_ERROR_INVALID_INPUT) return;
     try std.testing.expect(handle != null);
     defer zsasa_dcd_close(handle);
 

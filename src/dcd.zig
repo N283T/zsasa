@@ -351,10 +351,7 @@ test "read 1l2y.dcd header" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    var reader = DcdReader.open(allocator, io, "test_data/1l2y.dcd") catch |err| {
-        if (err == DcdError.FileNotFound) return; // Skip if not available
-        return err;
-    };
+    var reader = try DcdReader.open(allocator, io, "test_data/1l2y.dcd");
     defer reader.close();
 
     // 1l2y has 304 atoms
@@ -368,10 +365,7 @@ test "read 1l2y.dcd first frame" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    var reader = DcdReader.open(allocator, io, "test_data/1l2y.dcd") catch |err| {
-        if (err == DcdError.FileNotFound) return;
-        return err;
-    };
+    var reader = try DcdReader.open(allocator, io, "test_data/1l2y.dcd");
     defer reader.close();
 
     const natoms = reader.getNumAtoms();
@@ -397,10 +391,7 @@ test "read 1l2y.dcd all frames" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    var reader = DcdReader.open(allocator, io, "test_data/1l2y.dcd") catch |err| {
-        if (err == DcdError.FileNotFound) return;
-        return err;
-    };
+    var reader = try DcdReader.open(allocator, io, "test_data/1l2y.dcd");
     defer reader.close();
 
     var frame_count: usize = 0;
