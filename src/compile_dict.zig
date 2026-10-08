@@ -100,18 +100,18 @@ pub fn run(allocator: Allocator, io: std.Io, args: []const []const u8) !void {
     };
     defer allocator.free(source);
 
-    // Parse CIF
+    // Parse and serialize completely in memory first, so a failure leaves no
+    // output file (and no stale partial one) behind.
     std.debug.print("Parsing CIF data ({d} bytes)...\n", .{source.len});
-    var dict = ccd_parser.parseCcdData(allocator, source, null) catch |err| {
-        std.debug.print("Error: Failed to parse CIF data: {s}\n", .{@errorName(err)});
+    var diag: ccd_binary.WriteDiagnostic = .{};
+    var comp_count: usize = 0;
+    const bytes = compileToBytes(allocator, source, &comp_count, &diag) catch |err| {
+        printCompileError(err, in_path, diag);
         std.process.exit(1);
     };
-    defer dict.deinit();
-
-    const comp_count = dict.components.count();
+    defer allocator.free(bytes);
     std.debug.print("Parsed {d} components\n", .{comp_count});
 
-    // Write binary output
     const out_file = std.Io.Dir.cwd().createFile(io, out_path, .{}) catch |err| {
         std.debug.print("Error: Could not create '{s}': {s}\n", .{ out_path, @errorName(err) });
         std.process.exit(1);
@@ -120,8 +120,8 @@ pub fn run(allocator: Allocator, io: std.Io, args: []const []const u8) !void {
 
     var write_buf: [64 * 1024]u8 = undefined;
     var buffered = out_file.writer(io, &write_buf);
-    ccd_binary.writeDict(&buffered.interface, &dict) catch |err| {
-        std.debug.print("Error: Failed to write binary dict: {s}\n", .{@errorName(err)});
+    buffered.interface.writeAll(bytes) catch |err| {
+        std.debug.print("Error: Failed to write '{s}': {s}\n", .{ out_path, @errorName(err) });
         std.process.exit(1);
     };
     buffered.interface.flush() catch |err| {
@@ -130,4 +130,112 @@ pub fn run(allocator: Allocator, io: std.Io, args: []const []const u8) !void {
     };
 
     std.debug.print("Compiled {d} components to '{s}'\n", .{ comp_count, out_path });
+}
+
+/// Parse CIF text and serialize it to ZSDC bytes. Caller owns the result.
+///
+/// Fails with `NoComponents` for input that holds no components (an empty
+/// dictionary would only produce a file every later `--ccd` run silently
+/// ignores). `diag` names the component behind a writer error.
+pub fn compileToBytes(
+    allocator: Allocator,
+    source: []const u8,
+    comp_count: *usize,
+    diag: *ccd_binary.WriteDiagnostic,
+) ![]u8 {
+    var dict = try ccd_parser.parseCcdData(allocator, source, null);
+    defer dict.deinit();
+
+    comp_count.* = dict.components.count();
+    if (comp_count.* == 0) return error.NoComponents;
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    ccd_binary.writeDictDiag(&out.writer, &dict, diag) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+        else => |e| return e,
+    };
+    return out.toOwnedSlice();
+}
+
+fn printCompileError(err: anyerror, in_path: []const u8, diag: ccd_binary.WriteDiagnostic) void {
+    switch (err) {
+        error.NoComponents => std.debug.print(
+            "Error: '{s}' contains no CCD components (expected _chem_comp_atom loops); nothing to compile\n",
+            .{in_path},
+        ),
+        error.TooManyAtoms => if (diag.comp_id.len > 0) std.debug.print(
+            "Error: component '{s}' has more than 65535 atoms, which the ZSDC format cannot store\n",
+            .{diag.comp_id},
+        ) else std.debug.print(
+            "Error: '{s}' has a component with more than 65535 atoms, which the ZSDC format cannot store\n",
+            .{in_path},
+        ),
+        error.TooManyBonds => std.debug.print(
+            "Error: component '{s}' has more than 65535 bonds, which the ZSDC format cannot store\n",
+            .{diag.comp_id},
+        ),
+        error.InvalidComponentId => std.debug.print(
+            "Error: component ID '{s}' is empty or longer than 255 bytes, which the ZSDC format cannot store\n",
+            .{diag.comp_id},
+        ),
+        error.InvalidBondIndex => std.debug.print(
+            "Error: component '{s}' has a bond that refers to a missing atom\n",
+            .{diag.comp_id},
+        ),
+        else => std.debug.print("Error: Failed to parse CIF data: {s}\n", .{@errorName(err)}),
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+const test_cif_header =
+    \\data_T
+    \\loop_
+    \\_chem_comp_atom.comp_id
+    \\_chem_comp_atom.atom_id
+    \\_chem_comp_atom.type_symbol
+    \\
+;
+
+test "compileToBytes rejects input without components" {
+    const allocator = std.testing.allocator;
+    var diag: ccd_binary.WriteDiagnostic = .{};
+    var count: usize = 99;
+
+    try std.testing.expectError(error.NoComponents, compileToBytes(allocator, "data_x\n", &count, &diag));
+    try std.testing.expectEqual(@as(usize, 0), count);
+    try std.testing.expectError(error.NoComponents, compileToBytes(allocator, "", &count, &diag));
+    // A loop header without rows is still no component.
+    try std.testing.expectError(error.NoComponents, compileToBytes(allocator, test_cif_header, &count, &diag));
+}
+
+test "compileToBytes produces a loadable image" {
+    const allocator = std.testing.allocator;
+    var diag: ccd_binary.WriteDiagnostic = .{};
+    var count: usize = 0;
+
+    const bytes = try compileToBytes(allocator, test_cif_header ++ "GLY N N\nGLY CA C\n", &count, &diag);
+    defer allocator.free(bytes);
+    try std.testing.expectEqual(@as(usize, 1), count);
+
+    var dict = try ccd_binary.loadDict(allocator, bytes);
+    defer dict.deinit();
+    const comp = dict.get("GLY") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), comp.atoms.len);
+}
+
+test "compileToBytes does not wrap the atom count of a huge component" {
+    const allocator = std.testing.allocator;
+
+    var cif: std.Io.Writer.Allocating = .init(allocator);
+    defer cif.deinit();
+    try cif.writer.writeAll(test_cif_header);
+    for (0..70_000) |i| try cif.writer.print("BIG C{d} C\n", .{i});
+
+    var diag: ccd_binary.WriteDiagnostic = .{};
+    var count: usize = 0;
+    try std.testing.expectError(error.TooManyAtoms, compileToBytes(allocator, cif.written(), &count, &diag));
 }

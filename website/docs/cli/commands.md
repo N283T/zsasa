@@ -72,6 +72,14 @@ zsasa compile-dict components.cif.gz -o components.zsdc
 
 The compiled ZSDC file can then be used with `--ccd=components.zsdc` for faster dictionary loading compared to parsing CIF text at runtime.
 
+`compile-dict` stops with a non-zero exit status, and writes no output file (an existing file at the output path is left untouched), when:
+
+- the input contains no components (no `_chem_comp_atom` loop with rows);
+- a component has more than 65,535 atoms or more than 65,535 bonds, the most the ZSDC format can store;
+- a component ID is longer than 255 bytes.
+
+`--ccd=` rejects a ZSDC file whose lengths, counts or bond orders are invalid, that is shorter than its counts say, that lists a component twice, or that has bytes after its last component. The error names the problem (for example `InvalidAtomLength` or `UnexpectedEof`). Files written by earlier versions of `compile-dict` load unchanged.
+
 ## Basic Usage
 
 ```bash

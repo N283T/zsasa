@@ -299,6 +299,8 @@ Supported input formats for `compile-dict`:
 - `.cif.gz` — gzip-compressed CIF text
 - `.cif.zst` — Zstandard-compressed CIF text
 
+A component in the ZSDC file can hold at most 65,535 atoms and 65,535 bonds. `compile-dict` exits with an error, and writes no file, if the input has no components or a component exceeds those limits. `--ccd=` rejects a ZSDC file with invalid lengths, counts or bond orders instead of loading it.
+
 ### Hybridization Analysis
 
 The CCD classifier determines van der Waals radii through the following process:

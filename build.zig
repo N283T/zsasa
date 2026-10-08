@@ -95,7 +95,7 @@ pub fn build(b: *std.Build) void {
     });
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
-        .filters = if (all_tests) &.{} else &.{ "calc.test.", "traj.test.", "main.test" },
+        .filters = if (all_tests) &.{} else &.{ "calc.test.", "traj.test.", "compile_dict.test.", "main.test" },
     });
     const lib_tests = b.addTest(.{ .root_module = lib.root_module });
     const test_step = b.step("test", "Run tests");
