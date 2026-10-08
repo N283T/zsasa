@@ -1,4 +1,0 @@
-interface:
-  display_name: "zsasa release"
-  short_description: "Release workflow for zsasa"
-  default_prompt: "Create or finish a zsasa release."
