@@ -25,6 +25,8 @@ Use JSON for machine-readable output and long-term pipelines. Legacy text
 formats such as `freesasa` and `rsa` are best-effort compatibility outputs for
 tools or reports that expect FreeSASA/NACCESS-style text.
 
+JSON and JSONL output only ever holds finite numbers. A result that contains an infinite or NaN area (for example from an input radius so large that the area overflows) is not written: the command fails with `NonFiniteValue` instead of producing a file with `inf` in it.
+
 ### Compact JSON
 
 Single-line JSON without whitespace:

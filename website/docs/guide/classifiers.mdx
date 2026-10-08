@@ -170,6 +170,12 @@ Use it from the CLI with:
 zsasa calc --config=my_radii.toml structure.cif output.json
 ```
 
+The file is checked strictly, and a rejected file stops the run with an error that names the problem and the line (`Error loading config file 'my_radii.toml' (line 4): RadiusOutOfRange`):
+
+- Every `radius` is a number greater than 0 and at most 100 Å, the same range JSON input uses (`RadiusOutOfRange`). A value such as `1e300`, `inf` or `nan` would make the areas overflow, and earlier versions accepted it.
+- Nothing may follow a value on its line except a `#` comment (`UnexpectedCharacter`).
+- A key appears once per table, `[[atoms]]` entry and inline table (`DuplicateKey`; a type name defined twice is `DuplicateType`), and each `[table]` header appears once (`DuplicateTable`). Earlier versions used the first value and ignored the rest silently.
+
 ### Migrating from legacy FreeSASA-style text
 
 Older custom classifier text files are no longer supported as input. Convert type definitions and atom mappings to TOML:
@@ -302,6 +308,8 @@ Supported input formats for `compile-dict`:
 - `.cif` — CIF text
 - `.cif.gz` — gzip-compressed CIF text
 - `.cif.zst` — Zstandard-compressed CIF text
+
+A component in the ZSDC file can hold at most 65,535 atoms and 65,535 bonds. `compile-dict` exits with an error, and writes no file, if the input has no components or a component exceeds those limits. `--ccd=` rejects a ZSDC file with invalid lengths, counts or bond orders instead of loading it.
 
 ### Hybridization Analysis
 
