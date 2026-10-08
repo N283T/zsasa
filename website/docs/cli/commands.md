@@ -148,7 +148,7 @@ See [Classifiers](../guide/classifiers.mdx) for detailed classifier documentatio
 
 | Option | Description | Default | Commands |
 |--------|-------------|---------|----------|
-| `--chain=ID` | Filter by chain ID (e.g., `A` or `A,B,C`). In `batch` it cannot be combined with `--workflow`; use the `chains` of a workflow job | all chains | calc, batch |
+| `--chain=ID` | Filter by chain ID (e.g., `A` or `A,B,C`). In `batch` it cannot be combined with `--workflow`; use the `chains` of a workflow job. `batch` rejects a value without any chain ID, such as `--chain=,` | all chains | calc, batch |
 | `--model=N` | Model number for NMR structures (≥1) | all models | calc |
 | `--auth-chain` | Use auth_asym_id for chain IDs and auth_seq_id for residue numbers (mmCIF/BinaryCIF) | label_asym_id, label_seq_id | calc, batch |
 | `--altloc=MODE` | [Alternate-location handling](input.md#alternate-locations) for PDB, mmCIF and BinaryCIF input: `auto`, `none`, `all`, `highest-occupancy`, or one ID such as `A` | `auto` | calc, batch, traj |
@@ -426,7 +426,8 @@ Errors are written to standard error and the command exits with status 1. `<...>
 | `Error: --residue-map is only supported with --format=jsonl` | batch | `--residue-map` without JSONL output |
 | `Error: --mol=<value> out of range (SDF has <n> molecules, use 1-based index)` | calc | `--mol` index past the end of the SDF file |
 | `Error loading config file '<path>': custom classifier configs are TOML-only; ...` | calc | `--config` file without the `.toml` extension |
-| `Error reading workflow file '<path>': <name>` | calc, batch | The workflow file is missing or invalid; `<name>` is `FileNotFound`, `UnknownField`, `UnsupportedVersion`, `InvalidKind`, `InvalidFieldType`, `InvalidClassifierConfig`, `InvalidAnalysisConfig`, `MissingJobName`, `DuplicateJobName`, `UnsafeJobName` or `NoJobs` |
+| `Error: --chain needs at least one chain ID (for example --chain=A or --chain=A,B), got '<value>'` | batch | `--chain` with an empty list, such as `--chain=,` |
+| `Error reading workflow file '<path>': <name>` | calc, batch | The workflow file is missing or invalid; `<name>` is `FileNotFound`, `UnknownField`, `UnsupportedVersion`, `InvalidKind`, `InvalidFieldType`, `InvalidClassifierConfig`, `InvalidAnalysisConfig`, `MissingJobName`, `DuplicateJobName`, `UnsafeJobName`, `NoJobs` or `EmptyJobChains` (a job with `chains = []`; an explanation follows on the next line) |
 
 ### Input files
 

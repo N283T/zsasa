@@ -14,7 +14,18 @@ pub const WorkflowError = error{
     InvalidAnalysisConfig,
     UnknownField,
     NoJobs,
+    EmptyJobChains,
 };
+
+/// Explanation of a workflow error whose name does not say what to change,
+/// or null. Printed by the commands below the error name.
+pub fn errorHint(err: anyerror) ?[]const u8 {
+    return switch (err) {
+        error.EmptyJobChains => "a [[jobs]] entry has an empty chains array; " ++
+            "list at least one chain ID, or remove the key to select every chain",
+        else => null,
+    };
+}
 
 pub const Error = WorkflowError || Allocator.Error || toml_parser.Error || std.Io.File.OpenError || std.Io.File.ReadStreamingError || error{ ReadFailed, StreamTooLong };
 
@@ -435,6 +446,11 @@ fn parseJob(allocator: Allocator, entries: []const toml_parser.Value.Entry, exis
 
     const chains = try optionalStringArray(allocator, entries, "chains");
     errdefer if (chains) |items| allocator.free(items);
+    // An empty list is neither "every chain" (that is the absent key) nor a
+    // selection: the runners would disagree on what it means.
+    if (chains) |items| {
+        if (items.len == 0) return error.EmptyJobChains;
+    }
     const chain_map = try optionalString(entries, "chain_map");
     if (chains != null and chain_map != null) return error.InvalidFieldType;
     const auth_chain = try optionalBool(entries, "auth_chain");
@@ -754,6 +770,31 @@ test "parse workflow job with per-file chain map" {
 
     try std.testing.expectEqual(@as(usize, 1), workflow.jobs.len);
     try std.testing.expectEqualStrings("chains.csv", workflow.jobs[0].chain_map.?);
+    try std.testing.expect(workflow.jobs[0].chains == null);
+}
+
+test "reject workflow job with an empty chains array" {
+    const header =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[[jobs]]
+        \\name = "nothing"
+        \\
+    ;
+    try std.testing.expectError(error.EmptyJobChains, parse(std.testing.allocator, header ++ "chains = []\n"));
+    try std.testing.expectError(error.EmptyJobChains, parse(std.testing.allocator, header ++ "chains = [ ]\nauth_chain = true\n"));
+    // An earlier job with chains must be released when a later job is rejected.
+    try std.testing.expectError(error.EmptyJobChains, parse(
+        std.testing.allocator,
+        header ++ "chains = [\"A\"]\n\n[[jobs]]\nname = \"second\"\nchains = []\n",
+    ));
+    try std.testing.expect(errorHint(error.EmptyJobChains) != null);
+    try std.testing.expect(errorHint(error.MissingJobName) == null);
+
+    // Without the key the job selects every chain.
+    var workflow = try parse(std.testing.allocator, header);
+    defer workflow.deinit();
     try std.testing.expect(workflow.jobs[0].chains == null);
 }
 

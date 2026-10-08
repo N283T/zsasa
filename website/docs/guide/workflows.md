@@ -597,7 +597,7 @@ A batch workflow needs at least one job unless it has an `[analysis]` section (`
 | Key | Type | Default | Used by | Description |
 |-----|------|---------|---------|-------------|
 | `name` | string | required | batch | Job name, unique within the file; used as the output subdirectory or file name, so it must not contain `/`, `\` or `..` |
-| `chains` | array of strings | all chains | batch | Chain IDs to calculate together as one complex |
+| `chains` | array of strings | all chains | batch | Chain IDs to calculate together as one complex. Leave the key out to select every chain: an empty array (`chains = []`) is rejected with `EmptyJobChains` |
 | `chain_map` | string | none | batch | Per-file chain map; see [Per-file Chain Maps](#per-file-chain-maps). Not allowed together with `chains` or `auth_chain` |
 | `auth_chain` | boolean | from `[calculation]` | batch | Use author chain IDs for this job |
 

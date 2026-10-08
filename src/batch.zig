@@ -2995,6 +2995,9 @@ fn parseJsonlDecimals(value: []const u8) u8 {
     return decimals;
 }
 
+/// Split a `--chain` value such as "A" or "A,B" into chain IDs. A value
+/// without any chain ID ("", "," or " , ") is `error.EmptyChainFilter`: it
+/// would select nothing and fail every input.
 fn parseBatchChainFilter(allocator: Allocator, filter_str: []const u8) ![]const []const u8 {
     var chains = std.ArrayListUnmanaged([]const u8).empty;
     errdefer chains.deinit(allocator);
@@ -3006,6 +3009,7 @@ fn parseBatchChainFilter(allocator: Allocator, filter_str: []const u8) ![]const 
             try chains.append(allocator, trimmed);
         }
     }
+    if (chains.items.len == 0) return error.EmptyChainFilter;
 
     return chains.toOwnedSlice(allocator);
 }
@@ -3688,6 +3692,11 @@ fn applyWorkflowJobOverrides(config: *BatchConfig, args: BatchArgs, job: workflo
 
 fn parseWorkflowFile(allocator: Allocator, io: std.Io, path: []const u8) !workflow_manifest.Workflow {
     return workflow_manifest.parseFile(allocator, io, path);
+}
+
+fn printWorkflowReadError(path: []const u8, err: anyerror) void {
+    std.debug.print("Error reading workflow file '{s}': {s}\n", .{ path, @errorName(err) });
+    if (workflow_manifest.errorHint(err)) |hint| std.debug.print("  {s}\n", .{hint});
 }
 
 fn classifierUsesCcdResources(effective_classifier_type: ?ClassifierType) bool {
@@ -5046,7 +5055,7 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
 
     const workflow_path = args.workflow_path.?;
     var workflow = parseWorkflowFile(allocator, io, workflow_path) catch |err| {
-        std.debug.print("Error reading workflow file '{s}': {s}\n", .{ workflow_path, @errorName(err) });
+        printWorkflowReadError(workflow_path, err);
         return err;
     };
     defer workflow.deinit();
@@ -5213,7 +5222,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
 
     const workflow_path = args.workflow_path.?;
     var workflow = parseWorkflowFile(allocator, io, workflow_path) catch |err| {
-        std.debug.print("Error reading workflow file '{s}': {s}\n", .{ workflow_path, @errorName(err) });
+        printWorkflowReadError(workflow_path, err);
         return err;
     };
     defer workflow.deinit();
@@ -5536,6 +5545,18 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         return error.MissingArgument;
     };
 
+    var chain_filter_slice: ?[]const []const u8 = null;
+    if (args.chain_filter) |filter_str| {
+        chain_filter_slice = parseBatchChainFilter(allocator, filter_str) catch |err| switch (err) {
+            error.EmptyChainFilter => {
+                std.debug.print("Error: --chain needs at least one chain ID (for example --chain=A or --chain=A,B), got '{s}'\n", .{filter_str});
+                return error.InvalidArgument;
+            },
+            else => |e| return e,
+        };
+    }
+    defer if (chain_filter_slice) |s| allocator.free(s);
+
     // Load external CCD dictionary if specified
     var ext_ccd: ?ccd_parser.ComponentDict = null;
     const use_ccd_resources = batchArgsUseCcdResources(args);
@@ -5620,12 +5641,6 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
 
     // For jsonl, don't pass output_dir to runBatch (no per-file I/O during computation)
     const output_dir: ?[]const u8 = if (args.output_format == .jsonl) null else args.output_path;
-
-    var chain_filter_slice: ?[]const []const u8 = null;
-    if (args.chain_filter) |filter_str| {
-        chain_filter_slice = try parseBatchChainFilter(allocator, filter_str);
-    }
-    defer if (chain_filter_slice) |s| allocator.free(s);
 
     // Build batch config from parsed args
     // CCD/ProtOr use united-atom radii (implicit H) — warn if explicit H included
@@ -6085,6 +6100,71 @@ test "parseBatchChainFilter splits comma-separated chains" {
     try std.testing.expectEqualStrings("A", chains[0]);
     try std.testing.expectEqualStrings("B", chains[1]);
     try std.testing.expectEqualStrings("AB", chains[2]);
+}
+
+test "batch rejects a --chain value without any chain ID" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ "", ",", " , ,", " " }) |value| {
+        try std.testing.expectError(error.EmptyChainFilter, parseBatchChainFilter(allocator, value));
+    }
+
+    // The command stops before it scans the input directory: every input
+    // would otherwise fail to parse with no atom selected.
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try tmp_dir.dir.realPath(std.testing.io, &root_buf)];
+    const output_dir = try std.fs.path.join(allocator, &.{ root, "out" });
+    defer allocator.free(output_dir);
+
+    for ([_][]const u8{ "--chain=,", "--chain=" }) |flag| {
+        const argv = [_][]const u8{ "zsasa", "batch", "-q", flag, root, output_dir };
+        try std.testing.expectError(error.InvalidArgument, run(allocator, std.testing.io, parseArgs(&argv, 2)));
+    }
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(std.testing.io, output_dir, .{}));
+}
+
+test "workflow rejects a job with an empty chains array before running anything" {
+    const allocator = std.testing.allocator;
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("tiny.pdb", test_naming_pdb);
+    const workflow_path = try sandbox.path("workflow.toml");
+    defer allocator.free(workflow_path);
+    const output_dir = try sandbox.path("output");
+    defer allocator.free(output_dir);
+
+    // With and without the job option that selects the job-first runner: an
+    // empty list used to mean every chain in one runner and none in the other.
+    inline for (.{ "", "auth_chain = true\n" }) |job_option| {
+        const workflow = try std.fmt.allocPrint(allocator,
+            \\version = 1
+            \\kind = "workflow"
+            \\
+            \\[input]
+            \\dir = "{s}"
+            \\
+            \\[output]
+            \\dir = "{s}"
+            \\format = "jsonl"
+            \\
+            \\[calculation]
+            \\quiet = true
+            \\
+            \\[[jobs]]
+            \\name = "nothing"
+            \\chains = []
+            \\{s}
+        , .{ sandbox.input_dir, output_dir, job_option });
+        defer allocator.free(workflow);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
+
+        try std.testing.expectError(
+            error.EmptyJobChains,
+            runWorkflow(allocator, std.testing.io, .{ .workflow_path = workflow_path }),
+        );
+    }
+    try sandbox.expectTree(&.{ "input/", "input/tiny.pdb", "workflow.toml" });
 }
 
 test "workflow numeric validators reject invalid values" {
