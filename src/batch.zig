@@ -1946,6 +1946,14 @@ fn truncateJsonlOutput(io: std.Io, path: []const u8) !void {
     file.close(io);
 }
 
+/// Opens an existing JSONL file for `appendJsonlResultToFile`. The file is
+/// opened for reading as well as writing: finding its end queries the file
+/// size, which Windows refuses on a write-only handle (`AccessDenied`).
+fn openJsonlForAppend(io: std.Io, path: []const u8) !std.Io.File {
+    return std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_write });
+}
+
+/// Appends one row to `file`, which must come from `openJsonlForAppend`.
 fn appendJsonlResultToFile(io: std.Io, file: std.Io.File, allocator: Allocator, result: *FileResult, options: json_writer.JsonlOptions) !void {
     const line = try fileResultToJsonlLineOptions(allocator, result, options);
     defer allocator.free(line);
@@ -5438,7 +5446,7 @@ fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
 fn workflowWriteSequentialJsonl(io: std.Io, arena: Allocator, state: *const WorkflowJobState, result: *FileResult) !void {
     if (!batchWritesJsonl(state.config)) return;
     if (state.jsonl_output_path) |path| {
-        const file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .write_only });
+        const file = try openJsonlForAppend(io, path);
         defer file.close(io);
         try appendJsonlResultToFile(io, file, arena, result, jsonlOptions(state.config));
     } else {
@@ -9995,12 +10003,12 @@ test "appendJsonlResultToFile appends without truncating existing JSONL content"
     };
 
     {
-        const file = try std.Io.Dir.cwd().openFile(std.testing.io, output_path, .{ .mode = .write_only });
+        const file = try openJsonlForAppend(std.testing.io, output_path);
         defer file.close(std.testing.io);
         try appendJsonlResultToFile(std.testing.io, file, allocator, &first, .{});
     }
     {
-        const file = try std.Io.Dir.cwd().openFile(std.testing.io, output_path, .{ .mode = .write_only });
+        const file = try openJsonlForAppend(std.testing.io, output_path);
         defer file.close(std.testing.io);
         try appendJsonlResultToFile(std.testing.io, file, allocator, &second, .{});
     }

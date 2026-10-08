@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-08
+
+### Upgrade notes
+
+This release follows a full audit of the code base. Several defaults and output formats changed, so results and scripts from 0.9.x may differ. The entries below explain each change; this list only says where to look.
+
+**Results that change with the same input**
+
+- HETATM records (ligands, ions, water) are excluded by default at every entry point, including the Python integrations. Pass `--include-hetatm` / `include_hetatm=True` to include them.
+- Lee-Richards computes arc angles exactly by default; `--lr-trig=fast` restores the previous approximation.
+- Radii changed for CCD components that list hydrogens, for NACCESS/OONS atoms whose names were read as metals, and for PDB files without an element column.
+- Alternate locations are resolved the same way in every parser, including ties in occupancy.
+- Non-polymer residue numbers from mmCIF and BinaryCIF, and all residue numbers with `--auth-chain`, are now the author numbers.
+
+**Output formats**
+
+- The rich CSV has a new `insertion_code` column after `resnum`.
+- `--format=rsa` follows the NACCESS fixed columns, and its polar/non-polar columns follow the classifier.
+
+**Input that is now rejected**
+
+- Batch runs whose outputs would overwrite each other, workflow keys the command does not read, empty chain lists, JSON input with values of the wrong type, classifier TOML with out-of-range radii or duplicate keys, and malformed SDF, BinaryCIF and ZSDC files.
+
+**Exit status and messages**
+
+- `-q` no longer hides failed inputs, and a workflow job that fails as a whole gives a non-zero exit status.
+
+**Python**
+
+- The package refuses a shared library with a different ABI version and no longer searches the current directory for it.
+- Several errors are raised as more specific exception types (`ValueError`, `NotADirectoryError`, `IsADirectoryError`, `PermissionError`) instead of `FileNotFoundError` or `RuntimeError`.
+
+**Pre-built binaries**
+
+- Every pre-built x86_64 binary, wheel and Docker image needs a CPU with AVX2 and FMA (x86-64-v3, 2013 and later); macOS builds need macOS 11 or later. Build from source on older machines.
+- `install.sh` stops when it cannot verify the checksum of the download (`SKIP_CHECKSUM=1` to override).
+
 ### Added
 
 - **Parse-once SASA selection maps**: allow ordinary workflow chain maps to request multiple globally identified chain selections per structure, reuse one parsed/classified input and duplicate chain-set calculations, emit per-selection JSONL success/error rows, and optionally include stable source-indexed atom identity metadata.
@@ -27,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **JSONL workflows with one thread on Windows**: a workflow that shares parsed inputs between jobs and runs with `--threads=1` failed on Windows with `Error: AccessDenied` as soon as it wrote a row to a job's JSONL file, because the file was opened write-only and its size was then queried, which Windows refuses on such a handle. The file is now opened for reading and writing. Present since the shared-input workflow runner was added; Linux and macOS were not affected.
 - **ZSDC dictionaries are validated when read and written**: `--ccd=` now rejects a ZSDC file with an atom ID or type symbol length above 4, a bond order that is not one of the six bond orders, a bond that refers to an atom outside its component, a component or atom count larger than the bytes that remain, an empty or repeated component ID, or bytes after the last component, with an error such as `InvalidAtomLength` instead of reading past the end of a 4-byte array or turning the byte into an invalid enum value (undefined behavior in a release build). Files written by `compile-dict` load as before. `compile-dict` now fails with a clear message, exits non-zero and writes no output file when the input has no components (it used to write a valid file with 0 components and exit 0), and when a component has more than 65,535 atoms or bonds (the atom count in the file header wrapped, so 70,000 atoms were stored as 4,464, and the CIF reader wrapped atom indices the same way); a component ID longer than 255 bytes is an error instead of being cut off. (#427)
 - **Stricter JSON input and BinaryCIF columns (newly rejected input)**: JSON input now keeps the JSON type of each value. A number given as a string (`"x": [0, "3"]`) is rejected with `ExpectedNumber`, a field of the wrong shape with `ExpectedArray`, a non-string `residue` or `atom_name` entry with `ExpectedString`, and `element` must be an array of whole numbers from 0 to 255 (`InvalidElement` otherwise): `"element": "CN"` used to be accepted as the atomic numbers 67 and 78, the bytes of the string. Documents that follow `website/docs/cli/input.md` (numbers for coordinates, radii and elements, strings for names) are unaffected. A BinaryCIF column whose `encoding` list is empty is rejected as `InvalidColumnData` instead of having its raw bytes read as integers; the BinaryCIF specification does not define such a column, and no writer produces one. (#427)
 - **Custom classifier TOML is validated, and `inf` can no longer reach JSON output (newly rejected input)**: every `radius` in a `--config` / workflow classifier file must be a number greater than 0 and at most 100 Å, the range JSON input already enforces (`RadiusOutOfRange`); `radius = 1e300` used to exit 0 and write `inf` into the JSON output, and a radius of 0 or below is no longer accepted either. Text after a value (`name = "x" junk`, `{ ... } extra`) is an error (`UnexpectedCharacter`), a key that appears twice in a table, `[[atoms]]` entry or inline table is `DuplicateKey` and a repeated `[table]` header is `DuplicateTable`; the first value used to win silently. The error message for a rejected classifier file now includes the line (`Error loading config file 'x.toml' (line 4): RadiusOutOfRange`). The JSON and JSONL writers refuse a non-finite area with `NonFiniteValue` instead of writing `inf` (or the string `"nan"`); this also covers `zsasa batch` with a JSON input whose radius is too large, which skips the radius check of `calc`. (#427)
@@ -722,7 +760,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `calc_reference_sasa.py` - Generate reference SASA
   - `benchmark.py` - Performance benchmarking
 
-[Unreleased]: https://github.com/N283T/zsasa/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/N283T/zsasa/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/N283T/zsasa/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/N283T/zsasa/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/N283T/zsasa/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/N283T/zsasa/compare/v0.7.1...v0.8.0
