@@ -54,6 +54,10 @@ curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | sh
 # Or with custom install directory
 curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | INSTALL_DIR=/usr/local/bin sh
 
+# The installer verifies the downloaded binary against the release's SHA256SUMS and stops
+# if it cannot (no SHA256SUMS, no sha256sum/shasum, no entry, mismatch). To install anyway
+# (not recommended): curl -fsSL .../install.sh | SKIP_CHECKSUM=1 sh
+
 # Or with Nix
 nix run github:N283T/zsasa -- calc structure.cif output.json
 
