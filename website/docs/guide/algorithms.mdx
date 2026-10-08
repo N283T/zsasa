@@ -11,16 +11,16 @@ zsasa provides two SASA calculation algorithms.
 
 ## Recommendation
 
-**Use Shrake-Rupley (SR)** for most use cases. It is the default algorithm, faster, and produces results within 0.05% of Lee-Richards.
+**Use Shrake-Rupley (SR)** for most use cases. It is the default algorithm and the faster one. At the default settings the totals of the two algorithms differ by less than 1% on the bundled examples, and they converge to the same value as `--n-points` and `--n-slices` grow (see [Accuracy](#accuracy)).
 
-Use Lee-Richards (LR) only when you need to compare results with other LR implementations or require arc-based geometric rigor.
+Use Lee-Richards (LR) when you need to compare results with other LR implementations, or when you want areas without sampling noise: LR computes the exposed arc of every slice analytically, so the slice thickness is its only approximation.
 
 ## Comparison
 
 | Property | Shrake-Rupley (SR) | Lee-Richards (LR) |
 |----------|-------------------|-------------------|
 | Method | Test point sampling | Slice/arc integration |
-| Speed | **Fast** | ~4x slower |
+| Speed | **Fast** | ~5x slower |
 | Default | Yes (`--algorithm=sr`) | No (`--algorithm=lr`) |
 | Precision control | `--n-points` (default: 100) | `--n-slices` (default: 20) |
 | Recommended for | General use | Comparison with LR implementations |
@@ -32,15 +32,43 @@ Use Lee-Richards (LR) only when you need to compare results with other LR implem
 | SR (100 points) | 2.6ms | **1.7x faster** |
 | LR (20 slices) | 9.9ms | **1.6x faster** |
 
+The LR row was measured with the approximate arc angles that were the default up to zsasa 0.9.1 (now `--lr-trig=fast`). With the exact default, the LR calculation takes about 1.3 times as long.
+
 ### Accuracy
 
-Both algorithms produce nearly identical results on the same structure:
+Both algorithms converge to the same area. Totals in Å² for two of the bundled examples (`--classifier=naccess`, f64):
 
-| Algorithm | SASA (Å²) |
-|-----------|-----------|
-| SR (100 points) | 19,211.19 |
-| LR (20 slices) | 19,201.26 |
-| Difference | 0.05% |
+| Setting | `examples/1ubq.pdb` (602 atoms) | `examples/3hhb.cif.gz` (4,384 atoms) |
+|---------|--------------------------------:|-------------------------------------:|
+| SR, 100 points (default) | 4,823.29 | 25,484.51 |
+| SR, 1,000 points | 4,780.03 | 25,453.82 |
+| SR, 10,000 points | 4,782.19 | 25,442.39 |
+| LR, 20 slices (default) | 4,782.16 | 25,436.14 |
+| LR, 200 slices | 4,783.22 | 25,442.13 |
+| LR, 1,000 slices | 4,783.34 | 25,442.93 |
+
+At the defaults, SR is within 0.9% and LR within 0.03% of the converged value on these two structures. The SR total scatters around that value as the number of test points changes (the sampling noise shrinks with more points and with more atoms). The LR total is within 0.01% of it from 50 slices on.
+
+### Lee-Richards arc angles
+
+For every slice of an atom, LR needs two angles per neighbor: the half-width of the arc the neighbor covers (an `acos`) and its direction (an `atan2`).
+
+| Mode | Angles | Use |
+|------|--------|-----|
+| `--lr-trig=exact` (default) | `acos` and `atan2` for every neighbor | All new work |
+| `--lr-trig=fast` | Polynomial approximations (up to 0.064 rad, or 3.7°, off) for most neighbors | Reproducing results of zsasa 0.9.1 and earlier |
+
+Up to zsasa 0.9.1 the approximations were always used. They overestimate the exposed area by an amount that does not shrink with `--n-slices`, and they make the area of an atom depend on the order of the atoms in the input:
+
+| Structure (`--algorithm=lr`, default options) | `exact` (Å²) | `fast` (Å²) | Difference | Largest per-atom difference (Å²) |
+|-----------------------------------------------|-------------:|------------:|-----------:|---------------------------------:|
+| `examples/1ubq.pdb` | 4,804.06 | 4,812.47 | +0.18% | 0.88 |
+| `examples/1crn.pdb` | 2,999.33 | 3,005.06 | +0.19% | 0.97 |
+| `examples/3hhb.cif.gz` | 25,515.99 | 25,583.13 | +0.26% | 1.31 |
+
+In exact mode the per-atom areas agree with an independent reference implementation to rounding error (below 1e-12 Å²) and do not depend on the atom order. The exact calculation takes about 1.3 times as long as the fast one.
+
+The mode is a command-line and workflow option (`lr_trig` under `[calculation]`). The Python and C APIs always use exact trigonometry.
 
 ## Usage
 
@@ -53,6 +81,9 @@ zsasa calc structure.cif output.json
 
 # Lee-Richards
 zsasa calc --algorithm=lr structure.cif output.json
+
+# Lee-Richards with the approximate arc angles of zsasa 0.9.1 and earlier
+zsasa calc --algorithm=lr --lr-trig=fast structure.cif output.json
 
 # SR with more test points (higher precision)
 zsasa calc --n-points=200 structure.cif output.json

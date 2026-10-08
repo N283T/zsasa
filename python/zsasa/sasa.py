@@ -121,6 +121,9 @@ def calculate_sasa(
         coords: Atom coordinates as (N, 3) array.
         radii: Atom radii as (N,) array.
         algorithm: Algorithm to use: "sr" (Shrake-Rupley) or "lr" (Lee-Richards).
+            Lee-Richards computes its arc angles with exact trigonometry; the
+            approximate mode of the command line (--lr-trig=fast) is not
+            available from Python.
         n_points: Number of test points per atom (for SR algorithm). Default: 100.
         n_slices: Number of slices per atom (for LR algorithm). Default: 20.
         probe_radius: Water probe radius in Angstroms. Default: 1.4.

@@ -15,15 +15,55 @@ const NeighborListGen = neighbor_list_mod.NeighborListGen;
 
 const TWOPI: f64 = 2.0 * std.math.pi;
 
+/// How the angles of the arc that a neighbor covers on a slice circle are computed.
+pub const TrigMode = enum {
+    /// `std.math.acos` and `std.math.atan2` for every neighbor.
+    exact,
+    /// The polynomial approximations `simd.fastAcos` and `simd.fastAtan2` for
+    /// the neighbors that fall in the 8-wide and 4-wide batches, exact
+    /// trigonometry for the 0 to 3 neighbors left over. This is how
+    /// Lee-Richards was computed up to zsasa 0.9.1. The approximations are off
+    /// by up to 0.064 rad, which biases the total upwards by a few tenths of a
+    /// percent, independently of `n_slices`, and makes the area of an atom
+    /// depend on the order of its neighbors.
+    fast,
+
+    /// Parse the value of `--lr-trig` or of the workflow key `lr_trig`.
+    pub fn fromString(value: []const u8) ?TrigMode {
+        return std.meta.stringToEnum(TrigMode, value);
+    }
+};
+
 /// Configuration for Lee-Richards algorithm
 pub const LeeRichardsConfig = struct {
     /// Number of slices per atom diameter
     n_slices: u32 = 20,
     /// Water probe radius in Angstroms
     probe_radius: f64 = 1.4,
+    /// Trigonometry used for the arc angles
+    trig: TrigMode = .exact,
 };
 
 /// Arc interval representing a buried portion of a circle
+///
+/// A neighbor circle j covers the arc `[beta - alpha, beta + alpha]` of circle
+/// i, with `cos(alpha) = (Ri'^2 + dij^2 - Rj'^2) / (2 Ri' dij)`. The angles are
+/// then brought into [0, 2 pi] and an arc that crosses 0 is split in two. Two
+/// tangent cases must not reach that step:
+///
+/// - `dij + Ri' = Rj'`: circle i touches circle j from inside and is buried.
+///   Here `cos(alpha) = -1` and `alpha = pi`, the whole circle, but once both
+///   ends are wrapped into [0, 2 pi] they can coincide (`start == end`), and
+///   the neighbor that covers everything covers nothing.
+/// - `dij + Rj' = Ri'`: circle j touches circle i from inside and covers
+///   nothing. Here `cos(alpha) = 1` and `alpha = 0`, and with `beta = 2 pi`
+///   the wrap turns the empty arc `[2 pi, 2 pi]` into `[0, 2 pi]`: full
+///   burial from a neighbor that covers nothing.
+///
+/// `atomArea` therefore treats `dij + Ri' <= Rj'` and `cos(alpha) <= -1` as
+/// buried, `dij + Rj' <= Ri'` and `cos(alpha) >= 1` as no arc (the tests on
+/// `cos(alpha)` catch the pairs that rounding lets past the tests on the
+/// radii), and drops any arc whose two ends are equal before they are wrapped.
 const Arc = struct {
     start: f64, // Start angle (radians)
     end: f64, // End angle (radians)
@@ -89,6 +129,7 @@ pub fn calculateSasa(
             radii,
             &neighbor_list,
             config.n_slices,
+            config.trig,
             arc_buffer,
         );
         total_area += atom_areas[i];
@@ -101,6 +142,26 @@ pub fn calculateSasa(
     };
 }
 
+/// Half-angle of the arc that neighbor j covers on the slice circle of atom i,
+/// for a neighbor of the 8-wide and 4-wide batches. The neighbors left over
+/// after the batches use `std.math.acos` in both modes.
+inline fn batchHalfAngle(trig: TrigMode, cos_alpha: f64) f64 {
+    return switch (trig) {
+        .exact => std.math.acos(std.math.clamp(cos_alpha, -1.0, 1.0)),
+        .fast => simd.fastAcos(cos_alpha),
+    };
+}
+
+/// Direction of neighbor j seen from atom i in the slice plane, for a neighbor
+/// of the 8-wide and 4-wide batches. The neighbors left over after the batches
+/// use `std.math.atan2` in both modes.
+inline fn batchDirection(trig: TrigMode, dy: f64, dx: f64) f64 {
+    return switch (trig) {
+        .exact => std.math.atan2(dy, dx),
+        .fast => simd.fastAtan2(dy, dx),
+    };
+}
+
 /// Calculate SASA for a single atom using slice-based method with SIMD optimization
 fn atomArea(
     atom_idx: usize,
@@ -110,6 +171,7 @@ fn atomArea(
     radii: []const f64,
     neighbor_list: *const NeighborList,
     n_slices: u32,
+    trig: TrigMode,
     arc_buffer: []Arc,
 ) f64 {
     const xi = x[atom_idx];
@@ -218,23 +280,31 @@ fn atomArea(
                     continue;
                 }
 
-                // Check if circle i is completely inside circle j
-                if (dij + Ri_prime < Rj_prime) {
+                // Check if circle i is completely inside circle j (or touches it from inside)
+                if (dij + Ri_prime <= Rj_prime) {
                     is_buried = true;
                     break;
                 }
-                // Check if circle j is completely inside circle i
-                if (dij + Rj_prime < Ri_prime) {
+                // Check if circle j is completely inside circle i (or touches it from inside)
+                if (dij + Rj_prime <= Ri_prime) {
                     continue;
                 }
 
                 // Calculate arc
                 const cos_alpha = (Ri_prime2 + dij * dij - Rj_prime2) / (2.0 * Ri_prime * dij);
-                const alpha = simd.fastAcos(cos_alpha);
-                const beta = simd.fastAtan2(dy, dx) + std.math.pi;
+                // Tangent circles that rounding let past the tests above (see `Arc`)
+                if (cos_alpha <= -1.0) {
+                    is_buried = true;
+                    break;
+                }
+                if (cos_alpha >= 1.0) continue;
+                const alpha = batchHalfAngle(trig, cos_alpha);
+                const beta = batchDirection(trig, dy, dx) + std.math.pi;
 
                 var inf = beta - alpha;
                 var sup = beta + alpha;
+                // An arc without width covers nothing (see `Arc`)
+                if (!(inf < sup)) continue;
 
                 while (inf < 0) inf += TWOPI;
                 while (inf >= TWOPI) inf -= TWOPI;
@@ -312,23 +382,31 @@ fn atomArea(
                     continue;
                 }
 
-                // Check if circle i is completely inside circle j
-                if (dij + Ri_prime < Rj_prime) {
+                // Check if circle i is completely inside circle j (or touches it from inside)
+                if (dij + Ri_prime <= Rj_prime) {
                     is_buried = true;
                     break;
                 }
-                // Check if circle j is completely inside circle i
-                if (dij + Rj_prime < Ri_prime) {
+                // Check if circle j is completely inside circle i (or touches it from inside)
+                if (dij + Rj_prime <= Ri_prime) {
                     continue;
                 }
 
                 // Calculate arc
                 const cos_alpha = (Ri_prime2 + dij * dij - Rj_prime2) / (2.0 * Ri_prime * dij);
-                const alpha = simd.fastAcos(cos_alpha);
-                const beta = simd.fastAtan2(dy, dx) + std.math.pi;
+                // Tangent circles that rounding let past the tests above (see `Arc`)
+                if (cos_alpha <= -1.0) {
+                    is_buried = true;
+                    break;
+                }
+                if (cos_alpha >= 1.0) continue;
+                const alpha = batchHalfAngle(trig, cos_alpha);
+                const beta = batchDirection(trig, dy, dx) + std.math.pi;
 
                 var inf = beta - alpha;
                 var sup = beta + alpha;
+                // An arc without width covers nothing (see `Arc`)
+                if (!(inf < sup)) continue;
 
                 while (inf < 0) inf += TWOPI;
                 while (inf >= TWOPI) inf -= TWOPI;
@@ -350,7 +428,7 @@ fn atomArea(
             }
         }
 
-        // Process remaining neighbors (scalar)
+        // Process remaining neighbors (scalar, exact trigonometry in both modes)
         while (i < neighbors.len and !is_buried) : (i += 1) {
             const j = neighbors[i];
             const zj = z[j];
@@ -376,18 +454,26 @@ fn atomArea(
                 continue;
             }
 
-            if (dij + Ri_prime < Rj_prime) {
+            if (dij + Ri_prime <= Rj_prime) {
                 is_buried = true;
                 break;
             }
-            if (dij + Rj_prime < Ri_prime) continue;
+            if (dij + Rj_prime <= Ri_prime) continue;
 
             const cos_alpha = (Ri_prime2 + dij * dij - Rj_prime2) / (2.0 * Ri_prime * dij);
+            // Tangent circles that rounding let past the tests above (see `Arc`)
+            if (cos_alpha <= -1.0) {
+                is_buried = true;
+                break;
+            }
+            if (cos_alpha >= 1.0) continue;
             const alpha = std.math.acos(std.math.clamp(cos_alpha, -1.0, 1.0));
             const beta = std.math.atan2(dy, dx) + std.math.pi;
 
             var inf = beta - alpha;
             var sup = beta + alpha;
+            // An arc without width covers nothing (see `Arc`)
+            if (!(inf < sup)) continue;
 
             while (inf < 0) inf += TWOPI;
             while (inf >= TWOPI) inf -= TWOPI;
@@ -470,6 +556,7 @@ const ParallelContext = struct {
     radii: []const f64,
     neighbor_list: *const NeighborList,
     n_slices: u32,
+    trig: TrigMode,
     max_arc_buffer_size: usize,
     /// Scratch space for all chunks: `max_arc_buffer_size` arcs per chunk.
     arc_buffers: []Arc,
@@ -521,6 +608,7 @@ fn parallelLeeRichardsWorker(ctx: ParallelContext, chunk_start: usize, chunk_end
             ctx.radii,
             ctx.neighbor_list,
             ctx.n_slices,
+            ctx.trig,
             arc_buffer,
         );
         ctx.atom_areas[i] = area;
@@ -544,7 +632,7 @@ fn sumReducer(results: []const f64) f64 {
 /// # Parameters
 /// - `allocator`: Memory allocator for result arrays
 /// - `input`: Atom input data (positions and radii)
-/// - `config`: Configuration parameters (n_slices, probe_radius)
+/// - `config`: Configuration parameters (n_slices, probe_radius, trig)
 /// - `n_threads`: Number of worker threads (0 = auto-detect)
 ///
 /// # Returns
@@ -621,6 +709,7 @@ pub fn calculateSasaParallel(
         .radii = radii,
         .neighbor_list = &neighbor_list,
         .n_slices = config.n_slices,
+        .trig = config.trig,
         .max_arc_buffer_size = max_arc_buffer_size,
         .arc_buffers = arc_buffers,
         .chunk_size = chunk_size,
@@ -658,6 +747,8 @@ pub fn LeeRichardsConfigGen(comptime T: type) type {
         n_slices: u32 = 20,
         /// Water probe radius in Angstroms
         probe_radius: T = 1.4,
+        /// Trigonometry used for the arc angles
+        trig: TrigMode = .exact,
     };
 }
 
@@ -682,7 +773,8 @@ pub fn LeeRichardsGen(comptime T: type) type {
 
         const TWOPI_T: T = 2.0 * std.math.pi;
 
-        /// Arc interval representing a buried portion of a circle
+        /// Arc interval representing a buried portion of a circle.
+        /// See the non-generic `Arc` for the handling of tangent circles.
         pub const Arc = struct {
             start: T, // Start angle (radians)
             end: T, // End angle (radians)
@@ -730,6 +822,27 @@ pub fn LeeRichardsGen(comptime T: type) type {
             return sum;
         }
 
+        /// Half-angle of the arc that neighbor j covers on the slice circle of
+        /// atom i, for a neighbor of the 8-wide and 4-wide batches. The
+        /// neighbors left over after the batches use `std.math.acos` in both
+        /// modes.
+        inline fn batchHalfAngle(trig: TrigMode, cos_alpha: T) T {
+            return switch (trig) {
+                .exact => std.math.acos(std.math.clamp(cos_alpha, @as(T, -1.0), @as(T, 1.0))),
+                .fast => FastAcos.compute(cos_alpha),
+            };
+        }
+
+        /// Direction of neighbor j seen from atom i in the slice plane, for a
+        /// neighbor of the 8-wide and 4-wide batches. The neighbors left over
+        /// after the batches use `std.math.atan2` in both modes.
+        inline fn batchDirection(trig: TrigMode, dy: T, dx: T) T {
+            return switch (trig) {
+                .exact => std.math.atan2(dy, dx),
+                .fast => FastAtan2.compute(dy, dx),
+            };
+        }
+
         /// Calculate SASA for a single atom using slice-based method with SIMD optimization
         fn atomArea(
             atom_idx: usize,
@@ -739,6 +852,7 @@ pub fn LeeRichardsGen(comptime T: type) type {
             radii: []const T,
             neighbor_list: *const NList,
             n_slices: u32,
+            trig: TrigMode,
             arc_buffer: []Self.Arc,
         ) T {
             const xi = x[atom_idx];
@@ -848,23 +962,31 @@ pub fn LeeRichardsGen(comptime T: type) type {
                             continue;
                         }
 
-                        // Check if circle i is completely inside circle j
-                        if (dij + Ri_prime < Rj_prime) {
+                        // Check if circle i is completely inside circle j (or touches it from inside)
+                        if (dij + Ri_prime <= Rj_prime) {
                             is_buried = true;
                             break;
                         }
-                        // Check if circle j is completely inside circle i
-                        if (dij + Rj_prime < Ri_prime) {
+                        // Check if circle j is completely inside circle i (or touches it from inside)
+                        if (dij + Rj_prime <= Ri_prime) {
                             continue;
                         }
 
                         // Calculate arc
                         const cos_alpha = (Ri_prime2 + dij * dij - Rj_prime2) / (2.0 * Ri_prime * dij);
-                        const alpha = FastAcos.compute(cos_alpha);
-                        const beta = FastAtan2.compute(dy, dx) + std.math.pi;
+                        // Tangent circles that rounding let past the tests above (see `Arc`)
+                        if (cos_alpha <= -1.0) {
+                            is_buried = true;
+                            break;
+                        }
+                        if (cos_alpha >= 1.0) continue;
+                        const alpha = Self.batchHalfAngle(trig, cos_alpha);
+                        const beta = Self.batchDirection(trig, dy, dx) + std.math.pi;
 
                         var inf = beta - alpha;
                         var sup = beta + alpha;
+                        // An arc without width covers nothing (see `Arc`)
+                        if (!(inf < sup)) continue;
 
                         while (inf < 0) inf += Self.TWOPI_T;
                         while (inf >= Self.TWOPI_T) inf -= Self.TWOPI_T;
@@ -937,18 +1059,26 @@ pub fn LeeRichardsGen(comptime T: type) type {
                             continue;
                         }
 
-                        if (dij + Ri_prime < Rj_prime) {
+                        if (dij + Ri_prime <= Rj_prime) {
                             is_buried = true;
                             break;
                         }
-                        if (dij + Rj_prime < Ri_prime) continue;
+                        if (dij + Rj_prime <= Ri_prime) continue;
 
                         const cos_alpha = (Ri_prime2 + dij * dij - Rj_prime2) / (2.0 * Ri_prime * dij);
-                        const alpha = FastAcos.compute(cos_alpha);
-                        const beta = FastAtan2.compute(dy, dx) + std.math.pi;
+                        // Tangent circles that rounding let past the tests above (see `Arc`)
+                        if (cos_alpha <= -1.0) {
+                            is_buried = true;
+                            break;
+                        }
+                        if (cos_alpha >= 1.0) continue;
+                        const alpha = Self.batchHalfAngle(trig, cos_alpha);
+                        const beta = Self.batchDirection(trig, dy, dx) + std.math.pi;
 
                         var inf = beta - alpha;
                         var sup = beta + alpha;
+                        // An arc without width covers nothing (see `Arc`)
+                        if (!(inf < sup)) continue;
 
                         while (inf < 0) inf += Self.TWOPI_T;
                         while (inf >= Self.TWOPI_T) inf -= Self.TWOPI_T;
@@ -970,7 +1100,7 @@ pub fn LeeRichardsGen(comptime T: type) type {
                     }
                 }
 
-                // Process remaining neighbors (scalar)
+                // Process remaining neighbors (scalar, exact trigonometry in both modes)
                 while (i < neighbors.len and !is_buried) : (i += 1) {
                     const j = neighbors[i];
                     const zj = z[j];
@@ -997,18 +1127,26 @@ pub fn LeeRichardsGen(comptime T: type) type {
                         continue;
                     }
 
-                    if (dij + Ri_prime < Rj_prime) {
+                    if (dij + Ri_prime <= Rj_prime) {
                         is_buried = true;
                         break;
                     }
-                    if (dij + Rj_prime < Ri_prime) continue;
+                    if (dij + Rj_prime <= Ri_prime) continue;
 
                     const cos_alpha = (Ri_prime2 + dij * dij - Rj_prime2) / (2.0 * Ri_prime * dij);
+                    // Tangent circles that rounding let past the tests above (see `Arc`)
+                    if (cos_alpha <= -1.0) {
+                        is_buried = true;
+                        break;
+                    }
+                    if (cos_alpha >= 1.0) continue;
                     const alpha = std.math.acos(std.math.clamp(cos_alpha, @as(T, -1.0), @as(T, 1.0)));
                     const beta = std.math.atan2(dy, dx) + std.math.pi;
 
                     var inf = beta - alpha;
                     var sup = beta + alpha;
+                    // An arc without width covers nothing (see `Arc`)
+                    if (!(inf < sup)) continue;
 
                     while (inf < 0) inf += Self.TWOPI_T;
                     while (inf >= Self.TWOPI_T) inf -= Self.TWOPI_T;
@@ -1046,6 +1184,7 @@ pub fn LeeRichardsGen(comptime T: type) type {
             radii: []const T,
             neighbor_list: *const NList,
             n_slices: u32,
+            trig: TrigMode,
             max_arc_buffer_size: usize,
             /// Scratch space for all chunks: `max_arc_buffer_size` arcs per chunk.
             arc_buffers: []Self.Arc,
@@ -1055,10 +1194,10 @@ pub fn LeeRichardsGen(comptime T: type) type {
         };
 
         /// Worker function for parallel Lee-Richards calculation.
-        fn parallelLeeRichardsWorker(ctx: Self.ParallelContext, chunk_start: usize, chunk_end: usize) T {
+        fn parallelLeeRichardsWorker(ctx: Self.ParallelContext, chunk_start: usize, chunk_end: usize) f64 {
             const arc_buffer = chunkArcBuffer(Self.Arc, ctx.arc_buffers, chunk_start, ctx.chunk_size, ctx.max_arc_buffer_size);
 
-            var chunk_total: T = 0.0;
+            var chunk_total: f64 = 0.0;
 
             for (chunk_start..chunk_end) |i| {
                 const area = Self.atomArea(
@@ -1069,6 +1208,7 @@ pub fn LeeRichardsGen(comptime T: type) type {
                     ctx.radii,
                     ctx.neighbor_list,
                     ctx.n_slices,
+                    ctx.trig,
                     arc_buffer,
                 );
                 ctx.atom_areas[i] = area;
@@ -1078,9 +1218,9 @@ pub fn LeeRichardsGen(comptime T: type) type {
             return chunk_total;
         }
 
-        /// Reduce function to sum all chunk totals.
-        fn sumReducer(results: []const T) T {
-            var total: T = 0.0;
+        /// Reduce function to sum all chunk totals (in f64, see `SasaResultGen.total_area`).
+        fn sumReducer(results: []const f64) f64 {
+            var total: f64 = 0.0;
             for (results) |r| {
                 total += r;
             }
@@ -1143,7 +1283,7 @@ pub fn LeeRichardsGen(comptime T: type) type {
             // Calculate SASA for each atom
             const atom_areas = try allocator.alloc(T, n_atoms);
             errdefer allocator.free(atom_areas);
-            var total_area: T = 0.0;
+            var total_area: f64 = 0.0;
 
             // Estimate max neighbors for arc buffer allocation
             var max_neighbors: usize = 0;
@@ -1162,6 +1302,7 @@ pub fn LeeRichardsGen(comptime T: type) type {
                     radii,
                     &neighbor_list,
                     config.n_slices,
+                    config.trig,
                     arc_buffer,
                 );
                 total_area += atom_areas[i];
@@ -1260,6 +1401,7 @@ pub fn LeeRichardsGen(comptime T: type) type {
                 .radii = radii,
                 .neighbor_list = &neighbor_list,
                 .n_slices = config.n_slices,
+                .trig = config.trig,
                 .max_arc_buffer_size = max_arc_buffer_size,
                 .arc_buffers = arc_buffers,
                 .chunk_size = chunk_size,
@@ -1269,7 +1411,7 @@ pub fn LeeRichardsGen(comptime T: type) type {
             // Run parallel calculation
             const total_area = try thread_pool.parallelFor(
                 Self.ParallelContext,
-                T,
+                f64,
                 allocator,
                 actual_threads,
                 Self.parallelLeeRichardsWorker,
@@ -2020,4 +2162,642 @@ test "calculateSasa - a stray distant atom does not change the other areas" {
     try std.testing.expectEqualSlices(f32, compact_f32.atom_areas, stray_f32.atom_areas[0..n_compact]);
     try std.testing.expectApproxEqRel(isolated, stray.atom_areas[n_compact], 1e-12);
     try std.testing.expectApproxEqRel(@as(f32, @floatCast(isolated)), stray_f32.atom_areas[n_compact], 1e-6);
+}
+
+// =============================================================================
+// Trig mode: exact arc angles against an independent reference
+// =============================================================================
+
+/// Fixtures and an independent Lee-Richards reference for the trig mode tests.
+const trig_testing = struct {
+    /// Linear congruential generator. The fixtures use it instead of
+    /// `std.Random` so that their coordinates, and with them the pinned value
+    /// of the fast mode, never change with the standard library.
+    const Lcg = struct {
+        state: u64,
+
+        /// Uniform in [0, 1).
+        fn next(self: *Lcg) f64 {
+            self.state = self.state *% 6364136223846793005 +% 1442695040888963407;
+            return @as(f64, @floatFromInt(self.state >> 11)) / 9007199254740992.0;
+        }
+    };
+
+    const Fixture = struct {
+        allocator: Allocator,
+        x: []f64,
+        y: []f64,
+        z: []f64,
+        r: []f64,
+
+        fn init(allocator: Allocator, n_atoms: usize) !Fixture {
+            const x = try allocator.alloc(f64, n_atoms);
+            errdefer allocator.free(x);
+            const y = try allocator.alloc(f64, n_atoms);
+            errdefer allocator.free(y);
+            const z = try allocator.alloc(f64, n_atoms);
+            errdefer allocator.free(z);
+            const r = try allocator.alloc(f64, n_atoms);
+            return .{ .allocator = allocator, .x = x, .y = y, .z = z, .r = r };
+        }
+
+        fn deinit(self: *Fixture) void {
+            self.allocator.free(self.x);
+            self.allocator.free(self.y);
+            self.allocator.free(self.z);
+            self.allocator.free(self.r);
+        }
+
+        fn input(self: Fixture) AtomInput {
+            return .{ .x = self.x, .y = self.y, .z = self.z, .r = self.r, .allocator = self.allocator };
+        }
+
+        /// The same atoms in the order `order[0], order[1], ...`.
+        fn permuted(self: Fixture, order: []const usize) !Fixture {
+            const result = try Fixture.init(self.allocator, order.len);
+            for (order, 0..) |from, to| {
+                result.x[to] = self.x[from];
+                result.y[to] = self.y[from];
+                result.z[to] = self.z[from];
+                result.r[to] = self.r[from];
+            }
+            return result;
+        }
+    };
+
+    /// `side`^3 atoms on a cubic grid with the given spacing, each coordinate
+    /// moved by up to `jitter`, radii between 1.2 and 2.0 A.
+    fn jitteredGrid(allocator: Allocator, side: usize, spacing: f64, jitter: f64, seed: u64) !Fixture {
+        const fixture = try Fixture.init(allocator, side * side * side);
+        var lcg = Lcg{ .state = seed };
+        for (0..fixture.x.len) |i| {
+            const ix: f64 = @floatFromInt(i % side);
+            const iy: f64 = @floatFromInt((i / side) % side);
+            const iz: f64 = @floatFromInt(i / (side * side));
+            fixture.x[i] = spacing * ix + jitter * (2.0 * lcg.next() - 1.0);
+            fixture.y[i] = spacing * iy + jitter * (2.0 * lcg.next() - 1.0);
+            fixture.z[i] = spacing * iz + jitter * (2.0 * lcg.next() - 1.0);
+            fixture.r[i] = 1.2 + 0.8 * lcg.next();
+        }
+        return fixture;
+    }
+
+    /// 125 atoms at the density of a protein interior (one atom per 12 A^3):
+    /// about 60 neighbors per atom, so most neighbors go through the batches.
+    fn proteinLikeCluster(allocator: Allocator) !Fixture {
+        return jitteredGrid(allocator, 5, 2.3, 0.5, 430);
+    }
+
+    /// 216 strongly overlapping atoms (one atom per 2.2 A^3), where every atom
+    /// is a neighbor of almost every other one.
+    fn denseBlob(allocator: Allocator) !Fixture {
+        return jitteredGrid(allocator, 6, 1.3, 0.25, 431);
+    }
+
+    /// A fixed pseudo-random order of 0..n (Fisher-Yates).
+    fn shuffledOrder(allocator: Allocator, n: usize, seed: u64) ![]usize {
+        const order = try allocator.alloc(usize, n);
+        for (order, 0..) |*o, i| o.* = i;
+        var lcg = Lcg{ .state = seed };
+        var i = n;
+        while (i > 1) : (i -= 1) {
+            const j: usize = @intFromFloat(lcg.next() * @as(f64, @floatFromInt(i)));
+            std.mem.swap(usize, &order[i - 1], &order[j]);
+        }
+        return order;
+    }
+
+    /// Length of the union of `intervals`, each `{ start, end }` with
+    /// `start <= end`. Sorts `intervals`.
+    fn unionLength(intervals: [][2]f64) f64 {
+        std.mem.sort([2]f64, intervals, {}, struct {
+            fn lessThan(_: void, a: [2]f64, b: [2]f64) bool {
+                return a[0] < b[0];
+            }
+        }.lessThan);
+        var covered: f64 = 0.0;
+        var reach: f64 = 0.0;
+        for (intervals) |interval| {
+            const start = @max(interval[0], reach);
+            if (interval[1] > start) {
+                covered += interval[1] - start;
+                reach = interval[1];
+            }
+        }
+        return covered;
+    }
+
+    /// Independent Lee-Richards reference: the slicing of `atomArea`, but
+    /// `std.math.acos` and `std.math.atan2` for every neighbor, every other
+    /// atom tested as a neighbor (no neighbor list, no batches, no early
+    /// distance cut-off) and its own interval union. Returns the per-atom
+    /// areas, which the caller frees.
+    fn reference(allocator: Allocator, input: AtomInput, n_slices: u32, probe_radius: f64) ![]f64 {
+        const n_atoms = input.atomCount();
+        const areas = try allocator.alloc(f64, n_atoms);
+        errdefer allocator.free(areas);
+        // An arc that crosses the angle 0 is split in two.
+        const intervals = try allocator.alloc([2]f64, 2 * n_atoms);
+        defer allocator.free(intervals);
+
+        for (areas, 0..) |*area, i| {
+            const ri = input.r[i] + probe_radius;
+            const delta = 2.0 * ri / @as(f64, @floatFromInt(n_slices));
+            var exposed_angle: f64 = 0.0; // summed over the slices
+
+            for (0..n_slices) |k| {
+                const slice_z = input.z[i] - ri + delta * (@as(f64, @floatFromInt(k)) + 0.5);
+                const hi = slice_z - input.z[i];
+                const ci2 = ri * ri - hi * hi; // squared radius of circle i
+                if (ci2 <= 0) continue;
+                const ci = @sqrt(ci2);
+
+                var n_intervals: usize = 0;
+                var buried = false;
+                for (0..n_atoms) |j| {
+                    if (j == i) continue;
+                    const rj = input.r[j] + probe_radius;
+                    const hj = slice_z - input.z[j];
+                    const cj2 = rj * rj - hj * hj; // squared radius of circle j
+                    if (cj2 <= 0) continue;
+                    const cj = @sqrt(cj2);
+
+                    const dx = input.x[j] - input.x[i];
+                    const dy = input.y[j] - input.y[i];
+                    const d = @sqrt(dx * dx + dy * dy);
+                    if (d >= ci + cj) continue; // apart
+                    if (d + ci <= cj) { // circle i inside circle j
+                        buried = true;
+                        break;
+                    }
+                    if (d + cj <= ci) continue; // circle j inside circle i
+
+                    const cos_half = (ci2 + d * d - cj2) / (2.0 * ci * d);
+                    const half = std.math.acos(std.math.clamp(cos_half, -1.0, 1.0));
+                    // The covered arc is centered on the direction of j.
+                    const start = @mod(std.math.atan2(dy, dx) - half, TWOPI);
+                    const end = start + 2.0 * half;
+                    if (end > TWOPI) {
+                        intervals[n_intervals] = .{ 0.0, end - TWOPI };
+                        intervals[n_intervals + 1] = .{ start, TWOPI };
+                        n_intervals += 2;
+                    } else {
+                        intervals[n_intervals] = .{ start, end };
+                        n_intervals += 1;
+                    }
+                }
+                if (!buried) exposed_angle += TWOPI - unionLength(intervals[0..n_intervals]);
+            }
+            area.* = ri * delta * exposed_angle;
+        }
+        return areas;
+    }
+
+    /// Largest absolute per-atom difference between `expected` and `actual`.
+    fn maxAbsDiff(comptime T: type, expected: []const f64, actual: []const T) !f64 {
+        try std.testing.expectEqual(expected.len, actual.len);
+        var max_diff: f64 = 0.0;
+        for (expected, actual) |e, a| {
+            max_diff = @max(max_diff, @abs(e - @as(f64, a)));
+        }
+        return max_diff;
+    }
+
+    fn sum(comptime T: type, areas: []const T) f64 {
+        var total: f64 = 0.0;
+        for (areas) |area| total += area;
+        return total;
+    }
+
+    /// Per-atom tolerance in A^2 for f64 results against the reference: both
+    /// use exact trigonometry, so only rounding is left (observed: 2e-14).
+    const f64_tolerance = 1e-10;
+    /// Per-atom tolerance in A^2 for f32 results against the f64 reference
+    /// (observed: 2e-5).
+    const f32_tolerance = 5e-4;
+
+    /// Run every Lee-Richards entry point in exact mode on `fixture` and
+    /// compare the per-atom areas with the reference.
+    fn expectExactMatchesReference(fixture: Fixture, n_slices: u32) !void {
+        const allocator = fixture.allocator;
+        const input = fixture.input();
+        const probe_radius = 1.4;
+
+        const expected = try reference(allocator, input, n_slices, probe_radius);
+        defer allocator.free(expected);
+
+        const config = LeeRichardsConfig{ .n_slices = n_slices, .probe_radius = probe_radius, .trig = .exact };
+        const config_f32 = LeeRichardsConfigGen(f32){ .n_slices = n_slices, .probe_radius = probe_radius, .trig = .exact };
+        const config_gen = LeeRichardsConfigGen(f64){ .n_slices = n_slices, .probe_radius = probe_radius, .trig = .exact };
+
+        {
+            var result = try calculateSasa(allocator, input, config);
+            defer result.deinit();
+            try std.testing.expect(try maxAbsDiff(f64, expected, result.atom_areas) < f64_tolerance);
+        }
+        {
+            var result = try calculateSasaParallel(allocator, input, config, 4);
+            defer result.deinit();
+            try std.testing.expect(try maxAbsDiff(f64, expected, result.atom_areas) < f64_tolerance);
+        }
+        {
+            var result = try LeeRichardsGen(f64).calculateSasa(allocator, input, config_gen);
+            defer result.deinit();
+            try std.testing.expect(try maxAbsDiff(f64, expected, result.atom_areas) < f64_tolerance);
+        }
+        {
+            var result = try LeeRichardsGen(f64).calculateSasaParallel(allocator, input, config_gen, 4);
+            defer result.deinit();
+            try std.testing.expect(try maxAbsDiff(f64, expected, result.atom_areas) < f64_tolerance);
+        }
+        {
+            var result = try calculateSasaf32(allocator, input, config_f32);
+            defer result.deinit();
+            try std.testing.expect(try maxAbsDiff(f32, expected, result.atom_areas) < f32_tolerance);
+        }
+        {
+            var result = try calculateSasaParallelf32(allocator, input, config_f32, 4);
+            defer result.deinit();
+            try std.testing.expect(try maxAbsDiff(f32, expected, result.atom_areas) < f32_tolerance);
+        }
+    }
+};
+
+test "TrigMode.fromString accepts exact and fast only" {
+    try std.testing.expectEqual(TrigMode.exact, TrigMode.fromString("exact").?);
+    try std.testing.expectEqual(TrigMode.fast, TrigMode.fromString("fast").?);
+    try std.testing.expect(TrigMode.fromString("") == null);
+    try std.testing.expect(TrigMode.fromString("Exact") == null);
+    try std.testing.expect(TrigMode.fromString("approximate") == null);
+}
+
+test "exact trigonometry is the default of every Lee-Richards configuration" {
+    try std.testing.expectEqual(TrigMode.exact, (LeeRichardsConfig{}).trig);
+    try std.testing.expectEqual(TrigMode.exact, (LeeRichardsConfigGen(f32){}).trig);
+    try std.testing.expectEqual(TrigMode.exact, (LeeRichardsConfigGen(f64){}).trig);
+
+    const allocator = std.testing.allocator;
+    var fixture = try trig_testing.proteinLikeCluster(allocator);
+    defer fixture.deinit();
+    const input = fixture.input();
+
+    var by_default = try calculateSasa(allocator, input, .{});
+    defer by_default.deinit();
+    var exact = try calculateSasa(allocator, input, .{ .trig = .exact });
+    defer exact.deinit();
+    try std.testing.expectEqualSlices(f64, exact.atom_areas, by_default.atom_areas);
+}
+
+test "exact mode matches the independent reference on a protein-like cluster" {
+    var fixture = try trig_testing.proteinLikeCluster(std.testing.allocator);
+    defer fixture.deinit();
+    try trig_testing.expectExactMatchesReference(fixture, 20);
+    // An odd slice count puts a slice through every atom center.
+    try trig_testing.expectExactMatchesReference(fixture, 7);
+}
+
+test "exact mode matches the independent reference on a dense blob" {
+    var fixture = try trig_testing.denseBlob(std.testing.allocator);
+    defer fixture.deinit();
+    try trig_testing.expectExactMatchesReference(fixture, 20);
+}
+
+test "exact mode does not depend on the order of the atoms, fast mode does" {
+    const allocator = std.testing.allocator;
+    var fixture = try trig_testing.proteinLikeCluster(allocator);
+    defer fixture.deinit();
+    const n_atoms = fixture.x.len;
+
+    const order = try trig_testing.shuffledOrder(allocator, n_atoms, 432);
+    defer allocator.free(order);
+    var shuffled = try fixture.permuted(order);
+    defer shuffled.deinit();
+
+    // Largest difference between the area of an atom in the original order
+    // and the area of the same atom after shuffling.
+    const Shuffle = struct {
+        fn maxDiff(comptime T: type, original: []const T, reordered: []const T, new_order: []const usize) f64 {
+            var max_diff: f64 = 0.0;
+            for (new_order, 0..) |from, to| {
+                max_diff = @max(max_diff, @abs(@as(f64, original[from]) - @as(f64, reordered[to])));
+            }
+            return max_diff;
+        }
+    };
+
+    inline for (.{ TrigMode.exact, TrigMode.fast }) |trig| {
+        var original = try calculateSasa(allocator, fixture.input(), .{ .trig = trig });
+        defer original.deinit();
+        var reordered = try calculateSasa(allocator, shuffled.input(), .{ .trig = trig });
+        defer reordered.deinit();
+        const diff = Shuffle.maxDiff(f64, original.atom_areas, reordered.atom_areas, order);
+
+        var original_f32 = try calculateSasaf32(allocator, fixture.input(), .{ .trig = trig });
+        defer original_f32.deinit();
+        var reordered_f32 = try calculateSasaf32(allocator, shuffled.input(), .{ .trig = trig });
+        defer reordered_f32.deinit();
+        const diff_f32 = Shuffle.maxDiff(f32, original_f32.atom_areas, reordered_f32.atom_areas, order);
+
+        switch (trig) {
+            // Only rounding is left: a neighbor's slice radius is squared from
+            // its square root in the batches and computed directly otherwise.
+            .exact => {
+                try std.testing.expect(diff < trig_testing.f64_tolerance);
+                try std.testing.expect(diff_f32 < trig_testing.f32_tolerance);
+            },
+            // The order decides which neighbors get the approximation
+            // (observed: 2e-2 A^2).
+            .fast => {
+                try std.testing.expect(diff > 1e-3);
+                try std.testing.expect(diff_f32 > 1e-3);
+            },
+        }
+    }
+}
+
+test "fast mode is selectable, keeps the values of zsasa 0.9.1 and is biased on a dense system" {
+    const allocator = std.testing.allocator;
+    var fixture = try trig_testing.denseBlob(allocator);
+    defer fixture.deinit();
+    const input = fixture.input();
+
+    const expected = try trig_testing.reference(allocator, input, 20, 1.4);
+    defer allocator.free(expected);
+    const reference_total = trig_testing.sum(f64, expected);
+
+    var exact = try calculateSasa(allocator, input, .{ .trig = .exact });
+    defer exact.deinit();
+    var fast = try calculateSasa(allocator, input, .{ .trig = .fast });
+    defer fast.deinit();
+
+    try std.testing.expectApproxEqRel(reference_total, trig_testing.sum(f64, exact.atom_areas), 1e-12);
+
+    // Total of `zsasa calc --algorithm=lr --threads=1` from zsasa 0.9.1 (commit
+    // 83a4a4c, before the trig mode existed) on this fixture written to JSON.
+    const fast_total_0_9_1 = 776.668240633079;
+    const fast_total = trig_testing.sum(f64, fast.atom_areas);
+    try std.testing.expectApproxEqRel(fast_total_0_9_1, fast_total, 1e-13);
+
+    // The approximation overestimates the exposed area (+0.12% here, 0.12 A^2
+    // on the worst atom).
+    try std.testing.expect(fast_total > reference_total * 1.001);
+    try std.testing.expect(try trig_testing.maxAbsDiff(f64, expected, fast.atom_areas) > 0.1);
+    try std.testing.expect(try trig_testing.maxAbsDiff(f64, expected, exact.atom_areas) < trig_testing.f64_tolerance);
+
+    // Every entry point honors the mode and agrees with the others.
+    {
+        var parallel = try calculateSasaParallel(allocator, input, .{ .trig = .fast }, 4);
+        defer parallel.deinit();
+        try std.testing.expectEqualSlices(f64, fast.atom_areas, parallel.atom_areas);
+    }
+    {
+        var generic = try LeeRichardsGen(f64).calculateSasa(allocator, input, .{ .trig = .fast });
+        defer generic.deinit();
+        try std.testing.expectEqualSlices(f64, fast.atom_areas, generic.atom_areas);
+    }
+    {
+        var generic = try LeeRichardsGen(f64).calculateSasaParallel(allocator, input, .{ .trig = .fast }, 4);
+        defer generic.deinit();
+        try std.testing.expectEqualSlices(f64, fast.atom_areas, generic.atom_areas);
+    }
+    {
+        var fast_f32 = try calculateSasaf32(allocator, input, .{ .trig = .fast });
+        defer fast_f32.deinit();
+        var parallel_f32 = try calculateSasaParallelf32(allocator, input, .{ .trig = .fast }, 4);
+        defer parallel_f32.deinit();
+        try std.testing.expectEqualSlices(f32, fast_f32.atom_areas, parallel_f32.atom_areas);
+        // f32 fast follows f64 fast, not the exact reference.
+        try std.testing.expect(try trig_testing.maxAbsDiff(f32, fast.atom_areas, fast_f32.atom_areas) < trig_testing.f32_tolerance);
+        try std.testing.expect(trig_testing.sum(f32, fast_f32.atom_areas) > reference_total * 1.001);
+    }
+}
+
+// =============================================================================
+// Tangent circles
+// =============================================================================
+
+/// The tangent pair of issue #430: with the probe, a sphere of radius 2 at the
+/// origin touches a sphere of radius 3 at (x_large, 0, 0) from inside when
+/// |x_large| = 1. The small atom is buried and the large one fully exposed.
+/// An odd slice count puts a slice through both centers, where the two slice
+/// circles are tangent; in every other slice the small circle lies strictly
+/// inside the large one.
+const tangent_testing = struct {
+    const small_radius = 0.6;
+    const large_radius = 1.6;
+    const probe_radius = 1.4;
+    /// 4 pi (1.6 + 1.4)^2
+    const large_area = 4.0 * std.math.pi * 9.0;
+    const max_padding = 12;
+
+    /// The pair plus `n_padding` atoms of radius 0.1 on the z axis, at
+    /// |z| >= 1.6. With the probe they are neighbors of both atoms of the pair
+    /// but do not reach the plane z = 0, so with one slice they change no area.
+    /// They only move the tangent neighbor between the 8-wide batch, the
+    /// 4-wide batch and the scalar remainder.
+    const System = struct {
+        x: [2 + max_padding]f64 = @splat(0.0),
+        y: [2 + max_padding]f64 = @splat(0.0),
+        z: [2 + max_padding]f64 = @splat(0.0),
+        r: [2 + max_padding]f64 = @splat(0.1),
+        n_atoms: usize,
+
+        fn init(x_large: f64, n_padding: usize) System {
+            std.debug.assert(n_padding <= max_padding);
+            var system = System{ .n_atoms = 2 + n_padding };
+            system.r[0] = small_radius;
+            system.x[1] = x_large;
+            system.r[1] = large_radius;
+            for (0..n_padding) |k| {
+                const height = 1.6 + 0.15 * @as(f64, @floatFromInt(k / 2));
+                system.z[2 + k] = if (k % 2 == 0) height else -height;
+            }
+            return system;
+        }
+
+        fn input(self: *System, allocator: Allocator) AtomInput {
+            const n = self.n_atoms;
+            return .{ .x = self.x[0..n], .y = self.y[0..n], .z = self.z[0..n], .r = self.r[0..n], .allocator = allocator };
+        }
+    };
+
+    /// Areas of the small and the large atom, as f64.
+    fn pairAreas(
+        comptime T: type,
+        allocator: Allocator,
+        input: AtomInput,
+        n_slices: u32,
+        trig: TrigMode,
+        n_threads: ?usize,
+    ) ![2]f64 {
+        const config = LeeRichardsConfigGen(T){ .n_slices = n_slices, .probe_radius = probe_radius, .trig = trig };
+        var result = if (n_threads) |n|
+            try LeeRichardsGen(T).calculateSasaParallel(allocator, input, config, n)
+        else
+            try LeeRichardsGen(T).calculateSasa(allocator, input, config);
+        defer result.deinit();
+        return .{ result.atom_areas[0], result.atom_areas[1] };
+    }
+
+    /// The same through the non-generic f64 entry points.
+    fn pairAreasNonGeneric(allocator: Allocator, input: AtomInput, n_slices: u32, trig: TrigMode, n_threads: ?usize) ![2]f64 {
+        const config = LeeRichardsConfig{ .n_slices = n_slices, .probe_radius = probe_radius, .trig = trig };
+        var result = if (n_threads) |n|
+            try calculateSasaParallel(allocator, input, config, n)
+        else
+            try calculateSasa(allocator, input, config);
+        defer result.deinit();
+        return .{ result.atom_areas[0], result.atom_areas[1] };
+    }
+
+    fn expectBuriedAndExposed(comptime T: type, areas: [2]f64) !void {
+        try std.testing.expectEqual(@as(f64, 0.0), areas[0]);
+        try std.testing.expectApproxEqRel(@as(f64, large_area), areas[1], if (T == f32) 1e-6 else 1e-13);
+    }
+};
+
+test "tangent circles: an atom touching a larger one from inside is buried, the larger one stays exposed" {
+    const allocator = std.testing.allocator;
+
+    inline for (.{ f64, f32 }) |T| {
+        for ([_]f64{ 1.0, -1.0 }) |x_large| {
+            var system = tangent_testing.System.init(x_large, 0);
+            const input = system.input(allocator);
+            // Odd counts have a slice through the centers, where the circles are tangent.
+            for ([_]u32{ 1, 2, 20, 21 }) |n_slices| {
+                for ([_]TrigMode{ .exact, .fast }) |trig| {
+                    for ([_]?usize{ null, 2 }) |n_threads| {
+                        const areas = try tangent_testing.pairAreas(T, allocator, input, n_slices, trig, n_threads);
+                        try tangent_testing.expectBuriedAndExposed(T, areas);
+                    }
+                }
+            }
+        }
+    }
+
+    // The non-generic f64 copy
+    for ([_]f64{ 1.0, -1.0 }) |x_large| {
+        var system = tangent_testing.System.init(x_large, 0);
+        const input = system.input(allocator);
+        for ([_]u32{ 1, 2, 20, 21 }) |n_slices| {
+            for ([_]TrigMode{ .exact, .fast }) |trig| {
+                for ([_]?usize{ null, 2 }) |n_threads| {
+                    const areas = try tangent_testing.pairAreasNonGeneric(allocator, input, n_slices, trig, n_threads);
+                    try tangent_testing.expectBuriedAndExposed(f64, areas);
+                }
+            }
+        }
+    }
+}
+
+test "tangent circles: the tangent neighbor is handled the same in the batches and in the scalar remainder" {
+    const allocator = std.testing.allocator;
+
+    // 1 to 13 neighbors per atom: the tangent neighbor falls in the scalar
+    // remainder, in the 4-wide batch and in the 8-wide batch.
+    for (0..tangent_testing.max_padding + 1) |n_padding| {
+        for ([_]f64{ 1.0, -1.0 }) |x_large| {
+            var system = tangent_testing.System.init(x_large, n_padding);
+            const input = system.input(allocator);
+            for ([_]TrigMode{ .exact, .fast }) |trig| {
+                inline for (.{ f64, f32 }) |T| {
+                    const areas = try tangent_testing.pairAreas(T, allocator, input, 1, trig, null);
+                    try tangent_testing.expectBuriedAndExposed(T, areas);
+                }
+                const areas = try tangent_testing.pairAreasNonGeneric(allocator, input, 1, trig, null);
+                try tangent_testing.expectBuriedAndExposed(f64, areas);
+            }
+        }
+    }
+}
+
+test "tangent circles: areas are continuous across tangency" {
+    const allocator = std.testing.allocator;
+
+    inline for (.{ f64, f32 }) |T| {
+        // Center distances next to 1 in the working precision, and a little further away.
+        const one: T = 1.0;
+        const distances = [_]f64{
+            std.math.nextAfter(T, one, 0.0),
+            std.math.nextAfter(T, one, 2.0),
+            @as(T, 1.0 - 1e-6),
+            @as(T, 1.0 + 1e-6),
+        };
+        for (distances) |distance| {
+            // With one slice (thickness 4, radius 2), a small circle that
+            // sticks out by eps exposes an arc of 2 sqrt(3 eps), and covers an
+            // arc of 2 sqrt(4 eps / 3) of the large circle (thickness 6, radius 3).
+            const eps = @abs(distance - 1.0);
+            const small_bound = 2.0 * 16.0 * @sqrt(3.0 * eps) + 1e-5;
+            const large_bound = 2.0 * 36.0 * @sqrt(4.0 * eps / 3.0) + 1e-4;
+
+            for ([_]f64{ 1.0, -1.0 }) |sign| {
+                var system = tangent_testing.System.init(sign * distance, 0);
+                const input = system.input(allocator);
+                for ([_]u32{ 1, 21 }) |n_slices| {
+                    for ([_]TrigMode{ .exact, .fast }) |trig| {
+                        const areas = try tangent_testing.pairAreas(T, allocator, input, n_slices, trig, null);
+                        try std.testing.expect(areas[0] >= 0.0);
+                        try std.testing.expect(areas[0] < small_bound);
+                        try std.testing.expectApproxEqAbs(@as(f64, tangent_testing.large_area), areas[1], large_bound);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// f32 totals
+// =============================================================================
+
+/// What `total_area` of an f32 result has to be: the sum of the per-atom
+/// areas accumulated in f64. Also checks that the test can tell the
+/// difference, i.e. that an f32 accumulator gives another value on these
+/// areas, and that their f64 sum does not depend on the order of the
+/// additions, which the comparison across thread counts relies on (the thread
+/// pool adds per-chunk sums).
+fn expectedF32Total(atom_areas: []const f32) !f64 {
+    var forward: f64 = 0.0;
+    var in_f32: f32 = 0.0;
+    for (atom_areas) |area| {
+        forward += area;
+        in_f32 += area;
+    }
+    var backward: f64 = 0.0;
+    var i = atom_areas.len;
+    while (i > 0) : (i -= 1) backward += atom_areas[i - 1];
+
+    try std.testing.expectEqual(forward, backward);
+    try std.testing.expect(@as(f64, in_f32) != forward);
+    return forward;
+}
+
+test "Lee-Richards f32 total_area is the f64 sum of the per-atom areas, for any thread count" {
+    const allocator = std.testing.allocator;
+
+    var x: [error_path_n_atoms]f64 = undefined;
+    var y: [error_path_n_atoms]f64 = undefined;
+    var z: [error_path_n_atoms]f64 = undefined;
+    var r: [error_path_n_atoms]f64 = undefined;
+    fillErrorPathGrid(&x, &y, &z, &r);
+    const input = AtomInput{ .x = &x, .y = &y, .z = &z, .r = &r, .allocator = allocator };
+
+    inline for (.{ TrigMode.exact, TrigMode.fast }) |trig| {
+        const config = LeeRichardsConfigGen(f32){ .n_slices = 20, .probe_radius = 1.4, .trig = trig };
+
+        var sequential = try calculateSasaf32(allocator, input, config);
+        defer sequential.deinit();
+        const expected = try expectedF32Total(sequential.atom_areas);
+        try std.testing.expectEqual(expected, sequential.total_area);
+
+        // One thread takes the direct path of parallelFor, the others go
+        // through the pool with different chunk sizes.
+        for ([_]usize{ 1, 2, 4, 7 }) |n_threads| {
+            var parallel = try calculateSasaParallelf32(allocator, input, config, n_threads);
+            defer parallel.deinit();
+            try std.testing.expectEqualSlices(f32, sequential.atom_areas, parallel.atom_areas);
+            try std.testing.expectEqual(expected, parallel.total_area);
+        }
+    }
 }

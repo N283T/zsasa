@@ -678,8 +678,8 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             correction: Correction = .{},
         };
 
-        fn parallelSasaWorker(ctx: Self.ParallelContext, chunk_start: usize, chunk_end: usize) T {
-            var chunk_total: T = 0.0;
+        fn parallelSasaWorker(ctx: Self.ParallelContext, chunk_start: usize, chunk_end: usize) f64 {
+            var chunk_total: f64 = 0.0;
 
             for (chunk_start..chunk_end) |i| {
                 const atom_radius_probe = ctx.radii[i] + ctx.probe_radius;
@@ -712,8 +712,8 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             fine_lut: *const Lut,
         };
 
-        fn parallelAdaptiveSasaWorker(ctx: Self.AdaptiveParallelContext, chunk_start: usize, chunk_end: usize) T {
-            var chunk_total: T = 0.0;
+        fn parallelAdaptiveSasaWorker(ctx: Self.AdaptiveParallelContext, chunk_start: usize, chunk_end: usize) f64 {
+            var chunk_total: f64 = 0.0;
 
             for (chunk_start..chunk_end) |i| {
                 const atom_radius_probe = ctx.radii[i] + ctx.probe_radius;
@@ -744,8 +744,9 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             return chunk_total;
         }
 
-        fn sumReducer(results: []const T) T {
-            var total: T = 0.0;
+        /// Reduce function to sum all chunk totals (in f64, see `SasaResultGen.total_area`).
+        fn sumReducer(results: []const f64) f64 {
+            var total: f64 = 0.0;
             for (results) |r| {
                 total += r;
             }
@@ -877,7 +878,7 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             const atom_areas = try allocator.alloc(T, n_atoms);
             errdefer allocator.free(atom_areas);
 
-            var total_area: T = 0.0;
+            var total_area: f64 = 0.0;
             for (0..n_atoms) |i| {
                 const atom_radius_probe = radii[i] + config.probe_radius;
                 const neighbors = neighbor_list_data.getNeighbors(i);
@@ -940,7 +941,7 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             const atom_areas = try allocator.alloc(T, n_atoms);
             errdefer allocator.free(atom_areas);
 
-            var total_area: T = 0.0;
+            var total_area: f64 = 0.0;
             for (0..n_atoms) |i| {
                 const atom_radius_probe = radii[i] + config.probe_radius;
                 const neighbors = neighbor_list_data.getNeighbors(i);
@@ -1124,7 +1125,7 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
 
             const total_area = try thread_pool.parallelFor(
                 Self.ParallelContext,
-                T,
+                f64,
                 allocator,
                 actual_threads,
                 Self.parallelSasaWorker,
@@ -1201,7 +1202,7 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
 
             const total_area = try thread_pool.parallelFor(
                 Self.AdaptiveParallelContext,
-                T,
+                f64,
                 allocator,
                 actual_threads,
                 Self.parallelAdaptiveSasaWorker,
@@ -2096,4 +2097,96 @@ test "bitmask calculateSasa - a stray distant atom does not change the other are
     try std.testing.expectEqualSlices(f32, compact_f32.atom_areas, stray_f32.atom_areas[0..n_compact]);
     try std.testing.expectApproxEqRel(isolated, stray.atom_areas[n_compact], 1e-12);
     try std.testing.expectApproxEqRel(@as(f32, @floatCast(isolated)), stray_f32.atom_areas[n_compact], 1e-6);
+}
+
+// =============================================================================
+// f32 totals
+// =============================================================================
+
+/// What `total_area` of an f32 result has to be: the sum of the per-atom
+/// areas accumulated in f64. Also checks that the test can tell the
+/// difference, i.e. that an f32 accumulator gives another value on these
+/// areas, and that their f64 sum does not depend on the order of the
+/// additions, which the comparison across thread counts relies on (the thread
+/// pool adds per-chunk sums).
+fn expectedF32Total(atom_areas: []const f32) !f64 {
+    var forward: f64 = 0.0;
+    var in_f32: f32 = 0.0;
+    for (atom_areas) |area| {
+        forward += area;
+        in_f32 += area;
+    }
+    var backward: f64 = 0.0;
+    var i = atom_areas.len;
+    while (i > 0) : (i -= 1) backward += atom_areas[i - 1];
+
+    try std.testing.expectEqual(forward, backward);
+    try std.testing.expect(@as(f64, in_f32) != forward);
+    return forward;
+}
+
+test "bitmask f32 total_area is the f64 sum of the per-atom areas, for any thread count" {
+    const allocator = std.testing.allocator;
+    const Bitmask = ShrakeRupleyBitmaskGen(f32);
+
+    var x: [spawn_failure_n_atoms]f64 = undefined;
+    var y: [spawn_failure_n_atoms]f64 = undefined;
+    var z: [spawn_failure_n_atoms]f64 = undefined;
+    var r: [spawn_failure_n_atoms]f64 = undefined;
+    fillSpawnFailureGrid(&x, &y, &z, &r);
+    const input = AtomInput{ .x = &x, .y = &y, .z = &z, .r = &r, .allocator = allocator };
+
+    const config = ConfigGen(f32){ .n_points = 128, .probe_radius = 1.4 };
+
+    var sequential = try Bitmask.calculateSasa(allocator, input, config);
+    defer sequential.deinit();
+    const expected = try expectedF32Total(sequential.atom_areas);
+    try std.testing.expectEqual(expected, sequential.total_area);
+
+    for ([_]usize{ 1, 2, 4, 7 }) |n_threads| {
+        var parallel = try Bitmask.calculateSasaParallel(allocator, input, config, n_threads);
+        defer parallel.deinit();
+        try std.testing.expectEqualSlices(f32, sequential.atom_areas, parallel.atom_areas);
+        try std.testing.expectEqual(expected, parallel.total_area);
+    }
+}
+
+test "adaptive bitmask f32 total_area is the f64 sum of the per-atom areas, for any thread count" {
+    const allocator = std.testing.allocator;
+    const Bitmask = ShrakeRupleyBitmaskGen(f32);
+
+    var x: [spawn_failure_n_atoms]f64 = undefined;
+    var y: [spawn_failure_n_atoms]f64 = undefined;
+    var z: [spawn_failure_n_atoms]f64 = undefined;
+    var r: [spawn_failure_n_atoms]f64 = undefined;
+    fillSpawnFailureGrid(&x, &y, &z, &r);
+    const input = AtomInput{ .x = &x, .y = &y, .z = &z, .r = &r, .allocator = allocator };
+
+    var coarse_lut = try BitmaskLutGen(f32).init(allocator, 64);
+    defer coarse_lut.deinit();
+    var fine_lut = try BitmaskLutGen(f32).init(allocator, 256);
+    defer fine_lut.deinit();
+
+    const config = ConfigGen(f32){ .n_points = 256, .probe_radius = 1.4 };
+    const adaptive = Bitmask.AdaptiveConfig{ .coarse_points = 64, .fine_points = 256, .low = 0.05, .high = 0.95 };
+
+    var sequential = try Bitmask.calculateSasaAdaptiveWithLuts(allocator, input, config, adaptive, &coarse_lut, &fine_lut);
+    defer sequential.deinit();
+    const expected = try expectedF32Total(sequential.atom_areas);
+    try std.testing.expectEqual(expected, sequential.total_area);
+
+    for ([_]usize{ 1, 2, 4, 7 }) |n_threads| {
+        var parallel = try Bitmask.calculateSasaAdaptiveParallelWithLuts(
+            allocator,
+            input,
+            config,
+            adaptive,
+            n_threads,
+            &coarse_lut,
+            &fine_lut,
+        );
+        defer parallel.deinit();
+        try std.testing.expectEqualSlices(f32, sequential.atom_areas, parallel.atom_areas);
+        try std.testing.expectEqual(expected, parallel.total_area);
+    }
 }
