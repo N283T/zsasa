@@ -1439,6 +1439,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
     if (effective_args.workflow_path) |workflow_path| {
         workflow = workflow_manifest.parseFile(allocator, io, workflow_path) catch |err| {
             std.debug.print("Error reading workflow file '{s}': {s}\n", .{ workflow_path, @errorName(err) });
+            if (workflow_manifest.errorHint(err)) |hint| std.debug.print("  {s}\n", .{hint});
             return err;
         };
         try applyWorkflowToCalcArgs(&effective_args, workflow.?);
