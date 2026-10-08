@@ -11,6 +11,10 @@
 //! - Float and integer values
 //! - `#` comments (line-end and full-line)
 //!
+//! Text after a value on the same line (other than a comment) is an error,
+//! and every entry and section remembers the line it was read from, so a
+//! caller that validates the document can report where the problem is.
+//!
 //! All string slices point into the original input buffer; only inline table
 //! entry slices and string array slices are heap-allocated.
 //!
@@ -40,6 +44,12 @@ pub const TomlError = error{
 
 pub const Error = TomlError || Allocator.Error;
 
+/// Where a parse error was found. `line` is 1-based, or 0 when the error is
+/// not tied to a line (for example running out of memory).
+pub const Diagnostic = struct {
+    line: usize = 0,
+};
+
 /// A TOML value.
 pub const Value = union(enum) {
     string: []const u8,
@@ -52,6 +62,8 @@ pub const Value = union(enum) {
     pub const Entry = struct {
         key: []const u8,
         value: Value,
+        /// 1-based line of the entry, or 0 when not known.
+        line: usize = 0,
     };
 };
 
@@ -59,6 +71,8 @@ pub const Value = union(enum) {
 pub const Table = struct {
     name: []const u8,
     entries: []const Value.Entry,
+    /// 1-based line of the `[name]` header, or 0 for the root table.
+    line: usize = 0,
 };
 
 /// Result of parsing a TOML document.
@@ -72,6 +86,8 @@ pub const Document = struct {
     pub const ArrayTable = struct {
         name: []const u8,
         entries: []const Value.Entry,
+        /// 1-based line of the `[[name]]` header.
+        line: usize = 0,
     };
 
     pub fn deinit(self: *Document) void {
@@ -154,6 +170,19 @@ const SectionKind = enum {
 /// arrays are heap-allocated. Call `Document.deinit()` to free all owned
 /// memory.
 pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
+    return parseDiag(allocator, content, null);
+}
+
+/// Like `parse`, but stores the line of a syntax error in `diag`.
+pub fn parseDiag(allocator: Allocator, content: []const u8, diag: ?*Diagnostic) Error!Document {
+    var line_no: usize = 0;
+    return parseLines(allocator, content, &line_no) catch |err| {
+        if (diag) |d| d.line = if (err == error.OutOfMemory) 0 else line_no;
+        return err;
+    };
+}
+
+fn parseLines(allocator: Allocator, content: []const u8, line_no: *usize) Error!Document {
     var tables = std.ArrayListUnmanaged(Table).empty;
     errdefer {
         for (tables.items) |table| {
@@ -179,6 +208,7 @@ pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
     // Current section state
     var current_name: []const u8 = "";
     var current_kind: SectionKind = .table;
+    var current_line: usize = 0;
     var current_entries = std.ArrayListUnmanaged(Value.Entry).empty;
     errdefer {
         for (current_entries.items) |entry| {
@@ -189,6 +219,7 @@ pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
 
     var line_iter = std.mem.splitScalar(u8, content, '\n');
     while (line_iter.next()) |raw_line| {
+        line_no.* += 1;
         const line = stripComment(raw_line);
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0) continue;
@@ -204,10 +235,12 @@ pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
                 &array_tables,
                 current_name,
                 current_kind,
+                current_line,
                 &current_entries,
             );
             current_name = std.mem.trim(u8, trimmed[2 .. 2 + end], " \t");
             current_kind = .array_of_tables;
+            current_line = line_no.*;
             continue;
         }
 
@@ -221,10 +254,12 @@ pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
                     &array_tables,
                     current_name,
                     current_kind,
+                    current_line,
                     &current_entries,
                 );
                 current_name = std.mem.trim(u8, trimmed[1..end], " \t");
                 current_kind = .table;
+                current_line = line_no.*;
                 continue;
             }
         }
@@ -243,7 +278,7 @@ pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
             {
                 const value = try parseValue(allocator, value_trimmed);
                 errdefer freeValue(allocator, value);
-                try current_entries.append(allocator, .{ .key = key, .value = value });
+                try current_entries.append(allocator, .{ .key = key, .value = value, .line = line_no.* });
             }
             continue;
         }
@@ -258,6 +293,7 @@ pub fn parse(allocator: Allocator, content: []const u8) Error!Document {
         &array_tables,
         current_name,
         current_kind,
+        current_line,
         &current_entries,
     );
 
@@ -286,6 +322,7 @@ fn flushSection(
     array_tables: *std.ArrayListUnmanaged(Document.ArrayTable),
     name: []const u8,
     kind: SectionKind,
+    line: usize,
     entries: *std.ArrayListUnmanaged(Value.Entry),
 ) Allocator.Error!void {
     // Even if entries is empty, create the section so getTable("") works
@@ -309,10 +346,12 @@ fn flushSection(
         .table => try tables.append(allocator, .{
             .name = name,
             .entries = owned_entries,
+            .line = line,
         }),
         .array_of_tables => try array_tables.append(allocator, .{
             .name = name,
             .entries = owned_entries,
+            .line = line,
         }),
     }
 }
@@ -347,6 +386,7 @@ fn parseValue(allocator: Allocator, raw: []const u8) Error!Value {
 fn parseString(raw: []const u8) Error!Value {
     std.debug.assert(raw[0] == '"');
     const close = try findStringClose(raw);
+    if (std.mem.trim(u8, raw[close + 1 ..], " \t").len != 0) return error.UnexpectedCharacter;
     // Return the content between the quotes (excluding quotes).
     // Note: this returns the raw content including escape sequences.
     // For our use case (identifiers and simple strings), this is fine.
@@ -437,6 +477,7 @@ fn parseInlineTable(allocator: Allocator, raw: []const u8) Error!Value {
     // Find the closing '}'
     const close = std.mem.findScalar(u8, raw, '}') orelse
         return error.InvalidInlineTable;
+    if (std.mem.trim(u8, raw[close + 1 ..], " \t").len != 0) return error.UnexpectedCharacter;
 
     const inner = std.mem.trim(u8, raw[1..close], " \t");
     if (inner.len == 0) {
@@ -785,4 +826,30 @@ test "parse error: trailing backslash in string" {
     const input = "key = \"trailing\\";
     const result = parse(std.testing.allocator, input);
     try std.testing.expectError(error.UnterminatedString, result);
+}
+
+test "parse rejects text after a string or an inline table" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(error.UnexpectedCharacter, parse(allocator, "name = \"x\" junk\n"));
+    try std.testing.expectError(error.UnexpectedCharacter, parse(allocator, "[t]\nk = { a = 1 } junk\n"));
+    try std.testing.expectError(error.UnexpectedCharacter, parse(allocator, "[t]\nk = { a = \"x\" y }\n"));
+    // Whitespace and a comment after a value are fine.
+    var doc = try parse(allocator, "name = \"x\"  \t # c\n[t]\nk = { a = 1 }  # c\n");
+    doc.deinit();
+}
+
+test "parseDiag reports the line of an error and records lines of entries and sections" {
+    const allocator = std.testing.allocator;
+
+    var diag: Diagnostic = .{};
+    try std.testing.expectError(error.InvalidNumber, parseDiag(allocator, "a = 1\n\nb = oops\n", &diag));
+    try std.testing.expectEqual(@as(usize, 3), diag.line);
+
+    var doc = try parseDiag(allocator, "a = 1\n\n[sec]\nb = 2\n\n[[arr]]\nc = 3\n", &diag);
+    defer doc.deinit();
+    try std.testing.expectEqual(@as(usize, 1), doc.getTable("").?.entries[0].line);
+    try std.testing.expectEqual(@as(usize, 3), doc.getTable("sec").?.line);
+    try std.testing.expectEqual(@as(usize, 4), doc.getTable("sec").?.entries[0].line);
+    try std.testing.expectEqual(@as(usize, 6), doc.array_tables[0].line);
+    try std.testing.expectEqual(@as(usize, 7), doc.array_tables[0].entries[0].line);
 }

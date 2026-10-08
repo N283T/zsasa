@@ -50,6 +50,43 @@ pub const OutputFormat = enum {
     rsa, // FreeSASA/NACCESS-compatible residue RSA text (single calc only)
 };
 
+/// Fails with `NonFiniteValue` if `value` holds a NaN or infinite float.
+///
+/// `std.json.Stringify` writes an infinite float as a bare `inf` or `-inf`
+/// (not JSON) and NaN as the string "nan", so a calculation that overflowed
+/// would produce output that no JSON reader accepts or that silently holds
+/// a string where a number belongs. Reject it instead.
+fn requireFinite(value: anytype) error{NonFiniteValue}!void {
+    const T = @TypeOf(value);
+    switch (@typeInfo(T)) {
+        .float => if (!std.math.isFinite(value)) return error.NonFiniteValue,
+        .optional => if (value) |v| try requireFinite(v),
+        .pointer => |p| switch (p.size) {
+            .slice => {
+                if (p.child == u8) return;
+                for (value) |item| try requireFinite(item);
+            },
+            .one => try requireFinite(value.*),
+            else => {},
+        },
+        .array => |a| {
+            if (a.child == u8) return;
+            for (value) |item| try requireFinite(item);
+        },
+        .@"struct" => |st| inline for (st.fields) |f| try requireFinite(@field(value, f.name)),
+        .@"union" => |u| if (u.tag_type != null) switch (value) {
+            inline else => |payload| try requireFinite(payload),
+        },
+        else => {},
+    }
+}
+
+/// `std.json.Stringify.valueAlloc` that refuses non-finite floats; see `requireFinite`.
+pub fn stringifyFinite(allocator: Allocator, value: anytype, options: std.json.Stringify.Options) ![]u8 {
+    try requireFinite(value);
+    return std.json.Stringify.valueAlloc(allocator, value, options);
+}
+
 /// JSON structure for output
 const JsonOutput = struct {
     total_area: f64,
@@ -64,7 +101,7 @@ pub fn sasaResultToJson(allocator: Allocator, result: SasaResult) ![]u8 {
         .atom_areas = result.atom_areas,
     };
 
-    return std.json.Stringify.valueAlloc(allocator, output, .{});
+    return stringifyFinite(allocator, output, .{});
 }
 
 /// Convert SasaResult to pretty-printed JSON string
@@ -75,7 +112,7 @@ pub fn sasaResultToJsonPretty(allocator: Allocator, result: SasaResult) ![]u8 {
         .atom_areas = result.atom_areas,
     };
 
-    return std.json.Stringify.valueAlloc(allocator, output, .{
+    return stringifyFinite(allocator, output, .{
         .whitespace = .indent_2,
     });
 }
@@ -772,7 +809,7 @@ pub fn fileResultToJsonlLineOptions(allocator: Allocator, filename: []const u8, 
             filename: []const u8,
             total_area: f64,
         };
-        return std.json.Stringify.valueAlloc(allocator, JsonlEntry{
+        return stringifyFinite(allocator, JsonlEntry{
             .status = "ok",
             .filename = filename,
             .total_area = maybeRoundJsonlFloat(total_area, options),
@@ -785,7 +822,7 @@ pub fn fileResultToJsonlLineOptions(allocator: Allocator, filename: []const u8, 
             filename: []const u8,
             atom_areas: []const f64,
         };
-        return std.json.Stringify.valueAlloc(allocator, JsonlEntry{
+        return stringifyFinite(allocator, JsonlEntry{
             .status = "ok",
             .filename = filename,
             .atom_areas = output_areas,
@@ -797,7 +834,7 @@ pub fn fileResultToJsonlLineOptions(allocator: Allocator, filename: []const u8, 
             status: []const u8,
             filename: []const u8,
         };
-        return std.json.Stringify.valueAlloc(allocator, JsonlEntry{
+        return stringifyFinite(allocator, JsonlEntry{
             .status = "ok",
             .filename = filename,
         }, .{});
@@ -817,7 +854,7 @@ pub fn fileResultToJsonlLineOptions(allocator: Allocator, filename: []const u8, 
         .atom_areas = output_areas,
     };
 
-    return std.json.Stringify.valueAlloc(allocator, entry, .{});
+    return stringifyFinite(allocator, entry, .{});
 }
 
 pub fn fileErrorToJsonlLine(allocator: Allocator, filename: []const u8, error_msg: []const u8) ![]u8 {
@@ -827,7 +864,7 @@ pub fn fileErrorToJsonlLine(allocator: Allocator, filename: []const u8, error_ms
         @"error": []const u8,
     };
 
-    return std.json.Stringify.valueAlloc(allocator, JsonlEntry{
+    return stringifyFinite(allocator, JsonlEntry{
         .status = "err",
         .filename = filename,
         .@"error" = error_msg,
@@ -886,7 +923,7 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
             residue_atom_count: []const usize,
             residue_sasa: []const f64,
         };
-        return std.json.Stringify.valueAlloc(allocator, JsonlEntry{
+        return stringifyFinite(allocator, JsonlEntry{
             .status = "ok",
             .filename = filename,
             .total_area = maybeRoundJsonlFloat(total_area, options),
@@ -914,7 +951,7 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
             residue_atom_count: []const usize,
             residue_sasa: []const f64,
         };
-        return std.json.Stringify.valueAlloc(allocator, JsonlEntry{
+        return stringifyFinite(allocator, JsonlEntry{
             .status = "ok",
             .filename = filename,
             .total_area = maybeRoundJsonlFloat(total_area, options),
@@ -941,7 +978,7 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
             residue_atom_count: []const usize,
             residue_sasa: []const f64,
         };
-        return std.json.Stringify.valueAlloc(allocator, JsonlEntry{
+        return stringifyFinite(allocator, JsonlEntry{
             .status = "ok",
             .filename = filename,
             .atom_areas = output_areas,
@@ -966,7 +1003,7 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
         residue_atom_count: []const usize,
         residue_sasa: []const f64,
     };
-    return std.json.Stringify.valueAlloc(allocator, JsonlEntry{
+    return stringifyFinite(allocator, JsonlEntry{
         .status = "ok",
         .filename = filename,
         .residue_chain = residue_chain,
@@ -1014,7 +1051,7 @@ pub fn selectionErrorToJsonlLine(allocator: Allocator, row: SelectionErrorJsonl)
         chains: []const []const u8,
         @"error": []const u8,
     };
-    return std.json.Stringify.valueAlloc(allocator, Entry{
+    return stringifyFinite(allocator, Entry{
         .status = "err",
         .filename = row.filename,
         .id = row.id,
@@ -1083,7 +1120,7 @@ pub fn selectionResultToJsonlLineOptions(
                 residue_atom_count: []const usize,
                 residue_sasa: []const f64,
             };
-            return std.json.Stringify.valueAlloc(allocator, Entry{
+            return stringifyFinite(allocator, Entry{
                 .status = "ok",
                 .filename = row.filename,
                 .id = row.id,
@@ -1121,7 +1158,7 @@ pub fn selectionResultToJsonlLineOptions(
             atom_name: []const []const u8,
             atom_element: []const []const u8,
         };
-        return std.json.Stringify.valueAlloc(allocator, Entry{
+        return stringifyFinite(allocator, Entry{
             .status = "ok",
             .filename = row.filename,
             .id = row.id,
@@ -1155,7 +1192,7 @@ pub fn selectionResultToJsonlLineOptions(
                 residue_atom_count: []const usize,
                 residue_sasa: []const f64,
             };
-            return std.json.Stringify.valueAlloc(allocator, Entry{
+            return stringifyFinite(allocator, Entry{
                 .status = "ok",
                 .filename = row.filename,
                 .id = row.id,
@@ -1185,7 +1222,7 @@ pub fn selectionResultToJsonlLineOptions(
             residue_atom_count: []const usize,
             residue_sasa: []const f64,
         };
-        return std.json.Stringify.valueAlloc(allocator, Entry{
+        return stringifyFinite(allocator, Entry{
             .status = "ok",
             .filename = row.filename,
             .id = row.id,
@@ -1210,7 +1247,7 @@ pub fn selectionResultToJsonlLineOptions(
             total_area: f64,
             atom_areas: []const f64,
         };
-        return std.json.Stringify.valueAlloc(allocator, Entry{
+        return stringifyFinite(allocator, Entry{
             .status = "ok",
             .filename = row.filename,
             .id = row.id,
@@ -1227,7 +1264,7 @@ pub fn selectionResultToJsonlLineOptions(
         chains: []const []const u8,
         total_area: f64,
     };
-    return std.json.Stringify.valueAlloc(allocator, Entry{
+    return stringifyFinite(allocator, Entry{
         .status = "ok",
         .filename = row.filename,
         .id = row.id,
@@ -1286,7 +1323,7 @@ pub fn bsaAnalysisErrorToJsonlLine(allocator: Allocator, row: BsaAnalysisErrorJs
         name: []const u8,
         @"error": []const u8,
     };
-    return std.json.Stringify.valueAlloc(allocator, Entry{
+    return stringifyFinite(allocator, Entry{
         .status = "err",
         .filename = row.filename,
         .id = row.id,
@@ -1350,7 +1387,7 @@ pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl
                 atom_sasa_complex: []const f64,
                 atom_delta_sasa: []const f64,
             };
-            return std.json.Stringify.valueAlloc(allocator, Entry{
+            return stringifyFinite(allocator, Entry{
                 .status = "ok",
                 .filename = row.filename,
                 .id = row.id,
@@ -1408,7 +1445,7 @@ pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl
             residue_sasa_complex: []const f64,
             residue_delta_sasa: []const f64,
         };
-        return std.json.Stringify.valueAlloc(allocator, Entry{
+        return stringifyFinite(allocator, Entry{
             .status = "ok",
             .filename = row.filename,
             .id = row.id,
@@ -1448,7 +1485,7 @@ pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl
         bsa: f64,
         delta_sasa_level: []const u8,
     };
-    return std.json.Stringify.valueAlloc(allocator, Entry{
+    return stringifyFinite(allocator, Entry{
         .status = "ok",
         .filename = row.filename,
         .id = row.id,
@@ -3153,4 +3190,36 @@ test "fileResultToJsonlLine can omit total area" {
         "{\"status\":\"ok\",\"filename\":\"areas.pdb\",\"atom_areas\":[1,2]}",
         line,
     );
+}
+
+test "stringifyFinite refuses infinite and NaN floats instead of writing inf" {
+    const allocator = std.testing.allocator;
+    const inf = std.math.inf(f64);
+
+    // std.json writes these as a bare `inf` and the string "nan".
+    const raw = try std.json.Stringify.valueAlloc(allocator, JsonOutput{ .total_area = inf, .atom_areas = &.{1.0} }, .{});
+    defer allocator.free(raw);
+    try std.testing.expect(std.mem.find(u8, raw, "inf") != null);
+
+    try std.testing.expectError(error.NonFiniteValue, stringifyFinite(allocator, JsonOutput{ .total_area = inf, .atom_areas = &.{1.0} }, .{}));
+    try std.testing.expectError(error.NonFiniteValue, stringifyFinite(allocator, JsonOutput{ .total_area = 1.0, .atom_areas = &.{ 1.0, -inf } }, .{}));
+    try std.testing.expectError(error.NonFiniteValue, stringifyFinite(allocator, JsonOutput{ .total_area = std.math.nan(f64), .atom_areas = &.{} }, .{}));
+    // Optionals and nested structs are checked too.
+    const Nested = struct { name: []const u8, inner: ?struct { v: []const f64 } };
+    try std.testing.expectError(error.NonFiniteValue, stringifyFinite(allocator, Nested{ .name = "x", .inner = .{ .v = &.{inf} } }, .{}));
+
+    const ok = try stringifyFinite(allocator, JsonOutput{ .total_area = 3.5, .atom_areas = &.{ 1.5, 2.0 } }, .{});
+    defer allocator.free(ok);
+    try std.testing.expectEqualStrings("{\"total_area\":3.5,\"atom_areas\":[1.5,2]}", ok);
+    const none = try stringifyFinite(allocator, Nested{ .name = "x", .inner = null }, .{});
+    defer allocator.free(none);
+}
+
+test "sasaResultToJson fails when an area overflowed" {
+    const allocator = std.testing.allocator;
+    const inf = std.math.inf(f64);
+    var areas = [_]f64{ inf, 1.0 };
+    const result = SasaResult{ .total_area = inf, .atom_areas = &areas, .allocator = allocator };
+    try std.testing.expectError(error.NonFiniteValue, sasaResultToJson(allocator, result));
+    try std.testing.expectError(error.NonFiniteValue, sasaResultToJsonPretty(allocator, result));
 }

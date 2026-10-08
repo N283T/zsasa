@@ -4,18 +4,6 @@ const compressed = @import("compressed.zig");
 const AtomInput = types.AtomInput;
 const Allocator = std.mem.Allocator;
 
-/// JSON structure matching the input file format
-const JsonInput = struct {
-    x: []f64,
-    y: []f64,
-    z: []f64,
-    r: []f64,
-    residue: ?[][]const u8 = null,
-    atom_name: ?[][]const u8 = null,
-    /// Element atomic numbers (e.g., 6=C, 7=N, 8=O, 20=Ca)
-    element: ?[]u8 = null,
-};
-
 /// Validation error details
 pub const ValidationError = struct {
     message: []const u8,
@@ -43,7 +31,7 @@ fn isFinite(value: f64) bool {
 }
 
 /// Validate radius value (must be positive and finite)
-fn isValidRadius(value: f64) bool {
+pub fn isValidRadius(value: f64) bool {
     return isFinite(value) and value > 0 and value <= MAX_RADIUS_ANGSTROMS;
 }
 
@@ -188,90 +176,212 @@ fn checkDuplicateCoordinatesOptions(allocator: Allocator, input: AtomInput, opti
     return duplicate_count;
 }
 
-/// Parse atom input from JSON string
+/// Field values of the JSON input while it is being read. Owns every list
+/// until `parseAtomInput` moves them into the result.
+const JsonFields = struct {
+    x: ?std.ArrayList(f64) = null,
+    y: ?std.ArrayList(f64) = null,
+    z: ?std.ArrayList(f64) = null,
+    r: ?std.ArrayList(f64) = null,
+    residue: ?std.ArrayList(types.FixedString5) = null,
+    atom_name: ?std.ArrayList(types.FixedString4) = null,
+    element: ?std.ArrayList(u8) = null,
+
+    fn deinit(self: *JsonFields, allocator: Allocator) void {
+        inline for (std.meta.fields(JsonFields)) |f| {
+            if (@field(self, f.name)) |*list| list.deinit(allocator);
+        }
+    }
+};
+
+fn freeToken(allocator: Allocator, token: std.json.Token) void {
+    switch (token) {
+        .allocated_number, .allocated_string => |s| allocator.free(s),
+        else => {},
+    }
+}
+
+/// Read the next token of `scanner`; the caller releases it with `freeToken`.
+fn nextToken(allocator: Allocator, scanner: *std.json.Scanner) !std.json.Token {
+    return scanner.nextAlloc(allocator, .alloc_if_needed);
+}
+
+/// Read a JSON number. A string such as `"3"` is not a number.
+fn readNumber(allocator: Allocator, scanner: *std.json.Scanner) !f64 {
+    const token = try nextToken(allocator, scanner);
+    defer freeToken(allocator, token);
+    return switch (token) {
+        .number, .allocated_number => |s| std.fmt.parseFloat(f64, s) catch error.ExpectedNumber,
+        else => error.ExpectedNumber,
+    };
+}
+
+/// Read an atomic number: a JSON number that is a whole number from 0 to 255.
+/// Strings such as `"CN"` (whose bytes used to be taken as atomic numbers) are not accepted.
+fn readAtomicNumber(allocator: Allocator, scanner: *std.json.Scanner) !u8 {
+    const token = try nextToken(allocator, scanner);
+    defer freeToken(allocator, token);
+    const text = switch (token) {
+        .number, .allocated_number => |s| s,
+        else => return error.InvalidElement,
+    };
+    if (std.fmt.parseInt(u8, text, 10)) |n| return n else |_| {}
+    const f = std.fmt.parseFloat(f64, text) catch return error.InvalidElement;
+    if (!(f >= 0 and f <= 255) or f != @floor(f)) return error.InvalidElement;
+    return @intFromFloat(f);
+}
+
+fn readString(allocator: Allocator, scanner: *std.json.Scanner, comptime T: type) !T {
+    const token = try nextToken(allocator, scanner);
+    defer freeToken(allocator, token);
+    return switch (token) {
+        .string, .allocated_string => |s| T.fromSlice(s),
+        else => error.ExpectedString,
+    };
+}
+
+/// Read a JSON array of items into a new list. `null` is accepted only when
+/// `nullable` is set (optional fields), and yields `null`.
+fn readArray(
+    comptime T: type,
+    comptime readItem: anytype,
+    allocator: Allocator,
+    scanner: *std.json.Scanner,
+    comptime nullable: bool,
+) !?std.ArrayList(T) {
+    if (nullable and try scanner.peekNextTokenType() == .null) {
+        _ = try scanner.next();
+        return null;
+    }
+    const begin = try nextToken(allocator, scanner);
+    defer freeToken(allocator, begin);
+    if (begin != .array_begin) return error.ExpectedArray;
+
+    var list: std.ArrayList(T) = .empty;
+    errdefer list.deinit(allocator);
+    while (try scanner.peekNextTokenType() != .array_end) {
+        try list.append(allocator, try readItem(allocator, scanner));
+    }
+    _ = try scanner.next(); // array_end
+    return list;
+}
+
+fn readResidue(allocator: Allocator, scanner: *std.json.Scanner) !types.FixedString5 {
+    return readString(allocator, scanner, types.FixedString5);
+}
+
+fn readAtomName(allocator: Allocator, scanner: *std.json.Scanner) !types.FixedString4 {
+    return readString(allocator, scanner, types.FixedString4);
+}
+
+/// Parse atom input from a JSON string.
+///
+/// `x`, `y`, `z` and `r` must be arrays of JSON numbers, `residue` and
+/// `atom_name` arrays of strings and `element` an array of atomic numbers
+/// (numbers from 0 to 255). Values of another JSON type are rejected with
+/// `ExpectedNumber`, `ExpectedString`, `ExpectedArray` or `InvalidElement`
+/// instead of being converted.
 pub fn parseAtomInput(allocator: Allocator, json_str: []const u8) !AtomInput {
-    const parsed = try std.json.parseFromSlice(
-        JsonInput,
-        allocator,
-        json_str,
-        .{},
-    );
-    defer parsed.deinit();
+    var scanner = std.json.Scanner.initCompleteInput(allocator, json_str);
+    defer scanner.deinit();
 
-    const data = parsed.value;
+    var fields = JsonFields{};
+    defer fields.deinit(allocator);
 
-    // Validate all arrays have same length
-    const n = data.x.len;
-    if (data.y.len != n or data.z.len != n or data.r.len != n) {
-        return error.ArrayLengthMismatch;
+    const open = try nextToken(allocator, &scanner);
+    defer freeToken(allocator, open);
+    if (open != .object_begin) return error.UnexpectedToken;
+
+    while (true) {
+        const key_token = try nextToken(allocator, &scanner);
+        defer freeToken(allocator, key_token);
+        const key = switch (key_token) {
+            .string, .allocated_string => |s| s,
+            .object_end => break,
+            else => return error.UnexpectedToken,
+        };
+
+        if (std.mem.eql(u8, key, "x")) {
+            if (fields.x != null) return error.DuplicateField;
+            fields.x = (try readArray(f64, readNumber, allocator, &scanner, false)).?;
+        } else if (std.mem.eql(u8, key, "y")) {
+            if (fields.y != null) return error.DuplicateField;
+            fields.y = (try readArray(f64, readNumber, allocator, &scanner, false)).?;
+        } else if (std.mem.eql(u8, key, "z")) {
+            if (fields.z != null) return error.DuplicateField;
+            fields.z = (try readArray(f64, readNumber, allocator, &scanner, false)).?;
+        } else if (std.mem.eql(u8, key, "r")) {
+            if (fields.r != null) return error.DuplicateField;
+            fields.r = (try readArray(f64, readNumber, allocator, &scanner, false)).?;
+        } else if (std.mem.eql(u8, key, "residue")) {
+            if (fields.residue != null) return error.DuplicateField;
+            fields.residue = try readArray(types.FixedString5, readResidue, allocator, &scanner, true);
+        } else if (std.mem.eql(u8, key, "atom_name")) {
+            if (fields.atom_name != null) return error.DuplicateField;
+            fields.atom_name = try readArray(types.FixedString4, readAtomName, allocator, &scanner, true);
+        } else if (std.mem.eql(u8, key, "element")) {
+            if (fields.element != null) return error.DuplicateField;
+            fields.element = try readArray(u8, readAtomicNumber, allocator, &scanner, true);
+        } else {
+            return error.UnknownField;
+        }
     }
 
+    const end = try nextToken(allocator, &scanner);
+    defer freeToken(allocator, end);
+    if (end != .end_of_document) return error.UnexpectedToken;
+
+    const x = fields.x orelse return error.MissingField;
+    const y = fields.y orelse return error.MissingField;
+    const z = fields.z orelse return error.MissingField;
+    const r = fields.r orelse return error.MissingField;
+
+    // Validate all arrays have same length
+    const n = x.items.len;
+    if (y.items.len != n or z.items.len != n or r.items.len != n) {
+        return error.ArrayLengthMismatch;
+    }
     if (n == 0) {
         return error.EmptyInput;
     }
-
-    // Validate optional arrays if present
-    if (data.residue) |res| {
-        if (res.len != n) return error.ArrayLengthMismatch;
+    if (fields.residue) |res| {
+        if (res.items.len != n) return error.ArrayLengthMismatch;
     }
-    if (data.atom_name) |names| {
-        if (names.len != n) return error.ArrayLengthMismatch;
+    if (fields.atom_name) |names| {
+        if (names.items.len != n) return error.ArrayLengthMismatch;
     }
-    if (data.element) |elem| {
-        if (elem.len != n) return error.ArrayLengthMismatch;
+    if (fields.element) |elem| {
+        if (elem.items.len != n) return error.ArrayLengthMismatch;
     }
 
-    // Allocate and copy data
-    const x = try allocator.alloc(f64, n);
-    errdefer allocator.free(x);
+    // Move the lists into the result. A list that has been taken is empty, so
+    // `fields.deinit` stays correct if a later step fails.
+    const x_out = try fields.x.?.toOwnedSlice(allocator);
+    errdefer allocator.free(x_out);
+    const y_out = try fields.y.?.toOwnedSlice(allocator);
+    errdefer allocator.free(y_out);
+    const z_out = try fields.z.?.toOwnedSlice(allocator);
+    errdefer allocator.free(z_out);
+    const r_out = try fields.r.?.toOwnedSlice(allocator);
+    errdefer allocator.free(r_out);
 
-    const y = try allocator.alloc(f64, n);
-    errdefer allocator.free(y);
-
-    const z = try allocator.alloc(f64, n);
-    errdefer allocator.free(z);
-
-    const r = try allocator.alloc(f64, n);
-    errdefer allocator.free(r);
-
-    @memcpy(x, data.x);
-    @memcpy(y, data.y);
-    @memcpy(z, data.z);
-    @memcpy(r, data.r);
-
-    // Copy optional residue names (using FixedString5 for mmCIF 5-char comp_id)
     var residue: ?[]types.FixedString5 = null;
-    if (data.residue) |res| {
-        const res_copy = try allocator.alloc(types.FixedString5, n);
-        for (res, 0..) |s, i| {
-            res_copy[i] = types.FixedString5.fromSlice(s);
-        }
-        residue = res_copy;
-    }
-    errdefer if (residue) |res| allocator.free(res);
+    errdefer if (residue) |s| allocator.free(s);
+    if (fields.residue != null) residue = try fields.residue.?.toOwnedSlice(allocator);
 
-    // Copy optional atom names (using FixedString4)
     var atom_name: ?[]types.FixedString4 = null;
-    if (data.atom_name) |names| {
-        const names_copy = try allocator.alloc(types.FixedString4, n);
-        for (names, 0..) |s, i| {
-            names_copy[i] = types.FixedString4.fromSlice(s);
-        }
-        atom_name = names_copy;
-    }
+    errdefer if (atom_name) |s| allocator.free(s);
+    if (fields.atom_name != null) atom_name = try fields.atom_name.?.toOwnedSlice(allocator);
 
-    // Copy optional element atomic numbers
     var element: ?[]u8 = null;
-    if (data.element) |elem| {
-        element = try allocator.dupe(u8, elem);
-    }
-    errdefer if (element) |elem| allocator.free(elem);
+    errdefer if (element) |s| allocator.free(s);
+    if (fields.element != null) element = try fields.element.?.toOwnedSlice(allocator);
 
     return AtomInput{
-        .x = x,
-        .y = y,
-        .z = z,
-        .r = r,
+        .x = x_out,
+        .y = y_out,
+        .z = z_out,
+        .r = r_out,
         .residue = residue,
         .atom_name = atom_name,
         .element = element,
@@ -791,4 +901,140 @@ test "checkDuplicateCoordinates single atom" {
 
     const count = try checkDuplicateCoordinates(allocator, input);
     try std.testing.expectEqual(@as(usize, 0), count);
+}
+
+fn expectJsonError(expected: anyerror, json: []const u8) !void {
+    try std.testing.expectError(expected, parseAtomInput(std.testing.allocator, json));
+}
+
+test "parseAtomInput rejects strings where numbers are required" {
+    // Coordinates and radii: a numeric string used to be converted.
+    try expectJsonError(error.ExpectedNumber,
+        \\{"x": [0, "3"], "y": [0, 0], "z": [0, 0], "r": [1, 1]}
+    );
+    try expectJsonError(error.ExpectedNumber,
+        \\{"x": [0, 0], "y": ["1.5", 0], "z": [0, 0], "r": [1, 1]}
+    );
+    try expectJsonError(error.ExpectedNumber,
+        \\{"x": [0, 0], "y": [0, 0], "z": [0, "abc"], "r": [1, 1]}
+    );
+    try expectJsonError(error.ExpectedNumber,
+        \\{"x": [0, 0], "y": [0, 0], "z": [0, 0], "r": ["1.7", "1.7"]}
+    );
+    // Other JSON types are no numbers either.
+    try expectJsonError(error.ExpectedNumber,
+        \\{"x": [true, 0], "y": [0, 0], "z": [0, 0], "r": [1, 1]}
+    );
+    try expectJsonError(error.ExpectedNumber,
+        \\{"x": [null, 0], "y": [0, 0], "z": [0, 0], "r": [1, 1]}
+    );
+    try expectJsonError(error.ExpectedNumber,
+        \\{"x": [[0], 0], "y": [0, 0], "z": [0, 0], "r": [1, 1]}
+    );
+    // A field that is not an array.
+    try expectJsonError(error.ExpectedArray,
+        \\{"x": 1, "y": [0], "z": [0], "r": [1]}
+    );
+    try expectJsonError(error.ExpectedArray,
+        \\{"x": "1,2", "y": [0], "z": [0], "r": [1]}
+    );
+    try expectJsonError(error.ExpectedArray,
+        \\{"x": null, "y": [0], "z": [0], "r": [1]}
+    );
+}
+
+test "parseAtomInput rejects element values that are not atomic numbers" {
+    const head = "{\"x\": [0, 0], \"y\": [0, 0], \"z\": [0, 0], \"r\": [1, 1], \"element\": ";
+    // A string was read as its bytes: "CN" became the atomic numbers 67 and 78.
+    try expectJsonError(error.ExpectedArray, head ++ "\"CN\"}");
+    try expectJsonError(error.InvalidElement, head ++ "[6, \"7\"]}");
+    try expectJsonError(error.InvalidElement, head ++ "[\"C\", \"N\"]}");
+    try expectJsonError(error.InvalidElement, head ++ "[6, 7.5]}");
+    try expectJsonError(error.InvalidElement, head ++ "[6, -1]}");
+    try expectJsonError(error.InvalidElement, head ++ "[6, 256]}");
+    try expectJsonError(error.InvalidElement, head ++ "[6, true]}");
+    try expectJsonError(error.InvalidElement, head ++ "[6, null]}");
+    try expectJsonError(error.ArrayLengthMismatch, head ++ "[6]}");
+}
+
+test "parseAtomInput accepts the documented element forms" {
+    const allocator = std.testing.allocator;
+    const head = "{\"x\": [0, 1, 2], \"y\": [0, 0, 0], \"z\": [0, 0, 0], \"r\": [1, 1, 1]";
+
+    var ints = try parseAtomInput(allocator, head ++ ", \"element\": [7, 6, 118]}");
+    defer ints.deinit();
+    try std.testing.expectEqualSlices(u8, &.{ 7, 6, 118 }, ints.element.?);
+
+    // A whole number written with a fraction or exponent is still that number.
+    var floats = try parseAtomInput(allocator, head ++ ", \"element\": [6.0, 7e0, 0]}");
+    defer floats.deinit();
+    try std.testing.expectEqualSlices(u8, &.{ 6, 7, 0 }, floats.element.?);
+
+    // null and a missing field both mean "no element information".
+    var null_element = try parseAtomInput(allocator, head ++ ", \"element\": null}");
+    defer null_element.deinit();
+    try std.testing.expect(null_element.element == null);
+}
+
+test "parseAtomInput rejects non-string residue and atom names" {
+    const head = "{\"x\": [0], \"y\": [0], \"z\": [0], \"r\": [1], ";
+    try expectJsonError(error.ExpectedString, head ++ "\"residue\": [1]}");
+    try expectJsonError(error.ExpectedString, head ++ "\"atom_name\": [null]}");
+    try expectJsonError(error.ExpectedArray, head ++ "\"residue\": \"ALA\"}");
+}
+
+test "parseAtomInput keeps rejecting unknown and repeated fields and trailing text" {
+    try expectJsonError(error.UnknownField,
+        \\{"x": [0], "y": [0], "z": [0], "r": [1], "radius": [1]}
+    );
+    try expectJsonError(error.DuplicateField,
+        \\{"x": [0], "x": [1], "y": [0], "z": [0], "r": [1]}
+    );
+    try expectJsonError(error.MissingField,
+        \\{"x": [0], "y": [0], "z": [0]}
+    );
+    try expectJsonError(error.UnexpectedToken,
+        \\[0, 1]
+    );
+    try expectJsonError(error.SyntaxError,
+        \\{"x": [0], "y": [0], "z": [0], "r": [1]} {}
+    );
+}
+
+test "parseAtomInput reads escaped strings and numbers in any order" {
+    const allocator = std.testing.allocator;
+    var input = try parseAtomInput(allocator,
+        \\{"atom_name": ["CA"], "residue": ["ALA"], "r": [1.5e0], "z": [-3], "y": [2], "x": [1E1]}
+    );
+    defer input.deinit();
+    try std.testing.expectEqualStrings("CA", input.atom_name.?[0].slice());
+    try std.testing.expectEqualStrings("ALA", input.residue.?[0].slice());
+    try std.testing.expectEqual(@as(f64, 10.0), input.x[0]);
+    try std.testing.expectEqual(@as(f64, -3.0), input.z[0]);
+    try std.testing.expectEqual(@as(f64, 1.5), input.r[0]);
+}
+
+test "parseAtomInput releases everything on allocation failure and on errors" {
+    const Check = struct {
+        fn ok(allocator: Allocator) !void {
+            var input = try parseAtomInput(allocator,
+                \\{"x": [1, 2], "y": [3, 4], "z": [5, 6], "r": [1.5, 1.6],
+                \\ "residue": ["ALA", "GLY"], "atom_name": ["CA", "N"], "element": [6, 7]}
+            );
+            input.deinit();
+        }
+        fn bad(allocator: Allocator) !void {
+            var input = parseAtomInput(allocator,
+                \\{"x": [1, 2], "y": [3, 4], "z": [5, 6], "r": [1.5, 1.6],
+                \\ "residue": ["ALA", "GLY"], "atom_name": ["CA", "N"], "element": [6, "7"]}
+            ) catch |err| switch (err) {
+                error.InvalidElement => return,
+                else => |e| return e,
+            };
+            input.deinit();
+            return error.TestUnexpectedResult;
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.ok, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.bad, .{});
 }

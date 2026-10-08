@@ -1339,7 +1339,7 @@ fn writeWorkflowJsonlMetadata(
         },
     };
 
-    const text = try std.json.Stringify.valueAlloc(allocator, meta, .{ .whitespace = .indent_2 });
+    const text = try json_writer.stringifyFinite(allocator, meta, .{ .whitespace = .indent_2 });
     defer allocator.free(text);
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = text });
 }
@@ -4004,11 +4004,15 @@ fn loadExternalCcd(allocator: Allocator, io: std.Io, path: []const u8, quiet: bo
 }
 
 fn loadCustomClassifier(allocator: Allocator, io: std.Io, path: []const u8) !classifier.Classifier {
-    return classifier_parser.parseConfigFile(allocator, io, path) catch |err| {
+    var diag: classifier_parser.Diagnostic = .{};
+    return classifier_parser.parseConfigFileDiag(allocator, io, path, &diag) catch |err| {
         switch (err) {
             error.UnsupportedConfigExtension => std.debug.print("Error loading config file '{s}': custom classifier configs are TOML-only; rename or convert the file to .toml\n", .{path}),
             error.UnsupportedLegacyFormat => std.debug.print("Error loading config file '{s}': FreeSASA-style custom classifier configs are no longer supported; convert to TOML [types] and [[atoms]]\n", .{path}),
-            else => std.debug.print("Error loading config file '{s}': {s}\n", .{ path, @errorName(err) }),
+            else => if (diag.line != 0)
+                std.debug.print("Error loading config file '{s}' (line {d}): {s}\n", .{ path, diag.line, @errorName(err) })
+            else
+                std.debug.print("Error loading config file '{s}': {s}\n", .{ path, @errorName(err) }),
         }
         return err;
     };
