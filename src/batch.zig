@@ -91,7 +91,7 @@ pub const BatchConfig = struct {
     fine_points: u32 = 256,
     adaptive_low: f64 = 0.10,
     adaptive_high: f64 = 0.90,
-    store_atom_areas: bool = false, // When true, copy atom_areas to result_allocator for jsonl
+    store_atom_areas: bool = false, // When true, keep atom_areas in each result (for JSONL rows)
     external_ccd: ?*const ccd_parser.ComponentDict = null, // External CCD dictionary
     sdf_ccd: ?*const ccd_parser.ComponentDict = null, // SDF bond topology dictionary
     custom_classifier: ?*const classifier.Classifier = null,
@@ -1016,8 +1016,17 @@ fn jsonlOptions(config: BatchConfig) json_writer.JsonlOptions {
     };
 }
 
+/// Whether the atom areas of each result are kept for its JSONL row.
 fn batchShouldStoreAtomAreas(config: BatchConfig) bool {
     return config.output_format == .jsonl and config.jsonl_include_atom_areas;
+}
+
+/// Whether a run writes one JSONL row per input instead of one output file
+/// per input. This is a property of the output format alone: JSONL without
+/// atom areas (`[output.jsonl] atom_areas = false`) still writes rows, to the
+/// JSONL file or to stdout, and never writes per-file outputs.
+fn batchWritesJsonl(config: BatchConfig) bool {
+    return config.output_format == .jsonl;
 }
 
 fn classifierTypeName(classifier_type: ?ClassifierType) []const u8 {
@@ -1216,7 +1225,7 @@ fn calculatePreparedInputResult(
     }
 
     if (output_dir) |out_dir| {
-        if (!config.store_atom_areas) {
+        if (!batchWritesJsonl(config)) {
             writeSasaOutput(T, arena, io, &sasa_result, out_dir, .input_file, filename, config.output_format) catch |err| {
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
@@ -1486,7 +1495,7 @@ fn processOneSdfMoleculeInner(
             }
 
             if (output_dir) |out_dir| {
-                if (!config.store_atom_areas) {
+                if (!batchWritesJsonl(config)) {
                     writeSasaOutput(f64, arena, io, &sasa_result, out_dir, .sdf_molecule, display_name, config.output_format) catch |err| {
                         res.status = .err;
                         res.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
@@ -1539,7 +1548,7 @@ fn processOneSdfMoleculeInner(
             }
 
             if (output_dir) |out_dir| {
-                if (!config.store_atom_areas) {
+                if (!batchWritesJsonl(config)) {
                     writeSasaOutput(f32, arena, io, &sasa_result, out_dir, .sdf_molecule, display_name, config.output_format) catch |err| {
                         res.status = .err;
                         res.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
@@ -1903,7 +1912,7 @@ fn runPreparedSequential(
     if (jsonl_output_path) |path| {
         jsonl_file = try std.Io.Dir.cwd().createFile(io, path, .{});
         jsonl_file_needs_close = true;
-    } else if (config.store_atom_areas) {
+    } else if (batchWritesJsonl(config)) {
         jsonl_file = std.Io.File.stdout();
     }
     defer if (jsonl_file_needs_close) {
@@ -2403,7 +2412,7 @@ pub fn runBatchParallel(
     if (jsonl_output_path) |path| {
         jsonl_file = try std.Io.Dir.cwd().createFile(io, path, .{});
         jsonl_file_needs_close = true;
-    } else if (config.store_atom_areas) {
+    } else if (batchWritesJsonl(config)) {
         jsonl_file = std.Io.File.stdout();
     }
     defer if (jsonl_file_needs_close) {
@@ -2748,7 +2757,7 @@ fn validateUniqueOutputNames(
     output_dir: ?[]const u8,
     config: BatchConfig,
 ) !void {
-    if (output_dir == null or config.store_atom_areas) return;
+    if (output_dir == null or batchWritesJsonl(config)) return;
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -2818,7 +2827,7 @@ fn validateUniqueFileOutputNames(
     output_dir: ?[]const u8,
     config: BatchConfig,
 ) !void {
-    if (output_dir == null or config.store_atom_areas) return;
+    if (output_dir == null or batchWritesJsonl(config)) return;
 
     const items = try plainWorkItems(allocator, files);
     defer allocator.free(items);
@@ -7045,6 +7054,57 @@ test "validateUniqueOutputNames only applies to per-file output" {
     const jsonl_config = BatchConfig{ .output_format = .jsonl, .store_atom_areas = true };
     try validateUniqueOutputNames(std.testing.allocator, items, "out", jsonl_config);
     try validateUniqueFileOutputNames(std.testing.allocator, &files, "out", jsonl_config);
+    // Also when its rows carry no atom areas.
+    const jsonl_totals_config = BatchConfig{ .output_format = .jsonl, .jsonl_include_atom_areas = false };
+    try std.testing.expect(!batchShouldStoreAtomAreas(jsonl_totals_config));
+    try validateUniqueOutputNames(std.testing.allocator, items, "out", jsonl_totals_config);
+    try validateUniqueFileOutputNames(std.testing.allocator, &files, "out", jsonl_totals_config);
+}
+
+test "JSONL without atom areas writes rows and no per-file outputs" {
+    const allocator = std.testing.allocator;
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    // Two inputs that would share "tiny.jsonl" as a per-file output
+    try sandbox.writeInput("tiny.pdb", test_naming_pdb);
+    try sandbox.writeInput("tiny.ent", test_naming_pdb);
+    try sandbox.writeInput("lig.sdf", comptime testSdfRecord("one"));
+    const output_dir = try sandbox.path("out");
+    defer allocator.free(output_dir);
+
+    inline for (test_naming_threads) |n_threads| {
+        const jsonl_path = try sandbox.path(std.fmt.comptimePrint("rows{d}.jsonl", .{n_threads}));
+        defer allocator.free(jsonl_path);
+
+        // What a workflow with `[output.jsonl] atom_areas = false` configures:
+        // JSONL output, and no atom areas kept in the results.
+        var config = NamingSandbox.config(n_threads);
+        config.output_format = .jsonl;
+        config.jsonl_include_atom_areas = false;
+        config.store_atom_areas = batchShouldStoreAtomAreas(config);
+        try std.testing.expect(!config.store_atom_areas);
+        try std.testing.expect(batchWritesJsonl(config));
+
+        var result = try runBatch(allocator, std.testing.io, sandbox.input_dir, output_dir, config, jsonl_path);
+        defer result.deinit();
+        try std.testing.expectEqual(@as(usize, 3), result.successful);
+
+        const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, jsonl_path, allocator, .limited(4096));
+        defer allocator.free(content);
+        try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, content, "\"status\":\"ok\""));
+        try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, content, "\"total_area\""));
+        try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, content, "\"atom_areas\""));
+    }
+    // The output directory holds no per-file output.
+    try sandbox.expectTree(&.{
+        "input/",
+        "input/lig.sdf",
+        "input/tiny.ent",
+        "input/tiny.pdb",
+        "out/",
+        "rows1.jsonl",
+        "rows4.jsonl",
+    });
 }
 
 test "batch runners reject colliding output names before writing anything" {

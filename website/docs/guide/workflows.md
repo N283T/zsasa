@@ -501,6 +501,10 @@ areas. Selection-map JSONL also requires `total_area = true`. When
 `metadata = "sidecar"` is set, workflow batch jobs write a `<job>.meta.json`
 file next to `<job>.jsonl` with the effective JSONL and calculation settings.
 
+These keys choose the fields of each row, not where the rows go: with
+`atom_areas = false` a job still writes one row per input to `<job>.jsonl`, or
+to standard output when the workflow has one job and no output directory.
+
 ## Key Reference
 
 A workflow file starts with `version = 1` (required) and an optional `kind = "workflow"`, followed by the sections below. The parser rejects the whole file when it meets an unknown section or key, a repeated section or key, or a value of the wrong type or out of range, and prints `Error reading workflow file '<path>': <name>` with `UnknownField`, `InvalidFieldType`, `UnsupportedVersion` or `InvalidKind`.
