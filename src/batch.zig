@@ -3983,11 +3983,47 @@ fn applyWorkflowJobOverrides(config: *BatchConfig, args: BatchArgs, job: workflo
     config.chain_filter = job.chains;
 }
 
+/// The keys and options that a batch workflow does not read: those of the
+/// manifest (see `workflow_manifest.checkKeys`) and the command-line options
+/// that only have an effect outside a workflow.
+fn batchWorkflowFindings(workflow: workflow_manifest.Workflow, args: BatchArgs) workflow_manifest.Findings {
+    const is_analysis = workflow.analysis != null;
+    var findings = workflow_manifest.checkKeys(workflow, if (is_analysis) .batch_analysis else .batch_jobs);
+
+    // An [analysis] workflow reports the SASA time; a workflow with jobs
+    // reports through the per-job summary only.
+    if (!is_analysis) {
+        if (args.timing_explicit and args.show_timing) {
+            findings.add(.warning, "--timing has no effect on a workflow with [[jobs]] " ++
+                "(only an [analysis] workflow reports timing): remove the option");
+        } else if (workflow.calculation.timing orelse false) {
+            findings.add(.warning, "[calculation] timing = true has no effect on a workflow with [[jobs]] " ++
+                "(only an [analysis] workflow reports timing): remove the key");
+        }
+    }
+    if (args.profile_stages_explicit and args.profile_stages) {
+        findings.add(.warning, "--profile-stages has no effect on a workflow " ++
+            "(stage timings are reported only by batch without --workflow): remove the option");
+    }
+    if (is_analysis) {
+        if (args.residue_map) {
+            findings.add(.err, "--residue-map is not supported by an [analysis] workflow " ++
+                "(its rows carry no residue map): remove the option");
+        }
+        if (args.format_explicit and args.output_format != .jsonl) {
+            findings.add(.err, "--format other than jsonl is not supported by an [analysis] workflow " ++
+                "(it always writes JSONL): remove the option");
+        }
+    }
+    return findings;
+}
+
 fn parseWorkflowFile(allocator: Allocator, io: std.Io, path: []const u8) !workflow_manifest.Workflow {
     return workflow_manifest.parseFile(allocator, io, path);
 }
 
 fn printWorkflowReadError(path: []const u8, err: anyerror) void {
+    if (builtin.is_test) return;
     std.debug.print("Error reading workflow file '{s}': {s}\n", .{ path, @errorName(err) });
     if (workflow_manifest.errorHint(err)) |hint| std.debug.print("  {s}\n", .{hint});
 }
@@ -4517,6 +4553,7 @@ fn runWorkflowBsaAnalysis(
     workflow: workflow_manifest.Workflow,
 ) !void {
     const analysis = workflow.analysis orelse return error.InvalidArgument;
+    try batchWorkflowFindings(workflow, args).report();
     const fixed_partner_a = analysis.partner_a;
     const fixed_partner_b = analysis.partner_b;
     const level = analysisLevel(analysis);
@@ -5471,6 +5508,9 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
     };
     defer workflow.deinit();
 
+    try batchWorkflowFindings(workflow, args).report();
+    try workflow.applyInputChainToJobs();
+
     if (workflow.jobs.len == 0) {
         std.debug.print("Error: batch workflow requires at least one [[jobs]] entry\n", .{});
         return error.NoJobs;
@@ -5701,6 +5741,9 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
         return err;
     };
     defer workflow.deinit();
+
+    try batchWorkflowFindings(workflow, args).report();
+    try workflow.applyInputChainToJobs();
 
     if (workflow.jobs.len == 0) {
         std.debug.print("Error: batch workflow requires at least one [[jobs]] entry\n", .{});
@@ -11097,4 +11140,241 @@ test "batch classifies every SDF molecule from its own bond topology, with or wi
             try expectExposedAtomRadii(sandbox, out_name ++ "/" ++ name, &.{ 1.88, 1.76, 1.42 });
         }
     }
+}
+
+// -----------------------------------------------------------------------------
+// Keys and options a batch workflow does not read
+// -----------------------------------------------------------------------------
+
+const test_bsa_analysis = "[analysis]\ntype = \"bsa\"\npartner_a = [\"A\"]\npartner_b = [\"B\"]\n";
+
+/// Write "workflow.toml" in the sandbox: a JSONL workflow over its input
+/// directory with the given extra lines in `[input]` and `[calculation]`,
+/// followed by `body`. Returns the path, allocated from `arena`.
+fn writeKeyWorkflow(
+    sandbox: NamingSandbox,
+    arena: Allocator,
+    input_extra: []const u8,
+    calc_extra: []const u8,
+    body: []const u8,
+) ![]const u8 {
+    const workflow = try std.fmt.allocPrint(arena,
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "{s}"
+        \\{s}
+        \\[output]
+        \\dir = "{s}/output"
+        \\format = "jsonl"
+        \\
+        \\[calculation]
+        \\n_points = 8
+        \\quiet = true
+        \\{s}
+        \\[classifier]
+        \\type = "naccess"
+        \\
+        \\{s}
+    , .{ sandbox.input_dir, input_extra, sandbox.root, calc_extra, body });
+    const workflow_path = try std.fs.path.join(arena, &.{ sandbox.root, "workflow.toml" });
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
+    return workflow_path;
+}
+
+fn readSandboxFile(sandbox: NamingSandbox, arena: Allocator, name: []const u8) ![]const u8 {
+    const path = try std.fs.path.join(arena, &.{ sandbox.root, name });
+    return std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, arena, .limited(1 << 20));
+}
+
+test "workflow rejects keys that batch cannot honor before running anything" {
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("two.pdb", test_two_chain_pdb);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const Case = struct { input_extra: []const u8 = "", calc_extra: []const u8 = "" };
+    const cases = [_]Case{
+        .{ .input_extra = "model = 2\n" },
+        .{ .input_extra = "mol = \"1\"\n" },
+        .{ .input_extra = "path = \"two.pdb\"\n" },
+        .{ .calc_extra = "rsa = true\n" },
+        .{ .calc_extra = "per_residue = true\n" },
+        .{ .calc_extra = "polar = true\n" },
+        .{ .calc_extra = "validate_only = true\n" },
+    };
+    for (cases) |case| {
+        for (test_workflow_runners) |runner| {
+            const body = try std.fmt.allocPrint(arena, "[[jobs]]\nname = \"everything\"\n{s}", .{runner.jobOption()});
+            const workflow_path = try writeKeyWorkflow(sandbox, arena, case.input_extra, case.calc_extra, body);
+            try std.testing.expectError(
+                error.InvalidArgument,
+                runWorkflow(std.testing.allocator, std.testing.io, .{ .workflow_path = workflow_path }),
+            );
+        }
+        // The same keys in an [analysis] workflow
+        const workflow_path = try writeKeyWorkflow(sandbox, arena, case.input_extra, case.calc_extra, test_bsa_analysis);
+        try std.testing.expectError(
+            error.InvalidArgument,
+            runWorkflow(std.testing.allocator, std.testing.io, .{ .workflow_path = workflow_path }),
+        );
+    }
+    try sandbox.expectTree(&.{ "input/", "input/two.pdb", "workflow.toml" });
+}
+
+test "workflow rejects [input] chain where no job can use it" {
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("two.pdb", test_two_chain_pdb);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const bodies = [_][]const u8{
+        test_bsa_analysis,
+        "[[jobs]]\nname = \"m\"\nchain_map = \"chains.csv\"\n",
+        "[[jobs]]\nname = \"own\"\nchains = [\"A\"]\n",
+    };
+    for (bodies) |body| {
+        const workflow_path = try writeKeyWorkflow(sandbox, arena, "chain = \"B\"\n", "", body);
+        try std.testing.expectError(
+            error.InvalidArgument,
+            runWorkflow(std.testing.allocator, std.testing.io, .{ .workflow_path = workflow_path }),
+        );
+    }
+    try sandbox.expectTree(&.{ "input/", "input/two.pdb", "workflow.toml" });
+}
+
+test "workflow honors [input] chain as the default chains of the jobs that have none" {
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("two.pdb", test_two_chain_pdb);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    for (test_workflow_runners) |runner| {
+        try sandbox.tmp.dir.deleteTree(std.testing.io, "output");
+        // "default" takes chain B from [input]; "explicit" lists it itself,
+        // "both" lists A and B.
+        const body = try std.fmt.allocPrint(arena,
+            \\[[jobs]]
+            \\name = "default"
+            \\
+            \\[[jobs]]
+            \\name = "explicit"
+            \\chains = ["B"]
+            \\{s}
+            \\[[jobs]]
+            \\name = "both"
+            \\chains = ["A", "B"]
+            \\
+        , .{runner.jobOption()});
+        const workflow_path = try writeKeyWorkflow(sandbox, arena, "chain = \"B\"\n", "", body);
+        try runWorkflow(std.testing.allocator, std.testing.io, .{ .workflow_path = workflow_path });
+
+        const default_rows = try readSandboxFile(sandbox, arena, "output/default.jsonl");
+        const explicit_rows = try readSandboxFile(sandbox, arena, "output/explicit.jsonl");
+        const both_rows = try readSandboxFile(sandbox, arena, "output/both.jsonl");
+        try std.testing.expectEqualStrings(explicit_rows, default_rows);
+        try std.testing.expect(!std.mem.eql(u8, both_rows, default_rows));
+        // Chain B has two atoms, the whole structure four
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, default_rows, "\"atom_areas\":["));
+        try std.testing.expect(std.mem.count(u8, default_rows, ",") < std.mem.count(u8, both_rows, ","));
+    }
+}
+
+test "workflow with timing or an output path still runs and only warns" {
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("two.pdb", test_two_chain_pdb);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    for (test_workflow_runners) |runner| {
+        try sandbox.tmp.dir.deleteTree(std.testing.io, "output");
+        const body = try std.fmt.allocPrint(arena, "[[jobs]]\nname = \"everything\"\n{s}", .{runner.jobOption()});
+        const workflow_path = try writeKeyWorkflow(sandbox, arena, "", "timing = true\n", body);
+        try runWorkflow(std.testing.allocator, std.testing.io, .{ .workflow_path = workflow_path });
+        try sandbox.expectTree(&.{
+            "input/",
+            "input/two.pdb",
+            "output/",
+            "output/everything.jsonl",
+            "workflow.toml",
+        });
+    }
+}
+
+fn expectBatchFinding(
+    content: []const u8,
+    args: BatchArgs,
+    severity: workflow_manifest.Severity,
+    needle: ?[]const u8,
+) !void {
+    var workflow = try workflow_manifest.parse(std.testing.allocator, content);
+    defer workflow.deinit();
+    const findings = batchWorkflowFindings(workflow, args);
+    if (needle) |text| {
+        for (findings.slice()) |finding| {
+            if (finding.severity == severity and std.mem.find(u8, finding.message, text) != null) return;
+        }
+        std.debug.print("no {s} containing '{s}'\n", .{ @tagName(severity), text });
+        return error.TestExpectedFinding;
+    }
+    try std.testing.expectEqual(@as(usize, 0), findings.len);
+}
+
+test "batch workflow findings: timing and stage profiling only warn" {
+    const jobs = "version = 1\n[input]\ndir = \"d\"\n[[jobs]]\nname = \"j\"\n";
+    const jobs_timing = "version = 1\n[input]\ndir = \"d\"\n[calculation]\ntiming = true\n[[jobs]]\nname = \"j\"\n";
+    const analysis_timing = "version = 1\n[input]\ndir = \"d\"\n[calculation]\ntiming = true\n" ++ test_bsa_analysis;
+
+    try expectBatchFinding(jobs, .{}, .warning, null);
+    try expectBatchFinding(jobs_timing, .{}, .warning, "[calculation] timing = true");
+    try expectBatchFinding(jobs, .{ .show_timing = true, .timing_explicit = true }, .warning, "--timing");
+    // The command-line option is named when both are given
+    try expectBatchFinding(jobs_timing, .{ .show_timing = true, .timing_explicit = true }, .warning, "--timing");
+    // An [analysis] workflow reports its SASA time
+    try expectBatchFinding(analysis_timing, .{ .show_timing = true, .timing_explicit = true }, .warning, null);
+    for ([_][]const u8{ jobs, analysis_timing }) |content| {
+        try expectBatchFinding(content, .{ .profile_stages = true, .profile_stages_explicit = true }, .warning, "--profile-stages");
+    }
+}
+
+test "batch workflow findings: an [analysis] workflow rejects --residue-map and a format other than jsonl" {
+    const analysis = "version = 1\n[input]\ndir = \"d\"\n" ++ test_bsa_analysis;
+    try expectBatchFinding(analysis, .{ .residue_map = true }, .err, "--residue-map");
+    try expectBatchFinding(analysis, .{ .output_format = .csv, .format_explicit = true }, .err, "--format");
+    try expectBatchFinding(analysis, .{ .output_format = .jsonl, .format_explicit = true }, .err, null);
+    // Workflows with jobs take both
+    const jobs = "version = 1\n[input]\ndir = \"d\"\n[[jobs]]\nname = \"j\"\n";
+    try expectBatchFinding(jobs, .{ .residue_map = true, .output_format = .csv, .format_explicit = true }, .err, null);
+}
+
+test "workflow rejects [analysis] with [[jobs]] and a [[jobs]] table without a name" {
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("two.pdb", test_two_chain_pdb);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const cases = [_]struct { body: []const u8, expected: anyerror }{
+        .{ .body = test_bsa_analysis ++ "[[jobs]]\nname = \"j\"\n", .expected = error.AnalysisWithJobs },
+        .{ .body = "[[jobs]]\n[[jobs]]\nname = \"second\"\n", .expected = error.MissingJobName },
+        .{ .body = "[[jobs]]\nname = \"first\"\n[[jobs]]\n", .expected = error.MissingJobName },
+    };
+    for (cases) |case| {
+        const workflow_path = try writeKeyWorkflow(sandbox, arena, "", "", case.body);
+        try std.testing.expectError(
+            case.expected,
+            runWorkflow(std.testing.allocator, std.testing.io, .{ .workflow_path = workflow_path }),
+        );
+    }
+    try sandbox.expectTree(&.{ "input/", "input/two.pdb", "workflow.toml" });
 }

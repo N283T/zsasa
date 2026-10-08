@@ -1443,6 +1443,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
             if (workflow_manifest.errorHint(err)) |hint| std.debug.print("  {s}\n", .{hint});
             return err;
         };
+        try workflow_manifest.checkKeys(workflow.?, .calc).report();
         try applyWorkflowToCalcArgs(&effective_args, workflow.?);
     }
 
@@ -3132,4 +3133,82 @@ test "calc does not read an SDF molecule's title as a residue name" {
         defer allocator.free(text);
         try SdfCalcSandbox.expectRadii(text, &test_acetonitrile_radii);
     }
+}
+
+const CalcWorkflowOutcome = struct {
+    result: anyerror!void,
+    output_written: bool,
+};
+
+/// Runs `calc --workflow` on a manifest of a temporary structure and result
+/// file. `input_extra` and `output_extra` are added to `[input]` and
+/// `[output]`; `tail` is added after the `[classifier]` table.
+fn runCalcWorkflowWith(input_extra: []const u8, output_extra: []const u8, tail: []const u8) !CalcWorkflowOutcome {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try tmp_dir.dir.realPath(std.testing.io, &root_buf)];
+    const pdb_path = try std.fs.path.join(allocator, &.{ root, "one.pdb" });
+    defer allocator.free(pdb_path);
+    const output_path = try std.fs.path.join(allocator, &.{ root, "result.json" });
+    defer allocator.free(output_path);
+    const workflow_path = try std.fs.path.join(allocator, &.{ root, "calc.toml" });
+    defer allocator.free(workflow_path);
+
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = pdb_path,
+        .data = "ATOM      1  N   GLY A   1       0.000   0.000   0.000  1.00 20.00           N  \nEND\n",
+    });
+    const workflow = try std.fmt.allocPrint(allocator,
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\path = "{s}"
+        \\{s}
+        \\[output]
+        \\path = "{s}"
+        \\format = "json"
+        \\{s}
+        \\[calculation]
+        \\n_points = 8
+        \\threads = 1
+        \\quiet = true
+        \\
+        \\[classifier]
+        \\type = "naccess"
+        \\
+        \\{s}
+    , .{ pdb_path, input_extra, output_path, output_extra, tail });
+    defer allocator.free(workflow);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
+
+    const result = run(allocator, std.testing.io, .{ .workflow_path = workflow_path });
+    const written = if (std.Io.Dir.cwd().access(std.testing.io, output_path, .{})) |_| true else |_| false;
+    return .{ .result = result, .output_written = written };
+}
+
+test "calc workflow rejects batch-only keys that calc would ignore" {
+    const cases = [_]struct { input_extra: []const u8 = "", tail: []const u8 = "" }{
+        .{ .tail = "[analysis]\ntype = \"bsa\"\npartner_a = [\"A\"]\npartner_b = [\"B\"]\n" },
+        .{ .tail = "[[jobs]]\nname = \"all\"\n" },
+        .{ .input_extra = "dir = \"structures\"\n" },
+    };
+    for (cases) |case| {
+        const outcome = try runCalcWorkflowWith(case.input_extra, "", case.tail);
+        try std.testing.expectError(error.InvalidArgument, outcome.result);
+        try std.testing.expect(!outcome.output_written);
+    }
+}
+
+test "calc workflow with batch output keys still runs and only warns" {
+    const output_dir = try runCalcWorkflowWith("", "dir = \"results\"\n", "");
+    try output_dir.result;
+    try std.testing.expect(output_dir.output_written);
+
+    const jsonl = try runCalcWorkflowWith("", "", "[output.jsonl]\ndecimals = 3\natom_areas = false\n");
+    try jsonl.result;
+    try std.testing.expect(jsonl.output_written);
 }

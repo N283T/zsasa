@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const toml_parser = @import("toml_parser.zig");
 const altloc = @import("altloc.zig");
@@ -15,6 +16,7 @@ pub const WorkflowError = error{
     UnknownField,
     NoJobs,
     EmptyJobChains,
+    AnalysisWithJobs,
 };
 
 /// Explanation of a workflow error whose name does not say what to change,
@@ -23,6 +25,9 @@ pub fn errorHint(err: anyerror) ?[]const u8 {
     return switch (err) {
         error.EmptyJobChains => "a [[jobs]] entry has an empty chains array; " ++
             "list at least one chain ID, or remove the key to select every chain",
+        error.AnalysisWithJobs => "[analysis] and [[jobs]] cannot be combined: an [analysis] " ++
+            "workflow runs one BSA analysis and has no jobs; keep one of them and move " ++
+            "the other into a separate workflow file",
         else => null,
     };
 }
@@ -125,7 +130,230 @@ pub const Workflow = struct {
         self.allocator.free(self.content);
         self.* = undefined;
     }
+
+    /// Make `[input] chain` the chain selection of every job that has none of
+    /// its own (neither `chains` nor `chain_map`), as batch workflows read it.
+    /// The chain IDs are comma separated, as for `--chain`. `checkKeys`
+    /// rejects a blank value and a value no job would use.
+    pub fn applyInputChainToJobs(self: *Workflow) Error!void {
+        const chain = self.input.chain orelse return;
+        for (self.jobs) |*job| {
+            if (job.chains != null or job.chain_map != null) continue;
+            var ids = std.ArrayListUnmanaged([]const u8).empty;
+            errdefer ids.deinit(self.allocator);
+            var parts = std.mem.splitScalar(u8, chain, ',');
+            while (parts.next()) |part| {
+                const id = std.mem.trim(u8, part, " ");
+                if (id.len > 0) try ids.append(self.allocator, id);
+            }
+            if (ids.items.len == 0) return error.InvalidFieldType;
+            job.chains = try ids.toOwnedSlice(self.allocator);
+        }
+    }
 };
+
+/// The command a manifest is run by and, for batch, the kind of workflow.
+pub const Mode = enum {
+    /// `zsasa calc --workflow`: one structure.
+    calc,
+    /// `zsasa batch --workflow` with `[[jobs]]`.
+    batch_jobs,
+    /// `zsasa batch --workflow` with `[analysis]`.
+    batch_analysis,
+};
+
+pub const Severity = enum {
+    /// The key would change the results, or the manifest does not fit the
+    /// command: the command stops.
+    err,
+    /// The key only affects reporting or where output goes: the command goes on.
+    warning,
+};
+
+pub const Finding = struct {
+    severity: Severity,
+    /// Names the key and says what to do about it.
+    message: []const u8,
+};
+
+/// Keys a command does not read. Nothing a user writes is dropped silently:
+/// each of them is an error or a warning.
+pub const Findings = struct {
+    items: [max_findings]Finding = undefined,
+    len: usize = 0,
+
+    /// More than any manifest can produce (`checkKeys` has fewer checks).
+    pub const max_findings = 32;
+
+    pub fn add(self: *Findings, severity: Severity, message: []const u8) void {
+        std.debug.assert(self.len < max_findings);
+        self.items[self.len] = .{ .severity = severity, .message = message };
+        self.len += 1;
+    }
+
+    pub fn slice(self: *const Findings) []const Finding {
+        return self.items[0..self.len];
+    }
+
+    pub fn errorCount(self: *const Findings) usize {
+        var count: usize = 0;
+        for (self.slice()) |finding| {
+            if (finding.severity == .err) count += 1;
+        }
+        return count;
+    }
+
+    /// Print every finding to stderr (also in quiet mode: they are not
+    /// progress output) and fail if any is an error. Prints nothing in tests.
+    pub fn report(self: *const Findings) error{InvalidArgument}!void {
+        for (self.slice()) |finding| {
+            if (builtin.is_test) continue;
+            const label = switch (finding.severity) {
+                .err => "Error",
+                .warning => "Warning",
+            };
+            std.debug.print("{s}: {s}\n", .{ label, finding.message });
+        }
+        if (self.errorCount() > 0) return error.InvalidArgument;
+    }
+};
+
+const batch_hint = "run it with 'zsasa batch --workflow'";
+const calc_hint = "run it on one structure with 'zsasa calc --workflow'";
+
+/// The keys of `workflow` that the command for `mode` does not read: errors
+/// where honoring them would change the results, warnings where they only
+/// affect reporting or the output location. A boolean key set to false asks
+/// for what the command does anyway and is not reported.
+pub fn checkKeys(workflow: Workflow, mode: Mode) Findings {
+    var findings = Findings{};
+    switch (mode) {
+        .calc => checkCalcKeys(workflow, &findings),
+        .batch_jobs, .batch_analysis => checkBatchKeys(workflow, mode, &findings),
+    }
+    return findings;
+}
+
+fn checkCalcKeys(workflow: Workflow, findings: *Findings) void {
+    const legacy = workflow.is_legacy_batch_workflow;
+    if (workflow.analysis != null) {
+        findings.add(.err, "[analysis] is read only by 'zsasa batch --workflow' and calc would ignore it: " ++
+            "this is a batch manifest; " ++ batch_hint);
+    }
+    if (workflow.jobs.len > 0) {
+        findings.add(.err, "[[jobs]] is read only by 'zsasa batch --workflow' and calc would ignore it: " ++
+            "this is a batch manifest; " ++ batch_hint);
+    }
+    if (workflow.input.dir != null) {
+        findings.add(.err, if (legacy)
+            "input_dir is read only by 'zsasa batch --workflow' and calc would ignore it: " ++
+                "this is a batch manifest; " ++ batch_hint ++ ", or name one structure with [input] path"
+        else
+            "[input] dir is read only by 'zsasa batch --workflow' and calc would ignore it: " ++
+                "this is a batch manifest; " ++ batch_hint ++ ", or name one structure with [input] path");
+    }
+    if (workflow.calculation.residue_map orelse false) {
+        findings.add(.err, "[calculation] residue_map = true is read only by 'zsasa batch --workflow' " ++
+            "(calc writes no residue map): remove it, or " ++ batch_hint);
+    }
+    if (workflow.output.dir != null) {
+        findings.add(.warning, if (legacy)
+            "output_dir is read only by 'zsasa batch --workflow' and calc ignores it: " ++
+                "the result goes to [output] path or the output argument"
+        else
+            "[output] dir is read only by 'zsasa batch --workflow' and calc ignores it: " ++
+                "the result goes to [output] path or the output argument");
+    }
+    const jsonl = workflow.output.jsonl;
+    if (jsonl.atom_areas != null or jsonl.atom_identity != null or jsonl.total_area != null or
+        jsonl.decimals != null or jsonl.metadata != null)
+    {
+        findings.add(.warning, "[output.jsonl] is read only by 'zsasa batch --workflow' and calc ignores it " ++
+            "(calc writes no JSONL): remove the table");
+    }
+}
+
+fn checkBatchKeys(workflow: Workflow, mode: Mode, findings: *Findings) void {
+    if (workflow.input.path != null) {
+        findings.add(.err, "[input] path is not read by 'zsasa batch --workflow' (batch processes a directory): " ++
+            "set [input] dir, or " ++ calc_hint);
+    }
+    if (workflow.input.model != null) {
+        findings.add(.err, "[input] model is not supported by batch (it cannot select a model): " ++
+            "remove it, or " ++ calc_hint);
+    }
+    if (workflow.input.mol != null) {
+        findings.add(.err, "[input] mol is not supported by batch (every molecule of an SDF file is processed): " ++
+            "remove it, or " ++ calc_hint);
+    }
+    const calculation = workflow.calculation;
+    if (calculation.rsa orelse false) {
+        findings.add(.err, "[calculation] rsa = true is not supported by batch (only calc writes RSA tables): " ++
+            "remove it, or " ++ calc_hint);
+    }
+    if (calculation.per_residue orelse false) {
+        findings.add(.err, "[calculation] per_residue = true is not supported by batch " ++
+            "(only calc writes per-residue output; batch has residue_map with JSONL output): " ++
+            "remove it, or " ++ calc_hint);
+    }
+    if (calculation.polar orelse false) {
+        findings.add(.err, "[calculation] polar = true is not supported by batch " ++
+            "(only calc writes the polar/apolar split): remove it, or " ++ calc_hint);
+    }
+    if (calculation.validate_only orelse false) {
+        findings.add(.err, "[calculation] validate_only = true is not supported by batch " ++
+            "(batch would run the calculation): remove it, or " ++ calc_hint);
+    }
+    if (workflow.output.path != null) {
+        findings.add(.warning, "[output] path is not read by 'zsasa batch --workflow' (batch writes into a directory): " ++
+            "the output goes to [output] dir or the output argument");
+    }
+
+    if (mode == .batch_analysis) {
+        if (workflow.input.chain != null) {
+            findings.add(.err, "[input] chain is not supported by an [analysis] workflow: " ++
+                "select the chains of the interface with partner_a and partner_b");
+        }
+        if (calculation.residue_map orelse false) {
+            findings.add(.err, "[calculation] residue_map = true is not supported by an [analysis] workflow " ++
+                "(its rows carry no residue map): remove it");
+        }
+        if (workflow.output.jsonl.atom_identity orelse false) {
+            findings.add(.err, "[output.jsonl] atom_identity = true is not supported by an [analysis] workflow " ++
+                "(its rows carry no atom list; atom_identity belongs to chain_map jobs): remove it");
+        }
+    } else if (workflow.input.chain) |chain| {
+        checkInputChainOfJobs(workflow, chain, findings);
+    }
+}
+
+/// `[input] chain` is the default chain selection of the jobs of a batch
+/// workflow (see `Workflow.applyInputChainToJobs`).
+fn checkInputChainOfJobs(workflow: Workflow, chain: []const u8, findings: *Findings) void {
+    var has_id = false;
+    var parts = std.mem.splitScalar(u8, chain, ',');
+    while (parts.next()) |part| {
+        if (std.mem.trim(u8, part, " ").len > 0) has_id = true;
+    }
+    if (!has_id) {
+        findings.add(.err, "[input] chain needs at least one chain ID (for example \"A\" or \"A,B\"): " ++
+            "list the chains or remove the key");
+        return;
+    }
+    var uses_default = false;
+    for (workflow.jobs) |job| {
+        if (job.chain_map != null) {
+            findings.add(.err, "[input] chain cannot be combined with a job that sets chain_map " ++
+                "(the map selects the chains per file): remove [input] chain, or give the other jobs their own chains");
+            return;
+        }
+        if (job.chains == null) uses_default = true;
+    }
+    if (!uses_default and workflow.jobs.len > 0) {
+        findings.add(.err, "[input] chain is used by no job because every [[jobs]] entry sets its own chains: " ++
+            "remove [input] chain");
+    }
+}
 
 pub fn parse(allocator: Allocator, content: []const u8) Error!Workflow {
     const owned_content = try allocator.dupe(u8, content);
@@ -178,6 +406,10 @@ fn parseOwned(allocator: Allocator, owned_content: []const u8) Error!Workflow {
     }
 
     workflow.jobs = try parseJobs(allocator, doc.array_tables);
+    // The TOML parser drops an array table without keys, so a bare `[[jobs]]`
+    // is only visible in the text.
+    if (try countJobHeaders(owned_content) != workflow.jobs.len) return error.MissingJobName;
+    if (workflow.analysis != null and workflow.jobs.len > 0) return error.AnalysisWithJobs;
     try validateClassifier(workflow.classifier);
     return workflow;
 }
@@ -462,6 +694,21 @@ fn parseJob(allocator: Allocator, entries: []const toml_parser.Value.Entry, exis
         .chain_map = chain_map,
         .auth_chain = auth_chain,
     };
+}
+
+/// The number of `[[jobs]]` headers in `content`. Any other array-of-tables
+/// header is an unknown field.
+fn countJobHeaders(content: []const u8) WorkflowError!usize {
+    var count: usize = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, toml_parser.stripComment(raw_line), " \t\r");
+        if (!std.mem.startsWith(u8, line, "[[")) continue;
+        const end = std.mem.find(u8, line[2..], "]]") orelse continue;
+        if (!std.mem.eql(u8, std.mem.trim(u8, line[2 .. 2 + end], " \t"), "jobs")) return error.UnknownField;
+        count += 1;
+    }
+    return count;
 }
 
 fn rejectDuplicateTableHeaders(content: []const u8) WorkflowError!void {
@@ -1237,4 +1484,343 @@ test "parse workflow rejects an invalid calculation altloc" {
         \\altloc = true
         \\
     ));
+}
+
+test "parse rejects an [analysis] workflow that also has [[jobs]]" {
+    const allocator = std.testing.allocator;
+    const analysis =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[analysis]
+        \\type = "bsa"
+        \\partner_a = ["A"]
+        \\partner_b = ["B"]
+        \\
+    ;
+    // Either order, with a chains array that has to be released
+    try std.testing.expectError(error.AnalysisWithJobs, parse(allocator, analysis ++ "\n[[jobs]]\nname = \"j\"\nchains = [\"A\"]\n"));
+    try std.testing.expectError(error.AnalysisWithJobs, parse(
+        allocator,
+        "version = 1\n\n[[jobs]]\nname = \"j\"\nchains = [\"A\"]\n\n[analysis]\ntype = \"bsa\"\npartner_a = [\"A\"]\npartner_b = [\"B\"]\n",
+    ));
+    try std.testing.expect(errorHint(error.AnalysisWithJobs) != null);
+
+    // Each alone is fine
+    var only_analysis = try parse(allocator, analysis);
+    defer only_analysis.deinit();
+    try std.testing.expect(only_analysis.analysis != null);
+    var only_jobs = try parse(allocator, "version = 1\n\n[[jobs]]\nname = \"j\"\n");
+    defer only_jobs.deinit();
+    try std.testing.expectEqual(@as(usize, 1), only_jobs.jobs.len);
+}
+
+test "parse rejects a [[jobs]] table without keys wherever it is" {
+    const allocator = std.testing.allocator;
+    const named = "[[jobs]]\nname = \"named\"\nchains = [\"A\"]\n";
+    // First, in the middle and last: the TOML parser drops the empty table
+    try std.testing.expectError(error.MissingJobName, parse(allocator, "version = 1\n[[jobs]]\n" ++ named));
+    try std.testing.expectError(error.MissingJobName, parse(allocator, "version = 1\n" ++ named ++ "[[jobs]]\n" ++ "[[jobs]]\nname = \"other\"\n"));
+    try std.testing.expectError(error.MissingJobName, parse(allocator, "version = 1\n" ++ named ++ "[[jobs]]\n"));
+    try std.testing.expectError(error.MissingJobName, parse(allocator, "version = 1\n[[ jobs ]] # no name\n"));
+    // A table with keys but no name was always rejected
+    try std.testing.expectError(error.MissingJobName, parse(allocator, "version = 1\n[[jobs]]\nchains = [\"A\"]\n[[jobs]]\nname = \"x\"\n"));
+
+    // A header in a comment is not a table
+    var commented = try parse(allocator, "version = 1\n# [[jobs]]\n" ++ named);
+    defer commented.deinit();
+    try std.testing.expectEqual(@as(usize, 1), commented.jobs.len);
+}
+
+test "parse rejects an empty array table that is not [[jobs]]" {
+    try std.testing.expectError(error.UnknownField, parse(std.testing.allocator, "version = 1\n[[job]]\n"));
+    try std.testing.expectError(error.UnknownField, parse(std.testing.allocator, "version = 1\n[[jobs]]\nname = \"a\"\n[[analysis]]\n"));
+}
+
+fn expectFinding(findings: Findings, severity: Severity, needle: []const u8) !void {
+    for (findings.slice()) |finding| {
+        if (finding.severity == severity and std.mem.find(u8, finding.message, needle) != null) return;
+    }
+    std.debug.print("no {s} containing '{s}' in:\n", .{ @tagName(severity), needle });
+    for (findings.slice()) |finding| std.debug.print("  {s}: {s}\n", .{ @tagName(finding.severity), finding.message });
+    return error.TestExpectedFinding;
+}
+
+fn expectFindingCount(content: []const u8, mode: Mode, errors: usize, warnings: usize) !void {
+    var workflow = try parse(std.testing.allocator, content);
+    defer workflow.deinit();
+    const findings = checkKeys(workflow, mode);
+    try std.testing.expectEqual(errors, findings.errorCount());
+    try std.testing.expectEqual(warnings, findings.len - findings.errorCount());
+}
+
+const test_legacy_manifest =
+    \\version = 1
+    \\input_dir = "examples"
+    \\output_dir = "out"
+    \\format = "jsonl"
+    \\n_points = 32
+    \\
+    \\[[jobs]]
+    \\name = "all"
+    \\
+;
+
+test "checkKeys reports nothing for manifests that fit their command" {
+    const calc =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\path = "examples/1crn.pdb"
+        \\chain = "A"
+        \\model = 1
+        \\
+        \\[output]
+        \\path = "out.json"
+        \\format = "json"
+        \\
+        \\[calculation]
+        \\n_points = 32
+        \\timing = true
+        \\rsa = true
+        \\per_residue = true
+        \\polar = true
+        \\validate_only = false
+        \\
+        \\[classifier]
+        \\type = "ccd"
+        \\
+    ;
+    const batch =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "examples"
+        \\
+        \\[output]
+        \\dir = "out"
+        \\format = "jsonl"
+        \\
+        \\[output.jsonl]
+        \\decimals = 3
+        \\
+        \\[calculation]
+        \\n_points = 32
+        \\timing = false
+        \\residue_map = true
+        \\rsa = false
+        \\per_residue = false
+        \\polar = false
+        \\validate_only = false
+        \\
+        \\[[jobs]]
+        \\name = "all"
+        \\
+    ;
+    const analysis =
+        \\version = 1
+        \\
+        \\[input]
+        \\dir = "examples"
+        \\
+        \\[output]
+        \\dir = "out"
+        \\
+        \\[analysis]
+        \\type = "bsa"
+        \\partner_a = ["A"]
+        \\partner_b = ["B"]
+        \\
+    ;
+    try expectFindingCount(calc, .calc, 0, 0);
+    try expectFindingCount(batch, .batch_jobs, 0, 0);
+    try expectFindingCount(analysis, .batch_analysis, 0, 0);
+    try expectFindingCount(test_legacy_manifest, .batch_jobs, 0, 0);
+}
+
+test "checkKeys: calc rejects batch-only structure and warns about batch-only output" {
+    const allocator = std.testing.allocator;
+
+    var analysis = try parse(allocator,
+        \\version = 1
+        \\
+        \\[input]
+        \\path = "a.pdb"
+        \\
+        \\[analysis]
+        \\type = "bsa"
+        \\partner_a = ["A"]
+        \\partner_b = ["B"]
+        \\
+    );
+    defer analysis.deinit();
+    const analysis_findings = checkKeys(analysis, .calc);
+    try std.testing.expectEqual(@as(usize, 1), analysis_findings.len);
+    try expectFinding(analysis_findings, .err, "[analysis]");
+    try expectFinding(analysis_findings, .err, "zsasa batch --workflow");
+
+    var jobs = try parse(allocator, "version = 1\n[input]\npath = \"a.pdb\"\n[[jobs]]\nname = \"j\"\n");
+    defer jobs.deinit();
+    const jobs_findings = checkKeys(jobs, .calc);
+    try std.testing.expectEqual(@as(usize, 1), jobs_findings.len);
+    try expectFinding(jobs_findings, .err, "[[jobs]]");
+
+    var input_dir = try parse(allocator, "version = 1\n[input]\npath = \"a.pdb\"\ndir = \"d\"\n");
+    defer input_dir.deinit();
+    const dir_findings = checkKeys(input_dir, .calc);
+    try std.testing.expectEqual(@as(usize, 1), dir_findings.len);
+    try expectFinding(dir_findings, .err, "[input] dir");
+    try expectFinding(dir_findings, .err, "zsasa batch --workflow");
+
+    // The flat batch manifest names the key as it is written there
+    var legacy = try parse(allocator, test_legacy_manifest);
+    defer legacy.deinit();
+    const legacy_findings = checkKeys(legacy, .calc);
+    try expectFinding(legacy_findings, .err, "input_dir");
+    try expectFinding(legacy_findings, .err, "[[jobs]]");
+    try expectFinding(legacy_findings, .warning, "output_dir");
+
+    // calc writes no residue map; false asks for what calc does
+    try expectFindingCount("version = 1\n[calculation]\nresidue_map = true\n", .calc, 1, 0);
+    try expectFindingCount("version = 1\n[calculation]\nresidue_map = false\n", .calc, 0, 0);
+
+    // Output location and JSONL options only warn
+    try expectFindingCount("version = 1\n[output]\ndir = \"out\"\n", .calc, 0, 1);
+    try expectFindingCount("version = 1\n[output.jsonl]\natom_areas = false\n", .calc, 0, 1);
+    try expectFindingCount("version = 1\n[output.jsonl]\nmetadata = \"none\"\ndecimals = 2\n", .calc, 0, 1);
+}
+
+test "checkKeys: batch rejects keys it cannot honor and says what to do" {
+    const allocator = std.testing.allocator;
+    const header = "version = 1\n[input]\ndir = \"d\"\n";
+    const job = "\n[[jobs]]\nname = \"j\"\n";
+
+    inline for (.{
+        .{ "path = \"a.pdb\"\n", "[input] path", "set [input] dir" },
+        .{ "model = 2\n", "[input] model", "zsasa calc --workflow" },
+        .{ "mol = \"1\"\n", "[input] mol", "zsasa calc --workflow" },
+    }) |case| {
+        var workflow = try parse(allocator, header ++ case[0] ++ job);
+        defer workflow.deinit();
+        const findings = checkKeys(workflow, .batch_jobs);
+        try std.testing.expectEqual(@as(usize, 1), findings.len);
+        try expectFinding(findings, .err, case[1]);
+        try expectFinding(findings, .err, case[2]);
+    }
+
+    inline for (.{ "rsa", "per_residue", "polar", "validate_only" }) |key| {
+        inline for (.{ Mode.batch_jobs, Mode.batch_analysis }) |mode| {
+            const tail = if (mode == .batch_jobs) job else "\n[analysis]\ntype = \"bsa\"\npartner_a = [\"A\"]\npartner_b = [\"B\"]\n";
+            var workflow = try parse(allocator, header ++ "[calculation]\n" ++ key ++ " = true\n" ++ tail);
+            defer workflow.deinit();
+            const findings = checkKeys(workflow, mode);
+            try std.testing.expectEqual(@as(usize, 1), findings.len);
+            try expectFinding(findings, .err, "[calculation] " ++ key ++ " = true");
+            try expectFinding(findings, .err, "zsasa calc --workflow");
+        }
+    }
+
+    // Where the output goes is a warning
+    var output_path = try parse(allocator, header ++ "[output]\npath = \"o.json\"\n" ++ job);
+    defer output_path.deinit();
+    const findings = checkKeys(output_path, .batch_jobs);
+    try std.testing.expectEqual(@as(usize, 1), findings.len);
+    try expectFinding(findings, .warning, "[output] path");
+    try expectFinding(findings, .warning, "[output] dir");
+}
+
+test "checkKeys: an [analysis] workflow rejects chain, residue_map and atom_identity" {
+    const base = "version = 1\n[analysis]\ntype = \"bsa\"\npartner_a = [\"A\"]\npartner_b = [\"B\"]\n";
+    try expectFindingCount("version = 1\n[input]\nchain = \"A\"\n[analysis]\ntype = \"bsa\"\npartner_a = [\"A\"]\npartner_b = [\"B\"]\n", .batch_analysis, 1, 0);
+    try expectFindingCount(base ++ "[calculation]\nresidue_map = true\n", .batch_analysis, 1, 0);
+    try expectFindingCount(base ++ "[output.jsonl]\natom_identity = true\n", .batch_analysis, 1, 0);
+    try expectFindingCount(base ++ "[output.jsonl]\natom_identity = false\ndecimals = 2\n", .batch_analysis, 0, 0);
+}
+
+test "checkKeys: [input] chain is the default selection of the jobs that have none" {
+    const allocator = std.testing.allocator;
+    const header = "version = 1\n[input]\ndir = \"d\"\nchain = \"A, B\"\n";
+
+    // A job without a selection takes it; a job with its own keeps it
+    var workflow = try parse(allocator, header ++ "[[jobs]]\nname = \"default\"\n[[jobs]]\nname = \"own\"\nchains = [\"C\"]\n");
+    defer workflow.deinit();
+    try std.testing.expectEqual(@as(usize, 0), checkKeys(workflow, .batch_jobs).len);
+    try workflow.applyInputChainToJobs();
+    try std.testing.expectEqual(@as(usize, 2), workflow.jobs[0].chains.?.len);
+    try std.testing.expectEqualStrings("A", workflow.jobs[0].chains.?[0]);
+    try std.testing.expectEqualStrings("B", workflow.jobs[0].chains.?[1]);
+    try std.testing.expectEqual(@as(usize, 1), workflow.jobs[1].chains.?.len);
+    try std.testing.expectEqualStrings("C", workflow.jobs[1].chains.?[0]);
+
+    // Without the key nothing changes
+    var plain = try parse(allocator, "version = 1\n[[jobs]]\nname = \"default\"\n");
+    defer plain.deinit();
+    try plain.applyInputChainToJobs();
+    try std.testing.expect(plain.jobs[0].chains == null);
+
+    // A chain_map job selects per file, so the default cannot apply
+    var mapped = try parse(allocator, header ++ "[[jobs]]\nname = \"m\"\nchain_map = \"c.csv\"\n[[jobs]]\nname = \"default\"\n");
+    defer mapped.deinit();
+    try expectFinding(checkKeys(mapped, .batch_jobs), .err, "chain_map");
+
+    // A value no job would use
+    var overridden = try parse(allocator, header ++ "[[jobs]]\nname = \"own\"\nchains = [\"C\"]\n");
+    defer overridden.deinit();
+    try expectFinding(checkKeys(overridden, .batch_jobs), .err, "used by no job");
+
+    // A value without a chain ID
+    inline for (.{ "\"\"", "\" , \"" }) |blank| {
+        var blank_chain = try parse(allocator, "version = 1\n[input]\nchain = " ++ blank ++ "\n[[jobs]]\nname = \"default\"\n");
+        defer blank_chain.deinit();
+        try expectFinding(checkKeys(blank_chain, .batch_jobs), .err, "at least one chain ID");
+    }
+}
+
+test "Findings.report fails on errors and passes warnings" {
+    var warnings = Findings{};
+    warnings.add(.warning, "only a warning");
+    try warnings.report();
+
+    var errors = Findings{};
+    errors.add(.warning, "a warning");
+    errors.add(.err, "an error");
+    try std.testing.expectError(error.InvalidArgument, errors.report());
+    try std.testing.expectEqual(@as(usize, 1), errors.errorCount());
+}
+
+test "checkKeys never needs more room than Findings has" {
+    var workflow = try parse(std.testing.allocator,
+        \\version = 1
+        \\
+        \\[input]
+        \\path = "a.pdb"
+        \\dir = "d"
+        \\chain = "A"
+        \\model = 1
+        \\mol = "1"
+        \\
+        \\[output]
+        \\path = "o.json"
+        \\dir = "o"
+        \\
+        \\[output.jsonl]
+        \\atom_identity = true
+        \\
+        \\[calculation]
+        \\residue_map = true
+        \\rsa = true
+        \\per_residue = true
+        \\polar = true
+        \\validate_only = true
+        \\
+        \\[[jobs]]
+        \\name = "j"
+        \\
+    );
+    defer workflow.deinit();
+    for ([_]Mode{ .calc, .batch_jobs, .batch_analysis }) |mode| {
+        try std.testing.expect(checkKeys(workflow, mode).len < Findings.max_findings);
+    }
 }
