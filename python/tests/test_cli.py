@@ -366,3 +366,98 @@ class TestResidueOutputsAgree:
         starts, counts = row["residue_atom_start"], row["residue_atom_count"]
         assert starts == [sum(counts[:i]) for i in range(len(counts))]
         assert sum(counts) == len(row["atom_areas"])
+
+
+class TestPolarPartition:
+    """The polar/non-polar split by atom follows the classes of the classifier."""
+
+    @pytest.mark.parametrize("classifier", ["naccess", "oons", "ccd"])
+    def test_rsa_totals_and_polar_summary_are_the_sums_by_class(
+        self, tmp_path: Path, classifier: str
+    ):
+        from zsasa import AtomClass, ClassifierType, classify_atoms
+
+        input_file = EXAMPLES_DIR / "1ubq.pdb"
+        # The atoms that calc reads by default: ATOM records without hydrogens
+        atom_lines = [
+            line
+            for line in input_file.read_text().splitlines()
+            if line.startswith("ATOM") and line[76:78].strip() != "H"
+        ]
+        residues = [line[17:20].strip() for line in atom_lines]
+        atom_names = [line[12:16].strip() for line in atom_lines]
+
+        json_file = tmp_path / "out.json"
+        result = run_zsasa(
+            "calc", f"--classifier={classifier}", "--polar", str(input_file), str(json_file)
+        )
+        assert result.returncode == 0, result.stderr
+        areas = json.loads(json_file.read_text())["atom_areas"]
+        assert len(areas) == len(atom_lines)
+
+        # Classes from the same classifier through the C API
+        classes = classify_atoms(residues, atom_names, ClassifierType[classifier.upper()]).classes
+        assert AtomClass.UNKNOWN not in set(classes)
+        polar = sum(
+            area for area, cls in zip(areas, classes, strict=True) if cls == AtomClass.POLAR
+        )
+        apolar = sum(
+            area for area, cls in zip(areas, classes, strict=True) if cls == AtomClass.APOLAR
+        )
+
+        # TOTAL row of the RSA file: non-polar in columns 51-60, polar in columns 64-73
+        rsa_file = tmp_path / "out.rsa"
+        result_rsa = run_zsasa(
+            "calc",
+            "--quiet",
+            "--format=rsa",
+            f"--classifier={classifier}",
+            str(input_file),
+            str(rsa_file),
+        )
+        assert result_rsa.returncode == 0, result_rsa.stderr
+        total_row = next(
+            line for line in rsa_file.read_text().splitlines() if line.startswith("TOTAL")
+        )
+        assert float(total_row[50:60]) == pytest.approx(apolar, abs=0.051)
+        assert float(total_row[63:73]) == pytest.approx(polar, abs=0.051)
+
+        # Atom summary of --polar on stderr
+        lines = result.stderr.splitlines()
+        start = next(
+            i
+            for i, line in enumerate(lines)
+            if line.startswith("Polar/Nonpolar SASA by atom class")
+        )
+        assert float(lines[start + 1].split()[1]) == pytest.approx(polar, abs=0.0051)
+        assert float(lines[start + 2].split()[1]) == pytest.approx(apolar, abs=0.0051)
+        assert lines[start + 1].endswith(
+            f"- {sum(cls == AtomClass.POLAR for cls in classes)} atoms"
+        )
+        assert lines[start + 2].endswith(
+            f"- {sum(cls == AtomClass.APOLAR for cls in classes)} atoms"
+        )
+
+    def test_classifiers_give_different_partitions(self, tmp_path: Path):
+        """NACCESS classes sulfur as apolar, OONS classes carbonyl carbon as polar."""
+        totals = {}
+        for classifier in ("naccess", "oons", "ccd"):
+            rsa_file = tmp_path / f"{classifier}.rsa"
+            result = run_zsasa(
+                "calc",
+                "--quiet",
+                "--format=rsa",
+                f"--classifier={classifier}",
+                str(EXAMPLES_DIR / "1ubq.pdb"),
+                str(rsa_file),
+            )
+            assert result.returncode == 0, result.stderr
+            total_row = next(
+                line for line in rsa_file.read_text().splitlines() if line.startswith("TOTAL")
+            )
+            totals[classifier] = (float(total_row[50:60]), float(total_row[63:73]))
+
+        # 1ubq, 100 test points: non-polar and polar area by class
+        assert totals["naccess"] == pytest.approx((2469.4, 2353.9), abs=0.11)
+        assert totals["oons"] == pytest.approx((2542.6, 2236.9), abs=0.11)
+        assert totals["ccd"] == pytest.approx((2318.9, 2515.8), abs=0.11)

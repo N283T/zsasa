@@ -6,7 +6,11 @@
 //! - Polar/nonpolar classification
 
 const std = @import("std");
+const classifier = @import("classifier.zig");
 const types = @import("types.zig");
+
+/// Polarity class that a classifier gives an atom
+pub const AtomClass = classifier.AtomClass;
 
 /// Maximum SASA values for standard amino acids (in Å²).
 /// Values from Tien et al. (2013) "Maximum allowed solvent accessibilities
@@ -175,6 +179,114 @@ pub fn printPolarSummary(summary: PolarSummary) void {
         std.debug.print("  Unknown:  {d:>10.2} Å² - {d} residues (excluded from %)\n", .{
             summary.unknown_sasa,
             summary.unknown_residue_count,
+        });
+    }
+}
+
+/// Whether an atom counts as polar in the polar/non-polar partition by atom:
+/// the `Non-polar` and `All polar` columns of the RSA file and the atom
+/// summary of `--polar`.
+///
+/// `class` is the class that the active classifier gives the atom, the same
+/// classifier that set its radius. Classifiers disagree on some atoms
+/// (NACCESS classes sulfur as apolar, OONS classes carbonyl carbon as polar),
+/// so the partition follows the classifier. An atom that the classifier does
+/// not class (`.unknown`: hydrogens, ligands outside its tables), and every
+/// atom when no classifier ran, falls back on the element: N, O, P and S are
+/// polar, everything else is apolar. The element is the atom's entry in the
+/// input's element column or, without such a column, the first letter of the
+/// atom name; an atom without a name is apolar.
+pub fn isPolarAtom(class: AtomClass, atom_name: ?[]const u8, element: ?u8) bool {
+    switch (class) {
+        .polar => return true,
+        .apolar => return false,
+        .unknown => {},
+    }
+    const name = atom_name orelse return false;
+    if (element) |atomic_number| {
+        return atomic_number == 7 or atomic_number == 8 or atomic_number == 15 or atomic_number == 16;
+    }
+    const trimmed = std.mem.trim(u8, name, " ");
+    if (trimmed.len == 0) return false;
+    const c = std.ascii.toUpper(trimmed[0]);
+    return c == 'N' or c == 'O' or c == 'P' or c == 'S';
+}
+
+/// Class of atom `i` in `atom_classes`, or `.unknown` when no classifier ran.
+pub fn atomClassAt(atom_classes: ?[]const AtomClass, i: usize) AtomClass {
+    return if (atom_classes) |classes| classes[i] else .unknown;
+}
+
+/// Polar/non-polar SASA by atom, as partitioned by `isPolarAtom`.
+pub const AtomPolarSummary = struct {
+    polar_sasa: f64 = 0,
+    apolar_sasa: f64 = 0,
+    polar_atom_count: usize = 0,
+    apolar_atom_count: usize = 0,
+    /// Atoms without a class from the classifier, classed by their element
+    fallback_atom_count: usize = 0,
+
+    pub fn polarFraction(self: AtomPolarSummary) f64 {
+        const total = self.polar_sasa + self.apolar_sasa;
+        return if (total > 0) self.polar_sasa / total else 0;
+    }
+
+    pub fn apolarFraction(self: AtomPolarSummary) f64 {
+        const total = self.polar_sasa + self.apolar_sasa;
+        return if (total > 0) self.apolar_sasa / total else 0;
+    }
+};
+
+/// Sum atom areas by polarity. `atom_classes` holds the class of every atom
+/// from the active classifier, or is null when no classifier ran.
+pub fn calculateAtomPolarSummary(
+    input: types.AtomInput,
+    atom_areas: []const f64,
+    atom_classes: ?[]const AtomClass,
+) !AtomPolarSummary {
+    const n = input.atomCount();
+    if (atom_areas.len != n) return error.LengthMismatch;
+    if (atom_classes) |classes| {
+        if (classes.len != n) return error.LengthMismatch;
+    }
+
+    var summary = AtomPolarSummary{};
+    for (atom_areas, 0..) |area, i| {
+        const class = atomClassAt(atom_classes, i);
+        if (class == .unknown) summary.fallback_atom_count += 1;
+        const polar = isPolarAtom(
+            class,
+            if (input.atom_name) |names| names[i].slice() else null,
+            if (input.element) |elements| elements[i] else null,
+        );
+        if (polar) {
+            summary.polar_sasa += area;
+            summary.polar_atom_count += 1;
+        } else {
+            summary.apolar_sasa += area;
+            summary.apolar_atom_count += 1;
+        }
+    }
+    return summary;
+}
+
+/// Print the polar/non-polar SASA by atom class below the summary by residue
+/// type. The areas are those of the `TOTAL` row of the RSA file.
+pub fn printAtomPolarSummary(summary: AtomPolarSummary, classifier_name: []const u8) void {
+    std.debug.print("\nPolar/Nonpolar SASA by atom class (classifier: {s}):\n", .{classifier_name});
+    std.debug.print("  Polar:    {d:>10.2} Å² ({d:>5.1}%) - {d} atoms\n", .{
+        summary.polar_sasa,
+        summary.polarFraction() * 100,
+        summary.polar_atom_count,
+    });
+    std.debug.print("  Nonpolar: {d:>10.2} Å² ({d:>5.1}%) - {d} atoms\n", .{
+        summary.apolar_sasa,
+        summary.apolarFraction() * 100,
+        summary.apolar_atom_count,
+    });
+    if (summary.fallback_atom_count > 0) {
+        std.debug.print("  ({d} atoms without a class from the classifier are classed by element)\n", .{
+            summary.fallback_atom_count,
         });
     }
 }

@@ -13,6 +13,10 @@ pub const TextOutputOptions = struct {
     probe_radius: f64 = 1.4,
     detail_count: u32 = 0,
     detail_label: []const u8 = "Detail",
+    /// Polarity class of every atom from the classifier that set the radii,
+    /// or null when no classifier ran. Decides the non-polar and polar
+    /// columns of the RSA text; see `analysis.isPolarAtom`.
+    atom_classes: ?[]const analysis.AtomClass = null,
 };
 
 const AreaBreakdown = struct {
@@ -126,41 +130,37 @@ fn isMainChainAtom(atom_name: []const u8) bool {
         std.mem.eql(u8, atom_name, "OXT");
 }
 
-fn isPolarAtom(atom_name: []const u8, element: ?u8) bool {
-    if (element) |atomic_number| {
-        return atomic_number == 7 or atomic_number == 8 or atomic_number == 15 or atomic_number == 16;
-    }
-    const trimmed = std.mem.trim(u8, atom_name, " ");
-    if (trimmed.len == 0) return false;
-    const c = std.ascii.toUpper(trimmed[0]);
-    return c == 'N' or c == 'O' or c == 'P' or c == 'S';
-}
-
-fn addAtomArea(area: *AreaBreakdown, atom_area: f64, atom_name: ?[]const u8, element: ?u8) void {
+/// Add the area of one atom to a breakdown. `class` is the atom's polarity
+/// class from the active classifier (`analysis.isPolarAtom`).
+fn addAtomArea(area: *AreaBreakdown, atom_area: f64, atom_name: ?[]const u8, element: ?u8, class: analysis.AtomClass) void {
     area.total += atom_area;
-    if (atom_name) |name| {
-        if (isMainChainAtom(name)) {
-            area.main_chain += atom_area;
-        } else {
-            area.side_chain += atom_area;
-        }
-        if (isPolarAtom(name, element)) {
-            area.polar += atom_area;
-        } else {
-            area.apolar += atom_area;
-        }
+    if (atom_name != null and isMainChainAtom(atom_name.?)) {
+        area.main_chain += atom_area;
     } else {
         area.side_chain += atom_area;
+    }
+    if (analysis.isPolarAtom(class, atom_name, element)) {
+        area.polar += atom_area;
+    } else {
         area.apolar += atom_area;
     }
 }
 
 /// Sum atom areas per residue. The residues are those of
 /// `analysis.ResidueIdentity`, the same ones as in the `--per-residue` table
-/// and in the JSONL residue map.
-fn collectResidueAreas(allocator: Allocator, input: AtomInput, atom_areas: []const f64) ![]ResidueArea {
+/// and in the JSONL residue map. `atom_classes` is
+/// `TextOutputOptions.atom_classes`.
+fn collectResidueAreas(
+    allocator: Allocator,
+    input: AtomInput,
+    atom_areas: []const f64,
+    atom_classes: ?[]const analysis.AtomClass,
+) ![]ResidueArea {
     if (!input.hasResidueInfo()) return error.MissingResidueInfo;
     if (atom_areas.len != input.atomCount()) return error.LengthMismatch;
+    if (atom_classes) |classes| {
+        if (classes.len != input.atomCount()) return error.LengthMismatch;
+    }
 
     const identity = try analysis.ResidueIdentity.init(input);
     const residues = try allocator.alloc(ResidueArea, identity.residueCount());
@@ -179,6 +179,7 @@ fn collectResidueAreas(allocator: Allocator, input: AtomInput, atom_areas: []con
                 atom_areas[i],
                 if (atom_names) |names| names[i].slice() else null,
                 if (elements) |elem| elem[i] else null,
+                analysis.atomClassAt(atom_classes, i),
             );
         }
         residues[residue_idx] = .{ .first_atom = range.start, .area = area };
@@ -347,8 +348,13 @@ fn areaBreakdownNeedsSummaryWidthWarning(area: AreaBreakdown) bool {
 /// described above: a residue name of more than three characters, a chain ID
 /// of more than one, a residue number of more than four, an insertion code of
 /// more than one, more than 999 chains, or a value too wide for its field.
-fn rsaResultNeedsLegacyWidthWarning(allocator: Allocator, result: SasaResult, input: AtomInput) !bool {
-    const residues = try collectResidueAreas(allocator, input, result.atom_areas);
+fn rsaResultNeedsLegacyWidthWarning(
+    allocator: Allocator,
+    result: SasaResult,
+    input: AtomInput,
+    atom_classes: ?[]const analysis.AtomClass,
+) !bool {
+    const residues = try collectResidueAreas(allocator, input, result.atom_areas, atom_classes);
     defer allocator.free(residues);
     const identity = try analysis.ResidueIdentity.init(input);
     const chains = try collectChainAreas(allocator, identity, residues);
@@ -379,7 +385,7 @@ fn rsaResultNeedsLegacyWidthWarning(allocator: Allocator, result: SasaResult, in
 }
 
 pub fn sasaResultToRsa(allocator: Allocator, result: SasaResult, input: AtomInput, options: TextOutputOptions) ![]u8 {
-    const residues = try collectResidueAreas(allocator, input, result.atom_areas);
+    const residues = try collectResidueAreas(allocator, input, result.atom_areas, options.atom_classes);
     defer allocator.free(residues);
     const identity = try analysis.ResidueIdentity.init(input);
     const chains = try collectChainAreas(allocator, identity, residues);
@@ -391,7 +397,7 @@ pub fn sasaResultToRsa(allocator: Allocator, result: SasaResult, input: AtomInpu
 
     try writer.writeAll("REM  zsasa FreeSASA/NACCESS-compatible RSA\n");
     try writer.print("REM  Absolute and relative SASAs for {s}\n", .{options.input_name});
-    try writer.print("REM  Atomic radii: {s}\n", .{options.classifier_name});
+    try writer.print("REM  Atomic radii and polar/non-polar classes: {s}\n", .{options.classifier_name});
     // The reference values do not depend on the classifier (analysis.MaxSASA)
     try writer.writeAll("REM  Reference values for relative SASA: Tien et al. 2013\n");
     try writer.print("REM  Algorithm: {s}\n", .{options.algorithm_name});
@@ -592,7 +598,7 @@ pub fn writeSasaResultWithFormatAndInputOptions(
     format: OutputFormat,
     options: TextOutputOptions,
 ) !void {
-    if (format == .rsa and try rsaResultNeedsLegacyWidthWarning(allocator, result, input)) {
+    if (format == .rsa and try rsaResultNeedsLegacyWidthWarning(allocator, result, input, options.atom_classes)) {
         std.debug.print(
             "Warning: --format=rsa output exceeds legacy NACCESS fixed-width columns; columns may be misaligned. Use --format=json for machine-readable output.\n",
             .{},
@@ -2343,7 +2349,7 @@ test "sasaResultToRsa writes residue, chain, and total rows" {
     try std.testing.expectEqualStrings(
         \\REM  zsasa FreeSASA/NACCESS-compatible RSA
         \\REM  Absolute and relative SASAs for mini.pdb
-        \\REM  Atomic radii: naccess
+        \\REM  Atomic radii and polar/non-polar classes: naccess
         \\REM  Reference values for relative SASA: Tien et al. 2013
         \\REM  Algorithm: Shrake & Rupley
         \\REM  Probe-radius: 1.40
@@ -2451,7 +2457,7 @@ const RsaRows = struct {
         return .{
             .text = text,
             .rows = rows,
-            .needs_warning = try rsaResultNeedsLegacyWidthWarning(allocator, structure.result(), structure.input),
+            .needs_warning = try rsaResultNeedsLegacyWidthWarning(allocator, structure.result(), structure.input, null),
         };
     }
 
@@ -2543,6 +2549,61 @@ test "sasaResultToRsa rows follow the NACCESS fixed columns" {
     }
 }
 
+test "sasaResultToRsa takes the non-polar and polar columns from the classifier classes" {
+    const allocator = std.testing.allocator;
+    var structure = try TestStructure.init(&.{
+        .{ .chain = "A", .residue = "MET", .number = 1, .atom = "N", .area = 1 },
+        .{ .chain = "A", .residue = "MET", .number = 1, .atom = "C", .area = 2 },
+        .{ .chain = "A", .residue = "MET", .number = 1, .atom = "SD", .area = 4 },
+        .{ .chain = "A", .residue = "MET", .number = 1, .atom = "CE", .area = 8 },
+        .{ .chain = "A", .residue = "LIG", .number = 2, .atom = "S1", .area = 16 },
+        .{ .chain = "A", .residue = "LIG", .number = 2, .atom = "C1", .area = 32 },
+    }, false);
+    defer structure.deinit();
+
+    const Case = struct { classes: ?[]const analysis.AtomClass, apolar: [2]f64, polar: [2]f64 };
+    const cases = [_]Case{
+        // No classifier: N, O, P and S are polar, everything else apolar
+        .{ .classes = null, .apolar = .{ 10, 32 }, .polar = .{ 5, 16 } },
+        // NACCESS classes sulfur as apolar; the ligand is outside its tables
+        // and falls back on the element
+        .{ .classes = &.{ .polar, .apolar, .apolar, .apolar, .unknown, .unknown }, .apolar = .{ 14, 32 }, .polar = .{ 1, 16 } },
+        // OONS classes carbonyl carbon as polar
+        .{ .classes = &.{ .polar, .polar, .polar, .apolar, .unknown, .unknown }, .apolar = .{ 8, 32 }, .polar = .{ 7, 16 } },
+        // A classifier that classes every atom decides alone
+        .{ .classes = &.{ .apolar, .apolar, .apolar, .polar, .apolar, .polar }, .apolar = .{ 7, 16 }, .polar = .{ 8, 32 } },
+    };
+    for (cases) |case| {
+        const rsa = try sasaResultToRsa(allocator, structure.result(), structure.input, .{ .atom_classes = case.classes });
+        defer allocator.free(rsa);
+
+        var row: usize = 0;
+        var lines = std.mem.splitScalar(u8, rsa, '\n');
+        while (lines.next()) |line| {
+            if (std.mem.startsWith(u8, line, "RES ")) {
+                // Non-polar and polar absolute values: the fourth and fifth pair
+                try std.testing.expectEqual(case.apolar[row], try std.fmt.parseFloat(f64, std.mem.trim(u8, line[54..61], " ")));
+                try std.testing.expectEqual(case.polar[row], try std.fmt.parseFloat(f64, std.mem.trim(u8, line[67..74], " ")));
+                row += 1;
+            } else if (std.mem.startsWith(u8, line, "TOTAL")) {
+                try std.testing.expectEqual(case.apolar[0] + case.apolar[1], try std.fmt.parseFloat(f64, std.mem.trim(u8, line[50..60], " ")));
+                try std.testing.expectEqual(case.polar[0] + case.polar[1], try std.fmt.parseFloat(f64, std.mem.trim(u8, line[63..73], " ")));
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 2), row);
+
+        // The atom summary of --polar reports the same partition
+        const summary = try analysis.calculateAtomPolarSummary(structure.input, structure.areas, case.classes);
+        try std.testing.expectEqual(case.apolar[0] + case.apolar[1], summary.apolar_sasa);
+        try std.testing.expectEqual(case.polar[0] + case.polar[1], summary.polar_sasa);
+    }
+
+    // The classes must cover every atom
+    try std.testing.expectError(error.LengthMismatch, sasaResultToRsa(allocator, structure.result(), structure.input, .{
+        .atom_classes = &.{.polar},
+    }));
+}
+
 test "sasaResultToRsa keeps labels and values whole when they do not fit the fixed columns" {
     var rsa = try RsaRows.init(&.{
         // Residue number of five characters
@@ -2632,7 +2693,7 @@ test "rsaResultNeedsLegacyWidthWarning detects oversized RSA numeric columns" {
         .allocator = allocator,
     };
 
-    try std.testing.expect(try rsaResultNeedsLegacyWidthWarning(allocator, result, input));
+    try std.testing.expect(try rsaResultNeedsLegacyWidthWarning(allocator, result, input, null));
 }
 
 test "rsaResultNeedsLegacyWidthWarning accepts legacy-width RSA output" {
@@ -2666,7 +2727,7 @@ test "rsaResultNeedsLegacyWidthWarning accepts legacy-width RSA output" {
         .allocator = allocator,
     };
 
-    try std.testing.expect(!try rsaResultNeedsLegacyWidthWarning(allocator, result, input));
+    try std.testing.expect(!try rsaResultNeedsLegacyWidthWarning(allocator, result, input, null));
 }
 
 test "sasaResultToCsv empty atoms" {

@@ -49,10 +49,10 @@ When the input of `calc` has residue information (PDB, mmCIF, BinaryCIF and SDF/
 
 ```csv
 chain,residue,resnum,insertion_code,atom_name,x,y,z,radius,area
-H,GLY,10,,N,1.000,3.000,5.000,1.640,32.470000
-H,GLY,10,,CA,2.000,4.000,6.000,1.880,0.250000
-H,SER,10,A,N,3.000,5.000,7.000,1.640,15.820000
-,,,,,,,,,18923.280000
+A,MET,1,,N,27.340,24.430,2.614,1.650,49.097438
+A,MET,1,,CA,26.266,25.413,2.842,1.870,16.124513
+H,SER,10,A,N,27.361,17.959,8.559,1.650,49.097438
+,,,,,,,,,699.097218
 ```
 
 | Column | Content |
@@ -99,21 +99,21 @@ The single-structure `calc` command can also write a residue table in the
 ```text
 REM  zsasa FreeSASA/NACCESS-compatible RSA
 REM  Absolute and relative SASAs for structure.pdb
-REM  Atomic radii: NACCESS
+REM  Atomic radii and polar/non-polar classes: NACCESS
 REM  Reference values for relative SASA: Tien et al. 2013
 REM  Algorithm: Shrake & Rupley
 REM  Probe-radius: 1.40
 REM  Test-points: 100
 REM RES _ NUM      All-atoms   Total-Side   Main-Chain    Non-polar    All polar
 REM                ABS   REL    ABS   REL    ABS   REL    ABS   REL    ABS   REL
-RES MET A   1    52.21  23.3  18.10   N/A  34.11   N/A  28.35   N/A  23.86   N/A
-RES GLN A   2    78.96  35.1  73.18   N/A   5.78   N/A  14.42   N/A  64.54   N/A
-RES SER H  10A   30.00  19.4  20.00   N/A  10.00   N/A  20.00   N/A  10.00   N/A
+RES MET A   1   241.62 107.9 149.97   N/A  91.65   N/A 169.86   N/A  71.76   N/A
+RES GLN A   2   232.62 103.4 156.88   N/A  75.74   N/A  99.54   N/A 133.07   N/A
+RES SER H  10A  224.86 145.1  83.12   N/A 141.74   N/A 100.89   N/A 123.97   N/A
 END  Absolute sums over single chains surface
-CHAIN  1 A      131.2         91.3         39.9         42.8         88.4
-CHAIN  2 H       30.0         20.0         10.0         20.0         10.0
+CHAIN  1 A      474.2        306.9        167.4        269.4        204.8
+CHAIN  2 H      224.9         83.1        141.7        100.9        124.0
 END  Absolute sums over all chains
-TOTAL           161.2        111.3         49.9         62.8         98.4
+TOTAL           699.1        390.0        309.1        370.3        328.8
 ```
 
 `rsa` requires residue metadata, so use PDB/mmCIF input or another input format
@@ -128,6 +128,17 @@ reported for the 20 standard amino acids. zsasa has no reference values for
 the side-chain, main-chain, non-polar and polar columns, so their relative
 values, and the all-atom relative value of any other residue, are printed as
 `N/A`, FreeSASA's notation for a missing reference value.
+
+The `Non-polar` and `All polar` columns split the area by atom, using the
+polarity class that the active classifier gives each atom, the same classifier
+that sets the radii (see
+[Classifiers and CCD](../guide/classifiers.mdx#radii-reference-table)). The
+classifiers disagree on some atoms: NACCESS classes sulfur as non-polar where
+CCD, ProtOr and OONS class it as polar, and OONS classes carbonyl carbon as
+polar. An atom that the classifier does not class (hydrogens, ligands outside
+its tables) is classed by its element: N, O, P and S are polar, everything else
+is non-polar. The `--polar` option prints the same split for the whole
+structure.
 
 #### RSA Column Layout
 
@@ -248,16 +259,24 @@ Chain  Res    Num       SASA    RSA  Atoms
 
 ### Polar/Nonpolar Summary (`--polar`)
 
-Classifies residues and shows SASA breakdown. Automatically enables `--per-residue`.
+Prints two summaries of the SASA, one by residue type and one by atom class. Automatically enables `--per-residue`.
+
+```
+Polar/Nonpolar SASA:
+  Polar:       3478.56 Å² ( 72.1%) - 42 residues
+  Nonpolar:    1344.73 Å² ( 27.9%) - 34 residues
+
+Polar/Nonpolar SASA by atom class (classifier: NACCESS):
+  Polar:       2353.88 Å² ( 48.8%) - 223 atoms
+  Nonpolar:    2469.41 Å² ( 51.2%) - 379 atoms
+```
+
+**By residue type.** The first block adds up whole residues:
 
 - **Polar**: ARG, ASN, ASP, GLN, GLU, HIS, LYS, SER, THR, TYR
 - **Nonpolar**: ALA, CYS, PHE, GLY, ILE, LEU, MET, PRO, TRP, VAL
 - **Unknown**: Non-standard residues (ligands, modified residues, etc.)
 
-```
-Polar/Nonpolar SASA:
-  Polar:       2345.67 Å² ( 45.2%) - 42 residues
-  Nonpolar:    2845.23 Å² ( 54.8%) - 58 residues
-```
-
 An `Unknown` line (`Unknown:  <area> Å² - <n> residues (excluded from %)`) is added only when the structure has non-standard residues with SASA; the percentages leave them out.
+
+**By atom class.** The second block adds up atoms by the polarity class that the active classifier gives each of them, so it depends on `--classifier`. It is the split of the `Non-polar` and `All polar` columns of the [RSA text format](#rsa-text-calc---formatrsa): its two areas are the last two values of the `TOTAL` row. Atoms that the classifier does not class are classed by element (N, O, P and S polar, everything else nonpolar); when there are any, a line `(<n> atoms without a class from the classifier are classed by element)` follows. The two blocks answer different questions and do not agree: the carbon atoms of a polar residue count as polar in the first block and as nonpolar in the second.

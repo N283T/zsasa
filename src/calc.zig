@@ -1095,15 +1095,21 @@ fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, arg
     };
 }
 
-/// Apply a custom classifier to input, replacing radii based on residue/atom names
+/// Apply a custom classifier to input, replacing radii based on residue/atom names.
+/// `classes`, when given, has one entry per atom and receives the polarity
+/// class of the atom, or `.unknown` for an atom outside the classifier.
 fn applyClassifier(
     input: *types.AtomInput,
     custom_classifier: *const classifier.Classifier,
+    classes: ?[]classifier.AtomClass,
     quiet: bool,
 ) !void {
     const n = input.atomCount();
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
+    if (classes) |out| {
+        if (out.len != n) return error.LengthMismatch;
+    }
 
     // Allocate new radii array (use input.allocator for consistency with deinit)
     const new_radii = try input.allocator.alloc(f64, n);
@@ -1114,8 +1120,10 @@ fn applyClassifier(
 
     for (0..n) |i| {
         // Try classifier lookup
-        if (custom_classifier.getRadius(residues[i].slice(), atom_names[i].slice())) |r| {
-            new_radii[i] = r;
+        const maybe_props = custom_classifier.getProperties(residues[i].slice(), atom_names[i].slice());
+        if (classes) |out| out[i] = if (maybe_props) |props| props.class else .unknown;
+        if (maybe_props) |props| {
+            new_radii[i] = props.radius;
             classified_count += 1;
         } else if (input.element) |elements| {
             // Fall back to element-based radius
@@ -1149,18 +1157,25 @@ fn applyClassifier(
     }
 }
 
-/// Apply a built-in classifier to input
+/// Apply a built-in classifier to input.
+/// `classes`, when given, has one entry per atom and receives the polarity
+/// class of the atom, or `.unknown` for an atom outside the classifier's
+/// tables (one that gets a fallback radius or keeps its own).
 fn applyBuiltinClassifier(
     input: *types.AtomInput,
     ct: ClassifierType,
     sdf_ccd: ?*const ccd_parser.ComponentDict,
     inline_ccd: ?*const ccd_parser.ComponentDict,
     external_ccd: ?*const ccd_parser.ComponentDict,
+    classes: ?[]classifier.AtomClass,
     quiet: bool,
 ) !void {
     const n = input.atomCount();
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
+    if (classes) |out| {
+        if (out.len != n) return error.LengthMismatch;
+    }
 
     // CCD and ProtOr share the static ProtOr-compatible table. Only CCD may
     // extend it with runtime component topology.
@@ -1214,15 +1229,16 @@ fn applyBuiltinClassifier(
     var fallback_count: usize = 0;
 
     for (0..n) |i| {
-        // Try built-in classifier lookup
-        const maybe_radius: ?f64 = switch (ct) {
-            .naccess => classifier_naccess.getRadius(residues[i].slice(), atom_names[i].slice()),
-            .protor, .ccd => if (ccd_clf) |*c| c.getRadius(residues[i].slice(), atom_names[i].slice()) else null,
-            .oons => classifier_oons.getRadius(residues[i].slice(), atom_names[i].slice()),
+        // Try built-in classifier lookup: radius and polarity class of the atom
+        const maybe_props: ?classifier.AtomProperties = switch (ct) {
+            .naccess => classifier_naccess.getProperties(residues[i].slice(), atom_names[i].slice()),
+            .protor, .ccd => if (ccd_clf) |*c| c.getProperties(residues[i].slice(), atom_names[i].slice()) else null,
+            .oons => classifier_oons.getProperties(residues[i].slice(), atom_names[i].slice()),
         };
+        if (classes) |out| out[i] = if (maybe_props) |props| props.class else .unknown;
 
-        if (maybe_radius) |r| {
-            new_radii[i] = r;
+        if (maybe_props) |props| {
+            new_radii[i] = props.radius;
             classified_count += 1;
         } else if (classifier.guessFallbackRadius(
             ct,
@@ -1258,10 +1274,11 @@ fn applySdfTopologyClassifier(
     input: *types.AtomInput,
     own_component: *const ccd_parser.StoredComponent,
     sdf_option_given: bool,
+    classes: ?[]classifier.AtomClass,
     quiet: bool,
 ) !void {
     const view = own_component.view();
-    const counts = try sdf_parser.applyTopologyRadii(input, &view);
+    const counts = try sdf_parser.applyTopologyRadiiAndClasses(input, &view, classes);
 
     if (!quiet) {
         if (sdf_option_given) {
@@ -1504,6 +1521,12 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
     // Default: ccd for PDB/mmCIF input (ProtOr-compatible with CCD extension)
     timer = std.Io.Timestamp.now(io, .awake);
 
+    // Polarity class of every atom from the classifier that sets the radii,
+    // for the polar/non-polar partition of the RSA file and of --polar.
+    // Stays null when no classifier runs.
+    var atom_classes: ?[]classifier.AtomClass = null;
+    defer if (atom_classes) |classes| allocator.free(classes);
+
     if (effective_args.config_path != null or effective_classifier != null) {
         // Warn if both are specified
         if (effective_args.config_path != null and effective_args.classifier_type != null) {
@@ -1518,6 +1541,11 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
             std.process.exit(1);
         }
 
+        atom_classes = allocator.alloc(classifier.AtomClass, input.atomCount()) catch |err| {
+            std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+
         // Load classifier and apply radii
         if (effective_args.config_path) |config_path| {
             // Load from custom config file
@@ -1531,7 +1559,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
             };
             defer custom_classifier.deinit();
 
-            applyClassifier(&input, &custom_classifier, effective_args.quiet) catch |err| {
+            applyClassifier(&input, &custom_classifier, atom_classes, effective_args.quiet) catch |err| {
                 std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
                 std.process.exit(1);
             };
@@ -1600,12 +1628,12 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
                 // SDF/MOL input: the molecule is its own component definition.
                 // Its atoms are matched to its own bond topology, not looked
                 // up by residue name, so --sdf and --ccd have nothing to add.
-                applySdfTopologyClassifier(&input, own_component, sdf_ccd_ptr != null, effective_args.quiet) catch |err| {
+                applySdfTopologyClassifier(&input, own_component, sdf_ccd_ptr != null, atom_classes, effective_args.quiet) catch |err| {
                     std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
                     std.process.exit(1);
                 };
             } else {
-                applyBuiltinClassifier(&input, ct, sdf_ccd_ptr, inline_ccd, ext_ccd_ptr, effective_args.quiet) catch |err| {
+                applyBuiltinClassifier(&input, ct, sdf_ccd_ptr, inline_ccd, ext_ccd_ptr, atom_classes, effective_args.quiet) catch |err| {
                     std.debug.print("Error applying classifier: {s}\n", .{@errorName(err)});
                     std.process.exit(1);
                 };
@@ -1747,6 +1775,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
         .probe_radius = effective_args.probe_radius,
         .detail_count = detailCount(effective_args),
         .detail_label = detailLabel(effective_args.algorithm),
+        .atom_classes = atom_classes,
     }) catch |err| {
         if (effective_args.output_format == .rsa and err == error.MissingResidueInfo) {
             std.debug.print("Error: --format=rsa requires chain, residue name, residue number, and insertion code metadata; use PDB/mmCIF input or another structural input with residue metadata\n", .{});
@@ -1785,8 +1814,19 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
 
             // Print polar/nonpolar summary if requested
             if (effective_args.polar) {
+                // By residue type
                 const polar_summary = analysis.calculatePolarSummary(residue_result.residues);
                 analysis.printPolarSummary(polar_summary);
+
+                // By atom class of the classifier: the partition of the RSA file
+                const atom_polar_summary = analysis.calculateAtomPolarSummary(input, result.atom_areas, atom_classes) catch |err| {
+                    std.debug.print("Error calculating polar/nonpolar SASA: {s}\n", .{@errorName(err)});
+                    std.process.exit(1);
+                };
+                analysis.printAtomPolarSummary(
+                    atom_polar_summary,
+                    classifierName(effective_classifier, effective_args.config_path),
+                );
             }
         }
 
@@ -2466,6 +2506,88 @@ test "calc CSV output has an insertion code column after resnum" {
     try std.testing.expectEqual(@as(?[]const u8, null), lines.next());
 }
 
+test "calc RSA non-polar and polar totals are the sums by classifier class" {
+    const allocator = std.testing.allocator;
+
+    // Fully exposed atoms, 10 Å apart. The classifiers disagree on the
+    // carbonyl carbons (polar in OONS) and on the sulfurs (apolar in NACCESS).
+    const Atom = struct { residue: []const u8, number: u32, name: []const u8, element: []const u8 };
+    const atoms = [_]Atom{
+        .{ .residue = "MET", .number = 1, .name = "N", .element = "N" },
+        .{ .residue = "MET", .number = 1, .name = "CA", .element = "C" },
+        .{ .residue = "MET", .number = 1, .name = "C", .element = "C" },
+        .{ .residue = "MET", .number = 1, .name = "O", .element = "O" },
+        .{ .residue = "MET", .number = 1, .name = "CB", .element = "C" },
+        .{ .residue = "MET", .number = 1, .name = "CG", .element = "C" },
+        .{ .residue = "MET", .number = 1, .name = "SD", .element = "S" },
+        .{ .residue = "MET", .number = 1, .name = "CE", .element = "C" },
+        .{ .residue = "CYS", .number = 2, .name = "N", .element = "N" },
+        .{ .residue = "CYS", .number = 2, .name = "CA", .element = "C" },
+        .{ .residue = "CYS", .number = 2, .name = "C", .element = "C" },
+        .{ .residue = "CYS", .number = 2, .name = "O", .element = "O" },
+        .{ .residue = "CYS", .number = 2, .name = "CB", .element = "C" },
+        .{ .residue = "CYS", .number = 2, .name = "SG", .element = "S" },
+    };
+    var pdb = std.Io.Writer.Allocating.init(allocator);
+    defer pdb.deinit();
+    for (atoms, 0..) |atom, i| {
+        try pdb.writer.print("ATOM  {d:>5}  {s:<3} {s:>3} A{d:>4}    {d:>8.3}{d:>8.3}{d:>8.3}  1.00 20.00          {s:>2}\n", .{
+            i + 1,
+            atom.name,
+            atom.residue,
+            atom.number,
+            @as(f64, @floatFromInt(10 * i)),
+            @as(f64, 0),
+            @as(f64, 0),
+            atom.element,
+        });
+    }
+    try pdb.writer.writeAll("END\n");
+
+    var ccd = classifier_ccd.CcdClassifier.init(allocator);
+    defer ccd.deinit();
+
+    var apolar_by_classifier: [3]f64 = undefined;
+    for ([_]ClassifierType{ .naccess, .oons, .ccd }, &apolar_by_classifier) |ct, *apolar_out| {
+        const args = CalcArgs{ .classifier_type = ct, .n_points = 100 };
+
+        // Per-atom areas, summed by the class the classifier gives each atom
+        const json = try runCalcOnText("classes.pdb", pdb.written(), .json, args);
+        defer allocator.free(json);
+        const parsed = try std.json.parseFromSlice(struct { total_area: f64, atom_areas: []f64 }, allocator, json, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqual(atoms.len, parsed.value.atom_areas.len);
+
+        var apolar: f64 = 0;
+        var polar: f64 = 0;
+        for (atoms, parsed.value.atom_areas) |atom, area| {
+            const class = switch (ct) {
+                .naccess => classifier_naccess.getClass(atom.residue, atom.name),
+                .oons => classifier_oons.getClass(atom.residue, atom.name),
+                .protor, .ccd => ccd.getClass(atom.residue, atom.name),
+            };
+            switch (class) {
+                .polar => polar += area,
+                .apolar => apolar += area,
+                .unknown => return error.TestUnexpectedResult,
+            }
+        }
+        apolar_out.* = apolar;
+
+        // TOTAL row: non-polar in columns 51-60, polar in columns 64-73
+        const rsa = try runCalcOnText("classes.pdb", pdb.written(), .rsa, args);
+        defer allocator.free(rsa);
+        const total_start = std.mem.indexOf(u8, rsa, "\nTOTAL").? + 1;
+        const total_row = rsa[total_start .. rsa.len - 1];
+        try std.testing.expectApproxEqAbs(apolar, try std.fmt.parseFloat(f64, std.mem.trim(u8, total_row[50..60], " ")), 0.05);
+        try std.testing.expectApproxEqAbs(polar, try std.fmt.parseFloat(f64, std.mem.trim(u8, total_row[63..73], " ")), 0.05);
+    }
+
+    // The three partitions differ by far more than the tolerance
+    try std.testing.expect(apolar_by_classifier[0] - apolar_by_classifier[2] > 100); // NACCESS: sulfur is apolar
+    try std.testing.expect(apolar_by_classifier[2] - apolar_by_classifier[1] > 100); // OONS: carbonyl carbon is polar
+}
+
 test "NACCESS and OONS take the element of unlisted atoms from the element column" {
     const allocator = std.testing.allocator;
 
@@ -2494,7 +2616,7 @@ test "NACCESS and OONS take the element of unlisted atoms from the element colum
         var input = try parser.parse(pdb_content);
         defer input.deinit();
 
-        try applyBuiltinClassifier(&input, ct, null, null, null, true);
+        try applyBuiltinClassifier(&input, ct, null, null, null, null, true);
 
         try std.testing.expectEqual(expected_fallback.len, input.atomCount());
         for (expected_fallback, 0..) |expected, i| {
@@ -2522,7 +2644,7 @@ test "classifiers guess the element from residue and atom name without an elemen
         defer input.deinit();
         try std.testing.expect(input.element == null);
 
-        try applyBuiltinClassifier(&input, ct, null, null, null, true);
+        try applyBuiltinClassifier(&input, ct, null, null, null, null, true);
 
         try std.testing.expectEqualSlices(f64, &expected, input.r);
     }

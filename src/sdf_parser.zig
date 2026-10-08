@@ -789,23 +789,40 @@ pub const TopologyRadiiCounts = struct {
 /// table, or a hydrogen) gets the element-based fallback radius of the CCD
 /// classifier, and keeps its radius if there is none.
 pub fn applyTopologyRadii(input: *types.AtomInput, component: *const hybridization.Component) !TopologyRadiiCounts {
+    return applyTopologyRadiiAndClasses(input, component, null);
+}
+
+/// `applyTopologyRadii` that also reports the polarity class of every atom.
+/// `classes`, when given, has one entry per atom of `input` and receives the
+/// class that the bond topology gives the atom, or `.unknown` for an atom
+/// that got a fallback radius or kept its own.
+pub fn applyTopologyRadiiAndClasses(
+    input: *types.AtomInput,
+    component: *const hybridization.Component,
+    classes: ?[]classifier.AtomClass,
+) !TopologyRadiiCounts {
     const allocator = input.allocator;
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
+    if (classes) |out| {
+        if (out.len != input.atomCount()) return error.LengthMismatch;
+    }
 
     const derived = try hybridization.deriveComponentProperties(allocator, component);
     defer allocator.free(derived);
 
     // Atom names are unique within a molecule and zero-padded (`AtomNamer`)
-    var radius_by_name: std.AutoHashMapUnmanaged([4]u8, f64) = .empty;
-    defer radius_by_name.deinit(allocator);
-    try radius_by_name.ensureTotalCapacity(allocator, @intCast(derived.len));
-    for (derived) |entry| radius_by_name.putAssumeCapacity(entry.atom_id, entry.props.radius);
+    var props_by_name: std.AutoHashMapUnmanaged([4]u8, classifier.AtomProperties) = .empty;
+    defer props_by_name.deinit(allocator);
+    try props_by_name.ensureTotalCapacity(allocator, @intCast(derived.len));
+    for (derived) |entry| props_by_name.putAssumeCapacity(entry.atom_id, entry.props);
 
     var counts = TopologyRadiiCounts{};
     for (input.r, atom_names, residues, 0..) |*radius, *atom_name, *residue, i| {
-        if (radius_by_name.get(atom_name.data)) |derived_radius| {
-            radius.* = derived_radius;
+        const derived_props = props_by_name.get(atom_name.data);
+        if (classes) |out| out[i] = if (derived_props) |props| props.class else .unknown;
+        if (derived_props) |props| {
+            radius.* = props.radius;
             counts.classified += 1;
         } else if (classifier.guessFallbackRadius(
             .ccd,
@@ -2684,6 +2701,40 @@ test "applyTopologyRadii uses the bond table of each molecule of a file" {
             try std.testing.expectEqual(@as(usize, 0), counts.fallback);
         }
     }
+}
+
+test "applyTopologyRadiiAndClasses reports the polarity class of every atom" {
+    const allocator = std.testing.allocator;
+    // Acetaldehyde with an atom of an unknown element next to it
+    const source = "\n" ++ test_header_rest ++
+        "  4  2  0  0  0  0  0  0  0  0999 V2000\n" ++
+        "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+        "    1.5000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+        "    2.1000    1.0500    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+        "    9.0000    0.0000    0.0000 R#  0  0  0  0  0  0  0  0  0  0  0  0\n" ++
+        "  1  2  1  0  0  0  0\n" ++
+        "  2  3  2  0  0  0  0\n" ++
+        "M  END\n$$$$\n";
+    const molecules = try parse(allocator, source);
+    defer freeMolecules(allocator, molecules);
+
+    var input = try toAtomInput(allocator, molecules[0..1], true);
+    defer input.deinit();
+    var stored = try toStoredComponent(allocator, &molecules[0]);
+    defer stored.deinit();
+    const view = stored.view();
+
+    var classes: [4]classifier.AtomClass = undefined;
+    const counts = try applyTopologyRadiiAndClasses(&input, &view, &classes);
+
+    // Carbons apolar and oxygen polar from the bond table; the unknown
+    // element has no class
+    try std.testing.expectEqualSlices(classifier.AtomClass, &.{ .apolar, .apolar, .polar, .unknown }, &classes);
+    try std.testing.expectEqual(@as(usize, 3), counts.classified);
+
+    // The classes must cover every atom
+    var too_few: [3]classifier.AtomClass = undefined;
+    try std.testing.expectError(error.LengthMismatch, applyTopologyRadiiAndClasses(&input, &view, &too_few));
 }
 
 test "applyTopologyRadii falls back to the element where the bond table gives no radius" {
