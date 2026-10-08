@@ -126,7 +126,7 @@ frame,step,time,total_sasa
 
 ### Per-Residue Aggregation (`--per-residue`)
 
-Groups atom SASA by residue (chain + residue number + insertion code):
+Sums atom SASA per residue:
 
 ```
 Per-residue SASA:
@@ -138,6 +138,20 @@ Chain  Res    Num       SASA  Atoms
 ```
 
 For mmCIF and BinaryCIF input, residue numbers are `label_seq_id` values by default and `auth_seq_id` values with `--auth-chain`; see [mmCIF Format](input.md#mmcif-format).
+
+#### Residue Identity
+
+The per-residue table, the [RSA text format](#rsa-text-calc---formatrsa) and the [JSONL residue map](../guide/batch.md#residue-maps-in-jsonl) use one definition of a residue, so they report the same residues with the same atoms and areas. Two atoms belong to the same residue when they are adjacent in the input and have the same
+
+- chain ID (the full ID, also when it is longer than four characters),
+- residue number,
+- insertion code, and
+- residue name.
+
+A residue is therefore a run of consecutive atoms, and residues are listed in input order. Residues `10`, `10A` and `10B` are three residues, and so are `GLY 10` and `LYS 10` of one chain.
+
+- **Non-contiguous residues.** If the atoms of a residue are not contiguous in the input, each run is reported as its own entry with the same labels. The entries are not merged, because the residue map describes a residue as an atom range (`residue_atom_start`, `residue_atom_count`).
+- **Multi-model files.** `calc` and `batch` read all models superimposed (`calc --model=N` selects one), so every residue appears once per model. Each copy is its own entry, with the area that this copy has inside the superimposed structure; the copies are not summed. Use `calc --model=N` to get one entry per residue. (When each model consists of a single residue, consecutive models continue the same run and are reported as one entry.)
 
 ### RSA Calculation (`--rsa`)
 

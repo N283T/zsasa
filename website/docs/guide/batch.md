@@ -188,6 +188,8 @@ This adds these arrays to each JSONL result:
 - `residue_atom_count`
 - `residue_sasa`
 
+Each entry is a run of consecutive atoms with the same chain ID, residue number, insertion code and residue name, the same definition as in the per-residue table and the RSA text format of `calc`; see [Residue Identity](../cli/output.md#residue-identity) for non-contiguous residues and multi-model files.
+
 Without `--residue-map`, result rows include only `status`, `filename`, `total_area`, and `atom_areas`.
 
 ## Chain Filters

@@ -23,11 +23,10 @@ const AreaBreakdown = struct {
     polar: f64 = 0,
 };
 
+/// One residue of the RSA table. `first_atom` is the first atom of the residue
+/// in the input, from which the labels of the residue are read.
 const ResidueArea = struct {
-    chain: types.FixedString4,
-    residue: types.FixedString5,
-    residue_number: i32,
-    insertion_code: types.FixedString4,
+    first_atom: usize,
     area: AreaBreakdown,
 };
 
@@ -155,84 +154,56 @@ fn addAtomArea(area: *AreaBreakdown, atom_area: f64, atom_name: ?[]const u8, ele
     }
 }
 
-fn sameResidueKey(
-    area: ResidueArea,
-    chain: types.FixedString4,
-    residue: types.FixedString5,
-    residue_number: i32,
-    insertion_code: types.FixedString4,
-) bool {
-    return area.residue_number == residue_number and
-        std.mem.eql(u8, area.chain.slice(), chain.slice()) and
-        std.mem.eql(u8, area.residue.slice(), residue.slice()) and
-        std.mem.eql(u8, area.insertion_code.slice(), insertion_code.slice());
-}
-
+/// Sum atom areas per residue. The residues are those of
+/// `analysis.ResidueIdentity`, the same ones as in the `--per-residue` table
+/// and in the JSONL residue map.
 fn collectResidueAreas(allocator: Allocator, input: AtomInput, atom_areas: []const f64) ![]ResidueArea {
     if (!input.hasResidueInfo()) return error.MissingResidueInfo;
     if (atom_areas.len != input.atomCount()) return error.LengthMismatch;
 
-    var residues = std.ArrayListUnmanaged(ResidueArea).empty;
-    errdefer residues.deinit(allocator);
+    const identity = try analysis.ResidueIdentity.init(input);
+    const residues = try allocator.alloc(ResidueArea, identity.residueCount());
+    errdefer allocator.free(residues);
 
-    const chains = input.chain_id.?;
-    const residue_names = input.residue.?;
-    const residue_nums = input.residue_num.?;
-    const insertions = input.insertion_code.?;
     const atom_names = input.atom_name;
     const elements = input.element;
 
-    for (0..input.atomCount()) |i| {
-        const chain = chains[i];
-        const residue = residue_names[i];
-        const residue_num = residue_nums[i];
-        const insertion = insertions[i];
-
-        var found_idx: ?usize = null;
-        for (residues.items, 0..) |residue_area, j| {
-            if (sameResidueKey(residue_area, chain, residue, residue_num, insertion)) {
-                found_idx = j;
-                break;
-            }
+    var it = identity.residues();
+    var residue_idx: usize = 0;
+    while (it.next()) |range| : (residue_idx += 1) {
+        var area = AreaBreakdown{};
+        for (range.start..range.end) |i| {
+            addAtomArea(
+                &area,
+                atom_areas[i],
+                if (atom_names) |names| names[i].slice() else null,
+                if (elements) |elem| elem[i] else null,
+            );
         }
-
-        const idx = found_idx orelse blk: {
-            try residues.append(allocator, .{
-                .chain = chain,
-                .residue = residue,
-                .residue_number = residue_num,
-                .insertion_code = insertion,
-                .area = .{},
-            });
-            break :blk residues.items.len - 1;
-        };
-
-        addAtomArea(
-            &residues.items[idx].area,
-            atom_areas[i],
-            if (atom_names) |names| names[i].slice() else null,
-            if (elements) |elem| elem[i] else null,
-        );
+        residues[residue_idx] = .{ .first_atom = range.start, .area = area };
     }
 
-    return residues.toOwnedSlice(allocator);
+    return residues;
 }
 
-fn collectChainAreas(allocator: Allocator, residues: []const ResidueArea) ![]ChainArea {
+fn collectChainAreas(allocator: Allocator, input: AtomInput, residues: []const ResidueArea) ![]ChainArea {
+    const chain_ids = input.chain_id orelse return error.MissingResidueInfo;
+
     var chains = std.ArrayListUnmanaged(ChainArea).empty;
     errdefer chains.deinit(allocator);
 
     for (residues) |residue| {
+        const residue_chain = chain_ids[residue.first_atom];
         var found_idx: ?usize = null;
         for (chains.items, 0..) |*chain, i| {
-            if (std.mem.eql(u8, chain.chain.slice(), residue.chain.slice())) {
+            if (std.mem.eql(u8, chain.chain.slice(), residue_chain.slice())) {
                 found_idx = i;
                 break;
             }
         }
 
         const idx = found_idx orelse blk: {
-            try chains.append(allocator, .{ .chain = residue.chain, .area = .{} });
+            try chains.append(allocator, .{ .chain = residue_chain, .area = .{} });
             break :blk chains.items.len - 1;
         };
         chains.items[idx].area.total += residue.area.total;
@@ -292,19 +263,22 @@ fn areaBreakdownNeedsSummaryWidthWarning(area: AreaBreakdown) bool {
 fn rsaResultNeedsLegacyWidthWarning(allocator: Allocator, result: SasaResult, input: AtomInput) !bool {
     const residues = try collectResidueAreas(allocator, input, result.atom_areas);
     defer allocator.free(residues);
-    const chains = try collectChainAreas(allocator, residues);
+    const chains = try collectChainAreas(allocator, input, residues);
     defer allocator.free(chains);
+    const identity = try analysis.ResidueIdentity.init(input);
 
     var total = AreaBreakdown{};
     for (residues) |residue| {
+        const residue_name = identity.residue_names[residue.first_atom].slice();
+        const chain = identity.chain_ids[residue.first_atom].slice();
         var num_buf: [32]u8 = undefined;
-        const num = residueNumberString(&num_buf, residue.residue_number, residue.insertion_code);
-        const rel_total: ?f64 = if (analysis.MaxSASA.get(residue.residue.slice())) |max_sasa|
+        const num = residueNumberString(&num_buf, identity.residue_nums[residue.first_atom], identity.insertion_codes[residue.first_atom]);
+        const rel_total: ?f64 = if (analysis.MaxSASA.get(residue_name)) |max_sasa|
             if (max_sasa > 0) residue.area.total * 100.0 / max_sasa else null
         else
             null;
 
-        if (residue.residue.len > 3 or residue.chain.len > 3 or num.len > 4) return true;
+        if (residue_name.len > 3 or chain.len > 3 or num.len > 4) return true;
         if (areaBreakdownNeedsResidueWidthWarning(residue.area, rel_total)) return true;
 
         total.total += residue.area.total;
@@ -325,8 +299,9 @@ fn rsaResultNeedsLegacyWidthWarning(allocator: Allocator, result: SasaResult, in
 pub fn sasaResultToRsa(allocator: Allocator, result: SasaResult, input: AtomInput, options: TextOutputOptions) ![]u8 {
     const residues = try collectResidueAreas(allocator, input, result.atom_areas);
     defer allocator.free(residues);
-    const chains = try collectChainAreas(allocator, residues);
+    const chains = try collectChainAreas(allocator, input, residues);
     defer allocator.free(chains);
+    const identity = try analysis.ResidueIdentity.init(input);
 
     var aw = std.Io.Writer.Allocating.init(allocator);
     errdefer aw.deinit();
@@ -345,14 +320,16 @@ pub fn sasaResultToRsa(allocator: Allocator, result: SasaResult, input: AtomInpu
 
     var total = AreaBreakdown{};
     for (residues) |residue| {
+        const residue_name = identity.residue_names[residue.first_atom].slice();
+        const chain = identity.chain_ids[residue.first_atom].slice();
         var num_buf: [32]u8 = undefined;
-        const num = residueNumberString(&num_buf, residue.residue_number, residue.insertion_code);
-        const rel_total: ?f64 = if (analysis.MaxSASA.get(residue.residue.slice())) |max_sasa|
+        const num = residueNumberString(&num_buf, identity.residue_nums[residue.first_atom], identity.insertion_codes[residue.first_atom]);
+        const rel_total: ?f64 = if (analysis.MaxSASA.get(residue_name)) |max_sasa|
             if (max_sasa > 0) residue.area.total * 100.0 / max_sasa else null
         else
             null;
 
-        try writer.print("RES {s:>3} {s:>3} {s:<4} ", .{ residue.residue.slice(), residue.chain.slice(), num });
+        try writer.print("RES {s:>3} {s:>3} {s:<4} ", .{ residue_name, chain, num });
         try writeAbsRel(writer, residue.area.total, rel_total);
         try writeAbsRel(writer, residue.area.side_chain, null);
         try writeAbsRel(writer, residue.area.main_chain, null);
@@ -593,44 +570,15 @@ fn maybeRoundJsonlFloatSlice(allocator: Allocator, values: []const f64, options:
     return rounded;
 }
 
-fn sameResidue(
-    chain_ids: []const types.FixedString4,
-    chain_ids_full: ?[]const []const u8,
-    residue_names: []const types.FixedString5,
-    residue_nums: []const i32,
-    insertion_codes: []const types.FixedString4,
-    a: usize,
-    b: usize,
-) bool {
-    const same_chain = if (chain_ids_full) |full|
-        std.mem.eql(u8, full[a], full[b])
-    else
-        std.mem.eql(u8, chain_ids[a].slice(), chain_ids[b].slice());
-
-    return residue_nums[a] == residue_nums[b] and
-        same_chain and
-        std.mem.eql(u8, residue_names[a].slice(), residue_names[b].slice()) and
-        std.mem.eql(u8, insertion_codes[a].slice(), insertion_codes[b].slice());
-}
-
+/// Build the residue map of the JSONL output. The residues are those of
+/// `analysis.ResidueIdentity`: one entry per run of consecutive atoms with
+/// the same chain ID, residue number, insertion code and residue name.
 pub fn buildResidueMap(allocator: Allocator, input: AtomInput, atom_areas: []const f64) !ResidueMap {
-    const n = input.atomCount();
-    if (atom_areas.len != n) return error.LengthMismatch;
+    if (atom_areas.len != input.atomCount()) return error.LengthMismatch;
 
-    const chain_ids = input.chain_id orelse return error.MissingChainInfo;
-    const chain_ids_full = input.chain_id_full;
-    const residue_names = input.residue orelse return error.MissingResidueInfo;
-    const residue_nums = input.residue_num orelse return error.MissingResidueNumInfo;
-    const insertion_codes = input.insertion_code orelse return error.MissingInsertionCodeInfo;
-
-    var residue_count: usize = 0;
-    var i: usize = 0;
-    while (i < n) {
-        const start = i;
-        residue_count += 1;
-        i += 1;
-        while (i < n and sameResidue(chain_ids, chain_ids_full, residue_names, residue_nums, insertion_codes, start, i)) : (i += 1) {}
-    }
+    const identity = try analysis.ResidueIdentity.init(input);
+    const chain_ids_full = identity.chain_ids_full;
+    const residue_count = identity.residueCount();
 
     const residue_chain = try allocator.alloc(types.FixedString4, residue_count);
     errdefer allocator.free(residue_chain);
@@ -654,31 +602,28 @@ pub fn buildResidueMap(allocator: Allocator, input: AtomInput, atom_areas: []con
     const residue_sasa = try allocator.alloc(f64, residue_count);
     errdefer allocator.free(residue_sasa);
 
-    i = 0;
     var residue_idx: usize = 0;
     var residue_full_initialized: usize = 0;
     errdefer if (residue_chain_full) |chains| {
         for (chains[0..residue_full_initialized]) |chain| allocator.free(chain);
     };
-    while (i < n) : (residue_idx += 1) {
-        const start = i;
-        var sasa = atom_areas[i];
-        i += 1;
-        while (i < n and sameResidue(chain_ids, chain_ids_full, residue_names, residue_nums, insertion_codes, start, i)) : (i += 1) {
-            sasa += atom_areas[i];
-        }
+    var it = identity.residues();
+    while (it.next()) |range| : (residue_idx += 1) {
+        const start = range.start;
+        var sasa = atom_areas[start];
+        for (atom_areas[start + 1 .. range.end]) |area| sasa += area;
 
-        residue_chain[residue_idx] = chain_ids[start];
+        residue_chain[residue_idx] = identity.chain_ids[start];
         if (residue_chain_full) |chains| {
             const full = chain_ids_full.?[start];
             chains[residue_idx] = try allocator.dupe(u8, full);
             residue_full_initialized += 1;
         }
-        residue_name[residue_idx] = residue_names[start];
-        residue_number[residue_idx] = residue_nums[start];
-        residue_insertion_code[residue_idx] = insertion_codes[start];
+        residue_name[residue_idx] = identity.residue_names[start];
+        residue_number[residue_idx] = identity.residue_nums[start];
+        residue_insertion_code[residue_idx] = identity.insertion_codes[start];
         residue_atom_start[residue_idx] = start;
-        residue_atom_count[residue_idx] = i - start;
+        residue_atom_count[residue_idx] = range.atomCount();
         residue_sasa[residue_idx] = sasa;
     }
 
@@ -1404,6 +1349,210 @@ pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl
 }
 
 // Tests
+
+/// One atom of a `TestStructure`.
+const TestAtom = struct {
+    chain: []const u8,
+    residue: []const u8,
+    number: i32,
+    insertion: []const u8 = "",
+    atom: []const u8 = "CA",
+    area: f64 = 1.0,
+};
+
+/// Structure input with residue metadata, built from a list of atoms.
+const TestStructure = struct {
+    arena: std.heap.ArenaAllocator,
+    input: AtomInput,
+    areas: []f64,
+
+    /// `full_chain_ids` also fills `chain_id_full`, as the mmCIF parser does.
+    fn init(atoms: []const TestAtom, full_chain_ids: bool) !TestStructure {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        errdefer arena.deinit();
+        const allocator = arena.allocator();
+
+        const n = atoms.len;
+        const x = try allocator.alloc(f64, n);
+        const y = try allocator.alloc(f64, n);
+        const z = try allocator.alloc(f64, n);
+        const r = try allocator.alloc(f64, n);
+        const chain_id = try allocator.alloc(types.FixedString4, n);
+        const chain_id_full = try allocator.alloc([]const u8, n);
+        const residue = try allocator.alloc(types.FixedString5, n);
+        const residue_num = try allocator.alloc(i32, n);
+        const insertion_code = try allocator.alloc(types.FixedString4, n);
+        const atom_name = try allocator.alloc(types.FixedString4, n);
+        const areas = try allocator.alloc(f64, n);
+        for (atoms, 0..) |atom, i| {
+            x[i] = @floatFromInt(i);
+            y[i] = 0;
+            z[i] = 0;
+            r[i] = 1;
+            chain_id[i] = types.FixedString4.fromSlice(atom.chain);
+            chain_id_full[i] = atom.chain;
+            residue[i] = types.FixedString5.fromSlice(atom.residue);
+            residue_num[i] = atom.number;
+            insertion_code[i] = types.FixedString4.fromSlice(atom.insertion);
+            atom_name[i] = types.FixedString4.fromSlice(atom.atom);
+            areas[i] = atom.area;
+        }
+
+        return .{
+            .arena = arena,
+            .input = .{
+                .x = x,
+                .y = y,
+                .z = z,
+                .r = r,
+                .chain_id = chain_id,
+                .chain_id_full = if (full_chain_ids) chain_id_full else null,
+                .residue = residue,
+                .residue_num = residue_num,
+                .insertion_code = insertion_code,
+                .atom_name = atom_name,
+                .allocator = allocator,
+            },
+            .areas = areas,
+        };
+    }
+
+    fn deinit(self: *TestStructure) void {
+        self.arena.deinit();
+    }
+
+    fn result(self: *const TestStructure) SasaResult {
+        var total: f64 = 0;
+        for (self.areas) |area| total += area;
+        return .{ .total_area = total, .atom_areas = self.areas, .allocator = self.arena.child_allocator };
+    }
+};
+
+const ExpectedResidue = struct {
+    chain: []const u8,
+    residue: []const u8,
+    number: i32,
+    insertion: []const u8 = "",
+    atom_count: usize,
+    sasa: f64,
+};
+
+/// The `--per-residue` table, the RSA file and the JSONL residue map must
+/// report the same residues, in the same order, with the same atoms and areas.
+fn expectSameResiduesInAllOutputs(atoms: []const TestAtom, full_chain_ids: bool, expected: []const ExpectedResidue) !void {
+    const allocator = std.testing.allocator;
+    var structure = try TestStructure.init(atoms, full_chain_ids);
+    defer structure.deinit();
+
+    // --per-residue / --rsa table
+    var table = try analysis.aggregateByResidue(allocator, structure.input, structure.areas);
+    defer table.deinit();
+    try std.testing.expectEqual(expected.len, table.residues.len);
+    for (expected, table.residues) |want, got| {
+        try std.testing.expectEqualStrings(want.chain, got.chainLabel());
+        try std.testing.expectEqualStrings(want.residue, got.residue_name.slice());
+        try std.testing.expectEqual(want.number, got.residue_num);
+        try std.testing.expectEqualStrings(want.insertion, got.insertion_code.slice());
+        try std.testing.expectEqual(want.atom_count, got.atom_count);
+        try std.testing.expectApproxEqAbs(want.sasa, got.sasa, 1e-9);
+    }
+
+    // JSONL residue map
+    var map = try buildResidueMap(allocator, structure.input, structure.areas);
+    defer map.deinit();
+    try std.testing.expectEqual(expected.len, map.len());
+    for (expected, 0..) |want, i| {
+        const chain = if (map.residue_chain_full) |full| full[i] else map.residue_chain[i].slice();
+        try std.testing.expectEqualStrings(want.chain, chain);
+        try std.testing.expectEqualStrings(want.residue, map.residue_name[i].slice());
+        try std.testing.expectEqual(want.number, map.residue_number[i]);
+        try std.testing.expectEqualStrings(want.insertion, map.residue_insertion_code[i].slice());
+        try std.testing.expectEqual(want.atom_count, map.residue_atom_count[i]);
+        try std.testing.expectApproxEqAbs(want.sasa, map.residue_sasa[i], 1e-9);
+    }
+
+    // RSA file: one RES row per residue, in the same order
+    const rsa = try sasaResultToRsa(allocator, structure.result(), structure.input, .{});
+    defer allocator.free(rsa);
+    var lines = std.mem.splitScalar(u8, rsa, '\n');
+    var row: usize = 0;
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "RES ")) continue;
+        try std.testing.expect(row < expected.len);
+        const want = expected[row];
+        var fields = std.mem.tokenizeScalar(u8, line[4..], ' ');
+        try std.testing.expectEqualStrings(want.residue, fields.next().?);
+        var number_buf: [32]u8 = undefined;
+        const number = try std.fmt.bufPrint(&number_buf, "{d}{s}", .{ want.number, want.insertion });
+        if (want.chain.len == 1) {
+            // Chain and residue number share a field when the number is four characters wide
+            const label = fields.next().?;
+            try std.testing.expectEqualStrings(want.chain, label[0..1]);
+            try std.testing.expectEqualStrings(number, if (label.len > 1) label[1..] else fields.next().?);
+        } else {
+            try std.testing.expectEqualStrings(want.chain, fields.next().?);
+            try std.testing.expectEqualStrings(number, fields.next().?);
+        }
+        try std.testing.expectApproxEqAbs(want.sasa, try std.fmt.parseFloat(f64, fields.next().?), 0.005);
+        row += 1;
+    }
+    try std.testing.expectEqual(expected.len, row);
+}
+
+test "all residue outputs keep residues that differ only in the insertion code apart" {
+    try expectSameResiduesInAllOutputs(&.{
+        .{ .chain = "H", .residue = "GLY", .number = 10, .atom = "N", .area = 1 },
+        .{ .chain = "H", .residue = "GLY", .number = 10, .atom = "CA", .area = 2 },
+        .{ .chain = "H", .residue = "GLY", .number = 10, .insertion = "A", .atom = "N", .area = 4 },
+        .{ .chain = "H", .residue = "GLY", .number = 10, .insertion = "B", .atom = "N", .area = 8 },
+        .{ .chain = "H", .residue = "GLY", .number = 10, .insertion = "B", .atom = "CA", .area = 16 },
+    }, false, &.{
+        .{ .chain = "H", .residue = "GLY", .number = 10, .atom_count = 2, .sasa = 3 },
+        .{ .chain = "H", .residue = "GLY", .number = 10, .insertion = "A", .atom_count = 1, .sasa = 4 },
+        .{ .chain = "H", .residue = "GLY", .number = 10, .insertion = "B", .atom_count = 2, .sasa = 24 },
+    });
+}
+
+test "all residue outputs keep residues with the same number and different names apart" {
+    try expectSameResiduesInAllOutputs(&.{
+        .{ .chain = "A", .residue = "GLY", .number = 10, .atom = "N", .area = 1 },
+        .{ .chain = "A", .residue = "GLY", .number = 10, .atom = "CA", .area = 2 },
+        .{ .chain = "A", .residue = "LYS", .number = 10, .atom = "N", .area = 4 },
+    }, false, &.{
+        .{ .chain = "A", .residue = "GLY", .number = 10, .atom_count = 2, .sasa = 3 },
+        .{ .chain = "A", .residue = "LYS", .number = 10, .atom_count = 1, .sasa = 4 },
+    });
+}
+
+test "all residue outputs report a non-contiguous residue once per run" {
+    try expectSameResiduesInAllOutputs(&.{
+        .{ .chain = "A", .residue = "ALA", .number = 1, .atom = "N", .area = 1 },
+        .{ .chain = "B", .residue = "UNK", .number = 2, .atom = "C1", .area = 2 },
+        .{ .chain = "A", .residue = "ALA", .number = 1, .atom = "CB", .area = 4 },
+    }, false, &.{
+        .{ .chain = "A", .residue = "ALA", .number = 1, .atom_count = 1, .sasa = 1 },
+        .{ .chain = "B", .residue = "UNK", .number = 2, .atom_count = 1, .sasa = 2 },
+        .{ .chain = "A", .residue = "ALA", .number = 1, .atom_count = 1, .sasa = 4 },
+    });
+}
+
+test "all residue outputs report the residues of superimposed models once per model" {
+    // Two models of MET 1 - GLY 2, as the parsers return them for the default --model
+    try expectSameResiduesInAllOutputs(&.{
+        .{ .chain = "A", .residue = "MET", .number = 1, .atom = "N", .area = 1 },
+        .{ .chain = "A", .residue = "MET", .number = 1, .atom = "CA", .area = 2 },
+        .{ .chain = "A", .residue = "GLY", .number = 2, .atom = "N", .area = 4 },
+        .{ .chain = "A", .residue = "MET", .number = 1, .atom = "N", .area = 8 },
+        .{ .chain = "A", .residue = "MET", .number = 1, .atom = "CA", .area = 16 },
+        .{ .chain = "A", .residue = "GLY", .number = 2, .atom = "N", .area = 32 },
+    }, false, &.{
+        .{ .chain = "A", .residue = "MET", .number = 1, .atom_count = 2, .sasa = 3 },
+        .{ .chain = "A", .residue = "GLY", .number = 2, .atom_count = 1, .sasa = 4 },
+        .{ .chain = "A", .residue = "MET", .number = 1, .atom_count = 2, .sasa = 24 },
+        .{ .chain = "A", .residue = "GLY", .number = 2, .atom_count = 1, .sasa = 32 },
+    });
+}
+
 test "buildResidueMap groups consecutive atoms" {
     const allocator = std.testing.allocator;
 
@@ -2049,7 +2198,7 @@ test "sasaResultToRsa writes residue, chain, and total rows" {
     , output);
 }
 
-test "sasaResultToRsa aggregates non-contiguous atoms from the same residue" {
+test "sasaResultToRsa writes one row per run of a non-contiguous residue" {
     const allocator = std.testing.allocator;
 
     const x = [_]f64{ 0, 1, 2 };
@@ -2106,8 +2255,12 @@ test "sasaResultToRsa aggregates non-contiguous atoms from the same residue" {
     });
     defer allocator.free(output);
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "RES ALA   A 1      30.00  23.3") != null);
-    try std.testing.expectEqual(@as(?usize, null), std.mem.indexOf(u8, output, "RES ALA   A 1      10.00"));
+    // The same rows as the JSONL residue map; see analysis.ResidueIdentity
+    try std.testing.expect(std.mem.indexOf(u8, output, "RES ALA   A 1      10.00   7.8") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "RES ALA   A 1      20.00  15.5") != null);
+    try std.testing.expectEqual(@as(?usize, null), std.mem.indexOf(u8, output, "RES ALA   A 1      30.00"));
+    // Chain totals still cover every residue of the chain
+    try std.testing.expect(std.mem.indexOf(u8, output, "CHAIN  1   A       30.0") != null);
 }
 
 test "rsaResultNeedsLegacyWidthWarning detects oversized RSA numeric columns" {
