@@ -11213,6 +11213,8 @@ test "workflow rejects [input] chain where no job can use it" {
 }
 
 test "workflow honors [input] chain as the default chains of the jobs that have none" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     var sandbox = try NamingSandbox.init();
     defer sandbox.deinit();
     try sandbox.writeInput("two.pdb", test_two_chain_pdb);
@@ -11252,6 +11254,8 @@ test "workflow honors [input] chain as the default chains of the jobs that have 
 }
 
 test "workflow with timing or an output path still runs and only warns" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     var sandbox = try NamingSandbox.init();
     defer sandbox.deinit();
     try sandbox.writeInput("two.pdb", test_two_chain_pdb);
