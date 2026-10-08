@@ -2830,8 +2830,15 @@ test "writeSasaResultWithFormat json" {
     const content = try r.interface.allocRemaining(allocator, .unlimited);
     defer allocator.free(content);
 
-    // Should be pretty-printed
+    // Pretty-printed (one value per line), and the same values as the compact form.
     try std.testing.expect(std.mem.find(u8, content, "\n") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(f64, 30.8), parsed.value.object.get("total_area").?.float);
+    const areas = parsed.value.object.get("atom_areas").?.array.items;
+    try std.testing.expectEqual(@as(usize, 2), areas.len);
+    try std.testing.expectEqual(@as(f64, 10.5), areas[0].float);
+    try std.testing.expectEqual(@as(f64, 20.3), areas[1].float);
 }
 
 test "writeSasaResultWithFormat csv" {

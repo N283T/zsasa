@@ -79,7 +79,7 @@ pub fn build(b: *std.Build) void {
     // Each test should run exactly once, so the library root stays unfiltered
     // and the other two roots only run the tests no earlier root reaches:
     //   - the zsasa module (src/root.zig): dcd.zig and root.zig itself
-    //   - the executable (src/main.zig): calc.zig, traj.zig and main.zig itself
+    //   - the executable (src/main.zig): calc.zig, traj.zig, compile_dict.zig and main.zig itself
     // Filters are substring matches on the full test name.
     // scripts/check_test_partition.py verifies that every test runs in exactly
     // one artifact, so a new file reachable from only one root cannot silently
@@ -95,7 +95,7 @@ pub fn build(b: *std.Build) void {
     });
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
-        .filters = if (all_tests) &.{} else &.{ "calc.test.", "traj.test.", "main.test" },
+        .filters = if (all_tests) &.{} else &.{ "calc.test.", "traj.test.", "compile_dict.test.", "main.test" },
     });
     const lib_tests = b.addTest(.{ .root_module = lib.root_module });
     const test_step = b.step("test", "Run tests");
