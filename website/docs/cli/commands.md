@@ -192,7 +192,7 @@ See [Output & Analysis](output.md#analysis-features) for detailed output descrip
 | `--jsonl-decimals=N` | Round JSONL floating-point values to `N` decimal places (`0..15`) | full precision | batch |
 | `--timing` | Show timing breakdown (for benchmarking) | off | calc, batch |
 | `--profile-stages` | With `--timing`, add read/parse, classifier, and JSONL write timings to the batch summary | off | batch |
-| `-q, --quiet` | Suppress progress output, including standard progress bars shown by `batch` and `traj` | off | calc, batch, traj |
+| `-q, --quiet` | Suppress progress output, including standard progress bars shown by `batch` and `traj`, and the `batch` summary. Errors are not suppressed: `batch` still lists the [inputs that failed](../guide/batch.md#failed-inputs) on standard error | off | calc, batch, traj |
 | `--validate` | Validate input only, do not calculate | off | calc |
 
 `batch --format=jsonl` without an output path writes the rows to standard output.
@@ -440,10 +440,12 @@ Errors are written to standard error and the command exits with status 1. `<...>
 | `Error: Unknown trajectory format. Supported: .xtc, .trr, .dcd, .nc, .ncdf` | traj | The trajectory extension is not recognized |
 | `Error: Atom count mismatch - trajectory has <n> atoms, topology has <m>` | traj | The trajectory and the topology (first model, `ATOM` and `HETATM` records) have different numbers of atoms |
 | `Error: 1 output name is shared by more than one input:` | batch | Several inputs would write the same output file (`<n> output names are ...` for several names); see [Batch Processing](../guide/batch.md#basic-directory-batch) |
+| `Error running workflow job '<job>': <cause>` | batch | A workflow job could not run: `cannot read input directory '<dir>': <name>`, `its inputs share output names (listed above)`, `cannot create output directory '<dir>': <name>` or `cannot create JSONL output '<path>': <name>`. The other jobs still run, `<n> of <m> jobs failed: <jobs>` follows the totals, and the command ends with `Error: WorkflowJobFailed`; see [Workflow Files](../guide/workflows.md#failures) |
+| `<n> of <m> inputs failed:` | batch | Not an error exit: inputs that could not be processed, one per line with the reason, printed at the end of the run also with `--quiet`. A workflow prints `Job '<job>': <n> of <m> inputs failed:` for each job; see [Batch Processing](../guide/batch.md#failed-inputs) |
 
 ## Exit Codes
 
 | Code | Meaning |
 |------|---------|
-| 0 | Success |
-| 1 | Error (invalid input, file not found, etc.) |
+| 0 | Success. For `batch` this means that the run got through its input directory: inputs that failed are [listed on standard error](../guide/batch.md#failed-inputs) (also with `--quiet`) and have `status: "err"` rows in JSONL output, and they do not change the exit status |
+| 1 | Error (invalid input, file not found, etc.). For `batch` also a run that could not start or write its output, and a [workflow job that could not run](../guide/workflows.md#failures) |
