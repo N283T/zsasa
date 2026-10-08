@@ -38,6 +38,12 @@ pub const ZSASA_ERROR_FILE_IO: c_int = -4;
 pub const ZSASA_ERROR_UNSUPPORTED_N_POINTS: c_int = -5;
 /// Several inputs map to the same per-file output name in the output directory
 pub const ZSASA_ERROR_OUTPUT_NAME_COLLISION: c_int = -6;
+/// An input file exists but is not valid for the format it was opened as: another
+/// format, an empty or truncated file, or corrupt data (trajectory readers)
+pub const ZSASA_ERROR_INVALID_FORMAT: c_int = -7;
+/// The output directory cannot be created or is not a directory
+/// (`zsasa_batch_dir_process`); the input directory is reported as ZSASA_ERROR_FILE_IO
+pub const ZSASA_ERROR_OUTPUT_DIR: c_int = -8;
 
 // =============================================================================
 // Algorithm Constants
@@ -58,7 +64,11 @@ pub const ZSASA_CLASSIFIER_NACCESS: c_int = 0;
 pub const ZSASA_CLASSIFIER_PROTOR: c_int = 1;
 /// OONS radii (older FreeSASA default)
 pub const ZSASA_CLASSIFIER_OONS: c_int = 2;
-/// CCD-based radii derived from bond topology (default)
+/// CCD classifier (default). The CLI and `zsasa_batch_dir_process` derive radii from
+/// bond topology for components that are not in the built-in table. The classify
+/// functions (`zsasa_classifier_get_radius`, `zsasa_classifier_get_class`,
+/// `zsasa_classify_atoms`) have no way to load components, so there it returns the
+/// same built-in ProtOr radii as ZSASA_CLASSIFIER_PROTOR.
 pub const ZSASA_CLASSIFIER_CCD: c_int = 3;
 
 // =============================================================================
@@ -75,14 +85,59 @@ pub const ZSASA_ATOM_CLASS_UNKNOWN: c_int = 2;
 // Version string
 const VERSION = "0.9.1";
 
+/// Version of the C ABI, returned by `zsasa_abi_version()`.
+///
+/// The Python bindings declare the signatures of this library by hand and refuse
+/// to load a library whose ABI version differs from the one they expect, because
+/// calling through a stale declaration is undefined behavior.
+///
+/// Bump it whenever an existing exported function changes its signature (argument
+/// or return types, order or count) or an exported struct changes its layout, and
+/// change `_EXPECTED_ABI_VERSION` in `python/zsasa/_ffi.py` together with it.
+/// Adding a new export or a new error code does not require a bump.
+const ABI_VERSION: c_int = 1;
+
 /// Thread-safe allocator for C API (uses C allocator for simplicity)
 const c_allocator = std.heap.c_allocator;
 
 /// Returns a single-threaded Io for FFI entries that do not spawn threads.
-/// Multi-threaded FFI entries (e.g., zsasa_batch_dir_process) MUST construct
-/// their own std.Io.Threaded.init(allocator, .{}) and pass that downstream.
+/// Multi-threaded FFI entries (e.g., zsasa_batch_dir_process) MUST use
+/// `sharedThreadedIo()` instead of constructing their own std.Io.Threaded.
 fn cIo() std.Io {
     return std.Io.Threaded.global_single_threaded.io();
+}
+
+// The process-wide multi-threaded Io. `std.Io.Threaded.init` replaces the
+// process's SIGIO and SIGPIPE handlers with a no-op one and `deinit` puts back
+// whatever `init` found. Two overlapping instances (concurrent calls from several
+// Python threads) restore each other's no-op handler instead of the original one.
+// So the instance is created once, on first use, and never deinitialized: the
+// handlers are replaced at most once per process and nothing is restored while
+// another call may still be running. The worker threads Threaded starts on demand
+// stay parked until the process exits.
+const shared_io_uninitialized: u8 = 0;
+const shared_io_initializing: u8 = 1;
+const shared_io_ready: u8 = 2;
+var shared_io_state = std.atomic.Value(u8).init(shared_io_uninitialized);
+var shared_threaded: std.Io.Threaded = undefined;
+
+/// Returns the process-wide multi-threaded Io, creating it on the first call.
+/// Thread-safe: concurrent first calls create exactly one instance; the others
+/// wait for it.
+fn sharedThreadedIo() std.Io {
+    while (true) {
+        switch (shared_io_state.load(.acquire)) {
+            shared_io_ready => return shared_threaded.io(),
+            shared_io_uninitialized => {
+                if (shared_io_state.cmpxchgStrong(shared_io_uninitialized, shared_io_initializing, .acquire, .monotonic) == null) {
+                    shared_threaded = std.Io.Threaded.init(c_allocator, .{});
+                    shared_io_state.store(shared_io_ready, .release);
+                    return shared_threaded.io();
+                }
+            },
+            else => std.Thread.yield() catch {},
+        }
+    }
 }
 
 fn isPositiveFinite(comptime T: type, value: T) bool {
@@ -140,9 +195,35 @@ fn calcErrorCode(err: anyerror) c_int {
     };
 }
 
+/// Map an error from opening or reading a trajectory file to a C API error code.
+///
+/// A missing file stays ZSASA_ERROR_INVALID_INPUT (the code the open functions
+/// have always returned for it). A file that exists but cannot be parsed as the
+/// requested format (another format, empty, truncated, corrupt) is
+/// ZSASA_ERROR_INVALID_FORMAT, so that callers can tell it from a missing file.
+fn trajectoryErrorCode(err: anyerror) c_int {
+    return switch (err) {
+        error.FileNotFound => ZSASA_ERROR_INVALID_INPUT,
+        error.InvalidMagic,
+        error.BadFormat,
+        error.EndOfFile, // the header of an empty file; `next()` turns a frame-boundary end into null
+        error.ReadError,
+        error.DecompressionError,
+        error.FixedAtomsNotSupported,
+        => ZSASA_ERROR_INVALID_FORMAT,
+        error.OutOfMemory => ZSASA_ERROR_OUT_OF_MEMORY,
+        else => ZSASA_ERROR_CALCULATION,
+    };
+}
+
 /// Get library version string.
 export fn zsasa_version() callconv(.c) [*:0]const u8 {
     return VERSION;
+}
+
+/// Get the C ABI version (see `ABI_VERSION` for when it changes).
+export fn zsasa_abi_version() callconv(.c) c_int {
+    return ABI_VERSION;
 }
 
 /// Calculate SASA using Shrake-Rupley algorithm.
@@ -1686,7 +1767,11 @@ const XtcHandle = struct {
 /// Parameters:
 ///   path: Path to XTC file (null-terminated string)
 ///   natoms_out: Output pointer for number of atoms (set on success)
-///   error_code: Output pointer for error code (set on failure)
+///   error_code: Output pointer for error code (set on failure):
+///     ZSASA_ERROR_INVALID_INPUT: the file does not exist
+///     ZSASA_ERROR_INVALID_FORMAT: the file is not an XTC file (another format,
+///       empty or truncated)
+///     ZSASA_ERROR_OUT_OF_MEMORY: allocation failed
 ///
 /// Returns:
 ///   Opaque handle on success, null on failure.
@@ -1705,12 +1790,7 @@ export fn zsasa_xtc_open(
 
     handle.reader = xtc.XtcReader.open(cIo(), c_allocator, path_slice) catch |err| {
         c_allocator.destroy(handle);
-        error_code.* = switch (err) {
-            error.FileNotFound => ZSASA_ERROR_INVALID_INPUT,
-            error.InvalidMagic => ZSASA_ERROR_INVALID_INPUT,
-            error.OutOfMemory => ZSASA_ERROR_OUT_OF_MEMORY,
-            else => ZSASA_ERROR_CALCULATION,
-        };
+        error_code.* = trajectoryErrorCode(err);
         return null;
     };
 
@@ -1746,7 +1826,8 @@ export fn zsasa_xtc_close(
 /// Returns:
 ///   ZSASA_OK (0) on success
 ///   ZSASA_XTC_END_OF_FILE (1) when no more frames
-///   Negative error code on failure
+///   ZSASA_ERROR_INVALID_FORMAT when the frame is corrupt or truncated
+///   Other negative error code on failure
 export fn zsasa_xtc_read_frame(
     handle: ?*anyopaque,
     coords_out: [*]f32,
@@ -1762,11 +1843,7 @@ export fn zsasa_xtc_read_frame(
     const xtc_handle: *XtcHandle = @ptrCast(@alignCast(handle.?));
 
     const frame = (xtc_handle.reader.next() catch |err| {
-        return switch (err) {
-            error.InvalidMagic => ZSASA_ERROR_INVALID_INPUT,
-            error.DecompressionError => ZSASA_ERROR_CALCULATION,
-            else => ZSASA_ERROR_CALCULATION,
-        };
+        return trajectoryErrorCode(err);
     }) orelse return ZSASA_XTC_END_OF_FILE;
 
     // Copy step, time, precision. ztraj's high-level XTC reader normalizes to Å
@@ -2591,7 +2668,11 @@ const DcdHandle = struct {
 /// Parameters:
 ///   path: Path to DCD file (null-terminated string)
 ///   natoms_out: Output pointer for number of atoms (set on success)
-///   error_code: Output pointer for error code (set on failure)
+///   error_code: Output pointer for error code (set on failure):
+///     ZSASA_ERROR_INVALID_INPUT: the file does not exist
+///     ZSASA_ERROR_INVALID_FORMAT: the file is not a (supported) DCD file
+///       (another format, empty or truncated, or unreadable)
+///     ZSASA_ERROR_OUT_OF_MEMORY: allocation failed
 ///
 /// Returns:
 ///   Opaque handle on success, null on failure.
@@ -2610,12 +2691,7 @@ export fn zsasa_dcd_open(
 
     handle.reader = dcd.DcdReader.open(cIo(), c_allocator, path_slice) catch |err| {
         c_allocator.destroy(handle);
-        error_code.* = switch (err) {
-            error.FileNotFound => ZSASA_ERROR_INVALID_INPUT,
-            error.InvalidMagic => ZSASA_ERROR_INVALID_INPUT,
-            error.OutOfMemory => ZSASA_ERROR_OUT_OF_MEMORY,
-            else => ZSASA_ERROR_CALCULATION,
-        };
+        error_code.* = trajectoryErrorCode(err);
         return null;
     };
 
@@ -2650,7 +2726,8 @@ export fn zsasa_dcd_close(
 /// Returns:
 ///   ZSASA_OK (0) on success
 ///   ZSASA_DCD_END_OF_FILE (2) when no more frames
-///   Negative error code on failure
+///   ZSASA_ERROR_INVALID_FORMAT when the frame is corrupt or truncated
+///   Other negative error code on failure
 export fn zsasa_dcd_read_frame(
     handle: ?*anyopaque,
     coords_out: [*]f32,
@@ -2665,10 +2742,7 @@ export fn zsasa_dcd_read_frame(
     const dcd_handle: *DcdHandle = @ptrCast(@alignCast(handle.?));
 
     const frame = (dcd_handle.reader.next() catch |err| {
-        return switch (err) {
-            error.InvalidMagic => ZSASA_ERROR_INVALID_INPUT,
-            else => ZSASA_ERROR_CALCULATION,
-        };
+        return trajectoryErrorCode(err);
     }) orelse return ZSASA_DCD_END_OF_FILE;
 
     // Copy step, time
@@ -2835,6 +2909,21 @@ const BatchDirHandle = struct {
     }
 };
 
+/// Map an error returned by a directory batch run to a C API error code.
+/// `stage` is the step of the run that failed: the same filesystem error means
+/// a bad input directory while scanning and a bad output directory while
+/// creating it.
+fn batchErrorCode(err: anyerror, stage: batch.BatchStage) c_int {
+    return switch (err) {
+        error.OutOfMemory => ZSASA_ERROR_OUT_OF_MEMORY,
+        error.OutputNameCollision => ZSASA_ERROR_OUTPUT_NAME_COLLISION,
+        else => switch (stage) {
+            .create_output_dir => ZSASA_ERROR_OUTPUT_DIR,
+            .scan_inputs, .process => ZSASA_ERROR_FILE_IO,
+        },
+    };
+}
+
 /// Process all structure files in a directory.
 ///
 /// Scans the directory for supported files (.pdb, .cif, .mmcif, .bcif, .json,
@@ -2861,6 +2950,10 @@ const BatchDirHandle = struct {
 ///   When output_dir is set and several inputs would be written to the same
 ///   output file (e.g. 1crn.pdb and 1crn.cif), nothing is processed and
 ///   error_code is set to ZSASA_ERROR_OUTPUT_NAME_COLLISION.
+///   When output_dir cannot be created (for example a path below a regular
+///   file), error_code is set to ZSASA_ERROR_OUTPUT_DIR; an input_dir that
+///   cannot be read gives ZSASA_ERROR_FILE_IO.
+///   Safe to call from several threads at once.
 ///   Caller must call zsasa_batch_dir_free() to release resources.
 export fn zsasa_batch_dir_process(
     input_dir: ?[*:0]const u8,
@@ -2928,18 +3021,12 @@ export fn zsasa_batch_dir_process(
 
     // Batch processing spawns N worker threads, so we need a multi-threaded Io
     // rather than the global single-threaded Io returned by cIo().
-    var threaded = std.Io.Threaded.init(c_allocator, .{});
-    defer threaded.deinit();
-    const batch_io = threaded.io();
+    const batch_io = sharedThreadedIo();
 
     // Run batch processing
-    var batch_result = batch.runBatch(c_allocator, batch_io, input_dir_slice, output_dir_slice, config, null) catch |err| {
-        const code = switch (err) {
-            error.OutOfMemory => ZSASA_ERROR_OUT_OF_MEMORY,
-            error.OutputNameCollision => ZSASA_ERROR_OUTPUT_NAME_COLLISION,
-            else => ZSASA_ERROR_FILE_IO,
-        };
-        setError(error_code, code);
+    var stage: batch.BatchStage = .scan_inputs;
+    var batch_result = batch.runBatchReportingStage(c_allocator, batch_io, input_dir_slice, output_dir_slice, config, &stage) catch |err| {
+        setError(error_code, batchErrorCode(err, stage));
         return null;
     };
 
@@ -3447,4 +3534,248 @@ test "zsasa_batch_dir_process classifier_type -1 uses input radii" {
     // Guard against a vacuous comparison: the NACCESS classifier would give the
     // PDB file another area, so matching the input radii proves no classifier ran.
     try std.testing.expect(@abs(naccess_area - input_radii_area) > 1.0);
+}
+
+// =============================================================================
+// ABI Version, Error Mapping and Shared Io Tests
+// =============================================================================
+
+test "zsasa_abi_version is a positive constant" {
+    try std.testing.expect(zsasa_abi_version() >= 1);
+    try std.testing.expectEqual(zsasa_abi_version(), zsasa_abi_version());
+}
+
+test "trajectoryErrorCode separates missing, malformed and out-of-memory" {
+    try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, trajectoryErrorCode(error.FileNotFound));
+    for ([_]anyerror{
+        error.InvalidMagic,
+        error.BadFormat,
+        error.EndOfFile,
+        error.ReadError,
+        error.DecompressionError,
+        error.FixedAtomsNotSupported,
+    }) |err| {
+        try std.testing.expectEqual(ZSASA_ERROR_INVALID_FORMAT, trajectoryErrorCode(err));
+    }
+    try std.testing.expectEqual(ZSASA_ERROR_OUT_OF_MEMORY, trajectoryErrorCode(error.OutOfMemory));
+    try std.testing.expectEqual(ZSASA_ERROR_CALCULATION, trajectoryErrorCode(error.Unexpected));
+}
+
+test "batchErrorCode reads the same filesystem error by stage" {
+    try std.testing.expectEqual(ZSASA_ERROR_FILE_IO, batchErrorCode(error.NotDir, .scan_inputs));
+    try std.testing.expectEqual(ZSASA_ERROR_OUTPUT_DIR, batchErrorCode(error.NotDir, .create_output_dir));
+    try std.testing.expectEqual(ZSASA_ERROR_FILE_IO, batchErrorCode(error.AccessDenied, .process));
+    try std.testing.expectEqual(ZSASA_ERROR_OUT_OF_MEMORY, batchErrorCode(error.OutOfMemory, .create_output_dir));
+    try std.testing.expectEqual(ZSASA_ERROR_OUTPUT_NAME_COLLISION, batchErrorCode(error.OutputNameCollision, .scan_inputs));
+}
+
+/// Open `path` with `open` (zsasa_xtc_open or zsasa_dcd_open) and return the error code.
+/// Fails the test when the file unexpectedly opens.
+fn trajectoryOpenError(
+    comptime open: fn ([*:0]const u8, *i32, *c_int) callconv(.c) ?*anyopaque,
+    comptime close: fn (?*anyopaque) callconv(.c) void,
+    path: [*:0]const u8,
+) !c_int {
+    var natoms: i32 = 0;
+    var error_code: c_int = ZSASA_OK;
+    const handle = open(path, &natoms, &error_code);
+    if (handle != null) {
+        close(handle);
+        return error.TestUnexpectedResult;
+    }
+    return error_code;
+}
+
+test "trajectory open reports a file of another format as invalid format" {
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_FORMAT,
+        try trajectoryOpenError(zsasa_xtc_open, zsasa_xtc_close, "test_data/1l2y.dcd"),
+    );
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_FORMAT,
+        try trajectoryOpenError(zsasa_dcd_open, zsasa_dcd_close, "test_data/1l2y.xtc"),
+    );
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_FORMAT,
+        try trajectoryOpenError(zsasa_xtc_open, zsasa_xtc_close, "test_data/1l2y.pdb"),
+    );
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_FORMAT,
+        try trajectoryOpenError(zsasa_dcd_open, zsasa_dcd_close, "test_data/1l2y.pdb"),
+    );
+}
+
+test "trajectory open reports an empty file as invalid format and a missing one as invalid input" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const dir = try writeBatchFixtureDir(&tmp_dir, &.{.{ .name = "empty.bin", .data = "" }});
+    defer std.testing.allocator.free(dir);
+    const empty_path = try std.fmt.allocPrintSentinel(std.testing.allocator, "{s}/empty.bin", .{dir}, 0);
+    defer std.testing.allocator.free(empty_path);
+    const missing_path = try std.fmt.allocPrintSentinel(std.testing.allocator, "{s}/missing.bin", .{dir}, 0);
+    defer std.testing.allocator.free(missing_path);
+
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_FORMAT,
+        try trajectoryOpenError(zsasa_xtc_open, zsasa_xtc_close, empty_path),
+    );
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_FORMAT,
+        try trajectoryOpenError(zsasa_dcd_open, zsasa_dcd_close, empty_path),
+    );
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_INPUT,
+        try trajectoryOpenError(zsasa_xtc_open, zsasa_xtc_close, missing_path),
+    );
+    try std.testing.expectEqual(
+        ZSASA_ERROR_INVALID_INPUT,
+        try trajectoryOpenError(zsasa_dcd_open, zsasa_dcd_close, missing_path),
+    );
+}
+
+test "zsasa_batch_dir_process distinguishes a bad output directory from a bad input directory" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const input_dir = try writeBatchFixtureDir(&tmp_dir, batch_fixture_files[0..1]);
+    defer std.testing.allocator.free(input_dir);
+
+    // A path below a regular file can never be created as a directory.
+    const blocked_output = try std.fmt.allocPrintSentinel(std.testing.allocator, "{s}/ala.pdb/sub", .{input_dir}, 0);
+    defer std.testing.allocator.free(blocked_output);
+
+    // One thread and several: both runners create the output directory.
+    for ([_]usize{ 1, 4 }) |n_threads| {
+        var error_code: c_int = ZSASA_OK;
+        const handle = zsasa_batch_dir_process(
+            input_dir,
+            blocked_output,
+            ZSASA_ALGORITHM_SR,
+            100,
+            1.4,
+            n_threads,
+            ZSASA_CLASSIFIER_PROTOR,
+            0,
+            0,
+            &error_code,
+        );
+        try std.testing.expect(handle == null);
+        try std.testing.expectEqual(ZSASA_ERROR_OUTPUT_DIR, error_code);
+    }
+
+    // The input directory is the one that is missing, with a usable output directory.
+    const output_dir = try std.fmt.allocPrintSentinel(std.testing.allocator, "{s}/out", .{input_dir}, 0);
+    defer std.testing.allocator.free(output_dir);
+    var error_code: c_int = ZSASA_OK;
+    const handle = zsasa_batch_dir_process(
+        "/nonexistent/path/that/does/not/exist",
+        output_dir,
+        ZSASA_ALGORITHM_SR,
+        100,
+        1.4,
+        1,
+        ZSASA_CLASSIFIER_PROTOR,
+        0,
+        0,
+        &error_code,
+    );
+    try std.testing.expect(handle == null);
+    try std.testing.expectEqual(ZSASA_ERROR_FILE_IO, error_code);
+
+    // An input directory that is a regular file is also an input problem.
+    const file_as_input = try std.fmt.allocPrintSentinel(std.testing.allocator, "{s}/ala.pdb", .{input_dir}, 0);
+    defer std.testing.allocator.free(file_as_input);
+    const handle2 = zsasa_batch_dir_process(
+        file_as_input,
+        output_dir,
+        ZSASA_ALGORITHM_SR,
+        100,
+        1.4,
+        1,
+        ZSASA_CLASSIFIER_PROTOR,
+        0,
+        0,
+        &error_code,
+    );
+    try std.testing.expect(handle2 == null);
+    try std.testing.expectEqual(ZSASA_ERROR_FILE_IO, error_code);
+}
+
+const SharedIoProbe = struct {
+    userdata: ?*anyopaque = null,
+
+    fn run(self: *SharedIoProbe) void {
+        self.userdata = sharedThreadedIo().userdata;
+    }
+};
+
+test "sharedThreadedIo creates one instance for concurrent first calls" {
+    var probes: [8]SharedIoProbe = @splat(.{});
+    var threads: [probes.len]std.Thread = undefined;
+    for (&threads, &probes) |*thread, *probe| {
+        thread.* = try std.Thread.spawn(.{}, SharedIoProbe.run, .{probe});
+    }
+    for (threads) |thread| thread.join();
+
+    for (probes) |probe| {
+        try std.testing.expect(probe.userdata != null);
+        try std.testing.expectEqual(probes[0].userdata, probe.userdata);
+    }
+    // Later calls get the same instance too: nothing deinitializes it.
+    try std.testing.expectEqual(probes[0].userdata, sharedThreadedIo().userdata);
+}
+
+const ConcurrentBatchRun = struct {
+    input_dir: [*:0]const u8,
+    error_code: c_int = -999,
+    successful: usize = 0,
+
+    fn run(self: *ConcurrentBatchRun) void {
+        const handle = zsasa_batch_dir_process(
+            self.input_dir,
+            null,
+            ZSASA_ALGORITHM_SR,
+            100,
+            1.4,
+            2,
+            ZSASA_CLASSIFIER_PROTOR,
+            0,
+            0,
+            &self.error_code,
+        );
+        defer zsasa_batch_dir_free(handle);
+        self.successful = zsasa_batch_dir_get_successful(handle);
+    }
+};
+
+fn currentSigPipeHandler() ?*const anyopaque {
+    var current: std.posix.Sigaction = undefined;
+    std.posix.sigaction(.PIPE, null, &current);
+    return @ptrCast(current.handler.handler);
+}
+
+test "zsasa_batch_dir_process is safe to call from several threads at once" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const input_dir = try writeBatchFixtureDir(&tmp_dir, batch_fixture_files[0..2]);
+    defer std.testing.allocator.free(input_dir);
+
+    // Once the shared Io exists, the SIGPIPE handler Threaded installed must
+    // stay the same through any number of overlapping calls: no call may restore
+    // a handler it found installed by another one.
+    const have_handlers = std.posix.Sigaction != void;
+    _ = sharedThreadedIo();
+    const installed = if (have_handlers) currentSigPipeHandler() else null;
+
+    var runs: [6]ConcurrentBatchRun = @splat(.{ .input_dir = input_dir.ptr });
+    var threads: [runs.len]std.Thread = undefined;
+    for (&threads, &runs) |*thread, *run| {
+        thread.* = try std.Thread.spawn(.{}, ConcurrentBatchRun.run, .{run});
+    }
+    for (threads) |thread| thread.join();
+
+    for (runs) |run| {
+        try std.testing.expectEqual(ZSASA_OK, run.error_code);
+        try std.testing.expectEqual(@as(usize, 2), run.successful);
+    }
+    if (have_handlers) try std.testing.expectEqual(installed, currentSigPipeHandler());
 }

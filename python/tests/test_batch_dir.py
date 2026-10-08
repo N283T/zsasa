@@ -83,6 +83,55 @@ class TestProcessDirectory:
         with pytest.raises(FileNotFoundError):
             process_directory("/nonexistent/path/that/does/not/exist")
 
+    def test_process_directory_input_is_a_file(self, tmp_path: Path) -> None:
+        """A file given as the input directory is not a missing directory."""
+        not_a_dir = tmp_path / "ala.pdb"
+        not_a_dir.write_text(SMALL_ALA_PDB)
+
+        with pytest.raises(NotADirectoryError, match="Input path is not a directory"):
+            process_directory(not_a_dir)
+
+    def test_process_directory_unreadable_output_dir_blames_the_output(
+        self, tmp_path: Path
+    ) -> None:
+        """An uncreatable output directory is not reported as a bad input directory.
+
+        The input directory exists and is fine; the output path lies below a
+        regular file, so it can never be created.
+        """
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        (input_dir / "ala.pdb").write_text(SMALL_ALA_PDB)
+        blocker = tmp_path / "blocker"
+        blocker.write_text("a regular file")
+        output_dir = blocker / "sub"
+
+        for n_threads in (1, 4):
+            with pytest.raises(
+                NotADirectoryError, match="Cannot create output directory"
+            ) as excinfo:
+                process_directory(input_dir, output_dir=output_dir, n_threads=n_threads)
+            message = str(excinfo.value)
+            assert str(output_dir) in message
+            assert str(blocker) in message
+            assert "Input" not in message
+
+    def test_process_directory_output_dir_is_a_file(self, tmp_path: Path) -> None:
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        (input_dir / "ala.pdb").write_text(SMALL_ALA_PDB)
+        output_path = tmp_path / "out.txt"
+        output_path.write_text("a regular file")
+
+        with pytest.raises(FileExistsError, match="not a directory"):
+            process_directory(input_dir, output_dir=output_path)
+
+    def test_process_directory_missing_input_with_valid_output(self, tmp_path: Path) -> None:
+        """The missing directory is the input one, so the input error is raised."""
+        with pytest.raises(FileNotFoundError, match="Input directory not found"):
+            process_directory(tmp_path / "missing", output_dir=tmp_path / "out")
+        assert not (tmp_path / "out").exists()
+
     def test_process_directory_classifier_none(self) -> None:
         """classifier=None uses input radii (classifier_type=-1)."""
         result = process_directory(TEST_DATA_DIR, classifier=None)

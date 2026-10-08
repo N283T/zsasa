@@ -135,7 +135,9 @@ def calculate_sasa_from_atom_array(
 
     Args:
         atom_array: A Biotite AtomArray object.
-        classifier: Classifier for atom radii. Default: CCD.
+        classifier: Classifier for atom radii. Default: CCD, which here is the built-in
+            ProtOr table only (no bond-topology analysis of unknown components);
+            atoms it does not know get a radius from their element.
         algorithm: SASA algorithm ("sr" or "lr"). Default: "sr".
         n_points: Test points per atom (SR algorithm). Default: 100.
         n_slices: Slices per atom (LR algorithm). Default: 20.
@@ -224,7 +226,9 @@ def calculate_sasa_from_structure(
     Args:
         source: Path to structure file or Biotite AtomArray/AtomArrayStack.
         model_index: Model index to use (for AtomArrayStack). Default: 0.
-        classifier: Classifier for atom radii. Default: CCD.
+        classifier: Classifier for atom radii. Default: CCD, which here is the built-in
+            ProtOr table only (no bond-topology analysis of unknown components);
+            atoms it does not know get a radius from their element.
         algorithm: SASA algorithm ("sr" or "lr"). Default: "sr".
         n_points: Test points per atom (SR algorithm). Default: 100.
         n_slices: Slices per atom (LR algorithm). Default: 20.

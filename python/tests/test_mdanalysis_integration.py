@@ -92,6 +92,84 @@ class TestElementInference:
         assert all(r == pytest.approx(1.70, rel=0.01) for r in radii)
 
 
+#: (residue name, atom name, expected radius from the MDAnalysis vdW table).
+#: The ions and the heme iron/nitrogen show where the first letter alone is wrong.
+GUESSED_ATOMS = [
+    ("ALA", "N", 1.55),
+    ("ALA", "CA", 1.70),  # alpha carbon, not calcium
+    ("ALA", "HB1", 1.10),
+    ("SER", "HG", 1.10),  # hydrogen, not mercury
+    ("NA", "NA", 2.27),  # sodium ion
+    ("CL", "CL", 1.75),  # chloride ion
+    ("ZN", "ZN", 1.39),  # zinc ion
+    ("CA", "CA", 2.31),  # calcium ion
+    ("HEM", "NA", 1.55),  # heme nitrogen A, not sodium
+    ("HEM", "FE", 2.00),  # iron: not in the MDAnalysis table, so the default radius
+]
+
+
+def make_universe_without_elements(tmp_path) -> mda.Universe:  # noqa: ANN001
+    """A GRO universe: types and masses are guessed by MDAnalysis, there is no element column."""
+    lines = ["guessed atoms", str(len(GUESSED_ATOMS))]
+    for index, (resname, name, _) in enumerate(GUESSED_ATOMS, 1):
+        lines.append(
+            f"{index:5d}{resname:<5s}{name:>5s}{index:5d}{index * 0.5:8.3f}{0.0:8.3f}{0.0:8.3f}"
+        )
+    lines.append("   10.00000   10.00000   10.00000")
+    path = tmp_path / "guessed.gro"
+    path.write_text("\n".join(lines) + "\n")
+    return MDAnalysis.Universe(str(path))
+
+
+class TestElementInferenceWithoutElementAttribute:
+    """A topology without an element column: ions are not read as their first letter."""
+
+    def test_universe_has_no_element_attribute(self, tmp_path) -> None:  # noqa: ANN001
+        u = make_universe_without_elements(tmp_path)
+        assert not hasattr(u.atoms, "elements")
+
+    def test_radii_follow_the_inferred_elements(self, tmp_path) -> None:  # noqa: ANN001
+        u = make_universe_without_elements(tmp_path)
+
+        radii = _get_radii_from_atomgroup(u.atoms)
+
+        expected = [radius for _, _, radius in GUESSED_ATOMS]
+        np.testing.assert_allclose(radii, expected, rtol=1e-6)
+
+    def test_inferred_elements(self, tmp_path) -> None:  # noqa: ANN001
+        u = make_universe_without_elements(tmp_path)
+
+        elements = [_get_element(atom) for atom in u.atoms]
+
+        assert elements == ["N", "C", "H", "H", "Na", "Cl", "Zn", "Ca", "N", "Fe"]
+
+
+class TestFrameSelection:
+    """step, start and stop are validated before any frame is read."""
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            ({"step": 0}, "step must be a positive integer"),
+            ({"step": -1}, "step must be a positive integer"),
+            ({"start": -5}, "start must be non-negative"),
+            ({"stop": -2}, "stop must be non-negative"),
+        ],
+    )
+    def test_bad_selection_is_value_error(self, kwargs: dict, message: str) -> None:
+        u = make_universe(n_atoms=4, n_residues=2, n_frames=3)
+
+        with pytest.raises(ValueError, match=message):
+            SASAAnalysis(u).run(**kwargs)
+
+    def test_valid_step_still_works(self) -> None:
+        u = make_universe(n_atoms=4, n_residues=2, n_frames=6)
+
+        result = SASAAnalysis(u).run(start=1, step=2, n_points=20)
+
+        assert result.n_frames == 3
+
+
 class TestSASAAnalysis:
     """Test SASAAnalysis class."""
 

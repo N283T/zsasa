@@ -12,7 +12,9 @@ class ClassifierType(IntEnum):
     CCD = 3      # CCD-based radii (default)
 ```
 
-`PROTOR` is a separate value, not an alias of `CCD`: it selects the static ProtOr-compatible table without any CCD resource parsing. `get_radius` and `classify_atoms` have no CCD dictionary to read, so they give `CCD` and `PROTOR` the same hardcoded ProtOr radii (atoms outside the table return `None` or `NaN`). The CCD bond-topology analysis for ligands and modified residues runs in the CLI and in `process_directory`.
+`PROTOR` is a separate value, not an alias of `CCD`: it selects the static ProtOr-compatible table without any CCD resource parsing.
+
+`CCD` does less in Python than in the CLI. Everything that goes through the C classify API (`get_radius`, `get_atom_class`, `classify_atoms`, and the gemmi, BioPython and Biotite integrations built on them) looks atoms up in the built-in ProtOr table only, so it gives `CCD` and `PROTOR` the same radii. There is no bond-topology analysis of components that are not in the table: their atoms get a `NaN` radius (`None` from `get_radius`) and class `UNKNOWN`, and the integrations then use the element's radius. The bond-topology analysis of ligands and modified residues runs in the CLI (inline `_chem_comp_bond` data of an mmCIF file, SDF bonds or `--ccd`) and in `process_directory` (inline mmCIF data and SDF bonds; it cannot take an external dictionary). With a structure that has HETATM ligands, the integrations can therefore give a different total than `zsasa calc` with `--classifier=ccd`.
 
 ## AtomClass
 

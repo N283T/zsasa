@@ -48,6 +48,10 @@ Biotite uses `atom_array` instead of `model`:
 | `include_hydrogens` | `bool` | `False` | Include hydrogen atoms (deuterium counts as hydrogen) |
 | `model_index` | `int` | `0` | Model index (NMR); `calculate_sasa_from_structure` only |
 
+### Classifier and ligands
+
+`ClassifierType.CCD`, the default, is the built-in ProtOr table in the integrations: they classify atoms through `classify_atoms`, which has no source for chemical component definitions and does not analyze the bond topology of components outside the table. Atoms of such ligands and modified residues (only present with `include_hetatm=True` for HETATM records) take the radius of their element instead. The CLI and [`process_directory`](../python-api/core.md#process_directory) analyze that topology, so their totals can differ for structures with ligands. See [Classifier API](../python-api/classifier.md#classifiertype).
+
 ## Alternate Locations {#alternate-locations}
 
 A SASA calculation needs one conformer per atom. Each integration gets there differently:

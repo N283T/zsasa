@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import shutil
+import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -84,3 +86,51 @@ def test_process_directory_can_run_concurrently(tmp_path: Path) -> None:
     assert result_a[:3] == (1, 1, 0)
     assert result_b[:3] == (1, 1, 0)
     assert result_a[3] == pytest.approx(result_b[3])
+
+
+_SIGPIPE_PROBE_LOCK = threading.Lock()
+
+
+def _sigpipe_handler() -> int:
+    """Address of the process's SIGPIPE handler (0 = default, 1 = ignored), via libc.
+
+    Reads the handler by swapping it for SIG_IGN and back, so the swaps are serialized.
+    """
+    import ctypes
+
+    libc = ctypes.CDLL(None)
+    libc.signal.restype = ctypes.c_void_p
+    libc.signal.argtypes = [ctypes.c_int, ctypes.c_void_p]
+    sigpipe, sig_ignore = 13, 1
+    with _SIGPIPE_PROBE_LOCK:
+        current = libc.signal(sigpipe, sig_ignore) or 0
+        libc.signal(sigpipe, current)
+    return current
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal handlers")
+def test_concurrent_process_directory_keeps_one_sigpipe_handler(tmp_path: Path) -> None:
+    """Overlapping calls must not restore each other's handlers.
+
+    The native batch code runs on a process-wide thread runtime that replaces the
+    SIGPIPE handler once. A runtime created and torn down per call put the handler
+    back to whatever it found, which with overlapping calls was another call's
+    replacement, so the handler depended on the order in which calls finished.
+    """
+    input_dir = tmp_path / "in"
+    input_dir.mkdir()
+    shutil.copy(PDB_FILE, input_dir / "1l2y.pdb")
+
+    process_directory(input_dir, n_threads=1)
+    installed = _sigpipe_handler()
+    assert installed not in (0, 1), "the batch runtime should have installed its handler"
+
+    def worker(_: int) -> int:
+        process_directory(input_dir, n_threads=2)
+        return _sigpipe_handler()
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        handlers = list(executor.map(worker, range(12)))
+
+    assert set(handlers) == {installed}
+    assert _sigpipe_handler() == installed

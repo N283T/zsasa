@@ -30,8 +30,11 @@ Opens an XTC file for reading.
 - `path`: Path to XTC trajectory file
 
 **Raises:**
-- `FileNotFoundError`: If file doesn't exist
-- `RuntimeError`: If file is invalid or corrupted
+- `FileNotFoundError`: If the file doesn't exist
+- `IsADirectoryError`: If `path` is a directory
+- `PermissionError`: If the file cannot be read
+- `ValueError`: If the file exists but is not a valid XTC file: empty, truncated, or in another format (for example a DCD file)
+- `MemoryError`: If memory cannot be allocated
 
 ### Properties
 
@@ -53,7 +56,8 @@ Read the next frame from the trajectory.
 - `XtcFrame` object, or `None` if end of file reached
 
 **Raises:**
-- `RuntimeError`: If reader is closed or read error occurs
+- `RuntimeError`: If the reader is closed, or the frame is corrupt or truncated
+- `MemoryError`: If memory for the frame cannot be allocated
 
 #### close
 
@@ -150,9 +154,9 @@ def compute_sasa_trajectory(
 | `algorithm` | `str` | `"sr"` | `"sr"` (Shrake-Rupley) or `"lr"` (Lee-Richards) |
 | `n_slices` | `int` | `20` | Slices per atom (LR algorithm) |
 | `n_threads` | `int` | `0` | Thread count (0 = auto-detect) |
-| `start` | `int` | `0` | First frame to process |
-| `stop` | `int \| None` | `None` | Stop before this frame (None = all) |
-| `step` | `int` | `1` | Process every Nth frame |
+| `start` | `int` | `0` | First frame to process (non-negative) |
+| `stop` | `int \| None` | `None` | Stop before this frame (non-negative; None = all) |
+| `step` | `int` | `1` | Process every Nth frame (positive) |
 | `use_bitmask` | `bool` | `False` | Use [bitmask LUT optimization](../guide/algorithms.mdx#bitmask-lut-optimization) (SR only, n_points must be 1..1024) |
 | `bitmask_correction` | `bool` | `False` | Experimental exposed-fraction correction for bitmask quantization bias; requires `use_bitmask=True` |
 | `bitmask_correction_coeff` | `float \| None` | `None` | Override the experimental correction coefficient (`None` uses library default) |
@@ -160,8 +164,8 @@ def compute_sasa_trajectory(
 **Returns:** `TrajectorySasaResult`
 
 **Raises:**
-- `FileNotFoundError`: If XTC file doesn't exist
-- `ValueError`: If radii length doesn't match trajectory atoms
+- `ValueError`: If `step` is less than 1 or `start` or `stop` is negative (checked before the file is opened), if the file is not a valid XTC file, if radii length doesn't match trajectory atoms, or if no frame is selected
+- `FileNotFoundError`: If the XTC file doesn't exist
 
 ### Unit Conversion
 
@@ -254,7 +258,7 @@ It takes the parameters of [`compute_sasa_trajectory`](#compute_sasa_trajectory)
 **Returns:** `TrajectorySasaSummaryResult`
 
 **Raises:**
-- `ValueError`: If `radii` does not match the trajectory atoms, `chunk_size` is not positive, `atom_to_residue` has the wrong shape or negative values, or no frame is selected
+- `ValueError`: If `radii` does not match the trajectory atoms, `chunk_size` is not positive, `step` is less than 1 or `start` or `stop` is negative, `atom_to_residue` has the wrong shape or negative values, or no frame is selected
 
 ### TrajectorySasaSummaryResult
 
@@ -298,7 +302,7 @@ from zsasa.dcd import (
 
 | Name | Description |
 |------|-------------|
-| `DcdReader(path)` | Frame reader with the same interface as `XtcReader`: `natoms`, `read_frame()`, `close()`, iteration and context-manager use. Raises `FileNotFoundError` if the file cannot be opened |
+| `DcdReader(path)` | Frame reader with the same interface as `XtcReader`: `natoms`, `read_frame()`, `close()`, iteration and context-manager use. Raises the same exceptions as `XtcReader` (`FileNotFoundError` for a missing file, `ValueError` for an empty, truncated or non-DCD file) |
 | `DcdFrame` | One frame: `step`, `time`, `coords` (`NDArray[float32]`, (n_atoms, 3), Å), `unitcell` (six doubles, or `None` when the file has none) and the `natoms` property |
 | `compute_sasa_trajectory(dcd_path, radii, ...)` | Same parameters and `TrajectorySasaResult` as the XTC function; `dcd_path` replaces `xtc_path` |
 | `compute_sasa_trajectory_summary(dcd_path, radii, ...)` | Same parameters and `TrajectorySasaSummaryResult` as the XTC function, including `atom_to_residue` and `chunk_size` |

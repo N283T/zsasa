@@ -33,7 +33,12 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 from numpy.typing import NDArray
 
-from zsasa._ffi import _get_lib
+from zsasa._ffi import (
+    _get_lib,
+    _raise_trajectory_open_error,
+    _raise_trajectory_read_error,
+    _validate_frame_selection,
+)
 from zsasa.sasa import calculate_sasa_batch
 from zsasa.xtc import (
     TrajectorySasaResult,
@@ -51,8 +56,6 @@ if TYPE_CHECKING:
 # Error codes from C API
 _ZSASA_OK = 0
 _ZSASA_DCD_END_OF_FILE = 2
-_ZSASA_ERROR_INVALID_INPUT = -1
-_ZSASA_ERROR_OUT_OF_MEMORY = -2
 
 
 @dataclass
@@ -108,7 +111,22 @@ class DcdReader:
     """
 
     def __init__(self, path: str | Path) -> None:
-        """Open a DCD file for reading."""
+        """Open a DCD file for reading.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the file does not exist.
+        IsADirectoryError
+            If ``path`` is a directory.
+        PermissionError
+            If the file cannot be read.
+        ValueError
+            If the file exists but is not a valid DCD file (an empty or
+            truncated file, or a file in another format such as DCD for XTC).
+        MemoryError
+            If memory for the reader cannot be allocated.
+        """
         self._ffi: FFI
         self._lib: object
         self._ffi, self._lib = _get_lib()
@@ -129,15 +147,7 @@ class DcdReader:
         )
 
         if self._handle == self._ffi.NULL:
-            if error_code[0] == _ZSASA_ERROR_INVALID_INPUT:
-                msg = f"Cannot open DCD file: {self._path}"
-                raise FileNotFoundError(msg)
-            elif error_code[0] == _ZSASA_ERROR_OUT_OF_MEMORY:
-                msg = "Out of memory opening DCD file"
-                raise MemoryError(msg)
-            else:
-                msg = f"Error opening DCD file: {error_code[0]}"
-                raise RuntimeError(msg)
+            _raise_trajectory_open_error("DCD", self._path, error_code[0])
 
         self._natoms = natoms_out[0]
 
@@ -161,7 +171,9 @@ class DcdReader:
         Raises
         ------
         RuntimeError
-            If an error occurs during reading.
+            If the reader is closed, or a frame is corrupt or truncated.
+        MemoryError
+            If memory for the frame cannot be allocated.
         """
         if self._closed:
             msg = "DcdReader is closed"
@@ -184,13 +196,7 @@ class DcdReader:
         if result == _ZSASA_DCD_END_OF_FILE:
             return None
         elif result != _ZSASA_OK:
-            error_messages = {
-                _ZSASA_ERROR_INVALID_INPUT: "invalid or corrupt DCD frame data",
-                _ZSASA_ERROR_OUT_OF_MEMORY: "out of memory",
-            }
-            detail = error_messages.get(result, f"error code {result}")
-            msg = f"Error reading DCD frame: {detail}"
-            raise RuntimeError(msg)
+            _raise_trajectory_read_error("DCD", result)
 
         # Copy buffers to new arrays
         coords = self._coords_buffer.copy().reshape(self._natoms, 3)
@@ -257,6 +263,7 @@ def compute_sasa_trajectory_summary(
     DCD coordinates are already in Angstroms. Frames are processed in chunks and
     per-atom SASA arrays are discarded after aggregate values are accumulated.
     """
+    _validate_frame_selection(start, stop, step)
     radii = np.asarray(radii, dtype=np.float32)
     chunk_size = _validate_chunk_size(chunk_size)
 
@@ -363,11 +370,11 @@ def compute_sasa_trajectory(
     n_threads : int, optional
         Number of threads (0 = auto-detect). Default: 0.
     start : int, optional
-        First frame to process (0-indexed). Default: 0.
+        First frame to process (0-indexed, non-negative). Default: 0.
     stop : int, optional
-        Stop before this frame (exclusive). Default: None (all frames).
+        Stop before this frame (exclusive, non-negative). Default: None (all frames).
     step : int, optional
-        Process every Nth frame. Default: 1.
+        Process every Nth frame (positive). Default: 1.
     use_bitmask : bool, optional
         Use bitmask LUT optimization for SR algorithm.
         Supports n_points 1..1024. Default: False.
@@ -399,6 +406,7 @@ def compute_sasa_trajectory(
     >>> print(f"Processed {result.n_frames} frames")
     >>> print(f"Total SASA: {result.total_areas}")
     """
+    _validate_frame_selection(start, stop, step)
     radii = np.asarray(radii, dtype=np.float32)
 
     # Read all frames first

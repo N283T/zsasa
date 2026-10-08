@@ -78,9 +78,9 @@ def run(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `start` | `int` | `0` | First frame to analyze |
-| `stop` | `int \| None` | `None` | Stop before this frame (None = run through the last frame) |
-| `step` | `int` | `1` | Step between frames |
+| `start` | `int` | `0` | First frame to analyze (not negative) |
+| `stop` | `int \| None` | `None` | Stop before this frame (not negative; None = run through the last frame) |
+| `step` | `int` | `1` | Step between frames (at least 1; `0` or a negative value raises `ValueError` before any frame is read) |
 | `probe_radius` | `float` | `1.4` | Probe radius in Å |
 | `n_points` | `int` | `960` | Test points per atom (SR) |
 | `algorithm` | `"sr"` or `"lr"` | `"sr"` | Algorithm to use |
@@ -106,6 +106,21 @@ After calling `run()`, results are available in the `results` attribute:
 | `mean_total_area` | `float` | Mean total SASA across all frames |
 
 **Units:** All SASA values are in Å² (matching MDAnalysis conventions).
+
+### Radii
+
+The radius of each atom comes from the MDAnalysis van der Waals table (`MDAnalysis.guesser.tables.vdwradii`; `MDAnalysis.topology.tables.vdwradii` in MDAnalysis releases before 2.8, which zsasa falls back to) and the atom's element. An element missing from that table (for example Fe, which MDAnalysis does not list) gets 2.0 Å.
+
+The element is the `element` attribute when the topology has one (for example a PDB file with an element column). Without it (for example GRO files, or PDB files without an element column), it is inferred from the atom type and name together with the residue name:
+
+- A name or type that starts with `CL`, `BR`, `FE`, `ZN`, `MG`, `MN`, `NI`, `CU`, `LI` or `AL` is that element (`CL1` is chlorine, `ZN` is zinc).
+- A two-letter symbol that is also an ordinary atom name (`CA`, `CD`, `NA`, `HG`, `SE`, `CO`, ...) is that element only when the residue is the ion itself (atom `CA` in residue `CA`, atom `NA` in residue `NA+`). The alpha carbon `CA` of `ALA`, the `CD` of `GLN` and the `NA` nitrogen of `HEM` stay carbon, carbon and nitrogen, and `HG` of `SER` stays hydrogen.
+- CHARMM ion names (`SOD`, `POT`, `CLA`, `CAL`, `CES`) give sodium, potassium, chlorine, calcium and caesium.
+- The type and the name are both read, and a two-letter reading from either wins: a parser may guess the type of an ion from its name and get it wrong (MDAnalysis types the calcium ion `CA` as carbon).
+
+The atom mass is not used. MDAnalysis guesses masses from the same types when a topology has none, so a guessed mass cannot confirm a guessed type.
+
+Anything else takes the first letter of the type, or the name when there is no type, and carbon when there is neither.
 
 ## Example
 

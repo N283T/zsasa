@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import filecmp
 import os
 import sys
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from cffi import FFI
 
@@ -18,6 +19,14 @@ ZSASA_ERROR_CALCULATION = -3
 ZSASA_ERROR_FILE_IO = -4
 ZSASA_ERROR_UNSUPPORTED_N_POINTS = -5
 ZSASA_ERROR_OUTPUT_NAME_COLLISION = -6
+ZSASA_ERROR_INVALID_FORMAT = -7
+ZSASA_ERROR_OUTPUT_DIR = -8
+
+# Version of the C ABI this package's cdef (below) was written for. It must equal
+# the value zsasa_abi_version() returns in the loaded library. Bump it together with
+# ABI_VERSION in src/c_api.zig whenever an existing exported signature or struct
+# layout changes (not for new exports or new error codes).
+_EXPECTED_ABI_VERSION = 1
 
 # Valid n_points range for bitmask algorithm
 _BITMASK_MIN_N_POINTS = 1
@@ -70,6 +79,7 @@ ZSASA_ATOM_CLASS_UNKNOWN = 2
 _CDEF = """
     // Version
     const char* zsasa_version(void);
+    int zsasa_abi_version(void);
 
     // SASA calculation
     int zsasa_calc_sr(
@@ -215,37 +225,82 @@ _CDEF = """
 """
 
 
+def _library_file_name() -> str:
+    """Return the platform-specific file name of the shared library."""
+    if sys.platform == "darwin":
+        return "libzsasa.dylib"
+    if sys.platform == "win32":
+        return "zsasa.dll"
+    return "libzsasa.so"
+
+
+def _choose_checkout_library(bundled: Path, built: Path) -> Path:
+    """Choose between the library bundled in the package and a ``zig-out`` build.
+
+    A development checkout can have both: the package directory holds a copy made
+    by the build hook (untracked), ``zig-out`` holds the latest ``zig build``.
+    The bundled copy goes stale when the sources change without a reinstall, and
+    loading it instead of the fresh build would run old code with no warning. The
+    newer file wins; a warning names the one that was skipped when the two differ.
+    """
+    if filecmp.cmp(bundled, built, shallow=False):
+        return bundled  # the build hook's copy of this very build
+
+    if built.stat().st_mtime > bundled.stat().st_mtime:
+        chosen, skipped = built, bundled
+    else:
+        chosen, skipped = bundled, built
+    warnings.warn(
+        f"Found two different zsasa libraries: {bundled} (bundled in the package) and "
+        f"{built} (build output). Loading {chosen}, which is newer; skipping {skipped}. "
+        "Rebuild with 'zig build -Doptimize=ReleaseFast', reinstall the package, or delete "
+        "the stale file to silence this warning. Set ZSASA_LIB to the library you want to "
+        "load to override the choice.",
+        stacklevel=2,
+    )
+    return chosen
+
+
 def _find_library() -> Path:
-    """Find the zsasa shared library."""
+    """Find the zsasa shared library.
+
+    Order: the ``ZSASA_LIB`` environment variable, then the package directory and the
+    ``zig-out`` directory of the checkout this file belongs to (the newer wins when both
+    exist, see ``_choose_checkout_library``), then the system library directories. The
+    current directory is deliberately not searched: loading a shared library from
+    wherever the process happens to run would let a stray file run code in it.
+    """
     # Check environment variable first
     if lib_path := os.environ.get("ZSASA_LIB"):
         return Path(lib_path)
 
-    # Platform-specific library names
-    if sys.platform == "darwin":
-        lib_name = "libzsasa.dylib"
-    elif sys.platform == "win32":
-        lib_name = "zsasa.dll"
-    else:
-        lib_name = "libzsasa.so"
+    lib_name = _library_file_name()
+    package_dir = Path(__file__).parent
+    checkout_root = package_dir.parent.parent
 
-    # Search paths
-    search_paths = [
-        # Bundled in package (wheel installation)
-        Path(__file__).parent / lib_name,
-        # Relative to this file (development: python/zsasa -> zig-out/lib or bin)
-        Path(__file__).parent.parent.parent / "zig-out" / "lib" / lib_name,
-        Path(__file__).parent.parent.parent / "zig-out" / "bin" / lib_name,
-        # System paths
-        Path("/usr/local/lib") / lib_name,
-        Path("/usr/lib") / lib_name,
-        # Current directory
-        Path.cwd() / lib_name,
-        Path.cwd() / "zig-out" / "lib" / lib_name,
-        Path.cwd() / "zig-out" / "bin" / lib_name,
-    ]
+    # Bundled in the package (wheel installation, or a copy made by the build hook)
+    bundled = package_dir / lib_name
+    # Development checkout: python/zsasa -> zig-out/lib or zig-out/bin (Windows DLLs)
+    built = next(
+        (
+            path
+            for path in (
+                checkout_root / "zig-out" / "lib" / lib_name,
+                checkout_root / "zig-out" / "bin" / lib_name,
+            )
+            if path.exists()
+        ),
+        None,
+    )
 
-    for path in search_paths:
+    if bundled.exists() and built is not None:
+        return _choose_checkout_library(bundled, built)
+    if bundled.exists():
+        return bundled
+    if built is not None:
+        return built
+
+    for path in (Path("/usr/local/lib") / lib_name, Path("/usr/lib") / lib_name):
         if path.exists():
             return path
 
@@ -257,12 +312,41 @@ def _find_library() -> Path:
     raise FileNotFoundError(msg)
 
 
+def _check_abi_version(lib: Any, lib_path: Path) -> None:
+    """Refuse a library whose C ABI differs from the one this package declares.
+
+    The signatures in ``_CDEF`` are written by hand. Calling a function through a
+    declaration that no longer matches the library is undefined behavior (wrong
+    arguments, corrupted memory), so a mismatch is an error, not a warning.
+    """
+    rebuild = (
+        "Rebuild it with 'zig build -Doptimize=ReleaseFast' from the same checkout as this "
+        "package, reinstall zsasa, or point ZSASA_LIB at a matching library."
+    )
+    try:
+        found = lib.zsasa_abi_version()
+    except AttributeError as e:
+        msg = (
+            f"The zsasa library {lib_path} does not export zsasa_abi_version(): it was built "
+            f"from an older version than this Python package (expects ABI version "
+            f"{_EXPECTED_ABI_VERSION}). {rebuild}"
+        )
+        raise ImportError(msg) from e
+    if found != _EXPECTED_ABI_VERSION:
+        msg = (
+            f"The zsasa library {lib_path} has ABI version {found}, but this Python package "
+            f"expects ABI version {_EXPECTED_ABI_VERSION}. {rebuild}"
+        )
+        raise ImportError(msg)
+
+
 def _load_library() -> tuple[FFI, Any]:
-    """Load the zsasa shared library using cffi."""
+    """Load the zsasa shared library using cffi and check its ABI version."""
     ffi = FFI()
     ffi.cdef(_CDEF)
     lib_path = _find_library()
     lib = ffi.dlopen(str(lib_path))
+    _check_abi_version(lib, lib_path)
     return ffi, lib
 
 
@@ -283,3 +367,64 @@ def get_version() -> str:
     """Get the library version string."""
     ffi, lib = _get_lib()
     return ffi.string(lib.zsasa_version()).decode("utf-8")
+
+
+def _validate_frame_selection(start: int, stop: int | None, step: int) -> None:
+    """Reject a ``start``/``stop``/``step`` frame selection that cannot select frames.
+
+    Called before a trajectory is opened, so that a bad argument fails at once with a
+    message about the argument instead of as a ``ZeroDivisionError`` after the file
+    has been opened, or as a silent empty selection.
+    """
+    if step < 1:
+        msg = f"step must be a positive integer (1 selects every frame), got {step}"
+        raise ValueError(msg)
+    if start < 0:
+        msg = f"start must be non-negative, got {start}"
+        raise ValueError(msg)
+    if stop is not None and stop < 0:
+        msg = f"stop must be non-negative or None, got {stop}"
+        raise ValueError(msg)
+
+
+def _raise_trajectory_open_error(kind: str, path: str, code: int) -> NoReturn:
+    """Raise the exception that matches why a trajectory file could not be opened.
+
+    ``kind`` is the format name ("XTC" or "DCD"), ``code`` the error code from the
+    C open function. The C library reports a missing file and a file that is not
+    valid for the format as different codes; the file system tells a directory or an
+    unreadable file apart from a malformed one.
+    """
+    if code == ZSASA_ERROR_OUT_OF_MEMORY:
+        msg = f"Out of memory opening {kind} file: {path}"
+        raise MemoryError(msg)
+    if code in (ZSASA_ERROR_INVALID_INPUT, ZSASA_ERROR_INVALID_FORMAT):
+        target = Path(path)
+        if not target.exists():
+            msg = f"{kind} file not found: {path}"
+            raise FileNotFoundError(msg)
+        if target.is_dir():
+            msg = f"{kind} path is a directory, not a file: {path}"
+            raise IsADirectoryError(msg)
+        if not os.access(target, os.R_OK):
+            msg = f"Permission denied reading {kind} file: {path}"
+            raise PermissionError(msg)
+        if code == ZSASA_ERROR_INVALID_FORMAT:
+            msg = f"{path} is not a valid {kind} file: it is empty, truncated, or in another format"
+            raise ValueError(msg)
+        msg = f"Cannot open {kind} file: {path}"
+        raise OSError(msg)
+    msg = f"Error opening {kind} file {path}: error code {code}"
+    raise RuntimeError(msg)
+
+
+def _raise_trajectory_read_error(kind: str, code: int) -> NoReturn:
+    """Raise the exception for a failed ``zsasa_*_read_frame`` call."""
+    if code == ZSASA_ERROR_OUT_OF_MEMORY:
+        msg = f"Out of memory reading {kind} frame"
+        raise MemoryError(msg)
+    if code == ZSASA_ERROR_INVALID_FORMAT:
+        msg = f"Error reading {kind} frame: the file is corrupt or truncated"
+        raise RuntimeError(msg)
+    msg = f"Error reading {kind} frame: error code {code}"
+    raise RuntimeError(msg)

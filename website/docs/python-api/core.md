@@ -189,7 +189,11 @@ Process all supported structure files (.pdb, .cif, .mmcif, .bcif, .ent, .json, .
 | Exception | Cause |
 |-----------|-------|
 | `ValueError` | Invalid parameters (algorithm, probe_radius, n_points, etc.), or `output_dir` is set and several inputs share an output file name (`1crn.pdb` and `1crn.cif`) |
-| `FileNotFoundError` | Directory does not exist or is not readable |
+| `FileNotFoundError` | `input_dir` does not exist |
+| `NotADirectoryError` | `input_dir` is not a directory, or a parent of `output_dir` is a file |
+| `FileExistsError` | `output_dir` exists and is not a directory |
+| `PermissionError` | `input_dir` cannot be read, or `output_dir` cannot be created for lack of permission |
+| `OSError` | `output_dir` cannot be created for another reason |
 | `MemoryError` | Out of memory |
 | `RuntimeError` | Calculation or other processing error |
 
