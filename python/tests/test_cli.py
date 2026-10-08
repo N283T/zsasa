@@ -94,9 +94,14 @@ class TestFindBinary:
 
     @pytest.fixture
     def install(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-        """A fake installation: the package in `site/zsasa`, the environment in `prefix`."""
+        """A fake installation: the package in `site/zsasa`, the environment in `prefix`.
+
+        The layout is the unix one (`bin/zsasa`) whatever the tests run on; the test of
+        the Windows layout sets `sys.platform` itself.
+        """
         from zsasa import cli
 
+        monkeypatch.setattr(sys, "platform", "linux")
         package_dir = tmp_path / "site" / "zsasa"
         package_dir.mkdir(parents=True)
         (tmp_path / "prefix").mkdir()
