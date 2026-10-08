@@ -179,13 +179,6 @@ class ReleaseBumpTests(unittest.TestCase):
             bump.run(self.tmp, "0.8.0", release_date="2026-07-01", check_clean=True)
 
 
-class ReleaseTagTests(unittest.TestCase):
-    def test_normalize_version_accepts_prefixed_and_unprefixed(self):
-        tag = load_script("release_tag.py")
-        self.assertEqual(tag.normalize_version("0.8.0"), ("0.8.0", "v0.8.0"))
-        self.assertEqual(tag.normalize_version("v0.8.0"), ("0.8.0", "v0.8.0"))
-
-
 PKGBUILD = """\
 # Maintainer: Someone
 pkgname=zsasa-bin

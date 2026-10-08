@@ -346,12 +346,10 @@ jobs:
         run: |
           python -m pip install ruff==0.14.13
           ruff check scripts/
-          # release_bump.py, release_tag.py and test_release_tools.py predate the
-          # formatter check and are not formatted yet; drop the excludes once
-          # they are.
+          # release_bump.py and test_release_tools.py predate the formatter
+          # check and are not formatted yet; drop the excludes once they are.
           ruff format --check scripts/ \
             --exclude scripts/release_bump.py \
-            --exclude scripts/release_tag.py \
             --exclude scripts/test_release_tools.py
 
   python_integrations:

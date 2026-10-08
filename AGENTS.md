@@ -1,180 +1,83 @@
 # AGENTS.md
 
-Repository-specific instructions for AI coding agents working on `zsasa`.
+Instructions for AI coding agents working on `zsasa`, a Solvent Accessible Surface Area calculator written in Zig with Python bindings. `CONTRIBUTING.md` has the developer setup and explains how the tests are organized; read it before changing tests or the build.
 
-## Scope
+## Layout
 
-These instructions apply to the entire repository. Follow them together with the user's global Codex instructions and prefer the more specific instruction when there is a conflict.
+- `src/` — Zig library, CLI, parsers, algorithms, C ABI (`c_api.zig`) and their tests.
+- `python/` — Python package (cffi bindings over the C ABI) and its tests.
+- `website/` — documentation site: Markdown in `website/docs/`, built by `website/build.py`.
+- `scripts/` — release and maintenance scripts, with tests.
+- `packaging/`, `flake.nix`, `Dockerfile`, `install.sh` — distribution.
+- `benchmarks/`, `examples/`, `test_data/` — benchmark scripts and fixtures.
 
-## Project Overview
+## Rules
 
-`zsasa` is a high-performance Solvent Accessible Surface Area (SASA) calculator written primarily in Zig, with Python bindings and a Docusaurus documentation site.
+- Do not commit to `main`. Work on a `feature/`, `fix/`, `docs/` or `release/` branch.
+- Do not merge pull requests, create tags or publish anything without explicit approval from the user.
+- A change in behavior comes with its tests, its documentation (`website/docs/`, `README.md`, `python/README.md`) and a `CHANGELOG.md` entry under `[Unreleased]`, mirrored in `website/docs/changelog.md`.
+- Do not change the CLI, the JSON/CSV/RSA output, the C ABI or the Python API unless the task asks for it. Mark a change of default results or of an output schema as such in the changelog.
+- Do not delete tracked fixtures or docs, and do not edit `website/data/benchmarks/*.json` by hand (regenerate with `website/scripts/export_benchmarks.py`). Benchmark and accuracy figures in the docs come from the paper; do not change them on your own.
+- Parsers, units, atom order, classifier radii and numerical precision are high-risk: compare against existing fixtures and add a test with a tolerance.
 
-Key areas:
+## Checks
 
-- `src/` — Zig library, CLI, parsers, algorithms, C ABI, and tests.
-- `python/` — Python package and tests for the Zig-backed bindings.
-- `website/` — documentation site: Markdown docs, hand-written HTML/CSS/JS, and a small Python builder (`website/build.py`).
-- `docs/` and `plans/` — design docs and implementation notes.
-- `benchmarks/` — benchmark and validation scripts/data.
-- `examples/` and `test_data/` — small fixtures used by docs, tests, and smoke checks.
-
-## Development Workflow
-
-- Keep changes small, focused, and reversible.
-- Do not commit directly to `main`; create a feature/fix/docs branch before committing.
-- Preserve existing public CLI, JSON/CSV output, C ABI, and Python API behavior unless the task explicitly changes them.
-- Do not delete tracked fixtures, generated reference data, or docs without explicit user approval.
-- Avoid committing local build artifacts and caches such as `zig-out/`, `.zig-cache/`, `result`, `website/dist/`, and Python caches.
-- If changing behavior, update relevant docs, examples, and tests in the same change.
-
-## Build and Test Commands
-
-Core Zig checks:
+Run the narrowest set that covers the change, and say which checks were skipped and why.
 
 ```bash
+# Zig
 zig fmt --check src/
-zig build test
-python3 scripts/check_test_partition.py   # each test runs in exactly one artifact; see CONTRIBUTING.md
+zig build test                            # prints nothing from the tests when it passes
+python3 scripts/check_test_partition.py   # every test runs in exactly one artifact
 zig build -Doptimize=ReleaseFast
-./zig-out/bin/zsasa --help
-./zig-out/bin/zsasa --version
-mkdir -p /tmp/zsasa-check
 ./zig-out/bin/zsasa calc examples/1ubq.pdb /tmp/zsasa-check/output.json
+
+# Python (when python/ or the C ABI changed)
+cd python && ruff format . && ruff check . && pytest tests/ -v
+
+# Website (when website/ or the docs changed)
+uv run website/build.py                   # fails on broken links and anchors
+
+# Release tooling (scripts/, install.sh, flake.nix, build.zig.zon, packaging/)
+python3 -m unittest discover -s scripts -p 'test_*.py'
+python3 scripts/check_versions.py
+python3 scripts/check_nix_deps_hash.py
+sh -n install.sh
 ```
 
-Release tooling checks, when touching `scripts/`, a version file or the publish workflow:
+## Things that are easy to get wrong
 
-```bash
-python3 scripts/check_versions.py                        # build.zig, build.zig.zon, src/c_api.zig and python/pyproject.toml agree
-python3 -m unittest discover -s scripts -p 'test_*.py'   # tests of the release scripts
-```
+- **Zig 0.16.** `std.Io` is passed explicitly. Release builds are ReleaseFast, where illegal behavior is silent corruption, not a panic: validate lengths and enum values read from files.
+- **Python tests and the library.** A stale `python/zsasa/libzsasa.*` copy can shadow a fresh build. Set `ZSASA_LIB=$PWD/zig-out/lib/libzsasa.dylib` (or `.so`) when testing a local build, and `PYTHONPATH=<worktree>/python` in a git worktree. The integration tests need `pip install -e ".[all,dev]"`; without the optional packages they are skipped.
+- **C ABI.** Keep `src/c_api.zig`, the cdef in `python/zsasa/_ffi.py` and the Python error mapping in step. Bump `ABI_VERSION` (and `_EXPECTED_ABI_VERSION`) when an existing exported signature or struct layout changes; adding an export does not need it.
+- **Test partition.** A test file that only the module root or the executable root reaches needs a filter in `build.zig`, or its tests run nowhere.
+- **Stderr in tests.** A test that runs a code path printing with `std.debug.print` starts with `var muted = test_support.muteStderr(); defer muted.restore();`.
+- **Windows.** CI builds for Windows but runs no tests there; they first run in the publish workflow. Do not query the size of a file opened write-only (`AccessDenied` on Windows).
+- **Nix.** When the dependencies in `build.zig.zon` or the Zig version change, run `scripts/check_nix_deps_hash.py --refresh` and `nix build`.
+- **Zig version bump.** Also update the tarball checksums in `Dockerfile` and `python/pyproject.toml` (cibuildwheel `before-all`) and the version in `.github/workflows/`.
 
-Python package checks, when touching `python/` or the C ABI:
+## Release
 
-```bash
-cd python
-pip install -e ".[dev]"
-ruff format .
-ruff check .
-pytest tests/ -v
-```
+A pushed `vX.Y.Z` tag publishes to PyPI, GitHub Releases, GHCR, Homebrew and Scoop, and cannot be undone. Merge and tag only after the user says so.
 
-Documentation site checks, when touching `website/` or documentation build plumbing:
+1. From an up-to-date `main`: `git switch -c release/vX.Y.Z`, then `./scripts/release_bump.py X.Y.Z`. It bumps every version file, promotes the `[Unreleased]` notes in both changelogs, and marks the conda checksums `PENDING-...`. `packaging/aur/` stays at the previous release.
+2. If defaults, output formats or accepted input changed, add an "Upgrade notes" block at the top of the new changelog section.
+3. Run the checks above, plus `python3 scripts/check_versions.py --tag vX.Y.Z`. Commit as `release: vX.Y.Z`, push and open the pull request.
+4. Rehearse the publish workflow on the release branch. It builds every wheel, CLI binary and the Docker image and publishes nothing:
 
-```bash
-uv run website/build.py
-```
+   ```bash
+   gh workflow run publish.yml --ref release/vX.Y.Z -f release_tag=vX.Y.Z -f target=none -f jobs=all
+   ```
 
-The build fails on broken internal links, missing heading anchors, and unknown chart or table references. Benchmark charts are drawn from `website/data/benchmarks/*.json`; regenerate those with `website/scripts/export_benchmarks.py` (see `website/README.md`) rather than editing them by hand.
+5. After approval, with CI and the rehearsal green:
 
-Release tooling checks, when touching `scripts/`, `install.sh`, `flake.nix`, `build.zig.zon` or `packaging/`:
+   ```bash
+   gh pr merge <PR> --squash --subject "release: vX.Y.Z"
+   git switch main && git pull --ff-only
+   python3 scripts/check_versions.py --tag vX.Y.Z
+   git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z
+   ```
 
-```bash
-uv run --no-project --python 3.12 --with pytest python -m pytest scripts/ -q
-sh -n install.sh && nix run nixpkgs#shellcheck -- install.sh
-scripts/check_nix_deps_hash.py
-```
+6. When the publish run has finished, on a new branch: `./scripts/update_packaging_checksums.py X.Y.Z`, commit and open a pull request. The AUR repository (`zsasa-bin`) and the conda-forge feedstock are updated by hand from those files.
 
-Use the narrowest checks that cover the changed surface area. If a check is skipped, say why.
-
-## Zig Guidelines
-
-- Target Zig 0.16.0+ unless the project metadata changes.
-- Run `zig fmt` on touched Zig files before finalizing.
-- Follow existing naming and layout conventions:
-  - `snake_case` for functions and variables.
-  - `PascalCase` for types.
-  - Small, focused functions with explicit error handling.
-- Keep allocation ownership clear and documented at API boundaries.
-- Preserve scalar fallbacks when adding SIMD or platform-specific optimizations.
-- Benchmark performance-sensitive changes with `-Doptimize=ReleaseFast` when practical.
-- Add or update tests for parser, algorithm, CLI, and output-format changes.
-
-## Python Guidelines
-
-- Python lives under `python/` and targets Python 3.11+.
-- Use type hints for new or changed public functions.
-- Keep the Python API aligned with the C ABI in `src/c_api.zig`.
-- Prefer focused tests in `python/tests/` for binding/API changes.
-- Use Ruff formatting/linting for Python changes.
-- Treat Ruff and pytest as the default Python release gates. Run `ty` only for focused typing work or after configuring/installing the relevant optional integration dependencies, because the current tree includes optional BioPython/Biotite/Gemmi/MDAnalysis/MDTraj imports and dynamic CFFI attributes that make an unconstrained full-tree `ty check` noisy.
-
-## Documentation Guidelines
-
-- Update `README.md`, `CONTRIBUTING.md`, `docs/`, `website/docs/`, or `python/README.md` when changing user-visible behavior.
-- Keep examples runnable and consistent with the current CLI/API.
-- Do not hand-edit generated autodoc outputs; update source docs/comments instead.
-
-## Data, Scientific Correctness, and Compatibility
-
-- Treat parser correctness, units, atom ordering, classifier behavior, and numerical precision as high-risk areas.
-- For SASA algorithm changes, compare against existing examples/fixtures and include tolerance-aware tests where possible.
-- Be careful with mmCIF/PDB/SDF edge cases, compressed inputs, trajectory formats, and residue/atom metadata preservation.
-- Do not silently change output schemas. If schema changes are required, update docs, examples, and downstream Python handling.
-
-## Release and Packaging Notes
-
-- `CHANGELOG.md`, `build.zig.zon`, `python/pyproject.toml`, packaging metadata, and install scripts may need coordinated updates for releases.
-- Do not publish packages, create tags, or merge PRs without explicit user approval.
-- For Nix changes, verify the flake path touched and mention any follow-up commands the user should run.
-- `flake.nix` pins the Zig dependencies of `build.zig.zon` with a fixed-output hash (`outputHash`) and records a fingerprint of the inputs it was computed for (`# zig-deps-fingerprint:`). **Whenever the `.dependencies` in `build.zig.zon` or the Zig version in `flake.nix` change, in any PR and not only in releases**, refresh both with `scripts/check_nix_deps_hash.py --refresh` (needs Nix; it builds with a fake hash and reads the real one from the mismatch error) and confirm with `nix build && ./result/bin/zsasa --version`. `scripts/check_nix_deps_hash.py` without options needs no Nix and exits 1 when the hash is stale; `scripts/test_release_tools.py` runs the same check. A package version bump does not change the hash. Never commit the `result` symlink.
-
-### Release Checklist
-
-Before opening a release PR:
-
-- Work from an up-to-date `main` branch with a clean working tree, then create a `release/vX.Y.Z` branch.
-- Normalize release versions as `vX.Y.Z` for git tags and PR titles, and as `X.Y.Z` in files.
-- Grep for the current version before editing so stale references are not missed:
-
-  ```bash
-  git grep -n '<current-version>' -- \
-    ':(exclude)CHANGELOG.md' \
-    ':(exclude)*.lock' \
-    ':(exclude)zig-out/'
-  ```
-
-- Bump every active package/runtime version reference:
-  - `build.zig`
-  - `build.zig.zon`
-  - `flake.nix`
-  - `python/pyproject.toml`
-  - `python/uv.lock` (regenerate or verify after `python/pyproject.toml` changes)
-  - `packaging/conda-forge/meta.yaml` (`scripts/release_bump.py` sets the version, restarts the build number at 0 and replaces the four binary checksums and the `LICENSE` checksum with a `PENDING-...` marker, because the old ones would look valid but fail; the real values are filled in after the release is published, see below)
-  - `src/c_api.zig` (`VERSION`, used by `zsasa_version()` and Python `get_version()`)
-- Check release-adjacent files for required updates even when grep does not find the old version:
-  - `install.sh`
-  - `Dockerfile`
-  - `.github/workflows/publish.yml`
-  - `packaging/aur/PKGBUILD` and `packaging/aur/.SRCINFO`: leave them at the previous release in the release PR; they cannot be bumped before the release assets and their checksums exist
-  - `CITATION.cff`
-- Update changelogs and release links:
-  - Add a dated `CHANGELOG.md` section for `X.Y.Z`.
-  - Update the `[Unreleased]` compare link and add the new `X.Y.Z` compare link at the bottom of `CHANGELOG.md`.
-  - Update `website/docs/changelog.md` when the website changelog mirrors release notes.
-- Run focused release checks:
-
-  ```bash
-  zig fmt --check src/
-  zig build test
-  zig build -Doptimize=ReleaseFast
-  ./zig-out/bin/zsasa --version
-  mkdir -p /tmp/zsasa-check
-  ./zig-out/bin/zsasa calc examples/1ubq.pdb /tmp/zsasa-check/output.json
-  ```
-
-- Check the Nix flake: run `scripts/check_nix_deps_hash.py` (exits 1 when the dependency hash is stale), and on a machine with Nix `nix build` followed by `./result/bin/zsasa --version`. The release PR only changes the version in `flake.nix`, so a failure here means an earlier dependency change skipped the refresh described under Release and Packaging Notes.
-- Run the release tooling tests: `uv run --no-project --python 3.12 --with pytest python -m pytest scripts/ -q`.
-- When `python/` or the C ABI changed, also run the Python package checks from this file.
-- When `website/` or documentation build plumbing changed, also run the documentation site checks from this file.
-- Tag only after the release PR is merged. A pushed `vX.Y.Z` tag triggers the publish workflow, so confirm `CHANGELOG.md` and generated release notes first.
-- Before tagging, run `python3 scripts/check_versions.py --tag vX.Y.Z` on the merge commit. The publish workflow runs the same check and also requires the tagged commit to be on `main`; it publishes nothing until every build and check has succeeded.
-- A manual `workflow_dispatch` run only creates the GitHub Release, pushes the Docker image and updates Homebrew and Scoop with `target=pypi`; use `target=testpypi` (TestPyPI only) for a TestPyPI upload. Before tagging, rehearse the release with `target=none`: start the workflow from the release branch (or `main` after the merge) with `release_tag=vX.Y.Z`; it builds every wheel, CLI binary and the Docker image from that branch, runs every check, and publishes nothing. The tag does not have to exist yet.
-- When bumping Zig, update the sha256 values for the Zig tarballs in `Dockerfile` and in `python/pyproject.toml` (cibuildwheel `before-all`) from `https://ziglang.org/download/index.json`, together with the version in the workflows. When updating a pinned third-party action, change the commit SHA and the version comment together.
-
-After the release is published (the publish workflow has attached the binaries and `SHA256SUMS` to the GitHub release), in a follow-up PR from an up-to-date `main`:
-
-- Run `scripts/update_packaging_checksums.py X.Y.Z`. It reads the release's `SHA256SUMS`, cross-checks it against the asset digests GitHub records, and rewrites `packaging/conda-forge/meta.yaml` (checksums), `packaging/aur/PKGBUILD` (`pkgver`, `pkgrel=1`, `sha256sums`) and `packaging/aur/.SRCINFO`. Review the diff, commit it and open the PR.
-- `scripts/update_packaging_checksums.py X.Y.Z --check` changes nothing and exits non-zero while any of these files is stale or still carries the `PENDING-...` marker.
-- Submit the same `PKGBUILD` and `.SRCINFO` to the AUR repository `zsasa-bin` and update the conda-forge feedstock from the recipe. Neither is automated, and the AUR build (`makepkg`) is not run by any script here.
+A failed publish run can be repeated for one part with `workflow_dispatch` (`target=pypi` and the job to repeat); `target=testpypi` uploads to TestPyPI only.
