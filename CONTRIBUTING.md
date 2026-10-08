@@ -41,6 +41,8 @@ python3 scripts/check_test_partition.py
 
 `build.zig` builds three test artifacts (the `zsasa` module, the CLI executable and the C library). Zig runs the tests of every file a root reaches, so each artifact only runs a filtered subset: the C library artifact (`src/c_api.zig`, which reaches almost every file) runs everything it reaches, and the module and executable artifacts run only the tests no other artifact reaches (`dcd.test.`/`root.test` and `calc.test.`/`traj.test.`/`compile_dict.test.`/`main.test`). When you add a file that only the module root or the executable root reaches, run `python3 scripts/check_test_partition.py` (CI runs it too): it fails if a test would run in no artifact or in more than one, and tells you which filter in `build.zig` to adjust.
 
+A passing `zig build test` should print nothing. A test that runs a code path which reports to stderr with `std.debug.print` (argument errors, `Workflow complete: ...`) starts with `var muted = test_support.muteStderr(); defer muted.restore();` (`src/test_support.zig`). Set `ZSASA_TEST_STDERR=1` to see that output while debugging. Run a test binary directly (`zig build test-bins`, then `./zig-out/test-bin/lib-tests`) only from the repository root, and do not call `std.Progress.start` from a test: the test runner has already started it.
+
 ### Python Bindings (Optional)
 
 The Python package automatically builds the Zig library during installation:

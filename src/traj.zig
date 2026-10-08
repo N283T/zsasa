@@ -28,6 +28,7 @@ const ccd_parser = @import("ccd_parser.zig");
 const ccd_binary = @import("ccd_binary.zig");
 const sdf_parser = @import("sdf_parser.zig");
 const compressed = @import("compressed.zig");
+const test_support = @import("test_support.zig");
 
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
@@ -1804,6 +1805,8 @@ test "TrajArgs --bitmask-lut-mode parses supported modes" {
 }
 
 test "TrajArgs non-default bitmask LUT mode requires bitmask" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     try std.testing.expectError(
         error.InvalidArgument,
         validateBitmaskLutMode(.{ .bitmask_lut_mode = .per_frame }),
@@ -1876,6 +1879,8 @@ test "parseArgsChecked accepts -o FILE, -o=FILE, --output=FILE and --output FILE
 }
 
 test "parseArgsChecked rejects unknown dash arguments and a positional output" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const rejected = [_][]const []const u8{
         // -oFILE used to be taken as the output path "XYZ"
         &.{ "zsasa", "traj", "traj.xtc", "topology.pdb", "-oXYZ" },
@@ -1891,6 +1896,8 @@ test "parseArgsChecked rejects unknown dash arguments and a positional output" {
 }
 
 test "parseArgsChecked --lr-trig: exact by default, exact or fast in the = form only" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const default_args = [_][]const u8{ "zsasa", "traj", "--algorithm=lr", "traj.xtc", "topology.pdb" };
     try std.testing.expectEqual(TrigMode.exact, (try parseArgsChecked(&default_args, 2)).lr_trig);
 
@@ -1920,6 +1927,8 @@ test "parseArgsChecked --lr-trig: exact by default, exact or fast in the = form 
 }
 
 test "parseArgsChecked range-checks stride, probe radius, n-points and n-slices" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const rejected = [_][]const u8{
         "--stride=0",
         "--probe-radius=0",
@@ -2169,6 +2178,8 @@ test "traj run: --lr-trig reaches the sequential and the batch path at both prec
 }
 
 test "traj run: --no-hydrogens equals a run on a hydrogen-free topology and trajectory" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     var ws = TestWorkspace.init();
     defer ws.deinit();
     const a = ws.allocator();
@@ -2384,6 +2395,8 @@ test "traj run: multi-model, HETATM and mmCIF topologies map onto the trajectory
 }
 
 test "traj run: invalid options are rejected before the output file is created" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     var ws = TestWorkspace.init();
     defer ws.deinit();
 
@@ -2419,6 +2432,8 @@ test "traj run: invalid options are rejected before the output file is created" 
 }
 
 test "traj run: frames computed before a failure are written to the output" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     var ws = TestWorkspace.init();
     defer ws.deinit();
 
@@ -2469,5 +2484,54 @@ test "traj run: frames computed before a failure are written to the output" {
         } else |_| {}
         // Frames 0 and 1 precede the failing frame and are kept.
         try std.testing.expectEqualStrings(clean_rows, try ws.read(nan_args.output_path));
+    }
+}
+
+test "traj run: --start, --end and --stride select the frames, in both paths" {
+    var ws = TestWorkspace.init();
+    defer ws.deinit();
+    const topology = try ws.write("m1.pdb", try ws.firstModelPdb());
+
+    const base = TrajArgs{ .traj_path = test_xtc_path, .topology_path = topology, .n_points = 32, .batch_size = 2 };
+
+    var full_args = base;
+    full_args.end_frame = 4;
+    full_args.n_threads = 1;
+    const full = try ws.totals(try ws.runTraj(full_args, "full.csv"));
+    try std.testing.expectEqual(@as(usize, 5), full.len);
+
+    // Frames 1 and 3 of the five: the rows keep the index in the trajectory.
+    for ([_]usize{ 1, 2 }) |n_threads| {
+        var args = base;
+        args.start_frame = 1;
+        args.end_frame = 4;
+        args.stride = 2;
+        args.n_threads = n_threads;
+        const csv = try ws.runTraj(args, "selected.csv");
+        const selected = try ws.totals(csv);
+        try std.testing.expectEqual(@as(usize, 2), selected.len);
+        try std.testing.expectEqual(full[1], selected[0]);
+        try std.testing.expectEqual(full[3], selected[1]);
+        try std.testing.expect(std.mem.indexOf(u8, csv, "\n1,") != null);
+        try std.testing.expect(std.mem.indexOf(u8, csv, "\n3,") != null);
+        try std.testing.expect(std.mem.indexOf(u8, csv, "\n2,") == null);
+    }
+}
+
+test "traj run: a DCD trajectory gives the totals of the same frames in the XTC fixture" {
+    var ws = TestWorkspace.init();
+    defer ws.deinit();
+    const topology = try ws.write("m1.pdb", try ws.firstModelPdb());
+
+    var args = TrajArgs{ .topology_path = topology, .n_points = 32, .end_frame = 2, .n_threads = 1 };
+    args.traj_path = test_xtc_path;
+    const from_xtc = try ws.totals(try ws.runTraj(args, "xtc.csv"));
+    args.traj_path = "test_data/1l2y.dcd";
+    const from_dcd = try ws.totals(try ws.runTraj(args, "dcd.csv"));
+
+    try std.testing.expectEqual(@as(usize, 3), from_dcd.len);
+    // Both files hold the same coordinates (the XTC rounds them to 0.001 nm).
+    for (from_xtc, from_dcd) |expected, actual| {
+        try std.testing.expectApproxEqRel(expected, actual, 1e-3);
     }
 }

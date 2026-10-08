@@ -25,6 +25,7 @@ const ccd_binary = @import("ccd_binary.zig");
 const sdf_parser = @import("sdf_parser.zig");
 const compressed = @import("compressed.zig");
 const workflow_manifest = @import("workflow_manifest.zig");
+const test_support = @import("test_support.zig");
 
 const Config = types.Config;
 const Configf32 = types.Configf32;
@@ -2191,6 +2192,8 @@ test "CalcArgs --lr-trig is accepted and unused with the default sr algorithm, l
 }
 
 test "calc workflow lr_trig applies unless --lr-trig was given, and rejects unknown values" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     {
         var args = CalcArgs{};
         try applyWorkflowCalculationToCalcArgs(&args, .{ .lr_trig = "fast" });
@@ -2295,7 +2298,10 @@ test "ensureCalcOutputParentDir creates nested output parent directories" {
     defer allocator.free(output_path);
 
     try ensureCalcOutputParentDir(std.testing.io, output_path);
-    _ = try tmp_dir.dir.statFile(std.testing.io, "nested/deeper", .{});
+    const stat = try tmp_dir.dir.statFile(std.testing.io, "nested/deeper", .{});
+    try std.testing.expectEqual(std.Io.File.Kind.directory, stat.kind);
+    // Only the parent is created, not the output file itself.
+    try std.testing.expectError(error.FileNotFound, tmp_dir.dir.statFile(std.testing.io, "nested/deeper/result.json", .{}));
 }
 
 fn readAtomAreasLenFromJson(allocator: std.mem.Allocator, path: []const u8) !usize {
@@ -2512,6 +2518,8 @@ test "calc CSV output has an insertion code column after resnum" {
 }
 
 test "calc RSA non-polar and polar totals are the sums by classifier class" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const allocator = std.testing.allocator;
 
     // Fully exposed atoms, 10 Å apart. The classifiers disagree on the
