@@ -351,6 +351,11 @@ fn decodeColumnWithNullHints(
     null_hints: ?[]const NullKind,
     bound: LengthBound,
 ) DecodeError!DecodedColumn {
+    // The data blob of a column is bytes, and only ByteArray and StringArray
+    // turn bytes into values, so a chain that has neither (an empty list
+    // included) has no defined meaning. Reading the bytes as small integers
+    // would turn a damaged or foreign file into plausible-looking values.
+    if (encodings.len == 0) return ParseError.InvalidColumnData;
     const initial_bound = try checkDeclaredLengths(encodings, bound);
 
     var column = DecodedColumn{ .values = &.{} };
@@ -370,11 +375,6 @@ fn decodeColumnWithNullHints(
         }
     }
 
-    if (!initialized) {
-        column.values = try allocator.alloc(Scalar, data.len);
-        initialized = true;
-        for (data, 0..) |byte, idx| column.values[idx] = .{ .int = byte };
-    }
     return column;
 }
 
@@ -3596,6 +3596,50 @@ test "bcif decoder chain frees intermediate column once on transform error" {
             .{ .byte_array = .{ .type_code = 2 } },
         }, .{ .exact = 1 }),
     );
+}
+
+test "bcif columns reject an empty encoding list instead of reading raw bytes" {
+    const allocator = std.testing.allocator;
+    const bytes = [_]u8{ 1, 2, 3 };
+    try std.testing.expectError(ParseError.InvalidColumnData, decodeColumn(allocator, &bytes, &.{}, .{ .exact = 3 }));
+    try std.testing.expectError(
+        ParseError.InvalidColumnData,
+        decodeColumnWithMask(
+            allocator,
+            &bytes,
+            &[_]Encoding{.{ .byte_array = .{ .type_code = 4 } }},
+            &bytes,
+            &.{},
+            .{ .exact = 3 },
+        ),
+    );
+    // A chain that does not end in ByteArray or StringArray is still unsupported.
+    try std.testing.expectError(
+        ParseError.UnsupportedEncoding,
+        decodeColumn(allocator, &bytes, &[_]Encoding{.{ .delta = .{ .origin = 0 } }}, .{ .exact = 3 }),
+    );
+}
+
+test "parse BinaryCIF rejects a used column with an empty encoding list" {
+    // Cartn_x, a mask and the indices of a string column are all read.
+    try expectReplacedColumnError(ParseError.InvalidColumnData, .{
+        .name = "label_seq_id",
+        .values = .{ .data = &.{ 1, 1, 1, 2, 2, 0, 0 }, .encodings = &.{} },
+    });
+    try expectReplacedColumnError(ParseError.InvalidColumnData, .{
+        .name = "label_seq_id",
+        .values = .{ .data = &.{ 1, 1, 1, 2, 2, 0, 0 }, .encodings = &.{.{ .byte_array = .{ .type_code = 1 } }} },
+        .mask = .{ .data = &.{ 0, 0, 0, 0, 0, 0, 0 }, .encodings = &.{} },
+    });
+    try expectReplacedColumnError(ParseError.InvalidColumnData, .{ .name = "type_symbol", .values = .{
+        .data = &.{ 0, 1, 2, 0, 1, 2, 0 },
+        .encodings = &.{.{ .string_array = .{
+            .string_data = "NCO",
+            .offset_data = &.{ 0, 1, 2, 3 },
+            .offset_encoding = &.{.{ .byte_array = .{ .type_code = 4 } }},
+            .data_encoding = &.{},
+        } }},
+    } });
 }
 
 test "bcif integer packing accumulation rejects overflow" {
