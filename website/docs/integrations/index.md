@@ -45,8 +45,16 @@ Biotite uses `atom_array` instead of `model`:
 | `probe_radius` | `float` | `1.4` | Probe radius in Å |
 | `n_threads` | `int` | `0` | Threads (0 = auto) |
 | `include_hetatm` | `bool` | `False` | Include HETATM records |
-| `include_hydrogens` | `bool` | `False` | Include hydrogen atoms |
+| `include_hydrogens` | `bool` | `False` | Include hydrogen atoms (deuterium counts as hydrogen) |
 | `model_index` | `int` | `0` | Model index (NMR); `calculate_sasa_from_structure` only |
+
+## Alternate Locations {#alternate-locations}
+
+A SASA calculation needs one conformer per atom. Each integration gets there differently:
+
+- **Gemmi**: gemmi keeps every alternate conformer in its model, so the integration selects one per site by the rules of the CLI default, [`--altloc=auto`](../cli/input.md#alternate-locations). A file gives the same atoms through the Gemmi integration and through `zsasa calc`. To choose conformers yourself, edit the gemmi model before passing it.
+- **BioPython**: the integration uses the conformer BioPython selects in its disordered atoms and residues (the highest occupancy for an atom). This can differ from the CLI, in particular at positions where the alternates are different residues.
+- **Biotite**: `biotite.structure.io.load_structure()` keeps the first alternate location unless you pass another `altloc` setting, and the integration uses the atoms of the `AtomArray` as they are.
 
 ## SasaResultWithAtoms
 

@@ -151,7 +151,7 @@ See [Classifiers](../guide/classifiers.mdx) for detailed classifier documentatio
 | `--chain=ID` | Filter by chain ID (e.g., `A` or `A,B,C`). In `batch` it cannot be combined with `--workflow`; use the `chains` of a workflow job | all chains | calc, batch |
 | `--model=N` | Model number for NMR structures (≥1) | all models | calc |
 | `--auth-chain` | Use auth_asym_id for chain IDs and auth_seq_id for residue numbers (mmCIF/BinaryCIF) | label_asym_id, label_seq_id | calc, batch |
-| `--altloc=MODE` | mmCIF/BinaryCIF alternate-location handling: `auto`, `none`, `all`, `highest-occupancy`, or one ID such as `A` | `auto` | calc, batch, traj |
+| `--altloc=MODE` | [Alternate-location handling](input.md#alternate-locations) for PDB, mmCIF and BinaryCIF input: `auto`, `none`, `all`, `highest-occupancy`, or one ID such as `A` | `auto` | calc, batch, traj |
 | `--include-hydrogens` | Include hydrogen atoms | calc/batch: excluded; traj: included | calc, batch, traj |
 | `--no-hydrogens` | Exclude hydrogen atoms (`--exclude-hydrogens` is a synonym) | — | traj |
 | `--include-hetatm` | Include HETATM records | excluded | calc, batch |
@@ -230,7 +230,7 @@ Every option marked `traj` in the [algorithm](#algorithm-options), [classifier](
 | `--precision=P` | Floating-point precision: `f32` or `f64` | `f32` (note: different from calc/batch) |
 | `--no-hydrogens`, `--exclude-hydrogens` | Exclude hydrogen atoms from the calculation. They stay in the topology and trajectory files and are skipped in every frame | included |
 | `--include-hydrogens` | Include hydrogen atoms (default, for backward compat) | included |
-| `--altloc=MODE` | mmCIF topology alternate-location handling: `auto`, `none`, `all`, `highest-occupancy`, or one ID such as `A` | `auto` |
+| `--altloc=MODE` | [Alternate-location handling](input.md#alternate-locations) for the topology (PDB or mmCIF): `auto`, `none`, `all`, `highest-occupancy`, or one ID such as `A` | `auto` |
 | `--stride=N` | Process every Nth frame (N ≥ 1) | `1` |
 | `--start=N` | Start from frame N | `0` |
 | `--end=N` | End at frame N (inclusive) | all |

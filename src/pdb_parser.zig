@@ -35,6 +35,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const elem = @import("element.zig");
 const input_io = @import("input_io.zig");
+const altloc = @import("altloc.zig");
 const mmap_reader = @import("mmap_reader.zig");
 const compressed = @import("compressed.zig");
 const types = @import("types.zig");
@@ -49,7 +50,11 @@ pub const ParseError = error{
     NoAtomsFound,
     /// Line too short for required field
     LineTooShort,
+    /// A non-blank altLoc was encountered while altLoc mode is `none`
+    UnexpectedAltLoc,
 };
+
+pub const AltLocMode = altloc.AltLocMode;
 
 /// PDB Parser
 pub const PdbParser = struct {
@@ -60,8 +65,13 @@ pub const PdbParser = struct {
     /// Skip hydrogen atoms
     /// Default: true (matches FreeSASA/RustSASA behavior)
     skip_hydrogens: bool = true,
-    /// Filter to include only first alternate location
+    /// Select alternate locations according to `alt_loc_mode`. When false,
+    /// every alternate is kept (`alt_loc_mode = .none` still rejects them).
     first_alt_loc_only: bool = true,
+    /// Alternate-location handling policy (see `altloc.zig` for the rules).
+    alt_loc_mode: AltLocMode = .auto,
+    /// Selected altLoc ID when `alt_loc_mode == .selected`.
+    alt_loc_id: u8 = 'A',
     /// Model number to extract (null = all models)
     model_num: ?u32 = null,
     /// Read only the first model: stop at the first ENDMDL record, or at a
@@ -188,11 +198,20 @@ pub const PdbParser = struct {
                 if (!found) continue;
             }
 
+            if (self.alt_loc_mode == .none and atom.alt_loc != ' ') {
+                return ParseError.UnexpectedAltLoc;
+            }
+
             try atom_records.append(self.allocator, atom);
         }
 
+        const keep = try self.resolveAltLocs(atom_records.items);
+        defer if (keep) |flags| self.allocator.free(flags);
+
         for (atom_records.items, 0..) |atom, i| {
-            if (!self.shouldKeepAltLoc(atom_records.items, i)) continue;
+            if (keep) |flags| {
+                if (!flags[i]) continue;
+            }
 
             try appendAtomRecord(
                 self.allocator,
@@ -277,6 +296,19 @@ pub const PdbParser = struct {
         occupancy: f64,
         model_num: ?u32 = null,
         is_hydrogen: bool = false,
+
+        pub fn altLocSite(self: AtomRecord) altloc.Site {
+            return .{
+                .model_num = self.model_num,
+                .chain_id = self.chain_id,
+                .seq = self.residue_num,
+                .insertion_code = self.insertion_code,
+                .residue = self.residue,
+                .atom_name = self.atom_name,
+                .alt_loc = self.alt_loc,
+                .occupancy = self.occupancy,
+            };
+        }
     };
 
     fn appendAtomRecord(
@@ -305,35 +337,14 @@ pub const PdbParser = struct {
         try insertion_code_list.append(allocator, types.FixedString4.fromSlice(atom.insertion_code));
     }
 
-    fn sameAltLocSite(a: AtomRecord, b: AtomRecord) bool {
-        return a.model_num == b.model_num and
-            a.residue_num == b.residue_num and
-            std.mem.eql(u8, a.chain_id, b.chain_id) and
-            std.mem.eql(u8, a.residue, b.residue) and
-            std.mem.eql(u8, a.insertion_code, b.insertion_code) and
-            std.mem.eql(u8, a.atom_name, b.atom_name);
-    }
-
-    fn shouldKeepAltLoc(self: *PdbParser, atoms: []const AtomRecord, index: usize) bool {
-        if (!self.first_alt_loc_only) return true;
-
-        const atom = atoms[index];
-        if (atom.alt_loc == ' ') return true;
-
-        var best_non_preferred: ?usize = null;
-        for (atoms, 0..) |other, other_index| {
-            if (!sameAltLocSite(atom, other)) continue;
-            if (other.alt_loc == ' ') return false;
-            if (other.alt_loc == 'A') return atom.alt_loc == 'A';
-            if (best_non_preferred) |best_index| {
-                if (other.occupancy > atoms[best_index].occupancy) {
-                    best_non_preferred = other_index;
-                }
-            } else {
-                best_non_preferred = other_index;
-            }
-        }
-        return best_non_preferred == index;
+    /// One flag per record, true for the records that survive altLoc
+    /// resolution, or null when all of them do. The caller frees the flags.
+    fn resolveAltLocs(self: *PdbParser, atoms: []const AtomRecord) !?[]bool {
+        if (!self.first_alt_loc_only) return null;
+        return altloc.resolve(AtomRecord, self.allocator, atoms, .{
+            .mode = self.alt_loc_mode,
+            .id = self.alt_loc_id,
+        });
     }
 
     /// Parse a single ATOM/HETATM record
@@ -1104,6 +1115,262 @@ test "PdbParser altLoc selection is scoped by model" {
     try testing.expectEqual(@as(usize, 2), input.atomCount());
     try testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
     try testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
+}
+
+/// Residue 2 is PRO as altLoc A and SER as altLoc B, with a shared N that has
+/// no altLoc. Residue 3 is LEU as A and ILE as B at equal occupancy. The atoms
+/// of the alternates are interleaved, as in wwPDB files, and the x coordinate
+/// is the atom serial number.
+const microheterogeneity_pdb =
+    \\ATOM      1  N   GLY A   1       1.000   0.000   0.000  1.00 10.00           N
+    \\ATOM      2  CA  GLY A   1       2.000   0.000   0.000  1.00 10.00           C
+    \\ATOM      3  N   PRO A   2       3.000   0.000   0.000  1.00 10.00           N
+    \\ATOM      4  CA APRO A   2       4.000   0.000   0.000  0.40 10.00           C
+    \\ATOM      8  CA BSER A   2       8.000   0.000   0.000  0.60 10.00           C
+    \\ATOM      5  CB APRO A   2       5.000   0.000   0.000  0.40 10.00           C
+    \\ATOM      9  CB BSER A   2       9.000   0.000   0.000  0.60 10.00           C
+    \\ATOM      6  CG APRO A   2       6.000   0.000   0.000  0.40 10.00           C
+    \\ATOM     10  OG BSER A   2      10.000   0.000   0.000  0.60 10.00           O
+    \\ATOM      7  CD APRO A   2       7.000   0.000   0.000  0.40 10.00           C
+    \\ATOM     11  N  ALEU A   3      11.000   0.000   0.000  0.50 10.00           N
+    \\ATOM     14  N  BILE A   3      14.000   0.000   0.000  0.50 10.00           N
+    \\ATOM     12  CA ALEU A   3      12.000   0.000   0.000  0.50 10.00           C
+    \\ATOM     15  CA BILE A   3      15.000   0.000   0.000  0.50 10.00           C
+    \\ATOM     13  CD1ALEU A   3      13.000   0.000   0.000  0.50 10.00           C
+    \\ATOM     16  CG2BILE A   3      16.000   0.000   0.000  0.50 10.00           C
+    \\ATOM     17  CD1BILE A   3      17.000   0.000   0.000  0.50 10.00           C
+    \\END
+;
+
+test "PdbParser altLoc keeps one residue where alternates are different residues" {
+    const testing = std.testing;
+
+    const Case = struct {
+        mode: AltLocMode,
+        id: u8 = 'A',
+        x: []const f64,
+        /// Residue names at positions 2 (apart from the shared N) and 3
+        residues: [2][]const u8,
+    };
+    const cases = [_]Case{
+        // A is preferred
+        .{ .mode = .auto, .x = &.{ 1, 2, 3, 4, 5, 6, 7, 11, 12, 13 }, .residues = .{ "PRO", "LEU" } },
+        .{ .mode = .selected, .id = 'A', .x = &.{ 1, 2, 3, 4, 5, 6, 7, 11, 12, 13 }, .residues = .{ "PRO", "LEU" } },
+        .{ .mode = .selected, .id = 'B', .x = &.{ 1, 2, 3, 8, 9, 10, 14, 15, 16, 17 }, .residues = .{ "SER", "ILE" } },
+        // SER has the higher occupancy, and LEU comes first in a tie
+        .{ .mode = .highest_occupancy, .x = &.{ 1, 2, 3, 8, 9, 10, 11, 12, 13 }, .residues = .{ "SER", "LEU" } },
+    };
+    for (cases) |case| {
+        var parser = PdbParser.init(testing.allocator);
+        parser.alt_loc_mode = case.mode;
+        parser.alt_loc_id = case.id;
+        var input = try parser.parse(microheterogeneity_pdb);
+        defer input.deinit();
+
+        try testing.expectEqualSlices(f64, case.x, input.x);
+        for (input.x, input.residue_num.?, input.residue.?) |x, residue_num, residue| {
+            if (residue_num == 1 or x == 3.0) continue;
+            try testing.expectEqualStrings(case.residues[@intCast(residue_num - 2)], residue.slice());
+        }
+    }
+
+    // A site without the selected ID loses its alternates
+    var parser = PdbParser.init(testing.allocator);
+    parser.alt_loc_mode = .selected;
+    parser.alt_loc_id = 'C';
+    var selected_c = try parser.parse(microheterogeneity_pdb);
+    defer selected_c.deinit();
+    try testing.expectEqualSlices(f64, &.{ 1, 2, 3 }, selected_c.x);
+
+    parser.alt_loc_mode = .all;
+    var all = try parser.parse(microheterogeneity_pdb);
+    defer all.deinit();
+    try testing.expectEqual(@as(usize, 17), all.atomCount());
+
+    parser.alt_loc_mode = .none;
+    try testing.expectError(ParseError.UnexpectedAltLoc, parser.parse(microheterogeneity_pdb));
+}
+
+test "PdbParser altLoc all mode keeps every alternate" {
+    const testing = std.testing;
+    const pdb_content =
+        \\ATOM      1  CB AALA A   1      10.000  20.000  30.000  0.60 10.00           C
+        \\ATOM      2  CB BALA A   1      11.000  21.000  31.000  0.40 10.00           C
+        \\END
+    ;
+
+    var parser = PdbParser.init(testing.allocator);
+    parser.alt_loc_mode = .all;
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try testing.expectEqualSlices(f64, &.{ 10.0, 11.0 }, input.x);
+}
+
+test "PdbParser altLoc none mode rejects a non-blank alternate" {
+    const testing = std.testing;
+    const pdb_content =
+        \\ATOM      1  N   ALA A   1       1.000   0.000   0.000  1.00 10.00           N
+        \\ATOM      2  CA  ALA A   1       2.000   0.000   0.000  1.00 10.00           C
+        \\HETATM    3  O  AHOH A 101       3.000   0.000   0.000  0.50 10.00           O
+        \\HETATM    4  O  BHOH A 101       4.000   0.000   0.000  0.50 10.00           O
+        \\END
+    ;
+
+    var parser = PdbParser.init(testing.allocator);
+    parser.alt_loc_mode = .none;
+    parser.atom_only = false;
+    try testing.expectError(ParseError.UnexpectedAltLoc, parser.parse(pdb_content));
+
+    // Only atoms that pass the other filters count, as for mmCIF input
+    parser.atom_only = true;
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+    try testing.expectEqualSlices(f64, &.{ 1.0, 2.0 }, input.x);
+}
+
+test "PdbParser altLoc selected ID keeps blank and requested alternate" {
+    const testing = std.testing;
+    const pdb_content =
+        \\ATOM      1  CA  ALA A   1       9.000  19.000  29.000  1.00 10.00           C
+        \\ATOM      2  CB AALA A   1      10.000  20.000  30.000  0.60 10.00           C
+        \\ATOM      3  CB BALA A   1      11.000  21.000  31.000  0.40 10.00           C
+        \\END
+    ;
+
+    var parser = PdbParser.init(testing.allocator);
+    parser.alt_loc_mode = .selected;
+    parser.alt_loc_id = 'B';
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try testing.expectEqualSlices(f64, &.{ 9.0, 11.0 }, input.x);
+}
+
+test "PdbParser altLoc highest occupancy mode ignores A preference" {
+    const testing = std.testing;
+    const pdb_content =
+        \\ATOM      1  CB AALA A   1      10.000  20.000  30.000  0.40 10.00           C
+        \\ATOM      2  CB BALA A   1      11.000  21.000  31.000  0.70 10.00           C
+        \\END
+    ;
+
+    var parser = PdbParser.init(testing.allocator);
+    parser.alt_loc_mode = .highest_occupancy;
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+    try testing.expectEqualSlices(f64, &.{11.0}, input.x);
+
+    // The default prefers A
+    parser.alt_loc_mode = .auto;
+    var auto_input = try parser.parse(pdb_content);
+    defer auto_input.deinit();
+    try testing.expectEqualSlices(f64, &.{10.0}, auto_input.x);
+}
+
+test "PdbParser altLoc highest occupancy mode keeps the first alternate of a tie" {
+    const testing = std.testing;
+    // CA of residue 1 is a 0.50/0.50 pair, CB a three-way tie, and CA of
+    // residue 2 a tie whose first alternate is B.
+    const pdb_content =
+        \\ATOM      1  N   ALA A   1       1.000   0.000   0.000  1.00 10.00           N
+        \\ATOM      2  CA AALA A   1       2.000   0.000   0.000  0.50 10.00           C
+        \\ATOM      3  CA BALA A   1       3.000   0.000   0.000  0.50 10.00           C
+        \\ATOM      4  CB AALA A   1       4.000   0.000   0.000  0.33 10.00           C
+        \\ATOM      5  CB BALA A   1       5.000   0.000   0.000  0.33 10.00           C
+        \\ATOM      6  CB CALA A   1       6.000   0.000   0.000  0.33 10.00           C
+        \\ATOM      7  C   ALA A   1       7.000   0.000   0.000  1.00 10.00           C
+        \\ATOM      8  CA BGLY A   2       8.000   0.000   0.000  0.50 10.00           C
+        \\ATOM      9  CA AGLY A   2       9.000   0.000   0.000  0.50 10.00           C
+        \\END
+    ;
+
+    var parser = PdbParser.init(testing.allocator);
+    parser.alt_loc_mode = .highest_occupancy;
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+    try testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0, 7.0, 8.0 }, input.x);
+
+    // `auto` prefers A wherever it comes in the file
+    parser.alt_loc_mode = .auto;
+    var auto_input = try parser.parse(pdb_content);
+    defer auto_input.deinit();
+    try testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0, 7.0, 9.0 }, auto_input.x);
+}
+
+test "PdbParser altLoc highest occupancy mode keeps one alternate without an occupancy column" {
+    const testing = std.testing;
+    // Lines that end after the coordinates
+    const pdb_content =
+        \\ATOM      1  N   ALA A   1       1.000   0.000   0.000
+        \\ATOM      2  CA BALA A   1       2.000   0.000   0.000
+        \\ATOM      3  CA AALA A   1       3.000   0.000   0.000
+        \\ATOM      4  C   ALA A   1       4.000   0.000   0.000
+        \\END
+    ;
+
+    var parser = PdbParser.init(testing.allocator);
+    parser.alt_loc_mode = .highest_occupancy;
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0 }, input.x);
+}
+
+test "PdbParser altLoc highest occupancy mode keeps every atom without an altLoc" {
+    const testing = std.testing;
+    // Two chains without chain IDs repeat the residue number, so their CA
+    // atoms share a site. They are not alternates of each other.
+    const pdb_content =
+        \\ATOM      1  CA  ALA     1       1.000   0.000   0.000  1.00 10.00           C
+        \\ATOM      2  CB AALA     1       2.000   0.000   0.000  0.50 10.00           C
+        \\ATOM      3  CB BALA     1       3.000   0.000   0.000  0.50 10.00           C
+        \\ATOM      4  CA  ALA     1       4.000   0.000   0.000  0.80 10.00           C
+        \\END
+    ;
+
+    var parser = PdbParser.init(testing.allocator);
+    parser.alt_loc_mode = .highest_occupancy;
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0 }, input.x);
+}
+
+test "PdbParser resolves the altLocs of a large file in linear time" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // 30,000 residues whose CA has the alternates A and B
+    const n_residues = 30_000;
+    var source = std.ArrayListUnmanaged(u8).empty;
+    defer source.deinit(allocator);
+    for (0..n_residues) |i| {
+        for ("AB", 0..) |alt_loc, k| {
+            var buf: [96]u8 = undefined;
+            try source.appendSlice(allocator, try std.fmt.bufPrint(
+                &buf,
+                "ATOM  {d:>5}  CA {c}ALA {c}{d:>4}    {d:>4}.000{d:>4}.000   0.000  0.50 10.00           C\n",
+                .{ (2 * i + k + 1) % 100_000, alt_loc, "ABCD"[i / 9999], i % 9999 + 1, i % 1000, k },
+            ));
+        }
+    }
+
+    var parser = PdbParser.init(allocator);
+    const start = std.Io.Timestamp.now(testing.io, .awake);
+    var input = try parser.parse(source.items);
+    defer input.deinit();
+    const elapsed_ns = start.untilNow(testing.io, .awake).nanoseconds;
+
+    try testing.expectEqual(@as(usize, n_residues), input.atomCount());
+    for (input.x, input.y, 0..) |x, y, i| {
+        try testing.expectEqual(@as(f64, @floatFromInt(i % 1000)), x);
+        try testing.expectEqual(@as(f64, 0.0), y); // alternate A
+    }
+
+    // A scan over all atoms for every alternate takes about a minute here
+    // in a debug build, and the hash maps a few milliseconds
+    try testing.expect(elapsed_ns < 15 * std.time.ns_per_s);
 }
 
 test "PdbParser atom_only filter (default)" {

@@ -114,7 +114,8 @@ pub const MmcifParser = struct {
     /// Skip hydrogen atoms
     /// Default: true (matches FreeSASA/RustSASA behavior)
     skip_hydrogens: bool = true,
-    /// Filter to include only first alternate location
+    /// Select alternate locations according to `alt_loc_mode`. When false,
+    /// every alternate is kept (`alt_loc_mode = .none` still rejects them).
     first_alt_loc_only: bool = true,
     /// Alternate-location handling policy for mmCIF atom_site rows.
     alt_loc_mode: AltLocMode = .auto,
@@ -450,8 +451,13 @@ pub const MmcifParser = struct {
         try residue_num_list.ensureTotalCapacity(self.allocator, max_output_atoms);
         try insertion_code_list.ensureTotalCapacity(self.allocator, max_output_atoms);
 
+        const keep = if (has_non_blank_alt_loc) try self.resolveAltLocs(atom_records.items) else null;
+        defer if (keep) |flags| self.allocator.free(flags);
+
         for (atom_records.items, 0..) |atom, i| {
-            if (has_non_blank_alt_loc and !self.shouldKeepAltLoc(atom_records.items, i)) continue;
+            if (keep) |flags| {
+                if (!flags[i]) continue;
+            }
 
             try x_list.append(self.allocator, atom.x);
             try y_list.append(self.allocator, atom.y);
@@ -547,6 +553,23 @@ pub const MmcifParser = struct {
         occupancy: f64,
         model_num: ?u32,
         is_hydrogen: bool,
+
+        /// label_seq_id and auth_seq_id are separate numberings: with auth
+        /// chain IDs a polymer residue and a non-polymer residue can share a
+        /// chain and a number, and they are still different residue positions.
+        pub fn altLocSite(self: AtomRecord) altloc.Site {
+            return .{
+                .model_num = self.model_num,
+                .chain_id = self.chain_id,
+                .seq = self.site_seq,
+                .seq_is_auth = self.site_seq_is_auth,
+                .insertion_code = self.insertion_code,
+                .residue = self.residue,
+                .atom_name = self.atom_name,
+                .alt_loc = self.alt_loc,
+                .occupancy = self.occupancy,
+            };
+        }
     };
 
     fn atomRecordFromRow(self: *MmcifParser, row_values: []const []const u8, columns: AtomSiteColumns) !AtomRecord {
@@ -650,63 +673,14 @@ pub const MmcifParser = struct {
         return true;
     }
 
-    fn sameAltLocSite(a: AtomRecord, b: AtomRecord) bool {
-        // label_seq_id and auth_seq_id are separate numberings: with auth chain
-        // IDs a polymer residue and a non-polymer residue can share a chain and
-        // a number, and they are still different sites.
-        return a.model_num == b.model_num and
-            a.site_seq == b.site_seq and
-            a.site_seq_is_auth == b.site_seq_is_auth and
-            std.mem.eql(u8, a.chain_id, b.chain_id) and
-            std.mem.eql(u8, a.residue, b.residue) and
-            std.mem.eql(u8, a.insertion_code, b.insertion_code) and
-            std.mem.eql(u8, a.atom_name, b.atom_name);
-    }
-
-    fn shouldKeepAltLoc(self: *MmcifParser, atoms: []const AtomRecord, index: usize) bool {
-        if (!self.first_alt_loc_only) return true;
-
-        return switch (self.alt_loc_mode) {
-            .all, .none => true,
-            .selected => blk: {
-                const atom = atoms[index];
-                break :blk atom.alt_loc == ' ' or atom.alt_loc == self.alt_loc_id;
-            },
-            .highest_occupancy => shouldKeepHighestOccupancyAltLoc(atoms, index),
-            .auto => shouldKeepAutoAltLoc(atoms, index),
-        };
-    }
-
-    fn shouldKeepAutoAltLoc(atoms: []const AtomRecord, index: usize) bool {
-        const atom = atoms[index];
-        if (atom.alt_loc == ' ') return true;
-
-        var best_non_preferred: ?usize = null;
-        for (atoms, 0..) |other, other_index| {
-            if (!sameAltLocSite(atom, other)) continue;
-            if (other.alt_loc == ' ') return false;
-            if (other.alt_loc == 'A') return atom.alt_loc == 'A';
-            if (best_non_preferred) |best_index| {
-                if (other.occupancy > atoms[best_index].occupancy) {
-                    best_non_preferred = other_index;
-                }
-            } else {
-                best_non_preferred = other_index;
-            }
-        }
-        return best_non_preferred == index;
-    }
-
-    fn shouldKeepHighestOccupancyAltLoc(atoms: []const AtomRecord, index: usize) bool {
-        const atom = atoms[index];
-        var best_index = index;
-        for (atoms, 0..) |other, other_index| {
-            if (!sameAltLocSite(atom, other)) continue;
-            if (other.occupancy > atoms[best_index].occupancy) {
-                best_index = other_index;
-            }
-        }
-        return best_index == index;
+    /// One flag per record, true for the records that survive altLoc
+    /// resolution, or null when all of them do. The caller frees the flags.
+    fn resolveAltLocs(self: *MmcifParser, atoms: []const AtomRecord) !?[]bool {
+        if (!self.first_alt_loc_only) return null;
+        return altloc.resolve(AtomRecord, self.allocator, atoms, .{
+            .mode = self.alt_loc_mode,
+            .id = self.alt_loc_id,
+        });
     }
 
     /// Check if an atom should be included based on filters
@@ -1572,6 +1546,110 @@ test "parse mmCIF altLoc highest occupancy mode ignores A preference" {
     try std.testing.expectApproxEqAbs(@as(f64, 11.0), input.x[0], 0.001);
 }
 
+test "parse mmCIF altLoc highest occupancy mode keeps the first alternate of a tie" {
+    // CA of residue 1 is a 0.50/0.50 pair, CB a three-way tie, and CA of
+    // residue 2 a tie whose first alternate is B.
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.occupancy
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 N N  ALA A 1 . 1.00 1.0 0.0 0.0
+        \\2 C CA ALA A 1 A 0.50 2.0 0.0 0.0
+        \\3 C CA ALA A 1 B 0.50 3.0 0.0 0.0
+        \\4 C CB ALA A 1 A 0.33 4.0 0.0 0.0
+        \\5 C CB ALA A 1 B 0.33 5.0 0.0 0.0
+        \\6 C CB ALA A 1 C 0.33 6.0 0.0 0.0
+        \\7 C C  ALA A 1 . 1.00 7.0 0.0 0.0
+        \\8 C CA GLY A 2 B 0.50 8.0 0.0 0.0
+        \\9 C CA GLY A 2 A 0.50 9.0 0.0 0.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .highest_occupancy;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0, 7.0, 8.0 }, input.x);
+
+    // `auto` prefers A wherever it comes in the file
+    parser.alt_loc_mode = .auto;
+    var auto_input = try parser.parse(source);
+    defer auto_input.deinit();
+
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0, 7.0, 9.0 }, auto_input.x);
+}
+
+test "parse mmCIF altLoc highest occupancy mode keeps one alternate without an occupancy column" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 N N  ALA A 1 . 1.0 0.0 0.0
+        \\2 C CA ALA A 1 B 2.0 0.0 0.0
+        \\3 C CA ALA A 1 A 3.0 0.0 0.0
+        \\4 C C  ALA A 1 . 4.0 0.0 0.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .highest_occupancy;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0 }, input.x);
+}
+
+test "parse mmCIF altLoc highest occupancy mode keeps every atom without an altLoc" {
+    // Two chains without chain IDs repeat the residue number, so their atoms
+    // share a site. They are not alternates of each other.
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.occupancy
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C CA ALA 1 . 1.00 1.0 0.0 0.0
+        \\2 C CB ALA 1 A 0.50 2.0 0.0 0.0
+        \\3 C CB ALA 1 B 0.50 3.0 0.0 0.0
+        \\4 C CA ALA 1 . 0.80 4.0 0.0 0.0
+        \\#
+    ;
+
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .highest_occupancy;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 4.0 }, input.x);
+}
+
 test "parse mmCIF altLoc selection is per atom site and keeps later B-only sites" {
     const source =
         \\data_TEST
@@ -1632,6 +1710,141 @@ test "parse mmCIF altLoc selection is scoped by model" {
     try std.testing.expectEqual(@as(usize, 2), input.atomCount());
     try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 14.0), input.x[1], 0.001);
+}
+
+test "parse mmCIF altLoc keeps one residue where alternates are different residues" {
+    // Residue 2 is PRO as altLoc A and SER as altLoc B, with a shared N that
+    // has no altLoc. Residue 3 is LEU as A and ILE as B at equal occupancy.
+    // The x coordinate is the atom's row number.
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.occupancy
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1  N N   GLY A 1 . 1.00 1.0  0.0 0.0
+        \\2  C CA  GLY A 1 . 1.00 2.0  0.0 0.0
+        \\3  N N   PRO A 2 . 1.00 3.0  0.0 0.0
+        \\4  C CA  PRO A 2 A 0.40 4.0  0.0 0.0
+        \\5  C CB  PRO A 2 A 0.40 5.0  0.0 0.0
+        \\6  C CG  PRO A 2 A 0.40 6.0  0.0 0.0
+        \\7  C CD  PRO A 2 A 0.40 7.0  0.0 0.0
+        \\8  C CA  SER A 2 B 0.60 8.0  0.0 0.0
+        \\9  C CB  SER A 2 B 0.60 9.0  0.0 0.0
+        \\10 O OG  SER A 2 B 0.60 10.0 0.0 0.0
+        \\11 N N   LEU A 3 A 0.50 11.0 0.0 0.0
+        \\12 C CA  LEU A 3 A 0.50 12.0 0.0 0.0
+        \\13 C CD1 LEU A 3 A 0.50 13.0 0.0 0.0
+        \\14 N N   ILE A 3 B 0.50 14.0 0.0 0.0
+        \\15 C CA  ILE A 3 B 0.50 15.0 0.0 0.0
+        \\16 C CG2 ILE A 3 B 0.50 16.0 0.0 0.0
+        \\17 C CD1 ILE A 3 B 0.50 17.0 0.0 0.0
+        \\#
+    ;
+
+    const Case = struct {
+        mode: AltLocMode,
+        id: u8 = 'A',
+        x: []const f64,
+        /// Residue names at positions 2 (apart from the shared N) and 3
+        residues: [2][]const u8,
+    };
+    const cases = [_]Case{
+        // A is preferred
+        .{ .mode = .auto, .x = &.{ 1, 2, 3, 4, 5, 6, 7, 11, 12, 13 }, .residues = .{ "PRO", "LEU" } },
+        .{ .mode = .selected, .id = 'A', .x = &.{ 1, 2, 3, 4, 5, 6, 7, 11, 12, 13 }, .residues = .{ "PRO", "LEU" } },
+        .{ .mode = .selected, .id = 'B', .x = &.{ 1, 2, 3, 8, 9, 10, 14, 15, 16, 17 }, .residues = .{ "SER", "ILE" } },
+        // SER has the higher occupancy, and LEU comes first in a tie
+        .{ .mode = .highest_occupancy, .x = &.{ 1, 2, 3, 8, 9, 10, 11, 12, 13 }, .residues = .{ "SER", "LEU" } },
+    };
+    for (cases) |case| {
+        var parser = MmcifParser.init(std.testing.allocator);
+        parser.alt_loc_mode = case.mode;
+        parser.alt_loc_id = case.id;
+        var input = try parser.parse(source);
+        defer input.deinit();
+
+        try std.testing.expectEqualSlices(f64, case.x, input.x);
+        for (input.x, input.residue_num.?, input.residue.?) |x, residue_num, residue| {
+            if (residue_num == 1 or x == 3.0) continue;
+            try std.testing.expectEqualStrings(case.residues[@intCast(residue_num - 2)], residue.slice());
+        }
+    }
+
+    // A site without the selected ID loses its alternates, as before
+    var parser = MmcifParser.init(std.testing.allocator);
+    parser.alt_loc_mode = .selected;
+    parser.alt_loc_id = 'C';
+    var selected_c = try parser.parse(source);
+    defer selected_c.deinit();
+    try std.testing.expectEqualSlices(f64, &.{ 1, 2, 3 }, selected_c.x);
+
+    parser.alt_loc_mode = .all;
+    var all = try parser.parse(source);
+    defer all.deinit();
+    try std.testing.expectEqual(@as(usize, 17), all.atomCount());
+
+    parser.alt_loc_mode = .none;
+    try std.testing.expectError(ParseError.UnexpectedAltLoc, parser.parse(source));
+}
+
+test "parse mmCIF resolves the altLocs of a large file in linear time" {
+    const allocator = std.testing.allocator;
+
+    // 30,000 residues whose CA has the alternates A and B
+    const n_residues = 30_000;
+    var source = std.ArrayListUnmanaged(u8).empty;
+    defer source.deinit(allocator);
+    try source.appendSlice(allocator,
+        \\data_TEST
+        \\loop_
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\_atom_site.occupancy
+        \\
+    );
+    for (0..n_residues) |i| {
+        for ("AB", 0..) |alt_loc, k| {
+            var buf: [96]u8 = undefined;
+            try source.appendSlice(allocator, try std.fmt.bufPrint(
+                &buf,
+                "C CA {c} ALA A {d} {d}.0 {d}.0 0.0 0.50\n",
+                .{ alt_loc, i + 1, i % 1000, k },
+            ));
+        }
+    }
+    try source.appendSlice(allocator, "#\n");
+
+    var parser = MmcifParser.init(allocator);
+    const start = std.Io.Timestamp.now(std.testing.io, .awake);
+    var input = try parser.parse(source.items);
+    defer input.deinit();
+    const elapsed_ns = start.untilNow(std.testing.io, .awake).nanoseconds;
+
+    try std.testing.expectEqual(@as(usize, n_residues), input.atomCount());
+    for (input.x, input.y, 0..) |x, y, i| {
+        try std.testing.expectEqual(@as(f64, @floatFromInt(i % 1000)), x);
+        try std.testing.expectEqual(@as(f64, 0.0), y); // alternate A
+    }
+
+    // A scan over all atoms for every alternate takes about a minute here
+    // in a debug build, and the hash maps a few milliseconds
+    try std.testing.expect(elapsed_ns < 15 * std.time.ns_per_s);
 }
 
 test "parse mmCIF numbers non-polymer rows by auth_seq_id when label_seq_id is null" {

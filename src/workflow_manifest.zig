@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const toml_parser = @import("toml_parser.zig");
+const altloc = @import("altloc.zig");
 
 pub const WorkflowError = error{
     UnsupportedVersion,
@@ -55,6 +56,9 @@ pub const Calculation = struct {
     timing: ?bool = null,
     quiet: ?bool = null,
     auth_chain: ?bool = null,
+    /// `altloc`: "auto", "none", "all", "highest-occupancy" or one altLoc ID,
+    /// as for the `--altloc` flag.
+    altloc: ?altloc.AltLocSetting = null,
     residue_map: ?bool = null,
     per_residue: ?bool = null,
     rsa: ?bool = null,
@@ -279,7 +283,8 @@ fn parseCalculation(table: toml_parser.Table) WorkflowError!Calculation {
     try rejectUnknownFields(table.entries, &.{
         "algorithm",         "threads",        "probe_radius", "n_points", "n_slices",      "precision",
         "include_hydrogens", "include_hetatm", "use_bitmask",  "timing",   "quiet",         "auth_chain",
-        "residue_map",       "per_residue",    "rsa",          "polar",    "validate_only", "lr_trig",
+        "residue_map",       "per_residue",    "rsa",          "polar",    "validate_only", "altloc",
+        "lr_trig",
     });
     const lr_trig = try optionalString(table.entries, "lr_trig");
     if (lr_trig) |value| {
@@ -301,12 +306,20 @@ fn parseCalculation(table: toml_parser.Table) WorkflowError!Calculation {
         .timing = try optionalBool(table.entries, "timing"),
         .quiet = try optionalBool(table.entries, "quiet"),
         .auth_chain = try optionalBool(table.entries, "auth_chain"),
+        .altloc = try optionalAltLoc(table.entries, "altloc"),
         .residue_map = try optionalBool(table.entries, "residue_map"),
         .per_residue = try optionalBool(table.entries, "per_residue"),
         .rsa = try optionalBool(table.entries, "rsa"),
         .polar = try optionalBool(table.entries, "polar"),
         .validate_only = try optionalBool(table.entries, "validate_only"),
     };
+}
+
+/// An altLoc setting written as for the `--altloc` flag. Any other string
+/// is an error, so that a typo does not fall back to the default.
+fn optionalAltLoc(entries: []const toml_parser.Value.Entry, key: []const u8) WorkflowError!?altloc.AltLocSetting {
+    const value = try optionalString(entries, key) orelse return null;
+    return altloc.parseSetting(value) orelse error.InvalidFieldType;
 }
 
 fn parseClassifier(allocator: Allocator, table: toml_parser.Table) Error!ClassifierConfig {
@@ -1127,4 +1140,60 @@ test "reject invalid classifier combinations" {
         \\sdf = "ligand.sdf"
     ;
     try std.testing.expectError(error.InvalidClassifierConfig, parse(std.testing.allocator, protor_with_sdf));
+}
+
+test "parse workflow calculation altloc" {
+    const allocator = std.testing.allocator;
+    const Case = struct { value: []const u8, mode: altloc.AltLocMode, id: u8 = 'A' };
+    const cases = [_]Case{
+        .{ .value = "auto", .mode = .auto },
+        .{ .value = "none", .mode = .none },
+        .{ .value = "all", .mode = .all },
+        .{ .value = "highest-occupancy", .mode = .highest_occupancy },
+        .{ .value = "B", .mode = .selected, .id = 'B' },
+    };
+    for (cases) |case| {
+        const content = try std.fmt.allocPrint(allocator,
+            \\version = 1
+            \\
+            \\[calculation]
+            \\altloc = "{s}"
+            \\
+        , .{case.value});
+        defer allocator.free(content);
+
+        var workflow = try parse(allocator, content);
+        defer workflow.deinit();
+        try std.testing.expectEqual(case.mode, workflow.calculation.altloc.?.mode);
+        try std.testing.expectEqual(case.id, workflow.calculation.altloc.?.id);
+    }
+
+    var without = try parse(allocator,
+        \\version = 1
+        \\
+        \\[calculation]
+        \\n_points = 8
+        \\
+    );
+    defer without.deinit();
+    try std.testing.expect(without.calculation.altloc == null);
+}
+
+test "parse workflow rejects an invalid calculation altloc" {
+    const allocator = std.testing.allocator;
+    // A typo must not fall back to the default
+    try std.testing.expectError(error.InvalidFieldType, parse(allocator,
+        \\version = 1
+        \\
+        \\[calculation]
+        \\altloc = "first"
+        \\
+    ));
+    try std.testing.expectError(error.InvalidFieldType, parse(allocator,
+        \\version = 1
+        \\
+        \\[calculation]
+        \\altloc = true
+        \\
+    ));
 }

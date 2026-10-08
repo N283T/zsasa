@@ -832,6 +832,8 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             parser.skip_hydrogens = !config.include_hydrogens;
             parser.atom_only = !config.include_hetatm;
             parser.chain_filter = config.chain_filter;
+            parser.alt_loc_mode = config.alt_loc_mode;
+            parser.alt_loc_id = config.alt_loc_id;
             break :blk .{ .input = try parser.parseFileWithInputIo(io, path, config.input_io) };
         },
         .sdf => blk: {
@@ -3473,8 +3475,9 @@ pub fn printHelp(program_name: []const u8) void {
         \\                        and auth_seq_id instead of label_seq_id for residue numbers
         \\    --af-model-fast     Use an experimental AlphaFold-model mmCIF fast parser
         \\                        with multi-chain metadata and safe generic fallback
-        \\    --altloc=MODE       mmCIF/BCIF alternate-location handling: auto, none, all,
-        \\                        highest-occupancy, or a single ID like A (default: auto)
+        \\    --altloc=MODE       Alternate-location handling (PDB/mmCIF/BCIF): auto, none,
+        \\                        all, highest-occupancy, or a single ID like A
+        \\                        (default: auto)
         \\    --residue-map       Include compact residue map arrays in JSONL output
         \\    --probe-radius=R    Probe radius in Angstroms (default: 1.4)
         \\    --n-points=N        Test points per atom (default: 100, for sr)
@@ -3599,6 +3602,12 @@ fn applyWorkflowToBatchConfig(
         if (calculation.use_bitmask) |v| config.use_bitmask = v;
     }
     if (calculation.auth_chain) |v| config.use_auth_chain = v;
+    if (!args.alt_loc_explicit) {
+        if (calculation.altloc) |v| {
+            config.alt_loc_mode = v.mode;
+            config.alt_loc_id = v.id;
+        }
+    }
     if (args.af_model_fast_explicit) config.af_model_fast = args.af_model_fast;
     if (calculation.residue_map) |v| config.residue_map = v;
 
@@ -3639,6 +3648,10 @@ fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
     if (args.bitmask_correction_explicit) config.bitmask_correction = args.bitmask_correction;
     if (args.bitmask_correction_coeff_explicit) config.bitmask_correction_coeff = args.bitmask_correction_coeff;
     if (args.use_auth_chain) config.use_auth_chain = true;
+    if (args.alt_loc_explicit) {
+        config.alt_loc_mode = args.alt_loc_mode;
+        config.alt_loc_id = args.alt_loc_id;
+    }
     if (args.residue_map) config.residue_map = true;
     if (args.jsonl_decimals_explicit) config.jsonl_decimals = args.jsonl_decimals;
 }
@@ -9010,6 +9023,232 @@ test "batch and workflow exclude HETATM by default, also with the CCD classifier
     }
 }
 
+/// Chain A has CA as altLoc A (0.30) and B (0.70) and a CB with altLoc A
+/// only; chain B is one atom. Atoms kept: 5 with `auto`, 6 with `all`, 4 with
+/// `B`.
+const altloc_workflow_pdb =
+    \\ATOM      1  N   ALA A   1       1.000   0.000   0.000  1.00 10.00           N
+    \\ATOM      2  CA AALA A   1       2.000   0.000   0.000  0.30 10.00           C
+    \\ATOM      3  CA BALA A   1       3.000   0.000   0.000  0.70 10.00           C
+    \\ATOM      4  CB AALA A   1       4.000   0.000   0.000  0.30 10.00           C
+    \\ATOM      5  C   ALA A   1       5.000   0.000   0.000  1.00 10.00           C
+    \\ATOM      6  N   GLY B   1       7.000   0.000   0.000  1.00 10.00           N
+    \\END
+    \\
+;
+const altloc_workflow_cif =
+    \\data_ALTLOC
+    \\loop_
+    \\_atom_site.group_PDB
+    \\_atom_site.type_symbol
+    \\_atom_site.label_atom_id
+    \\_atom_site.label_alt_id
+    \\_atom_site.label_comp_id
+    \\_atom_site.label_asym_id
+    \\_atom_site.label_seq_id
+    \\_atom_site.Cartn_x
+    \\_atom_site.Cartn_y
+    \\_atom_site.Cartn_z
+    \\_atom_site.occupancy
+    \\ATOM N N  . ALA A 1 1.000 0.000 0.000 1.00
+    \\ATOM C CA A ALA A 1 2.000 0.000 0.000 0.30
+    \\ATOM C CA B ALA A 1 3.000 0.000 0.000 0.70
+    \\ATOM C CB A ALA A 1 4.000 0.000 0.000 0.30
+    \\ATOM C C  . ALA A 1 5.000 0.000 0.000 1.00
+    \\ATOM N N  . GLY B 1 7.000 0.000 0.000 1.00
+    \\#
+    \\
+;
+
+/// One way a workflow reaches the input parser.
+const AltLocWorkflowPath = struct {
+    /// Workflow text after the [calculation] table
+    body: []const u8,
+    /// Output file inside the output directory
+    output_name: []const u8,
+    /// Row field with one entry per atom
+    atoms_field: []const u8,
+};
+
+/// Run `path` over a directory that holds `altloc_workflow_pdb` and
+/// `altloc_workflow_cif`, with an optional `[calculation].altloc` value and an
+/// optional `--altloc` flag, and return the atom count of the two output rows.
+fn altLocWorkflowAtomCount(
+    root: []const u8,
+    path: AltLocWorkflowPath,
+    workflow_altloc: ?[]const u8,
+    cli_flag: ?[]const u8,
+) !usize {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const cwd = std.Io.Dir.cwd();
+
+    const input_dir = try std.fs.path.join(arena, &.{ root, "input" });
+    try cwd.createDirPath(std.testing.io, input_dir);
+    try cwd.writeFile(std.testing.io, .{ .sub_path = try std.fs.path.join(arena, &.{ input_dir, "altloc.pdb" }), .data = altloc_workflow_pdb });
+    try cwd.writeFile(std.testing.io, .{ .sub_path = try std.fs.path.join(arena, &.{ input_dir, "altloc.cif" }), .data = altloc_workflow_cif });
+    const map_path = try std.fs.path.join(arena, &.{ root, "chains.csv" });
+    try cwd.writeFile(std.testing.io, .{ .sub_path = map_path, .data =
+        \\filename,chains,asym_id_type
+        \\altloc.pdb,"A,B",label
+        \\altloc.cif,"A,B",label
+        \\
+    });
+
+    const output_dir = try std.fmt.allocPrint(arena, "{s}/out-{s}-{s}-{s}", .{
+        root,
+        path.output_name,
+        workflow_altloc orelse "unset",
+        if (cli_flag) |flag| flag["--altloc=".len..] else "unset",
+    });
+    const altloc_line = if (workflow_altloc) |value|
+        try std.fmt.allocPrint(arena, "altloc = \"{s}\"\n", .{value})
+    else
+        "";
+    const body = try std.mem.replaceOwned(u8, arena, path.body, "MAP", map_path);
+    const workflow = try std.fmt.allocPrint(arena,
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "{s}"
+        \\
+        \\[output]
+        \\dir = "{s}"
+        \\format = "jsonl"
+        \\
+        \\[classifier]
+        \\type = "naccess"
+        \\
+        \\[calculation]
+        \\threads = 1
+        \\n_points = 8
+        \\quiet = true
+        \\{s}
+        \\{s}
+    , .{ input_dir, output_dir, altloc_line, body });
+    const workflow_path = try std.fs.path.join(arena, &.{ root, "workflow.toml" });
+    try cwd.writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
+
+    var argv = std.ArrayListUnmanaged([]const u8).empty;
+    try argv.appendSlice(arena, &.{ "zsasa", "batch", "--workflow", workflow_path });
+    if (cli_flag) |flag| try argv.append(arena, flag);
+    try run(std.testing.allocator, std.testing.io, parseArgs(argv.items, 2));
+
+    const content = try cwd.readFileAlloc(std.testing.io, try std.fs.path.join(arena, &.{ output_dir, path.output_name }), arena, .limited(1 << 20));
+    var n_rows: usize = 0;
+    var n_atoms: usize = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const object = (try std.json.parseFromSliceLeaky(std.json.Value, arena, line, .{})).object;
+        try std.testing.expectEqualStrings("ok", object.get("status").?.string);
+        const row_atoms = object.get(path.atoms_field).?.array.items.len;
+        // The PDB and the mmCIF file hold the same atoms
+        if (n_rows > 0) try std.testing.expectEqual(n_atoms, row_atoms);
+        n_atoms = row_atoms;
+        n_rows += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), n_rows);
+    return n_atoms;
+}
+
+test "workflow honors --altloc and the calculation altloc key in every path" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try tmp_dir.dir.realPath(std.testing.io, &root_buf)];
+
+    const paths = [_]AltLocWorkflowPath{
+        // File-first: jobs without chain maps share one parse of each file
+        .{
+            .body =
+            \\[[jobs]]
+            \\name = "file_first"
+            \\
+            ,
+            .output_name = "file_first.jsonl",
+            .atoms_field = "atom_areas",
+        },
+        // Job-first: a job whose auth_chain differs from the shared setting
+        .{
+            .body =
+            \\[[jobs]]
+            \\name = "job_first"
+            \\auth_chain = true
+            \\
+            ,
+            .output_name = "job_first.jsonl",
+            .atoms_field = "atom_areas",
+        },
+        // Selection map: a job with a chain map and JSONL output
+        .{
+            .body =
+            \\[[jobs]]
+            \\name = "selection_map"
+            \\chain_map = "MAP"
+            \\
+            ,
+            .output_name = "selection_map.jsonl",
+            .atoms_field = "atom_areas",
+        },
+        // BSA analysis
+        .{
+            .body =
+            \\[analysis]
+            \\type = "bsa"
+            \\name = "bsa"
+            \\partner_a = ["A"]
+            \\partner_b = ["B"]
+            \\level = "residue"
+            \\atom_output = true
+            \\
+            ,
+            .output_name = "bsa.jsonl",
+            .atoms_field = "atom_delta_sasa",
+        },
+    };
+
+    for (paths) |path| {
+        // Default: auto
+        try std.testing.expectEqual(@as(usize, 5), try altLocWorkflowAtomCount(root, path, null, null));
+        // The command-line flag is not dropped
+        try std.testing.expectEqual(@as(usize, 4), try altLocWorkflowAtomCount(root, path, null, "--altloc=B"));
+        try std.testing.expectEqual(@as(usize, 6), try altLocWorkflowAtomCount(root, path, null, "--altloc=all"));
+        // The workflow key
+        try std.testing.expectEqual(@as(usize, 6), try altLocWorkflowAtomCount(root, path, "all", null));
+        try std.testing.expectEqual(@as(usize, 4), try altLocWorkflowAtomCount(root, path, "B", null));
+        // The flag takes precedence over the key, also when it is `auto`
+        try std.testing.expectEqual(@as(usize, 4), try altLocWorkflowAtomCount(root, path, "all", "--altloc=B"));
+        try std.testing.expectEqual(@as(usize, 5), try altLocWorkflowAtomCount(root, path, "all", "--altloc=auto"));
+    }
+}
+
+test "workflow altloc applies to the batch config unless --altloc is given" {
+    const calculation = workflow_manifest.Calculation{ .altloc = .{ .mode = .selected, .id = 'B' } };
+
+    var from_workflow = BatchConfig{};
+    const no_flag = parseArgs(&.{ "zsasa", "batch", "--workflow", "wf.toml" }, 2);
+    try applyWorkflowToBatchConfig(&from_workflow, no_flag, calculation, .{}, .{});
+    applyCliOverrides(&from_workflow, no_flag);
+    try std.testing.expectEqual(mmcif_parser.AltLocMode.selected, from_workflow.alt_loc_mode);
+    try std.testing.expectEqual(@as(u8, 'B'), from_workflow.alt_loc_id);
+
+    var from_flag = BatchConfig{};
+    const flag = parseArgs(&.{ "zsasa", "batch", "--workflow", "wf.toml", "--altloc=C" }, 2);
+    try applyWorkflowToBatchConfig(&from_flag, flag, calculation, .{}, .{});
+    applyCliOverrides(&from_flag, flag);
+    try std.testing.expectEqual(mmcif_parser.AltLocMode.selected, from_flag.alt_loc_mode);
+    try std.testing.expectEqual(@as(u8, 'C'), from_flag.alt_loc_id);
+
+    var flag_only = BatchConfig{};
+    const none_flag = parseArgs(&.{ "zsasa", "batch", "--workflow", "wf.toml", "--altloc=none" }, 2);
+    try applyWorkflowToBatchConfig(&flag_only, none_flag, .{}, .{}, .{});
+    applyCliOverrides(&flag_only, none_flag);
+    try std.testing.expectEqual(mmcif_parser.AltLocMode.none, flag_only.alt_loc_mode);
+}
+
 test "runBatchParallel writes JSONL error rows for failed files" {
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -9345,6 +9584,74 @@ test "AF model fast fallback is limited to unsupported layouts" {
     try std.testing.expect(shouldFallbackAfModelFastError(error.UnsupportedLayout));
     try std.testing.expect(!shouldFallbackAfModelFastError(error.InvalidCoordinate));
     try std.testing.expect(!shouldFallbackAfModelFastError(error.AccessDenied));
+}
+
+test "batch --altloc applies to PDB input as it does to mmCIF input" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "altloc.pdb", .data =
+        \\ATOM      1  N   ALA A   1       1.000   0.000   0.000  1.00 10.00           N
+        \\ATOM      2  CA AALA A   1       2.000   0.000   0.000  0.30 10.00           C
+        \\ATOM      3  CA BALA A   1       3.000   0.000   0.000  0.70 10.00           C
+        \\ATOM      4  C   ALA A   1       4.000   0.000   0.000  1.00 10.00           C
+        \\END
+        \\
+    });
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "altloc.cif", .data =
+        \\data_ALTLOC
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\_atom_site.occupancy
+        \\ATOM N N  . ALA A 1 1.000 0.000 0.000 1.00
+        \\ATOM C CA A ALA A 1 2.000 0.000 0.000 0.30
+        \\ATOM C CA B ALA A 1 3.000 0.000 0.000 0.70
+        \\ATOM C C  . ALA A 1 4.000 0.000 0.000 1.00
+        \\#
+        \\
+    });
+    const pdb_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "altloc.pdb", allocator);
+    defer allocator.free(pdb_path);
+    const cif_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "altloc.cif", allocator);
+    defer allocator.free(cif_path);
+
+    // CA has the alternates A (0.30) and B (0.70)
+    const Case = struct { flag: []const u8, x: []const f64 };
+    const cases = [_]Case{
+        .{ .flag = "--altloc=auto", .x = &.{ 1, 2, 4 } },
+        .{ .flag = "--altloc=all", .x = &.{ 1, 2, 3, 4 } },
+        .{ .flag = "--altloc=A", .x = &.{ 1, 2, 4 } },
+        .{ .flag = "--altloc=B", .x = &.{ 1, 3, 4 } },
+        .{ .flag = "--altloc=C", .x = &.{ 1, 4 } },
+        .{ .flag = "--altloc=highest-occupancy", .x = &.{ 1, 3, 4 } },
+    };
+    for ([_][]const u8{ pdb_path, cif_path }) |path| {
+        for (cases) |case| {
+            const args = parseArgs(&.{ "zsasa", "batch", case.flag, "input_dir/" }, 2);
+            var parsed = try readInputFile(allocator, std.testing.io, path, .{
+                .alt_loc_mode = args.alt_loc_mode,
+                .alt_loc_id = args.alt_loc_id,
+            });
+            defer parsed.deinit();
+            try std.testing.expectEqualSlices(f64, case.x, parsed.input.x);
+        }
+
+        // `none` exists to fail fast
+        try std.testing.expectError(
+            error.UnexpectedAltLoc,
+            readInputFile(allocator, std.testing.io, path, .{ .alt_loc_mode = .none }),
+        );
+    }
 }
 
 test "readInputFile falls back to generic mmCIF for unsupported fast layout" {

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 
 from zsasa.classifier import AtomClass, ClassifierType
+from zsasa.integrations._altloc import SiteAtom, keep_auto_altloc
 from zsasa.integrations._types import AtomData, SasaResultWithAtoms, classify_atom_data
 from zsasa.sasa import calculate_sasa
 
@@ -53,10 +54,18 @@ def extract_atoms_from_model(
 ) -> AtomData:
     """Extract atom data from a gemmi Model.
 
+    Where the model has alternate locations, one conformer is kept by the
+    rules of ``--altloc=auto`` in the zsasa command line: an atom without an
+    altloc ID first, then altloc ``A``, then the highest occupancy, and one
+    whole residue where the alternates of a position are different residues
+    (microheterogeneity). To choose conformers yourself, edit the model before
+    passing it.
+
     Args:
         model: A gemmi Model object.
         include_hetatm: Whether to include HETATM records (ligands, waters, etc.).
-        include_hydrogens: Whether to include hydrogen atoms.
+        include_hydrogens: Whether to include hydrogen atoms. Deuterium counts
+            as hydrogen.
 
     Returns:
         AtomData containing coordinates and atom metadata.
@@ -67,7 +76,7 @@ def extract_atoms_from_model(
         >>> atoms = extract_atoms_from_model(structure[0])
         >>> print(f"Extracted {len(atoms)} atoms")
     """
-    gemmi = _import_gemmi()
+    _import_gemmi()  # Ensure gemmi is available
 
     coords = []
     residue_names = []
@@ -75,6 +84,7 @@ def extract_atoms_from_model(
     chain_ids = []
     residue_ids = []
     elements = []
+    site_atoms = []
 
     for chain in model:
         for residue in chain:
@@ -82,9 +92,10 @@ def extract_atoms_from_model(
             if not include_hetatm and residue.het_flag == "H":
                 continue
 
+            position = (chain.name, residue.seqid.num, residue.seqid.icode)
             for atom in residue:
-                # Skip hydrogens if not requested
-                if not include_hydrogens and atom.element == gemmi.Element("H"):
+                # Skip hydrogens if not requested (deuterium is an isotope of H)
+                if not include_hydrogens and atom.is_hydrogen():
                     continue
 
                 coords.append([atom.pos.x, atom.pos.y, atom.pos.z])
@@ -93,6 +104,23 @@ def extract_atoms_from_model(
                 chain_ids.append(chain.name)
                 residue_ids.append(residue.seqid.num)
                 elements.append(atom.element.name)
+                site_atoms.append(
+                    SiteAtom(
+                        position=position,
+                        residue_name=residue.name,
+                        atom_name=atom.name,
+                        altloc=atom.altloc if atom.has_altloc() else "",
+                        occupancy=atom.occ,
+                    )
+                )
+
+    # Iterating a gemmi residue yields the atoms of every alternate conformer
+    keep = keep_auto_altloc(site_atoms)
+    if not all(keep):
+        coords, residue_names, atom_names, chain_ids, residue_ids, elements = (
+            [value for value, kept in zip(values, keep, strict=True) if kept]
+            for values in (coords, residue_names, atom_names, chain_ids, residue_ids, elements)
+        )
 
     return AtomData(
         coords=np.array(coords, dtype=np.float64),

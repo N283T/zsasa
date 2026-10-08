@@ -48,8 +48,12 @@ def _import_biopython():
         raise ImportError(msg) from e
 
 
+# Deuterium is an isotope of hydrogen, as in the zsasa command line
+_HYDROGEN_ELEMENTS = frozenset({"H", "D"})
+
+
 def _is_hydrogen(atom: Atom) -> bool:
-    """Check if an atom is hydrogen.
+    """Check if an atom is hydrogen. Deuterium (element ``D``) counts as hydrogen.
 
     Uses element attribute if available, falls back to name-based heuristic.
 
@@ -60,7 +64,7 @@ def _is_hydrogen(atom: Atom) -> bool:
     """
     element = getattr(atom, "element", None)
     if element:
-        return element.strip().upper() == "H"
+        return element.strip().upper() in _HYDROGEN_ELEMENTS
     # Fallback: check atom name (may have edge cases with unusual naming)
     name = atom.get_name().strip()
     return name.startswith("H") or (len(name) > 1 and name[0].isdigit() and name[1] == "H")
