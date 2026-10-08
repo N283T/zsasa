@@ -51,7 +51,9 @@ Extended JSON with classification info (required for `--classifier`):
 | `r` | Yes | Van der Waals radii in Å |
 | `residue` | For classifier | 3-letter residue code (e.g., "ALA") |
 | `atom_name` | For classifier | Atom name (e.g., "CA", "N") |
-| `element` | Optional | Atomic numbers (e.g., 6=C, 7=N, 8=O) |
+| `element` | Optional | Atomic numbers (e.g., 6=C, 7=N, 8=O); whole numbers from 0 to 255, 0 meaning unknown |
+
+Values keep their JSON type: `x`, `y`, `z`, `r` and `element` hold JSON numbers, `residue` and `atom_name` hold strings. A number written as a string (`"x": [0, "3"]`) or an element given as a string (`"element": "CN"`, or symbols such as `["C", "N"]`) is rejected with `ExpectedNumber`, `ExpectedArray`, `ExpectedString` or `InvalidElement` instead of being converted. `residue`, `atom_name` and `element` may be `null` or left out. Unknown fields and repeated fields are errors.
 
 ### Validation Rules
 
@@ -78,7 +80,7 @@ Residue numbers come from `label_seq_id`. Non-polymer residues (waters, ligands,
 
 ## BinaryCIF Format
 
-BinaryCIF input decodes `_atom_site` for SASA calculation, follows the same [alternate-location](#alternate-locations) rules as mmCIF and PDB input, and uses embedded `_chem_comp_atom` / `_chem_comp_bond` inline CCD data when `--classifier=ccd` (or the `ccd` default) needs bond topology for non-standard compounds. You can still provide external CCD or SDF topology when the BinaryCIF file does not include component topology.
+BinaryCIF input decodes `_atom_site` for SASA calculation (every decoded column needs a non-empty `encoding` list that ends in `ByteArray` or `StringArray`; a column with an empty list is rejected as `InvalidColumnData` instead of being read as raw bytes), follows the same [alternate-location](#alternate-locations) rules as mmCIF and PDB input, and uses embedded `_chem_comp_atom` / `_chem_comp_bond` inline CCD data when `--classifier=ccd` (or the `ccd` default) needs bond topology for non-standard compounds. You can still provide external CCD or SDF topology when the BinaryCIF file does not include component topology.
 
 ## PDB Format
 

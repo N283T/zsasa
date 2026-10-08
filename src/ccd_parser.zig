@@ -337,6 +337,9 @@ fn parseAtomLoop(
                                     atom.aromatic = row_aromatic;
                                     atom.leaving = row_leaving;
 
+                                    // Atom indices and the ZSDC atom count are u16: a
+                                    // larger component would wrap and corrupt bond lookups.
+                                    if (builder.atoms.items.len >= std.math.maxInt(u16)) return error.TooManyAtoms;
                                     const atom_idx: u16 = @intCast(builder.atoms.items.len);
                                     try builder.atoms.append(allocator, atom);
 

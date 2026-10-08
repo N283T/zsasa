@@ -39,10 +39,19 @@ pub const Error = toml_classifier_parser.Error || error{
 /// Legacy FreeSASA-style configs whose first meaningful line is `name:`,
 /// `types:`, or `atoms:` are rejected with `error.UnsupportedLegacyFormat`.
 pub fn parseConfig(allocator: Allocator, content: []const u8) Error!Classifier {
+    return parseConfigDiag(allocator, content, null);
+}
+
+/// Where a parse error was found: the 1-based line, or 0 when unknown.
+pub const Diagnostic = toml_classifier_parser.Diagnostic;
+
+/// Like `parseConfig`, but stores the line of the offending input in `diag`.
+pub fn parseConfigDiag(allocator: Allocator, content: []const u8, diag: ?*Diagnostic) Error!Classifier {
+    if (diag) |d| d.* = .{};
     if (isLegacyFreeSasaConfig(content)) {
         return error.UnsupportedLegacyFormat;
     }
-    return toml_classifier_parser.parseConfig(allocator, content);
+    return toml_classifier_parser.parseConfigDiag(allocator, content, diag);
 }
 
 /// Parse a TOML classifier configuration file from disk.
@@ -50,13 +59,19 @@ pub fn parseConfig(allocator: Allocator, content: []const u8) Error!Classifier {
 /// Custom classifier files are TOML-only; paths not ending in `.toml` are
 /// rejected before any file I/O is attempted.
 pub fn parseConfigFile(allocator: Allocator, io: std.Io, path: []const u8) Error!Classifier {
+    return parseConfigFileDiag(allocator, io, path, null);
+}
+
+/// Like `parseConfigFile`, but stores the line of the offending input in `diag`.
+pub fn parseConfigFileDiag(allocator: Allocator, io: std.Io, path: []const u8, diag: ?*Diagnostic) Error!Classifier {
+    if (diag) |d| d.* = .{};
     if (!isTomlPath(path)) {
         return error.UnsupportedConfigExtension;
     }
 
     const content = try readFileContent(allocator, io, path);
     defer allocator.free(content);
-    return parseConfig(allocator, content);
+    return parseConfigDiag(allocator, content, diag);
 }
 
 fn isTomlPath(path: []const u8) bool {
