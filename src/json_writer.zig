@@ -245,8 +245,8 @@ fn collectChainAreas(allocator: Allocator, identity: analysis.ResidueIdentity, r
 //
 // A row follows these columns whenever its labels and values fit. zsasa asks
 // more of a value than its field width: the first column of the field must
-// stay blank, so an absolute value is at most 999.99 and a relative value
-// between -99.9 and 999.9. Biopython reads only the other columns of a field
+// stay blank, so an absolute value is at most 999.99 and a relative value at
+// most 999.9. Biopython reads only the other columns of a field
 // (`line[16:22]`, `line[23:28]`, ...), and the blank keeps neighboring values
 // apart for readers that split a row at blanks. A label or value that does
 // not fit is written in full all the same, with a blank between it and its

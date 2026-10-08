@@ -51,7 +51,7 @@ When the input of `calc` has residue information (PDB, mmCIF, BinaryCIF and SDF/
 chain,residue,resnum,insertion_code,atom_name,x,y,z,radius,area
 A,MET,1,,N,27.340,24.430,2.614,1.650,49.097438
 A,MET,1,,CA,26.266,25.413,2.842,1.870,16.124513
-H,SER,10,A,N,27.361,17.959,8.559,1.650,49.097438
+H,SER,10,A,CB,28.523,15.820,8.182,1.870,45.686121
 ,,,,,,,,,699.097218
 ```
 
@@ -66,7 +66,7 @@ H,SER,10,A,N,27.361,17.959,8.559,1.650,49.097438
 | `radius` | Atom radius in Å |
 | `area` | SASA of the atom in Å² |
 
-The last row holds the total area and leaves every other column empty. Text fields follow RFC 4180: a chain ID, residue name, insertion code or atom name that contains a comma, a double quote or a line break is enclosed in double quotes, with every double quote in it doubled (the PDB chain ID `,` is written as `","`). All other fields are written unquoted, so use a CSV parser instead of splitting lines at commas. Read the columns by name: the `insertion_code` column was added after `resnum` in the release after 0.9.1, which moved `atom_name` and the columns after it one position to the right.
+The last row holds the total area and leaves every other column empty. Text fields follow RFC 4180: a chain ID, residue name, insertion code or atom name that contains a comma, a double quote or a line break is enclosed in double quotes, with every double quote in it doubled (the PDB chain ID `,` is written as `","`). All other fields are written unquoted. Use a CSV parser instead of splitting lines at commas, and read the columns by name: `insertion_code` is new after zsasa 0.9.1, and it moved `atom_name` and the columns after it one position to the right.
 
 `batch --format=csv` always writes the basic `atom_index,area` CSV per input file, also for structure input.
 
