@@ -272,3 +272,47 @@ jobs:
           assert result.total_area > 0, 'SASA should be positive'
           print('Python bindings test passed!')
           "
+
+  python_integrations:
+    runs-on: ubuntu-latest
+    name: Python integrations (Linux)
+    needs: [fmt]
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      # The `all` extra holds gemmi, biopython, biotite, MDAnalysis and mdtraj.
+      # Without them the integration test modules skip themselves, which is
+      # what the plain `python` job above runs.
+      - name: Install Python package with every optional integration
+        working-directory: python
+        run: uv pip install --system -e ".[all,dev]"
+
+      - name: Check that every integration imports
+        run: python3 -c "import gemmi, Bio, biotite, MDAnalysis, mdtraj"
+
+      - name: Run Python tests, none of them skipped
+        working-directory: python
+        shell: bash
+        run: |
+          set -o pipefail
+          pytest tests/ -v -rs 2>&1 | tee pytest.log
+          if grep -E '^SKIPPED' pytest.log; then
+            echo "::error::a Python test was skipped; the integration packages should be installed here"
+            exit 1
+          fi
