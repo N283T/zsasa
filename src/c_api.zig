@@ -83,7 +83,7 @@ pub const ZSASA_ATOM_CLASS_APOLAR: c_int = 1;
 pub const ZSASA_ATOM_CLASS_UNKNOWN: c_int = 2;
 
 // Version string
-const VERSION = "0.10.0";
+const VERSION = "0.10.1";
 
 /// Version of the C ABI, returned by `zsasa_abi_version()`.
 ///
