@@ -4953,10 +4953,40 @@ const WorkflowParallelContext = struct {
     io: std.Io,
 };
 
-fn workflowMarkAllJobsFailed(ctx: *WorkflowParallelContext) void {
-    for (ctx.runtimes) |*runtime| {
-        _ = runtime.counter.failed.fetchAdd(1, .monotonic);
+/// A result that only reports `message` for `filename`; the message is not owned.
+fn failedFileResult(filename: []const u8, message: []const u8) FileResult {
+    return .{
+        .filename = filename,
+        .n_atoms = 0,
+        .sasa_time_ns = 0,
+        .total_sasa = 0,
+        .status = .err,
+        .error_msg = message,
+    };
+}
+
+/// Count `filename` as failed for one job of the parallel file-first runner
+/// and write its JSONL error row, as the other runners do for a failed input.
+fn workflowFailJob(runtime: *WorkflowJobRuntime, arena: Allocator, filename: []const u8, message: []const u8) void {
+    _ = runtime.counter.failed.fetchAdd(1, .monotonic);
+    std.debug.print("Error running workflow job '{s}' on '{s}': {s}\n", .{ runtime.state.name, filename, message });
+    if (runtime.jsonl_stream) |*stream| {
+        var result = failedFileResult(filename, message);
+        stream.writeResult(arena, &result);
     }
+}
+
+/// `workflowFailJob` for every job: the input could not be read, parsed or
+/// classified, so no job has a result for it.
+fn workflowFailAllJobs(
+    ctx: *WorkflowParallelContext,
+    arena: Allocator,
+    filename: []const u8,
+    comptime stage: []const u8,
+    err: anyerror,
+) void {
+    const message = std.fmt.allocPrint(arena, stage ++ " failed: {s}", .{@errorName(err)}) catch stage ++ " failed";
+    for (ctx.runtimes) |*runtime| workflowFailJob(runtime, arena, filename, message);
 }
 
 fn workflowClassifySourceInput(
@@ -4987,8 +5017,7 @@ fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
 
         const filename = ctx.files[file_index];
         const input_path = std.fs.path.join(arena.allocator(), &.{ ctx.input_dir, filename }) catch |err| {
-            workflowMarkAllJobsFailed(ctx);
-            std.debug.print("Error running workflow on '{s}': path join failed: {s}\n", .{ filename, @errorName(err) });
+            workflowFailAllJobs(ctx, arena.allocator(), filename, "path join", err);
             _ = ctx.processed_count.fetchAdd(1, .release);
             _ = arena.reset(.retain_capacity);
             continue;
@@ -4997,20 +5026,14 @@ fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
         var source_config = ctx.resource_config;
         source_config.chain_filter = null;
         var source_parsed = readInputFile(arena.allocator(), ctx.io, input_path, source_config) catch |err| {
-            workflowMarkAllJobsFailed(ctx);
-            for (ctx.runtimes) |runtime| {
-                std.debug.print("Error running workflow job '{s}' on '{s}': read/parse failed: {s}\n", .{ runtime.state.name, filename, @errorName(err) });
-            }
+            workflowFailAllJobs(ctx, arena.allocator(), filename, "read/parse", err);
             _ = ctx.processed_count.fetchAdd(1, .release);
             _ = arena.reset(.retain_capacity);
             continue;
         };
 
         workflowClassifySourceInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
-            workflowMarkAllJobsFailed(ctx);
-            for (ctx.runtimes) |runtime| {
-                std.debug.print("Error running workflow job '{s}' on '{s}': classifier failed: {s}\n", .{ runtime.state.name, filename, @errorName(err) });
-            }
+            workflowFailAllJobs(ctx, arena.allocator(), filename, "classifier", err);
             source_parsed.deinit();
             _ = ctx.processed_count.fetchAdd(1, .release);
             _ = arena.reset(.retain_capacity);
@@ -5022,8 +5045,8 @@ fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
             var runtime = &ctx.runtimes[job_index];
             const selected_chains: ?[]const []const u8 = if (format == .json) null else job.chains;
             var selected_input = copySelectedAtomInput(arena.allocator(), source_parsed.input, selected_chains) catch |err| {
-                _ = runtime.counter.failed.fetchAdd(1, .monotonic);
-                std.debug.print("Error running workflow job '{s}' on '{s}': selection failed: {s}\n", .{ runtime.state.name, filename, @errorName(err) });
+                const message = std.fmt.allocPrint(arena.allocator(), "selection failed: {s}", .{@errorName(err)}) catch "selection failed";
+                workflowFailJob(runtime, arena.allocator(), filename, message);
                 continue;
             };
             defer selected_input.deinit();
@@ -5054,6 +5077,42 @@ fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
         _ = ctx.processed_count.fetchAdd(1, .release);
         _ = arena.reset(.retain_capacity);
     }
+}
+
+/// Write the JSONL row of one result of a job in the sequential file-first
+/// runner; nothing for a job with per-file output.
+fn workflowWriteSequentialJsonl(io: std.Io, arena: Allocator, state: *const WorkflowJobState, result: *FileResult) !void {
+    if (!batchWritesJsonl(state.config)) return;
+    if (state.jsonl_output_path) |path| {
+        const file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .write_only });
+        defer file.close(io);
+        try appendJsonlResultToFile(io, file, arena, result, jsonlOptions(state.config));
+    } else {
+        var stdout_write_buf: [64 * 1024]u8 = undefined;
+        var stdout_writer = std.Io.File.Writer.initStreaming(std.Io.File.stdout(), io, &stdout_write_buf);
+        try writeJsonlResult(&stdout_writer, arena, result, jsonlOptions(state.config));
+    }
+}
+
+/// `workflowFailJob` for the sequential file-first runner.
+fn workflowFailJobSequential(io: std.Io, arena: Allocator, state: *WorkflowJobState, filename: []const u8, message: []const u8) !void {
+    state.failed += 1;
+    std.debug.print("Error running workflow job '{s}' on '{s}': {s}\n", .{ state.name, filename, message });
+    var result = failedFileResult(filename, message);
+    try workflowWriteSequentialJsonl(io, arena, state, &result);
+}
+
+/// `workflowFailAllJobs` for the sequential file-first runner.
+fn workflowFailAllJobsSequential(
+    io: std.Io,
+    arena: Allocator,
+    states: []WorkflowJobState,
+    filename: []const u8,
+    comptime stage: []const u8,
+    err: anyerror,
+) !void {
+    const message = std.fmt.allocPrint(arena, stage ++ " failed: {s}", .{@errorName(err)}) catch stage ++ " failed";
+    for (states) |*state| try workflowFailJobSequential(io, arena, state, filename, message);
 }
 
 fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
@@ -5449,48 +5508,25 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
         var source_config = resource_config;
         source_config.chain_filter = null;
         var source_parsed = readInputFile(arena.allocator(), io, input_path, source_config) catch |err| {
-            for (states) |*state| {
-                state.failed += 1;
-                std.debug.print("Error running workflow job '{s}' on '{s}': read/parse failed: {s}\n", .{ state.name, filename, @errorName(err) });
-            }
+            try workflowFailAllJobsSequential(io, arena.allocator(), states, filename, "read/parse", err);
             _ = arena.reset(.retain_capacity);
             continue;
         };
 
-        if (source_config.custom_classifier) |custom| {
-            if (source_parsed.input.hasClassificationInfo()) {
-                applyCustomClassifier(&source_parsed.input, custom, source_config.quiet) catch |err| {
-                    for (states) |*state| {
-                        state.failed += 1;
-                        std.debug.print("Error running workflow job '{s}' on '{s}': classifier failed: {s}\n", .{ state.name, filename, @errorName(err) });
-                    }
-                    source_parsed.deinit();
-                    _ = arena.reset(.retain_capacity);
-                    continue;
-                };
-            }
-        } else if (source_config.classifier_type) |ct| {
-            const format = format_detect.detectInputFormat(input_path);
-            if (format != .json and source_parsed.input.hasClassificationInfo()) {
-                applyBuiltinClassifier(&source_parsed.input, ct, source_config.sdf_ccd, source_parsed.inlineCcdPtr(), source_config.external_ccd) catch |err| {
-                    for (states) |*state| {
-                        state.failed += 1;
-                        std.debug.print("Error running workflow job '{s}' on '{s}': classifier failed: {s}\n", .{ state.name, filename, @errorName(err) });
-                    }
-                    source_parsed.deinit();
-                    _ = arena.reset(.retain_capacity);
-                    continue;
-                };
-            }
-        }
+        workflowClassifySourceInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
+            try workflowFailAllJobsSequential(io, arena.allocator(), states, filename, "classifier", err);
+            source_parsed.deinit();
+            _ = arena.reset(.retain_capacity);
+            continue;
+        };
 
         for (workflow.jobs, 0..) |job, job_index| {
             var state = &states[job_index];
 
             const selected_chains: ?[]const []const u8 = if (format_detect.detectInputFormat(input_path) == .json) null else job.chains;
             var selected_input = copySelectedAtomInput(arena.allocator(), source_parsed.input, selected_chains) catch |err| {
-                state.failed += 1;
-                std.debug.print("Error running workflow job '{s}' on '{s}': selection failed: {s}\n", .{ state.name, filename, @errorName(err) });
+                const message = std.fmt.allocPrint(arena.allocator(), "selection failed: {s}", .{@errorName(err)}) catch "selection failed";
+                try workflowFailJobSequential(io, arena.allocator(), state, filename, message);
                 continue;
             };
             defer selected_input.deinit();
@@ -5509,17 +5545,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
                 state.failed += 1;
             }
 
-            if (state.config.output_format == .jsonl) {
-                if (state.jsonl_output_path) |path| {
-                    const file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .write_only });
-                    defer file.close(io);
-                    try appendJsonlResultToFile(io, file, arena.allocator(), &result, jsonlOptions(state.config));
-                } else {
-                    var stdout_write_buf: [64 * 1024]u8 = undefined;
-                    var stdout_writer = std.Io.File.Writer.initStreaming(std.Io.File.stdout(), io, &stdout_write_buf);
-                    try writeJsonlResult(&stdout_writer, arena.allocator(), &result, jsonlOptions(state.config));
-                }
-            }
+            try workflowWriteSequentialJsonl(io, arena.allocator(), state, &result);
 
             result.atom_areas = null;
             result.residue_map = null;
@@ -7524,6 +7550,160 @@ test "workflow file-first keeps existing output layout" {
     defer allocator.free(chain_a_json_content_2);
     try std.testing.expect(std.mem.indexOf(u8, chain_a_json_content, "\"total_area\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, chain_a_json_content_2, "\"total_area\"") != null);
+}
+
+/// The runner a batch workflow is routed to (see `runWorkflow`).
+const TestWorkflowRunner = enum {
+    /// Every file is parsed once and reused by all jobs.
+    file_first,
+    /// One `runBatch` per job; chosen here by a job whose `auth_chain`
+    /// differs from the shared setting.
+    job_first,
+
+    fn jobOption(self: TestWorkflowRunner) []const u8 {
+        return switch (self) {
+            .file_first => "",
+            .job_first => "auth_chain = true\n",
+        };
+    }
+};
+
+const test_workflow_runners = [_]TestWorkflowRunner{ .file_first, .job_first };
+
+/// Two chains, one residue each.
+const test_two_chain_pdb =
+    "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N\n" ++
+    "ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C\n" ++
+    "ATOM      3  N   GLY B   1       5.000   0.000   0.000  1.00 20.00           N\n" ++
+    "ATOM      4  CA  GLY B   1       6.500   0.000   0.000  1.00 20.00           C\n" ++
+    "END\n";
+
+/// A sandbox whose input directory holds two readable and two unreadable
+/// structures, and the workflow files that run two jobs over it.
+const FailureSandbox = struct {
+    sandbox: NamingSandbox,
+
+    const good_files = [_][]const u8{ "good1.pdb", "good2.pdb" };
+    /// Unreadable inputs with the reason every runner reports for them.
+    const bad_files = [_][2][]const u8{
+        .{ "bad1.pdb", "read/parse failed: NoAtomsFound" },
+        .{ "bad2.cif", "read/parse failed: NoAtomSiteLoop" },
+    };
+    const jobs = [_][]const u8{ "chain_a", "everything" };
+
+    fn init() !FailureSandbox {
+        var sandbox = try NamingSandbox.init();
+        errdefer sandbox.deinit();
+        for (good_files) |name| try sandbox.writeInput(name, test_two_chain_pdb);
+        try sandbox.writeInput("bad1.pdb", "not a structure\n");
+        try sandbox.writeInput("bad2.cif", "data_bad\nloop_\n_cell.length_a\n1.0\n");
+        return .{ .sandbox = sandbox };
+    }
+
+    fn deinit(self: *FailureSandbox) void {
+        self.sandbox.deinit();
+    }
+
+    /// Write "workflow.toml" for `runner` and return its path, allocated
+    /// from `arena`. `input_name` and `output_name` are below the sandbox
+    /// root; without `output_name` the workflow has no output directory and a
+    /// single job. `extra` is inserted before the jobs.
+    fn writeWorkflow(
+        self: FailureSandbox,
+        arena: Allocator,
+        runner: TestWorkflowRunner,
+        input_name: []const u8,
+        output_name: ?[]const u8,
+        format: []const u8,
+        extra: []const u8,
+    ) ![]const u8 {
+        const output_dir_line = if (output_name) |name|
+            try std.fmt.allocPrint(arena, "dir = \"{s}/{s}\"\n", .{ self.sandbox.root, name })
+        else
+            "";
+        const first_job = if (output_name != null) "[[jobs]]\nname = \"chain_a\"\nchains = [\"A\"]\n\n" else "";
+        const workflow = try std.fmt.allocPrint(arena,
+            \\version = 1
+            \\kind = "workflow"
+            \\
+            \\[input]
+            \\dir = "{s}/{s}"
+            \\
+            \\[output]
+            \\{s}format = "{s}"
+            \\
+            \\[calculation]
+            \\n_points = 8
+            \\quiet = true
+            \\
+            \\[classifier]
+            \\type = "naccess"
+            \\
+            \\{s}
+            \\{s}[[jobs]]
+            \\name = "everything"
+            \\{s}
+        , .{ self.sandbox.root, input_name, output_dir_line, format, extra, first_job, runner.jobOption() });
+        const workflow_path = try std.fs.path.join(arena, &.{ self.sandbox.root, "workflow.toml" });
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
+        return workflow_path;
+    }
+
+    fn args(workflow_path: []const u8, n_threads: usize) BatchArgs {
+        return .{ .workflow_path = workflow_path, .n_threads = n_threads, .threads_explicit = true };
+    }
+
+    /// The rows of a JSONL file below the sandbox root, sorted, as one string.
+    fn sortedRows(self: FailureSandbox, arena: Allocator, sub_path: []const u8) ![]const u8 {
+        const path = try std.fs.path.join(arena, &.{ self.sandbox.root, sub_path });
+        const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, arena, .limited(1 << 20));
+        var rows = std.ArrayListUnmanaged([]const u8).empty;
+        var lines = std.mem.tokenizeScalar(u8, content, '\n');
+        while (lines.next()) |line| try rows.append(arena, line);
+        std.mem.sort([]const u8, rows.items, {}, NamingSandbox.stringLessThan);
+        return std.mem.join(arena, "\n", rows.items);
+    }
+};
+
+test "workflow writes JSONL error rows for unreadable inputs in every runner" {
+    var failures = try FailureSandbox.init();
+    defer failures.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Rows of each job as the first runner wrote them; the others must agree.
+    var reference: [FailureSandbox.jobs.len]?[]const u8 = @splat(null);
+
+    for (test_workflow_runners) |runner| {
+        inline for (test_naming_threads) |n_threads| {
+            const output_name = try std.fmt.allocPrint(arena, "out-{s}-{d}", .{ @tagName(runner), n_threads });
+            const workflow_path = try failures.writeWorkflow(arena, runner, "input", output_name, "jsonl", "");
+            try runWorkflow(std.testing.allocator, std.testing.io, FailureSandbox.args(workflow_path, n_threads));
+
+            for (FailureSandbox.jobs, 0..) |job, job_index| {
+                const rows = try failures.sortedRows(arena, try std.fmt.allocPrint(arena, "{s}/{s}.jsonl", .{ output_name, job }));
+
+                // One row per input: the readable ones succeed, and each
+                // unreadable one has an error row with the usual wording.
+                try std.testing.expectEqual(@as(usize, 4), std.mem.count(u8, rows, "\"status\":"));
+                for (FailureSandbox.good_files) |name| {
+                    const row_start = try std.fmt.allocPrint(arena, "{{\"status\":\"ok\",\"filename\":\"{s}\",", .{name});
+                    try std.testing.expect(std.mem.indexOf(u8, rows, row_start) != null);
+                }
+                for (FailureSandbox.bad_files) |bad| {
+                    const row = try std.fmt.allocPrint(arena, "{{\"status\":\"err\",\"filename\":\"{s}\",\"error\":\"{s}\"}}", .{ bad[0], bad[1] });
+                    try std.testing.expect(std.mem.indexOf(u8, rows, row) != null);
+                }
+
+                if (reference[job_index]) |expected| {
+                    try std.testing.expectEqualStrings(expected, rows);
+                } else {
+                    reference[job_index] = rows;
+                }
+            }
+        }
+    }
 }
 
 test "workflow rejects colliding per-file output names before creating output" {
