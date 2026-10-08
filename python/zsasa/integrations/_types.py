@@ -38,6 +38,11 @@ class AtomData:
         chain_ids: Chain IDs for each atom.
         residue_ids: Residue sequence numbers for each atom.
         elements: Element symbols for each atom.
+        insertion_codes: Insertion code of the residue of each atom, ``""``
+            for a residue without one, or ``None`` when the source of the
+            atoms did not provide insertion codes. Residues ``10``, ``10A``
+            and ``10B`` share their ``residue_ids`` entry and differ only
+            here. The gemmi, BioPython and Biotite extractors fill it.
     """
 
     coords: NDArray[np.float64]
@@ -46,6 +51,7 @@ class AtomData:
     chain_ids: list[str]
     residue_ids: list[int]
     elements: list[str]
+    insertion_codes: list[str] | None = None
 
     def __len__(self) -> int:
         return len(self.residue_names)
@@ -88,8 +94,10 @@ class SasaResultWithAtoms(SasaResult):
 
 def _format_atom_identifier(atom_data: AtomData, index: int) -> str:
     """Format a clear atom identifier for integration error messages."""
+    insertion_code = atom_data.insertion_codes[index] if atom_data.insertion_codes else ""
+    residue_number = f"{atom_data.residue_ids[index]}{insertion_code}"
     return (
-        f"chain {atom_data.chain_ids[index]} residue {atom_data.residue_ids[index]} "
+        f"chain {atom_data.chain_ids[index]} residue {residue_number} "
         f"{atom_data.residue_names[index]} atom {atom_data.atom_names[index]}"
     )
 

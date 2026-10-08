@@ -51,6 +51,9 @@ class ResidueResult:
         rsa: Relative Solvent Accessibility (0.0-1.0+), or None for
              non-standard amino acids.
         n_atoms: Number of atoms in this residue.
+        insertion_code: Insertion code of the residue, ``""`` for a residue
+            without one. Residues ``10``, ``10A`` and ``10B`` have the same
+            ``residue_id`` and differ only here.
     """
 
     chain_id: str
@@ -61,11 +64,13 @@ class ResidueResult:
     apolar_area: float
     rsa: float | None
     n_atoms: int
+    insertion_code: str = ""
 
     def __repr__(self) -> str:
         rsa_str = f"{self.rsa:.3f}" if self.rsa is not None else "None"
+        residue = f"{self.residue_name}{self.residue_id}{self.insertion_code}"
         return (
-            f"ResidueResult({self.chain_id}:{self.residue_name}{self.residue_id}, "
+            f"ResidueResult({self.chain_id}:{residue}, "
             f"total={self.total_area:.1f}, rsa={rsa_str}, n_atoms={self.n_atoms})"
         )
 
@@ -76,11 +81,17 @@ def aggregate_by_residue(
     residue_ids: list[int],
     residue_names: list[str],
     atom_classes: NDArray[np.int32] | None = None,
+    insertion_codes: list[str] | None = None,
 ) -> list[ResidueResult]:
     """Aggregate per-atom SASA values to per-residue.
 
-    Groups atoms by (chain_id, residue_id) and sums their SASA values.
-    Also calculates polar/apolar breakdown and RSA if atom classes are provided.
+    Groups atoms by (chain_id, residue_id, insertion_code) and sums their SASA
+    values. Also calculates polar/apolar breakdown and RSA if atom classes are
+    provided.
+
+    Pass ``insertion_codes`` for structures that use them (antibody numbering,
+    for example): without them, residues such as ``10``, ``10A`` and ``10B``
+    have the same ``residue_id`` and are merged into one result.
 
     Args:
         atom_areas: Per-atom SASA values in A^2.
@@ -89,6 +100,9 @@ def aggregate_by_residue(
         residue_names: Residue name for each atom.
         atom_classes: Optional per-atom polarity classes (AtomClass values).
                       If provided, polar_area and apolar_area will be calculated.
+        insertion_codes: Optional insertion code of the residue of each atom,
+                      ``""`` (or a blank) for a residue without one. If
+                      omitted, no residue has an insertion code.
 
     Returns:
         List of ResidueResult objects, one per unique residue.
@@ -128,13 +142,18 @@ def aggregate_by_residue(
     if atom_classes is not None and len(atom_classes) != n_atoms:
         msg = f"atom_classes length ({len(atom_classes)}) != atom_areas length ({n_atoms})"
         raise ValueError(msg)
+    if insertion_codes is not None and len(insertion_codes) != n_atoms:
+        msg = f"insertion_codes length ({len(insertion_codes)}) != atom_areas length ({n_atoms})"
+        raise ValueError(msg)
 
-    # Group atoms by (chain_id, residue_id)
+    # Group atoms by (chain_id, residue_id, insertion_code)
     # Use dict to preserve insertion order (Python 3.7+)
-    residue_data: dict[tuple[str, int], dict] = {}
+    residue_data: dict[tuple[str, int, str], dict] = {}
 
     for i in range(n_atoms):
-        key = (chain_ids[i], residue_ids[i])
+        # Structure libraries write a blank for "no insertion code"
+        insertion_code = insertion_codes[i].strip() if insertion_codes is not None else ""
+        key = (chain_ids[i], residue_ids[i], insertion_code)
 
         if key not in residue_data:
             residue_data[key] = {
@@ -159,7 +178,7 @@ def aggregate_by_residue(
 
     # Build result list
     results = []
-    for (chain_id, residue_id), data in residue_data.items():
+    for (chain_id, residue_id, insertion_code), data in residue_data.items():
         residue_name = data["residue_name"]
         total_area = data["total_area"]
 
@@ -177,6 +196,7 @@ def aggregate_by_residue(
                 apolar_area=data["apolar_area"],
                 rsa=rsa,
                 n_atoms=data["n_atoms"],
+                insertion_code=insertion_code,
             )
         )
 
@@ -214,4 +234,5 @@ def aggregate_from_result(result: SasaResultWithAtoms) -> list[ResidueResult]:
         residue_ids=result.atom_data.residue_ids,
         residue_names=result.atom_data.residue_names,
         atom_classes=result.atom_classes,
+        insertion_codes=result.atom_data.insertion_codes,
     )

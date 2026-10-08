@@ -186,8 +186,9 @@ pub const AtomInput = struct {
     chain_id: ?[]const FixedString4 = null,
     /// Extended chain IDs for formats that can exceed four characters (e.g. mmCIF).
     /// When present, this mirrors `chain_id` length and owns each string.
-    /// Existing output paths keep using `chain_id` for compatibility; chain
-    /// filtering should prefer this field when it is available.
+    /// Chain filtering, residue grouping and the output writers use this
+    /// field when it is available; `chain_id` holds only the first four
+    /// characters.
     chain_id_full: ?[]const []const u8 = null,
     /// Residue sequence numbers - optional, for per-residue analysis
     residue_num: ?[]const i32 = null,

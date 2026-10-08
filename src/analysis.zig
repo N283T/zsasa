@@ -6,7 +6,11 @@
 //! - Polar/nonpolar classification
 
 const std = @import("std");
+const classifier = @import("classifier.zig");
 const types = @import("types.zig");
+
+/// Polarity class that a classifier gives an atom
+pub const AtomClass = classifier.AtomClass;
 
 /// Maximum SASA values for standard amino acids (in Å²).
 /// Values from Tien et al. (2013) "Maximum allowed solvent accessibilities
@@ -179,6 +183,114 @@ pub fn printPolarSummary(summary: PolarSummary) void {
     }
 }
 
+/// Whether an atom counts as polar in the polar/non-polar partition by atom:
+/// the `Non-polar` and `All polar` columns of the RSA file and the atom
+/// summary of `--polar`.
+///
+/// `class` is the class that the active classifier gives the atom, the same
+/// classifier that set its radius. Classifiers disagree on some atoms
+/// (NACCESS classes sulfur as apolar, OONS classes carbonyl carbon as polar),
+/// so the partition follows the classifier. An atom that the classifier does
+/// not class (`.unknown`: hydrogens, ligands outside its tables), and every
+/// atom when no classifier ran, falls back on the element: N, O, P and S are
+/// polar, everything else is apolar. The element is the atom's entry in the
+/// input's element column or, without such a column, the first letter of the
+/// atom name; an atom without a name is apolar.
+pub fn isPolarAtom(class: AtomClass, atom_name: ?[]const u8, element: ?u8) bool {
+    switch (class) {
+        .polar => return true,
+        .apolar => return false,
+        .unknown => {},
+    }
+    const name = atom_name orelse return false;
+    if (element) |atomic_number| {
+        return atomic_number == 7 or atomic_number == 8 or atomic_number == 15 or atomic_number == 16;
+    }
+    const trimmed = std.mem.trim(u8, name, " ");
+    if (trimmed.len == 0) return false;
+    const c = std.ascii.toUpper(trimmed[0]);
+    return c == 'N' or c == 'O' or c == 'P' or c == 'S';
+}
+
+/// Class of atom `i` in `atom_classes`, or `.unknown` when no classifier ran.
+pub fn atomClassAt(atom_classes: ?[]const AtomClass, i: usize) AtomClass {
+    return if (atom_classes) |classes| classes[i] else .unknown;
+}
+
+/// Polar/non-polar SASA by atom, as partitioned by `isPolarAtom`.
+pub const AtomPolarSummary = struct {
+    polar_sasa: f64 = 0,
+    apolar_sasa: f64 = 0,
+    polar_atom_count: usize = 0,
+    apolar_atom_count: usize = 0,
+    /// Atoms without a class from the classifier, classed by their element
+    fallback_atom_count: usize = 0,
+
+    pub fn polarFraction(self: AtomPolarSummary) f64 {
+        const total = self.polar_sasa + self.apolar_sasa;
+        return if (total > 0) self.polar_sasa / total else 0;
+    }
+
+    pub fn apolarFraction(self: AtomPolarSummary) f64 {
+        const total = self.polar_sasa + self.apolar_sasa;
+        return if (total > 0) self.apolar_sasa / total else 0;
+    }
+};
+
+/// Sum atom areas by polarity. `atom_classes` holds the class of every atom
+/// from the active classifier, or is null when no classifier ran.
+pub fn calculateAtomPolarSummary(
+    input: types.AtomInput,
+    atom_areas: []const f64,
+    atom_classes: ?[]const AtomClass,
+) !AtomPolarSummary {
+    const n = input.atomCount();
+    if (atom_areas.len != n) return error.LengthMismatch;
+    if (atom_classes) |classes| {
+        if (classes.len != n) return error.LengthMismatch;
+    }
+
+    var summary = AtomPolarSummary{};
+    for (atom_areas, 0..) |area, i| {
+        const class = atomClassAt(atom_classes, i);
+        if (class == .unknown) summary.fallback_atom_count += 1;
+        const polar = isPolarAtom(
+            class,
+            if (input.atom_name) |names| names[i].slice() else null,
+            if (input.element) |elements| elements[i] else null,
+        );
+        if (polar) {
+            summary.polar_sasa += area;
+            summary.polar_atom_count += 1;
+        } else {
+            summary.apolar_sasa += area;
+            summary.apolar_atom_count += 1;
+        }
+    }
+    return summary;
+}
+
+/// Print the polar/non-polar SASA by atom class below the summary by residue
+/// type. The areas are those of the `TOTAL` row of the RSA file.
+pub fn printAtomPolarSummary(summary: AtomPolarSummary, classifier_name: []const u8) void {
+    std.debug.print("\nPolar/Nonpolar SASA by atom class (classifier: {s}):\n", .{classifier_name});
+    std.debug.print("  Polar:    {d:>10.2} Å² ({d:>5.1}%) - {d} atoms\n", .{
+        summary.polar_sasa,
+        summary.polarFraction() * 100,
+        summary.polar_atom_count,
+    });
+    std.debug.print("  Nonpolar: {d:>10.2} Å² ({d:>5.1}%) - {d} atoms\n", .{
+        summary.apolar_sasa,
+        summary.apolarFraction() * 100,
+        summary.apolar_atom_count,
+    });
+    if (summary.fallback_atom_count > 0) {
+        std.debug.print("  ({d} atoms without a class from the classifier are classed by element)\n", .{
+            summary.fallback_atom_count,
+        });
+    }
+}
+
 /// Per-residue SASA data
 pub const ResidueSasa = struct {
     chain_id: types.FixedString4,
@@ -233,88 +345,152 @@ fn freeResidueFullChainLabels(allocator: std.mem.Allocator, residues: []ResidueS
     }
 }
 
+/// Residue identity, shared by every output that reports residues: the
+/// `--per-residue` / `--rsa` table (`aggregateByResidue`), the RSA file
+/// (`json_writer.sasaResultToRsa`), and the JSONL residue map
+/// (`json_writer.buildResidueMap`) with the BSA residue arrays built from it.
+///
+/// Two atoms belong to the same residue when they are adjacent in the input
+/// and agree in all of
+///
+/// - the chain ID (the full ID from `chain_id_full` where the parser kept
+///   one, otherwise `chain_id`),
+/// - the residue number,
+/// - the insertion code, and
+/// - the residue name.
+///
+/// A residue is thus a maximal run of consecutive atoms with one identity,
+/// reported in input order. Two consequences are deliberate:
+///
+/// - Atoms of one residue that are not contiguous in the input give one
+///   entry per run, with the same labels. The JSONL residue map describes a
+///   residue as an atom range (`residue_atom_start`, `residue_atom_count`),
+///   which cannot hold a residue that is scattered over the file, and the
+///   other outputs follow it so that all of them report the same entries.
+///   FreeSASA starts a new residue the same way.
+/// - A multi-model file read with all models superimposed (the default)
+///   repeats every residue once per model. Each repetition is its own
+///   entry, with the area that this copy has inside the superimposed
+///   structure; the copies are not summed. Only when a model ends with the
+///   identity that the next one begins with (a model of a single residue)
+///   are the two runs adjacent and reported as one entry.
+pub const ResidueIdentity = struct {
+    chain_ids: []const types.FixedString4,
+    chain_ids_full: ?[]const []const u8,
+    residue_names: []const types.FixedString5,
+    residue_nums: []const i32,
+    insertion_codes: []const types.FixedString4,
+
+    /// Atom index range `[start, end)` of one residue.
+    pub const Range = struct {
+        start: usize,
+        end: usize,
+
+        pub fn atomCount(self: Range) usize {
+            return self.end - self.start;
+        }
+    };
+
+    /// Iterates over the residues of an input in input order.
+    pub const Iterator = struct {
+        identity: ResidueIdentity,
+        next_atom: usize = 0,
+
+        pub fn next(self: *Iterator) ?Range {
+            const start = self.next_atom;
+            if (start >= self.identity.atomCount()) return null;
+            var end = start + 1;
+            while (end < self.identity.atomCount() and self.identity.sameResidue(start, end)) : (end += 1) {}
+            self.next_atom = end;
+            return .{ .start = start, .end = end };
+        }
+    };
+
+    /// Borrows the identity columns of `input`, which must outlive the result.
+    pub fn init(input: types.AtomInput) !ResidueIdentity {
+        return .{
+            .chain_ids = input.chain_id orelse return error.MissingChainInfo,
+            .chain_ids_full = input.chain_id_full,
+            .residue_names = input.residue orelse return error.MissingResidueInfo,
+            .residue_nums = input.residue_num orelse return error.MissingResidueNumInfo,
+            .insertion_codes = input.insertion_code orelse return error.MissingInsertionCodeInfo,
+        };
+    }
+
+    pub fn atomCount(self: ResidueIdentity) usize {
+        return self.chain_ids.len;
+    }
+
+    /// Chain ID of an atom as it is written to output: the full ID where the
+    /// parser kept one, otherwise the (at most four-character) `chain_id`.
+    pub fn chainLabel(self: ResidueIdentity, atom: usize) []const u8 {
+        return if (self.chain_ids_full) |full| full[atom] else self.chain_ids[atom].slice();
+    }
+
+    pub fn sameChain(self: ResidueIdentity, a: usize, b: usize) bool {
+        return std.mem.eql(u8, self.chainLabel(a), self.chainLabel(b));
+    }
+
+    /// Whether atoms `a` and `b` have the same residue identity. Atoms of one
+    /// residue are also adjacent; see the type's documentation.
+    pub fn sameResidue(self: ResidueIdentity, a: usize, b: usize) bool {
+        return self.residue_nums[a] == self.residue_nums[b] and
+            self.sameChain(a, b) and
+            std.mem.eql(u8, self.insertion_codes[a].slice(), self.insertion_codes[b].slice()) and
+            std.mem.eql(u8, self.residue_names[a].slice(), self.residue_names[b].slice());
+    }
+
+    pub fn residues(self: ResidueIdentity) Iterator {
+        return .{ .identity = self };
+    }
+
+    pub fn residueCount(self: ResidueIdentity) usize {
+        var count: usize = 0;
+        var it = self.residues();
+        while (it.next()) |_| count += 1;
+        return count;
+    }
+};
+
 /// Aggregate atom SASA values to per-residue SASA.
-/// Atoms are grouped by (chain_id, residue_num, insertion_code).
+/// Atoms are grouped into residues by `ResidueIdentity`.
 pub fn aggregateByResidue(
     allocator: std.mem.Allocator,
     input: types.AtomInput,
     atom_areas: []const f64,
 ) !ResidueResult {
     // Check if we have the required residue info
-    const chain_ids = input.chain_id orelse return error.MissingChainInfo;
-    const chain_ids_full = input.chain_id_full;
-    const residue_names = input.residue orelse return error.MissingResidueInfo;
-    const residue_nums = input.residue_num orelse return error.MissingResidueNumInfo;
-    const insertion_codes = input.insertion_code orelse return error.MissingInsertionCodeInfo;
+    const identity = try ResidueIdentity.init(input);
 
     const n = input.atomCount();
     if (atom_areas.len != n) {
         return error.LengthMismatch;
     }
-    if (n == 0) {
-        return ResidueResult{
-            .residues = try allocator.alloc(ResidueSasa, 0),
-            .allocator = allocator,
-        };
-    }
 
-    // Use a simple approach: collect unique residues and sum areas
-    // For efficiency, we use a fixed-size buffer then convert to owned slice
     var residue_list = std.ArrayListUnmanaged(ResidueSasa).empty;
     errdefer freeResidueFullChainLabels(allocator, residue_list.items);
     defer residue_list.deinit(allocator);
+    try residue_list.ensureTotalCapacity(allocator, identity.residueCount());
 
-    for (0..n) |i| {
-        const chain = chain_ids[i];
-        const res_num = residue_nums[i];
-        const ins_code = insertion_codes[i];
+    var it = identity.residues();
+    while (it.next()) |range| {
+        var sasa = atom_areas[range.start];
+        for (atom_areas[range.start + 1 .. range.end]) |area| sasa += area;
 
-        // Find if this residue already exists
-        var found_idx: ?usize = null;
-        for (residue_list.items, 0..) |*res, j| {
-            const same_chain = if (chain_ids_full) |full|
-                if (res.chain_id_full) |res_full|
-                    std.mem.eql(u8, res_full, full[i])
-                else
-                    false
+        var residue = ResidueSasa{
+            .chain_id = identity.chain_ids[range.start],
+            .chain_id_full = if (identity.chain_ids_full) |full|
+                try allocator.dupe(u8, full[range.start])
             else
-                std.mem.eql(u8, res.chain_id.slice(), chain.slice());
-            if (res.residue_num == res_num and
-                same_chain and
-                std.mem.eql(u8, res.insertion_code.slice(), ins_code.slice()))
-            {
-                found_idx = j;
-                break;
-            }
-        }
-
-        if (found_idx) |idx| {
-            // Add to existing residue
-            residue_list.items[idx].sasa += atom_areas[i];
-            residue_list.items[idx].atom_count += 1;
-        } else {
-            const owned_chain_id_full = if (chain_ids_full) |full|
-                try allocator.dupe(u8, full[i])
-            else
-                null;
-            errdefer if (owned_chain_id_full) |chain_id_full| allocator.free(chain_id_full);
-
-            // Add new residue
-            try residue_list.append(allocator, ResidueSasa{
-                .chain_id = chain,
-                .chain_id_full = owned_chain_id_full,
-                .residue_name = residue_names[i],
-                .residue_num = res_num,
-                .insertion_code = ins_code,
-                .sasa = atom_areas[i],
-                .atom_count = 1,
-            });
-        }
-    }
-
-    // Calculate RSA for each residue
-    for (residue_list.items) |*res| {
-        res.calculateRsa();
+                null,
+            .residue_name = identity.residue_names[range.start],
+            .residue_num = identity.residue_nums[range.start],
+            .insertion_code = identity.insertion_codes[range.start],
+            .sasa = sasa,
+            .atom_count = range.atomCount(),
+        };
+        residue.calculateRsa();
+        residue_list.appendAssumeCapacity(residue);
     }
 
     return ResidueResult{
