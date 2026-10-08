@@ -211,3 +211,66 @@ class TestCrossLibraryConsistency:
         assert abs(result_gm.total_area - mean_area) / mean_area < 0.05
         assert abs(result_bp.total_area - mean_area) / mean_area < 0.05
         assert abs(result_bt.total_area - mean_area) / mean_area < 0.05
+
+
+class TestInsertionCodes:
+    """Residues that differ only in the insertion code stay separate residues."""
+
+    @staticmethod
+    def ubq_with_insertion_code(tmp_path: Path) -> Path:
+        """Write 1UBQ with residue 2 renumbered to 1A (so 1 and 1A share a number)."""
+        source = EXAMPLES_DIR / "1ubq.pdb"
+        _skip_if_missing(source)
+        lines = []
+        for line in source.read_text().splitlines(keepends=True):
+            if line.startswith("ATOM") and line[21] == "A" and line[22:27] == "   2 ":
+                line = line[:22] + "   1A" + line[27:]
+            lines.append(line)
+        path = tmp_path / "1ubq_1A.pdb"
+        path.write_text("".join(lines))
+        return path
+
+    @pytest.mark.parametrize(
+        ("package", "module"),
+        [("gemmi", "gemmi"), ("Bio", "biopython"), ("biotite", "biotite")],
+    )
+    def test_residues_1_and_1a_are_two_residues(self, tmp_path, package, module):
+        import importlib
+
+        pytest.importorskip(package)
+        from zsasa.analysis import aggregate_from_result
+
+        integration = importlib.import_module(f"zsasa.integrations.{module}")
+        result = integration.calculate_sasa_from_structure(self.ubq_with_insertion_code(tmp_path))
+
+        # One insertion code per atom: "" for a residue without one
+        codes = result.atom_data.insertion_codes
+        assert codes is not None
+        assert len(codes) == len(result.atom_areas)
+        assert set(codes) == {"", "A"}
+        assert codes.count("A") == 9
+
+        residues = aggregate_from_result(result)
+
+        # 76 residues as in the unmodified file, not 75 with MET 1 holding 17 atoms
+        assert len(residues) == 76
+        met, gln, ile = residues[:3]
+        assert (met.residue_name, met.residue_id, met.insertion_code, met.n_atoms) == (
+            "MET",
+            1,
+            "",
+            8,
+        )
+        assert (gln.residue_name, gln.residue_id, gln.insertion_code, gln.n_atoms) == (
+            "GLN",
+            1,
+            "A",
+            9,
+        )
+        assert (ile.residue_name, ile.residue_id, ile.insertion_code, ile.n_atoms) == (
+            "ILE",
+            3,
+            "",
+            8,
+        )
+        assert sum(res.total_area for res in residues) == pytest.approx(result.total_area)

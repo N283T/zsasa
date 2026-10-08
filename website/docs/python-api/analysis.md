@@ -11,10 +11,24 @@ def aggregate_by_residue(
     residue_ids: list[int],
     residue_names: list[str],
     atom_classes: NDArray[int32] | None = None,
+    insertion_codes: list[str] | None = None,
 ) -> list[ResidueResult]
 ```
 
-Aggregate per-atom SASA values to per-residue.
+Aggregate per-atom SASA values to per-residue. Atoms are grouped by chain ID,
+residue number and insertion code, and the residues are returned in the order
+in which they first appear.
+
+Pass `insertion_codes` (one entry per atom, `""` for a residue without an
+insertion code) for structures that use them, such as antibodies: residues
+`10`, `10A` and `10B` have the same `residue_ids` entry, and without their
+insertion codes they are merged into one result. `aggregate_from_result` does
+this for you.
+
+The residue name is not part of the grouping key, and atoms of one residue need
+not be contiguous. In both points this function differs from the CLI, whose
+[residue identity](../cli/output.md#residue-identity) is a run of consecutive
+atoms with the same chain ID, residue number, insertion code and residue name.
 
 ## aggregate_from_result
 
@@ -22,7 +36,9 @@ Aggregate per-atom SASA values to per-residue.
 def aggregate_from_result(result: SasaResultWithAtoms) -> list[ResidueResult]
 ```
 
-Convenience wrapper for `SasaResultWithAtoms` from integration modules.
+Convenience wrapper for `SasaResultWithAtoms` from integration modules. It
+passes the insertion codes that the gemmi, BioPython and Biotite integrations
+record in `result.atom_data.insertion_codes`.
 
 ## ResidueResult
 
@@ -37,7 +53,12 @@ class ResidueResult:
     apolar_area: float  # Apolar SASA in Å²
     rsa: float | None   # Relative Solvent Accessibility
     n_atoms: int        # Number of atoms
+    insertion_code: str = ""  # Insertion code, "" for a residue without one
 ```
+
+`residue_id` and `insertion_code` together give the residue number as it is
+written in the structure file: residue `10A` has `residue_id == 10` and
+`insertion_code == "A"`.
 
 ---
 

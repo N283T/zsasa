@@ -112,6 +112,7 @@ def extract_atoms_from_model(
     atom_names = []
     chain_ids = []
     residue_ids = []
+    insertion_codes = []
     elements = []
 
     for chain in model:
@@ -126,6 +127,8 @@ def extract_atoms_from_model(
 
             res_name = residue.get_resname()
             res_seq = res_id[1]  # (hetfield, resseq, icode)
+            # BioPython writes a blank for a residue without an insertion code
+            insertion_code = res_id[2].strip()
 
             for atom in residue:
                 # Skip hydrogens if not requested
@@ -138,6 +141,7 @@ def extract_atoms_from_model(
                 atom_names.append(atom.get_name())
                 chain_ids.append(chain_id)
                 residue_ids.append(res_seq)
+                insertion_codes.append(insertion_code)
                 elements.append(getattr(atom, "element", "") or "")
 
     return AtomData(
@@ -147,6 +151,7 @@ def extract_atoms_from_model(
         chain_ids=chain_ids,
         residue_ids=residue_ids,
         elements=elements,
+        insertion_codes=insertion_codes,
     )
 
 

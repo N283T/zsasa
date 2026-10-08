@@ -83,6 +83,7 @@ def extract_atoms_from_model(
     atom_names = []
     chain_ids = []
     residue_ids = []
+    insertion_codes = []
     elements = []
     site_atoms = []
 
@@ -103,6 +104,8 @@ def extract_atoms_from_model(
                 atom_names.append(atom.name)
                 chain_ids.append(chain.name)
                 residue_ids.append(residue.seqid.num)
+                # gemmi writes a blank for a residue without an insertion code
+                insertion_codes.append(residue.seqid.icode.strip())
                 elements.append(atom.element.name)
                 site_atoms.append(
                     SiteAtom(
@@ -117,9 +120,17 @@ def extract_atoms_from_model(
     # Iterating a gemmi residue yields the atoms of every alternate conformer
     keep = keep_auto_altloc(site_atoms)
     if not all(keep):
-        coords, residue_names, atom_names, chain_ids, residue_ids, elements = (
+        coords, residue_names, atom_names, chain_ids, residue_ids, insertion_codes, elements = (
             [value for value, kept in zip(values, keep, strict=True) if kept]
-            for values in (coords, residue_names, atom_names, chain_ids, residue_ids, elements)
+            for values in (
+                coords,
+                residue_names,
+                atom_names,
+                chain_ids,
+                residue_ids,
+                insertion_codes,
+                elements,
+            )
         )
 
     return AtomData(
@@ -129,6 +140,7 @@ def extract_atoms_from_model(
         chain_ids=chain_ids,
         residue_ids=residue_ids,
         elements=elements,
+        insertion_codes=insertion_codes,
     )
 
 

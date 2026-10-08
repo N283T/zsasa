@@ -185,6 +185,64 @@ class TestAggregateByResidue:
             assert results[0].rsa is not None
             assert results[0].rsa == pytest.approx(50.0 / MAX_SASA[aa], rel=1e-6)
 
+    def test_insertion_codes_keep_residues_apart(self):
+        """Residues 10, 10A and 10B share a number and differ in the insertion code."""
+        atom_areas = np.array([1.0, 2.0, 4.0, 8.0, 16.0])
+        chain_ids = ["H"] * 5
+        residue_ids = [10] * 5
+        residue_names = ["GLY", "GLY", "SER", "THR", "THR"]
+        atom_classes = np.array(
+            [AtomClass.POLAR, AtomClass.APOLAR, AtomClass.POLAR, AtomClass.POLAR, AtomClass.APOLAR],
+            dtype=np.int32,
+        )
+        # Structure libraries write a blank for "no insertion code"
+        insertion_codes = ["", " ", "A", "B", "B"]
+
+        results = aggregate_by_residue(
+            atom_areas,
+            chain_ids,
+            residue_ids,
+            residue_names,
+            atom_classes,
+            insertion_codes=insertion_codes,
+        )
+
+        assert [(r.residue_name, r.residue_id, r.insertion_code, r.n_atoms) for r in results] == [
+            ("GLY", 10, "", 2),
+            ("SER", 10, "A", 1),
+            ("THR", 10, "B", 2),
+        ]
+        assert [r.total_area for r in results] == [3.0, 4.0, 24.0]
+        assert [r.polar_area for r in results] == [1.0, 4.0, 8.0]
+        assert [r.apolar_area for r in results] == [2.0, 0.0, 16.0]
+        assert results[1].rsa == pytest.approx(4.0 / MAX_SASA["SER"])
+
+    def test_without_insertion_codes_residues_have_none(self):
+        """Callers that pass no insertion codes get the grouping by chain and number."""
+        atom_areas = np.array([1.0, 2.0])
+        results = aggregate_by_residue(atom_areas, ["A", "A"], [1, 1], ["ALA", "ALA"])
+
+        assert len(results) == 1
+        assert results[0].insertion_code == ""
+        assert results[0].n_atoms == 2
+
+    def test_same_insertion_code_in_different_residues(self):
+        """The insertion code is part of the key, next to chain and number."""
+        atom_areas = np.array([1.0, 2.0, 4.0])
+        results = aggregate_by_residue(
+            atom_areas,
+            ["A", "A", "B"],
+            [1, 2, 1],
+            ["ALA", "GLY", "SER"],
+            insertion_codes=["A", "A", "A"],
+        )
+
+        assert [(r.chain_id, r.residue_id, r.insertion_code) for r in results] == [
+            ("A", 1, "A"),
+            ("A", 2, "A"),
+            ("B", 1, "A"),
+        ]
+
 
 class TestAggregateByResidueValidation:
     """Tests for input validation."""
@@ -230,6 +288,18 @@ class TestAggregateByResidueValidation:
         with pytest.raises(ValueError, match="atom_classes length"):
             aggregate_by_residue(atom_areas, chain_ids, residue_ids, residue_names, atom_classes)
 
+    def test_mismatched_insertion_codes_length(self):
+        """Should raise error for mismatched insertion_codes length."""
+        atom_areas = np.array([10.0, 20.0])
+        chain_ids = ["A", "A"]
+        residue_ids = [1, 1]
+        residue_names = ["ALA", "ALA"]
+
+        with pytest.raises(ValueError, match="insertion_codes length"):
+            aggregate_by_residue(
+                atom_areas, chain_ids, residue_ids, residue_names, insertion_codes=["A"]
+            )
+
 
 class TestResidueResultRepr:
     """Tests for ResidueResult repr."""
@@ -266,6 +336,52 @@ class TestResidueResultRepr:
         )
         repr_str = repr(res)
         assert "rsa=None" in repr_str
+
+    def test_repr_with_insertion_code(self):
+        """Should show the insertion code after the residue number."""
+        res = ResidueResult(
+            chain_id="H",
+            residue_id=10,
+            residue_name="SER",
+            total_area=30.0,
+            polar_area=10.0,
+            apolar_area=20.0,
+            rsa=0.19,
+            n_atoms=6,
+            insertion_code="A",
+        )
+        assert "H:SER10A," in repr(res)
+
+    def test_positional_construction_without_insertion_code(self):
+        """The insertion code is the last field and optional."""
+        res = ResidueResult("A", 1, "ALA", 64.5, 20.0, 44.5, 0.5, 5)
+        assert res.insertion_code == ""
+        assert res.n_atoms == 5
+
+
+class TestAtomDataInsertionCodes:
+    """AtomData carries optional per-atom insertion codes."""
+
+    def test_positional_construction_without_insertion_codes(self):
+        from zsasa.integrations._types import AtomData
+
+        atoms = AtomData(np.zeros((1, 3)), ["ALA"], ["CA"], ["A"], [1], ["C"])
+        assert atoms.insertion_codes is None
+        assert len(atoms) == 1
+
+    def test_insertion_codes_field(self):
+        from zsasa.integrations._types import AtomData
+
+        atoms = AtomData(
+            coords=np.zeros((2, 3)),
+            residue_names=["GLY", "SER"],
+            atom_names=["CA", "CA"],
+            chain_ids=["H", "H"],
+            residue_ids=[10, 10],
+            elements=["C", "C"],
+            insertion_codes=["", "A"],
+        )
+        assert atoms.insertion_codes == ["", "A"]
 
 
 # =============================================================================

@@ -102,6 +102,7 @@ def extract_atoms_from_atom_array(
             chain_ids=[],
             residue_ids=[],
             elements=[],
+            insertion_codes=[],
         )
 
     return AtomData(
@@ -111,6 +112,7 @@ def extract_atoms_from_atom_array(
         chain_ids=filtered.chain_id.tolist(),
         residue_ids=filtered.res_id.tolist(),
         elements=filtered.element.tolist(),
+        insertion_codes=[code.strip() for code in filtered.ins_code.tolist()],
     )
 
 

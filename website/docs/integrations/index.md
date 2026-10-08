@@ -80,4 +80,11 @@ class AtomData:
     chain_ids: list[str]       # Chain IDs
     residue_ids: list[int]     # Residue numbers
     elements: list[str]        # Element symbols
+    insertion_codes: list[str] | None = None  # Insertion codes, "" where there is none
 ```
+
+`insertion_codes` has one entry per atom. The gemmi, BioPython and Biotite
+integrations fill it, so that residues such as `10`, `10A` and `10B`, which
+share their `residue_ids` entry, stay apart in
+[`aggregate_from_result`](../python-api/analysis.md#aggregate_from_result). It
+is `None` for an `AtomData` built without it.
