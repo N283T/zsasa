@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NoReturn
 
 from zsasa._ffi import (
     ZSASA_ALGORITHM_LR,
@@ -14,10 +15,46 @@ from zsasa._ffi import (
     ZSASA_ERROR_FILE_IO,
     ZSASA_ERROR_INVALID_INPUT,
     ZSASA_ERROR_OUT_OF_MEMORY,
+    ZSASA_ERROR_OUTPUT_DIR,
     ZSASA_ERROR_OUTPUT_NAME_COLLISION,
     _get_lib,
 )
 from zsasa.classifier import ClassifierType
+
+
+def _raise_input_dir_error(input_dir: str | Path) -> NoReturn:
+    """Raise the exception for an input directory the library could not read."""
+    path = Path(input_dir)
+    if not path.exists():
+        msg = f"Input directory not found: {input_dir}"
+        raise FileNotFoundError(msg)
+    if not path.is_dir():
+        msg = f"Input path is not a directory: {input_dir}"
+        raise NotADirectoryError(msg)
+    if not os.access(path, os.R_OK | os.X_OK):
+        msg = f"Permission denied reading input directory: {input_dir}"
+        raise PermissionError(msg)
+    msg = f"Cannot read input directory: {input_dir}"
+    raise OSError(msg)
+
+
+def _raise_output_dir_error(output_dir: str | Path | None) -> NoReturn:
+    """Raise the exception for an output directory the library could not create."""
+    path = Path(output_dir) if output_dir is not None else Path()
+    if path.exists() and not path.is_dir():
+        msg = f"Output directory path exists and is not a directory: {output_dir}"
+        raise FileExistsError(msg)
+    for parent in path.parents:
+        if parent.exists():
+            if not parent.is_dir():
+                msg = f"Cannot create output directory {output_dir}: {parent} is not a directory"
+                raise NotADirectoryError(msg)
+            if not os.access(parent, os.W_OK | os.X_OK):
+                msg = f"Permission denied creating output directory: {output_dir}"
+                raise PermissionError(msg)
+            break
+    msg = f"Cannot create output directory: {output_dir}"
+    raise OSError(msg)
 
 
 @dataclass
@@ -102,7 +139,11 @@ def process_directory(
         probe_radius: Water probe radius in Angstroms. Default: 1.4.
         n_threads: Number of threads to use. 0 = auto-detect. Default: 0.
         classifier: Classifier for radius assignment. None = use input radii.
-            Default: ClassifierType.CCD.
+            Default: ClassifierType.CCD. With CCD, components that are not in the
+            built-in table get radii from the bond topology (``_chem_comp_bond``)
+            inside an mmCIF input, or from the bonds of an SDF/MOL molecule; there
+            is no way to pass an external CCD dictionary here (the CLI has
+            ``--ccd``).
         include_hydrogens: Whether to include hydrogen atoms. Default: False.
         include_hetatm: Whether to include HETATM records. Default: False.
 
@@ -113,6 +154,12 @@ def process_directory(
         ValueError: If input parameters are invalid, or if ``output_dir`` is
             set and several inputs map to the same output file name.
         FileNotFoundError: If the input directory does not exist.
+        NotADirectoryError: If ``input_dir`` is not a directory, or a parent of
+            ``output_dir`` is a file.
+        FileExistsError: If ``output_dir`` exists and is not a directory.
+        PermissionError: If the input directory cannot be read or the output
+            directory cannot be created for lack of permission.
+        OSError: If the output directory cannot be created for another reason.
         MemoryError: If out of memory.
         RuntimeError: For other processing errors.
 
@@ -181,8 +228,9 @@ def process_directory(
             msg = "SASA calculation failed during directory batch processing"
             raise RuntimeError(msg)
         elif ec == ZSASA_ERROR_FILE_IO:
-            msg = f"Directory not found or not readable: {input_dir}"
-            raise FileNotFoundError(msg)
+            _raise_input_dir_error(input_dir)
+        elif ec == ZSASA_ERROR_OUTPUT_DIR:
+            _raise_output_dir_error(output_dir)
         elif ec == ZSASA_ERROR_OUTPUT_NAME_COLLISION:
             msg = (
                 f"Several inputs in {input_dir} map to the same output file name "

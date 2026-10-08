@@ -664,6 +664,35 @@ class TestClassifyAtoms:
         assert not np.isnan(result_oons.radii[0])
         assert not np.isnan(result_ccd.radii[0])
 
+    def test_documented_example_radii(self):
+        """The radii shown in the docstrings and website docs for the default classifier."""
+        atoms = (["ALA", "ALA", "GLY"], ["CA", "O", "N"])
+
+        assert classify_atoms(*atoms).radii.tolist() == [1.88, 1.42, 1.64]
+        assert classify_atoms(*atoms, ClassifierType.CCD).radii.tolist() == [1.88, 1.42, 1.64]
+        assert classify_atoms(*atoms, ClassifierType.NACCESS).radii.tolist() == [1.87, 1.4, 1.65]
+        assert get_radius("ALA", "CA") == 1.88
+        assert get_radius("ALA", "CA", ClassifierType.NACCESS) == 1.87
+
+    def test_ccd_is_the_static_protor_table(self):
+        """CCD here does no bond-topology analysis: it equals PROTOR and unknown atoms are NaN.
+
+        The C classify API cannot load chemical component definitions; only the CLI
+        and process_directory analyze unknown components.
+        """
+        residues = ["ALA", "SER", "HEM", "HEM", "XYZ"]
+        atoms = ["CB", "OG", "FE", "CHA", "C1"]
+
+        ccd = classify_atoms(residues, atoms, ClassifierType.CCD)
+        protor = classify_atoms(residues, atoms, ClassifierType.PROTOR)
+
+        np.testing.assert_array_equal(ccd.radii, protor.radii)
+        np.testing.assert_array_equal(ccd.classes, protor.classes)
+        assert np.isfinite(ccd.radii[:2]).all()
+        assert np.isnan(ccd.radii[2:]).all()
+        assert all(c == AtomClass.UNKNOWN for c in ccd.classes[2:])
+        assert get_radius("HEM", "FE", ClassifierType.CCD) is None
+
     def test_classification_result_repr(self):
         """ClassificationResult should have a clean repr."""
         result = classify_atoms(["ALA", "ALA", "GLY"], ["CA", "O", "N"])

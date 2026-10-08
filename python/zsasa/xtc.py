@@ -34,7 +34,12 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 from numpy.typing import NDArray
 
-from zsasa._ffi import _get_lib
+from zsasa._ffi import (
+    _get_lib,
+    _raise_trajectory_open_error,
+    _raise_trajectory_read_error,
+    _validate_frame_selection,
+)
 from zsasa.sasa import calculate_sasa_batch
 
 if TYPE_CHECKING:
@@ -44,8 +49,6 @@ if TYPE_CHECKING:
 # Error codes from C API
 _ZSASA_OK = 0
 _ZSASA_XTC_END_OF_FILE = 1
-_ZSASA_ERROR_INVALID_INPUT = -1
-_ZSASA_ERROR_OUT_OF_MEMORY = -2
 
 
 @dataclass
@@ -103,7 +106,22 @@ class XtcReader:
     """
 
     def __init__(self, path: str | Path) -> None:
-        """Open an XTC file for reading."""
+        """Open an XTC file for reading.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the file does not exist.
+        IsADirectoryError
+            If ``path`` is a directory.
+        PermissionError
+            If the file cannot be read.
+        ValueError
+            If the file exists but is not a valid XTC file (an empty or
+            truncated file, or a file in another format such as DCD for XTC).
+        MemoryError
+            If memory for the reader cannot be allocated.
+        """
         self._ffi: FFI
         self._lib: object
         self._ffi, self._lib = _get_lib()
@@ -124,15 +142,7 @@ class XtcReader:
         )
 
         if self._handle == self._ffi.NULL:
-            if error_code[0] == _ZSASA_ERROR_INVALID_INPUT:
-                msg = f"Cannot open XTC file: {self._path}"
-                raise FileNotFoundError(msg)
-            elif error_code[0] == _ZSASA_ERROR_OUT_OF_MEMORY:
-                msg = "Out of memory opening XTC file"
-                raise MemoryError(msg)
-            else:
-                msg = f"Error opening XTC file: {error_code[0]}"
-                raise RuntimeError(msg)
+            _raise_trajectory_open_error("XTC", self._path, error_code[0])
 
         self._natoms = natoms_out[0]
 
@@ -156,7 +166,9 @@ class XtcReader:
         Raises
         ------
         RuntimeError
-            If an error occurs during reading.
+            If the reader is closed, or a frame is corrupt or truncated.
+        MemoryError
+            If memory for the frame cannot be allocated.
         """
         if self._closed:
             msg = "XtcReader is closed"
@@ -181,8 +193,7 @@ class XtcReader:
         if result == _ZSASA_XTC_END_OF_FILE:
             return None
         elif result != _ZSASA_OK:
-            msg = f"Error reading XTC frame: {result}"
-            raise RuntimeError(msg)
+            _raise_trajectory_read_error("XTC", result)
 
         # Copy buffers to new arrays (so they're independent of the reader)
         coords = self._coords_buffer.copy().reshape(self._natoms, 3)
@@ -384,6 +395,7 @@ def compute_sasa_trajectory_summary(
     XTC coordinates are read and processed in chunks. Per-atom SASA arrays are
     discarded after total and optional residue aggregates are accumulated.
     """
+    _validate_frame_selection(start, stop, step)
     radii = np.asarray(radii, dtype=np.float32)
     chunk_size = _validate_chunk_size(chunk_size)
 
@@ -490,11 +502,11 @@ def compute_sasa_trajectory(
     n_threads : int, optional
         Number of threads (0 = auto-detect). Default: 0.
     start : int, optional
-        First frame to process (0-indexed). Default: 0.
+        First frame to process (0-indexed, non-negative). Default: 0.
     stop : int, optional
-        Stop before this frame (exclusive). Default: None (all frames).
+        Stop before this frame (exclusive, non-negative). Default: None (all frames).
     step : int, optional
-        Process every Nth frame. Default: 1.
+        Process every Nth frame (positive). Default: 1.
     use_bitmask : bool, optional
         Use bitmask LUT optimization for SR algorithm.
         Supports n_points 1..1024. Default: False.
@@ -527,6 +539,7 @@ def compute_sasa_trajectory(
     >>> print(f"Processed {result.n_frames} frames")
     >>> print(f"Total SASA: {result.total_areas}")
     """
+    _validate_frame_selection(start, stop, step)
     radii = np.asarray(radii, dtype=np.float32)
 
     # Read all frames first (to know total count and validate radii)

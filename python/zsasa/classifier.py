@@ -26,10 +26,15 @@ class ClassifierType(IntEnum):
     """Available classifier types for atom radius assignment.
 
     Attributes:
-        CCD: CCD-based radii (default). Hardcoded ProtOr radii, plus runtime CCD
-             bond-topology analysis for non-standard residues where a CCD
-             dictionary is available (the CLI and ``process_directory``).
-             ``get_radius`` and ``classify_atoms`` only use the hardcoded table.
+        CCD: The default classifier. The CLI and ``process_directory`` derive radii
+             from bond topology for components that are not in the built-in table
+             (inline ``_chem_comp_bond`` data of an mmCIF file, SDF bonds, and with
+             the CLI an external ``--ccd`` dictionary). Everything that goes through
+             the C classify API does not: ``get_radius``, ``get_atom_class``,
+             ``classify_atoms`` and the gemmi, BioPython and Biotite integrations use
+             the built-in ProtOr table only, with no bond-topology analysis of
+             unknown components. Such atoms get a NaN radius (``None`` from
+             ``get_radius``); the integrations fill them from the element.
         PROTOR: Static ProtOr-compatible radii without CCD resource parsing. A
              separate value, not an alias of CCD; for ``get_radius`` and
              ``classify_atoms`` it returns the same radii as CCD.
@@ -73,6 +78,11 @@ def get_radius(
         Radius in Angstroms, or None if atom is not found in classifier.
 
     Note:
+        ``ClassifierType.CCD`` looks the atom up in the built-in ProtOr table only.
+        This function cannot load chemical component definitions, so a ligand or
+        modified residue that is not in the table gives None, where the CLI would
+        analyze its bond topology.
+
         NACCESS and OONS have no entries for hydrogens or ligands. For those
         atoms the element is guessed from the names: a name starting with
         H, C, N, O, P or S is that element ("HG" is hydrogen, "NA" in "HEM"
@@ -114,7 +124,9 @@ def get_atom_class(
         classifier_type: Classifier to use. Default: ClassifierType.CCD.
 
     Returns:
-        AtomClass constant (POLAR, APOLAR, or UNKNOWN).
+        AtomClass constant (POLAR, APOLAR, or UNKNOWN). ``ClassifierType.CCD``
+        uses the built-in ProtOr table only (see ``classify_atoms``), so atoms of
+        components outside it are UNKNOWN.
 
     Example:
         >>> from zsasa import get_atom_class, AtomClass
@@ -221,6 +233,12 @@ def classify_atoms(
     """Classify multiple atoms at once (batch operation).
 
     This is more efficient than calling get_radius for each atom individually.
+
+    ``ClassifierType.CCD`` (the default) and ``ClassifierType.PROTOR`` both look the
+    atoms up in the built-in ProtOr table. There is no bond-topology analysis of
+    components that are not in the table: the C classify API has no source for
+    chemical component definitions, so those atoms get a NaN radius and UNKNOWN
+    class. The CLI and ``process_directory`` do analyze them (see ``ClassifierType``).
 
     Args:
         residues: List of residue names.

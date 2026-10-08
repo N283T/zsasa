@@ -64,6 +64,8 @@ pytest tests/ -v
 
 Note: Requires Zig 0.16.0+ to be installed. The build hook compiles the library with ReleaseFast optimization.
 
+When both `python/zsasa/libzsasa.*` (a copy the build hook makes) and `zig-out/lib/libzsasa.*` exist and differ, the Python package loads the newer one and warns about the other; set `ZSASA_LIB` to pick a library explicitly. The package refuses a library whose `zsasa_abi_version()` differs from `_EXPECTED_ABI_VERSION` in `python/zsasa/_ffi.py`. If you change the signature of an existing export in `src/c_api.zig` or the layout of a struct it uses, bump `ABI_VERSION` there and `_EXPECTED_ABI_VERSION` together with the cdef; adding an export or an error code needs no bump.
+
 The benchmark scripts in `benchmarks/scripts/` (for example `bench.py`, `bench_batch.py`, `bench_md.py`) are `uv` scripts that declare their own dependencies and require Python 3.12+:
 
 ```bash

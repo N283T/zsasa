@@ -250,6 +250,10 @@ zsasa calc --classifier=ccd --ccd=HEM.cif structure.pdb output.json
 zsasa calc --classifier=ccd --ccd=components.zsdc structure.pdb output.json
 ```
 
+:::note[Python]
+The Python functions `classify_atoms`, `get_radius` and `get_atom_class`, and the gemmi, BioPython and Biotite integrations, use only the hardcoded table for `ClassifierType.CCD`; they do not analyze bond topology. Atoms outside the table get a `NaN` radius, which the integrations replace with the element's radius. `process_directory()` uses inline mmCIF CCD data and SDF bonds like `zsasa batch`, but has no `--ccd` option.
+:::
+
 :::tip[PDB users]
 If your PDB file contains only standard amino acids and nucleotides, no external dictionary is needed — the hardcoded table covers all standard residues. For non-standard residues, provide `--ccd=<path>` to get hybridization-aware radii.
 :::

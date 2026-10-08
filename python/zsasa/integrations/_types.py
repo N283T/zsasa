@@ -113,6 +113,10 @@ def classify_atom_data(
     radius, a ValueError identifies the problematic atom instead of allowing a
     NaN radius to reach the native calculator.
 
+    ``ClassifierType.CCD`` here is the built-in ProtOr table, as in ``classify_atoms``:
+    components outside it (ligands, modified residues) are not analyzed from bond
+    topology, unlike in the CLI, so their atoms take the element radius.
+
     NACCESS and OONS guess a radius from the atom name for atoms outside their
     tables (hydrogens, ligands). The element is more reliable than that guess,
     so it replaces the guess whenever it is known.

@@ -2791,6 +2791,46 @@ pub fn runBatch(
     return runBatchParallel(allocator, io, input_dir, output_dir, config, jsonl_output_path);
 }
 
+/// The step of `runBatchReportingStage` that was running when it failed.
+pub const BatchStage = enum {
+    /// Reading the input directory and validating the inputs.
+    scan_inputs,
+    /// Creating the output directory.
+    create_output_dir,
+    /// Processing the files.
+    process,
+};
+
+/// `runBatch`, taking the steps one at a time so that a caller can tell
+/// which one failed: the same filesystem error means a bad input directory
+/// while scanning and a bad output directory while creating it.
+///
+/// `stage` is set before each step; after an error it names the step that
+/// returned it. As in the workflow runner, the output directory is created
+/// only after the inputs are accepted.
+pub fn runBatchReportingStage(
+    allocator: Allocator,
+    io: std.Io,
+    input_dir: []const u8,
+    output_dir: ?[]const u8,
+    config: BatchConfig,
+    stage: *BatchStage,
+) !BatchResult {
+    stage.* = .scan_inputs;
+    try validateBatchOutputFormat(config.output_format);
+
+    var prepared = try prepareBatch(allocator, io, input_dir, output_dir, config);
+    defer prepared.deinit(allocator);
+
+    if (output_dir) |dir| {
+        stage.* = .create_output_dir;
+        try std.Io.Dir.cwd().createDirPath(io, dir);
+    }
+
+    stage.* = .process;
+    return runPrepared(allocator, io, input_dir, output_dir, config, null, &prepared);
+}
+
 // =============================================================================
 // CLI argument parsing and run entry point
 // =============================================================================

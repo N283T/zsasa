@@ -18,11 +18,13 @@ Example:
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from numpy.typing import NDArray
 
+from zsasa._ffi import _validate_frame_selection
 from zsasa.sasa import calculate_sasa_batch
 
 if TYPE_CHECKING:
@@ -31,29 +33,178 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Import MDAnalysis vdwradii table for consistency
-# Keys are uppercase element symbols (e.g., "C", "N", "CA" for calcium)
+# Import the MDAnalysis vdwradii table for consistency with the MDAnalysis ecosystem.
+# Keys are uppercase element symbols (e.g., "C", "N", "CA" for calcium).
+# The table lives in MDAnalysis.guesser.tables from MDAnalysis 2.8 on; earlier
+# releases (2.0 to 2.7, which pyproject.toml allows) only have it in
+# MDAnalysis.topology.tables, which 2.8 deprecates.
 try:
     from MDAnalysis.guesser.tables import vdwradii as _MDA_VDW_RADII
 except ImportError:
-    # Fallback if MDAnalysis structure changes
-    _MDA_VDW_RADII: dict[str, float] = {
-        "H": 1.1,
-        "C": 1.7,
-        "N": 1.55,
-        "O": 1.52,
-        "S": 1.8,
-        "P": 1.8,
-    }
+    try:
+        from MDAnalysis.topology.tables import vdwradii as _MDA_VDW_RADII
+    except ImportError:
+        # MDAnalysis is not installed (the module is importable without it); use
+        # the values MDAnalysis has for the elements this module can infer.
+        _MDA_VDW_RADII: dict[str, float] = {
+            "H": 1.1,
+            "C": 1.7,
+            "N": 1.55,
+            "O": 1.52,
+            "F": 1.47,
+            "NA": 2.27,
+            "MG": 1.73,
+            "P": 1.8,
+            "S": 1.8,
+            "CL": 1.75,
+            "K": 2.75,
+            "CA": 2.31,
+            "ZN": 1.39,
+            "SE": 1.9,
+            "BR": 1.85,
+            "I": 1.98,
+        }
 
 # Default radius for unknown elements (conservative estimate, larger than most common elements)
 _DEFAULT_RADIUS = 2.0
+
+# Two-letter symbols _get_element may return when there is no element attribute
+# (ions, halogens and metals of biomolecular systems).
+_TWO_LETTER_ELEMENTS = frozenset(
+    {
+        "LI",
+        "NA",
+        "MG",
+        "AL",
+        "SI",
+        "CL",
+        "CA",
+        "MN",
+        "FE",
+        "CO",
+        "NI",
+        "CU",
+        "ZN",
+        "SE",
+        "BR",
+        "RB",
+        "SR",
+        "CD",
+        "CS",
+        "BA",
+        "HG",
+    }
+)
+
+# Two-letter symbols that no protein, nucleic acid or common ligand atom name
+# starts with, so a name or type that begins with one is that element. The others
+# are also ordinary atom names (CA alpha carbon, CD/CE/CG side-chain carbons, NA
+# nitrogen A of a heme, HG/HE/HD hydrogens, SE selenium or sulfur, CO carbonyl) and
+# are only taken as the element when the residue name says the atom is an ion.
+_UNAMBIGUOUS_TWO_LETTER = frozenset({"CL", "BR", "FE", "ZN", "MG", "MN", "NI", "CU", "LI", "AL"})
+
+# CHARMM names for single-atom ions, which do not start with their element symbol.
+_ION_ALIASES = {
+    "SOD": "NA",
+    "POT": "K",
+    "CLA": "CL",
+    "CAL": "CA",
+    "CES": "CS",
+    "LIT": "LI",
+    "RUB": "RB",
+    "BAR": "BA",
+}
+
+_LEADING_LETTERS = re.compile(r"[^A-Za-z]*([A-Za-z]+)")
+
+
+def _letters(text: object) -> str:
+    """Return the first run of letters in ``text``, upper-cased, skipping leading numbers.
+
+    ``"1HB"`` gives ``"HB"``, ``"ZN2+"`` gives ``"ZN"``, ``"O5'"`` gives ``"O"``.
+    """
+    if text is None:
+        return ""
+    match = _LEADING_LETTERS.match(str(text).strip())
+    return match.group(1).upper() if match else ""
+
+
+def _element_from_label(label: object, resname: str) -> str:
+    """Infer an upper-case element symbol from an atom type or atom name.
+
+    The first letter is the element unless the label starts with a two-letter
+    symbol that is more than an ordinary atom name (see ``_infer_element``).
+    """
+    letters = _letters(label)
+    if not letters:
+        return ""
+    if letters in _ION_ALIASES:
+        return _ION_ALIASES[letters]
+
+    two = letters[:2]
+    if (
+        len(letters) >= 2
+        and two in _TWO_LETTER_ELEMENTS
+        and (two == resname or two in _UNAMBIGUOUS_TWO_LETTER)
+    ):
+        return two
+    return letters[0]
+
+
+def _infer_element(atom) -> str:  # noqa: ANN001
+    """Infer the element of an atom that has no ``element`` attribute.
+
+    Taking the first letter is not enough: ``CL``, ``FE``, ``ZN`` and ``MG`` must
+    not become carbon, fluorine and so on, while the alpha carbon ``CA`` of a
+    protein must stay carbon. Which reading is right depends on what the topology
+    provides. The atom type and the atom name are each read as follows:
+
+    1. CHARMM ion names (``SOD``, ``CLA``, ``CAL`` ...) give their element.
+    2. A two-letter symbol that is never an ordinary atom name (``CL``, ``BR``, ``FE``,
+       ``ZN``, ``MG``, ``MN``, ``NI``, ``CU``, ``LI``, ``AL``) is that element.
+    3. A two-letter symbol that is also an ordinary atom name (``CA``, ``CD``, ``NA``,
+       ``HG``, ``SE``, ``CO`` ...) is that element only when the residue name is the
+       same symbol (``CA`` in a residue ``CA``, ``NA`` in ``NA+``); inside ``ALA``,
+       ``GLN`` or ``HEM`` it is the first letter (C, C, N).
+    4. Otherwise the first letter. Force-field types such as ``CT1``, ``NH1`` or
+       ``HGA2`` are not element symbols and end here.
+
+    A two-letter reading from either the type or the name wins, because the type is
+    often guessed from the name by the topology parser and can be wrong for an ion
+    (MDAnalysis types the ion ``CA`` in residue ``CA`` as carbon). Otherwise the
+    type decides, then the name. The mass is not used: when a topology has no
+    masses MDAnalysis guesses them from these same types, so a mass cannot confirm
+    them.
+
+    Returns an upper-case symbol, or "" when the atom has neither type nor name.
+    """
+    try:
+        resname = _letters(atom.resname)
+    except (AttributeError, TypeError):
+        resname = ""
+
+    symbols = []
+    for attribute in ("type", "name"):
+        try:
+            label = getattr(atom, attribute)
+        except (AttributeError, TypeError):
+            continue
+        symbol = _element_from_label(label, resname)
+        if symbol:
+            symbols.append(symbol)
+
+    for symbol in symbols:
+        if len(symbol) == 2:
+            return symbol
+    return symbols[0] if symbols else ""
 
 
 def _get_element(atom) -> str:  # noqa: ANN001
     """Get element symbol from MDAnalysis atom.
 
-    Tries multiple methods with fallbacks.
+    Uses the ``element`` attribute when the topology has one. Otherwise the element
+    is inferred from the atom type, name and residue name (see ``_infer_element``);
+    carbon is the last resort.
     """
     # Try element attribute first
     try:
@@ -62,24 +213,8 @@ def _get_element(atom) -> str:  # noqa: ANN001
     except (AttributeError, TypeError):
         pass
 
-    # Try type attribute (first character)
-    try:
-        if hasattr(atom, "type") and atom.type:
-            return str(atom.type)[0].upper()
-    except (AttributeError, TypeError, IndexError):
-        pass
-
-    # Try name attribute (first character)
-    try:
-        if hasattr(atom, "name") and atom.name:
-            # Handle names like "CA", "CB" -> "C"
-            name = str(atom.name).strip()
-            if name:
-                return name[0].upper()
-    except (AttributeError, TypeError, IndexError):
-        pass
-
-    return "C"  # Default to carbon
+    symbol = _infer_element(atom)
+    return symbol.capitalize() if symbol else "C"  # Default to carbon
 
 
 def _get_radius(atom) -> float:  # noqa: ANN001
@@ -204,12 +339,13 @@ class SASAAnalysis:
         Parameters
         ----------
         start : int, optional
-            First frame to analyze (default: 0).
+            First frame to analyze (default: 0; must not be negative).
         stop : int, optional
             Stop before this frame (default: None, meaning run through the
-            last frame).
+            last frame; must not be negative).
         step : int, optional
-            Step between frames (default: 1).
+            Step between frames (default: 1; must be at least 1, otherwise
+            ValueError is raised before any frame is read).
         probe_radius : float, optional
             Probe radius in Angstroms (default: 1.4).
         n_points : int, optional
@@ -242,6 +378,8 @@ class SASAAnalysis:
         SASAAnalysis
             Self, for method chaining.
         """
+        _validate_frame_selection(start, stop, step)
+
         # Determine frame range
         if stop is None:
             stop = len(self._trajectory)
@@ -371,12 +509,12 @@ def compute_sasa(
     select : str, optional
         Atom selection string (default: "all").
     start : int, optional
-        First frame to analyze (default: 0).
+        First frame to analyze (default: 0; must not be negative).
     stop : int, optional
         Stop before this frame (default: None, meaning run through the last
-        frame).
+        frame; must not be negative).
     step : int, optional
-        Step between frames (default: 1).
+        Step between frames (default: 1; must be at least 1).
     probe_radius : float, optional
         Probe radius in Angstroms (default: 1.4).
     n_points : int, optional
