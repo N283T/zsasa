@@ -65,6 +65,7 @@ zsasa traj trajectory.xtc topology.pdb -o sasa_results.csv
 | `--algorithm=ALGO` | `sr` (Shrake-Rupley) or `lr` (Lee-Richards) | `sr` |
 | `--n-points=N` | Test points per atom (SR, 1-10000) | `100` |
 | `--n-slices=N` | Slices per atom diameter (LR, 1-1000) | `20` |
+| `--lr-trig=MODE` | LR arc angles: `exact` or `fast` (approximation of zsasa 0.9.1 and earlier) | `exact` |
 | `--probe-radius=R` | Probe radius in Å (0 < R ≤ 10) | `1.4` |
 | `--classifier=TYPE` | `ccd`, `naccess`, `protor`, `oons` | `naccess` |
 | `--threads=N` | Thread count (0 = auto) | `0` |

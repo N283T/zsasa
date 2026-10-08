@@ -15,6 +15,7 @@ const shrake_rupley = @import("shrake_rupley.zig");
 const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
 const bitmask_lut = @import("bitmask_lut.zig");
 const lee_richards = @import("lee_richards.zig");
+const TrigMode = lee_richards.TrigMode;
 const calc = @import("calc.zig");
 const types = @import("types.zig");
 const pdb_parser = @import("pdb_parser.zig");
@@ -141,6 +142,7 @@ pub const TrajArgs = struct {
     probe_radius: f64 = 1.4,
     n_points: u32 = 100,
     n_slices: u32 = 20,
+    lr_trig: TrigMode = .exact, // Lee-Richards arc angles: exact or approximate
     precision: Precision = .f32, // Default f32 for trajectory (speed)
     classifier_type: ?ClassifierType = .naccess, // Default: NACCESS for trajectories (supports explicit H)
     ccd_path: ?[]const u8 = null, // External CCD dictionary file (.zsdc or .cif[.gz|.zst])
@@ -305,6 +307,9 @@ fn parseArgsChecked(args: []const []const u8, start_idx: usize) ArgError!TrajArg
                     return error.InvalidArgument;
                 };
                 try checkNSlices(result.n_slices);
+            } else if (std.mem.startsWith(u8, arg, "--lr-trig=")) {
+                const value = arg["--lr-trig=".len..];
+                result.lr_trig = try parseLrTrig(value);
             } else if (std.mem.startsWith(u8, arg, "--precision=")) {
                 const value = arg["--precision=".len..];
                 result.precision = try parsePrecision(value);
@@ -472,6 +477,14 @@ fn parseAlgorithm(value: []const u8) ArgError!Algorithm {
     }
 }
 
+fn parseLrTrig(value: []const u8) ArgError!TrigMode {
+    return TrigMode.fromString(value) orelse {
+        std.debug.print("Error: Invalid lr-trig: {s}\n", .{value});
+        std.debug.print("Valid values: exact, fast\n", .{});
+        return error.InvalidArgument;
+    };
+}
+
 fn parsePrecision(value: []const u8) ArgError!Precision {
     if (std.mem.eql(u8, value, "f32")) {
         return .f32;
@@ -530,6 +543,10 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --probe-radius=R   Probe radius in Angstroms, 0 < R <= 10 (default: 1.4)
         \\    --n-points=N       Test points per atom, 1..10000 (default: 100, for sr)
         \\    --n-slices=N       Slices per atom diameter, 1..1000 (default: 20, for lr)
+        \\    --lr-trig=MODE     Arc angles for lr: exact (acos/atan2, default) or
+        \\                       fast (polynomial approximation, the results of
+        \\                       zsasa 0.9.1 and earlier; totals come out a few
+        \\                       tenths of a percent too high)
         \\    --precision=PREC    Floating-point precision: f32, f64 (default: f32)
         \\    --no-hydrogens     Exclude hydrogen atoms from the calculation; they stay
         \\                       in the topology and trajectory files (default: included)
@@ -707,6 +724,7 @@ const BatchWorkerArgs = struct {
     probe_radius: f64,
     n_points: u32,
     n_slices: u32,
+    lr_trig: TrigMode = .exact,
     coord_scale: f64, // ztraj readers already yield Å; kept for reader abstraction
     use_bitmask: bool = false,
     bitmask_luts: ?*const TrajLuts = null,
@@ -794,7 +812,7 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
                         setWorkerError(args, "frame {d}: bitmask-f32 failed: {s}", .{ frame_id, @errorName(err) });
                         return;
                     };
-                    total_sasa = @floatCast(result.total_area);
+                    total_sasa = result.total_area;
                     result.deinit();
                 } else if (args.use_bitmask) {
                     const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f32){
@@ -805,26 +823,27 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
                         setWorkerError(args, "frame {d}: bitmask-f32 failed: {s}", .{ frame_id, @errorName(err) });
                         return;
                     };
-                    total_sasa = @floatCast(result.total_area);
+                    total_sasa = result.total_area;
                     result.deinit();
                 } else {
                     var result = shrake_rupley.calculateSasaf32(thread_alloc, input, config) catch |err| {
                         setWorkerError(args, "frame {d}: SR-f32 SASA failed: {s}", .{ frame_id, @errorName(err) });
                         return;
                     };
-                    total_sasa = @floatCast(result.total_area);
+                    total_sasa = result.total_area;
                     result.deinit();
                 }
             } else {
                 const config = lee_richards.LeeRichardsConfigf32{
                     .probe_radius = @floatCast(args.probe_radius),
                     .n_slices = args.n_slices,
+                    .trig = args.lr_trig,
                 };
                 var result = lee_richards.calculateSasaf32(thread_alloc, input, config) catch |err| {
                     setWorkerError(args, "frame {d}: LR-f32 SASA failed: {s}", .{ frame_id, @errorName(err) });
                     return;
                 };
-                total_sasa = @floatCast(result.total_area);
+                total_sasa = result.total_area;
                 result.deinit();
             }
         } else {
@@ -868,6 +887,7 @@ fn batchWorkerFn(args: BatchWorkerArgs) void {
                 const config = lee_richards.LeeRichardsConfig{
                     .probe_radius = args.probe_radius,
                     .n_slices = args.n_slices,
+                    .trig = args.lr_trig,
                 };
                 var result = lee_richards.calculateSasa(thread_alloc, input, config) catch |err| {
                     setWorkerError(args, "frame {d}: LR SASA failed: {s}", .{ frame_id, @errorName(err) });
@@ -1408,7 +1428,7 @@ fn runSequential(
                             };
                             var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithLutAndCorrection(allocator, frame_input, config, lut, correction);
                             defer result.deinit();
-                            break :blk @floatCast(result.total_area);
+                            break :blk result.total_area;
                         } else if (args.use_bitmask) {
                             const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f32){
                                 .enabled = args.bitmask_correction,
@@ -1416,21 +1436,22 @@ fn runSequential(
                             };
                             var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithCorrection(allocator, frame_input, config, correction);
                             defer result.deinit();
-                            break :blk @floatCast(result.total_area);
+                            break :blk result.total_area;
                         } else {
                             var result = try shrake_rupley.calculateSasaf32(allocator, frame_input, config);
                             defer result.deinit();
-                            break :blk @floatCast(result.total_area);
+                            break :blk result.total_area;
                         }
                     },
                     .lr => {
                         const config = lee_richards.LeeRichardsConfigf32{
                             .probe_radius = @floatCast(args.probe_radius),
                             .n_slices = args.n_slices,
+                            .trig = args.lr_trig,
                         };
                         var result = try lee_richards.calculateSasaf32(allocator, frame_input, config);
                         defer result.deinit();
-                        break :blk @floatCast(result.total_area);
+                        break :blk result.total_area;
                     },
                 }
             },
@@ -1467,6 +1488,7 @@ fn runSequential(
                         const config = lee_richards.LeeRichardsConfig{
                             .probe_radius = args.probe_radius,
                             .n_slices = args.n_slices,
+                            .trig = args.lr_trig,
                         };
                         var result = try lee_richards.calculateSasa(allocator, frame_input, config);
                         defer result.deinit();
@@ -1565,6 +1587,7 @@ fn runBatchParallel(
                 .probe_radius = args.probe_radius,
                 .n_points = args.n_points,
                 .n_slices = args.n_slices,
+                .lr_trig = args.lr_trig,
                 .coord_scale = reader.coordScale(),
                 .use_bitmask = args.use_bitmask,
                 .bitmask_luts = luts,
@@ -1867,6 +1890,35 @@ test "parseArgsChecked rejects unknown dash arguments and a positional output" {
     }
 }
 
+test "parseArgsChecked --lr-trig: exact by default, exact or fast in the = form only" {
+    const default_args = [_][]const u8{ "zsasa", "traj", "--algorithm=lr", "traj.xtc", "topology.pdb" };
+    try std.testing.expectEqual(TrigMode.exact, (try parseArgsChecked(&default_args, 2)).lr_trig);
+
+    const fast_args = [_][]const u8{ "zsasa", "traj", "--algorithm=lr", "--lr-trig=fast", "traj.xtc", "topology.pdb" };
+    try std.testing.expectEqual(TrigMode.fast, (try parseArgsChecked(&fast_args, 2)).lr_trig);
+
+    const exact_args = [_][]const u8{ "zsasa", "traj", "--lr-trig=exact", "traj.xtc", "topology.pdb" };
+    try std.testing.expectEqual(TrigMode.exact, (try parseArgsChecked(&exact_args, 2)).lr_trig);
+
+    // Accepted and unused with the default sr algorithm, like --n-slices.
+    const sr_args = [_][]const u8{ "zsasa", "traj", "--algorithm=sr", "--lr-trig=fast", "traj.xtc", "topology.pdb" };
+    const sr_parsed = try parseArgsChecked(&sr_args, 2);
+    try std.testing.expectEqual(Algorithm.sr, sr_parsed.algorithm);
+    try std.testing.expectEqual(TrigMode.fast, sr_parsed.lr_trig);
+
+    const rejected = [_][]const u8{
+        "--lr-trig=approximate",
+        "--lr-trig=",
+        "--lr-trig=Fast",
+        // traj options take their value in the = form only
+        "--lr-trig",
+    };
+    for (rejected) |option| {
+        const args = [_][]const u8{ "zsasa", "traj", option, "traj.xtc", "topology.pdb" };
+        try std.testing.expectError(error.InvalidArgument, parseArgsChecked(&args, 2));
+    }
+}
+
 test "parseArgsChecked range-checks stride, probe radius, n-points and n-slices" {
     const rejected = [_][]const u8{
         "--stride=0",
@@ -2077,6 +2129,42 @@ test "traj run: every precision, algorithm and bitmask combination agrees across
     const lr_f32 = totals[combos.len - 1][0];
     for (sr_f32, lr_f32) |sr_total, lr_total| {
         try std.testing.expect(@abs(sr_total - lr_total) > 5.0);
+    }
+}
+
+test "traj run: --lr-trig reaches the sequential and the batch path at both precisions" {
+    var ws = TestWorkspace.init();
+    defer ws.deinit();
+    const topology = try ws.write("m1.pdb", try ws.firstModelPdb());
+
+    const modes = [_]TrigMode{ .exact, .fast };
+    for ([_]Precision{ .f32, .f64 }) |precision| {
+        // totals[mode] = total SASA of frames 0 and 1
+        var totals: [modes.len][]const f64 = undefined;
+        for (modes, 0..) |lr_trig, m| {
+            var args = TrajArgs{
+                .traj_path = test_xtc_path,
+                .topology_path = topology,
+                .algorithm = .lr,
+                .lr_trig = lr_trig,
+                .precision = precision,
+                .end_frame = 1,
+            };
+            args.n_threads = 1;
+            const sequential = try ws.runTraj(args, "sequential.csv");
+            args.n_threads = 2;
+            const parallel = try ws.runTraj(args, "parallel.csv");
+
+            try std.testing.expectEqualStrings(sequential, parallel);
+            totals[m] = try ws.totals(sequential);
+            try std.testing.expectEqual(@as(usize, 2), totals[m].len);
+        }
+        // The approximation of the fast mode overestimates the area by a few
+        // tenths of a percent (+0.2% on these frames).
+        for (totals[0], totals[1]) |exact_total, fast_total| {
+            try std.testing.expect(fast_total > exact_total * 1.0005);
+            try std.testing.expect(fast_total < exact_total * 1.01);
+        }
     }
 }
 

@@ -587,6 +587,7 @@ export fn zsasa_calc_sr_batch(
 /// Calculate SASA for multiple frames using Lee-Richards algorithm (batch processing).
 ///
 /// Similar to zsasa_calc_sr_batch but uses Lee-Richards algorithm.
+/// Arc angles are computed with exact trigonometry (`lee_richards.TrigMode.exact`).
 ///
 /// Parameters:
 ///   coordinates: Atom coordinates as contiguous array (n_frames * n_atoms * 3)
@@ -834,6 +835,7 @@ export fn zsasa_calc_sr_batch_f32(
 /// Calculate SASA for multiple frames using Lee-Richards algorithm (pure f32 precision).
 ///
 /// Same as zsasa_calc_lr_batch but uses f32 precision throughout the calculation.
+/// Arc angles are computed with exact trigonometry (`lee_richards.TrigMode.exact`).
 export fn zsasa_calc_lr_batch_f32(
     coordinates: [*]const f32,
     n_frames: usize,
@@ -1328,6 +1330,10 @@ export fn zsasa_calc_sr_batch_bitmask_f32_corrected(
 }
 
 /// Calculate SASA using Lee-Richards algorithm.
+///
+/// Arc angles are computed with exact trigonometry (`lee_richards.TrigMode.exact`).
+/// The approximation that was used up to zsasa 0.9.1, `TrigMode.fast`, is a
+/// command-line option only and is not available through the C API.
 ///
 /// Parameters:
 ///   x, y, z: Atom coordinates (arrays of n_atoms elements)
@@ -2838,7 +2844,8 @@ const BatchDirHandle = struct {
 /// Parameters:
 ///   input_dir: Path to directory containing structure files (null-terminated)
 ///   output_dir: Path to output directory for results (null-terminated), or null for no file output
-///   algorithm: ZSASA_ALGORITHM_SR (0) or ZSASA_ALGORITHM_LR (1)
+///   algorithm: ZSASA_ALGORITHM_SR (0) or ZSASA_ALGORITHM_LR (1). Lee-Richards
+///     uses exact trigonometry for its arc angles.
 ///   n_points: Number of test points (SR) or slices (LR)
 ///   probe_radius: Water probe radius in Angstroms (e.g., 1.4)
 ///   n_threads: Number of threads (0 = auto-detect)
@@ -3345,8 +3352,9 @@ test "zsasa_batch_dir_process with LR algorithm" {
     try std.testing.expectEqual(@as(usize, 2), zsasa_batch_dir_get_successful(lr));
     try std.testing.expectEqual(@as(usize, 0), zsasa_batch_dir_get_failed(lr));
 
-    // Reference values from `zsasa calc --algorithm=lr --classifier=naccess`.
-    try expectBatchDirFile(lr, "ala.pdb", 5, 215.14412396821933);
+    // Reference values from `zsasa calc --algorithm=lr --classifier=naccess`
+    // (exact arc angles, the default).
+    try expectBatchDirFile(lr, "ala.pdb", 5, 215.07786201196504);
     try expectBatchDirFile(lr, "gly.ent", 4, 188.2086929717762);
 
     // Shrake-Rupley on the same directory gives a different (but close) area,

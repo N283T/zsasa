@@ -116,6 +116,7 @@ The three commands share most of their options but not all of them. The **Comman
 | `--probe-radius=R` | Probe radius in Å (0 < R ≤ 10) | `1.4` | calc, batch, traj |
 | `--n-points=N` | Test points per atom (SR only, 1-10000) | `100` | calc, batch, traj |
 | `--n-slices=N` | Slices per atom diameter (LR only, 1-1000) | `20` | calc, batch, traj |
+| `--lr-trig=MODE` | [Arc angles](../guide/algorithms.mdx#lee-richards-arc-angles) of LR: `exact` (`acos`/`atan2`) or `fast` (the polynomial approximation of zsasa 0.9.1 and earlier, totals a few tenths of a percent too high). Accepted and unused with `--algorithm=sr`, like `--n-slices` | `exact` | calc, batch, traj |
 | `--use-bitmask` | Use [bitmask LUT optimization](../guide/algorithms.mdx#bitmask-lut-optimization) (SR only, n_points 1-1024) | off | calc, batch, traj |
 | `--bitmask-lut-mode=MODE` | Bitmask LUT reuse mode: `single`, `per-frame`, or `cycle`; non-default modes require `--use-bitmask` | `single` | traj |
 | `--bitmask-correction` | Experimental exposed-fraction correction for bitmask quantization bias; requires `--use-bitmask` | off | calc, batch, traj |
@@ -271,6 +272,9 @@ Every option marked `traj` in the [algorithm](#algorithm-options), [classifier](
 # Lee-Richards with 50 slices
 ./zig-out/bin/zsasa calc --algorithm=lr --n-slices=50 structure.cif output.json
 
+# Lee-Richards with the approximate arc angles of zsasa 0.9.1 and earlier
+./zig-out/bin/zsasa calc --algorithm=lr --lr-trig=fast structure.cif output.json
+
 # Shrake-Rupley with 200 test points
 ./zig-out/bin/zsasa calc --algorithm=sr --n-points=200 structure.cif output.json
 ```
@@ -414,6 +418,7 @@ Errors are written to standard error and the command exits with status 1. `<...>
 | `Error: Invalid algorithm: <value>` | all | Unknown algorithm name (`calc` and `batch` also list the valid names) |
 | `Error: Invalid classifier: <value>` | all | Unknown classifier name |
 | `Error: Invalid precision: <value>` | all | Precision is not `f32` or `f64` |
+| `Error: Invalid lr-trig: <value>` | all | `--lr-trig` is not `exact` or `fast` |
 | `Error: Model number must be >= 1` | calc | `--model` is 0 or negative |
 | `Error: Stride must be >= 1: <value>` | traj | `--stride=0` |
 | `Error: --use-bitmask requires --n-points to be 1..1024 (got <value>)` | calc | Bitmask mode supports 1 to 1024 test points. `batch` reports `Error: UnsupportedNPoints` and `traj` `Error: --use-bitmask requires --n-points=1..1024` |

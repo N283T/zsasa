@@ -37,6 +37,8 @@ Calculate Solvent Accessible Surface Area.
 | `bitmask_correction` | `bool` | `False` | Experimental exposed-fraction correction for bitmask quantization bias; requires `use_bitmask=True` |
 | `bitmask_correction_coeff` | `float \| None` | `None` | Override the experimental correction coefficient (`None` uses library default) |
 
+Lee-Richards (`algorithm="lr"`) always computes its arc angles with exact trigonometry (`acos`/`atan2`). The approximate mode of the command line, [`--lr-trig=fast`](../guide/algorithms.mdx#lee-richards-arc-angles), is not available from Python, so LR results from Python differ by a few tenths of a percent from those of zsasa 0.9.1 and earlier. This applies to every Python function that takes `algorithm="lr"`.
+
 **Returns:** `SasaResult`
 
 **Raises:** `ValueError` for invalid input

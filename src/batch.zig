@@ -38,6 +38,7 @@ const OutputFormat = json_writer.OutputFormat;
 pub const InputIoMode = input_io.InputIoMode;
 const LeeRichardsConfig = lee_richards.LeeRichardsConfig;
 const LeeRichardsConfigGen = lee_richards.LeeRichardsConfigGen;
+const TrigMode = lee_richards.TrigMode;
 
 fn shouldShowProgress(config: BatchConfig) bool {
     return config.show_progress and !config.quiet;
@@ -70,6 +71,7 @@ pub const BatchConfig = struct {
     algorithm: Algorithm = .sr,
     n_points: u32 = 100,
     n_slices: u32 = 20,
+    lr_trig: TrigMode = .exact, // Lee-Richards arc angles: exact or approximate
     probe_radius: f64 = 1.4,
     output_format: OutputFormat = .json,
     show_timing: bool = false,
@@ -447,11 +449,13 @@ fn calculateSasaDispatch(
             lee_richards.LeeRichardsGen(T).calculateSasaParallel(allocator, input, .{
                 .n_slices = config.n_slices,
                 .probe_radius = probe_radius,
+                .trig = config.lr_trig,
             }, n_threads)
         else
             lee_richards.LeeRichardsGen(T).calculateSasa(allocator, input, .{
                 .n_slices = config.n_slices,
                 .probe_radius = probe_radius,
+                .trig = config.lr_trig,
             }),
     };
 }
@@ -1172,7 +1176,7 @@ fn calculatePreparedInputResult(
     };
     defer sasa_result.deinit();
     result.sasa_time_ns = @intCast(sasa_timer.untilNow(io, .awake).nanoseconds);
-    result.total_sasa = if (T == f64) sasa_result.total_area else @as(f64, @floatCast(sasa_result.total_area));
+    result.total_sasa = sasa_result.total_area;
 
     if (config.store_atom_areas) {
         if (T == f64) {
@@ -1504,7 +1508,7 @@ fn processOneSdfMoleculeInner(
             };
             defer sasa_result.deinit();
             res.sasa_time_ns = @intCast(sasa_timer.untilNow(io, .awake).nanoseconds);
-            total_area = @floatCast(sasa_result.total_area);
+            total_area = sasa_result.total_area;
 
             if (config.store_atom_areas) {
                 const areas_f32 = sasa_result.atom_areas;
@@ -2559,6 +2563,7 @@ pub const BatchArgs = struct {
     probe_radius: f64 = 1.4,
     n_points: u32 = 100,
     n_slices: u32 = 20,
+    lr_trig: TrigMode = .exact,
     algorithm: Algorithm = .sr,
     precision: Precision = .f64,
     output_format: OutputFormat = .json,
@@ -2585,6 +2590,7 @@ pub const BatchArgs = struct {
     probe_radius_explicit: bool = false,
     n_points_explicit: bool = false,
     n_slices_explicit: bool = false,
+    lr_trig_explicit: bool = false,
     algorithm_explicit: bool = false,
     precision_explicit: bool = false,
     format_explicit: bool = false,
@@ -2901,6 +2907,15 @@ fn parseNSlices(value: []const u8) u32 {
     };
 }
 
+/// Parse and validate lr-trig value (for Lee-Richards)
+fn parseLrTrig(value: []const u8) TrigMode {
+    return TrigMode.fromString(value) orelse {
+        std.debug.print("Error: Invalid lr-trig: {s}\n", .{value});
+        std.debug.print("Valid values: exact, fast\n", .{});
+        std.process.exit(1);
+    };
+}
+
 /// Parse and validate algorithm value
 fn parseAlgorithm(value: []const u8) Algorithm {
     if (std.mem.eql(u8, value, "sr") or std.mem.eql(u8, value, "shrake-rupley")) {
@@ -3066,6 +3081,20 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
                 std.process.exit(1);
             }
             result.n_slices = parseNSlices(args[i]);
+        }
+        // --lr-trig=MODE or --lr-trig MODE (for Lee-Richards)
+        else if (std.mem.startsWith(u8, arg, "--lr-trig=")) {
+            result.lr_trig_explicit = true;
+            const value = arg["--lr-trig=".len..];
+            result.lr_trig = parseLrTrig(value);
+        } else if (std.mem.eql(u8, arg, "--lr-trig")) {
+            result.lr_trig_explicit = true;
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --lr-trig\n", .{});
+                std.process.exit(1);
+            }
+            result.lr_trig = parseLrTrig(args[i]);
         }
         // --format=FORMAT or --format FORMAT
         else if (std.mem.startsWith(u8, arg, "--format=")) {
@@ -3453,6 +3482,10 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --probe-radius=R    Probe radius in Angstroms (default: 1.4)
         \\    --n-points=N        Test points per atom (default: 100, for sr)
         \\    --n-slices=N        Slices per atom diameter (default: 20, for lr)
+        \\    --lr-trig=MODE      Arc angles for lr: exact (acos/atan2, default) or
+        \\                        fast (polynomial approximation, the results of
+        \\                        zsasa 0.9.1 and earlier; totals come out a few
+        \\                        tenths of a percent too high)
         \\    --precision=PREC    Floating-point precision: f32, f64 (default: f64)
         \\    --input-io=MODE     File input strategy where supported: auto, mmap, read
         \\                        Default: auto (AF fast uses read; others keep defaults)
@@ -3522,6 +3555,12 @@ fn applyWorkflowToBatchConfig(
             return err;
         };
     }
+    if (!args.lr_trig_explicit) {
+        if (calculation.lr_trig) |v| config.lr_trig = TrigMode.fromString(v) orelse {
+            std.debug.print("Error: workflow lr_trig must be \"exact\" or \"fast\": {s}\n", .{v});
+            return error.InvalidArgument;
+        };
+    }
     if (!args.probe_radius_explicit) {
         if (calculation.probe_radius) |v| config.probe_radius = validateWorkflowProbeRadius(v) catch |err| {
             std.debug.print("Error: workflow probe_radius must be finite and between 0 and 10 Angstroms: {d}\n", .{v});
@@ -3586,6 +3625,7 @@ fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
     if (args.algorithm_explicit) config.algorithm = args.algorithm;
     if (args.n_points_explicit) config.n_points = args.n_points;
     if (args.n_slices_explicit) config.n_slices = args.n_slices;
+    if (args.lr_trig_explicit) config.lr_trig = args.lr_trig;
     if (args.probe_radius_explicit) config.probe_radius = args.probe_radius;
     if (args.precision_explicit) config.precision = args.precision;
     if (args.format_explicit) config.output_format = args.output_format;
@@ -5600,6 +5640,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         .algorithm = args.algorithm,
         .n_points = args.n_points,
         .n_slices = args.n_slices,
+        .lr_trig = args.lr_trig,
         .probe_radius = args.probe_radius,
         .precision = args.precision,
         .output_format = args.output_format,
@@ -9300,6 +9341,65 @@ test "BatchArgs --n-slices=N" {
     const args = [_][]const u8{ "zsasa", "batch", "--n-slices=40", "input_dir/" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(@as(u32, 40), parsed.n_slices);
+}
+
+test "BatchArgs --lr-trig defaults to exact" {
+    const args = [_][]const u8{ "zsasa", "batch", "--algorithm=lr", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(TrigMode.exact, parsed.lr_trig);
+    try std.testing.expectEqual(false, parsed.lr_trig_explicit);
+}
+
+test "BatchArgs --lr-trig=MODE and --lr-trig MODE" {
+    const eq = [_][]const u8{ "zsasa", "batch", "--algorithm=lr", "--lr-trig=fast", "input_dir/" };
+    const parsed_eq = parseArgs(&eq, 2);
+    try std.testing.expectEqual(TrigMode.fast, parsed_eq.lr_trig);
+    try std.testing.expectEqual(true, parsed_eq.lr_trig_explicit);
+
+    const spaced = [_][]const u8{ "zsasa", "batch", "--lr-trig", "fast", "input_dir/" };
+    const parsed_spaced = parseArgs(&spaced, 2);
+    try std.testing.expectEqual(TrigMode.fast, parsed_spaced.lr_trig);
+    try std.testing.expectEqual(true, parsed_spaced.lr_trig_explicit);
+    try std.testing.expectEqualStrings("input_dir/", parsed_spaced.input_path.?);
+
+    const exact = [_][]const u8{ "zsasa", "batch", "--lr-trig=exact", "input_dir/" };
+    const parsed_exact = parseArgs(&exact, 2);
+    try std.testing.expectEqual(TrigMode.exact, parsed_exact.lr_trig);
+    try std.testing.expectEqual(true, parsed_exact.lr_trig_explicit);
+}
+
+test "workflow lr_trig applies to the batch config unless --lr-trig was given, and rejects unknown values" {
+    const Calculation = @import("workflow_manifest.zig").Calculation;
+    const output = @import("workflow_manifest.zig").Output{};
+    const classifier_config = @import("workflow_manifest.zig").ClassifierConfig{};
+
+    {
+        var config = BatchConfig{};
+        try applyWorkflowToBatchConfig(&config, .{}, Calculation{ .lr_trig = "fast" }, output, classifier_config);
+        try std.testing.expectEqual(TrigMode.fast, config.lr_trig);
+    }
+    {
+        // The CLI value wins: the workflow value is skipped and the override is applied.
+        var config = BatchConfig{};
+        const args = BatchArgs{ .lr_trig = .exact, .lr_trig_explicit = true };
+        try applyWorkflowToBatchConfig(&config, args, Calculation{ .lr_trig = "fast" }, output, classifier_config);
+        applyCliOverrides(&config, args);
+        try std.testing.expectEqual(TrigMode.exact, config.lr_trig);
+    }
+    {
+        var config = BatchConfig{};
+        const args = BatchArgs{ .lr_trig = .fast, .lr_trig_explicit = true };
+        try applyWorkflowToBatchConfig(&config, args, Calculation{}, output, classifier_config);
+        applyCliOverrides(&config, args);
+        try std.testing.expectEqual(TrigMode.fast, config.lr_trig);
+    }
+    {
+        var config = BatchConfig{};
+        try std.testing.expectError(
+            error.InvalidArgument,
+            applyWorkflowToBatchConfig(&config, .{}, Calculation{ .lr_trig = "approximate" }, output, classifier_config),
+        );
+    }
 }
 
 test "BatchArgs --format=csv" {

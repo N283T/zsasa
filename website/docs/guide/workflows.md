@@ -551,6 +551,7 @@ The `[output.jsonl]` keys apply to batch JSONL output only. See [JSONL Output Op
 | `probe_radius` | number | `1.4` | calc, batch | Probe radius in Å, above 0 and at most 10 |
 | `n_points` | integer | `100` | calc, batch | Test points per atom for SR, 1-10000 |
 | `n_slices` | integer | `20` | calc, batch | Slices per atom diameter for LR, 1-1000 |
+| `lr_trig` | string | `"exact"` | calc, batch | [Arc angles](algorithms.mdx#lee-richards-arc-angles) of LR: `"exact"`, or `"fast"` for the approximation of zsasa 0.9.1 and earlier (`--lr-trig`) |
 | `precision` | string | `"f64"` | calc, batch | `"f32"` or `"f64"` |
 | `include_hydrogens` | boolean | `false` | calc, batch | Include hydrogen atoms |
 | `include_hetatm` | boolean | `false` | calc, batch | Include HETATM records |
@@ -628,7 +629,7 @@ name = "all"
 | `ccd`, `sdf` | `[classifier] ccd`, `sdf` |
 | `algorithm`, `threads`, `probe_radius`, `n_points`, `n_slices`, `precision`, `include_hydrogens`, `include_hetatm`, `use_bitmask`, `timing`, `quiet`, `auth_chain`, `residue_map` | the key of the same name in `[calculation]` |
 
-`version` is required, `kind` is optional, and `[[jobs]]` entries work as above. A legacy manifest cannot also contain sections such as `[input]` or `[calculation]`, and it cannot use the keys that only exist in the sectioned layout (`custom` classifiers, `[output.jsonl]`, `[analysis]`, `per_residue`, `rsa`, `polar`, `validate_only`): the file is rejected (`UnknownField`, or `InvalidClassifierConfig` for `classifier = "custom"`). New files should use the sectioned layout.
+`version` is required, `kind` is optional, and `[[jobs]]` entries work as above. A legacy manifest cannot also contain sections such as `[input]` or `[calculation]`, and it cannot use the keys that only exist in the sectioned layout (`custom` classifiers, `[output.jsonl]`, `[analysis]`, `lr_trig`, `per_residue`, `rsa`, `polar`, `validate_only`): the file is rejected (`UnknownField`, or `InvalidClassifierConfig` for `classifier = "custom"`). New files should use the sectioned layout.
 
 ## Reference
 

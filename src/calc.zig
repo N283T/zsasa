@@ -33,6 +33,7 @@ const OutputFormat = json_writer.OutputFormat;
 const ClassifierType = classifier.ClassifierType;
 const LeeRichardsConfig = lee_richards.LeeRichardsConfig;
 const LeeRichardsConfigf32 = lee_richards.LeeRichardsConfigf32;
+const TrigMode = lee_richards.TrigMode;
 
 /// SASA algorithm selection
 pub const Algorithm = enum {
@@ -52,6 +53,7 @@ pub const CalcArgs = struct {
     probe_radius: f64 = 1.4,
     n_points: u32 = 100, // For Shrake-Rupley
     n_slices: u32 = 20, // For Lee-Richards
+    lr_trig: TrigMode = .exact, // For Lee-Richards: exact or approximate arc angles
     algorithm: Algorithm = .sr, // Default: Shrake-Rupley
     precision: Precision = .f64, // f32 or f64 (default: f64)
     output_format: OutputFormat = .json,
@@ -81,6 +83,7 @@ pub const CalcArgs = struct {
     probe_radius_explicit: bool = false,
     n_points_explicit: bool = false,
     n_slices_explicit: bool = false,
+    lr_trig_explicit: bool = false,
     algorithm_explicit: bool = false,
     precision_explicit: bool = false,
     format_explicit: bool = false,
@@ -208,6 +211,15 @@ fn parseNSlices(value: []const u8) u32 {
     };
     return validateWorkflowNSlices(n) catch {
         std.debug.print("Error: n-slices must be between 1 and 1000: {d}\n", .{n});
+        std.process.exit(1);
+    };
+}
+
+/// Parse and validate lr-trig value (for Lee-Richards)
+fn parseLrTrig(value: []const u8) TrigMode {
+    return TrigMode.fromString(value) orelse {
+        std.debug.print("Error: Invalid lr-trig: {s}\n", .{value});
+        std.debug.print("Valid values: exact, fast\n", .{});
         std.process.exit(1);
     };
 }
@@ -370,6 +382,20 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
             }
             result.n_slices = parseNSlices(args[i]);
             result.n_slices_explicit = true;
+        }
+        // --lr-trig=MODE or --lr-trig MODE (for Lee-Richards)
+        else if (std.mem.startsWith(u8, arg, "--lr-trig=")) {
+            const value = arg["--lr-trig=".len..];
+            result.lr_trig = parseLrTrig(value);
+            result.lr_trig_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--lr-trig")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: Missing value for --lr-trig\n", .{});
+                std.process.exit(1);
+            }
+            result.lr_trig = parseLrTrig(args[i]);
+            result.lr_trig_explicit = true;
         }
         // --classifier=TYPE or --classifier TYPE
         else if (std.mem.startsWith(u8, arg, "--classifier=")) {
@@ -707,6 +733,14 @@ fn applyWorkflowCalculationToCalcArgs(args: *CalcArgs, calculation: workflow_man
             };
         }
     }
+    if (!args.lr_trig_explicit) {
+        if (calculation.lr_trig) |lr_trig| {
+            args.lr_trig = TrigMode.fromString(lr_trig) orelse {
+                std.debug.print("Error: workflow lr_trig must be \"exact\" or \"fast\": {s}\n", .{lr_trig});
+                return error.InvalidArgument;
+            };
+        }
+    }
     if (!args.algorithm_explicit) {
         if (calculation.algorithm) |algorithm| args.algorithm = parseAlgorithm(algorithm);
     }
@@ -849,6 +883,10 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --probe-radius=R   Probe radius in Angstroms (default: 1.4)
         \\    --n-points=N       Test points per atom (default: 100, for sr)
         \\    --n-slices=N       Slices per atom diameter (default: 20, for lr)
+        \\    --lr-trig=MODE     Arc angles for lr: exact (acos/atan2, default) or
+        \\                       fast (polynomial approximation, the results of
+        \\                       zsasa 0.9.1 and earlier; totals come out a few
+        \\                       tenths of a percent too high)
         \\    --format=FORMAT    Output format: json, compact, csv, freesasa, rsa
         \\                       (default: json; freesasa/rsa are single-calc text formats)
         \\    --precision=PREC   Floating-point precision: f32, f64 (default: f64)
@@ -1616,6 +1654,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
                 const lr_config = LeeRichardsConfig{
                     .n_slices = effective_args.n_slices,
                     .probe_radius = effective_args.probe_radius,
+                    .trig = effective_args.lr_trig,
                 };
                 break :blk if (effective_args.n_threads == 1)
                     lee_richards.calculateSasa(allocator, input, lr_config) catch |err| {
@@ -1669,6 +1708,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
                     const lr_config = LeeRichardsConfigf32{
                         .n_slices = effective_args.n_slices,
                         .probe_radius = @floatCast(effective_args.probe_radius),
+                        .trig = effective_args.lr_trig,
                     };
                     break :inner if (effective_args.n_threads == 1)
                         lee_richards.calculateSasaf32(allocator, input, lr_config) catch |err| {
@@ -2068,6 +2108,65 @@ test "CalcArgs --n-slices N (space-separated)" {
     const args = [_][]const u8{ "zsasa", "calc", "--n-slices", "30", "input.json" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(@as(u32, 30), parsed.n_slices);
+}
+
+test "CalcArgs --lr-trig defaults to exact" {
+    const args = [_][]const u8{ "zsasa", "calc", "--algorithm=lr", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(TrigMode.exact, parsed.lr_trig);
+    try std.testing.expectEqual(false, parsed.lr_trig_explicit);
+}
+
+test "CalcArgs --lr-trig=MODE" {
+    const fast = [_][]const u8{ "zsasa", "calc", "--algorithm=lr", "--lr-trig=fast", "input.json" };
+    const parsed_fast = parseArgs(&fast, 2);
+    try std.testing.expectEqual(TrigMode.fast, parsed_fast.lr_trig);
+    try std.testing.expectEqual(true, parsed_fast.lr_trig_explicit);
+
+    const exact = [_][]const u8{ "zsasa", "calc", "--algorithm=lr", "--lr-trig=exact", "input.json" };
+    const parsed_exact = parseArgs(&exact, 2);
+    try std.testing.expectEqual(TrigMode.exact, parsed_exact.lr_trig);
+    try std.testing.expectEqual(true, parsed_exact.lr_trig_explicit);
+}
+
+test "CalcArgs --lr-trig MODE (space-separated)" {
+    const args = [_][]const u8{ "zsasa", "calc", "--lr-trig", "fast", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(TrigMode.fast, parsed.lr_trig);
+    try std.testing.expectEqual(true, parsed.lr_trig_explicit);
+    try std.testing.expectEqualStrings("input.json", parsed.input_path.?);
+}
+
+test "CalcArgs --lr-trig is accepted and unused with the default sr algorithm, like --n-slices" {
+    const args = [_][]const u8{ "zsasa", "calc", "--algorithm=sr", "--lr-trig=fast", "--n-slices=30", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(Algorithm.sr, parsed.algorithm);
+    try std.testing.expectEqual(TrigMode.fast, parsed.lr_trig);
+}
+
+test "calc workflow lr_trig applies unless --lr-trig was given, and rejects unknown values" {
+    {
+        var args = CalcArgs{};
+        try applyWorkflowCalculationToCalcArgs(&args, .{ .lr_trig = "fast" });
+        try std.testing.expectEqual(TrigMode.fast, args.lr_trig);
+    }
+    {
+        var args = CalcArgs{ .lr_trig = .exact, .lr_trig_explicit = true };
+        try applyWorkflowCalculationToCalcArgs(&args, .{ .lr_trig = "fast" });
+        try std.testing.expectEqual(TrigMode.exact, args.lr_trig);
+    }
+    {
+        var args = CalcArgs{};
+        try applyWorkflowCalculationToCalcArgs(&args, .{});
+        try std.testing.expectEqual(TrigMode.exact, args.lr_trig);
+    }
+    {
+        var args = CalcArgs{};
+        try std.testing.expectError(
+            error.InvalidArgument,
+            applyWorkflowCalculationToCalcArgs(&args, .{ .lr_trig = "approximate" }),
+        );
+    }
 }
 
 test "CalcArgs --config=FILE" {

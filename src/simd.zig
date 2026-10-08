@@ -45,8 +45,13 @@ pub const optimal_vector_width = struct {
 // ============================================================================
 
 /// Fast approximate acos using polynomial approximation.
-/// Based on Handbook of Mathematical Functions (Abramowitz & Stegun).
-/// Max error: ~0.0003 radians (~0.02 degrees)
+/// The coefficients are the first four of the eight-term formula 4.4.46 in the
+/// Handbook of Mathematical Functions (Abramowitz & Stegun); the four terms
+/// left out cost most of its accuracy.
+/// Max error, measured over [-1, 1]: 0.0042 radians (0.24 degrees), reached at
+/// |x| = 0.88. The result is too small for x > 0 and too large for x < 0.
+///
+/// Lee-Richards uses it only in `TrigMode.fast`; see `lee_richards.TrigMode`.
 ///
 /// # Parameters
 /// - `x`: Input value in range [-1, 1]
@@ -74,7 +79,16 @@ pub fn fastAcos(x: f64) f64 {
 }
 
 /// Fast approximate atan2 using polynomial approximation.
-/// Based on approximation with max error ~0.0015 radians (~0.09 degrees)
+/// The coefficients are the first three of the five-term formula 4.4.49 in the
+/// Handbook of Mathematical Functions (Abramowitz & Stegun); the two terms left
+/// out cost most of its accuracy.
+/// Max error, measured over all directions: 0.064 radians (3.7 degrees),
+/// reached on the diagonals |y| = |x|. The error grows with r = min(|y/x|, |x/y|):
+/// below 0.001 rad for r < 0.5, 0.010 rad at r = 0.75, 0.033 rad at r = 0.9.
+/// The result is not continuous: it jumps by 0.129 rad across each diagonal
+/// (0.850 just below y = x, 0.721 just above, against π/4 = 0.785).
+///
+/// Lee-Richards uses it only in `TrigMode.fast`; see `lee_richards.TrigMode`.
 ///
 /// # Parameters
 /// - `y`: Y coordinate
@@ -744,6 +758,8 @@ pub fn isPointBuriedBatch16Gen(comptime T: type) type {
 }
 
 /// Generic fast approximate acos using polynomial approximation.
+/// Same polynomial as `fastAcos`. Max error, measured over [-1, 1] for f32 and
+/// f64: 0.0042 radians (0.24 degrees).
 pub fn fastAcosGen(comptime T: type) type {
     return struct {
         pub fn compute(x: T) T {
@@ -765,6 +781,9 @@ pub fn fastAcosGen(comptime T: type) type {
 }
 
 /// Generic fast approximate atan2 using polynomial approximation.
+/// Same polynomial as `fastAtan2`. Max error, measured over all directions for
+/// f32 and f64: 0.064 radians (3.7 degrees), with the same jump of 0.129 rad
+/// across the diagonals |y| = |x|.
 pub fn fastAtan2Gen(comptime T: type) type {
     return struct {
         pub fn compute(y: T, x: T) T {
@@ -1043,12 +1062,30 @@ test "circlesOverlapBatch4 - mixed" {
 test "fastAcos - accuracy" {
     // Test various values and compare with std.math.acos
     const test_values = [_]f64{ -1.0, -0.9, -0.5, 0.0, 0.5, 0.9, 1.0 };
-    const tolerance = 0.005; // ~0.3 degrees, matches polynomial approximation precision
+    const tolerance = 0.005; // ~0.3 degrees, just above the maximum error of 0.0042
 
     for (test_values) |x| {
         const expected = std.math.acos(x);
         const actual = fastAcos(x);
         try std.testing.expectApproxEqAbs(expected, actual, tolerance);
+    }
+}
+
+test "fastAcos - maximum error is the documented 0.0042 rad, for f64 and f32" {
+    var max_err: f64 = 0.0;
+    var max_err_gen: f64 = 0.0;
+    var max_err_f32: f64 = 0.0;
+    const n = 20000;
+    for (0..n + 1) |i| {
+        const x = -1.0 + 2.0 * @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(n));
+        max_err = @max(max_err, @abs(fastAcos(x) - std.math.acos(x)));
+        max_err_gen = @max(max_err_gen, @abs(fastAcosGen(f64).compute(x) - std.math.acos(x)));
+        const x32: f32 = @floatCast(x);
+        max_err_f32 = @max(max_err_f32, @abs(@as(f64, fastAcosGen(f32).compute(x32)) - std.math.acos(@as(f64, x32))));
+    }
+    for ([_]f64{ max_err, max_err_gen, max_err_f32 }) |err| {
+        try std.testing.expect(err > 0.0041);
+        try std.testing.expect(err < 0.0043);
     }
 }
 
@@ -1059,9 +1096,9 @@ test "fastAcos - edge cases" {
 }
 
 test "fastAtan2 - accuracy" {
-    // Test various angles
+    // Test various angles, all at least 0.2 rad away from the diagonals
     const angles = [_]f64{ 0.0, 0.25, 0.5, 1.0, 2.0, 3.0 };
-    const tolerance = 0.005; // ~0.3 degrees, matches polynomial approximation precision
+    const tolerance = 0.005; // ~0.3 degrees; the error is larger near the diagonals
 
     for (angles) |angle| {
         const y = @sin(angle);
@@ -1071,11 +1108,42 @@ test "fastAtan2 - accuracy" {
         try std.testing.expectApproxEqAbs(expected, actual, tolerance);
     }
 
-    // Test negative quadrants (non-unit-circle inputs have larger polynomial error)
+    // Test negative quadrants on the diagonals |y| = |x|, where the error is
+    // at its maximum of 0.064 rad
     const neg_tolerance = 0.07;
     try std.testing.expectApproxEqAbs(std.math.atan2(@as(f64, -1.0), @as(f64, 1.0)), fastAtan2(-1.0, 1.0), neg_tolerance);
     try std.testing.expectApproxEqAbs(std.math.atan2(@as(f64, -1.0), @as(f64, -1.0)), fastAtan2(-1.0, -1.0), neg_tolerance);
     try std.testing.expectApproxEqAbs(std.math.atan2(@as(f64, 1.0), @as(f64, -1.0)), fastAtan2(1.0, -1.0), neg_tolerance);
+}
+
+test "fastAtan2 - maximum error is the documented 0.064 rad on the diagonals, for f64 and f32" {
+    var max_err: f64 = 0.0;
+    var max_err_gen: f64 = 0.0;
+    var max_err_f32: f64 = 0.0;
+    const n = 20000; // a multiple of 8, so the diagonals are sampled
+    for (1..n) |i| {
+        const theta = -std.math.pi + 2.0 * std.math.pi * @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(n));
+        const y = @sin(theta);
+        const x = @cos(theta);
+        const expected = std.math.atan2(y, x);
+        max_err = @max(max_err, @abs(fastAtan2(y, x) - expected));
+        max_err_gen = @max(max_err_gen, @abs(fastAtan2Gen(f64).compute(y, x) - expected));
+        const y32: f32 = @floatCast(y);
+        const x32: f32 = @floatCast(x);
+        const expected32 = std.math.atan2(@as(f64, y32), @as(f64, x32));
+        max_err_f32 = @max(max_err_f32, @abs(@as(f64, fastAtan2Gen(f32).compute(y32, x32)) - expected32));
+    }
+    for ([_]f64{ max_err, max_err_gen, max_err_f32 }) |err| {
+        try std.testing.expect(err > 0.064);
+        try std.testing.expect(err < 0.065);
+    }
+
+    // The polynomial is evaluated on min(|y/x|, |x/y|), so the result jumps
+    // across a diagonal instead of passing through π/4.
+    const below = fastAtan2(1.0, 1.0);
+    const above = fastAtan2(1.0 + 1e-12, 1.0);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.8497), below, 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.7211), above, 1e-4);
 }
 
 test "fastAtan2 - edge cases" {
@@ -1283,7 +1351,7 @@ test "cpu_features - compile-time detection works" {
 
 test "fastAcosGen f32 - accuracy" {
     const test_values = [_]f32{ -1.0, -0.9, -0.5, 0.0, 0.5, 0.9, 1.0 };
-    const tolerance: f32 = 0.005; // Matches polynomial approximation precision for f32
+    const tolerance: f32 = 0.005; // Just above the maximum error of 0.0042
 
     for (test_values) |x| {
         const expected = std.math.acos(x);
