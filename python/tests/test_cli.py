@@ -572,6 +572,335 @@ class TestWorkflowFailureReporting:
         assert not output_dir.exists()
 
 
+BSA_ANALYSIS = '[analysis]\ntype = "bsa"\npartner_a = ["A"]\npartner_b = ["B"]\n'
+
+
+def write_key_workflow(
+    path: Path,
+    input_dir: Path,
+    output_dir: Path,
+    *,
+    input_extra: str = "",
+    calc_extra: str = "",
+    body: str = '[[jobs]]\nname = "everything"\n',
+) -> Path:
+    """Write a JSONL batch workflow with extra lines in `[input]` and `[calculation]`."""
+    path.write_text(
+        "version = 1\n"
+        'kind = "workflow"\n\n'
+        f'[input]\ndir = "{input_dir.as_posix()}"\n{input_extra}\n'
+        f'[output]\ndir = "{output_dir.as_posix()}"\nformat = "jsonl"\n\n'
+        f"[calculation]\nn_points = 8\n{calc_extra}\n"
+        '[classifier]\ntype = "naccess"\n\n'
+        f"{body}"
+    )
+    return path
+
+
+class TestWorkflowIgnoredKeys:
+    """Nothing a workflow says is dropped silently: an error or a warning."""
+
+    @staticmethod
+    def structure_dir(tmp_path: Path) -> Path:
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        (input_dir / "two.pdb").write_text(TWO_CHAIN_PDB)
+        return input_dir
+
+    @pytest.mark.parametrize("runner", WORKFLOW_RUNNERS)
+    @pytest.mark.parametrize(
+        ("input_extra", "calc_extra", "key"),
+        [
+            ("model = 2\n", "", "[input] model"),
+            ('mol = "1"\n', "", "[input] mol"),
+            ('path = "two.pdb"\n', "", "[input] path"),
+            ("", "rsa = true\n", "[calculation] rsa = true"),
+            ("", "per_residue = true\n", "[calculation] per_residue = true"),
+            ("", "polar = true\n", "[calculation] polar = true"),
+            ("", "validate_only = true\n", "[calculation] validate_only = true"),
+        ],
+    )
+    def test_batch_rejects_keys_it_cannot_honor(
+        self, tmp_path: Path, runner: str, input_extra: str, calc_extra: str, key: str
+    ):
+        output_dir = tmp_path / "out"
+        workflow = write_key_workflow(
+            tmp_path / "wf.toml",
+            self.structure_dir(tmp_path),
+            output_dir,
+            input_extra=input_extra,
+            calc_extra=calc_extra,
+            body=f'[[jobs]]\nname = "everything"\n{WORKFLOW_RUNNERS[runner]}',
+        )
+
+        result = run_zsasa("batch", "-q", "--workflow", str(workflow))
+
+        assert result.returncode == 1
+        assert f"Error: {key}" in result.stderr
+        assert "zsasa calc --workflow" in result.stderr
+        assert not output_dir.exists()
+
+    def test_batch_analysis_rejects_input_chain(self, tmp_path: Path):
+        output_dir = tmp_path / "out"
+        workflow = write_key_workflow(
+            tmp_path / "wf.toml",
+            self.structure_dir(tmp_path),
+            output_dir,
+            input_extra='chain = "A"\n',
+            body=BSA_ANALYSIS,
+        )
+
+        result = run_zsasa("batch", "-q", "--workflow", str(workflow))
+
+        assert result.returncode == 1
+        assert "Error: [input] chain is not supported by an [analysis] workflow" in result.stderr
+        assert "partner_a and partner_b" in result.stderr
+        assert not output_dir.exists()
+
+    @pytest.mark.parametrize("flag", ["--residue-map", "--format=csv"])
+    def test_batch_analysis_rejects_options_it_would_override(self, tmp_path: Path, flag: str):
+        output_dir = tmp_path / "out"
+        workflow = write_key_workflow(
+            tmp_path / "wf.toml",
+            self.structure_dir(tmp_path),
+            output_dir,
+            body=BSA_ANALYSIS,
+        )
+
+        result = run_zsasa("batch", "-q", flag, "--workflow", str(workflow))
+
+        assert result.returncode == 1
+        assert f"Error: {flag.split('=')[0]} " in result.stderr
+        assert not output_dir.exists()
+
+    @pytest.mark.parametrize("runner", WORKFLOW_RUNNERS)
+    def test_input_chain_is_the_default_chains_of_jobs_without_any(
+        self, tmp_path: Path, runner: str
+    ):
+        output_dir = tmp_path / "out"
+        body = (
+            '[[jobs]]\nname = "default"\n\n'
+            f'[[jobs]]\nname = "explicit"\nchains = ["B"]\n{WORKFLOW_RUNNERS[runner]}\n'
+            '[[jobs]]\nname = "both"\nchains = ["A", "B"]\n'
+        )
+        workflow = write_key_workflow(
+            tmp_path / "wf.toml",
+            self.structure_dir(tmp_path),
+            output_dir,
+            input_extra='chain = "B"\n',
+            body=body,
+        )
+
+        result = run_zsasa("batch", "-q", "--workflow", str(workflow))
+
+        assert result.returncode == 0, result.stderr
+        assert "Warning" not in result.stderr
+        default_rows = (output_dir / "default.jsonl").read_text()
+        assert default_rows == (output_dir / "explicit.jsonl").read_text()
+        assert default_rows != (output_dir / "both.jsonl").read_text()
+
+    def test_input_chain_that_no_job_uses_is_rejected(self, tmp_path: Path):
+        output_dir = tmp_path / "out"
+        workflow = write_key_workflow(
+            tmp_path / "wf.toml",
+            self.structure_dir(tmp_path),
+            output_dir,
+            input_extra='chain = "B"\n',
+            body='[[jobs]]\nname = "own"\nchains = ["A"]\n',
+        )
+
+        result = run_zsasa("batch", "-q", "--workflow", str(workflow))
+
+        assert result.returncode == 1
+        assert "Error: [input] chain is used by no job" in result.stderr
+        assert not output_dir.exists()
+
+    def test_analysis_with_jobs_is_a_manifest_error(self, tmp_path: Path):
+        output_dir = tmp_path / "out"
+        workflow = write_key_workflow(
+            tmp_path / "wf.toml",
+            self.structure_dir(tmp_path),
+            output_dir,
+            body=BSA_ANALYSIS + '\n[[jobs]]\nname = "never"\n',
+        )
+
+        result = run_zsasa("batch", "-q", "--workflow", str(workflow))
+
+        assert result.returncode == 1
+        assert f"Error reading workflow file '{workflow}': AnalysisWithJobs\n" in result.stderr
+        assert "[analysis] and [[jobs]] cannot be combined" in result.stderr
+        assert not output_dir.exists()
+
+    @pytest.mark.parametrize(
+        "jobs",
+        [
+            '[[jobs]]\n[[jobs]]\nname = "second"\n',
+            '[[jobs]]\nname = "first"\n[[jobs]]\n',
+            "[[jobs]]\n",
+        ],
+    )
+    def test_jobs_table_without_a_name_is_rejected(self, tmp_path: Path, jobs: str):
+        output_dir = tmp_path / "out"
+        workflow = write_key_workflow(
+            tmp_path / "wf.toml", self.structure_dir(tmp_path), output_dir, body=jobs
+        )
+
+        result = run_zsasa("batch", "-q", "--workflow", str(workflow))
+
+        assert result.returncode == 1
+        assert f"Error reading workflow file '{workflow}': MissingJobName\n" in result.stderr
+        assert not output_dir.exists()
+
+    @pytest.mark.parametrize("runner", WORKFLOW_RUNNERS)
+    @pytest.mark.parametrize("how", ["manifest", "option"])
+    def test_timing_in_a_workflow_with_jobs_warns_and_runs(
+        self, tmp_path: Path, runner: str, how: str
+    ):
+        output_dir = tmp_path / "out"
+        workflow = write_key_workflow(
+            tmp_path / "wf.toml",
+            self.structure_dir(tmp_path),
+            output_dir,
+            calc_extra="timing = true\n" if how == "manifest" else "",
+            body=f'[[jobs]]\nname = "everything"\n{WORKFLOW_RUNNERS[runner]}',
+        )
+        extra = ["--timing"] if how == "option" else []
+
+        result = run_zsasa("batch", "-q", *extra, "--workflow", str(workflow))
+
+        # -q keeps the warning, as it keeps the failure reports
+        assert result.returncode == 0, result.stderr
+        timing = "--timing" if how == "option" else "[calculation] timing = true"
+        assert result.stderr.startswith(
+            f"Warning: {timing} has no effect on a workflow with [[jobs]]"
+        )
+        assert (output_dir / "everything.jsonl").exists()
+
+    def test_timing_in_an_analysis_workflow_is_honored(self, tmp_path: Path):
+        output_dir = tmp_path / "out"
+        workflow = write_key_workflow(
+            tmp_path / "wf.toml",
+            self.structure_dir(tmp_path),
+            output_dir,
+            calc_extra="timing = true\n",
+            body=BSA_ANALYSIS,
+        )
+
+        result = run_zsasa("batch", "--workflow", str(workflow))
+
+        assert result.returncode == 0, result.stderr
+        assert "Warning" not in result.stderr
+        assert "BSA analysis SASA time:" in result.stderr
+
+    def test_profile_stages_in_a_workflow_warns(self, tmp_path: Path):
+        output_dir = tmp_path / "out"
+        workflow = write_key_workflow(
+            tmp_path / "wf.toml", self.structure_dir(tmp_path), output_dir
+        )
+
+        result = run_zsasa("batch", "-q", "--profile-stages", "--workflow", str(workflow))
+
+        assert result.returncode == 0, result.stderr
+        assert result.stderr.startswith("Warning: --profile-stages has no effect on a workflow")
+        assert (output_dir / "everything.jsonl").exists()
+
+    def test_batch_output_path_warns_and_runs(self, tmp_path: Path):
+        output_dir = tmp_path / "out"
+        workflow = write_key_workflow(
+            tmp_path / "wf.toml", self.structure_dir(tmp_path), output_dir
+        )
+        workflow.write_text(
+            workflow.read_text().replace("[output]\n", '[output]\npath = "ignored.json"\n')
+        )
+
+        result = run_zsasa("batch", "-q", "--workflow", str(workflow))
+
+        assert result.returncode == 0, result.stderr
+        assert result.stderr.startswith(
+            "Warning: [output] path is not read by 'zsasa batch --workflow'"
+        )
+        assert (output_dir / "everything.jsonl").exists()
+
+    @staticmethod
+    def write_calc_workflow(
+        path: Path,
+        structure: Path,
+        result_file: Path,
+        *,
+        input_extra: str = "",
+        output_extra: str = "",
+        tail: str = "",
+    ) -> Path:
+        """Write a `calc` workflow with extra lines in `[input]` and `[output]`."""
+        path.write_text(
+            "version = 1\n"
+            'kind = "workflow"\n\n'
+            f'[input]\npath = "{structure.as_posix()}"\n{input_extra}\n'
+            f'[output]\npath = "{result_file.as_posix()}"\nformat = "json"\n{output_extra}\n'
+            "[calculation]\nn_points = 8\nquiet = true\n\n"
+            '[classifier]\ntype = "naccess"\n\n'
+            f"{tail}"
+        )
+        return path
+
+    @pytest.mark.parametrize(
+        ("input_extra", "tail", "message"),
+        [
+            (
+                "",
+                BSA_ANALYSIS,
+                "Error: [analysis] is read only by 'zsasa batch --workflow'",
+            ),
+            (
+                "",
+                '[[jobs]]\nname = "all"\n',
+                "Error: [[jobs]] is read only by 'zsasa batch --workflow'",
+            ),
+            (
+                'dir = "structures"\n',
+                "",
+                "Error: [input] dir is read only by 'zsasa batch --workflow'",
+            ),
+        ],
+    )
+    def test_calc_rejects_batch_only_structure(
+        self, tmp_path: Path, input_extra: str, tail: str, message: str
+    ):
+        structure = tmp_path / "two.pdb"
+        structure.write_text(TWO_CHAIN_PDB)
+        result_file = tmp_path / "result.json"
+        workflow = self.write_calc_workflow(
+            tmp_path / "wf.toml", structure, result_file, input_extra=input_extra, tail=tail
+        )
+
+        result = run_zsasa("calc", "--workflow", str(workflow))
+
+        assert result.returncode == 1
+        assert message in result.stderr
+        assert "run it with 'zsasa batch --workflow'" in result.stderr
+        assert not result_file.exists()
+
+    def test_calc_warns_about_batch_output_keys_and_runs(self, tmp_path: Path):
+        structure = tmp_path / "two.pdb"
+        structure.write_text(TWO_CHAIN_PDB)
+        result_file = tmp_path / "result.json"
+        workflow = self.write_calc_workflow(
+            tmp_path / "wf.toml",
+            structure,
+            result_file,
+            output_extra='dir = "results"\n',
+            tail="[output.jsonl]\ndecimals = 3\n",
+        )
+
+        result = run_zsasa("calc", "-q", "--workflow", str(workflow))
+
+        assert result.returncode == 0, result.stderr
+        assert "Warning: [output] dir is read only by 'zsasa batch --workflow'" in result.stderr
+        assert "Warning: [output.jsonl] is read only by 'zsasa batch --workflow'" in result.stderr
+        assert result_file.exists()
+        assert not (tmp_path / "results").exists()
+
+
 # Residues 10, 10A and 10B of chain H (antibody numbering), far apart
 INSERTION_CODE_PDB = """\
 ATOM      1  N   GLY H  10       0.000   0.000   0.000  1.00 20.00           N

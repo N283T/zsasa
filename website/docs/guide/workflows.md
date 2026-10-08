@@ -23,7 +23,7 @@ zsasa batch --manifest bsa.toml
 
 Prefer `--workflow` in new scripts and docs. `--manifest` also reads the older [flat-root manifest layout](#legacy-flat-root-manifests).
 
-Every key a workflow file accepts is listed in the [Key Reference](#key-reference).
+Every key a workflow file accepts is listed in the [Key Reference](#key-reference). A file is written for one command: a key the command does not read is an error or a warning, never ignored silently (see [Keys a Command Does Not Read](#unused-keys)).
 
 ## Calc Workflow Example
 
@@ -539,9 +539,9 @@ to standard output when the workflow has one job and no output directory.
 
 ## Key Reference
 
-A workflow file starts with `version = 1` (required) and an optional `kind = "workflow"`, followed by the sections below. The parser rejects the whole file when it meets an unknown section or key, a repeated section or key, or a value of the wrong type or out of range, and prints `Error reading workflow file '<path>': <name>` with `UnknownField`, `InvalidFieldType`, `UnsupportedVersion` or `InvalidKind`.
+A workflow file starts with `version = 1` (required) and an optional `kind = "workflow"`, followed by the sections below. The parser rejects the whole file when it meets an unknown section or key, a repeated section or key, or a value of the wrong type or out of range, and prints `Error reading workflow file '<path>': <name>` with `UnknownField`, `InvalidFieldType`, `UnsupportedVersion` or `InvalidKind`. Two structural mistakes are rejected the same way: a `[[jobs]]` table without a `name` (`MissingJobName`, wherever it stands in the file, also when it has no key at all) and an `[analysis]` section together with `[[jobs]]` (`AnalysisWithJobs`: an analysis workflow runs one BSA analysis and has no jobs, so keep one of them and move the other into a separate file).
 
-The **Used by** column says which command reads the key. `calc` and `batch` accept the keys of the other command and ignore them, so one file can serve both. A value given on the command line overrides the same setting in the file; see [Override Precedence](#override-precedence).
+The **Used by** column says which command reads the key. A key that the other command does not read is reported, not ignored: see [Keys a Command Does Not Read](#unused-keys). A value given on the command line overrides the same setting in the file; see [Override Precedence](#override-precedence).
 
 ### Top level
 
@@ -554,21 +554,21 @@ The **Used by** column says which command reads the key. `calc` and `batch` acce
 
 | Key | Type | Default | Used by | Description |
 |-----|------|---------|---------|-------------|
-| `path` | string | none | calc | Input structure file. A positional input argument overrides it |
-| `dir` | string | none | batch | Input directory. A positional `input_dir` overrides it |
-| `chain` | string | all chains | calc | Chain filter such as `"A"` or `"A,B"` (`--chain`). In batch workflows chains are chosen per job with `chains` or `chain_map` |
-| `model` | integer ≥ 1 | all models | calc | Model number (`--model`) |
-| `mol` | string | first molecule | calc | Molecule title or 1-based index in a multi-molecule SDF (`--mol`) |
+| `path` | string | none | calc | Input structure file. A positional input argument overrides it. `batch` rejects it: set `dir` |
+| `dir` | string | none | batch | Input directory. A positional `input_dir` overrides it. `calc` rejects it |
+| `chain` | string | all chains | calc, batch | Chain filter such as `"A"` or `"A,B"` (`--chain`). In a batch workflow with `[[jobs]]` it is the default `chains` of every job that has neither `chains` nor `chain_map`; see [`[input] chain` in batch workflows](#input-chain-in-batch). An `[analysis]` workflow rejects it: choose the chains with `partner_a` and `partner_b` |
+| `model` | integer ≥ 1 | all models | calc | Model number (`--model`). `batch` rejects it |
+| `mol` | string | first molecule | calc | Molecule title or 1-based index in a multi-molecule SDF (`--mol`). `batch` rejects it (it processes every molecule) |
 
 ### `[output]` and `[output.jsonl]`
 
 | Key | Type | Default | Used by | Description |
 |-----|------|---------|---------|-------------|
-| `path` | string | `output.json` | calc | Output file. A positional output argument or `-o` overrides it |
-| `dir` | string | none | batch | Output directory; each job writes into its own `<job name>` subdirectory, or to `<job name>.jsonl` for JSONL output. A positional `output_dir` overrides it. A workflow with several jobs requires it; with one job and no directory, JSONL rows go to standard output and `json`/`csv` write no files |
+| `path` | string | `output.json` | calc | Output file. A positional output argument or `-o` overrides it. `batch` warns that it does not read it |
+| `dir` | string | none | batch | Output directory; each job writes into its own `<job name>` subdirectory, or to `<job name>.jsonl` for JSONL output. A positional `output_dir` overrides it. A workflow with several jobs requires it; with one job and no directory, JSONL rows go to standard output and `json`/`csv` write no files. `calc` warns that it does not read it |
 | `format` | string | `"json"` | calc, batch | `calc`: `json`, `compact`, `csv`, `freesasa` or `rsa`. `batch`: `json`, `compact`, `csv` or `jsonl` |
 
-The `[output.jsonl]` keys apply to batch JSONL output only. See [JSONL Output Options](#jsonl-output-options).
+The `[output.jsonl]` keys apply to batch JSONL output only. See [JSONL Output Options](#jsonl-output-options). `calc` writes no JSONL and warns if the table is present. An `[analysis]` workflow writes its own rows: it reads `decimals` and `metadata`, rejects `atom_identity = true`, and has no use for `atom_areas` and `total_area`.
 
 | Key | Type | Default | Used by | Description |
 |-----|------|---------|---------|-------------|
@@ -592,15 +592,15 @@ The `[output.jsonl]` keys apply to batch JSONL output only. See [JSONL Output Op
 | `include_hydrogens` | boolean | `false` | calc, batch | Include hydrogen atoms |
 | `include_hetatm` | boolean | `false` | calc, batch | Include HETATM records |
 | `use_bitmask` | boolean | `false` | calc, batch | Bitmask LUT optimization (SR only, `n_points` 1-1024) |
-| `timing` | boolean | `false` | calc, batch | Print the timing breakdown |
+| `timing` | boolean | `false` | calc, batch | Print the timing breakdown. In `batch` only an `[analysis]` workflow reports it (the SASA time); a workflow with `[[jobs]]` warns that the key has no effect |
 | `quiet` | boolean | `false` | calc, batch | Suppress progress output. Batch workflows still report [failed inputs and jobs](#failures) |
 | `auth_chain` | boolean | `false` | calc, batch | Match chains and number residues by `auth_asym_id` / `auth_seq_id` (mmCIF/BinaryCIF). A job can override it with its own `auth_chain` |
 | `altloc` | string | `"auto"` | calc, batch | Alternate-location handling: `"auto"`, `"none"`, `"all"`, `"highest-occupancy"` or one altloc ID such as `"A"`; see [Alternate Locations](../cli/input.md#alternate-locations). `--altloc` on the command line takes precedence |
-| `residue_map` | boolean | `false` | batch | Add residue map arrays to JSONL rows (`--residue-map`) |
-| `per_residue` | boolean | `false` | calc | Per-residue aggregation |
-| `rsa` | boolean | `false` | calc | Relative solvent accessibility; implies `per_residue` |
-| `polar` | boolean | `false` | calc | Polar/nonpolar summary; implies `per_residue` |
-| `validate_only` | boolean | `false` | calc | Validate the input without calculating (`--validate`) |
+| `residue_map` | boolean | `false` | batch | Add residue map arrays to JSONL rows (`--residue-map`). `calc` rejects `true`, and so does an `[analysis]` workflow |
+| `per_residue` | boolean | `false` | calc | Per-residue aggregation. `batch` rejects `true` |
+| `rsa` | boolean | `false` | calc | Relative solvent accessibility; implies `per_residue`. `batch` rejects `true` |
+| `polar` | boolean | `false` | calc | Polar/nonpolar summary; implies `per_residue`. `batch` rejects `true` |
+| `validate_only` | boolean | `false` | calc | Validate the input without calculating (`--validate`). `batch` rejects `true` |
 
 ### `[classifier]`
 
@@ -617,7 +617,7 @@ Set `type = "ccd"` whenever `ccd` or `sdf` is given. A file that combines them w
 
 | Key | Type | Default | Used by | Description |
 |-----|------|---------|---------|-------------|
-| `type` | string | required | batch | Must be `"bsa"` |
+| `type` | string | required | batch | Must be `"bsa"`. `calc` rejects the section, and so does a file that also has `[[jobs]]` |
 | `name` | string | `"bsa"` | batch | Output name: results go to `<name>.jsonl`. Must not contain `/`, `\` or `..` |
 | `partner_a`, `partner_b` | arrays of strings | none | batch | Chain IDs of the two partners. Required unless `chain_map` is set, and not allowed together with it |
 | `chain_map` | string | none | batch | CSV or JSON file with one interface per row, instead of `partner_a`/`partner_b` |
@@ -628,7 +628,7 @@ See [BSA / ΔSASA Analysis](#bsa-analysis) for the output.
 
 ### `[[jobs]]`
 
-A batch workflow needs at least one job unless it has an `[analysis]` section (`NoJobs` otherwise). `calc` ignores jobs.
+A batch workflow needs at least one job unless it has an `[analysis]` section (`NoJobs` otherwise); it cannot have both (`AnalysisWithJobs`). Every `[[jobs]]` table needs a `name` (`MissingJobName`). `calc` rejects a file with jobs.
 
 | Key | Type | Default | Used by | Description |
 |-----|------|---------|---------|-------------|
@@ -636,6 +636,35 @@ A batch workflow needs at least one job unless it has an `[analysis]` section (`
 | `chains` | array of strings | all chains | batch | Chain IDs to calculate together as one complex. Leave the key out to select every chain: an empty array (`chains = []`) is rejected with `EmptyJobChains` |
 | `chain_map` | string | none | batch | Per-file chain map; see [Per-file Chain Maps](#per-file-chain-maps). Not allowed together with `chains` or `auth_chain` |
 | `auth_chain` | boolean | from `[calculation]` | batch | Use author chain IDs for this job |
+
+### `[input] chain` in batch workflows {#input-chain-in-batch}
+
+`chain` under `[input]` is the batch counterpart of `--chain` for a workflow: it is the chain selection of every job that sets neither `chains` nor `chain_map`, written as for `--chain` (`"A"` or `"A,B"`; the chains are calculated together as one complex, like the `chains` of a job). A job's own `chains` take precedence over it, as job settings take precedence over workflow settings. These combinations are errors, because the key would not do what it says: a blank value, a `chain_map` job in the same file (the map chooses the chains per file), and a file in which every job sets its own `chains`.
+
+```toml
+[input]
+dir = "structures"
+chain = "A,B"
+
+[[jobs]]
+name = "ab"           # takes chains A and B from [input]
+
+[[jobs]]
+name = "c"
+chains = ["C"]        # its own selection wins
+```
+
+### Keys a Command Does Not Read {#unused-keys}
+
+zsasa does not drop a key silently. When a command meets a key it does not read, the key is an **error** when honoring it would change the results or the file is a workflow for the other command, and a **warning** when it would only change reporting or where the output goes. An error stops the command with exit status 1 before any work is done, and its message names the key and what to do. A warning is printed on standard error and the run goes on; it is printed with `--quiet` as well, as `--quiet` suppresses progress, not messages like this. A boolean key set to `false` asks for what the command does anyway and is not reported.
+
+| Command | Errors | Warnings |
+|---------|--------|----------|
+| `calc --workflow` | `[analysis]`, `[[jobs]]`, `[input] dir`, `[calculation] residue_map = true`: the file is a batch workflow, run it with `zsasa batch --workflow` | `[output] dir`, `[output.jsonl]` (calc writes `[output] path` and no JSONL) |
+| `batch --workflow` | `[input] path`, `model`, `mol`; `[calculation] rsa`, `per_residue`, `polar`, `validate_only` set to `true`: only `calc` reads them, run the file with `zsasa calc --workflow` | `[output] path`; `[calculation] timing = true` and `--timing` with `[[jobs]]`; `--profile-stages` |
+| `batch --workflow` with `[analysis]` | `[input] chain`; `[calculation] residue_map = true`; `[output.jsonl] atom_identity = true`; `--residue-map`; `--format` other than `jsonl` | `[output] path`; `--profile-stages` |
+
+The legacy flat-root keys follow the key they stand for (`input_dir` is `[input] dir`, `output_dir` is `[output] dir`).
 
 ## Legacy Flat-root Manifests
 
