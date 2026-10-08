@@ -10,10 +10,11 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ccd_parser = @import("ccd_parser.zig");
 const ccd_binary = @import("ccd_binary.zig");
+const cli_output = @import("cli_output.zig");
 const compressed = @import("compressed.zig");
 
-pub fn printHelp(program_name: []const u8) void {
-    std.debug.print(
+pub fn printHelp(io: std.Io, program_name: []const u8) void {
+    cli_output.print(io,
         \\zsasa compile-dict - Compile CIF dictionary to binary ZSDC format
         \\
         \\USAGE:
@@ -66,7 +67,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: []const []const u8) !void {
 
     if (show_help) {
         // Caller handles this; but just in case:
-        printHelp("zsasa");
+        printHelp(io, "zsasa");
         return;
     }
 
@@ -355,8 +356,6 @@ test "compile-dict reports a missing input or output without writing anything" {
 }
 
 test "compile-dict --help does not need an input and writes nothing" {
-    var muted = test_support.muteStderr();
-    defer muted.restore();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

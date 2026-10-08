@@ -78,6 +78,32 @@ pip install zsasa[all]
 uv add zsasa[gemmi]          # or any extra above
 ```
 
+### How the Native Library Is Found {#library-lookup}
+
+The package is a thin layer over the `libzsasa` shared library (`libzsasa.so`, `libzsasa.dylib` or `zsasa.dll`). A wheel from PyPI contains the library, so there is nothing to configure. The library is looked for in this order, and the first one found is loaded:
+
+1. The file named by the `ZSASA_LIB` environment variable.
+2. The package directory (the copy bundled in a wheel), and in a source checkout `zig-out/lib` (`zig-out/bin` on Windows). When a checkout has both and they differ, the newer one is loaded and a warning names the other.
+3. The environment of the running interpreter: `<sys.prefix>/lib`, on Windows `<sys.prefix>\Library\bin`, then the same directory under `sys.base_prefix` (a virtual environment created on top of such an environment). This is where a package manager that ships the library on its own, such as conda, installs it.
+4. `/usr/local/lib` and `/usr/lib`.
+
+The current directory is never searched. Whatever is found must have the C ABI version this version of the package was written for; otherwise loading fails with an `ImportError` that names the file.
+
+`python -m zsasa` and the `zsasa` console script run the native `zsasa` binary: the one bundled in the wheel, or else `<sys.prefix>/bin/zsasa` (Windows: `<sys.prefix>\Library\bin\zsasa.exe`), then the same under `sys.base_prefix`. A script at that path is never run, because in an installation without a bundled binary it is the console script itself.
+
+### Packaging Without Bundled Binaries {#packaging-without-bundled-binaries}
+
+For a package manager that ships `libzsasa` and the `zsasa` binary as packages of their own, build the wheel with `ZSASA_NO_BUNDLE=1`:
+
+```bash
+ZSASA_NO_BUNDLE=1 python -m pip wheel --no-deps ./python
+```
+
+Nothing is compiled or bundled, Zig is not needed, and the wheel is pure Python (`zsasa-<version>-py3-none-any.whl`). Installed next to the library and the binary (steps 3 and 4 above), it behaves like the wheel from PyPI. Two things to take care of:
+
+- Install the library of the **same zsasa version**: the package checks the ABI version of the library, and it calls functions that an older library does not have.
+- The wheel still declares the `zsasa` console script. On Linux and macOS `pip` writes it to `<prefix>/bin/zsasa`, the path of the native binary in such an environment, so install the native binary after the wheel or leave the console script out of the package. If the script stays, `zsasa` reports that no native binary was found instead of running one.
+
 ---
 
 ## Quick Start

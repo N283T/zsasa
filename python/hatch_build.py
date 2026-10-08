@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import stat
 import subprocess
@@ -11,6 +12,9 @@ from typing import Any
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
+# Every name the bundled library and binary can have in the package directory.
+NATIVE_FILE_NAMES = ("libzsasa.dylib", "libzsasa.so", "zsasa.dll", "zsasa", "zsasa.exe")
+
 
 class ZigBuildHook(BuildHookInterface):
     """Build hook that compiles the Zig library and CLI binary before packaging."""
@@ -18,7 +22,19 @@ class ZigBuildHook(BuildHookInterface):
     PLUGIN_NAME = "zig-build"
 
     def initialize(self, version: str, build_data: dict[str, Any]) -> None:
-        """Build the Zig library and CLI binary, then copy them to the package directory."""
+        """Build the Zig library and CLI binary, then copy them to the package directory.
+
+        With ``ZSASA_NO_BUNDLE=1`` in the environment nothing is built or bundled and the
+        wheel is pure Python (``py3-none-any``). That is for a packager who ships the
+        library and the binary separately (conda): the package then finds both in the
+        environment of the interpreter (``zsasa._ffi._find_library``,
+        ``zsasa.cli._find_binary``).
+        """
+        if os.environ.get("ZSASA_NO_BUNDLE") == "1":
+            self._check_nothing_to_bundle(Path(self.root) / "zsasa")
+            self.app.display_info("ZSASA_NO_BUNDLE=1: not bundling the Zig library and binary")
+            return
+
         # Mark as platform-specific wheel (required for .so/.dylib bundling)
         build_data["infer_tag"] = True
 
@@ -68,6 +84,21 @@ class ZigBuildHook(BuildHookInterface):
         # Include both artifacts in the wheel
         build_data["force_include"][str(lib_dst)] = f"zsasa/{lib_name}"
         build_data["force_include"][str(exe_dst)] = f"zsasa/{exe_name}"
+
+    def _check_nothing_to_bundle(self, package_dir: Path) -> None:
+        """Refuse a pure-Python build while native files lie in the package directory.
+
+        An earlier build without ``ZSASA_NO_BUNDLE`` copies the library and the binary
+        there. They are package files like any other, so the wheel would contain them
+        under a ``py3-none-any`` tag.
+        """
+        present = [name for name in NATIVE_FILE_NAMES if (package_dir / name).exists()]
+        if present:
+            msg = (
+                f"ZSASA_NO_BUNDLE=1, but {package_dir} contains {', '.join(present)} "
+                "(copies made by an earlier build). Delete them and build again."
+            )
+            raise RuntimeError(msg)
 
     def _find_zig_root(self, python_dir: Path) -> Path:
         """Find the directory that contains the Zig build files."""

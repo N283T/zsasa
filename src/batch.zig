@@ -19,6 +19,7 @@ const classifier_parser = @import("classifier_parser.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
+const cli_output = @import("cli_output.zig");
 const ccd_parser = @import("ccd_parser.zig");
 const ccd_binary = @import("ccd_binary.zig");
 const sdf_parser = @import("sdf_parser.zig");
@@ -3746,8 +3747,8 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
 }
 
 /// Print help for the batch subcommand
-pub fn printHelp(program_name: []const u8) void {
-    std.debug.print(
+pub fn printHelp(io: std.Io, program_name: []const u8) void {
+    cli_output.print(io,
         \\zsasa batch - Calculate SASA for all files in a directory
         \\
         \\USAGE:

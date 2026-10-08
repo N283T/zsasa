@@ -24,30 +24,39 @@ def run_zsasa(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def get_output(result: subprocess.CompletedProcess[str]) -> str:
-    """Get combined stdout+stderr output (zsasa writes help/version to stderr)."""
-    return result.stdout + result.stderr
-
-
 class TestCLIEntryPoint:
-    """Test that the CLI binary is bundled and executable."""
+    """Test that the CLI binary is found and executable."""
 
     def test_help(self):
         result = run_zsasa("--help")
         assert result.returncode == 0
-        output = get_output(result)
-        assert "USAGE" in output
-        assert "calc" in output
+        assert "USAGE" in result.stdout
+        assert "calc" in result.stdout
+        assert result.stderr == ""
 
     def test_version(self):
+        from zsasa import get_version
+
         result = run_zsasa("--version")
         assert result.returncode == 0
-        assert "zsasa" in get_output(result)
+        assert result.stdout == f"zsasa {get_version()}\n"
+        assert result.stderr == ""
 
-    def test_calc_help(self):
-        result = run_zsasa("calc", "--help")
+    @pytest.mark.parametrize("flag", ["--help", "-h"])
+    @pytest.mark.parametrize("command", ["calc", "batch", "traj", "compile-dict"])
+    def test_command_help_is_written_to_stdout(self, command: str, flag: str):
+        result = run_zsasa(command, flag)
         assert result.returncode == 0
-        assert "SASA" in get_output(result)
+        assert f"{command}" in result.stdout
+        assert "SASA" in result.stdout or "ZSDC" in result.stdout
+        assert result.stderr == ""
+
+    @pytest.mark.parametrize("args", [(), ("no-such-command",)])
+    def test_usage_after_an_error_is_written_to_stderr(self, args: tuple[str, ...]):
+        result = run_zsasa(*args)
+        assert result.returncode == 1
+        assert "USAGE" in result.stderr
+        assert result.stdout == ""
 
     def test_calc_structure(self, tmp_path):
         input_file = EXAMPLES_DIR / "1ubq.cif"
@@ -65,6 +74,154 @@ class TestCLIEntryPoint:
 
         binary = _find_binary()
         assert Path(binary).exists()
+
+
+# What `pip install` writes to `<prefix>/bin/zsasa` for `[project.scripts]`.
+CONSOLE_SCRIPT = (
+    "#!/some/environment/bin/python\n"
+    "import sys\n"
+    "from zsasa.cli import main\n"
+    "if __name__ == '__main__':\n"
+    "    sys.exit(main())\n"
+)
+
+# The first bytes of an ELF file: anything that is not a script counts as native.
+NATIVE_BINARY = b"\x7fELF\x02\x01\x01"
+
+
+class TestFindBinary:
+    """Where `zsasa.cli` takes the native binary from."""
+
+    @pytest.fixture
+    def install(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+        """A fake installation: the package in `site/zsasa`, the environment in `prefix`."""
+        from zsasa import cli
+
+        package_dir = tmp_path / "site" / "zsasa"
+        package_dir.mkdir(parents=True)
+        (tmp_path / "prefix").mkdir()
+        monkeypatch.setattr(cli, "__file__", str(package_dir / "cli.py"))
+        monkeypatch.setattr(sys, "prefix", str(tmp_path / "prefix"))
+        monkeypatch.setattr(sys, "base_prefix", str(tmp_path / "prefix"))
+        return tmp_path
+
+    @staticmethod
+    def write(path: Path, content: bytes | str) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, str):
+            path.write_text(content)
+        else:
+            path.write_bytes(content)
+        path.chmod(0o755)
+        return path
+
+    def test_bundled_binary_comes_first(self, install: Path):
+        from zsasa.cli import _find_binary
+
+        self.write(install / "prefix" / "bin" / "zsasa", NATIVE_BINARY)
+        bundled = self.write(install / "site" / "zsasa" / "zsasa", NATIVE_BINARY)
+
+        assert _find_binary() == str(bundled)
+
+    def test_binary_of_the_environment_is_found_when_none_is_bundled(self, install: Path):
+        from zsasa.cli import _find_binary
+
+        installed = self.write(install / "prefix" / "bin" / "zsasa", NATIVE_BINARY)
+
+        assert _find_binary() == str(installed)
+
+    def test_binary_of_the_base_environment_is_found(
+        self, monkeypatch: pytest.MonkeyPatch, install: Path
+    ):
+        from zsasa.cli import _find_binary
+
+        monkeypatch.setattr(sys, "base_prefix", str(install / "base"))
+        installed = self.write(install / "base" / "bin" / "zsasa", NATIVE_BINARY)
+
+        assert _find_binary() == str(installed)
+
+    def test_console_script_is_never_taken_for_the_binary(self, install: Path):
+        """`<prefix>/bin/zsasa` of a pure-Python install is the script that got us here."""
+        from zsasa.cli import _find_binary
+
+        script = self.write(install / "prefix" / "bin" / "zsasa", CONSOLE_SCRIPT)
+
+        with pytest.raises(FileNotFoundError, match="no native zsasa") as excinfo:
+            _find_binary()
+
+        message = str(excinfo.value)
+        assert str(script.parent) in message
+        assert str(install / "site" / "zsasa" / "zsasa") in message
+
+    def test_console_script_is_skipped_for_a_binary_of_the_base_environment(
+        self, monkeypatch: pytest.MonkeyPatch, install: Path
+    ):
+        from zsasa.cli import _find_binary
+
+        monkeypatch.setattr(sys, "base_prefix", str(install / "base"))
+        self.write(install / "prefix" / "bin" / "zsasa", CONSOLE_SCRIPT)
+        installed = self.write(install / "base" / "bin" / "zsasa", NATIVE_BINARY)
+
+        assert _find_binary() == str(installed)
+
+    def test_directory_and_unreadable_file_are_not_binaries(self, install: Path):
+        from zsasa.cli import _find_binary, _is_script
+
+        (install / "prefix" / "bin" / "zsasa").mkdir(parents=True)
+        with pytest.raises(FileNotFoundError, match="no native zsasa"):
+            _find_binary()
+        # A file that cannot be read cannot be run either
+        assert _is_script(install / "prefix" / "bin" / "missing")
+
+    def test_windows_searches_library_bin_only(
+        self, monkeypatch: pytest.MonkeyPatch, install: Path
+    ):
+        """The launcher pip writes to `Scripts/zsasa.exe` is an executable, not a script."""
+        from zsasa.cli import _find_binary
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        self.write(install / "prefix" / "Scripts" / "zsasa.exe", b"MZ launcher")
+        self.write(install / "prefix" / "bin" / "zsasa.exe", b"MZ stray")
+        with pytest.raises(FileNotFoundError, match="no native zsasa.exe"):
+            _find_binary()
+
+        installed = self.write(install / "prefix" / "Library" / "bin" / "zsasa.exe", b"MZ native")
+        assert _find_binary() == str(installed)
+
+    def test_main_reports_a_missing_binary_and_does_not_exec_the_script(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        install: Path,
+    ):
+        from zsasa import cli
+
+        self.write(install / "prefix" / "bin" / "zsasa", CONSOLE_SCRIPT)
+        executed: list[str] = []
+        monkeypatch.setattr(cli.os, "execvp", lambda file, args: executed.append(file))
+
+        with pytest.raises(SystemExit) as excinfo:
+            cli.main()
+
+        assert excinfo.value.code == 1
+        assert executed == []
+        captured = capsys.readouterr()
+        assert captured.err.startswith("Error: zsasa binary not found")
+        assert captured.out == ""
+
+    def test_main_execs_the_binary_of_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch, install: Path
+    ):
+        from zsasa import cli
+
+        installed = self.write(install / "prefix" / "bin" / "zsasa", NATIVE_BINARY)
+        executed: list[tuple[str, list[str]]] = []
+        monkeypatch.setattr(cli.os, "execvp", lambda file, args: executed.append((file, args)))
+        monkeypatch.setattr(sys, "argv", ["zsasa", "--version"])
+
+        cli.main()
+
+        assert executed == [(str(installed), [str(installed), "--version"])]
 
 
 RICH_CSV_HEADER = [
