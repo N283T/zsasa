@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
 
@@ -69,7 +69,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
 
@@ -110,7 +110,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
 
@@ -156,7 +156,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
 
@@ -203,6 +203,13 @@ jobs:
             name: macOS
             lib: libzsasa.dylib
             lib_dir: lib
+          # Oldest Python the package declares (requires-python in pyproject.toml).
+          # One extra Linux job, not a full matrix, to keep CI cheap.
+          - os: ubuntu-latest
+            name: Linux, Python 3.11
+            lib: libzsasa.so
+            lib_dir: lib
+            python: '3.11'
 
     runs-on: ${{ matrix.os }}
     name: Python (${{ matrix.name }})
@@ -214,7 +221,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
 
@@ -235,10 +242,10 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python || '3.12' }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
 
       - name: Install Python package
         working-directory: python
@@ -273,6 +280,80 @@ jobs:
           print('Python bindings test passed!')
           "
 
+  # Cross-compile the release targets that the Linux and macOS jobs above do
+  # not build natively, so a build break on one of them shows up on the pull
+  # request and not when the release tag is pushed. Build only: nothing is run.
+  # The publish workflow builds these targets natively, so this is a compile
+  # check, not a substitute for its smoke test.
+  cross_build:
+    runs-on: ubuntu-latest
+    name: Cross build (${{ matrix.target }})
+    needs: [fmt]
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-windows
+            binary: zsasa.exe
+          - target: aarch64-linux
+            binary: zsasa
+          - target: x86_64-macos
+            binary: zsasa
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+
+      - name: Check binary exists
+        run: test -s "zig-out/bin/${{ matrix.binary }}"
+
+  # Release tooling: the version files agree, the helper scripts have tests,
+  # and the scripts are linted.
+  release_tools:
+    runs-on: ubuntu-latest
+    name: Release tooling
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check version consistency
+        # build.zig, build.zig.zon, src/c_api.zig and python/pyproject.toml must
+        # carry the same version. The publish workflow also compares them with
+        # the release tag.
+        run: python3 scripts/check_versions.py
+
+      - name: Test release scripts
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+
+      - name: Lint scripts
+        run: |
+          python -m pip install ruff==0.14.13
+          ruff check scripts/
+          # release_bump.py, release_tag.py and test_release_tools.py predate the
+          # formatter check and are not formatted yet; drop the excludes once
+          # they are.
+          ruff format --check scripts/ \
+            --exclude scripts/release_bump.py \
+            --exclude scripts/release_tag.py \
+            --exclude scripts/test_release_tools.py
+
   python_integrations:
     runs-on: ubuntu-latest
     name: Python integrations (Linux)
@@ -284,7 +365,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
 
@@ -294,7 +375,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
 
       # The `all` extra holds gemmi, biopython, biotite, MDAnalysis and mdtraj.
       # Without them the integration test modules skip themselves, which is

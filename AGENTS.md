@@ -43,6 +43,13 @@ mkdir -p /tmp/zsasa-check
 ./zig-out/bin/zsasa calc examples/1ubq.pdb /tmp/zsasa-check/output.json
 ```
 
+Release tooling checks, when touching `scripts/`, a version file or the publish workflow:
+
+```bash
+python3 scripts/check_versions.py                        # build.zig, build.zig.zon, src/c_api.zig and python/pyproject.toml agree
+python3 -m unittest discover -s scripts -p 'test_*.py'   # tests of the release scripts
+```
+
 Python package checks, when touching `python/` or the C ABI:
 
 ```bash
@@ -162,6 +169,9 @@ Before opening a release PR:
 - When `python/` or the C ABI changed, also run the Python package checks from this file.
 - When `website/` or documentation build plumbing changed, also run the documentation site checks from this file.
 - Tag only after the release PR is merged. A pushed `vX.Y.Z` tag triggers the publish workflow, so confirm `CHANGELOG.md` and generated release notes first.
+- Before tagging, run `python3 scripts/check_versions.py --tag vX.Y.Z` on the merge commit. The publish workflow runs the same check and also requires the tagged commit to be on `main`; it publishes nothing until every build and check has succeeded.
+- A manual `workflow_dispatch` run only creates the GitHub Release, pushes the Docker image and updates Homebrew and Scoop with `target=pypi`; use `target=testpypi` (TestPyPI only) for a TestPyPI upload. Before tagging, rehearse the release with `target=none`: start the workflow from the release branch (or `main` after the merge) with `release_tag=vX.Y.Z`; it builds every wheel, CLI binary and the Docker image from that branch, runs every check, and publishes nothing. The tag does not have to exist yet.
+- When bumping Zig, update the sha256 values for the Zig tarballs in `Dockerfile` and in `python/pyproject.toml` (cibuildwheel `before-all`) from `https://ziglang.org/download/index.json`, together with the version in the workflows. When updating a pinned third-party action, change the commit SHA and the version comment together.
 
 After the release is published (the publish workflow has attached the binaries and `SHA256SUMS` to the GitHub release), in a follow-up PR from an up-to-date `main`:
 
