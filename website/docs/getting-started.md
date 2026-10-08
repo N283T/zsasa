@@ -17,6 +17,8 @@ uv add zsasa
 Pre-built wheels are available for Linux (x86_64, aarch64), macOS (x86_64, arm64), and Windows (x86_64).
 Python 3.11-3.13 supported.
 
+The pre-built x86_64 wheels, CLI binaries and Docker image need a CPU with AVX2 and FMA (x86-64-v3: Intel Haswell or AMD Excavator, 2013 and later, including every Zen CPU). The macOS builds need macOS 11 or later. On an older CPU, build from source: `pip install --no-binary zsasa zsasa` (needs Zig 0.16) or `zig build -Doptimize=ReleaseFast`, which target the machine they run on.
+
 For structure file support (mmCIF/PDB), install with an integration:
 
 ```bash

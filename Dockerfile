@@ -28,7 +28,13 @@ RUN apk add --no-cache curl xz git && \
 WORKDIR /src
 COPY build.zig build.zig.zon ./
 COPY src/ src/
-RUN zig build -Doptimize=ReleaseFast && \
+# Build for a fixed CPU instead of the build machine's: x86_64_v3 (AVX2, FMA)
+# on x86-64 and the baseline on arm64, like the release binaries.
+RUN case "$(uname -m)" in \
+      x86_64) ZIG_CPU=x86_64_v3 ;; \
+      *)      ZIG_CPU=baseline ;; \
+    esac && \
+    zig build -Doptimize=ReleaseFast -Dcpu="${ZIG_CPU}" && \
     cp zig-out/bin/zsasa /zsasa
 
 # Runtime stage — statically linked, no OS needed

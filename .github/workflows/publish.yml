@@ -338,22 +338,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # zig_args pins what each binary is built for. Without it Zig targets the
+        # runner's own CPU and OS version, so the result would depend on the
+        # machine GitHub happened to assign (an AVX-512 runner produced binaries
+        # that fault elsewhere). x86-64 is built for x86_64_v3 (AVX2, FMA; 2013 and
+        # later), arm64 for the baseline, and macOS for 11.0 and later.
         include:
           - os: ubuntu-latest
             target: linux-x86_64
             binary: zsasa
+            zig_args: -Dcpu=x86_64_v3
           - os: ubuntu-24.04-arm
             target: linux-aarch64
             binary: zsasa
+            zig_args: -Dcpu=baseline
           - os: macos-15-intel
             target: macos-x86_64
             binary: zsasa
+            zig_args: -Dtarget=x86_64-macos.11.0 -Dcpu=x86_64_v3
           - os: macos-latest
             target: macos-aarch64
             binary: zsasa
+            zig_args: -Dtarget=aarch64-macos.11.0
           - os: windows-latest
             target: windows-x86_64
             binary: zsasa.exe
+            zig_args: -Dcpu=x86_64_v3
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -366,7 +376,7 @@ jobs:
           version: 0.16.0
 
       - name: Build CLI
-        run: zig build -Doptimize=ReleaseFast
+        run: zig build -Doptimize=ReleaseFast ${{ matrix.zig_args }}
 
       - name: Smoke test
         shell: bash

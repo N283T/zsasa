@@ -97,11 +97,16 @@ manylinux-aarch64-image = "quay.io/pypa/manylinux_2_28_aarch64:2026.04.25-0"
 # checked against the sha256 published in https://ziglang.org/download/index.json
 # for 0.16.0 before it is unpacked; the build stops on a mismatch. When bumping
 # Zig, update both checksums here and in the Dockerfile.
-before-all = 'ARCH=$(uname -m) && case $ARCH in x86_64) SHA=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00;; aarch64) SHA=ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17;; *) echo "unsupported architecture $ARCH" >&2; exit 1;; esac && curl -sSfL -o /tmp/zig.tar.xz https://ziglang.org/download/0.16.0/zig-$ARCH-linux-0.16.0.tar.xz && test "$(sha256sum /tmp/zig.tar.xz | cut -d" " -f1)" = "$SHA" && tar -xJf /tmp/zig.tar.xz -C /usr/local && ln -sf /usr/local/zig-$ARCH-linux-0.16.0/zig /usr/local/bin/zig && zig build -Doptimize=ReleaseFast -Dtarget=$ARCH-linux-gnu.2.28'
+# x86-64 wheels are built for x86_64_v3 (AVX2, FMA) and aarch64 for the baseline;
+# the CLI binaries and the Docker image use the same CPUs (publish.yml, Dockerfile).
+before-all = 'ARCH=$(uname -m) && case $ARCH in x86_64) SHA=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00; CPU=x86_64_v3;; aarch64) SHA=ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17; CPU=baseline;; *) echo "unsupported architecture $ARCH" >&2; exit 1;; esac && curl -sSfL -o /tmp/zig.tar.xz https://ziglang.org/download/0.16.0/zig-$ARCH-linux-0.16.0.tar.xz && test "$(sha256sum /tmp/zig.tar.xz | cut -d" " -f1)" = "$SHA" && tar -xJf /tmp/zig.tar.xz -C /usr/local && ln -sf /usr/local/zig-$ARCH-linux-0.16.0/zig /usr/local/bin/zig && zig build -Doptimize=ReleaseFast -Dtarget=$ARCH-linux-gnu.2.28 -Dcpu=$CPU'
 
 [tool.cibuildwheel.macos]
 # Zig installed by setup-zig action in workflow (not via PyPI).
-before-all = "zig build -Doptimize=ReleaseFast"
+# The explicit target sets the minimum macOS version to 11.0, matching the
+# macosx_11_0 wheel tag: Zig ignores MACOSX_DEPLOYMENT_TARGET and would otherwise
+# use the build host's version. Intel wheels are built for x86_64_v3 (AVX2, FMA).
+before-all = 'ARCH=$(uname -m) && case $ARCH in x86_64) ZIG_ARGS="-Dtarget=x86_64-macos.11.0 -Dcpu=x86_64_v3";; arm64) ZIG_ARGS="-Dtarget=aarch64-macos.11.0";; *) echo "unsupported architecture $ARCH" >&2; exit 1;; esac && zig build -Doptimize=ReleaseFast $ZIG_ARGS'
 # Skip delocate: libzsasa.dylib has no external dylib dependencies.
 repair-wheel-command = ""
 
@@ -110,7 +115,8 @@ MACOSX_DEPLOYMENT_TARGET = "11.0"
 
 [tool.cibuildwheel.windows]
 # Zig installed by setup-zig action in workflow (not via PyPI).
-before-all = "zig build -Doptimize=ReleaseFast"
+# Built for x86_64_v3 (AVX2, FMA), not for the CPU of the build machine.
+before-all = "zig build -Doptimize=ReleaseFast -Dcpu=x86_64_v3"
 # Skip delvewheel: Zig statically links everything, no external DLL dependencies.
 repair-wheel-command = ""
 
