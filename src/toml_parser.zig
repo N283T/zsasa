@@ -551,7 +551,7 @@ fn parseNumber(raw: []const u8) Error!Value {
 
 /// Strip a `#` comment from the end of a line, being careful not to strip
 /// inside a quoted string.
-fn stripComment(line: []const u8) []const u8 {
+pub fn stripComment(line: []const u8) []const u8 {
     var in_string = false;
     var i: usize = 0;
     while (i < line.len) {

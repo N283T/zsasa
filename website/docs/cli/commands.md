@@ -24,6 +24,8 @@ zsasa batch --workflow <workflow.toml>
 
 Workflow files are TOML files that keep input, output, calculation, classifier, and batch job settings together. In batch mode, `--manifest` remains a compatibility alias for `--workflow`; it also accepts the older flat-root manifest layout.
 
+A workflow file is written for one command. A key that the command does not read is never ignored silently: it is an error when it would change the results (for example `[[jobs]]` or `[input] dir` under `calc --workflow`, or `[calculation] rsa = true` under `batch --workflow`) and a warning, printed also with `--quiet`, when it only affects reporting or the output location (for example `[output] dir` under `calc --workflow`, or `timing = true` in a batch workflow with `[[jobs]]`). See [Keys a Command Does Not Read](../guide/workflows.md#unused-keys).
+
 See [Workflow Files](../guide/workflows.md) for full examples, the [key reference](../guide/workflows.md#key-reference), precedence rules, custom classifier config, and residue-map usage.
 
 ## Subcommands
@@ -180,7 +182,7 @@ See [Output & Analysis](output.md#analysis-features) for detailed output descrip
 
 | Option | Description | Commands |
 |--------|-------------|----------|
-| `--workflow=PATH` | Read settings from a TOML [workflow file](../guide/workflows.md); explicit command-line options override it | calc, batch |
+| `--workflow=PATH` | Read settings from a TOML [workflow file](../guide/workflows.md); explicit command-line options override it. Keys the command does not read are [reported](../guide/workflows.md#unused-keys) | calc, batch |
 | `--manifest=PATH` | Compatibility alias for `--workflow` that also accepts legacy flat-root manifests | batch |
 
 ### Batch Input Options
@@ -196,10 +198,10 @@ See [Output & Analysis](output.md#analysis-features) for detailed output descrip
 |--------|-------------|---------|----------|
 | `-o, --output=FILE` | Output location, as an alternative to the positional argument: `calc` writes this file; `batch` writes per-file results into this directory, or all rows to this file with `--format=jsonl`; `traj` writes this CSV file. The option wins over a positional path. `-o FILE` and `--output FILE` also work, `-o=FILE` only for `traj` | calc: `output.json`; batch: no per-file output; traj: `traj_sasa.csv` | calc, batch, traj |
 | `--format=FMT` | Output format. `calc`: `json`, `compact`, `csv`, `freesasa`, `rsa`; `batch`: `json`, `compact`, `csv`, `jsonl` | `json` | calc, batch |
-| `--residue-map` | Add compact residue map arrays to batch JSONL output (`--format=jsonl` only) | off | batch |
+| `--residue-map` | Add compact residue map arrays to batch JSONL output (`--format=jsonl` only). A BSA `[analysis]` workflow rejects it | off | batch |
 | `--jsonl-decimals=N` | Round JSONL floating-point values to `N` decimal places (`0..15`) | full precision | batch |
-| `--timing` | Show timing breakdown (for benchmarking) | off | calc, batch |
-| `--profile-stages` | With `--timing`, add read/parse, classifier, and JSONL write timings to the batch summary | off | batch |
+| `--timing` | Show timing breakdown (for benchmarking). With `batch --workflow` only a BSA `[analysis]` workflow reports it; a workflow with `[[jobs]]` prints a warning that the option has no effect | off | calc, batch |
+| `--profile-stages` | With `--timing`, add read/parse, classifier, and JSONL write timings to the batch summary. It has no effect with `--workflow`, which prints a warning | off | batch |
 | `-q, --quiet` | Suppress progress output, including standard progress bars shown by `batch` and `traj`, and the `batch` summary. Errors are not suppressed: `batch` still lists the [inputs that failed](../guide/batch.md#failed-inputs) on standard error | off | calc, batch, traj |
 | `--validate` | Validate input only, do not calculate | off | calc |
 
@@ -435,7 +437,9 @@ Errors are written to standard error and the command exits with status 1. `<...>
 | `Error: --mol=<value> out of range (SDF has <n> molecules, use 1-based index)` | calc | `--mol` index past the end of the SDF file |
 | `Error loading config file '<path>': custom classifier configs are TOML-only; ...` | calc | `--config` file without the `.toml` extension |
 | `Error: --chain needs at least one chain ID (for example --chain=A or --chain=A,B), got '<value>'` | batch | `--chain` with an empty list, such as `--chain=,` |
-| `Error reading workflow file '<path>': <name>` | calc, batch | The workflow file is missing or invalid; `<name>` is `FileNotFound`, `UnknownField`, `UnsupportedVersion`, `InvalidKind`, `InvalidFieldType`, `InvalidClassifierConfig`, `InvalidAnalysisConfig`, `MissingJobName`, `DuplicateJobName`, `UnsafeJobName`, `NoJobs` or `EmptyJobChains` (a job with `chains = []`; an explanation follows on the next line) |
+| `Error reading workflow file '<path>': <name>` | calc, batch | The workflow file is missing or invalid; `<name>` is `FileNotFound`, `UnknownField`, `UnsupportedVersion`, `InvalidKind`, `InvalidFieldType`, `InvalidClassifierConfig`, `InvalidAnalysisConfig`, `MissingJobName` (a `[[jobs]]` table without a `name`, also an empty one), `DuplicateJobName`, `UnsafeJobName`, `NoJobs`, `EmptyJobChains` (a job with `chains = []`) or `AnalysisWithJobs` (`[analysis]` together with `[[jobs]]`); an explanation follows the last two on the next line |
+| `Error: <key> ...` | calc, batch | A workflow key the command cannot honor, for example `Error: [[jobs]] is read only by 'zsasa batch --workflow' and calc would ignore it: ...` or `Error: [calculation] rsa = true is not supported by batch (only calc writes RSA tables): ...`. The message names the key and says what to do; every such key is listed before the command stops with `Error: InvalidArgument` and exit status 1. See [Keys a Command Does Not Read](../guide/workflows.md#unused-keys) |
+| `Warning: <key> ...` | calc, batch | A workflow key or option that the command does not read and that only affects reporting or the output location, for example `Warning: [output] dir is read only by 'zsasa batch --workflow' and calc ignores it: ...`. The run goes on and the exit status is not changed; the warning is printed with `--quiet` too |
 
 ### Input files
 
