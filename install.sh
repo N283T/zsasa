@@ -6,8 +6,12 @@
 #   ./install.sh
 #
 # Environment variables:
-#   VERSION     - Pin a specific version (default: latest release)
-#   INSTALL_DIR - Override install directory (default: ~/.local/bin)
+#   VERSION        - Pin a specific version (default: latest release)
+#   INSTALL_DIR    - Override install directory (default: ~/.local/bin)
+#   SKIP_CHECKSUM  - Set to 1 to install a downloaded binary without verifying its
+#                    SHA256 checksum (not recommended). By default the install stops
+#                    if SHA256SUMS cannot be downloaded, has no entry for the binary,
+#                    no sha256sum/shasum tool is available, or the checksum differs.
 
 set -eu
 
@@ -187,6 +191,39 @@ build_from_source() {
 }
 
 # ---------------------------------------------------------------------------
+# Checksum verification (fails closed)
+# ---------------------------------------------------------------------------
+# verify_checksum FILE ASSET_NAME SHA256SUMS_FILE
+# Stops the installer unless FILE has the checksum that SHA256SUMS_FILE lists for
+# ASSET_NAME. Every way of not being able to verify is an error.
+verify_checksum() {
+    _file="$1"
+    _asset="$2"
+    _sums="$3"
+
+    _expected="$(awk -v name="${_asset}" '
+        { n = $2; sub(/^\*/, "", n); if (n == name) { print tolower($1); exit } }
+    ' "${_sums}")"
+    if [ -z "${_expected}" ]; then
+        die "SHA256SUMS has no entry for ${_asset}. Refusing to install an unverified binary (set SKIP_CHECKSUM=1 to skip verification)."
+    fi
+    case "${_expected}" in
+        *[!0-9a-f]*) die "SHA256SUMS has a malformed checksum for ${_asset}: '${_expected}'." ;;
+    esac
+    if [ "${#_expected}" -ne 64 ]; then
+        die "SHA256SUMS has a malformed checksum for ${_asset}: '${_expected}'."
+    fi
+
+    _actual="$(_sha256 "${_file}")" \
+        || die "Neither sha256sum nor shasum found, so the download cannot be verified. Install one and retry (or set SKIP_CHECKSUM=1 to skip verification)."
+
+    if [ "${_expected}" != "${_actual}" ]; then
+        die "Checksum mismatch for ${_asset}! Expected ${_expected}, got ${_actual}"
+    fi
+    info "Checksum verified."
+}
+
+# ---------------------------------------------------------------------------
 # Download pre-built binary
 # ---------------------------------------------------------------------------
 download_binary() {
@@ -204,21 +241,13 @@ download_binary() {
     download "${_url}" "${_tmp_bin}" \
         || die "Download failed. Check your network or visit https://github.com/${REPO}/releases."
 
-    info "Verifying checksum..."
-    if download "${_checksum_url}" "${_tmp_checksums}" 2>/dev/null; then
-        _expected="$(grep "${_asset_name}" "${_tmp_checksums}" | awk '{print $1}')"
-        if [ -n "${_expected}" ]; then
-            _actual="$(_sha256 "${_tmp_bin}")" || {
-                warn "No SHA256 tool available. Skipping checksum verification."
-                _expected=""
-            }
-            if [ -n "${_expected}" ] && [ "${_expected}" != "${_actual}" ]; then
-                die "Checksum mismatch! Expected ${_expected}, got ${_actual}"
-            fi
-            info "Checksum verified."
-        fi
+    if [ "${SKIP_CHECKSUM:-}" = "1" ]; then
+        warn "SKIP_CHECKSUM=1: installing without verifying the checksum."
     else
-        warn "Checksum file not available. Skipping verification."
+        info "Verifying checksum..."
+        download "${_checksum_url}" "${_tmp_checksums}" 2> /dev/null \
+            || die "Could not download ${_checksum_url}. Refusing to install an unverified binary (set SKIP_CHECKSUM=1 to skip verification)."
+        verify_checksum "${_tmp_bin}" "${_asset_name}" "${_tmp_checksums}"
     fi
 
     info "Installing zsasa to ${_install_dir}/zsasa..."

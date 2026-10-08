@@ -61,6 +61,14 @@ uv run website/build.py
 
 The build fails on broken internal links, missing heading anchors, and unknown chart or table references. Benchmark charts are drawn from `website/data/benchmarks/*.json`; regenerate those with `website/scripts/export_benchmarks.py` (see `website/README.md`) rather than editing them by hand.
 
+Release tooling checks, when touching `scripts/`, `install.sh`, `flake.nix`, `build.zig.zon` or `packaging/`:
+
+```bash
+uv run --no-project --python 3.12 --with pytest python -m pytest scripts/ -q
+sh -n install.sh && nix run nixpkgs#shellcheck -- install.sh
+scripts/check_nix_deps_hash.py
+```
+
 Use the narrowest checks that cover the changed surface area. If a check is skipped, say why.
 
 ## Zig Guidelines
@@ -103,6 +111,7 @@ Use the narrowest checks that cover the changed surface area. If a check is skip
 - `CHANGELOG.md`, `build.zig.zon`, `python/pyproject.toml`, packaging metadata, and install scripts may need coordinated updates for releases.
 - Do not publish packages, create tags, or merge PRs without explicit user approval.
 - For Nix changes, verify the flake path touched and mention any follow-up commands the user should run.
+- `flake.nix` pins the Zig dependencies of `build.zig.zon` with a fixed-output hash (`outputHash`) and records a fingerprint of the inputs it was computed for (`# zig-deps-fingerprint:`). **Whenever the `.dependencies` in `build.zig.zon` or the Zig version in `flake.nix` change, in any PR and not only in releases**, refresh both with `scripts/check_nix_deps_hash.py --refresh` (needs Nix; it builds with a fake hash and reads the real one from the mismatch error) and confirm with `nix build && ./result/bin/zsasa --version`. `scripts/check_nix_deps_hash.py` without options needs no Nix and exits 1 when the hash is stale; `scripts/test_release_tools.py` runs the same check. A package version bump does not change the hash. Never commit the `result` symlink.
 
 ### Release Checklist
 
@@ -125,13 +134,13 @@ Before opening a release PR:
   - `flake.nix`
   - `python/pyproject.toml`
   - `python/uv.lock` (regenerate or verify after `python/pyproject.toml` changes)
-  - `packaging/conda-forge/meta.yaml`
+  - `packaging/conda-forge/meta.yaml` (`scripts/release_bump.py` sets the version, restarts the build number at 0 and replaces the four binary checksums and the `LICENSE` checksum with a `PENDING-...` marker, because the old ones would look valid but fail; the real values are filled in after the release is published, see below)
   - `src/c_api.zig` (`VERSION`, used by `zsasa_version()` and Python `get_version()`)
 - Check release-adjacent files for required updates even when grep does not find the old version:
   - `install.sh`
   - `Dockerfile`
   - `.github/workflows/publish.yml`
-  - `packaging/aur/PKGBUILD`
+  - `packaging/aur/PKGBUILD` and `packaging/aur/.SRCINFO`: leave them at the previous release in the release PR; they cannot be bumped before the release assets and their checksums exist
   - `CITATION.cff`
 - Update changelogs and release links:
   - Add a dated `CHANGELOG.md` section for `X.Y.Z`.
@@ -148,6 +157,14 @@ Before opening a release PR:
   ./zig-out/bin/zsasa calc examples/1ubq.pdb /tmp/zsasa-check/output.json
   ```
 
+- Check the Nix flake: run `scripts/check_nix_deps_hash.py` (exits 1 when the dependency hash is stale), and on a machine with Nix `nix build` followed by `./result/bin/zsasa --version`. The release PR only changes the version in `flake.nix`, so a failure here means an earlier dependency change skipped the refresh described under Release and Packaging Notes.
+- Run the release tooling tests: `uv run --no-project --python 3.12 --with pytest python -m pytest scripts/ -q`.
 - When `python/` or the C ABI changed, also run the Python package checks from this file.
 - When `website/` or documentation build plumbing changed, also run the documentation site checks from this file.
 - Tag only after the release PR is merged. A pushed `vX.Y.Z` tag triggers the publish workflow, so confirm `CHANGELOG.md` and generated release notes first.
+
+After the release is published (the publish workflow has attached the binaries and `SHA256SUMS` to the GitHub release), in a follow-up PR from an up-to-date `main`:
+
+- Run `scripts/update_packaging_checksums.py X.Y.Z`. It reads the release's `SHA256SUMS`, cross-checks it against the asset digests GitHub records, and rewrites `packaging/conda-forge/meta.yaml` (checksums), `packaging/aur/PKGBUILD` (`pkgver`, `pkgrel=1`, `sha256sums`) and `packaging/aur/.SRCINFO`. Review the diff, commit it and open the PR.
+- `scripts/update_packaging_checksums.py X.Y.Z --check` changes nothing and exits non-zero while any of these files is stale or still carries the `PENDING-...` marker.
+- Submit the same `PKGBUILD` and `.SRCINFO` to the AUR repository `zsasa-bin` and update the conda-forge feedstock from the recipe. Neither is automated, and the AUR build (`makepkg`) is not run by any script here.
