@@ -93,35 +93,82 @@ FreeSASA-like human-readable report.
 
 ### RSA Text (`calc --format=rsa`)
 
-The single-structure `calc` command can also write a FreeSASA/NACCESS-style
-RSA table:
+The single-structure `calc` command can also write a residue table in the
+`.rsa` format of NACCESS, which FreeSASA writes too:
 
 ```text
 REM  zsasa FreeSASA/NACCESS-compatible RSA
 REM  Absolute and relative SASAs for structure.pdb
-REM  Atomic radii and reference values for relative SASA: naccess
+REM  Atomic radii: NACCESS
+REM  Reference values for relative SASA: Tien et al. 2013
 REM  Algorithm: Shrake & Rupley
 REM  Probe-radius: 1.40
 REM  Test-points: 100
 REM RES _ NUM      All-atoms   Total-Side   Main-Chain    Non-polar    All polar
 REM                ABS   REL    ABS   REL    ABS   REL    ABS   REL    ABS   REL
-RES ALA   A 1      30.00  23.3  20.00   N/A  10.00   N/A  20.00   N/A  10.00   N/A
+RES MET A   1    52.21  23.3  18.10   N/A  34.11   N/A  28.35   N/A  23.86   N/A
+RES GLN A   2    78.96  35.1  73.18   N/A   5.78   N/A  14.42   N/A  64.54   N/A
+RES SER H  10A   30.00  19.4  20.00   N/A  10.00   N/A  20.00   N/A  10.00   N/A
 END  Absolute sums over single chains surface
-CHAIN  1   A       30.0         20.0         10.0         20.0         10.0
+CHAIN  1 A      131.2         91.3         39.9         42.8         88.4
+CHAIN  2 H       30.0         20.0         10.0         20.0         10.0
 END  Absolute sums over all chains
-TOTAL              30.0         20.0         10.0         20.0         10.0
+TOTAL           161.2        111.3         49.9         62.8         98.4
 ```
 
 `rsa` requires residue metadata, so use PDB/mmCIF input or another input format
 that provides chain, residue name, residue number, and insertion code fields.
-Relative all-atom RSA values are reported for standard amino acids; unavailable
-relative values are printed as `N/A`, matching FreeSASA's convention.
+There is one `RES` row per residue as defined under
+[Residue Identity](#residue-identity), and one `CHAIN` row per chain ID.
 
-The RSA text table follows legacy NACCESS-style fixed-width columns where
-possible. If residue labels, residue numbers, chain IDs, or SASA/RSA values are
-too wide for those columns, zsasa still writes the full values and prints a
+The all-atom relative value (`REL`, in percent) is the absolute value divided
+by the maximum SASA of the residue type from Tien et al. (2013), the table
+under [RSA Calculation](#rsa-calculation---rsa), whatever the classifier. It is
+reported for the 20 standard amino acids. zsasa has no reference values for
+the side-chain, main-chain, non-polar and polar columns, so their relative
+values, and the all-atom relative value of any other residue, are printed as
+`N/A`, FreeSASA's notation for a missing reference value.
+
+#### RSA Column Layout
+
+Rows follow the fixed columns of NACCESS, so readers that take fields by
+position can read them. Columns are counted from 1:
+
+| Row | Columns | Content |
+|-----|---------|---------|
+| `RES` | 1-3 | `RES` |
+| | 5-7 | Residue name, right-justified |
+| | 9 | Chain ID |
+| | 10-13 | Residue number, right-justified |
+| | 14 | Insertion code |
+| | 16-80 | Five pairs of an absolute value (7 columns, 2 decimals) and a relative value (6 columns, 1 decimal): all atoms, side chain, main chain, non-polar, polar |
+| `CHAIN` | 1-5 | `CHAIN` |
+| | 6-8 | Number of the chain, right-justified |
+| | 10 | Chain ID |
+| | 12-21, 25-34, 38-47, 51-60, 64-73 | Absolute sums (10 columns, 1 decimal) in the order of the `RES` row |
+| `TOTAL` | 1-5 | `TOTAL`, then the sums in the columns of the `CHAIN` row |
+
+Chain ID, residue number and insertion code follow each other without a blank,
+as in a PDB file (`A1000B`), so read `RES` rows by column, not by splitting at
+blanks.
+
+A row keeps these columns when the residue name has at most three characters,
+the chain ID at most one, the residue number at most four (`-999` to `9999`)
+and the insertion code at most one, absolute values are at most `999.99` and
+relative values at most `999.9`. zsasa leaves the first column of every value
+field blank, which keeps neighboring values apart. A label or value that is
+too wide (a five-character residue name, a chain ID such as `AA`, a ligand with
+more than 1000 Å²) is still written in full, with a blank between it and its
+neighbors, so the rest of that row moves to the right. zsasa then prints a
 warning that columns may be misaligned. Use `--format=json` for robust
 machine-readable output.
+
+:::note
+Biopython's `Bio.PDB.NACCESS.process_rsa_data` reads these columns but converts
+every relative value to a number, so it stops with `ValueError` at the first
+`N/A`. This also happens with the RSA files of FreeSASA. Replace `   N/A` with
+` -99.9` (the same width) before passing the lines to it.
+:::
 
 The `freesasa` and `rsa` formats are available for single `calc` runs only.
 Batch output remains `json`, `compact`, `csv`, or `jsonl`.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -215,3 +216,153 @@ class TestCsvOutput:
 
         assert all(len(row) == len(RICH_CSV_HEADER) for row in rows)
         assert {row[1] for row in rows[1:-1]} == {'a,"b'}
+
+
+def pdb_atom(serial: int, atom: str, residue: str, chain: str, number: str, x: float) -> str:
+    """One ATOM record; `number` is the residue number with its insertion code."""
+    resseq, icode = (number[:-1], number[-1]) if number[-1].isalpha() else (number, " ")
+    element = atom[0]
+    return (
+        f"ATOM  {serial:5d}  {atom:<3s} {residue:>3s} {chain}{resseq:>4s}{icode}   "
+        f"{x:8.3f}{0.0:8.3f}{0.0:8.3f}  1.00 20.00          {element:>2s}\n"
+    )
+
+
+# (chain, residue name, residue number, insertion code, atom count) per residue
+ResidueKey = tuple[str, str, int, str, int]
+
+RESIDUE_CASES: dict[str, tuple[str, list[ResidueKey]]] = {
+    "insertion_codes": (
+        INSERTION_CODE_PDB,
+        [("H", "GLY", 10, "", 2), ("H", "SER", 10, "A", 2), ("H", "THR", 10, "B", 1)],
+    ),
+    # Same chain, number and insertion code, different residue names
+    "same_number_different_names": (
+        pdb_atom(1, "N", "GLY", "A", "10", 0.0)
+        + pdb_atom(2, "CA", "GLY", "A", "10", 1.458)
+        + pdb_atom(3, "N", "LYS", "A", "10", 20.0)
+        + "END\n",
+        [("A", "GLY", 10, "", 2), ("A", "LYS", 10, "", 1)],
+    ),
+    # ALA A 1 is interrupted by a residue of chain B: one entry per run
+    "non_contiguous_residue": (
+        pdb_atom(1, "N", "ALA", "A", "1", 0.0)
+        + pdb_atom(2, "N", "GLY", "B", "2", 20.0)
+        + pdb_atom(3, "CB", "ALA", "A", "1", 40.0)
+        + "END\n",
+        [("A", "ALA", 1, "", 1), ("B", "GLY", 2, "", 1), ("A", "ALA", 1, "", 1)],
+    ),
+    # All models are read superimposed by default: one entry per residue and model
+    "two_models": (
+        "MODEL        1\n"
+        + pdb_atom(1, "N", "MET", "A", "1", 0.0)
+        + pdb_atom(2, "CA", "MET", "A", "1", 1.458)
+        + pdb_atom(3, "N", "GLY", "A", "2", 20.0)
+        + "ENDMDL\nMODEL        2\n"
+        + pdb_atom(1, "N", "MET", "A", "1", 0.5)
+        + pdb_atom(2, "CA", "MET", "A", "1", 1.958)
+        + pdb_atom(3, "N", "GLY", "A", "2", 20.5)
+        + "ENDMDL\nEND\n",
+        [
+            ("A", "MET", 1, "", 2),
+            ("A", "GLY", 2, "", 1),
+            ("A", "MET", 1, "", 2),
+            ("A", "GLY", 2, "", 1),
+        ],
+    ),
+}
+
+
+class TestResidueOutputsAgree:
+    """`--per-residue`, `--format=rsa` and the JSONL residue map share one residue identity."""
+
+    @staticmethod
+    def per_residue_table(stderr: str) -> list[tuple[ResidueKey, float]]:
+        """Rows of the `--per-residue` table: `Chain  Res    Num       SASA  Atoms`."""
+        lines = stderr.splitlines()
+        start = lines.index("Per-residue SASA:") + 3
+        rows = []
+        for line in lines[start:]:
+            if not line.strip() or line.startswith("Output written"):
+                break
+            number = line[11:17].strip()
+            icode = number[-1] if number[-1].isalpha() else ""
+            key = (
+                line[0:5].strip(),
+                line[6:10].strip(),
+                int(number.removesuffix(icode) if icode else number),
+                icode,
+                int(line[29:35]),
+            )
+            rows.append((key, float(line[18:28])))
+        return rows
+
+    @staticmethod
+    def rsa_rows(text: str) -> list[tuple[tuple[str, str, int, str], float]]:
+        """`RES` rows by the NACCESS fixed columns (as Bio.PDB.NACCESS slices them)."""
+        rows = []
+        for line in text.splitlines():
+            if line.startswith("RES"):
+                key = (line[8].strip(), line[4:7].strip(), int(line[9:13]), line[13].strip())
+                rows.append((key, float(line[15:22])))
+        return rows
+
+    @pytest.mark.parametrize("case", list(RESIDUE_CASES))
+    def test_same_residues_atom_counts_and_areas(self, tmp_path: Path, case: str):
+        pdb_text, expected = RESIDUE_CASES[case]
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        input_file = input_dir / f"{case}.pdb"
+        input_file.write_text(pdb_text)
+
+        # --per-residue table on stderr
+        result = run_zsasa("calc", "--per-residue", str(input_file), str(tmp_path / "out.json"))
+        assert result.returncode == 0, result.stderr
+        table = self.per_residue_table(result.stderr)
+
+        # RSA file
+        rsa_file = tmp_path / "out.rsa"
+        result = run_zsasa("calc", "--quiet", "--format=rsa", str(input_file), str(rsa_file))
+        assert result.returncode == 0, result.stderr
+        assert "Warning" not in result.stderr
+        rsa = self.rsa_rows(rsa_file.read_text())
+
+        # JSONL residue map
+        jsonl_file = tmp_path / "out.jsonl"
+        result = run_zsasa(
+            "batch",
+            "--quiet",
+            "--format=jsonl",
+            "--residue-map",
+            "-o",
+            str(jsonl_file),
+            str(input_dir),
+        )
+        assert result.returncode == 0, result.stderr
+        row = json.loads(jsonl_file.read_text())
+        residue_map = list(
+            zip(
+                row["residue_chain"],
+                row["residue_name"],
+                row["residue_number"],
+                row["residue_insertion_code"],
+                row["residue_atom_count"],
+                strict=True,
+            )
+        )
+
+        assert [key for key, _ in table] == expected
+        assert residue_map == expected
+        assert [key for key, _ in rsa] == [key[:4] for key in expected]
+
+        # Areas: the table and the RSA file print two decimals
+        for (_, table_area), (_, rsa_area), map_area in zip(
+            table, rsa, row["residue_sasa"], strict=True
+        ):
+            assert table_area == pytest.approx(map_area, abs=0.0051)
+            assert rsa_area == pytest.approx(map_area, abs=0.0051)
+        assert sum(row["residue_sasa"]) == pytest.approx(row["total_area"])
+        # Atom ranges of the residue map cover every atom exactly once, in order
+        starts, counts = row["residue_atom_start"], row["residue_atom_count"]
+        assert starts == [sum(counts[:i]) for i in range(len(counts))]
+        assert sum(counts) == len(row["atom_areas"])

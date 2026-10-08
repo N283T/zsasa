@@ -217,20 +217,102 @@ fn collectChainAreas(allocator: Allocator, identity: analysis.ResidueIdentity, r
     return chains.toOwnedSlice(allocator);
 }
 
+// RSA text (`--format=rsa`)
+//
+// The fixed columns of a NACCESS `.rsa` file, as NACCESS and FreeSASA write
+// them (FreeSASA prints `RES %s %c%s ` and five `%7.2f%6.1f` pairs, where the
+// second `%s` is the residue number field of a PDB line, columns 23-27) and
+// as fixed-column readers such as Biopython's `Bio.PDB.NACCESS` slice them.
+// Columns are 1-based:
+//
+//   RES rows
+//      1-3   `RES`
+//      5-7   residue name, right-justified
+//      9     chain ID
+//     10-13  residue number, right-justified
+//     14     insertion code
+//     16-80  five pairs of an absolute (F7.2) and a relative (F6.1) value:
+//            all atoms, side chain, main chain, non-polar, polar
+//   CHAIN rows
+//      1-5   `CHAIN`
+//      6-8   number of the chain, right-justified
+//     10     chain ID
+//     12-21, 25-34, 38-47, 51-60, 64-73
+//            absolute sums (F10.1) in the order of the RES rows
+//   TOTAL row
+//      1-5   `TOTAL`, then the sums in the columns of the CHAIN rows
+//
+// A row follows these columns whenever its labels and values fit. zsasa asks
+// more of a value than its field width: the first column of the field must
+// stay blank, so an absolute value is at most 999.99 and a relative value
+// between -99.9 and 999.9. Biopython reads only the other columns of a field
+// (`line[16:22]`, `line[23:28]`, ...), and the blank keeps neighboring values
+// apart for readers that split a row at blanks. A label or value that does
+// not fit is written in full all the same, with a blank between it and its
+// neighbors, which moves the rest of the row to the right;
+// `rsaResultNeedsLegacyWidthWarning` tells when that happens.
+
+/// Widest absolute value of a RES row that keeps its fixed columns (`999.99`).
+const rsa_abs_width = 6;
+/// Widest relative value of a RES row that keeps its fixed columns (`999.9`).
+const rsa_rel_width = 5;
+/// Width of a sum in the CHAIN and TOTAL rows.
+const rsa_sum_width = 10;
+
+/// Labels of an RSA residue row.
+const RsaResidueLabel = struct {
+    residue_name: []const u8,
+    chain: []const u8,
+    /// Residue number in decimal, without the insertion code
+    number: []const u8,
+    insertion_code: []const u8,
+
+    /// `number_buf` holds the residue number and must outlive the result.
+    fn init(identity: analysis.ResidueIdentity, atom: usize, number_buf: *[16]u8) RsaResidueLabel {
+        return .{
+            .residue_name = identity.residue_names[atom].slice(),
+            .chain = identity.chainLabel(atom),
+            // An i32 has at most 11 characters
+            .number = std.fmt.bufPrint(number_buf, "{d}", .{identity.residue_nums[atom]}) catch unreachable,
+            .insertion_code = identity.insertion_codes[atom].slice(),
+        };
+    }
+
+    fn fitsFixedColumns(self: RsaResidueLabel) bool {
+        return self.residue_name.len <= 3 and
+            self.chain.len <= 1 and
+            self.number.len <= 4 and
+            self.insertion_code.len <= 1;
+    }
+
+    fn write(self: RsaResidueLabel, writer: *std.Io.Writer) !void {
+        if (self.fitsFixedColumns()) {
+            // Chain ID, residue number and insertion code follow each other
+            // without a blank (`A1000B`), as in a PDB line
+            try writer.print("RES {s:>3} {s:1}{s:>4}{s:1} ", .{ self.residue_name, self.chain, self.number, self.insertion_code });
+        } else {
+            try writer.print("RES {s:>3} {s} {s:>4}{s:1} ", .{ self.residue_name, self.chain, self.number, self.insertion_code });
+        }
+    }
+};
+
+/// Relative all-atom SASA in percent of the maximum SASA of the residue type
+/// (Tien et al. 2013), or null for a residue without a reference value.
+fn rsaRelativeTotal(residue_name: []const u8, total: f64) ?f64 {
+    const max_sasa = analysis.MaxSASA.get(residue_name) orelse return null;
+    return if (max_sasa > 0) total * 100.0 / max_sasa else null;
+}
+
+/// Write an absolute and a relative value of a RES row. Each is right-justified
+/// in its field (F7.2 and F6.1) behind at least one blank; `N/A` stands for a
+/// relative value without a reference value, as in FreeSASA.
 fn writeAbsRel(writer: *std.Io.Writer, abs: f64, rel: ?f64) !void {
-    try writer.print("{d:7.2}", .{abs});
+    try writer.print(" {d:>" ++ std.fmt.comptimePrint("{d}", .{rsa_abs_width}) ++ ".2}", .{abs});
     if (rel) |value| {
-        try writer.print("{d:6.1}", .{value});
+        try writer.print(" {d:>" ++ std.fmt.comptimePrint("{d}", .{rsa_rel_width}) ++ ".1}", .{value});
     } else {
         try writer.writeAll("   N/A");
     }
-}
-
-fn residueNumberString(buf: []u8, number: i32, insertion_code: types.FixedString4) []const u8 {
-    if (insertion_code.len > 0) {
-        return std.fmt.bufPrint(buf, "{d}{s}", .{ number, insertion_code.slice() }) catch "?";
-    }
-    return std.fmt.bufPrint(buf, "{d}", .{number}) catch "?";
 }
 
 fn formattedExceedsWidth(comptime fmt: []const u8, args: anytype, width: usize) bool {
@@ -238,9 +320,9 @@ fn formattedExceedsWidth(comptime fmt: []const u8, args: anytype, width: usize) 
 }
 
 fn absRelNeedsLegacyWidthWarning(abs: f64, rel: ?f64) bool {
-    if (formattedExceedsWidth("{d:.2}", .{abs}, 7)) return true;
+    if (formattedExceedsWidth("{d:.2}", .{abs}, rsa_abs_width)) return true;
     if (rel) |value| {
-        if (formattedExceedsWidth("{d:.1}", .{value}, 6)) return true;
+        if (formattedExceedsWidth("{d:.1}", .{value}, rsa_rel_width)) return true;
     }
     return false;
 }
@@ -254,13 +336,17 @@ fn areaBreakdownNeedsResidueWidthWarning(area: AreaBreakdown, rel_total: ?f64) b
 }
 
 fn areaBreakdownNeedsSummaryWidthWarning(area: AreaBreakdown) bool {
-    return formattedExceedsWidth("{d:.1}", .{area.total}, 10) or
-        formattedExceedsWidth("{d:.1}", .{area.side_chain}, 10) or
-        formattedExceedsWidth("{d:.1}", .{area.main_chain}, 10) or
-        formattedExceedsWidth("{d:.1}", .{area.apolar}, 10) or
-        formattedExceedsWidth("{d:.1}", .{area.polar}, 10);
+    return formattedExceedsWidth("{d:.1}", .{area.total}, rsa_sum_width) or
+        formattedExceedsWidth("{d:.1}", .{area.side_chain}, rsa_sum_width) or
+        formattedExceedsWidth("{d:.1}", .{area.main_chain}, rsa_sum_width) or
+        formattedExceedsWidth("{d:.1}", .{area.apolar}, rsa_sum_width) or
+        formattedExceedsWidth("{d:.1}", .{area.polar}, rsa_sum_width);
 }
 
+/// Whether some row of the RSA text for `result` leaves the fixed columns
+/// described above: a residue name of more than three characters, a chain ID
+/// of more than one, a residue number of more than four, an insertion code of
+/// more than one, more than 999 chains, or a value too wide for its field.
 fn rsaResultNeedsLegacyWidthWarning(allocator: Allocator, result: SasaResult, input: AtomInput) !bool {
     const residues = try collectResidueAreas(allocator, input, result.atom_areas);
     defer allocator.free(residues);
@@ -270,16 +356,11 @@ fn rsaResultNeedsLegacyWidthWarning(allocator: Allocator, result: SasaResult, in
 
     var total = AreaBreakdown{};
     for (residues) |residue| {
-        const residue_name = identity.residue_names[residue.first_atom].slice();
-        const chain = identity.chainLabel(residue.first_atom);
-        var num_buf: [32]u8 = undefined;
-        const num = residueNumberString(&num_buf, identity.residue_nums[residue.first_atom], identity.insertion_codes[residue.first_atom]);
-        const rel_total: ?f64 = if (analysis.MaxSASA.get(residue_name)) |max_sasa|
-            if (max_sasa > 0) residue.area.total * 100.0 / max_sasa else null
-        else
-            null;
+        var number_buf: [16]u8 = undefined;
+        const label = RsaResidueLabel.init(identity, residue.first_atom, &number_buf);
+        const rel_total = rsaRelativeTotal(label.residue_name, residue.area.total);
 
-        if (residue_name.len > 3 or chain.len > 3 or num.len > 4) return true;
+        if (!label.fitsFixedColumns()) return true;
         if (areaBreakdownNeedsResidueWidthWarning(residue.area, rel_total)) return true;
 
         total.total += residue.area.total;
@@ -290,7 +371,7 @@ fn rsaResultNeedsLegacyWidthWarning(allocator: Allocator, result: SasaResult, in
     }
 
     for (chains, 0..) |chain, i| {
-        if (i + 1 > 999 or chain.chain.len > 3) return true;
+        if (i + 1 > 999 or chain.chain.len > 1) return true;
         if (areaBreakdownNeedsSummaryWidthWarning(chain.area)) return true;
     }
 
@@ -310,7 +391,9 @@ pub fn sasaResultToRsa(allocator: Allocator, result: SasaResult, input: AtomInpu
 
     try writer.writeAll("REM  zsasa FreeSASA/NACCESS-compatible RSA\n");
     try writer.print("REM  Absolute and relative SASAs for {s}\n", .{options.input_name});
-    try writer.print("REM  Atomic radii and reference values for relative SASA: {s}\n", .{options.classifier_name});
+    try writer.print("REM  Atomic radii: {s}\n", .{options.classifier_name});
+    // The reference values do not depend on the classifier (analysis.MaxSASA)
+    try writer.writeAll("REM  Reference values for relative SASA: Tien et al. 2013\n");
     try writer.print("REM  Algorithm: {s}\n", .{options.algorithm_name});
     try writer.print("REM  Probe-radius: {d:.2}\n", .{options.probe_radius});
     if (options.detail_count > 0) {
@@ -321,17 +404,11 @@ pub fn sasaResultToRsa(allocator: Allocator, result: SasaResult, input: AtomInpu
 
     var total = AreaBreakdown{};
     for (residues) |residue| {
-        const residue_name = identity.residue_names[residue.first_atom].slice();
-        const chain = identity.chainLabel(residue.first_atom);
-        var num_buf: [32]u8 = undefined;
-        const num = residueNumberString(&num_buf, identity.residue_nums[residue.first_atom], identity.insertion_codes[residue.first_atom]);
-        const rel_total: ?f64 = if (analysis.MaxSASA.get(residue_name)) |max_sasa|
-            if (max_sasa > 0) residue.area.total * 100.0 / max_sasa else null
-        else
-            null;
+        var number_buf: [16]u8 = undefined;
+        const label = RsaResidueLabel.init(identity, residue.first_atom, &number_buf);
 
-        try writer.print("RES {s:>3} {s:>3} {s:<4} ", .{ residue_name, chain, num });
-        try writeAbsRel(writer, residue.area.total, rel_total);
+        try label.write(writer);
+        try writeAbsRel(writer, residue.area.total, rsaRelativeTotal(label.residue_name, residue.area.total));
         try writeAbsRel(writer, residue.area.side_chain, null);
         try writeAbsRel(writer, residue.area.main_chain, null);
         try writeAbsRel(writer, residue.area.apolar, null);
@@ -347,7 +424,7 @@ pub fn sasaResultToRsa(allocator: Allocator, result: SasaResult, input: AtomInpu
 
     try writer.writeAll("END  Absolute sums over single chains surface\n");
     for (chains, 0..) |chain, i| {
-        try writer.print("CHAIN{d:3} {s:>3} {d:10.1}   {d:10.1}   {d:10.1}   {d:10.1}   {d:10.1}\n", .{
+        try writer.print("CHAIN{d:3} {s:1} {d:10.1}   {d:10.1}   {d:10.1}   {d:10.1}   {d:10.1}\n", .{
             i + 1,
             chain.chain,
             chain.area.total,
@@ -359,7 +436,7 @@ pub fn sasaResultToRsa(allocator: Allocator, result: SasaResult, input: AtomInpu
     }
 
     try writer.writeAll("END  Absolute sums over all chains\n");
-    try writer.print("TOTAL        {d:10.1}   {d:10.1}   {d:10.1}   {d:10.1}   {d:10.1}\n", .{
+    try writer.print("TOTAL      {d:10.1}   {d:10.1}   {d:10.1}   {d:10.1}   {d:10.1}\n", .{
         total.total,
         total.side_chain,
         total.main_chain,
@@ -2266,19 +2343,20 @@ test "sasaResultToRsa writes residue, chain, and total rows" {
     try std.testing.expectEqualStrings(
         \\REM  zsasa FreeSASA/NACCESS-compatible RSA
         \\REM  Absolute and relative SASAs for mini.pdb
-        \\REM  Atomic radii and reference values for relative SASA: naccess
+        \\REM  Atomic radii: naccess
+        \\REM  Reference values for relative SASA: Tien et al. 2013
         \\REM  Algorithm: Shrake & Rupley
         \\REM  Probe-radius: 1.40
         \\REM  Test-points: 100
         \\REM RES _ NUM      All-atoms   Total-Side   Main-Chain    Non-polar    All polar
         \\REM                ABS   REL    ABS   REL    ABS   REL    ABS   REL    ABS   REL
-        \\RES ALA   A 1      30.00  23.3  20.00   N/A  10.00   N/A  20.00   N/A  10.00   N/A
-        \\RES UNK   B 2A     30.00   N/A  30.00   N/A   0.00   N/A  30.00   N/A   0.00   N/A
+        \\RES ALA A   1    30.00  23.3  20.00   N/A  10.00   N/A  20.00   N/A  10.00   N/A
+        \\RES UNK B   2A   30.00   N/A  30.00   N/A   0.00   N/A  30.00   N/A   0.00   N/A
         \\END  Absolute sums over single chains surface
-        \\CHAIN  1   A       30.0         20.0         10.0         20.0         10.0
-        \\CHAIN  2   B       30.0         30.0          0.0         30.0          0.0
+        \\CHAIN  1 A       30.0         20.0         10.0         20.0         10.0
+        \\CHAIN  2 B       30.0         30.0          0.0         30.0          0.0
         \\END  Absolute sums over all chains
-        \\TOTAL              60.0         50.0         10.0         50.0         10.0
+        \\TOTAL            60.0         50.0         10.0         50.0         10.0
         \\
     , output);
 }
@@ -2341,11 +2419,186 @@ test "sasaResultToRsa writes one row per run of a non-contiguous residue" {
     defer allocator.free(output);
 
     // The same rows as the JSONL residue map; see analysis.ResidueIdentity
-    try std.testing.expect(std.mem.indexOf(u8, output, "RES ALA   A 1      10.00   7.8") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "RES ALA   A 1      20.00  15.5") != null);
-    try std.testing.expectEqual(@as(?usize, null), std.mem.indexOf(u8, output, "RES ALA   A 1      30.00"));
+    try std.testing.expect(std.mem.indexOf(u8, output, "RES ALA A   1    10.00   7.8") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "RES ALA A   1    20.00  15.5") != null);
+    try std.testing.expectEqual(@as(?usize, null), std.mem.indexOf(u8, output, "RES ALA A   1    30.00"));
     // Chain totals still cover every residue of the chain
-    try std.testing.expect(std.mem.indexOf(u8, output, "CHAIN  1   A       30.0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "CHAIN  1 A       30.0") != null);
+}
+
+/// The `RES`, `CHAIN` and `TOTAL` rows of the RSA text for `atoms`.
+/// Caller frees the list and the text it points into.
+const RsaRows = struct {
+    text: []u8,
+    rows: std.ArrayListUnmanaged([]const u8),
+    needs_warning: bool,
+
+    fn init(atoms: []const TestAtom, full_chain_ids: bool) !RsaRows {
+        const allocator = std.testing.allocator;
+        var structure = try TestStructure.init(atoms, full_chain_ids);
+        defer structure.deinit();
+
+        const text = try sasaResultToRsa(allocator, structure.result(), structure.input, .{});
+        errdefer allocator.free(text);
+        var rows = std.ArrayListUnmanaged([]const u8).empty;
+        errdefer rows.deinit(allocator);
+        var lines = std.mem.splitScalar(u8, text, '\n');
+        while (lines.next()) |line| {
+            if (std.mem.startsWith(u8, line, "RES ") or std.mem.startsWith(u8, line, "CHAIN") or std.mem.startsWith(u8, line, "TOTAL")) {
+                try rows.append(allocator, line);
+            }
+        }
+        return .{
+            .text = text,
+            .rows = rows,
+            .needs_warning = try rsaResultNeedsLegacyWidthWarning(allocator, structure.result(), structure.input),
+        };
+    }
+
+    fn deinit(self: *RsaRows) void {
+        self.rows.deinit(std.testing.allocator);
+        std.testing.allocator.free(self.text);
+    }
+};
+
+test "sasaResultToRsa rows follow the NACCESS fixed columns" {
+    var rsa = try RsaRows.init(&.{
+        .{ .chain = "A", .residue = "MET", .number = 1, .atom = "N", .area = 54.39 },
+        .{ .chain = "A", .residue = "GLY", .number = -5, .atom = "N", .area = 0 },
+        .{ .chain = "A", .residue = "SER", .number = 10, .insertion = "A", .atom = "OG", .area = 7.5 },
+        .{ .chain = "B", .residue = "THR", .number = 1000, .atom = "CB", .area = 999.99 },
+        .{ .chain = "B", .residue = "THR", .number = 1000, .insertion = "B", .atom = "N", .area = 100.004 },
+        .{ .chain = "B", .residue = "ALA", .number = -999, .atom = "CB", .area = 12.346 },
+        // Two-character residue name and a blank chain ID
+        .{ .chain = "", .residue = "DA", .number = 7, .atom = "P", .area = 1 },
+    }, false);
+    defer rsa.deinit();
+
+    // 0-based columns: residue name [4:7], chain [8], residue number [9:13],
+    // insertion code [13], then five pairs of F7.2 and F6.1 from column 15
+    try std.testing.expectEqualStrings(
+        \\REM RES _ NUM      All-atoms   Total-Side   Main-Chain    Non-polar    All polar
+        \\REM                ABS   REL    ABS   REL    ABS   REL    ABS   REL    ABS   REL
+        \\RES MET A   1    54.39  24.3   0.00   N/A  54.39   N/A   0.00   N/A  54.39   N/A
+        \\RES GLY A  -5     0.00   0.0   0.00   N/A   0.00   N/A   0.00   N/A   0.00   N/A
+        \\RES SER A  10A    7.50   4.8   7.50   N/A   0.00   N/A   0.00   N/A   7.50   N/A
+        \\RES THR B1000   999.99 581.4 999.99   N/A   0.00   N/A 999.99   N/A   0.00   N/A
+        \\RES THR B1000B  100.00  58.1   0.00   N/A 100.00   N/A   0.00   N/A 100.00   N/A
+        \\RES ALA B-999    12.35   9.6  12.35   N/A   0.00   N/A  12.35   N/A   0.00   N/A
+        \\RES  DA     7     1.00   N/A   1.00   N/A   0.00   N/A   0.00   N/A   1.00   N/A
+        \\END  Absolute sums over single chains surface
+        \\CHAIN  1 A       61.9          7.5         54.4          0.0         61.9
+        \\CHAIN  2 B     1112.3       1012.3        100.0       1012.3        100.0
+        \\CHAIN  3          1.0          1.0          0.0          0.0          1.0
+        \\END  Absolute sums over all chains
+        \\TOTAL          1175.2       1020.8        154.4       1012.3        162.9
+        \\
+    , rsa.text[std.mem.indexOf(u8, rsa.text, "REM RES").?..]);
+    try std.testing.expect(!rsa.needs_warning);
+
+    const Expected = struct { name: []const u8, chain: u8, number: []const u8, insertion: u8 };
+    const expected = [_]Expected{
+        .{ .name = "MET", .chain = 'A', .number = "   1", .insertion = ' ' },
+        .{ .name = "GLY", .chain = 'A', .number = "  -5", .insertion = ' ' },
+        .{ .name = "SER", .chain = 'A', .number = "  10", .insertion = 'A' },
+        .{ .name = "THR", .chain = 'B', .number = "1000", .insertion = ' ' },
+        .{ .name = "THR", .chain = 'B', .number = "1000", .insertion = 'B' },
+        .{ .name = "ALA", .chain = 'B', .number = "-999", .insertion = ' ' },
+        .{ .name = " DA", .chain = ' ', .number = "   7", .insertion = ' ' },
+    };
+    for (expected, rsa.rows.items[0..expected.len]) |want, row| {
+        try std.testing.expectEqual(@as(usize, 80), row.len);
+        try std.testing.expectEqualStrings("RES ", row[0..4]);
+        try std.testing.expectEqualStrings(want.name, row[4..7]);
+        try std.testing.expectEqual(@as(u8, ' '), row[7]);
+        try std.testing.expectEqual(want.chain, row[8]);
+        try std.testing.expectEqualStrings(want.number, row[9..13]);
+        try std.testing.expectEqual(want.insertion, row[13]);
+        try std.testing.expectEqual(@as(u8, ' '), row[14]);
+        // Every value field starts with a blank and holds a number or N/A
+        for (0..5) |pair| {
+            const abs = row[15 + 13 * pair ..][0..7];
+            const rel = row[22 + 13 * pair ..][0..6];
+            try std.testing.expectEqual(@as(u8, ' '), abs[0]);
+            try std.testing.expectEqual(@as(u8, ' '), rel[0]);
+            _ = try std.fmt.parseFloat(f64, std.mem.trim(u8, abs, " "));
+            if (!std.mem.eql(u8, rel, "   N/A")) _ = try std.fmt.parseFloat(f64, std.mem.trim(u8, rel, " "));
+        }
+    }
+
+    // CHAIN and TOTAL rows: sums in [11:21], [24:34], [37:47], [50:60], [63:73]
+    for (rsa.rows.items[expected.len..], [_]u8{ 'A', 'B', ' ', 0 }) |row, chain| {
+        try std.testing.expectEqual(@as(usize, 73), row.len);
+        if (chain != 0) {
+            try std.testing.expectEqualStrings("CHAIN", row[0..5]);
+            try std.testing.expectEqual(@as(u8, ' '), row[8]);
+            try std.testing.expectEqual(chain, row[9]);
+        } else {
+            try std.testing.expectEqualStrings("TOTAL      ", row[0..11]);
+        }
+        for (0..5) |i| {
+            _ = try std.fmt.parseFloat(f64, std.mem.trim(u8, row[11 + 13 * i ..][0..10], " "));
+            try std.testing.expectEqual(@as(u8, ' '), row[10 + 13 * i]);
+        }
+    }
+}
+
+test "sasaResultToRsa keeps labels and values whole when they do not fit the fixed columns" {
+    var rsa = try RsaRows.init(&.{
+        // Residue number of five characters
+        .{ .chain = "A", .residue = "ALA", .number = 12345, .atom = "CB", .area = 1 },
+        // Chain ID of more than one character, with a four-digit residue number
+        .{ .chain = "AAAAA", .residue = "ALA", .number = 1000, .atom = "CB", .area = 2 },
+        // Residue name of more than three characters
+        .{ .chain = "B", .residue = "A1LXQ", .number = 1, .atom = "C1", .area = 4 },
+        // Absolute values that would touch the value before them
+        .{ .chain = "C", .residue = "UNK", .number = 1, .atom = "C1", .area = 2222.27 },
+    }, true);
+    defer rsa.deinit();
+
+    try std.testing.expect(rsa.needs_warning);
+    try std.testing.expectEqualStrings("RES ALA A 12345     1.00   0.8   1.00   N/A   0.00   N/A   1.00   N/A   0.00   N/A", rsa.rows.items[0]);
+    try std.testing.expectEqualStrings("RES ALA AAAAA 1000     2.00   1.6   2.00   N/A   0.00   N/A   2.00   N/A   0.00   N/A", rsa.rows.items[1]);
+    try std.testing.expectEqualStrings("RES A1LXQ B    1     4.00   N/A   4.00   N/A   0.00   N/A   4.00   N/A   0.00   N/A", rsa.rows.items[2]);
+    // `N/A2222.27` would be read as one value by a reader that splits at blanks
+    try std.testing.expectEqualStrings("RES UNK C   1   2222.27   N/A 2222.27   N/A   0.00   N/A 2222.27   N/A   0.00   N/A", rsa.rows.items[3]);
+    try std.testing.expectEqualStrings("CHAIN  2 AAAAA        2.0          2.0          0.0          2.0          0.0", rsa.rows.items[5]);
+
+    // Every row can be split at blanks into its labels and ten values
+    for (rsa.rows.items[0..4]) |row| {
+        var fields = std.mem.tokenizeScalar(u8, row, ' ');
+        var count: usize = 0;
+        while (fields.next()) |_| count += 1;
+        try std.testing.expectEqual(@as(usize, 14), count);
+    }
+}
+
+test "rsaResultNeedsLegacyWidthWarning is true exactly when a row leaves the fixed columns" {
+    const Case = struct { atom: TestAtom, full_chain_ids: bool = false, warns: bool };
+    const cases = [_]Case{
+        .{ .atom = .{ .chain = "A", .residue = "UNK", .number = 9999, .insertion = "Z", .area = 999.994 }, .warns = false },
+        .{ .atom = .{ .chain = "A", .residue = "UNK", .number = -999, .area = 0 }, .warns = false },
+        .{ .atom = .{ .chain = "", .residue = "DA", .number = 1, .area = 1 }, .warns = false },
+        // 999.995 is printed as 1000.00
+        .{ .atom = .{ .chain = "A", .residue = "UNK", .number = 1, .area = 999.996 }, .warns = true },
+        .{ .atom = .{ .chain = "A", .residue = "UNK", .number = 10000, .area = 1 }, .warns = true },
+        .{ .atom = .{ .chain = "A", .residue = "UNK", .number = -1000, .area = 1 }, .warns = true },
+        .{ .atom = .{ .chain = "AB", .residue = "UNK", .number = 1, .area = 1 }, .warns = true },
+        .{ .atom = .{ .chain = "AAAAA", .residue = "UNK", .number = 1, .area = 1 }, .full_chain_ids = true, .warns = true },
+        .{ .atom = .{ .chain = "A", .residue = "UNKX", .number = 1, .area = 1 }, .warns = true },
+        .{ .atom = .{ .chain = "A", .residue = "UNK", .number = 1, .insertion = "AB", .area = 1 }, .warns = true },
+        // The largest relative value of an absolute value that fits (GLY has
+        // the smallest maximum SASA, 104)
+        .{ .atom = .{ .chain = "A", .residue = "GLY", .number = 1, .area = 999.99 }, .warns = false },
+    };
+    for (cases) |case| {
+        var rsa = try RsaRows.init(&.{case.atom}, case.full_chain_ids);
+        defer rsa.deinit();
+        errdefer std.debug.print("row: {s}\n", .{rsa.rows.items[0]});
+        try std.testing.expectEqual(case.warns, rsa.needs_warning);
+        // A row that needs no warning is exactly 80 columns wide
+        if (!case.warns) try std.testing.expectEqual(@as(usize, 80), rsa.rows.items[0].len);
+    }
 }
 
 test "rsaResultNeedsLegacyWidthWarning detects oversized RSA numeric columns" {
