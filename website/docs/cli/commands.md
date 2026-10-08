@@ -218,6 +218,8 @@ not fit legacy NACCESS fixed-width columns.
 | `-h, --help` | Show help message (`zsasa <command> --help` for a command) | all commands |
 | `-V, --version` | Show version (`zsasa --version`) | top level only |
 
+Help and version are written to standard output, so they can be piped and captured (`zsasa --version` prints `zsasa <version>`). Progress, summaries, warnings and error messages are written to standard error, as is the usage text that follows an error such as an unknown command.
+
 ---
 
 ## Trajectory Options

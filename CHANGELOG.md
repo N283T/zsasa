@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`--help` and `--version` are written to standard output**: `zsasa --help`, `zsasa --version` and `zsasa <command> --help` (`calc`, `batch`, `traj`, `compile-dict`) printed to standard error, so `zsasa --version | grep ...` and `$(zsasa --version)` saw nothing. They now print to standard output, with exit status 0 as before. The usage text that follows an error (no command, unknown command) stays on standard error with exit status 1, as do progress, summaries, warnings and error messages. **Scripts that read the version or the help text from standard error must read standard output instead.**
+
 ## [0.10.0] - 2026-10-08
 
 ### Upgrade notes

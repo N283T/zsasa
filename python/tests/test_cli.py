@@ -24,30 +24,39 @@ def run_zsasa(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def get_output(result: subprocess.CompletedProcess[str]) -> str:
-    """Get combined stdout+stderr output (zsasa writes help/version to stderr)."""
-    return result.stdout + result.stderr
-
-
 class TestCLIEntryPoint:
-    """Test that the CLI binary is bundled and executable."""
+    """Test that the CLI binary is found and executable."""
 
     def test_help(self):
         result = run_zsasa("--help")
         assert result.returncode == 0
-        output = get_output(result)
-        assert "USAGE" in output
-        assert "calc" in output
+        assert "USAGE" in result.stdout
+        assert "calc" in result.stdout
+        assert result.stderr == ""
 
     def test_version(self):
+        from zsasa import get_version
+
         result = run_zsasa("--version")
         assert result.returncode == 0
-        assert "zsasa" in get_output(result)
+        assert result.stdout == f"zsasa {get_version()}\n"
+        assert result.stderr == ""
 
-    def test_calc_help(self):
-        result = run_zsasa("calc", "--help")
+    @pytest.mark.parametrize("flag", ["--help", "-h"])
+    @pytest.mark.parametrize("command", ["calc", "batch", "traj", "compile-dict"])
+    def test_command_help_is_written_to_stdout(self, command: str, flag: str):
+        result = run_zsasa(command, flag)
         assert result.returncode == 0
-        assert "SASA" in get_output(result)
+        assert f"{command}" in result.stdout
+        assert "SASA" in result.stdout or "ZSDC" in result.stdout
+        assert result.stderr == ""
+
+    @pytest.mark.parametrize("args", [(), ("no-such-command",)])
+    def test_usage_after_an_error_is_written_to_stderr(self, args: tuple[str, ...]):
+        result = run_zsasa(*args)
+        assert result.returncode == 1
+        assert "USAGE" in result.stderr
+        assert result.stdout == ""
 
     def test_calc_structure(self, tmp_path):
         input_file = EXAMPLES_DIR / "1ubq.cif"

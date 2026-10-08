@@ -24,6 +24,7 @@ const classifier = @import("classifier.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_oons = @import("classifier_oons.zig");
 const classifier_ccd = @import("classifier_ccd.zig");
+const cli_output = @import("cli_output.zig");
 const ccd_parser = @import("ccd_parser.zig");
 const ccd_binary = @import("ccd_binary.zig");
 const sdf_parser = @import("sdf_parser.zig");
@@ -516,8 +517,8 @@ fn parseClassifierType(value: []const u8) ArgError!ClassifierType {
 }
 
 /// Print help for trajectory mode
-pub fn printHelp(program_name: []const u8) void {
-    std.debug.print(
+pub fn printHelp(io: std.Io, program_name: []const u8) void {
+    cli_output.print(io,
         \\Usage: {s} traj <trajectory> <topology> [options]
         \\
         \\Calculate SASA for each frame in a trajectory.

@@ -8,6 +8,10 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+### Changed
+
+- **`--help` and `--version` are written to standard output**: `zsasa --help`, `zsasa --version` and `zsasa <command> --help` (`calc`, `batch`, `traj`, `compile-dict`) printed to standard error, so `zsasa --version | grep ...` and `$(zsasa --version)` saw nothing. They now print to standard output, with exit status 0 as before. The usage text that follows an error (no command, unknown command) stays on standard error with exit status 1, as do progress, summaries, warnings and error messages. **Scripts that read the version or the help text from standard error must read standard output instead.**
+
 ## [v0.10.0](https://github.com/N283T/zsasa/releases/tag/v0.10.0) — 2026-10-08
 
 ### Upgrade notes
