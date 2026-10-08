@@ -45,14 +45,30 @@ atom_index,area
 total,18923.280000
 ```
 
-When input has structural info (mmCIF/PDB), rich CSV is generated:
+When the input of `calc` has residue information (PDB, mmCIF, BinaryCIF and SDF/MOL input), `calc` writes the rich CSV instead, with one row per atom:
 
 ```csv
-chain,residue,resnum,atom_name,x,y,z,radius,area
-A,ALA,1,N,1.000,3.000,5.000,1.500,32.470000
-A,ALA,1,CA,2.000,4.000,6.000,1.700,0.250000
-,,,,,,,,18923.280000
+chain,residue,resnum,insertion_code,atom_name,x,y,z,radius,area
+H,GLY,10,,N,1.000,3.000,5.000,1.640,32.470000
+H,GLY,10,,CA,2.000,4.000,6.000,1.880,0.250000
+H,SER,10,A,N,3.000,5.000,7.000,1.640,15.820000
+,,,,,,,,,18923.280000
 ```
+
+| Column | Content |
+|--------|---------|
+| `chain` | Chain ID, in full (mmCIF chain IDs can be longer than four characters) |
+| `residue` | Residue name |
+| `resnum` | Residue number |
+| `insertion_code` | Insertion code; empty for a residue without one. Residues `10`, `10A` and `10B` differ only in this column |
+| `atom_name` | Atom name |
+| `x`, `y`, `z` | Coordinates in Å |
+| `radius` | Atom radius in Å |
+| `area` | SASA of the atom in Å² |
+
+The last row holds the total area and leaves every other column empty. Read the columns by name: the `insertion_code` column was added after `resnum` in the release after 0.9.1, which moved `atom_name` and the columns after it one position to the right.
+
+`batch --format=csv` always writes the basic `atom_index,area` CSV per input file, also for structure input.
 
 ### FreeSASA-Compatible Text (`calc --format=freesasa`)
 

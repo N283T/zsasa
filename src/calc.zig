@@ -917,7 +917,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\OUTPUT FORMATS:
         \\    json     Pretty-printed JSON with indentation
         \\    compact  Single-line JSON (no whitespace)
-        \\    csv      CSV; structure input: chain,residue,resnum,atom_name,x,y,z,radius,area
+        \\    csv      CSV; structure input:
+        \\             chain,residue,resnum,insertion_code,atom_name,x,y,z,radius,area
         \\             (JSON input without residue info: atom_index,area)
         \\    freesasa FreeSASA-compatible text summary
         \\    rsa      FreeSASA/NACCESS-compatible RSA residue table
@@ -2397,6 +2398,74 @@ test "calc excludes HETATM by default, also with the CCD classifier" {
     try std.testing.expectEqual(@as(usize, 2), try readAtomAreasLenFromJson(allocator, hetatm_out));
 }
 
+/// Runs `calc` on `input` (the contents of a file named `input_name`) in a
+/// temporary directory and returns the output file. Caller frees.
+fn runCalcOnText(input_name: []const u8, input: []const u8, format: OutputFormat, args: CalcArgs) ![]u8 {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try tmp_dir.dir.realPath(std.testing.io, &root_buf)];
+    const input_path = try std.fs.path.join(allocator, &.{ root, input_name });
+    defer allocator.free(input_path);
+    const output_path = try std.fs.path.join(allocator, &.{ root, "out.txt" });
+    defer allocator.free(output_path);
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = input_path, .data = input });
+
+    var run_args = args;
+    run_args.input_path = input_path;
+    run_args.output_path = output_path;
+    run_args.output_format = format;
+    run_args.n_threads = 1;
+    run_args.quiet = true;
+    try run(allocator, std.testing.io, run_args);
+
+    return std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(1024 * 1024));
+}
+
+/// Residues 10, 10A and 10B of chain H (antibody numbering), far apart.
+const test_insertion_code_pdb =
+    \\ATOM      1  N   GLY H  10       0.000   0.000   0.000  1.00 20.00           N
+    \\ATOM      2  CA  GLY H  10       1.458   0.000   0.000  1.00 20.00           C
+    \\ATOM      3  N   SER H  10A     20.000   0.000   0.000  1.00 20.00           N
+    \\ATOM      4  CA  SER H  10A     21.458   0.000   0.000  1.00 20.00           C
+    \\ATOM      5  N   THR H  10B     40.000   0.000   0.000  1.00 20.00           N
+    \\END
+    \\
+;
+
+test "calc CSV output has an insertion code column after resnum" {
+    const allocator = std.testing.allocator;
+    const csv = try runCalcOnText("insertion.pdb", test_insertion_code_pdb, .csv, .{ .n_points = 20 });
+    defer allocator.free(csv);
+
+    var lines = std.mem.tokenizeScalar(u8, csv, '\n');
+    try std.testing.expectEqualStrings("chain,residue,resnum,insertion_code,atom_name,x,y,z,radius,area", lines.next().?);
+
+    const expected = [_][5][]const u8{
+        .{ "H", "GLY", "10", "", "N" },
+        .{ "H", "GLY", "10", "", "CA" },
+        .{ "H", "SER", "10", "A", "N" },
+        .{ "H", "SER", "10", "A", "CA" },
+        .{ "H", "THR", "10", "B", "N" },
+    };
+    for (expected) |want| {
+        var fields = std.mem.splitScalar(u8, lines.next().?, ',');
+        for (want) |value| try std.testing.expectEqualStrings(value, fields.next().?);
+        // x, y, z, radius, area
+        for (0..5) |_| _ = try std.fmt.parseFloat(f64, fields.next().?);
+        try std.testing.expectEqual(@as(?[]const u8, null), fields.next());
+    }
+
+    // The total row leaves every column but the area empty
+    var total_fields = std.mem.splitScalar(u8, lines.next().?, ',');
+    for (0..9) |_| try std.testing.expectEqualStrings("", total_fields.next().?);
+    try std.testing.expect(try std.fmt.parseFloat(f64, total_fields.next().?) > 0);
+    try std.testing.expectEqual(@as(?[]const u8, null), total_fields.next());
+    try std.testing.expectEqual(@as(?[]const u8, null), lines.next());
+}
+
 test "NACCESS and OONS take the element of unlisted atoms from the element column" {
     const allocator = std.testing.allocator;
 
@@ -2820,15 +2889,18 @@ const SdfCalcSandbox = struct {
         var lines = std.mem.tokenizeScalar(u8, csv_text, '\n');
         _ = lines.next().?; // header
         for (expected) |want| {
-            // chain,,resnum,atom_name,x,y,z,radius,area
+            // chain,,resnum,insertion_code,atom_name,x,y,z,radius,area
             var fields = std.mem.splitScalar(u8, lines.next().?, ',');
-            var values: [9][]const u8 = undefined;
+            var values: [10][]const u8 = undefined;
             for (&values) |*value| value.* = fields.next().?;
-            try std.testing.expectEqualStrings(want[0], values[3]);
-            try std.testing.expectEqualStrings(want[1], values[7]);
+            try std.testing.expectEqual(@as(?[]const u8, null), fields.next());
+            try std.testing.expectEqualStrings(want[0], values[4]);
+            try std.testing.expectEqualStrings(want[1], values[8]);
         }
-        // Only the total row is left
-        try std.testing.expect(std.mem.startsWith(u8, lines.next().?, ",,,,,,,,"));
+        // Only the total row is left: nine empty fields and the area
+        const total_row = lines.next().?;
+        try std.testing.expect(std.mem.startsWith(u8, total_row, ",,,,,,,,,"));
+        try std.testing.expectEqual(@as(usize, 9), std.mem.count(u8, total_row, ","));
         try std.testing.expectEqual(@as(?[]const u8, null), lines.next());
     }
 };

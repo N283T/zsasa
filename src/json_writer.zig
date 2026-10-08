@@ -370,8 +370,13 @@ pub fn sasaResultToRsa(allocator: Allocator, result: SasaResult, input: AtomInpu
     return aw.toOwnedSlice();
 }
 
+/// Header of the rich CSV, the CSV written for input with residue information.
+pub const rich_csv_header = "chain,residue,resnum,insertion_code,atom_name,x,y,z,radius,area";
+
 /// Convert SasaResult to rich CSV string with structural information
-/// Format: chain,residue,resnum,atom_name,x,y,z,radius,area
+/// Format: `rich_csv_header`, one row per atom, and a last row that holds
+/// only the total area. `insertion_code` is empty for a residue without one.
+/// A column that the input does not have at all is written as `-`.
 /// Caller must free the returned slice
 pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: []const f64) ![]u8 {
     var aw = std.Io.Writer.Allocating.init(allocator);
@@ -379,7 +384,7 @@ pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: [
     const writer = &aw.writer;
 
     // Header
-    try writer.writeAll("chain,residue,resnum,atom_name,x,y,z,radius,area\n");
+    try writer.writeAll(rich_csv_header ++ "\n");
 
     // Atom rows
     const n = input.atomCount();
@@ -411,6 +416,14 @@ pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: [
         }
         try writer.writeAll(",");
 
+        // Insertion code (empty for a residue without one)
+        if (input.insertion_code) |codes| {
+            try writer.writeAll(codes[i].slice());
+        } else {
+            try writer.writeAll("-");
+        }
+        try writer.writeAll(",");
+
         // Atom name
         if (input.atom_name) |names| {
             try writer.writeAll(names[i].slice());
@@ -429,10 +442,10 @@ pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: [
         });
     }
 
-    // Total row
+    // Total row: every column but the area is empty
     var total: f64 = 0;
     for (atom_areas) |a| total += a;
-    try writer.print(",,,,,,,,{d:.6}\n", .{total});
+    try writer.print(",,,,,,,,,{d:.6}\n", .{total});
 
     return aw.toOwnedSlice();
 }
@@ -2641,15 +2654,44 @@ test "sasaResultToRichCsv with full info" {
     const csv = try sasaResultToRichCsv(allocator, input, atom_areas);
     defer allocator.free(csv);
 
-    // Check header
-    try std.testing.expect(std.mem.startsWith(u8, csv, "chain,residue,resnum,atom_name,x,y,z,radius,area\n"));
+    // Header, one row per atom (the insertion code column is empty), total row
+    try std.testing.expectEqualStrings(
+        \\chain,residue,resnum,insertion_code,atom_name,x,y,z,radius,area
+        \\A,ALA,1,,N,1.000,3.000,5.000,1.500,10.500000
+        \\A,ALA,1,,CA,2.000,4.000,6.000,1.700,20.300000
+        \\,,,,,,,,,30.800000
+        \\
+    , csv);
+}
 
-    // Check it contains expected data
-    try std.testing.expect(std.mem.find(u8, csv, "A,ALA,1,N,") != null);
-    try std.testing.expect(std.mem.find(u8, csv, "A,ALA,1,CA,") != null);
+test "sasaResultToRichCsv writes the insertion code after the residue number" {
+    const allocator = std.testing.allocator;
+    var structure = try TestStructure.init(&.{
+        .{ .chain = "H", .residue = "GLY", .number = 10, .atom = "N", .area = 1 },
+        .{ .chain = "H", .residue = "SER", .number = 10, .insertion = "A", .atom = "N", .area = 2 },
+        .{ .chain = "H", .residue = "THR", .number = 10, .insertion = "B", .atom = "OG1", .area = 4 },
+        .{ .chain = "H", .residue = "ALA", .number = -3, .atom = "CB", .area = 8 },
+    }, false);
+    defer structure.deinit();
 
-    // Check total row exists
-    try std.testing.expect(std.mem.find(u8, csv, ",,,,,,,,30.800000\n") != null);
+    const csv = try sasaResultToRichCsv(allocator, structure.input, structure.areas);
+    defer allocator.free(csv);
+
+    try std.testing.expectEqualStrings(
+        \\chain,residue,resnum,insertion_code,atom_name,x,y,z,radius,area
+        \\H,GLY,10,,N,0.000,0.000,0.000,1.000,1.000000
+        \\H,SER,10,A,N,1.000,0.000,0.000,1.000,2.000000
+        \\H,THR,10,B,OG1,2.000,0.000,0.000,1.000,4.000000
+        \\H,ALA,-3,,CB,3.000,0.000,0.000,1.000,8.000000
+        \\,,,,,,,,,15.000000
+        \\
+    , csv);
+
+    // Every row has the ten fields of the header
+    var lines = std.mem.tokenizeScalar(u8, csv, '\n');
+    while (lines.next()) |line| {
+        try std.testing.expectEqual(@as(usize, 9), std.mem.count(u8, line, ","));
+    }
 }
 
 test "sasaResultToRichCsv without residue info uses dashes" {
@@ -2686,7 +2728,7 @@ test "sasaResultToRichCsv without residue info uses dashes" {
     defer allocator.free(csv);
 
     // Check that missing fields produce dashes
-    try std.testing.expect(std.mem.find(u8, csv, "-,-,-,-,1.000,2.000,3.000,1.500,15.000000\n") != null);
+    try std.testing.expect(std.mem.find(u8, csv, "\n-,-,-,-,-,1.000,2.000,3.000,1.500,15.000000\n") != null);
 }
 
 test "fileResultToJsonlLine basic" {
