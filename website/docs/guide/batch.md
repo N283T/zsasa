@@ -79,7 +79,7 @@ Successful JSONL rows include `status: "ok"` plus the result fields:
 {"status":"ok","filename":"1ubq.pdb","total_area":4834.716264864688,"atom_areas":[17.420005600449258,16.223284994102602]}
 ```
 
-Failed structures are emitted as `status: "err"` rows instead of being available only in the batch summary:
+Failed structures are emitted as `status: "err"` rows, in addition to the [report on standard error](#failed-inputs):
 
 ```json
 {"status":"err","filename":"bad.pdb","error":"read/parse failed: NoAtomsFound"}
@@ -108,6 +108,30 @@ total_area = true
 decimals = 3
 metadata = "sidecar"
 ```
+
+## Failed Inputs and Exit Status {#failed-inputs}
+
+A batch run does not stop at an input it cannot read, parse, classify or calculate. It carries on with the remaining inputs and lists the failed ones on standard error when it ends, each with its reason:
+
+```text
+2 of 40 inputs failed:
+  bad.pdb: read/parse failed: NoAtomsFound
+  empty.cif: read/parse failed: NoAtomSiteLoop
+```
+
+`-q`/`--quiet` does not hide this report: quiet mode suppresses progress and the summary, not errors. A quiet run in which every input succeeds prints nothing. Without `--quiet` the same lines are part of the summary, after the `Batch Results` block.
+
+At most 20 failed inputs are listed. When more failed, a last line counts the rest and, for JSONL output, says where all of them are:
+
+```text
+  ... and 131 more (every failure is a "status":"err" row in results.jsonl)
+```
+
+A failed input has no output file with per-file output, and a `status: "err"` row with JSONL output.
+
+Failed inputs do not change the exit status: a run that got through its input directory exits with status 0, so scripts should check standard error or the `status` of the JSONL rows. The run itself failing is an error with exit status 1: a missing input directory, inputs that [share an output name](#basic-directory-batch), an output file or directory that cannot be created, or invalid options.
+
+[Workflows](workflows.md#failures) report failed inputs per job in the same form, and exit with status 1 when a whole job could not run.
 
 ## Thread Count for Large File Sets
 
@@ -139,8 +163,10 @@ including multiple chains. It falls back to the generic mmCIF parser for
 unsupported layouts, alternate locations, multiple models, hydrogens, and
 extended chain IDs. Malformed coordinates and I/O errors are reported instead
 of being hidden by fallback. Chain filters, author-chain matching,
-alternate-location overrides, and explicit hydrogen inclusion use the generic
-parser directly.
+alternate-location overrides, explicit hydrogen inclusion, and
+`--include-hetatm` use the generic parser directly: the fast parser reads only
+the leading `ATOM` rows, which is every atom of the file while HETATM records
+are excluded.
 
 The input strategy can be selected independently with
 `--input-io=auto|mmap|read`. `auto` uses whole-file reads for the AF fast path

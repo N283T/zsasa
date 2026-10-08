@@ -91,7 +91,7 @@ pub const BatchConfig = struct {
     fine_points: u32 = 256,
     adaptive_low: f64 = 0.10,
     adaptive_high: f64 = 0.90,
-    store_atom_areas: bool = false, // When true, copy atom_areas to result_allocator for jsonl
+    store_atom_areas: bool = false, // When true, keep atom_areas in each result (for JSONL rows)
     external_ccd: ?*const ccd_parser.ComponentDict = null, // External CCD dictionary
     sdf_ccd: ?*const ccd_parser.ComponentDict = null, // SDF bond topology dictionary
     custom_classifier: ?*const classifier.Classifier = null,
@@ -508,6 +508,189 @@ pub const FileResult = struct {
     };
 };
 
+/// Most failed inputs a failure report lists by name; the rest are counted.
+const max_listed_failures = 20;
+
+/// One failed input of a batch run or workflow job: what failed, and why.
+const Failure = struct {
+    name: []const u8,
+    reason: []const u8,
+
+    fn lessThan(_: void, a: Failure, b: Failure) bool {
+        return switch (std.mem.order(u8, a.name, b.name)) {
+            .lt => true,
+            .gt => false,
+            .eq => std.mem.lessThan(u8, a.reason, b.reason),
+        };
+    }
+};
+
+/// Where the JSONL rows of a run go, if it writes any. They hold every
+/// failure, so a report that lists only some of them points there.
+pub const JsonlDestination = union(enum) {
+    none,
+    stdout,
+    file: []const u8,
+
+    fn of(config: BatchConfig, jsonl_output_path: ?[]const u8) JsonlDestination {
+        if (!batchWritesJsonl(config)) return .none;
+        return if (jsonl_output_path) |path| .{ .file = path } else .stdout;
+    }
+};
+
+/// The failed inputs of one batch run, or of one job of a workflow.
+///
+/// This is what a run says about the inputs it could not process. It is
+/// printed to stderr at the end of the run whether or not `--quiet` is set:
+/// quiet mode suppresses progress and the summary, not errors.
+const FailureReport = struct {
+    /// Workflow job the inputs belong to; null for a run without jobs.
+    job: ?[]const u8 = null,
+    /// What is counted: one input file or SDF molecule, one chain selection
+    /// of a selection map, or one interface of a BSA analysis.
+    unit: Unit = .input,
+    total: usize,
+    failed: usize,
+    /// The failures in the order they are listed. At most
+    /// `max_listed_failures` of them are; the slice may also hold fewer than
+    /// `failed` entries when a failure could not be recorded.
+    failures: []const Failure,
+    jsonl: JsonlDestination = .none,
+
+    const Unit = enum {
+        input,
+        selection,
+        interface,
+
+        fn noun(self: Unit, count: usize) []const u8 {
+            return switch (self) {
+                .input => if (count == 1) "input" else "inputs",
+                .selection => if (count == 1) "selection" else "selections",
+                .interface => if (count == 1) "interface" else "interfaces",
+            };
+        }
+    };
+
+    /// Write the report; nothing when no input failed.
+    ///
+    ///     2 of 40 inputs failed:
+    ///       bad.pdb: read/parse failed: NoAtomsFound
+    ///       empty.cif: read/parse failed: NoAtomSiteLoop
+    ///
+    /// A workflow job starts with "Job 'name': ". When more inputs failed
+    /// than are listed, a last line counts the rest and, for JSONL output,
+    /// says where all of them are.
+    fn write(self: FailureReport, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        if (self.failed == 0) return;
+
+        if (self.job) |job| try w.print("Job '{s}': ", .{job});
+        try w.print("{d} of {d} {s} failed:\n", .{ self.failed, self.total, self.unit.noun(self.total) });
+
+        const listed = @min(self.failures.len, max_listed_failures, self.failed);
+        for (self.failures[0..listed]) |failure| {
+            try w.print("  {s}: {s}\n", .{ failure.name, failure.reason });
+        }
+        if (self.failed > listed) {
+            try w.print("  ... and {d} more", .{self.failed - listed});
+            switch (self.jsonl) {
+                .none => {},
+                .stdout => try w.writeAll(" (every failure is a \"status\":\"err\" row in the JSONL output)"),
+                .file => |path| try w.print(" (every failure is a \"status\":\"err\" row in {s})", .{path}),
+            }
+            try w.writeByte('\n');
+        }
+    }
+
+    /// The report as text. Caller frees the result.
+    fn format(self: FailureReport, allocator: Allocator) ![]u8 {
+        var aw = std.Io.Writer.Allocating.init(allocator);
+        defer aw.deinit();
+        try self.write(&aw.writer);
+        return aw.toOwnedSlice();
+    }
+
+    /// Print the report to stderr.
+    fn print(self: FailureReport, allocator: Allocator) void {
+        if (self.failed == 0) return;
+        const text = self.format(allocator) catch {
+            // Out of memory: the counts at least.
+            std.debug.print("{d} of {d} {s} failed\n", .{ self.failed, self.total, self.unit.noun(self.total) });
+            return;
+        };
+        defer allocator.free(text);
+        std.debug.print("{s}", .{text});
+    }
+
+    /// A copy that owns its strings and holds only the failures that are
+    /// listed, for a report that outlives the results it was made from.
+    fn dupe(self: FailureReport, arena: Allocator) !FailureReport {
+        const listed = @min(self.failures.len, max_listed_failures);
+        const failures = try arena.alloc(Failure, listed);
+        for (self.failures[0..listed], failures) |failure, *copy| {
+            copy.* = .{
+                .name = try arena.dupe(u8, failure.name),
+                .reason = try arena.dupe(u8, failure.reason),
+            };
+        }
+        var copy = self;
+        copy.failures = failures;
+        if (self.job) |job| copy.job = try arena.dupe(u8, job);
+        switch (self.jsonl) {
+            .file => |path| copy.jsonl = .{ .file = try arena.dupe(u8, path) },
+            .none, .stdout => {},
+        }
+        return copy;
+    }
+};
+
+/// The failures of a run whose rows are written by the workers as they go,
+/// without a result per input to read them from afterwards. Safe to use from
+/// several threads; `allocator` must be thread-safe.
+const FailureLog = struct {
+    allocator: Allocator,
+    mutex: std.Io.Mutex = .init,
+    entries: std.ArrayListUnmanaged(Failure) = .empty,
+
+    fn deinit(self: *FailureLog) void {
+        for (self.entries.items) |failure| {
+            self.allocator.free(failure.name);
+            self.allocator.free(failure.reason);
+        }
+        self.entries.deinit(self.allocator);
+    }
+
+    /// Record that `filename` failed. `id` tells the rows of one file apart
+    /// (a selection or an interface); it is left out when it is the file name
+    /// itself. Best effort: a failure that cannot be stored is still counted
+    /// by the runner and still has its JSONL row.
+    fn record(self: *FailureLog, io: std.Io, filename: []const u8, id: ?[]const u8, reason: []const u8) void {
+        const row_id: ?[]const u8 = if (id) |value| (if (std.mem.eql(u8, value, filename)) null else value) else null;
+        const name = (if (row_id) |value|
+            std.fmt.allocPrint(self.allocator, "{s} [{s}]", .{ filename, value })
+        else
+            self.allocator.dupe(u8, filename)) catch return;
+        const owned_reason = self.allocator.dupe(u8, reason) catch {
+            self.allocator.free(name);
+            return;
+        };
+
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        self.entries.append(self.allocator, .{ .name = name, .reason = owned_reason }) catch {
+            self.allocator.free(name);
+            self.allocator.free(owned_reason);
+        };
+    }
+
+    /// The recorded failures ordered by name, so that a report does not
+    /// depend on the order in which the workers finished. Call after the
+    /// workers have joined.
+    fn sorted(self: *FailureLog) []const Failure {
+        std.mem.sort(Failure, self.entries.items, {}, Failure.lessThan);
+        return self.entries.items;
+    }
+};
+
 /// Aggregate result for batch processing
 pub const BatchResult = struct {
     total_files: usize,
@@ -540,8 +723,39 @@ pub const BatchResult = struct {
         self.allocator.free(self.file_results);
     }
 
-    /// Print human-readable summary
-    pub fn printSummary(self: BatchResult, show_timing: bool) void {
+    /// The failure report of this run: the failed results in input order.
+    /// `buffer` holds the listed failures; they refer to the results.
+    fn failureReport(
+        self: BatchResult,
+        buffer: *[max_listed_failures]Failure,
+        job: ?[]const u8,
+        jsonl: JsonlDestination,
+    ) FailureReport {
+        var listed: usize = 0;
+        for (self.file_results) |file_result| {
+            if (listed == buffer.len) break;
+            if (file_result.status != .err) continue;
+            buffer[listed] = .{ .name = file_result.filename, .reason = file_result.error_msg orelse "unknown error" };
+            listed += 1;
+        }
+        return .{
+            .job = job,
+            .total = self.total_files,
+            .failed = self.failed,
+            .failures = buffer[0..listed],
+            .jsonl = jsonl,
+        };
+    }
+
+    /// Print the failed inputs to stderr; nothing when every input succeeded.
+    /// Not part of the summary: it is printed in quiet mode too.
+    pub fn printFailures(self: BatchResult, jsonl: JsonlDestination) void {
+        var buffer: [max_listed_failures]Failure = undefined;
+        self.failureReport(&buffer, null, jsonl).print(self.allocator);
+    }
+
+    /// Print human-readable summary, including the failed inputs
+    pub fn printSummary(self: BatchResult, show_timing: bool, jsonl: JsonlDestination) void {
         const ns_to_ms = 1_000_000.0;
         const total_sasa_ms = @as(f64, @floatFromInt(self.total_sasa_time_ns)) / ns_to_ms;
         const total_ms = @as(f64, @floatFromInt(self.total_time_ns)) / ns_to_ms;
@@ -558,18 +772,10 @@ pub const BatchResult = struct {
         std.debug.print("  Total time:      {d:.2} ms (includes I/O)\n", .{total_ms});
         std.debug.print("  Throughput:      {d:.1} files/sec\n", .{throughput});
 
-        // Print details for failed files
+        // The failed inputs, as quiet mode reports them
         if (self.failed > 0) {
-            std.debug.print("\nFailed files:\n", .{});
-            for (self.file_results) |file_result| {
-                if (file_result.status == .err) {
-                    if (file_result.error_msg) |msg| {
-                        std.debug.print("  {s}: {s}\n", .{ file_result.filename, msg });
-                    } else {
-                        std.debug.print("  {s}: unknown error\n", .{file_result.filename});
-                    }
-                }
-            }
+            std.debug.print("\n", .{});
+            self.printFailures(jsonl);
         }
 
         if (show_timing and self.successful > 0) {
@@ -638,12 +844,39 @@ const WorkflowJobState = struct {
     successful: usize = 0,
     failed: usize = 0,
     total_sasa_time_ns: u64 = 0,
+    /// The failed inputs of the job, for the report at the end of the run.
+    failures: FailureLog,
 
     fn deinit(self: *WorkflowJobState, allocator: Allocator) void {
         if (self.output_dir) |path| allocator.free(path);
         if (self.jsonl_output_path) |path| allocator.free(path);
+        self.failures.deinit();
+    }
+
+    /// Call when every input has been processed and the counters are final.
+    fn failureReport(self: *WorkflowJobState) FailureReport {
+        return .{
+            .job = self.name,
+            .total = self.successful + self.failed,
+            .failed = self.failed,
+            .failures = self.failures.sorted(),
+            .jsonl = JsonlDestination.of(self.config, self.jsonl_output_path),
+        };
     }
 };
+
+/// The last lines of a file-first workflow: the totals, then the failed
+/// inputs of each job.
+fn printWorkflowJobStates(allocator: Allocator, states: []WorkflowJobState) void {
+    var successful: usize = 0;
+    var failed: usize = 0;
+    for (states) |state| {
+        successful += state.successful;
+        failed += state.failed;
+    }
+    std.debug.print("Workflow complete: {d} successful, {d} failed\n", .{ successful, failed });
+    for (states) |*state| state.failureReport().print(allocator);
+}
 
 const WorkflowJobCounter = struct {
     successful: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
@@ -856,11 +1089,16 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
     };
 }
 
+/// Whether the AlphaFold-model fast parser may read an mmCIF input. It only
+/// reads the leading ATOM rows by label chain, so every option that asks for
+/// anything else goes to the generic parser: HETATM rows that follow the
+/// ATOM rows would otherwise be dropped although they were requested.
 fn shouldTryAfModelFastParser(config: BatchConfig) bool {
     return config.af_model_fast and
         config.chain_filter == null and
         !config.use_auth_chain and
         !config.include_hydrogens and
+        !config.include_hetatm and
         config.alt_loc_mode == .auto;
 }
 
@@ -1011,8 +1249,17 @@ fn jsonlOptions(config: BatchConfig) json_writer.JsonlOptions {
     };
 }
 
+/// Whether the atom areas of each result are kept for its JSONL row.
 fn batchShouldStoreAtomAreas(config: BatchConfig) bool {
     return config.output_format == .jsonl and config.jsonl_include_atom_areas;
+}
+
+/// Whether a run writes one JSONL row per input instead of one output file
+/// per input. This is a property of the output format alone: JSONL without
+/// atom areas (`[output.jsonl] atom_areas = false`) still writes rows, to the
+/// JSONL file or to stdout, and never writes per-file outputs.
+fn batchWritesJsonl(config: BatchConfig) bool {
+    return config.output_format == .jsonl;
 }
 
 fn classifierTypeName(classifier_type: ?ClassifierType) []const u8 {
@@ -1211,7 +1458,7 @@ fn calculatePreparedInputResult(
     }
 
     if (output_dir) |out_dir| {
-        if (!config.store_atom_areas) {
+        if (!batchWritesJsonl(config)) {
             writeSasaOutput(T, arena, io, &sasa_result, out_dir, .input_file, filename, config.output_format) catch |err| {
                 result.status = .err;
                 result.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
@@ -1481,7 +1728,7 @@ fn processOneSdfMoleculeInner(
             }
 
             if (output_dir) |out_dir| {
-                if (!config.store_atom_areas) {
+                if (!batchWritesJsonl(config)) {
                     writeSasaOutput(f64, arena, io, &sasa_result, out_dir, .sdf_molecule, display_name, config.output_format) catch |err| {
                         res.status = .err;
                         res.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
@@ -1534,7 +1781,7 @@ fn processOneSdfMoleculeInner(
             }
 
             if (output_dir) |out_dir| {
-                if (!config.store_atom_areas) {
+                if (!batchWritesJsonl(config)) {
                     writeSasaOutput(f32, arena, io, &sasa_result, out_dir, .sdf_molecule, display_name, config.output_format) catch |err| {
                         res.status = .err;
                         res.error_msg = std.fmt.allocPrint(result_allocator, "output write failed: {s}", .{@errorName(err)}) catch null;
@@ -1782,7 +2029,12 @@ fn buildBsaResidueDeltaArrays(
 
     for (0..isolated_map.len()) |i| {
         residue_partner[i] = if (atomSelectedByChains(input, isolated_map.residue_atom_start[i], partner_a)) "a" else "b";
-        residue_chain[i] = try allocator.dupe(u8, isolated_map.residue_chain[i].slice());
+        // The full chain ID when the input has one, as in the atom arrays:
+        // the fixed-width chain holds at most four characters.
+        residue_chain[i] = try allocator.dupe(u8, if (isolated_map.residue_chain_full) |chains|
+            chains[i]
+        else
+            isolated_map.residue_chain[i].slice());
         residue_name[i] = try allocator.dupe(u8, isolated_map.residue_name[i].slice());
         residue_insertion_code[i] = try allocator.dupe(u8, isolated_map.residue_insertion_code[i].slice());
         residue_delta_sasa[i] = residue_sasa_isolated[i] - residue_sasa_complex[i];
@@ -1893,7 +2145,7 @@ fn runPreparedSequential(
     if (jsonl_output_path) |path| {
         jsonl_file = try std.Io.Dir.cwd().createFile(io, path, .{});
         jsonl_file_needs_close = true;
-    } else if (config.store_atom_areas) {
+    } else if (batchWritesJsonl(config)) {
         jsonl_file = std.Io.File.stdout();
     }
     defer if (jsonl_file_needs_close) {
@@ -2360,29 +2612,34 @@ pub fn runBatchParallel(
 
     var prepared = try prepareBatch(allocator, io, input_dir, output_dir, config);
     defer prepared.deinit(allocator);
-    const work_items = prepared.work.items.items;
 
-    if (work_items.len == 0) {
-        return BatchResult{
-            .total_files = 0,
-            .successful = 0,
-            .failed = 0,
-            .total_sasa_time_ns = 0,
-            .total_time_ns = @intCast(prepared.total_timer.untilNow(io, .awake).nanoseconds),
-            .scan_time_ns = prepared.scan_time_ns,
-            .file_results = try allocator.alloc(FileResult, 0),
-            .allocator = allocator,
-        };
-    }
+    return runPrepared(allocator, io, input_dir, output_dir, config, jsonl_output_path, &prepared);
+}
+
+/// Process the work items of a prepared batch: in parallel, N items at a time
+/// with one SASA thread each, or one after another when there is nothing to
+/// run in parallel.
+fn runPrepared(
+    allocator: Allocator,
+    io: std.Io,
+    input_dir: []const u8,
+    output_dir: ?[]const u8,
+    config: BatchConfig,
+    jsonl_output_path: ?[]const u8,
+    prepared: *const PreparedBatch,
+) !BatchResult {
+    const work_items = prepared.work.items.items;
 
     // Determine thread count
     const cpu_count = std.Thread.getCpuCount() catch 1;
     const n_threads = resolveBatchThreadCount(config.n_threads, cpu_count);
     const actual_threads = @min(n_threads, work_items.len);
 
-    // For single item or single thread, use sequential
-    if (work_items.len == 1 or n_threads <= 1) {
-        return runPreparedSequential(allocator, io, input_dir, output_dir, config, jsonl_output_path, &prepared);
+    // Nothing to run in parallel for at most one item or a single thread. An
+    // empty directory goes this way too, so that it leaves the same output
+    // behind whatever the thread count: an empty JSONL file, not a stale one.
+    if (work_items.len <= 1 or n_threads <= 1) {
+        return runPreparedSequential(allocator, io, input_dir, output_dir, config, jsonl_output_path, prepared);
     }
 
     // Create output directory if specified
@@ -2404,7 +2661,7 @@ pub fn runBatchParallel(
     if (jsonl_output_path) |path| {
         jsonl_file = try std.Io.Dir.cwd().createFile(io, path, .{});
         jsonl_file_needs_close = true;
-    } else if (config.store_atom_areas) {
+    } else if (batchWritesJsonl(config)) {
         jsonl_file = std.Io.File.stdout();
     }
     defer if (jsonl_file_needs_close) {
@@ -2520,7 +2777,8 @@ pub fn runBatchParallel(
 }
 
 /// Run batch processing (main entry point)
-/// Uses file-level parallelism: N files in parallel, 1 thread per file
+/// Uses file-level parallelism: N files in parallel, 1 thread per file; with
+/// one thread or at most one input the files are processed one after another.
 pub fn runBatch(
     allocator: Allocator,
     io: std.Io,
@@ -2529,14 +2787,6 @@ pub fn runBatch(
     config: BatchConfig,
     jsonl_output_path: ?[]const u8,
 ) !BatchResult {
-    try validateBatchOutputFormat(config.output_format);
-
-    const cpu_count = std.Thread.getCpuCount() catch 1;
-    const n_threads = resolveBatchThreadCount(config.n_threads, cpu_count);
-
-    if (n_threads <= 1) {
-        return runBatchSequential(allocator, io, input_dir, output_dir, config, jsonl_output_path);
-    }
     return runBatchParallel(allocator, io, input_dir, output_dir, config, jsonl_output_path);
 }
 
@@ -2749,7 +2999,7 @@ fn validateUniqueOutputNames(
     output_dir: ?[]const u8,
     config: BatchConfig,
 ) !void {
-    if (output_dir == null or config.store_atom_areas) return;
+    if (output_dir == null or batchWritesJsonl(config)) return;
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -2819,7 +3069,7 @@ fn validateUniqueFileOutputNames(
     output_dir: ?[]const u8,
     config: BatchConfig,
 ) !void {
-    if (output_dir == null or config.store_atom_areas) return;
+    if (output_dir == null or batchWritesJsonl(config)) return;
 
     const items = try plainWorkItems(allocator, files);
     defer allocator.free(items);
@@ -2996,6 +3246,9 @@ fn parseJsonlDecimals(value: []const u8) u8 {
     return decimals;
 }
 
+/// Split a `--chain` value such as "A" or "A,B" into chain IDs. A value
+/// without any chain ID ("", "," or " , ") is `error.EmptyChainFilter`: it
+/// would select nothing and fail every input.
 fn parseBatchChainFilter(allocator: Allocator, filter_str: []const u8) ![]const []const u8 {
     var chains = std.ArrayListUnmanaged([]const u8).empty;
     errdefer chains.deinit(allocator);
@@ -3007,6 +3260,7 @@ fn parseBatchChainFilter(allocator: Allocator, filter_str: []const u8) ![]const 
             try chains.append(allocator, trimmed);
         }
     }
+    if (chains.items.len == 0) return error.EmptyChainFilter;
 
     return chains.toOwnedSlice(allocator);
 }
@@ -3508,7 +3762,8 @@ pub fn printHelp(program_name: []const u8) void {
         \\    --timing            Show timing breakdown for benchmarking
         \\    --profile-stages    Include read/parse, classifier, and JSONL stage timings
         \\    -o, --output=PATH   Output directory, or file path for --format=jsonl
-        \\    -q, --quiet         Suppress progress output
+        \\    -q, --quiet         Suppress progress output and the summary; inputs
+        \\                        that fail are still reported on stderr
         \\    -h, --help          Show this help message
         \\
         \\EXAMPLES:
@@ -3691,6 +3946,11 @@ fn parseWorkflowFile(allocator: Allocator, io: std.Io, path: []const u8) !workfl
     return workflow_manifest.parseFile(allocator, io, path);
 }
 
+fn printWorkflowReadError(path: []const u8, err: anyerror) void {
+    std.debug.print("Error reading workflow file '{s}': {s}\n", .{ path, @errorName(err) });
+    if (workflow_manifest.errorHint(err)) |hint| std.debug.print("  {s}\n", .{hint});
+}
+
 fn classifierUsesCcdResources(effective_classifier_type: ?ClassifierType) bool {
     const classifier_type = effective_classifier_type orelse return false;
     return classifier_type == .ccd;
@@ -3835,6 +4095,9 @@ const BsaInterfaceSelection = struct {
 const BsaInterfaceStats = struct {
     successful: bool,
     sasa_time_ns: u64 = 0,
+    /// The error row of a failed interface, for the failure report. The
+    /// strings live as long as the allocator the row was written with.
+    failure: ?struct { filename: []const u8, id: []const u8, reason: []const u8 } = null,
 };
 
 const BsaWorkflowCounter = struct {
@@ -3884,7 +4147,10 @@ fn writeBsaInterfaceError(
         .name = name,
         .error_message = error_message,
     });
-    return .{ .successful = false };
+    return .{
+        .successful = false,
+        .failure = .{ .filename = filename, .id = id, .reason = error_message },
+    };
 }
 
 fn processBsaInterface(
@@ -4041,6 +4307,8 @@ const BsaParallelContext = struct {
     processed_count: std.atomic.Value(usize),
     progress_node: std.Progress.Node,
     counter: BsaWorkflowCounter = .{},
+    /// Failed interfaces for the report at the end of the run.
+    failures: *FailureLog,
     worker_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     io: std.Io,
 };
@@ -4056,6 +4324,7 @@ fn recordBsaInterfaceStats(ctx: *BsaParallelContext, stats: BsaInterfaceStats) v
         _ = ctx.counter.total_sasa_time_ns.fetchAdd(stats.sasa_time_ns, .monotonic);
     } else {
         _ = ctx.counter.failed.fetchAdd(1, .monotonic);
+        if (stats.failure) |failure| ctx.failures.record(ctx.io, failure.filename, failure.id, failure.reason);
     }
 }
 
@@ -4320,6 +4589,9 @@ fn runWorkflowBsaAnalysis(
         .none;
     defer progress_root.end();
 
+    var failures = FailureLog{ .allocator = allocator };
+    defer failures.deinit();
+
     const file_threads = effectiveWorkflowFileThreads(config, files.len);
     var ctx = BsaParallelContext{
         .files = files,
@@ -4337,6 +4609,7 @@ fn runWorkflowBsaAnalysis(
         .next_file = std.atomic.Value(usize).init(0),
         .processed_count = std.atomic.Value(usize).init(0),
         .progress_node = progress_root,
+        .failures = &failures,
         .io = io,
     };
 
@@ -4385,6 +4658,13 @@ fn runWorkflowBsaAnalysis(
         std.debug.print("BSA analysis SASA time: {d:.2} ms\n", .{total_sasa_ms});
     }
     std.debug.print("Workflow complete: {d} successful, {d} failed\n", .{ successful, failed });
+    (FailureReport{
+        .unit = .interface,
+        .total = successful + failed,
+        .failed = failed,
+        .failures = failures.sorted(),
+        .jsonl = .{ .file = jsonl_output_path },
+    }).print(allocator);
 }
 
 const SelectionMapBatchStats = struct {
@@ -4446,6 +4726,8 @@ const SelectionMapContext = struct {
     sasa_threads: usize,
     luts: *const BatchLuts,
     jsonl_stream: *JsonlStreamWriter,
+    /// Failed selections for the report at the end of the run, if wanted.
+    failures: ?*FailureLog = null,
     next_file: std.atomic.Value(usize),
     processed_count: std.atomic.Value(usize),
     progress_node: std.Progress.Node,
@@ -4590,6 +4872,21 @@ fn writeSelectionSuccess(
     try stream.writeLine(entry.filename, line);
 }
 
+/// Write the error row of one failed selection, count it and keep it for the
+/// failure report.
+fn failSelection(
+    ctx: *SelectionMapContext,
+    allocator: Allocator,
+    filename: []const u8,
+    id: []const u8,
+    chains: []const []const u8,
+    message: []const u8,
+) !void {
+    try writeSelectionError(ctx.jsonl_stream, allocator, filename, id, chains, message);
+    _ = ctx.counter.failed.fetchAdd(1, .monotonic);
+    if (ctx.failures) |log| log.record(ctx.io, filename, id, message);
+}
+
 fn writeSelectionSourceErrorRows(
     ctx: *SelectionMapContext,
     allocator: Allocator,
@@ -4600,20 +4897,11 @@ fn writeSelectionSourceErrorRows(
     if (map_indices) |indices| {
         for (indices) |entry_index| {
             const entry = ctx.map.entries[entry_index];
-            try writeSelectionError(
-                ctx.jsonl_stream,
-                allocator,
-                filename,
-                entry.id orelse filename,
-                entry.chains,
-                message,
-            );
-            _ = ctx.counter.failed.fetchAdd(1, .monotonic);
+            try failSelection(ctx, allocator, filename, entry.id orelse filename, entry.chains, message);
         }
         return;
     }
-    try writeSelectionError(ctx.jsonl_stream, allocator, filename, filename, &.{}, message);
-    _ = ctx.counter.failed.fetchAdd(1, .monotonic);
+    try failSelection(ctx, allocator, filename, filename, &.{}, message);
 }
 
 fn calculateSelectionGroup(
@@ -4764,15 +5052,14 @@ fn processSelectionMapFile(ctx: *SelectionMapContext, allocator: Allocator, file
             try writeSelectionSuccess(ctx.jsonl_stream, allocator, entry, group.result, group.atom_identity);
             _ = ctx.counter.successful.fetchAdd(1, .monotonic);
         } else {
-            try writeSelectionError(
-                ctx.jsonl_stream,
+            try failSelection(
+                ctx,
                 allocator,
                 filename,
                 entry.id orelse filename,
                 entry.chains,
                 group.result.error_msg orelse "unknown error",
             );
-            _ = ctx.counter.failed.fetchAdd(1, .monotonic);
         }
     }
 
@@ -4809,6 +5096,7 @@ fn runSelectionMapBatch(
     config: BatchConfig,
     jsonl_output_path: ?[]const u8,
     map: *const chain_map.ChainMap,
+    failures: ?*FailureLog,
 ) !SelectionMapBatchStats {
     if (config.output_format != .jsonl) return error.MultiSelectionMapRequiresJsonl;
     if (!config.jsonl_include_total_area) return error.SelectionMapRequiresTotalArea;
@@ -4853,6 +5141,7 @@ fn runSelectionMapBatch(
         .sasa_threads = sasa_threads,
         .luts = &luts,
         .jsonl_stream = &jsonl_stream,
+        .failures = failures,
         .next_file = std.atomic.Value(usize).init(0),
         .processed_count = std.atomic.Value(usize).init(0),
         .progress_node = progress_root,
@@ -4879,15 +5168,14 @@ fn runSelectionMapBatch(
         if (discovered_files.contains(entry.filename)) continue;
         var error_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer error_arena.deinit();
-        try writeSelectionError(
-            &jsonl_stream,
+        try failSelection(
+            &ctx,
             error_arena.allocator(),
             entry.filename,
             entry.id orelse entry.filename,
             entry.chains,
             "input structure not found",
         );
-        _ = ctx.counter.failed.fetchAdd(1, .monotonic);
     }
 
     try jsonl_stream.flush();
@@ -4936,10 +5224,40 @@ const WorkflowParallelContext = struct {
     io: std.Io,
 };
 
-fn workflowMarkAllJobsFailed(ctx: *WorkflowParallelContext) void {
-    for (ctx.runtimes) |*runtime| {
-        _ = runtime.counter.failed.fetchAdd(1, .monotonic);
+/// A result that only reports `message` for `filename`; the message is not owned.
+fn failedFileResult(filename: []const u8, message: []const u8) FileResult {
+    return .{
+        .filename = filename,
+        .n_atoms = 0,
+        .sasa_time_ns = 0,
+        .total_sasa = 0,
+        .status = .err,
+        .error_msg = message,
+    };
+}
+
+/// Count `filename` as failed for one job of the parallel file-first runner
+/// and write its JSONL error row, as the other runners do for a failed input.
+fn workflowFailJob(io: std.Io, runtime: *WorkflowJobRuntime, arena: Allocator, filename: []const u8, message: []const u8) void {
+    _ = runtime.counter.failed.fetchAdd(1, .monotonic);
+    runtime.state.failures.record(io, filename, null, message);
+    if (runtime.jsonl_stream) |*stream| {
+        var result = failedFileResult(filename, message);
+        stream.writeResult(arena, &result);
     }
+}
+
+/// `workflowFailJob` for every job: the input could not be read, parsed or
+/// classified, so no job has a result for it.
+fn workflowFailAllJobs(
+    ctx: *WorkflowParallelContext,
+    arena: Allocator,
+    filename: []const u8,
+    comptime stage: []const u8,
+    err: anyerror,
+) void {
+    const message = std.fmt.allocPrint(arena, stage ++ " failed: {s}", .{@errorName(err)}) catch stage ++ " failed";
+    for (ctx.runtimes) |*runtime| workflowFailJob(ctx.io, runtime, arena, filename, message);
 }
 
 fn workflowClassifySourceInput(
@@ -4970,8 +5288,7 @@ fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
 
         const filename = ctx.files[file_index];
         const input_path = std.fs.path.join(arena.allocator(), &.{ ctx.input_dir, filename }) catch |err| {
-            workflowMarkAllJobsFailed(ctx);
-            std.debug.print("Error running workflow on '{s}': path join failed: {s}\n", .{ filename, @errorName(err) });
+            workflowFailAllJobs(ctx, arena.allocator(), filename, "path join", err);
             _ = ctx.processed_count.fetchAdd(1, .release);
             _ = arena.reset(.retain_capacity);
             continue;
@@ -4980,20 +5297,14 @@ fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
         var source_config = ctx.resource_config;
         source_config.chain_filter = null;
         var source_parsed = readInputFile(arena.allocator(), ctx.io, input_path, source_config) catch |err| {
-            workflowMarkAllJobsFailed(ctx);
-            for (ctx.runtimes) |runtime| {
-                std.debug.print("Error running workflow job '{s}' on '{s}': read/parse failed: {s}\n", .{ runtime.state.name, filename, @errorName(err) });
-            }
+            workflowFailAllJobs(ctx, arena.allocator(), filename, "read/parse", err);
             _ = ctx.processed_count.fetchAdd(1, .release);
             _ = arena.reset(.retain_capacity);
             continue;
         };
 
         workflowClassifySourceInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
-            workflowMarkAllJobsFailed(ctx);
-            for (ctx.runtimes) |runtime| {
-                std.debug.print("Error running workflow job '{s}' on '{s}': classifier failed: {s}\n", .{ runtime.state.name, filename, @errorName(err) });
-            }
+            workflowFailAllJobs(ctx, arena.allocator(), filename, "classifier", err);
             source_parsed.deinit();
             _ = ctx.processed_count.fetchAdd(1, .release);
             _ = arena.reset(.retain_capacity);
@@ -5005,8 +5316,8 @@ fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
             var runtime = &ctx.runtimes[job_index];
             const selected_chains: ?[]const []const u8 = if (format == .json) null else job.chains;
             var selected_input = copySelectedAtomInput(arena.allocator(), source_parsed.input, selected_chains) catch |err| {
-                _ = runtime.counter.failed.fetchAdd(1, .monotonic);
-                std.debug.print("Error running workflow job '{s}' on '{s}': selection failed: {s}\n", .{ runtime.state.name, filename, @errorName(err) });
+                const message = std.fmt.allocPrint(arena.allocator(), "selection failed: {s}", .{@errorName(err)}) catch "selection failed";
+                workflowFailJob(ctx.io, runtime, arena.allocator(), filename, message);
                 continue;
             };
             defer selected_input.deinit();
@@ -5023,6 +5334,7 @@ fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
                 _ = runtime.counter.total_sasa_time_ns.fetchAdd(result.sasa_time_ns, .monotonic);
             } else {
                 _ = runtime.counter.failed.fetchAdd(1, .monotonic);
+                runtime.state.failures.record(ctx.io, filename, null, result.error_msg orelse "unknown error");
             }
 
             if (runtime.jsonl_stream) |*stream| {
@@ -5039,6 +5351,72 @@ fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
     }
 }
 
+/// Write the JSONL row of one result of a job in the sequential file-first
+/// runner; nothing for a job with per-file output.
+fn workflowWriteSequentialJsonl(io: std.Io, arena: Allocator, state: *const WorkflowJobState, result: *FileResult) !void {
+    if (!batchWritesJsonl(state.config)) return;
+    if (state.jsonl_output_path) |path| {
+        const file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .write_only });
+        defer file.close(io);
+        try appendJsonlResultToFile(io, file, arena, result, jsonlOptions(state.config));
+    } else {
+        var stdout_write_buf: [64 * 1024]u8 = undefined;
+        var stdout_writer = std.Io.File.Writer.initStreaming(std.Io.File.stdout(), io, &stdout_write_buf);
+        try writeJsonlResult(&stdout_writer, arena, result, jsonlOptions(state.config));
+    }
+}
+
+/// `workflowFailJob` for the sequential file-first runner.
+fn workflowFailJobSequential(io: std.Io, arena: Allocator, state: *WorkflowJobState, filename: []const u8, message: []const u8) !void {
+    state.failed += 1;
+    state.failures.record(io, filename, null, message);
+    var result = failedFileResult(filename, message);
+    try workflowWriteSequentialJsonl(io, arena, state, &result);
+}
+
+/// `workflowFailAllJobs` for the sequential file-first runner.
+fn workflowFailAllJobsSequential(
+    io: std.Io,
+    arena: Allocator,
+    states: []WorkflowJobState,
+    filename: []const u8,
+    comptime stage: []const u8,
+    err: anyerror,
+) !void {
+    const message = std.fmt.allocPrint(arena, stage ++ " failed: {s}", .{@errorName(err)}) catch stage ++ " failed";
+    for (states) |*state| try workflowFailJobSequential(io, arena, state, filename, message);
+}
+
+/// Report a workflow job that failed as a whole, naming the job and the cause.
+fn printWorkflowJobError(job_name: []const u8, comptime cause_fmt: []const u8, cause_args: anytype) void {
+    std.debug.print("Error running workflow job '{s}': " ++ cause_fmt ++ "\n", .{job_name} ++ cause_args);
+}
+
+/// The line that closes a workflow in which whole jobs failed: how many of
+/// the jobs, and which. The cause of each was reported when it failed.
+/// Caller frees the result.
+fn formatFailedWorkflowJobs(allocator: Allocator, failed_jobs: []const []const u8, n_jobs: usize) ![]u8 {
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    defer aw.deinit();
+    const w = &aw.writer;
+
+    try w.print("{d} of {d} job{s} failed:", .{ failed_jobs.len, n_jobs, if (n_jobs == 1) "" else "s" });
+    for (failed_jobs, 0..) |name, i| {
+        try w.print("{s} {s}", .{ if (i == 0) "" else ",", name });
+    }
+    try w.writeByte('\n');
+    return aw.toOwnedSlice();
+}
+
+fn printFailedWorkflowJobs(allocator: Allocator, failed_jobs: []const []const u8, n_jobs: usize) void {
+    const text = formatFailedWorkflowJobs(allocator, failed_jobs, n_jobs) catch {
+        std.debug.print("{d} of {d} jobs failed\n", .{ failed_jobs.len, n_jobs });
+        return;
+    };
+    defer allocator.free(text);
+    std.debug.print("{s}", .{text});
+}
+
 fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     if (args.chain_filter != null) {
         std.debug.print("Error: --workflow cannot be combined with --chain; --manifest is a compatibility alias for --workflow; use [[jobs]].chains in the workflow\n", .{});
@@ -5047,7 +5425,7 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
 
     const workflow_path = args.workflow_path.?;
     var workflow = parseWorkflowFile(allocator, io, workflow_path) catch |err| {
-        std.debug.print("Error reading workflow file '{s}': {s}\n", .{ workflow_path, @errorName(err) });
+        printWorkflowReadError(workflow_path, err);
         return err;
     };
     defer workflow.deinit();
@@ -5106,6 +5484,15 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
 
     var successful: usize = 0;
     var failed: usize = 0;
+    // Jobs that failed as a whole. They are not inputs, so they are kept out
+    // of the counters above and make the run an error once every job has had
+    // its turn.
+    var failed_jobs = std.ArrayListUnmanaged([]const u8).empty;
+    defer failed_jobs.deinit(allocator);
+    // The failed inputs of each job, reported together when the workflow ends.
+    var report_arena = std.heap.ArenaAllocator.init(allocator);
+    defer report_arena.deinit();
+    var reports = std.ArrayListUnmanaged(FailureReport).empty;
 
     for (workflow.jobs) |job| {
         var loaded_chain_map: ?chain_map.ChainMap = null;
@@ -5170,6 +5557,8 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
         }
 
         if (loaded_chain_map != null and config.output_format == .jsonl) {
+            var selection_failures = FailureLog{ .allocator = allocator };
+            defer selection_failures.deinit();
             const stats = runSelectionMapBatch(
                 allocator,
                 io,
@@ -5177,12 +5566,25 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
                 config,
                 jsonl_output_path,
                 &loaded_chain_map.?,
+                &selection_failures,
             ) catch |err| {
                 std.debug.print("Error running selection-map workflow job '{s}': {s}\n", .{ job.name, @errorName(err) });
-                return err;
+                try failed_jobs.append(allocator, job.name);
+                continue;
             };
             successful += stats.successful;
             failed += stats.failed;
+            if (stats.failed > 0) {
+                const report = FailureReport{
+                    .job = job.name,
+                    .unit = .selection,
+                    .total = stats.successful + stats.failed,
+                    .failed = stats.failed,
+                    .failures = selection_failures.sorted(),
+                    .jsonl = JsonlDestination.of(config, jsonl_output_path),
+                };
+                try reports.append(report_arena.allocator(), try report.dupe(report_arena.allocator()));
+            }
             continue;
         }
         if (loaded_chain_map) |*map| {
@@ -5192,18 +5594,58 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
             }
         }
 
-        var result = runBatch(allocator, io, input_dir, job_output_dir, config, jsonl_output_path) catch |err| {
-            std.debug.print("Error running workflow job '{s}': {s}\n", .{ job.name, @errorName(err) });
-            failed += 1;
+        // The steps of `runBatch`, taken one at a time so that a failure can
+        // say what went wrong: nothing is created before the inputs are
+        // accepted, and a job that cannot write its output calculates nothing.
+        var prepared = prepareBatch(allocator, io, input_dir, job_output_dir, config) catch |err| {
+            switch (err) {
+                error.OutputNameCollision => printWorkflowJobError(job.name, "its inputs share output names (listed above)", .{}),
+                error.UnsupportedChainMapInputFormat, error.OutOfMemory => printWorkflowJobError(job.name, "{s}", .{@errorName(err)}),
+                else => printWorkflowJobError(job.name, "cannot read input directory '{s}': {s}", .{ input_dir, @errorName(err) }),
+            }
+            try failed_jobs.append(allocator, job.name);
+            continue;
+        };
+        defer prepared.deinit(allocator);
+
+        if (job_output_dir) |dir| {
+            std.Io.Dir.cwd().createDirPath(io, dir) catch |err| {
+                printWorkflowJobError(job.name, "cannot create output directory '{s}': {s}", .{ dir, @errorName(err) });
+                try failed_jobs.append(allocator, job.name);
+                continue;
+            };
+        }
+        if (jsonl_output_path) |path| {
+            truncateJsonlOutput(io, path) catch |err| {
+                printWorkflowJobError(job.name, "cannot create JSONL output '{s}': {s}", .{ path, @errorName(err) });
+                try failed_jobs.append(allocator, job.name);
+                continue;
+            };
+        }
+
+        var result = runPrepared(allocator, io, input_dir, job_output_dir, config, jsonl_output_path, &prepared) catch |err| {
+            printWorkflowJobError(job.name, "{s}", .{@errorName(err)});
+            try failed_jobs.append(allocator, job.name);
             continue;
         };
         defer result.deinit();
 
         successful += result.successful;
         failed += result.failed;
+        if (result.failed > 0) {
+            var buffer: [max_listed_failures]Failure = undefined;
+            const report = result.failureReport(&buffer, job.name, JsonlDestination.of(config, jsonl_output_path));
+            try reports.append(report_arena.allocator(), try report.dupe(report_arena.allocator()));
+        }
     }
 
     std.debug.print("Workflow complete: {d} successful, {d} failed\n", .{ successful, failed });
+    for (reports.items) |report| report.print(allocator);
+
+    if (failed_jobs.items.len > 0) {
+        printFailedWorkflowJobs(allocator, failed_jobs.items, workflow.jobs.len);
+        return error.WorkflowJobFailed;
+    }
 }
 
 fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_scanned_files: ?[]const []const u8) !void {
@@ -5214,7 +5656,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
 
     const workflow_path = args.workflow_path.?;
     var workflow = parseWorkflowFile(allocator, io, workflow_path) catch |err| {
-        std.debug.print("Error reading workflow file '{s}': {s}\n", .{ workflow_path, @errorName(err) });
+        printWorkflowReadError(workflow_path, err);
         return err;
     };
     defer workflow.deinit();
@@ -5339,6 +5781,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
             .config = config,
             .output_dir = job_output_dir,
             .jsonl_output_path = jsonl_output_path,
+            .failures = .{ .allocator = allocator },
         };
         states_initialized += 1;
     }
@@ -5406,20 +5849,16 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
             joinSpawnedThreads(threads, spawned_count);
         }
 
-        var successful: usize = 0;
-        var failed: usize = 0;
         for (runtimes) |*runtime| {
             runtime.state.successful = runtime.counter.successful.load(.monotonic);
             runtime.state.failed = runtime.counter.failed.load(.monotonic);
             runtime.state.total_sasa_time_ns = runtime.counter.total_sasa_time_ns.load(.monotonic);
-            successful += runtime.state.successful;
-            failed += runtime.state.failed;
             if (runtime.jsonl_stream) |*stream| {
                 try stream.flush();
                 if (stream.hasError()) return error.JsonlWriteFailed;
             }
         }
-        std.debug.print("Workflow complete: {d} successful, {d} failed\n", .{ successful, failed });
+        printWorkflowJobStates(allocator, states);
         return;
     }
 
@@ -5432,48 +5871,25 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
         var source_config = resource_config;
         source_config.chain_filter = null;
         var source_parsed = readInputFile(arena.allocator(), io, input_path, source_config) catch |err| {
-            for (states) |*state| {
-                state.failed += 1;
-                std.debug.print("Error running workflow job '{s}' on '{s}': read/parse failed: {s}\n", .{ state.name, filename, @errorName(err) });
-            }
+            try workflowFailAllJobsSequential(io, arena.allocator(), states, filename, "read/parse", err);
             _ = arena.reset(.retain_capacity);
             continue;
         };
 
-        if (source_config.custom_classifier) |custom| {
-            if (source_parsed.input.hasClassificationInfo()) {
-                applyCustomClassifier(&source_parsed.input, custom, source_config.quiet) catch |err| {
-                    for (states) |*state| {
-                        state.failed += 1;
-                        std.debug.print("Error running workflow job '{s}' on '{s}': classifier failed: {s}\n", .{ state.name, filename, @errorName(err) });
-                    }
-                    source_parsed.deinit();
-                    _ = arena.reset(.retain_capacity);
-                    continue;
-                };
-            }
-        } else if (source_config.classifier_type) |ct| {
-            const format = format_detect.detectInputFormat(input_path);
-            if (format != .json and source_parsed.input.hasClassificationInfo()) {
-                applyBuiltinClassifier(&source_parsed.input, ct, source_config.sdf_ccd, source_parsed.inlineCcdPtr(), source_config.external_ccd) catch |err| {
-                    for (states) |*state| {
-                        state.failed += 1;
-                        std.debug.print("Error running workflow job '{s}' on '{s}': classifier failed: {s}\n", .{ state.name, filename, @errorName(err) });
-                    }
-                    source_parsed.deinit();
-                    _ = arena.reset(.retain_capacity);
-                    continue;
-                };
-            }
-        }
+        workflowClassifySourceInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
+            try workflowFailAllJobsSequential(io, arena.allocator(), states, filename, "classifier", err);
+            source_parsed.deinit();
+            _ = arena.reset(.retain_capacity);
+            continue;
+        };
 
         for (workflow.jobs, 0..) |job, job_index| {
             var state = &states[job_index];
 
             const selected_chains: ?[]const []const u8 = if (format_detect.detectInputFormat(input_path) == .json) null else job.chains;
             var selected_input = copySelectedAtomInput(arena.allocator(), source_parsed.input, selected_chains) catch |err| {
-                state.failed += 1;
-                std.debug.print("Error running workflow job '{s}' on '{s}': selection failed: {s}\n", .{ state.name, filename, @errorName(err) });
+                const message = std.fmt.allocPrint(arena.allocator(), "selection failed: {s}", .{@errorName(err)}) catch "selection failed";
+                try workflowFailJobSequential(io, arena.allocator(), state, filename, message);
                 continue;
             };
             defer selected_input.deinit();
@@ -5490,19 +5906,10 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
                 state.total_sasa_time_ns += result.sasa_time_ns;
             } else {
                 state.failed += 1;
+                state.failures.record(io, filename, null, result.error_msg orelse "unknown error");
             }
 
-            if (state.config.output_format == .jsonl) {
-                if (state.jsonl_output_path) |path| {
-                    const file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .write_only });
-                    defer file.close(io);
-                    try appendJsonlResultToFile(io, file, arena.allocator(), &result, jsonlOptions(state.config));
-                } else {
-                    var stdout_write_buf: [64 * 1024]u8 = undefined;
-                    var stdout_writer = std.Io.File.Writer.initStreaming(std.Io.File.stdout(), io, &stdout_write_buf);
-                    try writeJsonlResult(&stdout_writer, arena.allocator(), &result, jsonlOptions(state.config));
-                }
-            }
+            try workflowWriteSequentialJsonl(io, arena.allocator(), state, &result);
 
             result.atom_areas = null;
             result.residue_map = null;
@@ -5512,13 +5919,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
         _ = arena.reset(.retain_capacity);
     }
 
-    var successful: usize = 0;
-    var failed: usize = 0;
-    for (states) |state| {
-        successful += state.successful;
-        failed += state.failed;
-    }
-    std.debug.print("Workflow complete: {d} successful, {d} failed\n", .{ successful, failed });
+    printWorkflowJobStates(allocator, states);
 }
 
 /// Run batch processing from parsed CLI arguments
@@ -5536,6 +5937,18 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         std.debug.print("Usage: zsasa batch [OPTIONS] <input_dir> [output_dir]\n", .{});
         return error.MissingArgument;
     };
+
+    var chain_filter_slice: ?[]const []const u8 = null;
+    if (args.chain_filter) |filter_str| {
+        chain_filter_slice = parseBatchChainFilter(allocator, filter_str) catch |err| switch (err) {
+            error.EmptyChainFilter => {
+                std.debug.print("Error: --chain needs at least one chain ID (for example --chain=A or --chain=A,B), got '{s}'\n", .{filter_str});
+                return error.InvalidArgument;
+            },
+            else => |e| return e,
+        };
+    }
+    defer if (chain_filter_slice) |s| allocator.free(s);
 
     // Load external CCD dictionary if specified
     var ext_ccd: ?ccd_parser.ComponentDict = null;
@@ -5622,12 +6035,6 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     // For jsonl, don't pass output_dir to runBatch (no per-file I/O during computation)
     const output_dir: ?[]const u8 = if (args.output_format == .jsonl) null else args.output_path;
 
-    var chain_filter_slice: ?[]const []const u8 = null;
-    if (args.chain_filter) |filter_str| {
-        chain_filter_slice = try parseBatchChainFilter(allocator, filter_str);
-    }
-    defer if (chain_filter_slice) |s| allocator.free(s);
-
     // Build batch config from parsed args
     // CCD/ProtOr use united-atom radii (implicit H) — warn if explicit H included
     if ((args.classifier_type == .ccd or args.classifier_type == .protor) and args.include_hydrogens and !args.quiet) {
@@ -5689,9 +6096,12 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     var result = try runBatch(allocator, io, input_dir, output_dir, config, jsonl_output_path);
     defer result.deinit();
 
-    // Print results
+    // Print results. Quiet mode drops the summary, not the failed inputs.
+    const jsonl_destination = JsonlDestination.of(config, jsonl_output_path);
     if (!args.quiet) {
-        result.printSummary(args.show_timing);
+        result.printSummary(args.show_timing, jsonl_destination);
+    } else {
+        result.printFailures(jsonl_destination);
     }
 
     // Always print benchmark output (for script parsing)
@@ -6086,6 +6496,71 @@ test "parseBatchChainFilter splits comma-separated chains" {
     try std.testing.expectEqualStrings("A", chains[0]);
     try std.testing.expectEqualStrings("B", chains[1]);
     try std.testing.expectEqualStrings("AB", chains[2]);
+}
+
+test "batch rejects a --chain value without any chain ID" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ "", ",", " , ,", " " }) |value| {
+        try std.testing.expectError(error.EmptyChainFilter, parseBatchChainFilter(allocator, value));
+    }
+
+    // The command stops before it scans the input directory: every input
+    // would otherwise fail to parse with no atom selected.
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try tmp_dir.dir.realPath(std.testing.io, &root_buf)];
+    const output_dir = try std.fs.path.join(allocator, &.{ root, "out" });
+    defer allocator.free(output_dir);
+
+    for ([_][]const u8{ "--chain=,", "--chain=" }) |flag| {
+        const argv = [_][]const u8{ "zsasa", "batch", "-q", flag, root, output_dir };
+        try std.testing.expectError(error.InvalidArgument, run(allocator, std.testing.io, parseArgs(&argv, 2)));
+    }
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(std.testing.io, output_dir, .{}));
+}
+
+test "workflow rejects a job with an empty chains array before running anything" {
+    const allocator = std.testing.allocator;
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("tiny.pdb", test_naming_pdb);
+    const workflow_path = try sandbox.path("workflow.toml");
+    defer allocator.free(workflow_path);
+    const output_dir = try sandbox.path("output");
+    defer allocator.free(output_dir);
+
+    // With and without the job option that selects the job-first runner: an
+    // empty list used to mean every chain in one runner and none in the other.
+    inline for (.{ "", "auth_chain = true\n" }) |job_option| {
+        const workflow = try std.fmt.allocPrint(allocator,
+            \\version = 1
+            \\kind = "workflow"
+            \\
+            \\[input]
+            \\dir = "{s}"
+            \\
+            \\[output]
+            \\dir = "{s}"
+            \\format = "jsonl"
+            \\
+            \\[calculation]
+            \\quiet = true
+            \\
+            \\[[jobs]]
+            \\name = "nothing"
+            \\chains = []
+            \\{s}
+        , .{ sandbox.input_dir, output_dir, job_option });
+        defer allocator.free(workflow);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
+
+        try std.testing.expectError(
+            error.EmptyJobChains,
+            runWorkflow(allocator, std.testing.io, .{ .workflow_path = workflow_path }),
+        );
+    }
+    try sandbox.expectTree(&.{ "input/", "input/tiny.pdb", "workflow.toml" });
 }
 
 test "workflow numeric validators reject invalid values" {
@@ -6892,14 +7367,15 @@ test "workflow job writes per-molecule SDF outputs and rejects collisions" {
     }
 
     // "dup_x_1.pdb" claims the output of the first molecule of "dup.sdf": the
-    // job is rejected before its output directory is created.
+    // job is rejected before its output directory is created, and the run
+    // is an error.
     try sandbox.writeInput("dup_x_1.pdb", test_naming_pdb);
     inline for (test_naming_threads) |n_threads| {
-        try runWorkflow(allocator, std.testing.io, .{
+        try std.testing.expectError(error.WorkflowJobFailed, runWorkflow(allocator, std.testing.io, .{
             .workflow_path = workflow_path,
             .n_threads = n_threads,
             .threads_explicit = true,
-        });
+        }));
         try sandbox.expectTree(&.{
             "input/",
             "input/dup.sdf",
@@ -6966,6 +7442,57 @@ test "validateUniqueOutputNames only applies to per-file output" {
     const jsonl_config = BatchConfig{ .output_format = .jsonl, .store_atom_areas = true };
     try validateUniqueOutputNames(std.testing.allocator, items, "out", jsonl_config);
     try validateUniqueFileOutputNames(std.testing.allocator, &files, "out", jsonl_config);
+    // Also when its rows carry no atom areas.
+    const jsonl_totals_config = BatchConfig{ .output_format = .jsonl, .jsonl_include_atom_areas = false };
+    try std.testing.expect(!batchShouldStoreAtomAreas(jsonl_totals_config));
+    try validateUniqueOutputNames(std.testing.allocator, items, "out", jsonl_totals_config);
+    try validateUniqueFileOutputNames(std.testing.allocator, &files, "out", jsonl_totals_config);
+}
+
+test "JSONL without atom areas writes rows and no per-file outputs" {
+    const allocator = std.testing.allocator;
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    // Two inputs that would share "tiny.jsonl" as a per-file output
+    try sandbox.writeInput("tiny.pdb", test_naming_pdb);
+    try sandbox.writeInput("tiny.ent", test_naming_pdb);
+    try sandbox.writeInput("lig.sdf", comptime testSdfRecord("one"));
+    const output_dir = try sandbox.path("out");
+    defer allocator.free(output_dir);
+
+    inline for (test_naming_threads) |n_threads| {
+        const jsonl_path = try sandbox.path(std.fmt.comptimePrint("rows{d}.jsonl", .{n_threads}));
+        defer allocator.free(jsonl_path);
+
+        // What a workflow with `[output.jsonl] atom_areas = false` configures:
+        // JSONL output, and no atom areas kept in the results.
+        var config = NamingSandbox.config(n_threads);
+        config.output_format = .jsonl;
+        config.jsonl_include_atom_areas = false;
+        config.store_atom_areas = batchShouldStoreAtomAreas(config);
+        try std.testing.expect(!config.store_atom_areas);
+        try std.testing.expect(batchWritesJsonl(config));
+
+        var result = try runBatch(allocator, std.testing.io, sandbox.input_dir, output_dir, config, jsonl_path);
+        defer result.deinit();
+        try std.testing.expectEqual(@as(usize, 3), result.successful);
+
+        const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, jsonl_path, allocator, .limited(4096));
+        defer allocator.free(content);
+        try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, content, "\"status\":\"ok\""));
+        try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, content, "\"total_area\""));
+        try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, content, "\"atom_areas\""));
+    }
+    // The output directory holds no per-file output.
+    try sandbox.expectTree(&.{
+        "input/",
+        "input/lig.sdf",
+        "input/tiny.ent",
+        "input/tiny.pdb",
+        "out/",
+        "rows1.jsonl",
+        "rows4.jsonl",
+    });
 }
 
 test "batch runners reject colliding output names before writing anything" {
@@ -7387,6 +7914,489 @@ test "workflow file-first keeps existing output layout" {
     try std.testing.expect(std.mem.indexOf(u8, chain_a_json_content_2, "\"total_area\"") != null);
 }
 
+/// The runner a batch workflow is routed to (see `runWorkflow`).
+const TestWorkflowRunner = enum {
+    /// Every file is parsed once and reused by all jobs.
+    file_first,
+    /// One `runBatch` per job; chosen here by a job whose `auth_chain`
+    /// differs from the shared setting.
+    job_first,
+
+    fn jobOption(self: TestWorkflowRunner) []const u8 {
+        return switch (self) {
+            .file_first => "",
+            .job_first => "auth_chain = true\n",
+        };
+    }
+};
+
+const test_workflow_runners = [_]TestWorkflowRunner{ .file_first, .job_first };
+
+/// Two chains, one residue each.
+const test_two_chain_pdb =
+    "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 20.00           N\n" ++
+    "ATOM      2  CA  ALA A   1       1.500   0.000   0.000  1.00 20.00           C\n" ++
+    "ATOM      3  N   GLY B   1       5.000   0.000   0.000  1.00 20.00           N\n" ++
+    "ATOM      4  CA  GLY B   1       6.500   0.000   0.000  1.00 20.00           C\n" ++
+    "END\n";
+
+/// A sandbox whose input directory holds two readable and two unreadable
+/// structures, and the workflow files that run two jobs over it.
+const FailureSandbox = struct {
+    sandbox: NamingSandbox,
+
+    const good_files = [_][]const u8{ "good1.pdb", "good2.pdb" };
+    /// Unreadable inputs with the reason every runner reports for them.
+    const bad_files = [_][2][]const u8{
+        .{ "bad1.pdb", "read/parse failed: NoAtomsFound" },
+        .{ "bad2.cif", "read/parse failed: NoAtomSiteLoop" },
+    };
+    const jobs = [_][]const u8{ "chain_a", "everything" };
+
+    fn init() !FailureSandbox {
+        var sandbox = try NamingSandbox.init();
+        errdefer sandbox.deinit();
+        for (good_files) |name| try sandbox.writeInput(name, test_two_chain_pdb);
+        try sandbox.writeInput("bad1.pdb", "not a structure\n");
+        try sandbox.writeInput("bad2.cif", "data_bad\nloop_\n_cell.length_a\n1.0\n");
+        return .{ .sandbox = sandbox };
+    }
+
+    fn deinit(self: *FailureSandbox) void {
+        self.sandbox.deinit();
+    }
+
+    /// Write "workflow.toml" for `runner` and return its path, allocated
+    /// from `arena`. `input_name` and `output_name` are below the sandbox
+    /// root; without `output_name` the workflow has no output directory and a
+    /// single job. `extra` is inserted before the jobs.
+    fn writeWorkflow(
+        self: FailureSandbox,
+        arena: Allocator,
+        runner: TestWorkflowRunner,
+        input_name: []const u8,
+        output_name: ?[]const u8,
+        format: []const u8,
+        extra: []const u8,
+    ) ![]const u8 {
+        const output_dir_line = if (output_name) |name|
+            try std.fmt.allocPrint(arena, "dir = \"{s}/{s}\"\n", .{ self.sandbox.root, name })
+        else
+            "";
+        const first_job = if (output_name != null) "[[jobs]]\nname = \"chain_a\"\nchains = [\"A\"]\n\n" else "";
+        const workflow = try std.fmt.allocPrint(arena,
+            \\version = 1
+            \\kind = "workflow"
+            \\
+            \\[input]
+            \\dir = "{s}/{s}"
+            \\
+            \\[output]
+            \\{s}format = "{s}"
+            \\
+            \\[calculation]
+            \\n_points = 8
+            \\quiet = true
+            \\
+            \\[classifier]
+            \\type = "naccess"
+            \\
+            \\{s}
+            \\{s}[[jobs]]
+            \\name = "everything"
+            \\{s}
+        , .{ self.sandbox.root, input_name, output_dir_line, format, extra, first_job, runner.jobOption() });
+        const workflow_path = try std.fs.path.join(arena, &.{ self.sandbox.root, "workflow.toml" });
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
+        return workflow_path;
+    }
+
+    fn args(workflow_path: []const u8, n_threads: usize) BatchArgs {
+        return .{ .workflow_path = workflow_path, .n_threads = n_threads, .threads_explicit = true };
+    }
+
+    /// The rows of a JSONL file below the sandbox root, sorted, as one string.
+    fn sortedRows(self: FailureSandbox, arena: Allocator, sub_path: []const u8) ![]const u8 {
+        const path = try std.fs.path.join(arena, &.{ self.sandbox.root, sub_path });
+        const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, arena, .limited(1 << 20));
+        var rows = std.ArrayListUnmanaged([]const u8).empty;
+        var lines = std.mem.tokenizeScalar(u8, content, '\n');
+        while (lines.next()) |line| try rows.append(arena, line);
+        std.mem.sort([]const u8, rows.items, {}, NamingSandbox.stringLessThan);
+        return std.mem.join(arena, "\n", rows.items);
+    }
+};
+
+test "workflow writes JSONL error rows for unreadable inputs in every runner" {
+    var failures = try FailureSandbox.init();
+    defer failures.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Rows of each job as the first runner wrote them; the others must agree.
+    var reference: [FailureSandbox.jobs.len]?[]const u8 = @splat(null);
+
+    for (test_workflow_runners) |runner| {
+        inline for (test_naming_threads) |n_threads| {
+            const output_name = try std.fmt.allocPrint(arena, "out-{s}-{d}", .{ @tagName(runner), n_threads });
+            const workflow_path = try failures.writeWorkflow(arena, runner, "input", output_name, "jsonl", "");
+            try runWorkflow(std.testing.allocator, std.testing.io, FailureSandbox.args(workflow_path, n_threads));
+
+            for (FailureSandbox.jobs, 0..) |job, job_index| {
+                const rows = try failures.sortedRows(arena, try std.fmt.allocPrint(arena, "{s}/{s}.jsonl", .{ output_name, job }));
+
+                // One row per input: the readable ones succeed, and each
+                // unreadable one has an error row with the usual wording.
+                try std.testing.expectEqual(@as(usize, 4), std.mem.count(u8, rows, "\"status\":"));
+                for (FailureSandbox.good_files) |name| {
+                    const row_start = try std.fmt.allocPrint(arena, "{{\"status\":\"ok\",\"filename\":\"{s}\",", .{name});
+                    try std.testing.expect(std.mem.indexOf(u8, rows, row_start) != null);
+                }
+                for (FailureSandbox.bad_files) |bad| {
+                    const row = try std.fmt.allocPrint(arena, "{{\"status\":\"err\",\"filename\":\"{s}\",\"error\":\"{s}\"}}", .{ bad[0], bad[1] });
+                    try std.testing.expect(std.mem.indexOf(u8, rows, row) != null);
+                }
+
+                if (reference[job_index]) |expected| {
+                    try std.testing.expectEqualStrings(expected, rows);
+                } else {
+                    reference[job_index] = rows;
+                }
+            }
+        }
+    }
+}
+
+/// `count` failures named "bad00.pdb", "bad01.pdb", ... Caller frees with
+/// `freeTestFailures`.
+fn makeTestFailures(allocator: Allocator, count: usize) ![]Failure {
+    const failures = try allocator.alloc(Failure, count);
+    var made: usize = 0;
+    errdefer freeTestFailures(allocator, failures[0..made]);
+    for (failures, 0..) |*failure, i| {
+        failure.* = .{
+            .name = try std.fmt.allocPrint(allocator, "bad{d:0>2}.pdb", .{i}),
+            .reason = "read/parse failed: NoAtomsFound",
+        };
+        made += 1;
+    }
+    return failures;
+}
+
+fn freeTestFailures(allocator: Allocator, failures: []const Failure) void {
+    for (failures) |failure| allocator.free(failure.name);
+    allocator.free(failures);
+}
+
+fn expectFailureReport(expected: []const u8, report: FailureReport) !void {
+    const text = try report.format(std.testing.allocator);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings(expected, text);
+}
+
+test "failure report lists the failed inputs with their reasons" {
+    const failures = [_]Failure{
+        .{ .name = "bad.pdb", .reason = "read/parse failed: NoAtomsFound" },
+        .{ .name = "empty.cif", .reason = "read/parse failed: NoAtomSiteLoop" },
+    };
+
+    // Nothing failed: no report at all, so quiet mode stays quiet.
+    try expectFailureReport("", .{ .total = 4, .failed = 0, .failures = &.{} });
+
+    try expectFailureReport(
+        \\2 of 4 inputs failed:
+        \\  bad.pdb: read/parse failed: NoAtomsFound
+        \\  empty.cif: read/parse failed: NoAtomSiteLoop
+        \\
+    , .{ .total = 4, .failed = 2, .failures = &failures });
+
+    // The JSONL destination only matters when some failures are not listed.
+    try expectFailureReport(
+        \\Job 'chain_a': 2 of 2 inputs failed:
+        \\  bad.pdb: read/parse failed: NoAtomsFound
+        \\  empty.cif: read/parse failed: NoAtomSiteLoop
+        \\
+    , .{ .job = "chain_a", .total = 2, .failed = 2, .failures = &failures, .jsonl = .{ .file = "out/chain_a.jsonl" } });
+
+    try expectFailureReport(
+        \\1 of 1 input failed:
+        \\  bad.pdb: read/parse failed: NoAtomsFound
+        \\
+    , .{ .total = 1, .failed = 1, .failures = failures[0..1] });
+
+    try expectFailureReport(
+        \\1 of 3 selections failed:
+        \\  bad.pdb: read/parse failed: NoAtomsFound
+        \\
+    , .{ .unit = .selection, .total = 3, .failed = 1, .failures = failures[0..1] });
+    try expectFailureReport(
+        \\1 of 1 interface failed:
+        \\  bad.pdb: read/parse failed: NoAtomsFound
+        \\
+    , .{ .unit = .interface, .total = 1, .failed = 1, .failures = failures[0..1] });
+}
+
+test "failure report lists at most max_listed_failures inputs and counts the rest" {
+    const allocator = std.testing.allocator;
+    const failures = try makeTestFailures(allocator, max_listed_failures + 5);
+    defer freeTestFailures(allocator, failures);
+
+    var listed = std.Io.Writer.Allocating.init(allocator);
+    defer listed.deinit();
+    for (failures[0..max_listed_failures]) |failure| {
+        try listed.writer.print("  {s}: {s}\n", .{ failure.name, failure.reason });
+    }
+
+    const Case = struct { jsonl: JsonlDestination, last_line: []const u8 };
+    const cases = [_]Case{
+        .{ .jsonl = .none, .last_line = "  ... and 5 more\n" },
+        .{ .jsonl = .stdout, .last_line = "  ... and 5 more (every failure is a \"status\":\"err\" row in the JSONL output)\n" },
+        .{ .jsonl = .{ .file = "out/results.jsonl" }, .last_line = "  ... and 5 more (every failure is a \"status\":\"err\" row in out/results.jsonl)\n" },
+    };
+    for (cases) |case| {
+        const expected = try std.mem.concat(allocator, u8, &.{ "25 of 300 inputs failed:\n", listed.written(), case.last_line });
+        defer allocator.free(expected);
+        try expectFailureReport(expected, .{ .total = 300, .failed = 25, .failures = failures, .jsonl = case.jsonl });
+    }
+
+    // Exactly the limit: every failure is listed and nothing is left to count.
+    const at_limit = try std.mem.concat(allocator, u8, &.{ "20 of 300 inputs failed:\n", listed.written() });
+    defer allocator.free(at_limit);
+    try expectFailureReport(at_limit, .{ .total = 300, .failed = max_listed_failures, .failures = failures[0..max_listed_failures] });
+
+    // Failures that could not be recorded are counted, not lost.
+    try expectFailureReport(
+        \\7 of 300 inputs failed:
+        \\  bad00.pdb: read/parse failed: NoAtomsFound
+        \\  bad01.pdb: read/parse failed: NoAtomsFound
+        \\  ... and 5 more
+        \\
+    , .{ .total = 300, .failed = 7, .failures = failures[0..2] });
+
+    // A copy for later keeps what is listed and owns its strings.
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const original = FailureReport{ .job = "all", .total = 300, .failed = 25, .failures = failures, .jsonl = .{ .file = "out/all.jsonl" } };
+    const copy = try original.dupe(arena_state.allocator());
+    try std.testing.expectEqual(@as(usize, max_listed_failures), copy.failures.len);
+    try std.testing.expect(copy.failures[0].name.ptr != failures[0].name.ptr);
+    const original_text = try original.format(allocator);
+    defer allocator.free(original_text);
+    try expectFailureReport(original_text, copy);
+}
+
+fn recordTestFailures(log: *FailureLog, first: usize) void {
+    var name_buf: [32]u8 = undefined;
+    for (0..50) |i| {
+        const name = std.fmt.bufPrint(&name_buf, "file{d:0>3}.pdb", .{first + i}) catch unreachable;
+        log.record(std.testing.io, name, null, "read/parse failed: NoAtomsFound");
+    }
+}
+
+test "FailureLog orders failures by name whatever order they were recorded in" {
+    var log = FailureLog{ .allocator = std.testing.allocator };
+    defer log.deinit();
+
+    log.record(std.testing.io, "b.cif", "b.cif", "read/parse failed: NoAtomSiteLoop");
+    log.record(std.testing.io, "a.cif", "pair-2", "partner B chain not found");
+    log.record(std.testing.io, "a.cif", "pair-1", "partner A chain not found");
+    log.record(std.testing.io, "c.pdb", null, "read/parse failed: NoAtomsFound");
+
+    try expectFailureReport(
+        \\4 of 9 interfaces failed:
+        \\  a.cif [pair-1]: partner A chain not found
+        \\  a.cif [pair-2]: partner B chain not found
+        \\  b.cif: read/parse failed: NoAtomSiteLoop
+        \\  c.pdb: read/parse failed: NoAtomsFound
+        \\
+    , .{ .unit = .interface, .total = 9, .failed = 4, .failures = log.sorted() });
+
+    // Workers record concurrently.
+    var shared = FailureLog{ .allocator = std.testing.allocator };
+    defer shared.deinit();
+    var threads: [4]std.Thread = undefined;
+    for (&threads, 0..) |*thread, t| {
+        thread.* = try std.Thread.spawn(.{}, recordTestFailures, .{ &shared, (threads.len - 1 - t) * 50 });
+    }
+    for (threads) |thread| thread.join();
+    const sorted = shared.sorted();
+    try std.testing.expectEqual(@as(usize, 200), sorted.len);
+    try std.testing.expectEqualStrings("file000.pdb", sorted[0].name);
+    try std.testing.expectEqualStrings("file199.pdb", sorted[199].name);
+}
+
+test "batch result reports its failed inputs in input order in both runners" {
+    const allocator = std.testing.allocator;
+    var failures = try FailureSandbox.init();
+    defer failures.deinit();
+
+    inline for (test_naming_threads) |n_threads| {
+        // Per-file output: the failed inputs leave no output file behind, so
+        // the report is the only trace of them.
+        var result = try failures.sandbox.run(n_threads, std.fmt.comptimePrint("out{d}", .{n_threads}));
+        defer result.deinit();
+        try std.testing.expectEqual(@as(usize, 2), result.failed);
+
+        var buffer: [max_listed_failures]Failure = undefined;
+        try expectFailureReport(
+            \\2 of 4 inputs failed:
+            \\  bad1.pdb: read/parse failed: NoAtomsFound
+            \\  bad2.cif: read/parse failed: NoAtomSiteLoop
+            \\
+        , result.failureReport(&buffer, null, .none));
+        try expectFailureReport(
+            \\Job 'everything': 2 of 4 inputs failed:
+            \\  bad1.pdb: read/parse failed: NoAtomsFound
+            \\  bad2.cif: read/parse failed: NoAtomSiteLoop
+            \\
+        , result.failureReport(&buffer, "everything", .stdout));
+    }
+    try failures.sandbox.expectTree(&.{
+        "input/",
+        "input/bad1.pdb",
+        "input/bad2.cif",
+        "input/good1.pdb",
+        "input/good2.pdb",
+        "out1/",
+        "out1/good1.json",
+        "out1/good2.json",
+        "out4/",
+        "out4/good1.json",
+        "out4/good2.json",
+    });
+
+    // More failures than the report lists
+    var name_buf: [32]u8 = undefined;
+    for (0..max_listed_failures + 3) |i| {
+        const name = try std.fmt.bufPrint(&name_buf, "worse{d:0>2}.pdb", .{i});
+        try failures.sandbox.writeInput(name, "not a structure\n");
+    }
+    const jsonl_path = try failures.sandbox.path("results.jsonl");
+    defer allocator.free(jsonl_path);
+    inline for (test_naming_threads) |n_threads| {
+        var config = NamingSandbox.config(n_threads);
+        config.output_format = .jsonl;
+        config.store_atom_areas = true;
+        var result = try runBatch(allocator, std.testing.io, failures.sandbox.input_dir, null, config, jsonl_path);
+        defer result.deinit();
+        try std.testing.expectEqual(@as(usize, 27), result.total_files);
+        try std.testing.expectEqual(@as(usize, 25), result.failed);
+
+        var buffer: [max_listed_failures]Failure = undefined;
+        const report = result.failureReport(&buffer, null, JsonlDestination.of(config, jsonl_path));
+        try std.testing.expectEqual(@as(usize, max_listed_failures), report.failures.len);
+        try std.testing.expectEqualStrings("bad1.pdb", report.failures[0].name);
+        try std.testing.expectEqualStrings("worse17.pdb", report.failures[max_listed_failures - 1].name);
+
+        const text = try report.format(allocator);
+        defer allocator.free(text);
+        try std.testing.expect(std.mem.startsWith(u8, text, "25 of 27 inputs failed:\n  bad1.pdb: read/parse failed: NoAtomsFound\n"));
+        const last_line = try std.fmt.allocPrint(allocator, "\n  ... and 5 more (every failure is a \"status\":\"err\" row in {s})\n", .{jsonl_path});
+        defer allocator.free(last_line);
+        try std.testing.expect(std.mem.endsWith(u8, text, last_line));
+        try std.testing.expectEqual(@as(usize, 2 + max_listed_failures), std.mem.count(u8, text, "\n"));
+
+        // The rows the last line points to
+        const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, jsonl_path, allocator, .limited(1 << 16));
+        defer allocator.free(content);
+        try std.testing.expectEqual(@as(usize, 25), std.mem.count(u8, content, "\"status\":\"err\""));
+    }
+}
+
+test "JsonlDestination follows the output format" {
+    const jsonl = BatchConfig{ .output_format = .jsonl, .jsonl_include_atom_areas = false };
+    try std.testing.expectEqualStrings("out.jsonl", JsonlDestination.of(jsonl, "out.jsonl").file);
+    try std.testing.expect(JsonlDestination.of(jsonl, null) == .stdout);
+    try std.testing.expect(JsonlDestination.of(.{}, null) == .none);
+    try std.testing.expect(JsonlDestination.of(.{ .output_format = .csv }, null) == .none);
+}
+
+test "workflow in which a whole job fails is an error in every runner" {
+    var failures = try FailureSandbox.init();
+    defer failures.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const cwd = std.Io.Dir.cwd();
+
+    for (test_workflow_runners) |runner| {
+        inline for (test_naming_threads) |n_threads| {
+            const tag = try std.fmt.allocPrint(arena, "{s}-{d}", .{ @tagName(runner), n_threads });
+
+            // The input directory does not exist.
+            {
+                const output_name = try std.fmt.allocPrint(arena, "missing-{s}", .{tag});
+                const workflow_path = try failures.writeWorkflow(arena, runner, "no-such-input", output_name, "jsonl", "");
+                const result = runWorkflow(std.testing.allocator, std.testing.io, FailureSandbox.args(workflow_path, n_threads));
+                try std.testing.expectError(switch (runner) {
+                    .file_first => error.FileNotFound,
+                    .job_first => error.WorkflowJobFailed,
+                }, result);
+            }
+
+            // The JSONL file of the second job cannot be created: a directory
+            // is in its place.
+            {
+                const output_name = try std.fmt.allocPrint(arena, "blocked-{s}", .{tag});
+                try cwd.createDirPath(std.testing.io, try std.fs.path.join(arena, &.{ failures.sandbox.root, output_name, "everything.jsonl" }));
+                const workflow_path = try failures.writeWorkflow(arena, runner, "input", output_name, "jsonl", "");
+                const result = runWorkflow(std.testing.allocator, std.testing.io, FailureSandbox.args(workflow_path, n_threads));
+                try std.testing.expectError(switch (runner) {
+                    .file_first => error.IsDir,
+                    .job_first => error.WorkflowJobFailed,
+                }, result);
+
+                // The job-first runner still runs the other job; its failed
+                // inputs are rows of that job, not failed jobs.
+                if (runner == .job_first) {
+                    const rows = try failures.sortedRows(arena, try std.fmt.allocPrint(arena, "{s}/chain_a.jsonl", .{output_name}));
+                    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, rows, "\"status\":\"ok\""));
+                    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, rows, "\"status\":\"err\""));
+                }
+            }
+
+            // Two inputs share a per-file output name.
+            {
+                const input_name = try std.fmt.allocPrint(arena, "clash-{s}", .{tag});
+                const output_name = try std.fmt.allocPrint(arena, "clash-out-{s}", .{tag});
+                const input_dir = try std.fs.path.join(arena, &.{ failures.sandbox.root, input_name });
+                try cwd.createDirPath(std.testing.io, input_dir);
+                for ([_][]const u8{ "same.pdb", "same.ent" }) |name| {
+                    try cwd.writeFile(std.testing.io, .{ .sub_path = try std.fs.path.join(arena, &.{ input_dir, name }), .data = test_two_chain_pdb });
+                }
+                const workflow_path = try failures.writeWorkflow(arena, runner, input_name, output_name, "json", "");
+                const result = runWorkflow(std.testing.allocator, std.testing.io, FailureSandbox.args(workflow_path, n_threads));
+                try std.testing.expectError(switch (runner) {
+                    .file_first => error.OutputNameCollision,
+                    .job_first => error.WorkflowJobFailed,
+                }, result);
+                // Nothing was written for the rejected jobs.
+                try std.testing.expectError(
+                    error.FileNotFound,
+                    cwd.access(std.testing.io, try std.fs.path.join(arena, &.{ failures.sandbox.root, output_name }), .{}),
+                );
+            }
+        }
+    }
+}
+
+test "formatFailedWorkflowJobs counts and names the failed jobs" {
+    const allocator = std.testing.allocator;
+
+    const one = try formatFailedWorkflowJobs(allocator, &.{"chain_a"}, 3);
+    defer allocator.free(one);
+    try std.testing.expectEqualStrings("1 of 3 jobs failed: chain_a\n", one);
+
+    const all = try formatFailedWorkflowJobs(allocator, &.{ "chain_a", "everything" }, 2);
+    defer allocator.free(all);
+    try std.testing.expectEqualStrings("2 of 2 jobs failed: chain_a, everything\n", all);
+
+    const single = try formatFailedWorkflowJobs(allocator, &.{"only"}, 1);
+    defer allocator.free(single);
+    try std.testing.expectEqualStrings("1 of 1 job failed: only\n", single);
+}
+
 test "workflow rejects colliding per-file output names before creating output" {
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -7753,7 +8763,7 @@ test "selection map LPT preserves JSONL results while processing a heavy file fi
         .output_format = .jsonl,
         .store_atom_areas = true,
         .quiet = true,
-    }, output_path, &map);
+    }, output_path, &map, null);
 
     try std.testing.expectEqual(@as(usize, 4), stats.successful);
     try std.testing.expectEqual(@as(usize, 0), stats.failed);
@@ -7819,6 +8829,8 @@ test "selection map parses and classifies once, reuses chain sets, and emits joi
     );
     defer map.deinit();
 
+    var failures = FailureLog{ .allocator = allocator };
+    defer failures.deinit();
     const stats = try runSelectionMapBatch(allocator, std.testing.io, input_dir, .{
         .n_threads = 4,
         .n_points = 128,
@@ -7832,10 +8844,23 @@ test "selection map parses and classifies once, reuses chain sets, and emits joi
         .jsonl_include_atom_areas = true,
         .jsonl_include_atom_identity = true,
         .quiet = true,
-    }, output_path, &map);
+    }, output_path, &map, &failures);
 
     try std.testing.expectEqual(@as(usize, 4), stats.successful);
     try std.testing.expectEqual(@as(usize, 2), stats.failed);
+    // The failed selections, as the workflow reports them for the job
+    try expectFailureReport(
+        \\Job 'sel': 2 of 6 selections failed:
+        \\  absent.pdb [absent]: input structure not found
+        \\  multi.pdb [bad]: selected chain not found: Z
+        \\
+    , .{
+        .job = "sel",
+        .unit = .selection,
+        .total = stats.successful + stats.failed,
+        .failed = stats.failed,
+        .failures = failures.sorted(),
+    });
     try std.testing.expectEqual(@as(usize, 1), stats.read_parse_count);
     try std.testing.expectEqual(@as(usize, 1), stats.classifier_count);
     try std.testing.expectEqual(@as(usize, 3), stats.calculation_count);
@@ -7922,7 +8947,7 @@ test "selection map parallelizes files and keeps internal SASA single-threaded" 
         .output_format = .jsonl,
         .store_atom_areas = true,
         .quiet = true,
-    }, output_path, &map);
+    }, output_path, &map, null);
 
     try std.testing.expectEqual(@as(usize, 2), stats.file_threads);
     try std.testing.expectEqual(@as(usize, 1), stats.sasa_threads);
@@ -8008,6 +9033,89 @@ test "workflow BSA analysis writes analysis JSONL" {
     try std.testing.expect(std.mem.indexOf(u8, content, "\"delta_sasa_total\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "\"bsa\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "\"residue_delta_sasa\"") != null);
+}
+
+test "workflow BSA analysis writes chain IDs longer than four characters in full" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const cwd = std.Io.Dir.cwd();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try tmp_dir.dir.realPath(std.testing.io, &root_buf)];
+    const input_dir = try std.fs.path.join(arena, &.{ root, "input" });
+    const output_dir = try std.fs.path.join(arena, &.{ root, "output" });
+    try cwd.createDirPath(std.testing.io, input_dir);
+    try cwd.writeFile(std.testing.io, .{
+        .sub_path = try std.fs.path.join(arena, &.{ input_dir, "long.cif" }),
+        .data =
+        \\data_LONG
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\ATOM 1 N N  GLY LONGA 1 0.000 0.000 0.000
+        \\ATOM 2 C CA GLY LONGA 1 1.500 0.000 0.000
+        \\ATOM 3 N N  ALA LONGB 2 3.000 0.000 0.000
+        \\ATOM 4 C CA ALA LONGB 2 4.500 0.000 0.000
+        \\#
+        \\
+        ,
+    });
+
+    const workflow_path = try std.fs.path.join(arena, &.{ root, "bsa.toml" });
+    try cwd.writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = try std.fmt.allocPrint(arena,
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "{s}"
+        \\
+        \\[output]
+        \\dir = "{s}"
+        \\format = "jsonl"
+        \\
+        \\[calculation]
+        \\n_points = 16
+        \\quiet = true
+        \\
+        \\[classifier]
+        \\type = "naccess"
+        \\
+        \\[analysis]
+        \\type = "bsa"
+        \\name = "long"
+        \\partner_a = ["LONGA"]
+        \\partner_b = ["LONGB"]
+        \\level = "residue"
+        \\atom_output = true
+        \\
+    , .{ input_dir, output_dir }) });
+
+    try runWorkflow(std.testing.allocator, std.testing.io, .{ .workflow_path = workflow_path });
+
+    const content = try cwd.readFileAlloc(std.testing.io, try std.fs.path.join(arena, &.{ output_dir, "long.jsonl" }), arena, .limited(1 << 16));
+    const row = (try std.json.parseFromSliceLeaky(std.json.Value, arena, std.mem.trimEnd(u8, content, "\n"), .{})).object;
+    try std.testing.expectEqualStrings("ok", row.get("status").?.string);
+
+    // One residue and two atoms per chain; both arrays name the same chains.
+    const residue_chain = row.get("residue_chain").?.array.items;
+    try std.testing.expectEqual(@as(usize, 2), residue_chain.len);
+    try std.testing.expectEqualStrings("LONGA", residue_chain[0].string);
+    try std.testing.expectEqualStrings("LONGB", residue_chain[1].string);
+    const atom_chain = row.get("atom_chain").?.array.items;
+    try std.testing.expectEqual(@as(usize, 4), atom_chain.len);
+    try std.testing.expectEqualStrings("LONGA", atom_chain[0].string);
+    try std.testing.expectEqualStrings("LONGB", atom_chain[3].string);
 }
 
 test "workflow BSA analysis uses per-file multi-chain interface map" {
@@ -9300,6 +10408,39 @@ test "runBatchParallel writes JSONL error rows for failed files" {
     try std.testing.expect(std.mem.indexOf(u8, content, "\"error\":") != null);
 }
 
+test "batch on an empty directory leaves an empty JSONL file whatever the thread count" {
+    const allocator = std.testing.allocator;
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    const jsonl_path = try sandbox.path("results.jsonl");
+    defer allocator.free(jsonl_path);
+
+    inline for (test_naming_threads) |n_threads| {
+        // Left over from an earlier run
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = jsonl_path, .data = "{\"status\":\"ok\",\"filename\":\"stale.pdb\"}\n" });
+
+        var config = NamingSandbox.config(n_threads);
+        config.output_format = .jsonl;
+        config.store_atom_areas = true;
+        var result = try runBatch(allocator, std.testing.io, sandbox.input_dir, null, config, jsonl_path);
+        defer result.deinit();
+        try std.testing.expectEqual(@as(usize, 0), result.total_files);
+        try std.testing.expectEqual(@as(usize, 0), result.failed);
+
+        const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, jsonl_path, allocator, .limited(4096));
+        defer allocator.free(content);
+        try std.testing.expectEqualStrings("", content);
+    }
+
+    // Per-file output: both runners create the (empty) output directory.
+    inline for (test_naming_threads) |n_threads| {
+        var result = try sandbox.run(n_threads, std.fmt.comptimePrint("out{d}", .{n_threads}));
+        defer result.deinit();
+        try std.testing.expectEqual(@as(usize, 0), result.total_files);
+    }
+    try sandbox.expectTree(&.{ "input/", "out1/", "out4/", "results.jsonl" });
+}
+
 test "BatchArgs explicit option flags" {
     const args = [_][]const u8{
         "zsasa", "batch", "--threads=8", "--n-points=128", "--format=jsonl", "--use-bitmask", "input_dir/",
@@ -9694,6 +10835,60 @@ test "AF model fast parser is skipped when chain filtering is requested" {
         .af_model_fast = true,
         .chain_filter = chains[0..],
     }));
+}
+
+test "AF model fast parser leaves files to the generic parser when HETATM is included" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // ATOM rows followed by HETATM rows: the fast parser stops at the first
+    // row that is not ATOM.
+    const source =
+        \\data_AF_HETATM
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_entity_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.pdbx_PDB_ins_code
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\ATOM   1 N  N  . GLY A 1 1 ? 1.000 2.000 3.000
+        \\ATOM   2 C  CA . GLY A 1 1 ? 2.000 3.000 4.000
+        \\HETATM 3 ZN ZN . ZN  B 2 . ? 9.000 9.000 9.000
+        \\HETATM 4 O  O  . HOH C 3 . ? 12.00 12.00 12.00
+        \\
+    ;
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "af.cif", .data = source });
+    const path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "af.cif", allocator);
+    defer allocator.free(path);
+
+    const Case = struct { af_model_fast: bool, include_hetatm: bool, expected_atoms: usize };
+    const cases = [_]Case{
+        .{ .af_model_fast = false, .include_hetatm = false, .expected_atoms = 2 },
+        .{ .af_model_fast = false, .include_hetatm = true, .expected_atoms = 4 },
+        .{ .af_model_fast = true, .include_hetatm = false, .expected_atoms = 2 },
+        .{ .af_model_fast = true, .include_hetatm = true, .expected_atoms = 4 },
+    };
+    for (cases) |case| {
+        var parsed = try readInputFile(allocator, std.testing.io, path, .{
+            .af_model_fast = case.af_model_fast,
+            .include_hetatm = case.include_hetatm,
+            .classifier_type = null,
+        });
+        defer parsed.deinit();
+        try std.testing.expectEqual(case.expected_atoms, parsed.input.atomCount());
+    }
+
+    try std.testing.expect(shouldTryAfModelFastParser(.{ .af_model_fast = true }));
+    try std.testing.expect(!shouldTryAfModelFastParser(.{ .af_model_fast = true, .include_hetatm = true }));
 }
 
 test "BatchConfig progress respects show_progress and quiet" {

@@ -411,6 +411,38 @@ is not emitted; the atom metadata is available for downstream classification.
 The schema does not use normal SASA JSONL `total_area` and `atom_areas` fields,
 because those names are ambiguous for interface analysis.
 
+## Failures and Exit Status {#failures}
+
+A batch workflow distinguishes an input that fails from a job that cannot run.
+
+**Failed inputs.** An input that cannot be read, parsed, classified or calculated is counted as failed for the job, and the run continues; a file that cannot be read fails for every job. With JSONL output each affected job gets a `status: "err"` row for the input, whichever way zsasa runs the workflow internally. When the run ends, the failed inputs of each job are listed on standard error after the totals:
+
+```text
+Workflow complete: 76 successful, 4 failed
+Job 'chain_a': 2 of 40 inputs failed:
+  bad.pdb: read/parse failed: NoAtomsFound
+  empty.cif: read/parse failed: NoAtomSiteLoop
+Job 'complex_ab': 2 of 40 inputs failed:
+  bad.pdb: read/parse failed: NoAtomsFound
+  empty.cif: read/parse failed: NoAtomSiteLoop
+```
+
+These lines are printed with `quiet = true` and `--quiet` as well: quiet mode suppresses progress, not errors. At most 20 inputs are listed per job; a last line counts the rest and names the JSONL file that has a row for every one of them (`... and 131 more (every failure is a "status":"err" row in results/chain_a.jsonl)`). A [chain-map](#per-file-chain-maps) job counts selections and a [BSA analysis](#bsa-analysis) counts interfaces instead of inputs, and names them `file [id]`. Failed inputs do not change the exit status, which stays 0.
+
+**Failed jobs.** A job that cannot run at all is an error, and `zsasa batch --workflow` exits with status 1: the input directory is missing, the inputs of the job would [share a per-file output name](batch.md#basic-directory-batch), or its output directory or JSONL file cannot be created. When zsasa runs the jobs one after another, the other jobs still run; each failed job is reported with its cause, it is not counted among the inputs, and the last lines name the failed jobs:
+
+```text
+Error running workflow job 'complex_ab': cannot create JSONL output 'results/complex_ab.jsonl': AccessDenied
+Workflow complete: 76 successful, 4 failed
+Job 'chain_a': 2 of 40 inputs failed:
+  bad.pdb: read/parse failed: NoAtomsFound
+  empty.cif: read/parse failed: NoAtomSiteLoop
+1 of 3 jobs failed: complex_ab
+Error: WorkflowJobFailed
+```
+
+When zsasa parses each input once for all jobs, the same conditions are found before any job starts and the run stops there with the error (`Error: FileNotFound`, the list of shared output names, ...). The exit status is 1 in both cases.
+
 ## Override Precedence
 
 When the same setting appears in multiple places, zsasa applies this order:
@@ -501,6 +533,10 @@ areas. Selection-map JSONL also requires `total_area = true`. When
 `metadata = "sidecar"` is set, workflow batch jobs write a `<job>.meta.json`
 file next to `<job>.jsonl` with the effective JSONL and calculation settings.
 
+These keys choose the fields of each row, not where the rows go: with
+`atom_areas = false` a job still writes one row per input to `<job>.jsonl`, or
+to standard output when the workflow has one job and no output directory.
+
 ## Key Reference
 
 A workflow file starts with `version = 1` (required) and an optional `kind = "workflow"`, followed by the sections below. The parser rejects the whole file when it meets an unknown section or key, a repeated section or key, or a value of the wrong type or out of range, and prints `Error reading workflow file '<path>': <name>` with `UnknownField`, `InvalidFieldType`, `UnsupportedVersion` or `InvalidKind`.
@@ -557,7 +593,7 @@ The `[output.jsonl]` keys apply to batch JSONL output only. See [JSONL Output Op
 | `include_hetatm` | boolean | `false` | calc, batch | Include HETATM records |
 | `use_bitmask` | boolean | `false` | calc, batch | Bitmask LUT optimization (SR only, `n_points` 1-1024) |
 | `timing` | boolean | `false` | calc, batch | Print the timing breakdown |
-| `quiet` | boolean | `false` | calc, batch | Suppress progress output |
+| `quiet` | boolean | `false` | calc, batch | Suppress progress output. Batch workflows still report [failed inputs and jobs](#failures) |
 | `auth_chain` | boolean | `false` | calc, batch | Match chains and number residues by `auth_asym_id` / `auth_seq_id` (mmCIF/BinaryCIF). A job can override it with its own `auth_chain` |
 | `altloc` | string | `"auto"` | calc, batch | Alternate-location handling: `"auto"`, `"none"`, `"all"`, `"highest-occupancy"` or one altloc ID such as `"A"`; see [Alternate Locations](../cli/input.md#alternate-locations). `--altloc` on the command line takes precedence |
 | `residue_map` | boolean | `false` | batch | Add residue map arrays to JSONL rows (`--residue-map`) |
@@ -597,7 +633,7 @@ A batch workflow needs at least one job unless it has an `[analysis]` section (`
 | Key | Type | Default | Used by | Description |
 |-----|------|---------|---------|-------------|
 | `name` | string | required | batch | Job name, unique within the file; used as the output subdirectory or file name, so it must not contain `/`, `\` or `..` |
-| `chains` | array of strings | all chains | batch | Chain IDs to calculate together as one complex |
+| `chains` | array of strings | all chains | batch | Chain IDs to calculate together as one complex. Leave the key out to select every chain: an empty array (`chains = []`) is rejected with `EmptyJobChains` |
 | `chain_map` | string | none | batch | Per-file chain map; see [Per-file Chain Maps](#per-file-chain-maps). Not allowed together with `chains` or `auth_chain` |
 | `auth_chain` | boolean | from `[calculation]` | batch | Use author chain IDs for this job |
 
