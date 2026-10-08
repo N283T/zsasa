@@ -54,9 +54,13 @@ class InstallShTests(unittest.TestCase):
         self.release = self.tmp.joinpath("release")
         self.release.mkdir()
         self.install_dir = self.tmp.joinpath("install")
-        self.shell = os.environ.get("INSTALL_SH_TEST_SHELL") or shutil.which("sh")  # e.g. dash, to check POSIX conformance
+        self.shell = os.environ.get("INSTALL_SH_TEST_SHELL") or shutil.which(
+            "sh"
+        )  # e.g. dash, to check POSIX conformance
         lines = INSTALL_SH.read_text().rstrip("\n").split("\n")
-        self.assertEqual(lines[-1], 'main "$@"', "install.sh must end with the call to main")
+        self.assertEqual(
+            lines[-1], 'main "$@"', "install.sh must end with the call to main"
+        )
         self.lib = self.tmp.joinpath("install_lib.sh")
         self.lib.write_text("\n".join(lines[:-1]) + "\n")
 

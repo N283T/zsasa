@@ -67,7 +67,9 @@ def read_current_version(root: Path) -> str:
 # Published checksums
 # ---------------------------------------------------------------------------
 def http_fetch(url: str) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "zsasa-update-packaging-checksums"})
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "zsasa-update-packaging-checksums"}
+    )
     token = os.environ.get("GITHUB_TOKEN")
     if token and url.startswith("https://api.github.com/"):
         request.add_header("Authorization", f"Bearer {token}")
@@ -83,10 +85,14 @@ def parse_sha256sums(text: str) -> dict[str, str]:
             continue
         match = re.fullmatch(r"([0-9a-fA-F]{64}) [ *](.+)", line.rstrip())
         if not match:
-            raise RuntimeError(f"SHA256SUMS line {number} is not '<sha256>  <name>': {line!r}")
+            raise RuntimeError(
+                f"SHA256SUMS line {number} is not '<sha256>  <name>': {line!r}"
+            )
         digest, name = match.group(1).lower(), match.group(2)
         if sums.setdefault(name, digest) != digest:
-            raise RuntimeError(f"SHA256SUMS lists {name} twice with different checksums")
+            raise RuntimeError(
+                f"SHA256SUMS lists {name} twice with different checksums"
+            )
     if not sums:
         raise RuntimeError("SHA256SUMS is empty")
     return sums
@@ -102,14 +108,22 @@ def parse_api_digests(body: bytes) -> dict[str, str]:
     return digests
 
 
-def load_release_checksums(version: str, fetch: Fetch, *, cross_check: bool = True) -> ReleaseChecksums:
+def load_release_checksums(
+    version: str, fetch: Fetch, *, cross_check: bool = True
+) -> ReleaseChecksums:
     tag = f"v{version}"
     try:
-        sums = parse_sha256sums(fetch(f"{RELEASE_DOWNLOAD_URL}/{tag}/SHA256SUMS").decode())
+        sums = parse_sha256sums(
+            fetch(f"{RELEASE_DOWNLOAD_URL}/{tag}/SHA256SUMS").decode()
+        )
         license_sha = hashlib.sha256(fetch(f"{RAW_URL}/{tag}/LICENSE")).hexdigest()
-        digests = parse_api_digests(fetch(f"{RELEASE_API_URL}/{tag}")) if cross_check else {}
+        digests = (
+            parse_api_digests(fetch(f"{RELEASE_API_URL}/{tag}")) if cross_check else {}
+        )
     except OSError as exc:  # urllib.error.URLError and HTTPError are OSErrors
-        raise RuntimeError(f"could not fetch the published checksums of {tag} ({exc}); is the release published?") from exc
+        raise RuntimeError(
+            f"could not fetch the published checksums of {tag} ({exc}); is the release published?"
+        ) from exc
     if cross_check:
         for name, digest in sums.items():
             if name not in digests:
@@ -118,7 +132,9 @@ def load_release_checksums(version: str, fetch: Fetch, *, cross_check: bool = Tr
                     "pass --no-cross-check to trust SHA256SUMS alone"
                 )
             if digests[name] != digest:
-                raise RuntimeError(f"{name}: SHA256SUMS says {digest} but GitHub's asset digest is {digests[name]}")
+                raise RuntimeError(
+                    f"{name}: SHA256SUMS says {digest} but GitHub's asset digest is {digests[name]}"
+                )
     return ReleaseChecksums(assets=sums, license=license_sha)
 
 
@@ -130,7 +146,9 @@ def lookup(checksums: ReleaseChecksums, key: str) -> str:
         return checksums.assets[key]
     except KeyError:
         known = ", ".join(sorted(checksums.assets))
-        raise RuntimeError(f"the release has no checksum for {key} (SHA256SUMS lists: {known})") from None
+        raise RuntimeError(
+            f"the release has no checksum for {key} (SHA256SUMS lists: {known})"
+        ) from None
 
 
 # ---------------------------------------------------------------------------
@@ -161,11 +179,15 @@ def update_conda_recipe(text: str, version: str, checksums: ReleaseChecksums) ->
     for line in text.splitlines(keepends=True):
         url_match = _CONDA_URL_RE.match(line)
         if url_match:
-            key = _conda_source_key(url_match.group(1).replace("{{ version }}", version))
+            key = _conda_source_key(
+                url_match.group(1).replace("{{ version }}", version)
+            )
         sha_match = _CONDA_SHA_RE.match(line)
         if sha_match:
             if key is None:
-                raise RuntimeError(f"{CONDA_RECIPE}: sha256 line without a preceding url: {line!r}")
+                raise RuntimeError(
+                    f"{CONDA_RECIPE}: sha256 line without a preceding url: {line!r}"
+                )
             line = f"{sha_match.group(1)}{lookup(checksums, key)}{sha_match.group(3)}"
             key = None
             entries += 1
@@ -197,7 +219,9 @@ def _quoted_items(body: str) -> list[str]:
 def pkgbuild_sources(text: str, version: str) -> list[str]:
     """Return the source URLs of a PKGBUILD with ``${pkgver}`` expanded."""
     items = _quoted_items(_pkgbuild_array(text, "source").group("body"))
-    return [item.replace("${pkgver}", version).replace("$pkgver", version) for item in items]
+    return [
+        item.replace("${pkgver}", version).replace("$pkgver", version) for item in items
+    ]
 
 
 def update_pkgbuild(text: str, version: str, checksums: ReleaseChecksums) -> str:
@@ -206,7 +230,9 @@ def update_pkgbuild(text: str, version: str, checksums: ReleaseChecksums) -> str
         raise RuntimeError(f"{AUR_PKGBUILD}: missing pkgver= or pkgrel= line")
     if match.group(1) != version:
         text = _PKGVER_RE.sub(f"pkgver={version}", text, count=1)
-        text = _PKGREL_RE.sub("pkgrel=1", text, count=1)  # a new upstream version restarts the package release
+        text = _PKGREL_RE.sub(
+            "pkgrel=1", text, count=1
+        )  # a new upstream version restarts the package release
     sources = pkgbuild_sources(text, version)
     sums = [lookup(checksums, url.rsplit("/", 1)[-1]) for url in sources]
     sha_array = _pkgbuild_array(text, "sha256sums")
@@ -222,7 +248,9 @@ def update_srcinfo(srcinfo: str, pkgbuild: str, version: str) -> str:
     sources = pkgbuild_sources(pkgbuild, version)
     sums = _quoted_items(_pkgbuild_array(pkgbuild, "sha256sums").group("body"))
     if len(sources) != len(sums):
-        raise RuntimeError(f"{AUR_PKGBUILD}: {len(sources)} sources but {len(sums)} sha256sums")
+        raise RuntimeError(
+            f"{AUR_PKGBUILD}: {len(sources)} sources but {len(sums)} sha256sums"
+        )
     replacements = {
         "pkgver": [version],
         "pkgrel": [pkgrel.group(1)],
@@ -237,23 +265,33 @@ def update_srcinfo(srcinfo: str, pkgbuild: str, version: str) -> str:
             name = field.group(1)
             values = replacements[name]
             if seen[name] >= len(values):
-                raise RuntimeError(f"{AUR_SRCINFO}: more {name} lines than the PKGBUILD has")
+                raise RuntimeError(
+                    f"{AUR_SRCINFO}: more {name} lines than the PKGBUILD has"
+                )
             line = f"\t{name} = {values[seen[name]]}\n"
             seen[name] += 1
         out.append(line)
     for name, values in replacements.items():
         if seen[name] != len(values):
-            raise RuntimeError(f"{AUR_SRCINFO}: expected {len(values)} {name} line(s), found {seen[name]}")
+            raise RuntimeError(
+                f"{AUR_SRCINFO}: expected {len(values)} {name} line(s), found {seen[name]}"
+            )
     return "".join(out)
 
 
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
-def compute_updates(root: Path, version: str, checksums: ReleaseChecksums) -> dict[str, str]:
+def compute_updates(
+    root: Path, version: str, checksums: ReleaseChecksums
+) -> dict[str, str]:
     """Return the new content of each packaging file (changed or not)."""
-    recipe = update_conda_recipe(root.joinpath(CONDA_RECIPE).read_text(), version, checksums)
-    pkgbuild = update_pkgbuild(root.joinpath(AUR_PKGBUILD).read_text(), version, checksums)
+    recipe = update_conda_recipe(
+        root.joinpath(CONDA_RECIPE).read_text(), version, checksums
+    )
+    pkgbuild = update_pkgbuild(
+        root.joinpath(AUR_PKGBUILD).read_text(), version, checksums
+    )
     srcinfo = update_srcinfo(root.joinpath(AUR_SRCINFO).read_text(), pkgbuild, version)
     return {CONDA_RECIPE: recipe, AUR_PKGBUILD: pkgbuild, AUR_SRCINFO: srcinfo}
 
@@ -268,7 +306,9 @@ def run(
 ) -> list[str]:
     """Update (or, with ``check``, only compare) the packaging files; return the files that were or are stale."""
     root = root.resolve()
-    version = normalize_version(version_arg) if version_arg else read_current_version(root)
+    version = (
+        normalize_version(version_arg) if version_arg else read_current_version(root)
+    )
     checksums = load_release_checksums(version, fetch, cross_check=cross_check)
     stale: list[str] = []
     for rel, content in compute_updates(root, version, checksums).items():
@@ -281,7 +321,9 @@ def run(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument(
         "version",
         nargs="?",
@@ -299,8 +341,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     try:
-        version = normalize_version(args.version) if args.version else read_current_version(Path.cwd())
-        stale = run(Path.cwd(), version, check=args.check, cross_check=not args.no_cross_check)
+        version = (
+            normalize_version(args.version)
+            if args.version
+            else read_current_version(Path.cwd())
+        )
+        stale = run(
+            Path.cwd(), version, check=args.check, cross_check=not args.no_cross_check
+        )
     except Exception as exc:  # noqa: BLE001 - CLI should print concise errors.
         print(f"update-packaging-checksums: {exc}", file=sys.stderr)
         return 2
@@ -309,7 +357,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Packaging files are stale for v{version}:", file=sys.stderr)
             for rel in stale:
                 print(f"  {rel}", file=sys.stderr)
-            print(f"Run: scripts/update_packaging_checksums.py {version}", file=sys.stderr)
+            print(
+                f"Run: scripts/update_packaging_checksums.py {version}", file=sys.stderr
+            )
             return 1
         print(f"Packaging files match the published checksums of v{version}.")
         return 0
