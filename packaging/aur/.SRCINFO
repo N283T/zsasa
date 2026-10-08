@@ -1,13 +1,13 @@
 pkgbase = zsasa-bin
 	pkgdesc = Fast Solvent Accessible Surface Area (SASA) calculator
-	pkgver = 0.9.1
+	pkgver = 0.10.0
 	pkgrel = 1
 	url = https://n283t.github.io/zsasa/
 	arch = x86_64
 	license = MIT
 	provides = zsasa
 	conflicts = zsasa
-	source = https://github.com/N283T/zsasa/releases/download/v0.9.1/zsasa-0.9.1-linux-x86_64
-	sha256sums = aff46c7806519f12bf45277e177d545bf0ce94d68959c2a7ba300c45fcbb7bc6
+	source = https://github.com/N283T/zsasa/releases/download/v0.10.0/zsasa-0.10.0-linux-x86_64
+	sha256sums = 5ef1c2f0a84f5f4c09859269999539f1c2666e85d39c61b28b890a68c7b899b6
 
 pkgname = zsasa-bin
