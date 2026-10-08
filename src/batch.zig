@@ -25,6 +25,7 @@ const sdf_parser = @import("sdf_parser.zig");
 const compressed = @import("compressed.zig");
 const input_io = @import("input_io.zig");
 const element_module = @import("element.zig");
+const test_support = @import("test_support.zig");
 
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
@@ -6344,29 +6345,42 @@ test "BatchConfig default values" {
     try std.testing.expectEqual(@as(f64, 1.4), config.probe_radius);
 }
 
-test "BatchResult deinit" {
-    const allocator = std.testing.allocator;
+test "BatchResult deinit frees every buffer a file result owns" {
+    // A DebugAllocator reports a leak through its return value, which makes the
+    // check an explicit assertion.
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    const allocator = gpa.allocator();
 
-    var results = try allocator.alloc(FileResult, 1);
+    const results = try allocator.alloc(FileResult, 2);
     results[0] = FileResult{
-        .filename = try allocator.dupe(u8, "test.json"),
+        .filename = try allocator.dupe(u8, "ok.json"),
         .n_atoms = 100,
         .sasa_time_ns = 1000000,
         .total_sasa = 123.45,
         .status = .ok,
+        .atom_areas = try allocator.alloc(f64, 3),
+    };
+    results[1] = FileResult{
+        .filename = try allocator.dupe(u8, "bad.json"),
+        .n_atoms = 0,
+        .sasa_time_ns = 0,
+        .total_sasa = 0,
+        .status = .err,
+        .error_msg = try allocator.dupe(u8, "read/parse failed"),
     };
 
     var batch_result = BatchResult{
-        .total_files = 1,
+        .total_files = 2,
         .successful = 1,
-        .failed = 0,
+        .failed = 1,
         .total_sasa_time_ns = 1000000,
         .total_time_ns = 2000000,
         .file_results = results,
         .allocator = allocator,
     };
-
     batch_result.deinit();
+
+    try std.testing.expectEqual(std.heap.Check.ok, gpa.deinit());
 }
 
 test "BatchResult phase timing fields default to zero" {
@@ -6499,6 +6513,8 @@ test "parseBatchChainFilter splits comma-separated chains" {
 }
 
 test "batch rejects a --chain value without any chain ID" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const allocator = std.testing.allocator;
     for ([_][]const u8{ "", ",", " , ,", " " }) |value| {
         try std.testing.expectError(error.EmptyChainFilter, parseBatchChainFilter(allocator, value));
@@ -6521,6 +6537,8 @@ test "batch rejects a --chain value without any chain ID" {
 }
 
 test "workflow rejects a job with an empty chains array before running anything" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const allocator = std.testing.allocator;
     var sandbox = try NamingSandbox.init();
     defer sandbox.deinit();
@@ -7212,6 +7230,8 @@ test "batch never writes an SDF title with path separators outside the output di
 }
 
 test "batch rejects output names that differ only in case" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     var sandbox = try NamingSandbox.init();
     defer sandbox.deinit();
     try sandbox.writeInput("PROT.pdb", test_naming_pdb);
@@ -7231,6 +7251,8 @@ test "batch rejects output names that differ only in case" {
 }
 
 test "batch rejects an SDF molecule output that equals a non-SDF output" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     var sandbox = try NamingSandbox.init();
     defer sandbox.deinit();
     // The unnamed molecule is written to "lig_1.json", and so is "lig_1.pdb".
@@ -7244,6 +7266,8 @@ test "batch rejects an SDF molecule output that equals a non-SDF output" {
 }
 
 test "batch accepts SDF files that share a stem unless their molecules clash" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     var sandbox = try NamingSandbox.init();
     defer sandbox.deinit();
     try sandbox.writeInput("lig.sdf", comptime testSdfRecord("one") ++ testSdfRecord("two"));
@@ -7280,6 +7304,8 @@ test "batch accepts SDF files that share a stem unless their molecules clash" {
 }
 
 test "batch reports an SDF file that cannot be parsed and lets it claim no output name" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     var sandbox = try NamingSandbox.init();
     defer sandbox.deinit();
     // "bad.sdf" would be expanded to "bad_1.json" if it could be parsed.
@@ -7313,6 +7339,8 @@ test "batch reports an SDF file that cannot be parsed and lets it claim no outpu
 }
 
 test "workflow job writes per-molecule SDF outputs and rejects collisions" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const allocator = std.testing.allocator;
     var sandbox = try NamingSandbox.init();
     defer sandbox.deinit();
@@ -7387,6 +7415,8 @@ test "workflow job writes per-molecule SDF outputs and rejects collisions" {
 }
 
 test "workflow rejects per-file output names that differ only in case" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const allocator = std.testing.allocator;
     var sandbox = try NamingSandbox.init();
     defer sandbox.deinit();
@@ -7496,6 +7526,8 @@ test "JSONL without atom areas writes rows and no per-file outputs" {
 }
 
 test "batch runners reject colliding output names before writing anything" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -7772,16 +7804,24 @@ test "resolveBatchThreadCount allows explicit overcommit for IO-bound runs" {
     try std.testing.expectEqual(@as(usize, 20), resolveBatchThreadCount(20, 10));
 }
 
-fn testNoopThread() void {}
+fn testCountingThread(counter: *std.atomic.Value(usize)) void {
+    _ = counter.fetchAdd(1, .seq_cst);
+}
 
 test "joinSpawnedThreads joins only initialized thread slots" {
-    var threads: [2]std.Thread = undefined;
-    threads[0] = try std.Thread.spawn(.{}, testNoopThread, .{});
-    threads[1] = try std.Thread.spawn(.{}, testNoopThread, .{});
+    var counter = std.atomic.Value(usize).init(0);
+    // The third slot is never spawned and stays undefined: joining it would crash.
+    var threads: [3]std.Thread = undefined;
+    threads[0] = try std.Thread.spawn(.{}, testCountingThread, .{&counter});
+    threads[1] = try std.Thread.spawn(.{}, testCountingThread, .{&counter});
     joinSpawnedThreads(threads[0..], 2);
+    // Both workers had finished when the join returned.
+    try std.testing.expectEqual(@as(usize, 2), counter.load(.seq_cst));
 }
 
 test "workflow file-first keeps existing output layout" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -8028,6 +8068,8 @@ const FailureSandbox = struct {
 };
 
 test "workflow writes JSONL error rows for unreadable inputs in every runner" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     var failures = try FailureSandbox.init();
     defer failures.deinit();
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -8313,6 +8355,8 @@ test "JsonlDestination follows the output format" {
 }
 
 test "workflow in which a whole job fails is an error in every runner" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     var failures = try FailureSandbox.init();
     defer failures.deinit();
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -8398,6 +8442,8 @@ test "formatFailedWorkflowJobs counts and names the failed jobs" {
 }
 
 test "workflow rejects colliding per-file output names before creating output" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -8547,6 +8593,8 @@ test "workflow reports errors raised after job setup without freeing job states 
 }
 
 test "workflow chain map selects per-file PDB and mmCIF chain complexes" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -8970,6 +9018,8 @@ test "selection map parallelizes files and keeps internal SASA single-threaded" 
 }
 
 test "workflow BSA analysis writes analysis JSONL" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -9036,6 +9086,8 @@ test "workflow BSA analysis writes analysis JSONL" {
 }
 
 test "workflow BSA analysis writes chain IDs longer than four characters in full" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -9119,6 +9171,8 @@ test "workflow BSA analysis writes chain IDs longer than four characters in full
 }
 
 test "workflow BSA analysis uses per-file multi-chain interface map" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -9246,6 +9300,8 @@ fn testJsonNumberArraySum(values: std.json.Array) f64 {
 }
 
 test "workflow BSA analysis emits one detailed row per interface and stable error IDs" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -9387,7 +9443,9 @@ test "workflow BSA analysis emits one detailed row per interface and stable erro
     try std.testing.expect(saw_missing);
 }
 
-test "workflow BSA progress completes across parallel success and error paths" {
+test "workflow BSA reports every interface across parallel success and error paths" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -9465,10 +9523,17 @@ test "workflow BSA progress completes across parallel success and error paths" {
     defer allocator.free(workflow);
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = workflow });
 
+    // std.Progress.start may run only once per process, and a test binary run
+    // directly (not through `zig build test`) has already started it in the
+    // Zig test runner. Progress is therefore off here, and the file loop is
+    // exercised with a no-op progress node.
     try runWorkflow(allocator, std.testing.io, .{
         .workflow_path = workflow_path,
         .n_threads = 4,
         .threads_explicit = true,
+        .quiet = false,
+        .quiet_explicit = true,
+        .show_progress = false,
     });
 
     const output_path = try std.fs.path.join(allocator, &.{ output_dir, "interfaces.jsonl" });
@@ -9529,6 +9594,8 @@ test "workflow BSA progress completes across parallel success and error paths" {
 }
 
 test "workflow mmCIF chain filters preserve long chain IDs" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -9646,6 +9713,8 @@ test "workflowJsonlOutputPath uses job file under output dir" {
 }
 
 test "workflow JSONL output options control fields and metadata sidecar" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -10039,6 +10108,8 @@ test "runBatchParallel writes parseable JSONL with multiple threads" {
 }
 
 test "batch and workflow exclude HETATM by default, also with the CCD classifier" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -10263,6 +10334,8 @@ fn altLocWorkflowAtomCount(
 }
 
 test "workflow honors --altloc and the calculation altloc key in every path" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     var root_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -10510,6 +10583,8 @@ test "BatchArgs --lr-trig=MODE and --lr-trig MODE" {
 }
 
 test "workflow lr_trig applies to the batch config unless --lr-trig was given, and rejects unknown values" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const Calculation = @import("workflow_manifest.zig").Calculation;
     const output = @import("workflow_manifest.zig").Output{};
     const classifier_config = @import("workflow_manifest.zig").ClassifierConfig{};
@@ -10626,6 +10701,8 @@ test "BatchArgs --bitmask-correction-coeff" {
 }
 
 test "BatchConfig bitmask correction requires bitmask" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     try std.testing.expectError(
         error.InvalidArgument,
         validateBitmaskCorrectionConfig(.{ .bitmask_correction = true }),
@@ -10633,6 +10710,8 @@ test "BatchConfig bitmask correction requires bitmask" {
 }
 
 test "BatchConfig bitmask correction rejects adaptive SR" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     try std.testing.expectError(
         error.InvalidArgument,
         validateBitmaskCorrectionConfig(.{
