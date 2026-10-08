@@ -246,9 +246,9 @@ def main(argv: list[str] | None = None) -> int:
     for rel in result.changed_files:
         print(f"  {rel}")
     print(
-        f"Note: the checksums in {CONDA_RECIPE} are marked {PENDING_CHECKSUM!r} and packaging/aur/ is left at the previous\n"
-        "release, because release asset checksums only exist once the publish workflow has run. After the release is\n"
-        f"published, run: scripts/update_packaging_checksums.py {result.version}"
+        f"Note: the checksums in {CONDA_RECIPE} are marked {PENDING_CHECKSUM!r}, because release asset checksums\n"
+        "only exist once the publish workflow has run. After the release is published, run:\n"
+        f"scripts/update_packaging_checksums.py {result.version}"
     )
     return 0
 

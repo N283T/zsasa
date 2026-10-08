@@ -179,32 +179,6 @@ class ReleaseBumpTests(unittest.TestCase):
             bump.run(self.tmp, "0.8.0", release_date="2026-07-01", check_clean=True)
 
 
-PKGBUILD = """\
-# Maintainer: Someone
-pkgname=zsasa-bin
-pkgver={version}
-pkgrel={pkgrel}
-arch=('x86_64')
-source=("https://github.com/N283T/zsasa/releases/download/v${{pkgver}}/zsasa-${{pkgver}}-linux-x86_64")
-sha256sums=('{sha}')
-
-package() {{
-    install -Dm755 "zsasa-${{pkgver}}-linux-x86_64" "${{pkgdir}}/usr/bin/zsasa"
-}}
-"""
-
-SRCINFO = """\
-pkgbase = zsasa-bin
-\tpkgdesc = Fast SASA calculator
-\tpkgver = {version}
-\tpkgrel = {pkgrel}
-\tarch = x86_64
-\tsource = https://github.com/N283T/zsasa/releases/download/v{version}/zsasa-{version}-linux-x86_64
-\tsha256sums = {sha}
-
-pkgname = zsasa-bin
-"""
-
 LICENSE_TEXT = b"MIT License\n"
 TARGETS = (
     "linux-x86_64",
@@ -213,11 +187,7 @@ TARGETS = (
     "macos-aarch64",
     "windows-x86_64.exe",
 )
-PACKAGING_FILES = (
-    "packaging/conda-forge/meta.yaml",
-    "packaging/aur/PKGBUILD",
-    "packaging/aur/.SRCINFO",
-)
+PACKAGING_FILES = ("packaging/conda-forge/meta.yaml",)
 
 
 def fake_sha(name: str) -> str:
@@ -262,18 +232,15 @@ class UpdatePackagingChecksumsTests(unittest.TestCase):
         self.script = load_script("update_packaging_checksums.py")
         self.tmp.joinpath("build.zig").write_text('const version = "0.8.0";\n')
         self.tmp.joinpath("packaging", "conda-forge").mkdir(parents=True)
-        self.tmp.joinpath("packaging", "aur").mkdir(parents=True)
-        self.write_packaging("0.7.1", "b" * 64, pkgrel=2)
+        self.write_packaging("0.7.1", "b" * 64)
 
-    def write_packaging(self, version: str, sha: str, *, pkgrel: int):
+    def write_packaging(self, version: str, sha: str):
         self.tmp.joinpath("packaging", "conda-forge", "meta.yaml").write_text(CONDA_RECIPE.format(version=version, sha=sha))
-        self.tmp.joinpath("packaging", "aur", "PKGBUILD").write_text(PKGBUILD.format(version=version, pkgrel=pkgrel, sha=sha))
-        self.tmp.joinpath("packaging", "aur", ".SRCINFO").write_text(SRCINFO.format(version=version, pkgrel=pkgrel, sha=sha))
 
     def read(self, rel: str) -> str:
         return self.tmp.joinpath(rel).read_text()
 
-    def test_update_rewrites_conda_recipe_pkgbuild_and_srcinfo(self):
+    def test_update_rewrites_the_conda_recipe(self):
         fetch, expected = fake_release("0.8.0")
         stale = self.script.run(self.tmp, None, fetch=fetch)
 
@@ -296,19 +263,6 @@ class UpdatePackagingChecksumsTests(unittest.TestCase):
         # Assets the recipe does not use are ignored.
         self.assertNotIn(expected["zsasa-0.8.0-windows-x86_64.exe"], recipe)
 
-        pkgbuild = self.read("packaging/aur/PKGBUILD")
-        self.assertIn("pkgver=0.8.0\npkgrel=1\n", pkgbuild)
-        self.assertIn(f"sha256sums=('{expected['zsasa-0.8.0-linux-x86_64']}')", pkgbuild)
-        self.assertIn("${pkgver}", pkgbuild)
-
-        srcinfo = self.read("packaging/aur/.SRCINFO")
-        self.assertIn("\tpkgver = 0.8.0\n\tpkgrel = 1\n", srcinfo)
-        self.assertIn(
-            "\tsource = https://github.com/N283T/zsasa/releases/download/v0.8.0/zsasa-0.8.0-linux-x86_64\n",
-            srcinfo,
-        )
-        self.assertIn(f"\tsha256sums = {expected['zsasa-0.8.0-linux-x86_64']}\n", srcinfo)
-        self.assertNotIn("0.7.1", srcinfo)
 
     def test_update_is_idempotent_and_check_agrees(self):
         fetch, _ = fake_release("0.8.0")
@@ -334,14 +288,6 @@ class UpdatePackagingChecksumsTests(unittest.TestCase):
             ["packaging/conda-forge/meta.yaml"],
         )
 
-    def test_pkgrel_is_kept_when_only_the_checksum_changes(self):
-        self.write_packaging("0.8.0", "b" * 64, pkgrel=2)
-        fetch, expected = fake_release("0.8.0")
-        self.script.run(self.tmp, "0.8.0", fetch=fetch)
-        self.assertIn("pkgrel=2\n", self.read("packaging/aur/PKGBUILD"))
-        self.assertIn("\tpkgrel = 2\n", self.read("packaging/aur/.SRCINFO"))
-        self.assertIn(expected["zsasa-0.8.0-linux-x86_64"], self.read("packaging/aur/PKGBUILD"))
-
     def test_cross_check_rejects_a_digest_that_disagrees(self):
         fetch, _ = fake_release("0.8.0", tamper={"zsasa-0.8.0-linux-x86_64": "d" * 64})
         before = self.read("packaging/conda-forge/meta.yaml")
@@ -354,7 +300,7 @@ class UpdatePackagingChecksumsTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "cannot be cross-checked"):
             self.script.run(self.tmp, "0.8.0", fetch=fetch)
         self.script.run(self.tmp, "0.8.0", fetch=fetch, cross_check=False)
-        self.assertIn(expected["zsasa-0.8.0-linux-x86_64"], self.read("packaging/aur/PKGBUILD"))
+        self.assertIn(expected["zsasa-0.8.0-linux-x86_64"], self.read("packaging/conda-forge/meta.yaml"))
 
     def test_missing_asset_checksum_fails_before_any_file_is_written(self):
         fetch, expected = fake_release("0.8.0")
@@ -391,7 +337,7 @@ class UpdatePackagingChecksumsTests(unittest.TestCase):
 
     def test_bump_then_update_goes_from_pending_to_published_checksums(self):
         bump = load_script("release_bump.py")
-        self.write_packaging("0.7.1", "b" * 64, pkgrel=1)
+        self.write_packaging("0.7.1", "b" * 64)
         # Minimal files the bump touches besides the packaging ones.
         for rel, text in {
             "build.zig": 'const version = "0.7.1";\n',
@@ -407,17 +353,14 @@ class UpdatePackagingChecksumsTests(unittest.TestCase):
             path = self.tmp.joinpath(rel)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
-        pkgbuild_before = self.read("packaging/aur/PKGBUILD")
-
         bump.run(self.tmp, "0.8.0", release_date="2026-07-01", check_clean=False)
 
-        # The recipe cannot pass for the published release, and the AUR files still describe the previous one.
+        # The recipe cannot pass for the published release until the checksums are filled in.
         fetch, _ = fake_release("0.8.0")
         self.assertEqual(
             self.script.run(self.tmp, "0.8.0", check=True, fetch=fetch),
             list(PACKAGING_FILES),
         )
-        self.assertEqual(self.read("packaging/aur/PKGBUILD"), pkgbuild_before)
 
         self.script.run(self.tmp, "0.8.0", fetch=fetch)
         self.assertNotIn(bump.PENDING_CHECKSUM, self.read("packaging/conda-forge/meta.yaml"))
@@ -437,14 +380,6 @@ class UpdatePackagingChecksumsTests(unittest.TestCase):
             "macos-aarch64",
         ):
             self.assertIn(expected[f"zsasa-{version}-{target}"], recipe, target)
-        self.assertIn(
-            expected[f"zsasa-{version}-linux-x86_64"],
-            self.read("packaging/aur/PKGBUILD"),
-        )
-        self.assertIn(
-            expected[f"zsasa-{version}-linux-x86_64"],
-            self.read("packaging/aur/.SRCINFO"),
-        )
 
 
 ZON = """\

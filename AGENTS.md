@@ -60,7 +60,7 @@ sh -n install.sh
 
 A pushed `vX.Y.Z` tag publishes to PyPI, GitHub Releases, GHCR, Homebrew and Scoop, and cannot be undone. Merge and tag only after the user says so.
 
-1. From an up-to-date `main`: `git switch -c release/vX.Y.Z`, then `./scripts/release_bump.py X.Y.Z`. It bumps every version file, promotes the `[Unreleased]` notes in both changelogs, and marks the conda checksums `PENDING-...`. `packaging/aur/` stays at the previous release.
+1. From an up-to-date `main`: `git switch -c release/vX.Y.Z`, then `./scripts/release_bump.py X.Y.Z`. It bumps every version file, promotes the `[Unreleased]` notes in both changelogs, and marks the conda checksums `PENDING-...`.
 2. If defaults, output formats or accepted input changed, add an "Upgrade notes" block at the top of the new changelog section.
 3. Run the checks above, plus `python3 scripts/check_versions.py --tag vX.Y.Z`. Commit as `release: vX.Y.Z`, push and open the pull request.
 4. Rehearse the publish workflow on the release branch. It builds every wheel, CLI binary and the Docker image and publishes nothing:
@@ -78,6 +78,6 @@ A pushed `vX.Y.Z` tag publishes to PyPI, GitHub Releases, GHCR, Homebrew and Sco
    git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z
    ```
 
-6. When the publish run has finished, on a new branch: `./scripts/update_packaging_checksums.py X.Y.Z`, commit and open a pull request. The AUR repository (`zsasa-bin`) and the conda-forge feedstock are updated by hand from those files.
+6. When the publish run has finished, on a new branch: `./scripts/update_packaging_checksums.py X.Y.Z`, commit and open a pull request. It fills in the checksums of `packaging/conda-forge/meta.yaml`.
 
 A failed publish run can be repeated for one part with `workflow_dispatch` (`target=pypi` and the job to repeat); `target=testpypi` uploads to TestPyPI only.

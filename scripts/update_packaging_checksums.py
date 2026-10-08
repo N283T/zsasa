@@ -2,13 +2,12 @@
 # /// script
 # requires-python = ">=3.12"
 # ///
-"""Fill the conda-forge recipe and the AUR package files with the checksums of a published release.
+"""Fill the conda-forge recipe with the checksums of a published release.
 
 The checksums of the release binaries only exist once the publish workflow has
 run, so this is a post-release step: ``scripts/release_bump.py`` writes the new
 version into ``packaging/conda-forge/meta.yaml`` and marks its checksums as
-pending, and this script replaces them with the published values. It also brings
-``packaging/aur/PKGBUILD`` and ``packaging/aur/.SRCINFO`` to the same version.
+pending, and this script replaces them with the published values.
 
 The checksums come from the ``SHA256SUMS`` asset of the release and are
 cross-checked against the digests GitHub records for the uploaded assets.
@@ -36,8 +35,6 @@ RAW_URL = f"https://raw.githubusercontent.com/{REPO_SLUG}"
 VERSION_RE = re.compile(r"^v?(\d+\.\d+\.\d+)$")
 
 CONDA_RECIPE = "packaging/conda-forge/meta.yaml"
-AUR_PKGBUILD = "packaging/aur/PKGBUILD"
-AUR_SRCINFO = "packaging/aur/.SRCINFO"
 
 # Fetches a URL and returns the response body. Replaced in tests.
 Fetch = Callable[[str], bytes]
@@ -198,88 +195,6 @@ def update_conda_recipe(text: str, version: str, checksums: ReleaseChecksums) ->
 
 
 # ---------------------------------------------------------------------------
-# AUR package
-# ---------------------------------------------------------------------------
-_PKGVER_RE = re.compile(r"^pkgver=(\S+)$", re.MULTILINE)
-_PKGREL_RE = re.compile(r"^pkgrel=(\S+)$", re.MULTILINE)
-_ARRAY_RE = r"^{name}=\((?P<body>[^)]*)\)"
-
-
-def _pkgbuild_array(text: str, name: str) -> re.Match[str]:
-    match = re.search(_ARRAY_RE.format(name=name), text, re.MULTILINE)
-    if not match:
-        raise RuntimeError(f"{AUR_PKGBUILD}: no {name}=(...) array")
-    return match
-
-
-def _quoted_items(body: str) -> list[str]:
-    return re.findall(r"""["']([^"']*)["']""", body)
-
-
-def pkgbuild_sources(text: str, version: str) -> list[str]:
-    """Return the source URLs of a PKGBUILD with ``${pkgver}`` expanded."""
-    items = _quoted_items(_pkgbuild_array(text, "source").group("body"))
-    return [
-        item.replace("${pkgver}", version).replace("$pkgver", version) for item in items
-    ]
-
-
-def update_pkgbuild(text: str, version: str, checksums: ReleaseChecksums) -> str:
-    match = _PKGVER_RE.search(text)
-    if not match or not _PKGREL_RE.search(text):
-        raise RuntimeError(f"{AUR_PKGBUILD}: missing pkgver= or pkgrel= line")
-    if match.group(1) != version:
-        text = _PKGVER_RE.sub(f"pkgver={version}", text, count=1)
-        text = _PKGREL_RE.sub(
-            "pkgrel=1", text, count=1
-        )  # a new upstream version restarts the package release
-    sources = pkgbuild_sources(text, version)
-    sums = [lookup(checksums, url.rsplit("/", 1)[-1]) for url in sources]
-    sha_array = _pkgbuild_array(text, "sha256sums")
-    body = ("\n" + " " * 12).join(f"'{digest}'" for digest in sums)
-    return text[: sha_array.start("body")] + body + text[sha_array.end("body") :]
-
-
-def update_srcinfo(srcinfo: str, pkgbuild: str, version: str) -> str:
-    """Rewrite the version, release, source and checksum fields of ``.SRCINFO`` from the PKGBUILD."""
-    pkgrel = _PKGREL_RE.search(pkgbuild)
-    if not pkgrel:
-        raise RuntimeError(f"{AUR_PKGBUILD}: missing pkgrel= line")
-    sources = pkgbuild_sources(pkgbuild, version)
-    sums = _quoted_items(_pkgbuild_array(pkgbuild, "sha256sums").group("body"))
-    if len(sources) != len(sums):
-        raise RuntimeError(
-            f"{AUR_PKGBUILD}: {len(sources)} sources but {len(sums)} sha256sums"
-        )
-    replacements = {
-        "pkgver": [version],
-        "pkgrel": [pkgrel.group(1)],
-        "source": sources,
-        "sha256sums": sums,
-    }
-    seen = dict.fromkeys(replacements, 0)
-    out: list[str] = []
-    for line in srcinfo.splitlines(keepends=True):
-        field = re.match(r"^\t(\w+) = ", line)
-        if field and field.group(1) in replacements:
-            name = field.group(1)
-            values = replacements[name]
-            if seen[name] >= len(values):
-                raise RuntimeError(
-                    f"{AUR_SRCINFO}: more {name} lines than the PKGBUILD has"
-                )
-            line = f"\t{name} = {values[seen[name]]}\n"
-            seen[name] += 1
-        out.append(line)
-    for name, values in replacements.items():
-        if seen[name] != len(values):
-            raise RuntimeError(
-                f"{AUR_SRCINFO}: expected {len(values)} {name} line(s), found {seen[name]}"
-            )
-    return "".join(out)
-
-
-# ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
 def compute_updates(
@@ -289,11 +204,7 @@ def compute_updates(
     recipe = update_conda_recipe(
         root.joinpath(CONDA_RECIPE).read_text(), version, checksums
     )
-    pkgbuild = update_pkgbuild(
-        root.joinpath(AUR_PKGBUILD).read_text(), version, checksums
-    )
-    srcinfo = update_srcinfo(root.joinpath(AUR_SRCINFO).read_text(), pkgbuild, version)
-    return {CONDA_RECIPE: recipe, AUR_PKGBUILD: pkgbuild, AUR_SRCINFO: srcinfo}
+    return {CONDA_RECIPE: recipe}
 
 
 def run(
