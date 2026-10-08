@@ -856,11 +856,16 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
     };
 }
 
+/// Whether the AlphaFold-model fast parser may read an mmCIF input. It only
+/// reads the leading ATOM rows by label chain, so every option that asks for
+/// anything else goes to the generic parser: HETATM rows that follow the
+/// ATOM rows would otherwise be dropped although they were requested.
 fn shouldTryAfModelFastParser(config: BatchConfig) bool {
     return config.af_model_fast and
         config.chain_filter == null and
         !config.use_auth_chain and
         !config.include_hydrogens and
+        !config.include_hetatm and
         config.alt_loc_mode == .auto;
 }
 
@@ -1782,7 +1787,12 @@ fn buildBsaResidueDeltaArrays(
 
     for (0..isolated_map.len()) |i| {
         residue_partner[i] = if (atomSelectedByChains(input, isolated_map.residue_atom_start[i], partner_a)) "a" else "b";
-        residue_chain[i] = try allocator.dupe(u8, isolated_map.residue_chain[i].slice());
+        // The full chain ID when the input has one, as in the atom arrays:
+        // the fixed-width chain holds at most four characters.
+        residue_chain[i] = try allocator.dupe(u8, if (isolated_map.residue_chain_full) |chains|
+            chains[i]
+        else
+            isolated_map.residue_chain[i].slice());
         residue_name[i] = try allocator.dupe(u8, isolated_map.residue_name[i].slice());
         residue_insertion_code[i] = try allocator.dupe(u8, isolated_map.residue_insertion_code[i].slice());
         residue_delta_sasa[i] = residue_sasa_isolated[i] - residue_sasa_complex[i];
@@ -2362,26 +2372,15 @@ pub fn runBatchParallel(
     defer prepared.deinit(allocator);
     const work_items = prepared.work.items.items;
 
-    if (work_items.len == 0) {
-        return BatchResult{
-            .total_files = 0,
-            .successful = 0,
-            .failed = 0,
-            .total_sasa_time_ns = 0,
-            .total_time_ns = @intCast(prepared.total_timer.untilNow(io, .awake).nanoseconds),
-            .scan_time_ns = prepared.scan_time_ns,
-            .file_results = try allocator.alloc(FileResult, 0),
-            .allocator = allocator,
-        };
-    }
-
     // Determine thread count
     const cpu_count = std.Thread.getCpuCount() catch 1;
     const n_threads = resolveBatchThreadCount(config.n_threads, cpu_count);
     const actual_threads = @min(n_threads, work_items.len);
 
-    // For single item or single thread, use sequential
-    if (work_items.len == 1 or n_threads <= 1) {
+    // Nothing to run in parallel for at most one item or a single thread. An
+    // empty directory goes this way too, so that it leaves the same output
+    // behind whatever the thread count: an empty JSONL file, not a stale one.
+    if (work_items.len <= 1 or n_threads <= 1) {
         return runPreparedSequential(allocator, io, input_dir, output_dir, config, jsonl_output_path, &prepared);
     }
 
@@ -8010,6 +8009,89 @@ test "workflow BSA analysis writes analysis JSONL" {
     try std.testing.expect(std.mem.indexOf(u8, content, "\"residue_delta_sasa\"") != null);
 }
 
+test "workflow BSA analysis writes chain IDs longer than four characters in full" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const cwd = std.Io.Dir.cwd();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try tmp_dir.dir.realPath(std.testing.io, &root_buf)];
+    const input_dir = try std.fs.path.join(arena, &.{ root, "input" });
+    const output_dir = try std.fs.path.join(arena, &.{ root, "output" });
+    try cwd.createDirPath(std.testing.io, input_dir);
+    try cwd.writeFile(std.testing.io, .{
+        .sub_path = try std.fs.path.join(arena, &.{ input_dir, "long.cif" }),
+        .data =
+        \\data_LONG
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\ATOM 1 N N  GLY LONGA 1 0.000 0.000 0.000
+        \\ATOM 2 C CA GLY LONGA 1 1.500 0.000 0.000
+        \\ATOM 3 N N  ALA LONGB 2 3.000 0.000 0.000
+        \\ATOM 4 C CA ALA LONGB 2 4.500 0.000 0.000
+        \\#
+        \\
+        ,
+    });
+
+    const workflow_path = try std.fs.path.join(arena, &.{ root, "bsa.toml" });
+    try cwd.writeFile(std.testing.io, .{ .sub_path = workflow_path, .data = try std.fmt.allocPrint(arena,
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[input]
+        \\dir = "{s}"
+        \\
+        \\[output]
+        \\dir = "{s}"
+        \\format = "jsonl"
+        \\
+        \\[calculation]
+        \\n_points = 16
+        \\quiet = true
+        \\
+        \\[classifier]
+        \\type = "naccess"
+        \\
+        \\[analysis]
+        \\type = "bsa"
+        \\name = "long"
+        \\partner_a = ["LONGA"]
+        \\partner_b = ["LONGB"]
+        \\level = "residue"
+        \\atom_output = true
+        \\
+    , .{ input_dir, output_dir }) });
+
+    try runWorkflow(std.testing.allocator, std.testing.io, .{ .workflow_path = workflow_path });
+
+    const content = try cwd.readFileAlloc(std.testing.io, try std.fs.path.join(arena, &.{ output_dir, "long.jsonl" }), arena, .limited(1 << 16));
+    const row = (try std.json.parseFromSliceLeaky(std.json.Value, arena, std.mem.trimEnd(u8, content, "\n"), .{})).object;
+    try std.testing.expectEqualStrings("ok", row.get("status").?.string);
+
+    // One residue and two atoms per chain; both arrays name the same chains.
+    const residue_chain = row.get("residue_chain").?.array.items;
+    try std.testing.expectEqual(@as(usize, 2), residue_chain.len);
+    try std.testing.expectEqualStrings("LONGA", residue_chain[0].string);
+    try std.testing.expectEqualStrings("LONGB", residue_chain[1].string);
+    const atom_chain = row.get("atom_chain").?.array.items;
+    try std.testing.expectEqual(@as(usize, 4), atom_chain.len);
+    try std.testing.expectEqualStrings("LONGA", atom_chain[0].string);
+    try std.testing.expectEqualStrings("LONGB", atom_chain[3].string);
+}
+
 test "workflow BSA analysis uses per-file multi-chain interface map" {
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -9300,6 +9382,39 @@ test "runBatchParallel writes JSONL error rows for failed files" {
     try std.testing.expect(std.mem.indexOf(u8, content, "\"error\":") != null);
 }
 
+test "batch on an empty directory leaves an empty JSONL file whatever the thread count" {
+    const allocator = std.testing.allocator;
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    const jsonl_path = try sandbox.path("results.jsonl");
+    defer allocator.free(jsonl_path);
+
+    inline for (test_naming_threads) |n_threads| {
+        // Left over from an earlier run
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = jsonl_path, .data = "{\"status\":\"ok\",\"filename\":\"stale.pdb\"}\n" });
+
+        var config = NamingSandbox.config(n_threads);
+        config.output_format = .jsonl;
+        config.store_atom_areas = true;
+        var result = try runBatch(allocator, std.testing.io, sandbox.input_dir, null, config, jsonl_path);
+        defer result.deinit();
+        try std.testing.expectEqual(@as(usize, 0), result.total_files);
+        try std.testing.expectEqual(@as(usize, 0), result.failed);
+
+        const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, jsonl_path, allocator, .limited(4096));
+        defer allocator.free(content);
+        try std.testing.expectEqualStrings("", content);
+    }
+
+    // Per-file output: both runners create the (empty) output directory.
+    inline for (test_naming_threads) |n_threads| {
+        var result = try sandbox.run(n_threads, std.fmt.comptimePrint("out{d}", .{n_threads}));
+        defer result.deinit();
+        try std.testing.expectEqual(@as(usize, 0), result.total_files);
+    }
+    try sandbox.expectTree(&.{ "input/", "out1/", "out4/", "results.jsonl" });
+}
+
 test "BatchArgs explicit option flags" {
     const args = [_][]const u8{
         "zsasa", "batch", "--threads=8", "--n-points=128", "--format=jsonl", "--use-bitmask", "input_dir/",
@@ -9694,6 +9809,60 @@ test "AF model fast parser is skipped when chain filtering is requested" {
         .af_model_fast = true,
         .chain_filter = chains[0..],
     }));
+}
+
+test "AF model fast parser leaves files to the generic parser when HETATM is included" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // ATOM rows followed by HETATM rows: the fast parser stops at the first
+    // row that is not ATOM.
+    const source =
+        \\data_AF_HETATM
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_entity_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.pdbx_PDB_ins_code
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\ATOM   1 N  N  . GLY A 1 1 ? 1.000 2.000 3.000
+        \\ATOM   2 C  CA . GLY A 1 1 ? 2.000 3.000 4.000
+        \\HETATM 3 ZN ZN . ZN  B 2 . ? 9.000 9.000 9.000
+        \\HETATM 4 O  O  . HOH C 3 . ? 12.00 12.00 12.00
+        \\
+    ;
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "af.cif", .data = source });
+    const path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "af.cif", allocator);
+    defer allocator.free(path);
+
+    const Case = struct { af_model_fast: bool, include_hetatm: bool, expected_atoms: usize };
+    const cases = [_]Case{
+        .{ .af_model_fast = false, .include_hetatm = false, .expected_atoms = 2 },
+        .{ .af_model_fast = false, .include_hetatm = true, .expected_atoms = 4 },
+        .{ .af_model_fast = true, .include_hetatm = false, .expected_atoms = 2 },
+        .{ .af_model_fast = true, .include_hetatm = true, .expected_atoms = 4 },
+    };
+    for (cases) |case| {
+        var parsed = try readInputFile(allocator, std.testing.io, path, .{
+            .af_model_fast = case.af_model_fast,
+            .include_hetatm = case.include_hetatm,
+            .classifier_type = null,
+        });
+        defer parsed.deinit();
+        try std.testing.expectEqual(case.expected_atoms, parsed.input.atomCount());
+    }
+
+    try std.testing.expect(shouldTryAfModelFastParser(.{ .af_model_fast = true }));
+    try std.testing.expect(!shouldTryAfModelFastParser(.{ .af_model_fast = true, .include_hetatm = true }));
 }
 
 test "BatchConfig progress respects show_progress and quiet" {

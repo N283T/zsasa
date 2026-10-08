@@ -139,8 +139,10 @@ including multiple chains. It falls back to the generic mmCIF parser for
 unsupported layouts, alternate locations, multiple models, hydrogens, and
 extended chain IDs. Malformed coordinates and I/O errors are reported instead
 of being hidden by fallback. Chain filters, author-chain matching,
-alternate-location overrides, and explicit hydrogen inclusion use the generic
-parser directly.
+alternate-location overrides, explicit hydrogen inclusion, and
+`--include-hetatm` use the generic parser directly: the fast parser reads only
+the leading `ATOM` rows, which is every atom of the file while HETATM records
+are excluded.
 
 The input strategy can be selected independently with
 `--input-io=auto|mmap|read`. `auto` uses whole-file reads for the AF fast path
