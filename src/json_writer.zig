@@ -370,6 +370,22 @@ pub fn sasaResultToRsa(allocator: Allocator, result: SasaResult, input: AtomInpu
     return aw.toOwnedSlice();
 }
 
+/// Write one text field of a CSV row as RFC 4180 specifies: a field that
+/// contains a comma, a double quote, CR or LF is enclosed in double quotes
+/// with every double quote in it doubled, and any other field is written as
+/// it is. A PDB chain ID can be `,` or `"`, and the residue name of an SDF
+/// molecule is taken from its title.
+fn writeCsvField(writer: *std.Io.Writer, field: []const u8) !void {
+    if (std.mem.findAny(u8, field, ",\"\r\n") == null) return writer.writeAll(field);
+
+    try writer.writeByte('"');
+    for (field) |c| {
+        if (c == '"') try writer.writeByte('"');
+        try writer.writeByte(c);
+    }
+    try writer.writeByte('"');
+}
+
 /// Header of the rich CSV, the CSV written for input with residue information.
 pub const rich_csv_header = "chain,residue,resnum,insertion_code,atom_name,x,y,z,radius,area";
 
@@ -377,6 +393,7 @@ pub const rich_csv_header = "chain,residue,resnum,insertion_code,atom_name,x,y,z
 /// Format: `rich_csv_header`, one row per atom, and a last row that holds
 /// only the total area. `insertion_code` is empty for a residue without one.
 /// A column that the input does not have at all is written as `-`.
+/// Text fields are quoted where RFC 4180 requires it (`writeCsvField`).
 /// Caller must free the returned slice
 pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: []const f64) ![]u8 {
     var aw = std.Io.Writer.Allocating.init(allocator);
@@ -392,9 +409,9 @@ pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: [
         // Chain: the full ID where the parser kept one (mmCIF chain IDs can
         // be longer than the four characters of `chain_id`)
         if (input.chain_id_full) |chains| {
-            try writer.writeAll(chains[i]);
+            try writeCsvField(writer, chains[i]);
         } else if (input.chain_id) |chains| {
-            try writer.writeAll(chains[i].slice());
+            try writeCsvField(writer, chains[i].slice());
         } else {
             try writer.writeAll("-");
         }
@@ -402,7 +419,7 @@ pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: [
 
         // Residue name
         if (input.residue) |residues| {
-            try writer.writeAll(residues[i].slice());
+            try writeCsvField(writer, residues[i].slice());
         } else {
             try writer.writeAll("-");
         }
@@ -418,7 +435,7 @@ pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: [
 
         // Insertion code (empty for a residue without one)
         if (input.insertion_code) |codes| {
-            try writer.writeAll(codes[i].slice());
+            try writeCsvField(writer, codes[i].slice());
         } else {
             try writer.writeAll("-");
         }
@@ -426,7 +443,7 @@ pub fn sasaResultToRichCsv(allocator: Allocator, input: AtomInput, atom_areas: [
 
         // Atom name
         if (input.atom_name) |names| {
-            try writer.writeAll(names[i].slice());
+            try writeCsvField(writer, names[i].slice());
         } else {
             try writer.writeAll("-");
         }
@@ -2692,6 +2709,44 @@ test "sasaResultToRichCsv writes the insertion code after the residue number" {
     while (lines.next()) |line| {
         try std.testing.expectEqual(@as(usize, 9), std.mem.count(u8, line, ","));
     }
+}
+
+test "sasaResultToRichCsv quotes fields per RFC 4180" {
+    const allocator = std.testing.allocator;
+    var structure = try TestStructure.init(&.{
+        // Nothing to quote: written exactly as without quoting support
+        .{ .chain = "A", .residue = "ALA", .number = 1, .atom = "CA", .area = 1 },
+        .{ .chain = " ", .residue = "A B", .number = 2, .atom = "C'", .area = 2 },
+        // Comma, double quote, LF and CR
+        .{ .chain = ",", .residue = "a,b", .number = 3, .insertion = ",", .atom = "C,1", .area = 4 },
+        .{ .chain = "\"", .residue = "a\"b", .number = 4, .insertion = "\"", .atom = "\"\"", .area = 8 },
+        .{ .chain = "A", .residue = "a\nb", .number = 5, .atom = "C\r1", .area = 16 },
+    }, false);
+    defer structure.deinit();
+
+    const csv = try sasaResultToRichCsv(allocator, structure.input, structure.areas);
+    defer allocator.free(csv);
+
+    try std.testing.expectEqualStrings("chain,residue,resnum,insertion_code,atom_name,x,y,z,radius,area\n" ++
+        "A,ALA,1,,CA,0.000,0.000,0.000,1.000,1.000000\n" ++
+        " ,A B,2,,C',1.000,0.000,0.000,1.000,2.000000\n" ++
+        "\",\",\"a,b\",3,\",\",\"C,1\",2.000,0.000,0.000,1.000,4.000000\n" ++
+        "\"\"\"\",\"a\"\"b\",4,\"\"\"\",\"\"\"\"\"\",3.000,0.000,0.000,1.000,8.000000\n" ++
+        "A,\"a\nb\",5,,\"C\r1\",4.000,0.000,0.000,1.000,16.000000\n" ++
+        ",,,,,,,,,31.000000\n", csv);
+}
+
+test "sasaResultToRichCsv quotes a full chain ID" {
+    const allocator = std.testing.allocator;
+    var structure = try TestStructure.init(&.{
+        .{ .chain = "A,\"long\"", .residue = "ALA", .number = 1, .atom = "CA", .area = 1 },
+    }, true);
+    defer structure.deinit();
+
+    const csv = try sasaResultToRichCsv(allocator, structure.input, structure.areas);
+    defer allocator.free(csv);
+
+    try std.testing.expect(std.mem.find(u8, csv, "\n\"A,\"\"long\"\"\",ALA,1,,CA,") != null);
 }
 
 test "sasaResultToRichCsv without residue info uses dashes" {

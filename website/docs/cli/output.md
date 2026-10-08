@@ -66,7 +66,7 @@ H,SER,10,A,N,3.000,5.000,7.000,1.640,15.820000
 | `radius` | Atom radius in Å |
 | `area` | SASA of the atom in Å² |
 
-The last row holds the total area and leaves every other column empty. Read the columns by name: the `insertion_code` column was added after `resnum` in the release after 0.9.1, which moved `atom_name` and the columns after it one position to the right.
+The last row holds the total area and leaves every other column empty. Text fields follow RFC 4180: a chain ID, residue name, insertion code or atom name that contains a comma, a double quote or a line break is enclosed in double quotes, with every double quote in it doubled (the PDB chain ID `,` is written as `","`). All other fields are written unquoted, so use a CSV parser instead of splitting lines at commas. Read the columns by name: the `insertion_code` column was added after `resnum` in the release after 0.9.1, which moved `atom_name` and the columns after it one position to the right.
 
 `batch --format=csv` always writes the basic `atom_index,area` CSV per input file, also for structure input.
 

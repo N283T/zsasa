@@ -179,3 +179,39 @@ class TestCsvOutput:
             rows = list(csv.reader(f))
         assert rows[0] == ["atom_index", "area"]
         assert [row[0] for row in rows[1:]] == ["0", "1", "2", "3", "4", "total"]
+
+    def test_fields_with_csv_metacharacters_survive_a_csv_parser(self, tmp_path: Path):
+        """RFC 4180 quoting: a chain ID of `,` or `"` stays one field."""
+        input_file = tmp_path / "metachars.pdb"
+        input_file.write_text(
+            "ATOM      1  N   GLY ,   1       0.000   0.000   0.000  1.00 20.00           N\n"
+            'ATOM      2  N   GLY "   2      20.000   0.000   0.000  1.00 20.00           N\n'
+            "ATOM      3  N   GLY A   3      40.000   0.000   0.000  1.00 20.00           N\n"
+            "END\n"
+        )
+
+        rows, _ = calc_csv(tmp_path, input_file)
+
+        assert rows[0] == RICH_CSV_HEADER
+        assert all(len(row) == len(RICH_CSV_HEADER) for row in rows)
+        assert [row[:5] for row in rows[1:-1]] == [
+            [",", "GLY", "1", "", "N"],
+            ['"', "GLY", "2", "", "N"],
+            ["A", "GLY", "3", "", "N"],
+        ]
+        # A field that needs no quoting is written as before
+        lines = (tmp_path / "metachars.csv").read_text().splitlines()
+        assert lines[1].startswith('",",GLY,1,,N,')
+        assert lines[2].startswith('"""",GLY,2,,N,')
+        assert lines[3].startswith("A,GLY,3,,N,40.000,0.000,0.000,")
+
+    def test_sdf_title_with_csv_metacharacters_survives_a_csv_parser(self, tmp_path: Path):
+        """The residue name of an SDF molecule is the start of its title."""
+        lines = (TEST_DATA_DIR / "ethanol_v2000.sdf").read_text().split("\n")
+        input_file = tmp_path / "title.sdf"
+        input_file.write_text("\n".join(['a,"b', *lines[1:]]))
+
+        rows, _ = calc_csv(tmp_path, input_file)
+
+        assert all(len(row) == len(RICH_CSV_HEADER) for row in rows)
+        assert {row[1] for row in rows[1:-1]} == {'a,"b'}
