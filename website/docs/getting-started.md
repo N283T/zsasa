@@ -47,7 +47,19 @@ cd zsasa
 zig build -Doptimize=ReleaseFast
 ```
 
-The binary is at `./zig-out/bin/zsasa` (source build) or `~/.local/bin/zsasa` (install.sh). The installer supports Linux and macOS. It downloads the latest release by default, or `VERSION=X.Y.Z` when pinned. If Zig 0.16.0 and `git` are available, it builds the tagged source release locally; otherwise it downloads the matching pre-built binary and verifies `SHA256SUMS` when available.
+The binary is at `./zig-out/bin/zsasa` (source build) or `~/.local/bin/zsasa` (install.sh). The installer supports Linux and macOS. It downloads the latest release by default, or `VERSION=X.Y.Z` when pinned. If Zig 0.16.0 and `git` are available, it builds the tagged source release locally; otherwise it downloads the matching pre-built binary and verifies it against the release's `SHA256SUMS`.
+
+The installer stops without installing when it cannot verify the binary: `SHA256SUMS` cannot be downloaded or has no entry for the binary, neither `sha256sum` nor `shasum` is installed, or the checksum differs. To install without verification anyway (not recommended), set `SKIP_CHECKSUM=1`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | SKIP_CHECKSUM=1 sh
+```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VERSION` | latest release | Version to install (`X.Y.Z`) |
+| `INSTALL_DIR` | `~/.local/bin` | Absolute path of the install directory |
+| `SKIP_CHECKSUM` | unset | Set to `1` to skip checksum verification of the downloaded binary |
 
 :::note
 If you have both the standalone binary and the Python package installed, the one that appears first in your `PATH` will be used. To avoid confusion, use only one installation method for the CLI.
