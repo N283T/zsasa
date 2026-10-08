@@ -1,5 +1,26 @@
 name: Build & Publish
 
+# Job graph. A tag push runs everything; workflow_dispatch runs the jobs chosen
+# with `jobs` and publishes according to `target` (see the plan step in `prepare`).
+#
+#   prepare               resolve the tag, check it against the sources and main,
+#     |                   decide which jobs run
+#     +- build_wheels     \
+#     +- build_sdist       |
+#     +- build_docker      |  build and check; nothing is published here
+#     +- release_notes     |
+#     +- build_cli         |
+#          +- release_assets
+#     |
+#   gate                  fails unless every selected job above succeeded
+#     +- publish          PyPI / TestPyPI
+#     +- github_release   GitHub Release
+#     |    +- update_homebrew
+#     |    +- update_scoop
+#     +- docker           Docker push, including `latest`
+#
+# Nothing irreversible runs before `gate` has succeeded.
+
 on:
   push:
     tags:
@@ -11,7 +32,7 @@ on:
         required: true
         type: string
       target:
-        description: "Publish target"
+        description: "Publish target: pypi = production release (PyPI, GitHub Release, Docker, Homebrew, Scoop); testpypi = upload to TestPyPI only; none = build and check only, publish nothing"
         required: true
         default: "testpypi"
         type: choice
@@ -20,7 +41,7 @@ on:
           - pypi
           - none
       jobs:
-        description: "Jobs to run (tag push always runs all)"
+        description: "Jobs to run (tag push always runs all). Publishing needs a matching target: see target"
         required: true
         default: "all"
         type: choice
@@ -35,22 +56,40 @@ permissions:
   contents: write
   packages: write
 
+# One publish run per release tag at a time. A queued run waits for the running
+# one and an in-progress publish is never cancelled (the later run would
+# otherwise leave a half-published release). Tag pushes and manual runs for the
+# same tag share one group.
+concurrency:
+  group: publish-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   prepare:
     name: Resolve release tag
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
+      python: ${{ steps.plan.outputs.python }}
+      cli: ${{ steps.plan.outputs.cli }}
+      docker: ${{ steps.plan.outputs.docker }}
+      publish_pypi: ${{ steps.plan.outputs.publish_pypi }}
+      publish_release: ${{ steps.plan.outputs.publish_release }}
+      publish_docker: ${{ steps.plan.outputs.publish_docker }}
+      publish_package_managers: ${{ steps.plan.outputs.publish_package_managers }}
 
     steps:
       - name: Resolve and validate release tag
         id: version
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.release_tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.release_tag }}"
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            TAG="${INPUT_TAG}"
           else
             TAG="${GITHUB_REF_NAME}"
           fi
@@ -65,15 +104,115 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Using release tag ${TAG} (version ${VERSION})"
 
-  # ---------- Phase 1: Build everything (preflight) ----------
+      # trigger / target / jobs -> which build jobs run and which publishing
+      # jobs are allowed. Builds and checks follow `jobs` only, so a manual run
+      # with target=none or testpypi still builds and checks everything it
+      # selects. Publishing needs the right target:
+      #   PyPI / TestPyPI   jobs in {all, pypi}                 and target in {pypi, testpypi}
+      #   GitHub Release    jobs in {all, github-release}       and target = pypi
+      #   Docker push       jobs in {all, docker}               and target = pypi
+      #   Homebrew, Scoop   jobs in {all, package-managers}     and target = pypi
+      # A tag push behaves as jobs=all, target=pypi.
+      - name: Decide what to build and publish
+        id: plan
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TARGET: ${{ inputs.target }}
+          INPUT_JOBS: ${{ inputs.jobs }}
+        run: |
+          set -euo pipefail
+
+          if [ "${EVENT_NAME}" = "push" ]; then
+            JOBS=all
+            TARGET=pypi
+          elif [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            JOBS="${INPUT_JOBS}"
+            TARGET="${INPUT_TARGET}"
+          else
+            echo "unexpected event '${EVENT_NAME}'" >&2
+            exit 1
+          fi
+
+          case "${JOBS}" in
+            all | pypi | github-release | docker | package-managers) ;;
+            *) echo "unknown jobs '${JOBS}'" >&2; exit 1 ;;
+          esac
+          case "${TARGET}" in
+            pypi | testpypi | none) ;;
+            *) echo "unknown target '${TARGET}'" >&2; exit 1 ;;
+          esac
+
+          # A job is selected by `jobs=all` or by its own name.
+          selected() { [ "${JOBS}" = all ] || [ "${JOBS}" = "$1" ]; }
+
+          PYTHON=false
+          CLI=false
+          DOCKER=false
+          PUBLISH_PYPI=false
+          PUBLISH_RELEASE=false
+          PUBLISH_DOCKER=false
+          PUBLISH_PACKAGE_MANAGERS=false
+
+          if selected pypi; then
+            PYTHON=true
+            if [ "${TARGET}" != none ]; then PUBLISH_PYPI=true; fi
+          fi
+          if selected github-release; then
+            CLI=true
+            if [ "${TARGET}" = pypi ]; then PUBLISH_RELEASE=true; fi
+          fi
+          if selected docker; then
+            DOCKER=true
+            if [ "${TARGET}" = pypi ]; then PUBLISH_DOCKER=true; fi
+          fi
+          if selected package-managers; then
+            if [ "${TARGET}" = pypi ]; then PUBLISH_PACKAGE_MANAGERS=true; fi
+          fi
+
+          {
+            echo "python=${PYTHON}"
+            echo "cli=${CLI}"
+            echo "docker=${DOCKER}"
+            echo "publish_pypi=${PUBLISH_PYPI}"
+            echo "publish_release=${PUBLISH_RELEASE}"
+            echo "publish_docker=${PUBLISH_DOCKER}"
+            echo "publish_package_managers=${PUBLISH_PACKAGE_MANAGERS}"
+          } | tee -a "$GITHUB_OUTPUT"
+          echo "event=${EVENT_NAME} jobs=${JOBS} target=${TARGET}"
+
+      - name: Checkout release tag
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+          # Full history so the tag can be compared with main below.
+          fetch-depth: 0
+
+      - name: Check the tag matches the versions in the sources
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: python3 scripts/check_versions.py --tag "${TAG}"
+
+      - name: Check the tagged commit is on main
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          SHA=$(git rev-parse HEAD)
+          if ! git merge-base --is-ancestor "${SHA}" origin/main; then
+            echo "${TAG} (${SHA}) is not on main; refusing to publish a commit that was never merged" >&2
+            exit 1
+          fi
+          echo "${TAG} (${SHA}) is on main"
+
+  # ---------- Phase 1: Build and check everything (no publishing) ----------
 
   build_wheels:
     name: Wheels (${{ matrix.os }})
     needs: [prepare]
-    if: >-
-      github.event_name == 'push'
-      || inputs.jobs == 'all'
-      || inputs.jobs == 'pypi'
+    if: needs.prepare.outputs.python == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -93,7 +232,7 @@ jobs:
 
       - name: Setup Zig
         if: runner.os != 'Linux'
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
 
@@ -121,10 +260,7 @@ jobs:
   build_sdist:
     name: Source dist
     needs: [prepare]
-    if: >-
-      github.event_name == 'push'
-      || inputs.jobs == 'all'
-      || inputs.jobs == 'pypi'
+    if: needs.prepare.outputs.python == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -139,7 +275,7 @@ jobs:
           python-version: "3.12"
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
 
@@ -178,10 +314,7 @@ jobs:
   build_cli:
     name: CLI (${{ matrix.target }})
     needs: [prepare]
-    if: >-
-      github.event_name == 'push'
-      || inputs.jobs == 'all'
-      || inputs.jobs == 'github-release'
+    if: needs.prepare.outputs.cli == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -210,7 +343,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
 
@@ -249,10 +382,7 @@ jobs:
   build_docker:
     name: Docker build (preflight)
     needs: [prepare]
-    if: >-
-      github.event_name == 'push'
-      || inputs.jobs == 'all'
-      || inputs.jobs == 'docker'
+    if: needs.prepare.outputs.docker == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -262,21 +392,159 @@ jobs:
           ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Build Docker image (no push)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           push: false
           tags: ghcr.io/n283t/zsasa:preflight
 
-  # ---------- Phase 2: Release (after build gates pass) ----------
+  release_notes:
+    name: Check changelog section
+    needs: [prepare]
+    if: needs.prepare.outputs.cli == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Extract release notes from CHANGELOG
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          awk -v v="${VERSION}" 'index($0, "## [" v "]") == 1 {found=1; next} /^## \[/ {if (found) exit} found {print}' CHANGELOG.md > release_notes.md
+          # grep -q fails on an empty or whitespace-only file.
+          if ! grep -q '[^[:space:]]' release_notes.md; then
+            echo "No CHANGELOG.md section (or an empty one) found for ${VERSION}" >&2
+            exit 1
+          fi
+          cat release_notes.md
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-notes
+          path: release_notes.md
+
+  release_assets:
+    name: Check CLI assets and checksums
+    needs: [prepare, build_cli]
+    if: needs.prepare.outputs.cli == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Download CLI artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: cli-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate CLI checksums
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          cd dist
+          ls -la
+
+          # Exactly these five files, none missing or empty and nothing else.
+          # Alphabetical, the order SHA256SUMS has always had.
+          ASSETS=(
+            "zsasa-${VERSION}-linux-aarch64"
+            "zsasa-${VERSION}-linux-x86_64"
+            "zsasa-${VERSION}-macos-aarch64"
+            "zsasa-${VERSION}-macos-x86_64"
+            "zsasa-${VERSION}-windows-x86_64.exe"
+          )
+          for asset in "${ASSETS[@]}"; do
+            if [ ! -s "${asset}" ]; then
+              echo "missing or empty release asset: ${asset}" >&2
+              exit 1
+            fi
+          done
+          FILES=(*)
+          if [ "${#FILES[@]}" -ne "${#ASSETS[@]}" ]; then
+            echo "unexpected files next to the release assets:" >&2
+            printf '%s\n' "${FILES[@]}" >&2
+            exit 1
+          fi
+
+          sha256sum "${ASSETS[@]}" > SHA256SUMS
+          if [ "$(wc -l < SHA256SUMS)" -ne "${#ASSETS[@]}" ]; then
+            echo "SHA256SUMS does not have one line per asset" >&2
+            exit 1
+          fi
+          cat SHA256SUMS
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-checksums
+          path: dist/SHA256SUMS
+
+  # ---------- Gate: nothing below runs unless everything above succeeded ----------
+
+  gate:
+    name: Release gate
+    needs: [prepare, build_wheels, build_sdist, build_cli, build_docker, release_notes, release_assets]
+    # Runs even when a build failed or was skipped so that it can say which one;
+    # it fails in that case and the publishing jobs below are then skipped.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Require every selected build and check to have succeeded
+        shell: bash
+        env:
+          PREPARE: ${{ needs.prepare.result }}
+          PYTHON: ${{ needs.prepare.outputs.python }}
+          CLI: ${{ needs.prepare.outputs.cli }}
+          DOCKER: ${{ needs.prepare.outputs.docker }}
+          WHEELS_RESULT: ${{ needs.build_wheels.result }}
+          SDIST_RESULT: ${{ needs.build_sdist.result }}
+          CLI_RESULT: ${{ needs.build_cli.result }}
+          DOCKER_RESULT: ${{ needs.build_docker.result }}
+          NOTES_RESULT: ${{ needs.release_notes.result }}
+          ASSETS_RESULT: ${{ needs.release_assets.result }}
+        run: |
+          if [ "${PREPARE}" != success ]; then
+            echo "prepare: ${PREPARE}" >&2
+            exit 1
+          fi
+
+          status=0
+          # expect NAME RESULT SELECTED: a selected job must have succeeded and a
+          # job that was not selected must have been skipped.
+          expect() {
+            local want=skipped
+            if [ "$3" = true ]; then want=success; fi
+            if [ "$2" = "${want}" ]; then
+              echo "ok: $1 is ${want}"
+            else
+              echo "::error::$1 is '$2', expected '${want}'"
+              status=1
+            fi
+          }
+
+          expect "wheels" "${WHEELS_RESULT}" "${PYTHON}"
+          expect "sdist" "${SDIST_RESULT}" "${PYTHON}"
+          expect "CLI builds" "${CLI_RESULT}" "${CLI}"
+          expect "changelog section" "${NOTES_RESULT}" "${CLI}"
+          expect "CLI assets and checksums" "${ASSETS_RESULT}" "${CLI}"
+          expect "Docker preflight" "${DOCKER_RESULT}" "${DOCKER}"
+          exit "${status}"
+
+  # ---------- Phase 2: Publish (only after the gate) ----------
 
   publish:
     name: Publish to PyPI
-    needs: [prepare, build_wheels, build_sdist]
+    needs: [prepare, gate]
     runs-on: ubuntu-latest
-    if: >-
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-      || (github.event_name == 'workflow_dispatch' && (inputs.jobs == 'all' || inputs.jobs == 'pypi') && inputs.target != 'none')
+    if: needs.prepare.outputs.publish_pypi == 'true'
     permissions:
       id-token: write
     environment:
@@ -299,7 +567,11 @@ jobs:
           merge-multiple: true
 
       - name: List distributions
-        run: ls -la dist/
+        run: |
+          ls -la dist/
+          # Fail before uploading anything if wheels or the sdist are missing.
+          ls dist/*.whl > /dev/null
+          ls dist/*.tar.gz > /dev/null
 
       - name: Publish to PyPI
         if: github.event_name == 'push' || inputs.target == 'pypi'
@@ -316,28 +588,20 @@ jobs:
 
   github_release:
     name: GitHub Release
-    needs: [prepare, build_cli]
+    needs: [prepare, gate]
     runs-on: ubuntu-latest
-    if: >-
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-      || (github.event_name == 'workflow_dispatch' && (inputs.jobs == 'all' || inputs.jobs == 'github-release'))
+    if: needs.prepare.outputs.publish_release == 'true'
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ needs.prepare.outputs.tag }}
 
-      - name: Extract release notes from CHANGELOG
-        id: notes
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          NOTES=$(awk "/^## \\[${VERSION}\\]/{found=1; next} /^## \\[/{if(found) exit} found{print}" CHANGELOG.md)
-          echo "$NOTES" > /tmp/release_notes.md
-          if [ ! -s /tmp/release_notes.md ]; then
-            echo "No CHANGELOG.md section found for ${VERSION}" >&2
-            exit 1
-          fi
+      - name: Download release notes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-notes
+          path: release-notes
 
       - name: Download CLI artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -346,15 +610,16 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Generate CLI checksums
+      - name: Download checksums
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-checksums
+          path: dist
+
+      - name: Verify checksums
         run: |
           cd dist
-          sha256sum zsasa-*-linux-* zsasa-*-macos-* zsasa-*-windows-* > SHA256SUMS 2>/dev/null || true
-          if [ ! -s SHA256SUMS ]; then
-            echo "No release assets found for checksum generation" >&2
-            exit 1
-          fi
-          cat SHA256SUMS
+          sha256sum -c SHA256SUMS
 
       - name: Create GitHub Release
         env:
@@ -363,24 +628,21 @@ jobs:
         run: |
           gh release create "${RELEASE_TAG}" \
             --title "${RELEASE_TAG}" \
-            --notes-file /tmp/release_notes.md \
+            --notes-file release-notes/release_notes.md \
             dist/*
 
   update_homebrew:
     name: Update Homebrew tap
-    needs: [prepare, github_release]
+    needs: [prepare, gate, github_release]
     runs-on: ubuntu-latest
+    # !cancelled() so the job still runs when github_release was skipped
+    # (jobs=package-managers: the release already exists). When this run does
+    # create the release it must have succeeded.
     if: >-
-      always()
-      && needs.prepare.result == 'success'
-      && (
-        (
-          (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-          || (github.event_name == 'workflow_dispatch' && inputs.jobs == 'all')
-        )
-        && needs.github_release.result == 'success'
-        || (github.event_name == 'workflow_dispatch' && inputs.jobs == 'package-managers')
-      )
+      !cancelled()
+      && needs.gate.result == 'success'
+      && needs.prepare.outputs.publish_package_managers == 'true'
+      && (needs.github_release.result == 'success' || needs.prepare.outputs.publish_release != 'true')
 
     steps:
       - name: Download checksums
@@ -404,26 +666,50 @@ jobs:
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
+          set -euo pipefail
           FORMULA="homebrew-zsasa/Formula/zsasa.rb"
 
-          LINUX_X86=$(grep "linux-x86_64" SHA256SUMS | awk '{print $1}')
-          LINUX_ARM=$(grep "linux-aarch64" SHA256SUMS | awk '{print $1}')
-          MACOS_X86=$(grep "macos-x86_64" SHA256SUMS | awk '{print $1}')
-          MACOS_ARM=$(grep "macos-aarch64" SHA256SUMS | awk '{print $1}')
+          # sha_for SUFFIX: print the sha256 of zsasa-VERSION-SUFFIX from SHA256SUMS,
+          # and stop the job unless there is exactly one valid digest for it.
+          sha_for() {
+            local name="zsasa-${VERSION}-$1" digest
+            digest=$(awk -v n="${name}" '$2 == n {print $1; c++} END {if (c != 1) exit 1}' SHA256SUMS) || return 1
+            if ! printf '%s' "${digest}" | grep -Eq '^[0-9a-f]{64}$'; then
+              echo "no valid sha256 for ${name} in SHA256SUMS" >&2
+              return 1
+            fi
+            printf '%s' "${digest}"
+          }
+
+          LINUX_X86=$(sha_for linux-x86_64)
+          LINUX_ARM=$(sha_for linux-aarch64)
+          MACOS_X86=$(sha_for macos-x86_64)
+          MACOS_ARM=$(sha_for macos-aarch64)
 
           sed -i "s/version \".*\"/version \"${VERSION}\"/" "$FORMULA"
 
-          python3 -c "
+          # The formula lists four digests in this order: macOS arm64, macOS
+          # x86_64, Linux arm64, Linux x86_64.
+          python3 - "$FORMULA" "$MACOS_ARM" "$MACOS_X86" "$LINUX_ARM" "$LINUX_X86" <<'PY'
           import re
-          with open('$FORMULA') as f:
+          import sys
+
+          formula, *new = sys.argv[1:]
+          with open(formula) as f:
               content = f.read()
-          shas = re.findall(r'sha256 \"([a-f0-9]+)\"', content)
-          replacements = ['$MACOS_ARM', '$MACOS_X86', '$LINUX_ARM', '$LINUX_X86']
-          for old, new in zip(shas, replacements):
-              content = content.replace(old, new, 1)
-          with open('$FORMULA', 'w') as f:
+          shas = re.findall(r'sha256 "([a-f0-9]+)"', content)
+          if len(shas) != len(new):
+              sys.exit(f"expected {len(new)} sha256 entries in {formula}, found {len(shas)}")
+          for old, digest in zip(shas, new):
+              content = content.replace(old, digest, 1)
+          with open(formula, "w") as f:
               f.write(content)
-          "
+          PY
+
+          grep -q "version \"${VERSION}\"" "$FORMULA"
+          for digest in "$MACOS_ARM" "$MACOS_X86" "$LINUX_ARM" "$LINUX_X86"; do
+            grep -q "sha256 \"${digest}\"" "$FORMULA"
+          done
 
       - name: Commit and push
         working-directory: homebrew-zsasa
@@ -439,19 +725,14 @@ jobs:
 
   update_scoop:
     name: Update Scoop bucket
-    needs: [prepare, github_release]
+    needs: [prepare, gate, github_release]
     runs-on: ubuntu-latest
+    # See update_homebrew for the condition.
     if: >-
-      always()
-      && needs.prepare.result == 'success'
-      && (
-        (
-          (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-          || (github.event_name == 'workflow_dispatch' && inputs.jobs == 'all')
-        )
-        && needs.github_release.result == 'success'
-        || (github.event_name == 'workflow_dispatch' && inputs.jobs == 'package-managers')
-      )
+      !cancelled()
+      && needs.gate.result == 'success'
+      && needs.prepare.outputs.publish_package_managers == 'true'
+      && (needs.github_release.result == 'success' || needs.prepare.outputs.publish_release != 'true')
 
     steps:
       - name: Download checksums
@@ -475,7 +756,15 @@ jobs:
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          WIN_HASH=$(grep "windows-x86_64" SHA256SUMS | awk '{print $1}')
+          set -euo pipefail
+
+          # Exactly one valid digest for the Windows asset, or stop the job.
+          NAME="zsasa-${VERSION}-windows-x86_64.exe"
+          WIN_HASH=$(awk -v n="${NAME}" '$2 == n {print $1; c++} END {if (c != 1) exit 1}' SHA256SUMS)
+          if ! printf '%s' "${WIN_HASH}" | grep -Eq '^[0-9a-f]{64}$'; then
+            echo "no valid sha256 for ${NAME} in SHA256SUMS" >&2
+            exit 1
+          fi
           MANIFEST="scoop-zsasa/bucket/zsasa.json"
 
           python3 -c "
@@ -505,11 +794,9 @@ jobs:
 
   docker:
     name: Docker push
-    needs: [prepare, build_docker]
+    needs: [prepare, gate]
     runs-on: ubuntu-latest
-    if: >-
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-      || (github.event_name == 'workflow_dispatch' && (inputs.jobs == 'all' || inputs.jobs == 'docker'))
+    if: needs.prepare.outputs.publish_docker == 'true'
     permissions:
       contents: read
       packages: write
@@ -520,7 +807,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -531,7 +818,7 @@ jobs:
         run: echo "version=${{ needs.prepare.outputs.version }}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           push: true
