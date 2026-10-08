@@ -4,8 +4,12 @@ These tests verify that the full pipeline works correctly with real-world
 structures from the examples/ directory.
 """
 
+import json
+import subprocess
+import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 # Get the examples directory path
@@ -18,6 +22,40 @@ def _skip_if_missing(path: Path) -> None:
         pytest.skip(f"Test file not found: {path}")
 
 
+def _assert_matches_cli(result, path: Path, tmp_path: Path) -> None:
+    """The integration must give what `zsasa calc` gives for the same file.
+
+    The defaults of the integrations (CCD classifier, 100 points, probe radius 1.4,
+    no HETATM, no hydrogens) are spelled out here so that the comparison does not
+    depend on the CLI defaults.
+    """
+    output = tmp_path / "cli.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "zsasa.cli",
+            "calc",
+            str(path),
+            str(output),
+            "-q",
+            "--algorithm=sr",
+            "--classifier=ccd",
+            "--n-points=100",
+            "--probe-radius=1.4",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    expected = json.loads(output.read_text())
+
+    assert len(result.atom_areas) == len(expected["atom_areas"])
+    assert result.total_area == pytest.approx(expected["total_area"], rel=1e-9)
+    np.testing.assert_allclose(result.atom_areas, expected["atom_areas"], rtol=1e-9, atol=1e-9)
+
+
 class TestGemmiRealStructures:
     """Test gemmi integration with real structure files."""
 
@@ -26,7 +64,7 @@ class TestGemmiRealStructures:
         """Skip if gemmi is not installed."""
         pytest.importorskip("gemmi")
 
-    def test_1crn_pdb(self):
+    def test_1crn_pdb(self, tmp_path):
         """Test SASA calculation for crambin (1CRN) from PDB."""
         from zsasa.integrations.gemmi import calculate_sasa_from_structure
 
@@ -35,14 +73,14 @@ class TestGemmiRealStructures:
 
         result = calculate_sasa_from_structure(pdb_path)
 
-        # Crambin: ~327 atoms, total SASA should be around 2400-2600 A^2
-        assert result.total_area > 2000
-        assert result.total_area < 3000
-        assert len(result.atom_areas) > 300
+        # Crambin has 327 heavy atoms (no hydrogens, no HETATM)
+        assert len(result.atom_areas) == 327
+        _assert_matches_cli(result, pdb_path, tmp_path)
         assert result.polar_area > 0
         assert result.apolar_area > 0
+        assert result.polar_area + result.apolar_area == pytest.approx(result.total_area)
 
-    def test_1ubq_cif(self):
+    def test_1ubq_cif(self, tmp_path):
         """Test SASA calculation for ubiquitin (1UBQ) from mmCIF."""
         from zsasa.integrations.gemmi import calculate_sasa_from_structure
 
@@ -51,10 +89,9 @@ class TestGemmiRealStructures:
 
         result = calculate_sasa_from_structure(cif_path)
 
-        # Ubiquitin: ~602 atoms, total SASA should be around 4500-5500 A^2
-        assert result.total_area > 4000
-        assert result.total_area < 6000
-        assert len(result.atom_areas) > 500
+        # Ubiquitin has 602 heavy atoms (no hydrogens, no HETATM)
+        assert len(result.atom_areas) == 602
+        _assert_matches_cli(result, cif_path, tmp_path)
 
     def test_1crn_residue_aggregation(self):
         """Test per-residue aggregation for crambin."""
@@ -85,7 +122,7 @@ class TestBioPythonRealStructures:
         """Skip if BioPython is not installed."""
         pytest.importorskip("Bio")
 
-    def test_1crn_pdb(self):
+    def test_1crn_pdb(self, tmp_path):
         """Test SASA calculation for crambin (1CRN) from PDB."""
         from zsasa.integrations.biopython import calculate_sasa_from_structure
 
@@ -94,11 +131,10 @@ class TestBioPythonRealStructures:
 
         result = calculate_sasa_from_structure(pdb_path)
 
-        assert result.total_area > 2000
-        assert result.total_area < 3000
-        assert len(result.atom_areas) > 300
+        assert len(result.atom_areas) == 327
+        _assert_matches_cli(result, pdb_path, tmp_path)
 
-    def test_1ubq_pdb(self):
+    def test_1ubq_pdb(self, tmp_path):
         """Test SASA calculation for ubiquitin (1UBQ) from PDB."""
         from zsasa.integrations.biopython import calculate_sasa_from_structure
 
@@ -107,9 +143,8 @@ class TestBioPythonRealStructures:
 
         result = calculate_sasa_from_structure(pdb_path)
 
-        assert result.total_area > 4000
-        assert result.total_area < 6000
-        assert len(result.atom_areas) > 500
+        assert len(result.atom_areas) == 602
+        _assert_matches_cli(result, pdb_path, tmp_path)
 
     def test_1crn_residue_aggregation(self):
         """Test per-residue aggregation for crambin."""
@@ -134,7 +169,7 @@ class TestBiotiteRealStructures:
         """Skip if Biotite is not installed."""
         pytest.importorskip("biotite")
 
-    def test_1crn_pdb(self):
+    def test_1crn_pdb(self, tmp_path):
         """Test SASA calculation for crambin (1CRN) from PDB."""
         from zsasa.integrations.biotite import calculate_sasa_from_structure
 
@@ -143,11 +178,10 @@ class TestBiotiteRealStructures:
 
         result = calculate_sasa_from_structure(pdb_path)
 
-        assert result.total_area > 2000
-        assert result.total_area < 3000
-        assert len(result.atom_areas) > 300
+        assert len(result.atom_areas) == 327
+        _assert_matches_cli(result, pdb_path, tmp_path)
 
-    def test_1ubq_pdb(self):
+    def test_1ubq_pdb(self, tmp_path):
         """Test SASA calculation for ubiquitin (1UBQ) from PDB."""
         from zsasa.integrations.biotite import calculate_sasa_from_structure
 
@@ -156,9 +190,8 @@ class TestBiotiteRealStructures:
 
         result = calculate_sasa_from_structure(pdb_path)
 
-        assert result.total_area > 4000
-        assert result.total_area < 6000
-        assert len(result.atom_areas) > 500
+        assert len(result.atom_areas) == 602
+        _assert_matches_cli(result, pdb_path, tmp_path)
 
     def test_1crn_residue_aggregation(self):
         """Test per-residue aggregation for crambin."""

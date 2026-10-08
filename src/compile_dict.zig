@@ -131,3 +131,131 @@ pub fn run(allocator: Allocator, io: std.Io, args: []const []const u8) !void {
 
     std.debug.print("Compiled {d} components to '{s}'\n", .{ comp_count, out_path });
 }
+
+const test_support = @import("test_support.zig");
+
+const test_cif =
+    \\data_ALA
+    \\#
+    \\loop_
+    \\_chem_comp_atom.comp_id
+    \\_chem_comp_atom.atom_id
+    \\_chem_comp_atom.type_symbol
+    \\_chem_comp_atom.pdbx_aromatic_flag
+    \\_chem_comp_atom.pdbx_leaving_atom_flag
+    \\ALA N   N N N
+    \\ALA CA  C N N
+    \\ALA C   C N N
+    \\ALA O   O N N
+    \\ALA OXT O N Y
+    \\#
+    \\loop_
+    \\_chem_comp_bond.comp_id
+    \\_chem_comp_bond.atom_id_1
+    \\_chem_comp_bond.atom_id_2
+    \\_chem_comp_bond.value_order
+    \\_chem_comp_bond.pdbx_aromatic_flag
+    \\ALA N   CA  SING N
+    \\ALA CA  C   SING N
+    \\ALA C   O   DOUB N
+    \\ALA C   OXT SING N
+    \\#
+    \\data_HOH
+    \\#
+    \\loop_
+    \\_chem_comp_atom.comp_id
+    \\_chem_comp_atom.atom_id
+    \\_chem_comp_atom.type_symbol
+    \\HOH O  O
+    \\HOH H1 H
+    \\HOH H2 H
+    \\#
+;
+
+/// Write `test_cif` into a temporary directory and return the paths of the
+/// input and of the (not yet existing) output, allocated from `arena`.
+fn prepareCompile(tmp: *std.testing.TmpDir, arena: Allocator) ![2][]const u8 {
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "components.cif", .data = test_cif });
+    const input = try tmp.dir.realPathFileAlloc(std.testing.io, "components.cif", arena);
+    const dir = std.fs.path.dirname(input) orelse return error.TestUnexpectedResult;
+    return .{ input, try std.fs.path.join(arena, &.{ dir, "components.zsdc" }) };
+}
+
+test "compile-dict writes the dictionary that parsing the CIF gives, with -o and --output=" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const input, const output = try prepareCompile(&tmp, arena.allocator());
+
+    // The expected bytes: the same parse, written by the binary writer.
+    var expected_dict = try ccd_parser.parseCcdData(allocator, test_cif, null);
+    defer expected_dict.deinit();
+    var expected_out: std.Io.Writer.Allocating = .init(allocator);
+    defer expected_out.deinit();
+    try ccd_binary.writeDict(&expected_out.writer, &expected_dict);
+
+    // The three spellings of the output option.
+    const output_equals = try std.fmt.allocPrint(arena.allocator(), "--output={s}", .{output});
+    const argument_lists = [_][]const []const u8{
+        &.{ input, "-o", output },
+        &.{ input, "--output", output },
+        &.{ output_equals, input },
+    };
+    for (argument_lists) |arguments| {
+        // A stale file from the previous form must not satisfy the check.
+        tmp.dir.deleteFile(std.testing.io, "components.zsdc") catch {};
+        try run(allocator, std.testing.io, arguments);
+
+        const written = try tmp.dir.readFileAlloc(std.testing.io, "components.zsdc", allocator, .limited(1 << 20));
+        defer allocator.free(written);
+        try std.testing.expect(ccd_binary.isBinaryDict(written));
+        try std.testing.expectEqualSlices(u8, expected_out.written(), written);
+    }
+
+    // And the file loads back with what the CIF listed.
+    const written = try tmp.dir.readFileAlloc(std.testing.io, "components.zsdc", allocator, .limited(1 << 20));
+    defer allocator.free(written);
+    var loaded = try ccd_binary.loadDict(allocator, written);
+    defer loaded.deinit();
+    try std.testing.expectEqual(@as(usize, 2), loaded.count());
+    const ala = loaded.get("ALA") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 5), ala.atoms.len);
+    try std.testing.expectEqual(@as(usize, 4), ala.bonds.len);
+    const hoh = loaded.get("HOH") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 3), hoh.atoms.len);
+    try std.testing.expectEqual(@as(usize, 0), hoh.bonds.len);
+}
+
+test "compile-dict reports a missing input or output without writing anything" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const input, const output = try prepareCompile(&tmp, arena.allocator());
+
+    try std.testing.expectError(error.MissingArgument, run(allocator, std.testing.io, &.{}));
+    try std.testing.expectError(error.MissingArgument, run(allocator, std.testing.io, &.{ "-o", output }));
+    try std.testing.expectError(error.MissingArgument, run(allocator, std.testing.io, &.{input}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "components.zsdc", .{}));
+}
+
+test "compile-dict --help does not need an input and writes nothing" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const input, const output = try prepareCompile(&tmp, arena.allocator());
+
+    try run(std.testing.allocator, std.testing.io, &.{"--help"});
+    try run(std.testing.allocator, std.testing.io, &.{ "-h", input, "-o", output });
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(std.testing.io, "components.zsdc", .{}));
+}
