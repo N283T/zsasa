@@ -37,6 +37,15 @@ python3 scripts/check_test_partition.py
 ./zig-out/bin/zsasa --version
 ```
 
+### Release tooling
+
+The helper scripts in `scripts/` have their own tests, and CI also checks that the version in `build.zig`, `build.zig.zon`, `src/c_api.zig` and `python/pyproject.toml` is the same everywhere:
+
+```bash
+python3 scripts/check_versions.py
+python3 -m unittest discover -s scripts -p 'test_*.py'
+```
+
 ### How the Zig tests are organized
 
 `build.zig` builds three test artifacts (the `zsasa` module, the CLI executable and the C library). Zig runs the tests of every file a root reaches, so each artifact only runs a filtered subset: the C library artifact (`src/c_api.zig`, which reaches almost every file) runs everything it reaches, and the module and executable artifacts run only the tests no other artifact reaches (`dcd.test.`/`root.test` and `calc.test.`/`traj.test.`/`main.test`). When you add a file that only the module root or the executable root reaches, run `python3 scripts/check_test_partition.py` (CI runs it too): it fails if a test would run in no artifact or in more than one, and tells you which filter in `build.zig` to adjust.
