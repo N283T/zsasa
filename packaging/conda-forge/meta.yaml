@@ -1,5 +1,5 @@
 {% set name = "zsasa" %}
-{% set version = "0.10.0" %}
+{% set version = "0.10.1" %}
 
 package:
   name: {{ name }}
@@ -7,19 +7,19 @@ package:
 
 source:
   - url: https://github.com/N283T/zsasa/releases/download/v{{ version }}/zsasa-{{ version }}-linux-x86_64  # [linux and x86_64]
-    sha256: 5ef1c2f0a84f5f4c09859269999539f1c2666e85d39c61b28b890a68c7b899b6  # [linux and x86_64]
+    sha256: PENDING-update_packaging_checksums.py  # [linux and x86_64]
     fn: zsasa  # [linux and x86_64]
   - url: https://github.com/N283T/zsasa/releases/download/v{{ version }}/zsasa-{{ version }}-linux-aarch64  # [linux and aarch64]
-    sha256: bb1168ff9ab2b829a04ef9f3efc4a1ad58a4e2fed572eb99d1ed27ea68b0d27a  # [linux and aarch64]
+    sha256: PENDING-update_packaging_checksums.py  # [linux and aarch64]
     fn: zsasa  # [linux and aarch64]
   - url: https://github.com/N283T/zsasa/releases/download/v{{ version }}/zsasa-{{ version }}-macos-x86_64  # [osx and x86_64]
-    sha256: 7f86b0d9116f52de581f5abbbe2e9666a6e9e4a825f2f28b92d014eb5627b1be  # [osx and x86_64]
+    sha256: PENDING-update_packaging_checksums.py  # [osx and x86_64]
     fn: zsasa  # [osx and x86_64]
   - url: https://github.com/N283T/zsasa/releases/download/v{{ version }}/zsasa-{{ version }}-macos-aarch64  # [osx and arm64]
-    sha256: d625da537fd5283da4545b5530a12087e4a91f8d3dd95746856090ded1580f46  # [osx and arm64]
+    sha256: PENDING-update_packaging_checksums.py  # [osx and arm64]
     fn: zsasa  # [osx and arm64]
   - url: https://raw.githubusercontent.com/N283T/zsasa/v{{ version }}/LICENSE
-    sha256: 452d2e27d011a6430b43ffe2321f4cb17867d7896a57c68d130cd8d012b49a0f
+    sha256: PENDING-update_packaging_checksums.py
     fn: LICENSE
 
 build:

@@ -8,6 +8,8 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+## [v0.10.1](https://github.com/N283T/zsasa/releases/tag/v0.10.1) — 2026-10-08
+
 ### Added
 
 - **Python package without bundled binaries**: the Python package can use a `libzsasa` and a `zsasa` binary that are installed on their own, as a package manager such as conda ships them. After the package directory and a checkout's `zig-out`, the library is looked for in the environment of the running interpreter (`<sys.prefix>/lib`, on Windows `<sys.prefix>\Library\bin`; `sys.base_prefix` after it, for a virtual environment on top of such an environment) before `/usr/local/lib` and `/usr/lib`. `ZSASA_LIB` still comes first, the ABI version of whatever is found is still checked, and the current directory is still not searched. `zsasa.cli` (the `zsasa` console script and `python -m zsasa`) falls back to `<sys.prefix>/bin/zsasa` (Windows: `<sys.prefix>\Library\bin\zsasa.exe`) when no binary is bundled. It never runs a script found there: in a pure-Python install that path is the console script itself, and running it would loop. When no native binary is found it exits with an error that names the places it looked in. Building the wheel with `ZSASA_NO_BUNDLE=1` compiles and bundles nothing and gives a pure-Python wheel (`py3-none-any`); the build stops if copies of the library or the binary from an earlier build lie in `python/zsasa/`. Wheels and source installs from PyPI are unchanged.

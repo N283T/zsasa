@@ -7,7 +7,7 @@ authors:
   - family-names: "Nagae"
     given-names: "Tsubasa"
     orcid: "https://orcid.org/0009-0003-2202-8741"
-version: "0.10.0"
+version: "0.10.1"
 date-released: "2026-10-08"
 license: MIT
 repository-code: "https://github.com/N283T/zsasa"
