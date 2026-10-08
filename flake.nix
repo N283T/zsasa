@@ -31,21 +31,28 @@
           zig = zig-overlay.packages.${system}."0.16.0";
 
           # Pre-fetch Zig dependencies as a fixed-output derivation.
-          # This runs `zig build --fetch` with network access and captures
-          # the resulting package cache directory ($ZIG_GLOBAL_CACHE_DIR/p).
+          # This runs `zig build --fetch` with network access and captures the
+          # unpacked packages. Since Zig 0.16 they are unpacked into ./zig-pkg
+          # (the global cache only keeps the tarballs under $ZIG_GLOBAL_CACHE_DIR/p),
+          # and that directory is what `zig build --system` expects.
+          #
+          # outputHash must be refreshed whenever the dependencies in
+          # build.zig.zon change (or the Zig version does): run
+          # `scripts/check_nix_deps_hash.py --refresh`, see AGENTS.md.
           zigDeps = pkgs.runCommand "zsasa-zig-deps"
             {
               src = ./.;
               nativeBuildInputs = [ zig ];
               outputHashAlgo = "sha256";
               outputHashMode = "recursive";
-              outputHash = "sha256-30G6nwi2dPa3iqZT/xr4se2bRhigiaSC90JDswDjNmU=";
+              # zig-deps-fingerprint: 839bd09e1d6ddecfc7326033212218137aab5a744d99c365847bb11b4ff9d867
+              outputHash = "sha256-l4l75mDej5R8oH4246wtB7bgPMaZctS7bIP0WFbzC3Y=";
             }
             ''
               export ZIG_GLOBAL_CACHE_DIR=$(mktemp -d)
               cp -r $src/. .
               zig build --fetch
-              mv $ZIG_GLOBAL_CACHE_DIR/p $out
+              mv zig-pkg $out
             '';
 
           zsasa = pkgs.stdenv.mkDerivation {

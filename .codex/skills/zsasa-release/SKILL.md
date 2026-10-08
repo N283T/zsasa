@@ -12,7 +12,7 @@ Use this instead of the generic release flow when working in the `N283T/zsasa` r
 - Work from a non-`main` branch for release PR preparation.
 - Keep release edits mechanical and scoped.
 - Treat tag push as the publish trigger; do not tag before the release PR is merged to `main`.
-- Do not bump `packaging/aur/PKGBUILD` in the release PR. Its checksum depends on release assets generated after tag push.
+- Do not bump `packaging/aur/PKGBUILD` or `.SRCINFO` in the release PR. Their checksums depend on release assets generated after tag push. `release_bump.py` leaves them alone and marks the checksums in `packaging/conda-forge/meta.yaml` as `PENDING-...`; Phase 3 fills them in.
 - Use concrete dates in release metadata and changelogs.
 
 ## Phase 1: create the release PR
@@ -44,7 +44,7 @@ Use this instead of the generic release flow when working in the `N283T/zsasa` r
    ./zig-out/bin/zsasa calc examples/1ubq.pdb /tmp/zsasa-check/output.json
    ```
 
-   Also run Python checks when Python/C ABI files changed, and website build when website docs changed.
+   Also run `scripts/check_nix_deps_hash.py` (and `nix build` where Nix is available), the release tooling tests (`uv run --no-project --python 3.12 --with pytest python -m pytest scripts/ -q`), Python checks when Python/C ABI files changed, and website build when website docs changed.
 
 6. Commit as `release: vX.Y.Z`, push, and open the PR.
 
@@ -58,6 +58,16 @@ When the user asks to proceed after CI, do not stop at “PR is open.” Verify 
 
 The script verifies CI/check state, squash-merges the release PR when open, fetches `origin/main`, verifies release files from that commit, creates an annotated `vX.Y.Z` tag on it, and pushes the tag.
 
+## Phase 3: packaging checksums after the release is published
+
+Once the publish workflow has attached the binaries and `SHA256SUMS` to the GitHub release, from up-to-date `main` on a new branch:
+
+```bash
+./scripts/update_packaging_checksums.py X.Y.Z
+```
+
+This fills the conda recipe checksums and brings `packaging/aur/PKGBUILD` and `.SRCINFO` to `X.Y.Z` (the checksums are cross-checked against the asset digests GitHub records). Commit, open a PR, then submit the AUR files and update the conda-forge feedstock by hand. `./scripts/update_packaging_checksums.py X.Y.Z --check` exits non-zero while any of them is stale.
+
 ## Common mistakes
 
 - Forgetting `python/uv.lock` or `src/c_api.zig` version bumps.
@@ -65,3 +75,4 @@ The script verifies CI/check state, squash-merges the release PR when open, fetc
 - Treating skipped deploy checks as failures; skipped deploy is normal on PRs.
 - Tagging a release branch instead of updated `main`.
 - Updating AUR `pkgver` before the asset checksum exists.
+- Changing `build.zig.zon` dependencies without refreshing the Nix hash (`scripts/check_nix_deps_hash.py --refresh`).
