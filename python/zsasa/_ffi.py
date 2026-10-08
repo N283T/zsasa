@@ -234,6 +234,22 @@ def _library_file_name() -> str:
     return "libzsasa.so"
 
 
+def _environment_directories(kind: str) -> list[Path]:
+    """Return where the environment of the running interpreter keeps native files.
+
+    ``kind`` is ``"lib"`` for shared libraries or ``"bin"`` for executables. A package
+    manager that ships the zsasa library and binary on their own, not inside this
+    package, installs them there: ``<prefix>/lib`` and ``<prefix>/bin``, and on Windows
+    ``<prefix>/Library/bin`` for both (the layout of a conda environment). ``<prefix>``
+    is ``sys.prefix``, followed by ``sys.base_prefix`` when the interpreter runs in a
+    virtual environment created on top of such an environment.
+    """
+    prefixes = list(dict.fromkeys((sys.prefix, sys.base_prefix)))
+    if sys.platform == "win32":
+        return [Path(prefix) / "Library" / "bin" for prefix in prefixes]
+    return [Path(prefix) / kind for prefix in prefixes]
+
+
 def _choose_checkout_library(bundled: Path, built: Path) -> Path:
     """Choose between the library bundled in the package and a ``zig-out`` build.
 
@@ -266,8 +282,9 @@ def _find_library() -> Path:
 
     Order: the ``ZSASA_LIB`` environment variable, then the package directory and the
     ``zig-out`` directory of the checkout this file belongs to (the newer wins when both
-    exist, see ``_choose_checkout_library``), then the system library directories. The
-    current directory is deliberately not searched: loading a shared library from
+    exist, see ``_choose_checkout_library``), then the environment of the running
+    interpreter (see ``_environment_directories``), then the system library directories.
+    The current directory is deliberately not searched: loading a shared library from
     wherever the process happens to run would let a stray file run code in it.
     """
     # Check environment variable first
@@ -300,14 +317,23 @@ def _find_library() -> Path:
     if built is not None:
         return built
 
-    for path in (Path("/usr/local/lib") / lib_name, Path("/usr/lib") / lib_name):
+    # Installed on its own, not inside this package: by the package manager of the
+    # interpreter's environment (conda), or system-wide.
+    searched = [
+        *_environment_directories("lib"),
+        Path("/usr/local/lib"),
+        Path("/usr/lib"),
+    ]
+    for directory in searched:
+        path = directory / lib_name
         if path.exists():
             return path
 
     msg = (
-        f"Could not find {lib_name}. "
-        f"Please install with: pip install zsasa "
-        f"(requires Zig 0.16.0+ to be installed)"
+        f"Could not find {lib_name}: it is not bundled in the zsasa package "
+        f"({package_dir}) and not in {', '.join(str(d) for d in searched)}. "
+        "Install with 'pip install zsasa' (a wheel bundles the library; a source "
+        "install requires Zig 0.16.0+), or set ZSASA_LIB to the library file."
     )
     raise FileNotFoundError(msg)
 

@@ -23,6 +23,10 @@ pip install zsasa[biotite]    # Biotite integration
 pip install zsasa[all]        # All integrations
 ```
 
+### Native Library
+
+A wheel from PyPI bundles the `libzsasa` shared library and the `zsasa` binary. The library is looked for in the file `ZSASA_LIB` names, the package directory (and `zig-out` of a source checkout), the environment of the running interpreter (`<sys.prefix>/lib`, on Windows `<sys.prefix>\Library\bin`), and `/usr/local/lib` and `/usr/lib`, in that order; the current directory is never searched. Packagers that ship the library and the binary separately build a pure-Python wheel with `ZSASA_NO_BUNDLE=1`. See [How the Native Library Is Found](https://n283t.github.io/zsasa/docs/python-api#library-lookup).
+
 ## Quick Start
 
 ```python
