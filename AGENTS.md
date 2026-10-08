@@ -8,7 +8,7 @@ Instructions for AI coding agents working on `zsasa`, a Solvent Accessible Surfa
 - `python/` — Python package (cffi bindings over the C ABI) and its tests.
 - `website/` — documentation site: Markdown in `website/docs/`, built by `website/build.py`.
 - `scripts/` — release and maintenance scripts, with tests.
-- `packaging/`, `flake.nix`, `Dockerfile`, `install.sh` — distribution.
+- `flake.nix`, `Dockerfile`, `install.sh` — distribution. The conda-forge recipe lives in the conda-forge feedstock, not here.
 - `benchmarks/`, `examples/`, `test_data/` — benchmark scripts and fixtures.
 
 ## Rules
@@ -38,7 +38,7 @@ cd python && ruff format . && ruff check . && pytest tests/ -v
 # Website (when website/ or the docs changed)
 uv run website/build.py                   # fails on broken links and anchors
 
-# Release tooling (scripts/, install.sh, flake.nix, build.zig.zon, packaging/)
+# Release tooling (scripts/, install.sh, flake.nix, build.zig.zon)
 python3 -m unittest discover -s scripts -p 'test_*.py'
 python3 scripts/check_versions.py
 python3 scripts/check_nix_deps_hash.py
@@ -60,7 +60,7 @@ sh -n install.sh
 
 A pushed `vX.Y.Z` tag publishes to PyPI, GitHub Releases, GHCR, Homebrew and Scoop, and cannot be undone. Merge and tag only after the user says so.
 
-1. From an up-to-date `main`: `git switch -c release/vX.Y.Z`, then `./scripts/release_bump.py X.Y.Z`. It bumps every version file, promotes the `[Unreleased]` notes in both changelogs, and marks the conda checksums `PENDING-...`.
+1. From an up-to-date `main`: `git switch -c release/vX.Y.Z`, then `./scripts/release_bump.py X.Y.Z`. It bumps every version file, promotes the `[Unreleased]` notes in both changelogs,
 2. If defaults, output formats or accepted input changed, add an "Upgrade notes" block at the top of the new changelog section.
 3. Run the checks above, plus `python3 scripts/check_versions.py --tag vX.Y.Z`. Commit as `release: vX.Y.Z`, push and open the pull request.
 4. Rehearse the publish workflow on the release branch. It builds every wheel, CLI binary and the Docker image and publishes nothing:
@@ -78,6 +78,6 @@ A pushed `vX.Y.Z` tag publishes to PyPI, GitHub Releases, GHCR, Homebrew and Sco
    git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z
    ```
 
-6. When the publish run has finished, on a new branch: `./scripts/update_packaging_checksums.py X.Y.Z`, commit and open a pull request. It fills in the checksums of `packaging/conda-forge/meta.yaml`.
+6. conda-forge builds zsasa from the source archive of the tag, with the Zig dependencies of `build.zig.zon` (`ztraj` and what it depends on) listed as extra sources in the recipe. If a release changed those dependencies, update the recipe's extra sources as well; a plain version bump needs only the new version and checksum. Until the feedstock exists the recipe is in conda-forge/staged-recipes#32551.
 
 A failed publish run can be repeated for one part with `workflow_dispatch` (`target=pypi` and the job to repeat); `target=testpypi` uploads to TestPyPI only.
