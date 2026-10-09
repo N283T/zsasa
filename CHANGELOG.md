@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Feedback links**: the README has a Feedback section, and the website's landing page and footer link to the bug report and feature request forms. Questions are pointed to the Q&A category of GitHub Discussions, also from the page where a new issue is opened.
+
+### Changed
+
+- **New logo**: the zsasa logo is redrawn as a lowercase wordmark with the lightning Z, and the README, the website navigation, footer and favicon use it. `logos/` holds the new set (`logo-on-light.svg`, `logo-on-dark.svg`, `logo-on-accent.svg`, the same with corner marks or a frame, and `icon-*.svg`). **The old files (`logo_white.svg`, `logo_black.svg`, `logo_t.svg`, `icon_white.svg`, `icon_black.svg`, `icon_t.svg`) are removed; links to them need the new names.**
+
 ## [0.10.1] - 2026-10-08
 
 ### Added

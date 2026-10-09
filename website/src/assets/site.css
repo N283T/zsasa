@@ -219,16 +219,26 @@ button {
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font: 700 18px var(--display);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
   text-decoration: none;
 }
 
 .brand img {
-  width: 26px;
+  width: auto;
   height: 26px;
+}
+
+.foot .brand img {
+  height: 96px;
+}
+
+/* The logo exists once per theme; only the one for the active theme is shown. */
+.brand .brand__logo--light,
+:root[data-theme="light"] .brand .brand__logo--dark {
+  display: none;
+}
+
+:root[data-theme="light"] .brand .brand__logo--light {
+  display: block;
 }
 
 .nav__links {
