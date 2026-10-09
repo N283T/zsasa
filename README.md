@@ -1,16 +1,19 @@
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="logos/logo-corners-on-dark.svg">
+    <img src="logos/logo-corners-on-light.svg" alt="zsasa" width="440">
+  </picture>
+</h1>
+
 <p align="center">
-  <img src="logos/logo_white.svg" alt="zsasa logo" width="480">
+  <a href="https://github.com/N283T/zsasa/actions/workflows/ci.yml"><img src="https://github.com/N283T/zsasa/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://pypi.org/project/zsasa/"><img src="https://img.shields.io/pypi/v/zsasa?color=blue" alt="PyPI"></a>
+  <a href="https://doi.org/10.64898/2026.06.29.733683"><img src="https://img.shields.io/badge/bioRxiv-10.64898%2F2026.06.29.733683-B31B1B" alt="bioRxiv"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://ziglang.org/"><img src="https://img.shields.io/badge/Zig-0.16.0+-f7a41d?logo=zig&logoColor=white" alt="Zig"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11+-3776ab?logo=python&logoColor=white" alt="Python"></a>
+  <a href="https://nixos.org/"><img src="https://img.shields.io/badge/Nix-flake-5277C3?logo=nixos&logoColor=white" alt="Nix"></a>
 </p>
-
-# zsasa
-
-[![CI](https://github.com/N283T/zsasa/actions/workflows/ci.yml/badge.svg)](https://github.com/N283T/zsasa/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/zsasa?color=blue)](https://pypi.org/project/zsasa/)
-[![bioRxiv](https://img.shields.io/badge/bioRxiv-10.64898%2F2026.06.29.733683-B31B1B)](https://doi.org/10.64898/2026.06.29.733683)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Zig](https://img.shields.io/badge/Zig-0.16.0+-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
-[![Python](https://img.shields.io/badge/Python-3.11+-3776ab?logo=python&logoColor=white)](https://www.python.org/)
-[![Nix](https://img.shields.io/badge/Nix-flake-5277C3?logo=nixos&logoColor=white)](https://nixos.org/)
 
 High-performance Solvent Accessible Surface Area (SASA) calculator in Zig.
 Paper-era benchmarks cover FreeSASA agreement, proteome-scale batch throughput, large single structures, and low-memory MD trajectory analysis.
@@ -97,6 +100,10 @@ If you use zsasa in your research, please cite the bioRxiv preprint:
   doi     = {10.64898/2026.06.29.733683}
 }
 ```
+
+## Feedback
+
+Found a bug, or missing a feature? [Open an issue](https://github.com/N283T/zsasa/issues/new/choose); the forms ask for what it takes to reproduce a problem. Questions about using zsasa go to [Discussions](https://github.com/N283T/zsasa/discussions/categories/q-a). If zsasa is useful to you, a star on GitHub helps other people find it.
 
 ## Contributing
 
