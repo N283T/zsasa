@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **conda-forge packages**: zsasa is on conda-forge, built from source: `zsasa` (the Python package, which brings the command with it), `zsasa-cli` (the command alone) and `libzsasa` (the shared library). Install with `conda install -c conda-forge zsasa`. These builds target the baseline CPU of each platform, unlike the PyPI wheels and release binaries, which need AVX2 on x86-64.
+
+### Added
+
 - **Feedback links**: the README has a Feedback section, and the website's landing page and footer link to the bug report and feature request forms. Questions are pointed to the Q&A category of GitHub Discussions, also from the page where a new issue is opened.
 
 ### Changed

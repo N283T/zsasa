@@ -74,15 +74,17 @@ brew tap N283T/zsasa
 brew install zsasa
 ```
 
-### conda-forge (coming soon)
+### conda-forge
 
 ```bash
 conda install -c conda-forge zsasa
+# or
+pixi add zsasa
 ```
 
-:::note
-Currently under review. See [staged-recipes PR #32551](https://github.com/conda-forge/staged-recipes/pull/32551) for status.
-:::
+`zsasa` is the Python package and brings the `zsasa` command with it. The command alone is `zsasa-cli`, and the shared library `libzsasa`. The platforms that are built are listed on [anaconda.org](https://anaconda.org/conda-forge/zsasa-cli).
+
+The conda-forge packages are built for the baseline CPU of each platform, so they run on any x86-64 machine. The PyPI wheels and the release binaries need AVX2 and use wider vectors on x86-64; prefer them there when speed matters.
 
 ### Docker
 
