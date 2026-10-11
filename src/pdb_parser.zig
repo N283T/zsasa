@@ -268,11 +268,7 @@ pub const PdbParser = struct {
                 return self.parse(mapped.data);
             },
             .read => {
-                const file = try std.Io.Dir.cwd().openFile(io, path, .{});
-                defer file.close(io);
-                var read_buf: [64 * 1024]u8 = undefined;
-                var reader = file.reader(io, &read_buf);
-                const data = try reader.interface.allocRemaining(self.allocator, .unlimited);
+                const data = try mmap_reader.readFileOnce(self.allocator, io, path);
                 defer self.allocator.free(data);
                 return self.parse(data);
             },

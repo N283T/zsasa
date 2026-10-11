@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`zsasa batch` reads each input with one read instead of mapping it**: PDB, mmCIF and BinaryCIF inputs of a batch are read into memory with a single read of the file's size; they were memory-mapped before (`--af-model-fast` already read whole files). Mapping costs a page fault per 16 KiB of input, and those become slow once the file cache has filled the machine's memory: 550,122 AlphaFold PDB files (119 GB on a machine with 32 GB of memory, 10 threads, passive disk I/O policy) took 408-414 s read and 438-454 s mapped. Sets that fit in memory take as long as before (Human and *E. coli* proteomes in PDB and mmCIF: within 1%), and results are identical. `--input-io=mmap` selects the old behavior, `--input-io=read` and `auto` the new one. `calc` is unchanged.
+
 - **New logo**: the zsasa logo is redrawn as a lowercase wordmark with the lightning Z, and the README, the website navigation, footer and favicon use it. `logos/` holds the new set (`logo-on-light.svg`, `logo-on-dark.svg`, `logo-on-accent.svg`, the same with corner marks or a frame, and `icon-*.svg`). **The old files (`logo_white.svg`, `logo_black.svg`, `logo_t.svg`, `icon_white.svg`, `icon_black.svg`, `icon_t.svg`) are removed; links to them need the new names.**
 
 ### Fixed
