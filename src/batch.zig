@@ -2884,6 +2884,7 @@ pub const BatchArgs = struct {
     show_progress: bool = true,
     show_timing: bool = false,
     profile_stages: bool = false,
+    passive_io: bool = false,
     input_io: InputIoMode = .auto,
     show_help: bool = false,
     threads_explicit: bool = false,
@@ -3683,6 +3684,10 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
             result.profile_stages = true;
             result.profile_stages_explicit = true;
         }
+        // --passive-io
+        else if (std.mem.eql(u8, arg, "--passive-io")) {
+            result.passive_io = true;
+        }
         // --help or -h
         else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             result.show_help = true;
@@ -3811,6 +3816,8 @@ pub fn printHelp(io: std.Io, program_name: []const u8) void {
         \\    --adaptive-high=X   Coarse accept high exposed fraction (default: 0.90)
         \\    --timing            Show timing breakdown for benchmarking
         \\    --profile-stages    Include read/parse, classifier, and JSONL stage timings
+        \\    --passive-io        macOS: do not throttle other disk I/O, such as an
+        \\                        on-access file scanner's (no effect elsewhere)
         \\    -o, --output=PATH   Output directory, or file path for --format=jsonl
         \\    -q, --quiet         Suppress progress output and the summary; inputs
         \\                        that fail are still reported on stderr
@@ -6059,7 +6066,37 @@ fn configFromArgs(args: BatchArgs) BatchConfig {
     };
 }
 
+/// The macOS disk I/O policy calls of `<sys/resource.h>`.
+const darwin_iopolicy = struct {
+    const type_disk: c_int = 0; // IOPOL_TYPE_DISK
+    const scope_process: c_int = 0; // IOPOL_SCOPE_PROCESS
+    const passive: c_int = 2; // IOPOL_PASSIVE
+
+    extern "c" fn setiopolicy_np(iotype: c_int, scope: c_int, policy: c_int) c_int;
+    extern "c" fn getiopolicy_np(iotype: c_int, scope: c_int) c_int;
+};
+
+/// Makes this process's disk I/O passive on macOS (`--passive-io`): it keeps
+/// its priority but no longer throttles lower-priority I/O on the same
+/// device. Other systems are left alone, and a failure is ignored.
+///
+/// macOS holds back throttled-tier disk I/O while a normal-tier process does
+/// I/O. An on-access file scanner reads at that tier, and its verdict is what
+/// the first `open()` of every input file waits for, so a batch slows down
+/// the scan it is waiting on. With Microsoft Defender and 550,122 cold files
+/// on 10 threads the batch took 439-473 s with this policy and 616-687 s
+/// without it; runs on already-scanned files did not change.
+fn usePassiveDiskIo() void {
+    if (builtin.os.tag == .macos) {
+        _ = darwin_iopolicy.setiopolicy_np(darwin_iopolicy.type_disk, darwin_iopolicy.scope_process, darwin_iopolicy.passive);
+    }
+}
+
 pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
+    // The policy is for the whole process, which is why only the command
+    // offers it and the library entry points do not.
+    if (args.passive_io) usePassiveDiskIo();
+
     if (args.workflow_path != null) {
         if (args.adaptive_sr_explicit or args.coarse_points_explicit or args.fine_points_explicit or args.adaptive_low_explicit or args.adaptive_high_explicit) {
             std.debug.print("Error: adaptive SR options are not supported with --workflow yet\n", .{});
@@ -6225,6 +6262,16 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
 // =============================================================================
 // Tests
 // =============================================================================
+
+test "usePassiveDiskIo sets the passive disk I/O policy on macOS" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    usePassiveDiskIo();
+    try std.testing.expectEqual(
+        darwin_iopolicy.passive,
+        darwin_iopolicy.getiopolicy_np(darwin_iopolicy.type_disk, darwin_iopolicy.scope_process),
+    );
+}
 
 test "scanDirectory returns supported structure files in sorted order" {
     const allocator = std.testing.allocator;
@@ -6577,6 +6624,16 @@ test "plain batch config carries the command-line options that have a config fie
     try std.testing.expect(config.af_model_fast);
     try std.testing.expectEqual(@as(?u8, 2), config.jsonl_decimals);
     try std.testing.expectEqual(@as(?*const ccd_parser.ComponentDict, null), config.external_ccd);
+}
+
+test "BatchArgs --passive-io" {
+    const default_args = [_][]const u8{ "zsasa", "batch", "input_dir/" };
+    try std.testing.expectEqual(false, parseArgs(&default_args, 2).passive_io);
+
+    const args = [_][]const u8{ "zsasa", "batch", "--passive-io", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqual(true, parsed.passive_io);
+    try std.testing.expectEqualStrings("input_dir/", parsed.input_path.?);
 }
 
 test "BatchArgs help flag" {

@@ -202,6 +202,7 @@ See [Output & Analysis](output.md#analysis-features) for detailed output descrip
 | `--jsonl-decimals=N` | Round JSONL floating-point values to `N` decimal places (`0..15`) | full precision | batch |
 | `--timing` | Show timing breakdown (for benchmarking). With `batch --workflow` only a BSA `[analysis]` workflow reports it; a workflow with `[[jobs]]` prints a warning that the option has no effect | off | calc, batch |
 | `--profile-stages` | With `--timing`, add read/parse, classifier, and JSONL write timings to the batch summary. It has no effect with `--workflow`, which prints a warning | off | batch |
+| `--passive-io` | macOS: run with a passive disk I/O policy, so that the batch does not throttle lower-priority disk I/O such as an [on-access file scanner's](../guide/batch.md#file-scanners-on-macos). No effect on other systems | off | batch |
 | `-q, --quiet` | Suppress progress output, including standard progress bars shown by `batch` and `traj`, and the `batch` summary. Errors are not suppressed: `batch` still lists the [inputs that failed](../guide/batch.md#failed-inputs) on standard error | off | calc, batch, traj |
 | `--validate` | Validate input only, do not calculate | off | calc |
 

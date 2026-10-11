@@ -10,6 +10,8 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ### Added
 
+- **`zsasa batch --passive-io`** (macOS): runs the batch with a passive disk I/O policy (`IOPOL_PASSIVE`). Its own reads keep their priority, but they no longer hold back lower-priority I/O on the same disk. This matters when files are scanned on access, as endpoint security software does: the first `open()` of every input waits for the scanner, and macOS throttles the scanner's reads while the batch is reading. On a MacBook Pro (M4, 10 threads) with Microsoft Defender, 550,122 AlphaFold PDB files that the scanner had not seen yet took 439-473 s with the option and 616-687 s without it. Runs over files it had already scanned took as long as before, and the results are identical. The option is off by default and does nothing on other systems; `taskpolicy -d passive zsasa batch ...` has the same effect. The C library and the Python package have no such switch, because the policy applies to the whole process.
+
 - **conda-forge packages**: zsasa is on conda-forge, built from source: `zsasa` (the Python package, which brings the command with it), `zsasa-cli` (the command alone) and `libzsasa` (the shared library). Install with `conda install -c conda-forge zsasa`. These builds target the baseline CPU of each platform, unlike the PyPI wheels and release binaries, which need AVX2 on x86-64.
 
 ### Added
