@@ -20,6 +20,10 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 - **New logo**: the zsasa logo is redrawn as a lowercase wordmark with the lightning Z, and the README, the website navigation, footer and favicon use it. `logos/` holds the new set (`logo-on-light.svg`, `logo-on-dark.svg`, `logo-on-accent.svg`, the same with corner marks or a frame, and `icon-*.svg`). **The old files (`logo_white.svg`, `logo_black.svg`, `logo_t.svg`, `icon_white.svg`, `icon_black.svg`, `icon_t.svg`) are removed; links to them need the new names.**
 
+### Fixed
+
+- **`zsasa batch --input-io` without `--workflow`**: the option was parsed but not passed on, so `--input-io=read` and `--input-io=mmap` had no effect on a plain `zsasa batch <dir>` since the option was added in 0.9.0. Every parser used its own default: memory mapping for PDB, mmCIF and BinaryCIF, and whole-file reads for `--af-model-fast`. Workflow runs were not affected. The option now selects the input strategy as documented; results do not depend on it. **Timings of `--input-io=read` against `--input-io=mmap` taken with 0.9.0 to 0.10.1 outside a workflow compared the same code path.**
+
 ## [v0.10.1](https://github.com/N283T/zsasa/releases/tag/v0.10.1) — 2026-10-08
 
 ### Added
