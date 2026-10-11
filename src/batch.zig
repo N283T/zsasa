@@ -6020,6 +6020,45 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
 }
 
 /// Run batch processing from parsed CLI arguments
+/// The configuration of a plain (non-workflow) batch run as far as it comes
+/// straight from the command line. `run` adds the resources it loads: the CCD
+/// dictionaries and the chain filter.
+fn configFromArgs(args: BatchArgs) BatchConfig {
+    return .{
+        .n_threads = args.n_threads,
+        .algorithm = args.algorithm,
+        .n_points = args.n_points,
+        .n_slices = args.n_slices,
+        .lr_trig = args.lr_trig,
+        .probe_radius = args.probe_radius,
+        .precision = args.precision,
+        .output_format = args.output_format,
+        .show_timing = args.show_timing,
+        .profile_stages = args.profile_stages,
+        .input_io = args.input_io,
+        .quiet = args.quiet,
+        .show_progress = args.show_progress,
+        .classifier_type = args.classifier_type,
+        .include_hydrogens = args.include_hydrogens,
+        .include_hetatm = args.include_hetatm,
+        .use_bitmask = args.use_bitmask,
+        .bitmask_correction = args.bitmask_correction,
+        .bitmask_correction_coeff = args.bitmask_correction_coeff,
+        .adaptive_sr = args.adaptive_sr,
+        .coarse_points = args.coarse_points,
+        .fine_points = args.fine_points,
+        .adaptive_low = args.adaptive_low,
+        .adaptive_high = args.adaptive_high,
+        .store_atom_areas = batchShouldStoreAtomAreas(.{ .output_format = args.output_format }),
+        .use_auth_chain = args.use_auth_chain,
+        .alt_loc_mode = args.alt_loc_mode,
+        .alt_loc_id = args.alt_loc_id,
+        .af_model_fast = args.af_model_fast,
+        .residue_map = args.residue_map,
+        .jsonl_decimals = args.jsonl_decimals,
+    };
+}
+
 pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     if (args.workflow_path != null) {
         if (args.adaptive_sr_explicit or args.coarse_points_explicit or args.fine_points_explicit or args.adaptive_low_explicit or args.adaptive_high_explicit) {
@@ -6139,40 +6178,12 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         std.debug.print("         CCD uses united-atom radii that already account for implicit hydrogens\n", .{});
     }
 
-    const config = BatchConfig{
-        .n_threads = args.n_threads,
-        .algorithm = args.algorithm,
-        .n_points = args.n_points,
-        .n_slices = args.n_slices,
-        .lr_trig = args.lr_trig,
-        .probe_radius = args.probe_radius,
-        .precision = args.precision,
-        .output_format = args.output_format,
-        .show_timing = args.show_timing,
-        .profile_stages = args.profile_stages,
-        .quiet = args.quiet,
-        .show_progress = args.show_progress,
-        .classifier_type = args.classifier_type,
-        .include_hydrogens = args.include_hydrogens,
-        .include_hetatm = args.include_hetatm,
-        .use_bitmask = args.use_bitmask,
-        .bitmask_correction = args.bitmask_correction,
-        .bitmask_correction_coeff = args.bitmask_correction_coeff,
-        .adaptive_sr = args.adaptive_sr,
-        .coarse_points = args.coarse_points,
-        .fine_points = args.fine_points,
-        .adaptive_low = args.adaptive_low,
-        .adaptive_high = args.adaptive_high,
-        .store_atom_areas = batchShouldStoreAtomAreas(.{ .output_format = args.output_format }),
-        .external_ccd = if (ext_ccd != null) &ext_ccd.? else null,
-        .sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null,
-        .chain_filter = chain_filter_slice,
-        .use_auth_chain = args.use_auth_chain,
-        .alt_loc_mode = args.alt_loc_mode,
-        .alt_loc_id = args.alt_loc_id,
-        .af_model_fast = args.af_model_fast,
-        .residue_map = args.residue_map,
-        .jsonl_decimals = args.jsonl_decimals,
+    const config = blk: {
+        var from_args = configFromArgs(args);
+        from_args.external_ccd = if (ext_ccd != null) &ext_ccd.? else null;
+        from_args.sdf_ccd = if (sdf_ccd != null) &sdf_ccd.? else null;
+        from_args.chain_filter = chain_filter_slice;
+        break :blk from_args;
     };
 
     if (!args.quiet) {
@@ -6533,6 +6544,39 @@ test "BatchArgs with options" {
     try std.testing.expectEqual(false, parsed.show_progress);
     try std.testing.expectEqual(true, parsed.show_timing);
     try std.testing.expectEqual(true, parsed.profile_stages);
+}
+
+test "plain batch config takes --input-io from the command line" {
+    const default_args = parseArgs(&.{ "zsasa", "batch", "input_dir/" }, 2);
+    try std.testing.expectEqual(InputIoMode.auto, configFromArgs(default_args).input_io);
+
+    const read_args = parseArgs(&.{ "zsasa", "batch", "--input-io=read", "input_dir/" }, 2);
+    try std.testing.expectEqual(InputIoMode.read, configFromArgs(read_args).input_io);
+
+    const mmap_args = parseArgs(&.{ "zsasa", "batch", "--input-io", "mmap", "input_dir/" }, 2);
+    try std.testing.expectEqual(InputIoMode.mmap, configFromArgs(mmap_args).input_io);
+}
+
+test "plain batch config carries the command-line options that have a config field" {
+    const args = parseArgs(&.{
+        "zsasa",            "batch",         "--threads=3",        "--algorithm=lr",
+        "--precision=f32",  "--n-points=64", "--format=jsonl",     "--timing",
+        "--profile-stages", "--quiet",       "--jsonl-decimals=2", "--af-model-fast",
+        "input_dir/",
+    }, 2);
+    const config = configFromArgs(args);
+    try std.testing.expectEqual(@as(usize, 3), config.n_threads);
+    try std.testing.expectEqual(Algorithm.lr, config.algorithm);
+    try std.testing.expectEqual(Precision.f32, config.precision);
+    try std.testing.expectEqual(@as(u32, 64), config.n_points);
+    try std.testing.expectEqual(OutputFormat.jsonl, config.output_format);
+    try std.testing.expect(config.show_timing);
+    try std.testing.expect(config.profile_stages);
+    try std.testing.expect(config.quiet);
+    try std.testing.expect(!config.show_progress);
+    try std.testing.expect(config.af_model_fast);
+    try std.testing.expectEqual(@as(?u8, 2), config.jsonl_decimals);
+    try std.testing.expectEqual(@as(?*const ccd_parser.ComponentDict, null), config.external_ccd);
 }
 
 test "BatchArgs help flag" {
