@@ -55,6 +55,40 @@ pub fn mmapFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Map
     }
 }
 
+/// Reads a whole file into memory, where possible with a single read of its
+/// stat size. Caller frees the result with `allocator`.
+///
+/// One read of the whole file is one disk request for a file that is not
+/// cached, where page faults on a mapping or a loop of small reads issue
+/// several.
+pub fn readFileOnce(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+
+    // Not on Windows, where the stat size can differ from the bytes read.
+    if (!is_windows) sized: {
+        const stat = file.stat(io) catch break :sized;
+        const size = std.math.cast(usize, stat.size) orelse return error.FileTooBig;
+        // One byte more than the size, so that a file that has grown is noticed.
+        const buf = try allocator.alloc(u8, size + 1);
+        const n = file.readPositionalAll(io, buf, 0) catch {
+            allocator.free(buf);
+            break :sized;
+        };
+        if (n > size) {
+            allocator.free(buf);
+            break :sized;
+        }
+        if (allocator.resize(buf, n)) return buf[0..n];
+        defer allocator.free(buf);
+        return allocator.dupe(u8, buf[0..n]);
+    }
+
+    var read_buf: [64 * 1024]u8 = undefined;
+    var reader = file.reader(io, &read_buf);
+    return reader.interface.allocRemaining(allocator, .unlimited);
+}
+
 test "mmapFile reads valid PDB" {
     const mapped = try mmapFile(std.testing.allocator, std.testing.io, "test_data/1l2y.pdb");
     defer mapped.deinit();
@@ -62,4 +96,25 @@ test "mmapFile reads valid PDB" {
     try std.testing.expect(std.mem.startsWith(u8, mapped.data, "REMARK") or
         std.mem.startsWith(u8, mapped.data, "HEADER") or
         std.mem.startsWith(u8, mapped.data, "ATOM"));
+}
+
+test "readFileOnce returns the same bytes as mmapFile" {
+    const allocator = std.testing.allocator;
+    const mapped = try mmapFile(allocator, std.testing.io, "test_data/1l2y.pdb");
+    defer mapped.deinit();
+    const data = try readFileOnce(allocator, std.testing.io, "test_data/1l2y.pdb");
+    defer allocator.free(data);
+    try std.testing.expectEqualSlices(u8, mapped.data, data);
+}
+
+test "readFileOnce reads an empty file" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "empty.pdb", .data = "" });
+    const path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "empty.pdb", allocator);
+    defer allocator.free(path);
+    const data = try readFileOnce(allocator, std.testing.io, path);
+    defer allocator.free(data);
+    try std.testing.expectEqual(@as(usize, 0), data.len);
 }

@@ -168,10 +168,12 @@ alternate-location overrides, explicit hydrogen inclusion, and
 the leading `ATOM` rows, which is every atom of the file while HETATM records
 are excluded.
 
-The input strategy can be selected independently with
-`--input-io=auto|mmap|read`. `auto` uses whole-file reads for the AF fast path
-and keeps each generic parser's existing default. Explicit `mmap` or `read`
-values are useful when benchmarking storage and operating-system behavior.
+A batch reads every input file into memory with one read. `--input-io=mmap`
+maps the files instead, which was the default up to 0.10.1 for everything but
+the AF fast path; `--input-io=read` and `auto` (the default) mean one read.
+On sets that fit in memory the two are equally fast. On sets larger than
+memory, mapping was slower in our measurements, because the page faults of a
+mapping wait for memory once the file cache has filled it.
 
 For parser and output profiling, combine `--timing` with `--profile-stages`.
 The additional machine-readable lines report aggregate read/parse, classifier,

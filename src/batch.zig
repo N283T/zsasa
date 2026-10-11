@@ -1026,6 +1026,10 @@ const ParsedInput = struct {
 
 fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: BatchConfig) !ParsedInput {
     const format = format_detect.detectInputFormat(path);
+    // A batch reads each input with one read unless told otherwise. Page
+    // faults on a mapping cost more once the file cache has filled memory:
+    // 550,122 AlphaFold PDB files took 408-414 s read and 438-454 s mapped.
+    const input_io_mode = config.input_io.resolve(.read);
     return switch (format) {
         .json => .{ .input = try json_parser.readAtomInputFromFile(allocator, io, path) },
         .bcif => blk: {
@@ -1038,13 +1042,13 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             parser.alt_loc_mode = config.alt_loc_mode;
             parser.alt_loc_id = config.alt_loc_id;
             parser.parse_inline_ccd = classifierUsesCcdResources(config.classifier_type);
-            const input = try parser.parseFileWithInputIo(io, path, config.input_io);
+            const input = try parser.parseFileWithInputIo(io, path, input_io_mode);
             break :blk .{ .input = input, .inline_ccd = parser.takeInlineCcd() };
         },
         .mmcif => blk: {
             if (shouldTryAfModelFastParser(config)) {
                 const input = af_model_parser.parseFileWithOptions(allocator, io, path, .{
-                    .io_mode = config.input_io.resolve(.read),
+                    .io_mode = input_io_mode,
                 }) catch |err| if (shouldFallbackAfModelFastError(err)) null else return err;
                 if (input) |fast_input| {
                     break :blk .{ .input = fast_input };
@@ -1059,7 +1063,7 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             parser.alt_loc_mode = config.alt_loc_mode;
             parser.alt_loc_id = config.alt_loc_id;
             parser.parse_inline_ccd = classifierUsesCcdResources(config.classifier_type);
-            const input = try parser.parseFileWithInputIo(io, path, config.input_io);
+            const input = try parser.parseFileWithInputIo(io, path, input_io_mode);
             break :blk .{ .input = input, .inline_ccd = parser.takeInlineCcd() };
         },
         .pdb => blk: {
@@ -1069,7 +1073,7 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             parser.chain_filter = config.chain_filter;
             parser.alt_loc_mode = config.alt_loc_mode;
             parser.alt_loc_id = config.alt_loc_id;
-            break :blk .{ .input = try parser.parseFileWithInputIo(io, path, config.input_io) };
+            break :blk .{ .input = try parser.parseFileWithInputIo(io, path, input_io_mode) };
         },
         .sdf => blk: {
             const source = if (compressed.isCompressed(path))
@@ -3791,7 +3795,8 @@ pub fn printHelp(io: std.Io, program_name: []const u8) void {
         \\                        zsasa 0.9.1 and earlier; totals come out a few
         \\                        tenths of a percent too high)
         \\    --precision=PREC    Floating-point precision: f32, f64 (default: f64)
-        \\    --input-io=MODE     File input strategy where supported: auto, mmap, read
+        \\    --input-io=MODE     How input files are read: auto (default, same as
+        \\                        read), read (one read per file), mmap
         \\                        Default: auto (AF fast uses read; others keep defaults)
         \\    --format=FORMAT     Output format: json, compact, csv, jsonl (default: json)
         \\    --jsonl-decimals=N  Round JSONL floating-point values to N decimals (0..15)

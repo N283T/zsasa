@@ -189,7 +189,7 @@ See [Output & Analysis](output.md#analysis-features) for detailed output descrip
 
 | Option | Description | Default | Commands |
 |--------|-------------|---------|----------|
-| `--input-io=MODE` | File input strategy where supported: `auto`, `mmap`, or `read` (`auto` reads whole files for the AlphaFold fast path and keeps each parser's own default otherwise) | `auto` | batch |
+| `--input-io=MODE` | How `batch` reads input files: `auto` or `read` (one read of the whole file) or `mmap` (memory mapping). See [the batch guide](../guide/batch.md#experimental-alphafold-mmcif-fast-parser) | `auto` | batch |
 | `--af-model-fast` | Experimental AlphaFold-model mmCIF fast parser with multi-chain metadata and a safe fallback to the generic parser; see [Batch Processing](../guide/batch.md#experimental-alphafold-mmcif-fast-parser) | off | batch |
 
 ### Output Options
