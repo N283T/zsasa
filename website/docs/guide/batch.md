@@ -147,6 +147,20 @@ zsasa batch structures/ results.jsonl \
 
 This can improve throughput on fast local SSDs, but the best value is machine- and dataset-dependent. Higher thread counts increase memory use and may stop helping once storage or CPU scheduling becomes saturated.
 
+### File Scanners on macOS
+
+Endpoint security software that scans files on access checks every input inside `open()`, so a batch over files it has not scanned yet waits for the scanner once per file, and that wait can be longer than the SASA calculation. macOS also holds back lower-priority disk I/O, which includes the scanner's reads, while a normal-priority process is reading, so the batch slows down the scan it is waiting for.
+
+`--passive-io` runs the batch with a passive disk I/O policy (`IOPOL_PASSIVE`): its reads keep their priority and no longer delay other I/O on the same disk.
+
+```bash
+zsasa batch structures/ results.jsonl \
+  --format=jsonl \
+  --passive-io
+```
+
+The option is off by default, does nothing on other systems, and does not change results. `taskpolicy -d passive zsasa batch ...` has the same effect and also works for other tools. Try it when a first run over a large directory keeps few CPU cores busy; a second run over the same files can be much faster without it, because the scanner remembers for a while which files it has checked.
+
 ## Experimental AlphaFold mmCIF Fast Parser
 
 For AlphaFold-like protein mmCIF batches, `--af-model-fast` enables an
