@@ -47,7 +47,7 @@ All runs were collected on one consumer laptop:
 | OS | macOS 26.2 |
 | Timing | hyperfine 1.20.0, three measured runs per condition, `--prepare sync` |
 | Tool pinning | Nix for native tools, uv for Python dependencies |
-| `zsasa` version | 0.9.0 |
+| `zsasa` version | 0.9.0; 0.11.0 for the mmCIF batch rows and one SwissProt row, named as such |
 
 Batch FreeSASA timings use a `freesasa_batch` wrapper, because upstream FreeSASA has no native directory mode. The pinned comparator builds did not change between `zsasa` releases, so their batch timings are retained from the 0.6.0 session on the same machine; validation, single-file and trajectory runs were repeated for all tools.
 
