@@ -28,18 +28,22 @@ OUT = Path(__file__).resolve().parents[1] / "data" / "benchmarks"
 
 ZSASA_VERSION = "0.9.0"
 
+# SwissProt is reported under the passive disk I/O policy, as in the paper: the benchmark
+# machine scans every file on first open, and the default policy slows that scan down.
+SWISSPROT = "SwissProt AFDB, passive disk I/O"
 BATCH_DATASETS = {
     "E. coli AFDB": "E. coli AFDB",
     "Human AFDB": "Human AFDB",
     "UP000005640_9606_HUMAN_v6_cif": "Human AFDB, mmCIF",
-    "SwissProt AFDB": "SwissProt AFDB",
+    SWISSPROT: "SwissProt AFDB",
 }
 # zsasa mmCIF parser-path variants are bitmask f32 runs; their names do not say so.
+# They were measured with 0.11.0, the first release whose batch runs apply --input-io.
 BITMASK_VARIANTS = {
-    "zsasa_generic_read",
-    "zsasa_generic_mmap",
-    "zsasa_af_fast_read",
-    "zsasa_af_fast_mmap",
+    "zsasa_0_11_0_generic_read",
+    "zsasa_0_11_0_generic_mmap",
+    "zsasa_0_11_0_af_fast_read",
+    "zsasa_0_11_0_af_fast_mmap",
 }
 TRAJECTORIES = ["5wvo_C", "6sup_A", "5vz0_A"]
 POINTS = [64, 128, 256, 512, 1024]
@@ -188,7 +192,7 @@ def export_batch(t: Tables) -> dict:
                     if col == thr
                     else (num(r, "peak_rss_stddev_mib") or 0.0)
                 )
-                entry = series_meta(r, keep_version=key == "SwissProt AFDB") | {
+                entry = series_meta(r, keep_version=key == SWISSPROT) | {
                     "v": sig(num(r, col)),
                     "e": sig(err, 3),
                 }
@@ -205,7 +209,8 @@ def export_batch(t: Tables) -> dict:
     charts["bars"] = {
         "type": "bar",
         "title": "Batch throughput and memory at 10 threads",
-        "note": "128 sphere points. Bars are three-run means; whiskers show one standard deviation.",
+        "note": "128 sphere points. Bars are three-run means; whiskers show one standard deviation. "
+        "SwissProt was measured once, under the passive disk I/O policy.",
         "controls": [
             {"label": "Dataset", "options": list(BATCH_DATASETS.values())},
             {"label": "Metric", "options": [m[0] for m in metrics]},
@@ -281,7 +286,7 @@ def export_batch(t: Tables) -> dict:
                 }
                 err = errors.get(col, lambda r: 0.0)
                 series.append(
-                    series_meta(rows[0], keep_version=key == "SwissProt AFDB")
+                    series_meta(rows[0], keep_version=key == SWISSPROT)
                     | {
                         "pts": [
                             [int(r["threads"]), sig(num(r, col)), sig(err(r), 3)]
@@ -297,7 +302,8 @@ def export_batch(t: Tables) -> dict:
         "type": "line",
         "title": "zsasa beyond the core count",
         "note": "Worker counts above the 10 logical CPUs of the benchmark machine, at 128 sphere points. Three-run means, "
-        "except SwissProt, which was measured once. Busy cores is CPU time divided by wall time.",
+        "except SwissProt, which was measured once under the passive disk I/O policy. "
+        "Busy cores is CPU time divided by wall time.",
         "x": {"label": "Worker threads", "values": [10, 20, 40]},
         "controls": [
             {"label": "Dataset", "options": list(BATCH_DATASETS.values())},
@@ -324,7 +330,7 @@ def export_batch(t: Tables) -> dict:
             + [f"vs {n}" for _, n in comparators],
             "rows": [
                 [
-                    series_meta(r, keep_version=key == "SwissProt AFDB")["name"],
+                    series_meta(r, keep_version=key == SWISSPROT)["name"],
                     fmt(num(r, "runtime_mean_s"), 3),
                     fmt(num(r, thr), 0),
                     fmt(num(r, "peak_rss_mean_mib")),
