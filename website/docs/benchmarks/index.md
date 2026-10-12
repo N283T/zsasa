@@ -5,7 +5,7 @@ sidebar_label: "Overview"
 
 # Benchmarks
 
-These pages report the `zsasa` 0.9.0 benchmark suite: agreement with established SASA implementations, proteome-scale batch throughput, large single structures, and MD trajectories. Every chart and table is generated from the result tables of [`zsasa-benchmarks`](https://github.com/N283T/zsasa-benchmarks), archived at [doi:10.5281/zenodo.23184113](https://doi.org/10.5281/zenodo.23184113).
+These pages report the `zsasa` 0.9.0 benchmark suite: agreement with established SASA implementations, proteome-scale batch throughput, large single structures, and MD trajectories. Every chart and table is generated from the result tables of [`zsasa-benchmarks`](https://github.com/N283T/zsasa-benchmarks), archived at [doi:10.5281/zenodo.23306698](https://doi.org/10.5281/zenodo.23306698).
 
 :::info[Numbers differ from the preprint]
 The current [bioRxiv preprint](https://doi.org/10.64898/2026.06.29.733683) reports the `zsasa` 0.6.0 suite. These pages use the 0.9.0 rerun, so headline values differ slightly from that version; a revision of the preprint based on the 0.9.0 suite is in preparation. The 0.6.0 archive remains available at [doi:10.5281/zenodo.20577561](https://doi.org/10.5281/zenodo.20577561).
@@ -54,6 +54,6 @@ Batch FreeSASA timings use a `freesasa_batch` wrapper, because upstream FreeSASA
 ## Evidence sources
 
 - Benchmark harness and result tables: [`N283T/zsasa-benchmarks`](https://github.com/N283T/zsasa-benchmarks)
-- Archived results: [doi:10.5281/zenodo.23184113](https://doi.org/10.5281/zenodo.23184113)
+- Archived results: [doi:10.5281/zenodo.23306698](https://doi.org/10.5281/zenodo.23306698)
 - Preprint: [Nagae and Tomii, *bioRxiv* (2026)](https://doi.org/10.64898/2026.06.29.733683)
 - Feature comparison: [Comparison with Other Tools](/docs/comparison)
