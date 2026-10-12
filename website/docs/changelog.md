@@ -8,7 +8,7 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
-## [v0.11.0](https://github.com/N283T/zsasa/releases/tag/v0.11.0) — 2026-10-11
+## [v0.11.0](https://github.com/N283T/zsasa/releases/tag/v0.11.0) — 2026-10-12
 
 ### Upgrade notes
 
