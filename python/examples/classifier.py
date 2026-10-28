@@ -131,7 +131,7 @@ def guess_from_element() -> None:
 
     for elem, name in elements:
         radius = guess_radius(elem)
-        if not np.isnan(radius):
+        if radius is not None:
             print(f"{elem:<10} {radius:>8.2f} Å  {name}")
         else:
             print(f"{elem:<10} {'Unknown':>8}  {name}")
@@ -140,25 +140,28 @@ def guess_from_element() -> None:
 def guess_from_atom_name() -> None:
     """Guess radius from PDB atom name.
 
-    PDB atom names encode element information:
-    - First 1-2 characters often indicate element
-    - "CA" = alpha carbon, "FE" = iron, etc.
+    PDB atom names encode element information through their column:
+    - A name that starts in column 13 begins with a two-letter element
+      ("FE  " = iron, "CA  " = calcium)
+    - A name that starts in column 14 is a one-letter element
+      (" CA " = alpha carbon)
 
-    This is useful when you have PDB atom names but
-    not full residue context.
+    Pass the name with its column padding; a trimmed "CA" is read as calcium.
+    This is useful when you have PDB atom names but not full residue context.
     """
     print("\n4. Guess radius from PDB atom name")
     print("-" * 30)
 
     atom_names = [
-        ("CA", "Alpha carbon"),
-        ("CB", "Beta carbon"),
-        ("N", "Nitrogen"),
-        ("O", "Oxygen"),
-        ("OG", "Gamma oxygen (Ser)"),
-        ("FE", "Iron"),
-        ("ZN", "Zinc"),
-        ("MG1", "Magnesium (alternate)"),
+        (" CA ", "Alpha carbon"),
+        ("CA  ", "Calcium"),
+        (" CB ", "Beta carbon"),
+        (" N  ", "Nitrogen"),
+        (" O  ", "Oxygen"),
+        (" OG ", "Gamma oxygen (Ser)"),
+        ("FE  ", "Iron"),
+        ("ZN  ", "Zinc"),
+        ("MG  ", "Magnesium"),
     ]
 
     print(f"{'Atom Name':<12} {'Radius':>8}  {'Description'}")
@@ -166,10 +169,11 @@ def guess_from_atom_name() -> None:
 
     for name, desc in atom_names:
         radius = guess_radius_from_atom_name(name)
-        if not np.isnan(radius):
-            print(f"{name:<12} {radius:>8.2f} Å  {desc}")
+        label = repr(name)
+        if radius is not None:
+            print(f"{label:<12} {radius:>8.2f} Å  {desc}")
         else:
-            print(f"{name:<12} {'Unknown':>8}  {desc}")
+            print(f"{label:<12} {'Unknown':>8}  {desc}")
 
 
 def batch_classification() -> None:

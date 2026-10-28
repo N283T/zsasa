@@ -8,6 +8,16 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+### Fixed
+
+- **Classifier follow-ups from #421 and #422**:
+  - A calcium ion (`CA` in residue `CA`) under NACCESS and OONS got the aliphatic carbon radius (1.87 / 2.00 Å) even when the element column said calcium, because the name matched the `CA` table entry first. When the element is known and is not the element the table entry is named after, the element now decides, as it already did for CCD and ProtOr. **This changes SASA values for NACCESS and OONS runs over inputs with an element column and an atom whose name contradicts it**, such as calcium ions named `CA`; standard residues are unchanged.
+  - CCD components with five-character IDs no longer overwrite each other's atoms of the same name (`A1AAA` and `A1AAB`): the lookup key was cut to four characters.
+  - A `_chem_comp_atom` or `_chem_comp_bond` category written as a single row without `loop_` is parsed. A component with exactly one bond (for example CMO) kept no bond, and a single-atom component was dropped.
+  - A hydrogen-free carbon with two delocalized (`DELO`/`POLY`) bonds is counted as C3H1 (1.76 Å) like the aromatic case, not as C3H0 (1.61 Å).
+  - The bond counters of the hybridization analysis saturate at 255 on a malformed component instead of wrapping around.
+  - The Python classifier example labelled `guess_radius_from_atom_name("CA")` as the alpha carbon (it is calcium) and passed a possible `None` to `np.isnan`.
+
 ## [v0.11.0](https://github.com/N283T/zsasa/releases/tag/v0.11.0) — 2026-10-12
 
 ### Upgrade notes
