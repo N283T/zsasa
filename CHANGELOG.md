@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`calc` and `batch` take `-o=FILE` / `-o=DIR`**, as `traj` already did. Before, `-o=FILE` was rejected as an unknown option.
+- **`calc --workflow` uses `[classifier] ccd` and `sdf` without `type`**, as `batch` does: an omitted type means the default `ccd` classifier. Before, `calc` ignored them silently.
+- **A workflow with `[classifier] config` but without `type = "custom"` is an error** (`InvalidClassifierConfig`, with an explanation). Before, the key was ignored and the default classifier was used.
+- **`--ccd` and `--sdf` print a warning when the classifier in use is not `ccd`** (`calc` and `batch`). They were ignored without a word; the classifier in use does not change.
+- **`batch --use-bitmask` explains a bad `--n-points` or `--algorithm=lr`** with the message `calc` prints, instead of only the error name.
+- **`batch --jsonl-decimals` without `--format=jsonl` is an error**, as `--residue-map` is. Before, the option was accepted and had no effect.
 - **`zsasa traj` fails when the frame selection matches nothing**: `--end` before `--start` is rejected before the output file is created, and a `--start` past the last frame exits with an error instead of writing a header-only CSV and exiting 0.
 - **DCD reader**: `DcdReader.readFrame` in the Zig library reports `error.TruncatedFrame` when the file ends inside a frame; `error.EndOfFile` now means a clean end between two frames.
 

@@ -125,7 +125,7 @@ const BatchLuts = struct {
 
     fn init(allocator: Allocator, config: BatchConfig) !BatchLuts {
         if (!config.use_bitmask) return .{};
-        if (config.algorithm != .sr) return error.BitmaskRequiresSR;
+        try validateBitmaskOptions(config.use_bitmask, config.algorithm, config.n_points, config.adaptive_sr);
 
         var luts = BatchLuts{};
         errdefer luts.deinit();
@@ -3705,6 +3705,9 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
             }
             result.output_path = args[i];
             result.output_path_explicit = true;
+        } else if (std.mem.startsWith(u8, arg, "-o=")) {
+            result.output_path = arg["-o=".len..];
+            result.output_path_explicit = true;
         } else if (std.mem.startsWith(u8, arg, "--output=")) {
             result.output_path = arg["--output=".len..];
             result.output_path_explicit = true;
@@ -3973,6 +3976,26 @@ fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
     if (args.jsonl_decimals_explicit) config.jsonl_decimals = args.jsonl_decimals;
 }
 
+/// The checks `calc` makes for --use-bitmask, with the same messages, so that
+/// a bad combination is explained instead of failing later as a bare error name.
+fn validateBitmaskOptions(use_bitmask: bool, algorithm: Algorithm, n_points: u32, adaptive_sr: bool) error{ BitmaskRequiresSR, UnsupportedNPoints }!void {
+    if (!use_bitmask) return;
+    if (algorithm != .sr) {
+        std.debug.print("Error: --use-bitmask is only supported with the sr (shrake-rupley) algorithm\n", .{});
+        return error.BitmaskRequiresSR;
+    }
+    // --adaptive-sr takes its point counts from --coarse-points / --fine-points.
+    if (!adaptive_sr and !bitmask_lut.isSupportedNPoints(n_points)) {
+        std.debug.print("Error: --use-bitmask requires --n-points to be 1..1024 (got {d})\n", .{n_points});
+        return error.UnsupportedNPoints;
+    }
+}
+
+/// --jsonl-decimals given on the command line for an output that is not JSONL.
+fn jsonlDecimalsNeedJsonl(args: BatchArgs) bool {
+    return args.jsonl_decimals_explicit and args.output_format != .jsonl;
+}
+
 fn validateBitmaskCorrectionConfig(config: BatchConfig) !void {
     if (config.bitmask_correction and !config.use_bitmask) {
         std.debug.print("Error: --bitmask-correction requires --use-bitmask\n", .{});
@@ -4056,6 +4079,16 @@ fn classifierUsesCcdResources(effective_classifier_type: ?ClassifierType) bool {
 
 fn batchArgsUseCcdResources(args: BatchArgs) bool {
     return classifierUsesCcdResources(args.classifier_type);
+}
+
+/// True when --ccd or --sdf was given but the classifier in use never reads it.
+fn ccdResourcesIgnored(args: BatchArgs, effective_classifier_type: ?ClassifierType) bool {
+    return (args.ccd_explicit or args.sdf_explicit) and !classifierUsesCcdResources(effective_classifier_type);
+}
+
+fn warnIgnoredCcdResources(args: BatchArgs, effective_classifier_type: ?ClassifierType, quiet: bool) void {
+    if (quiet or !ccdResourcesIgnored(args, effective_classifier_type)) return;
+    std.debug.print("Warning: --ccd and --sdf are used only with the ccd classifier; ignored\n", .{});
 }
 
 fn resolveWorkflowCcdPath(args: BatchArgs, classifier_config: workflow_manifest.ClassifierConfig, effective_classifier_type: ?ClassifierType) ?[]const u8 {
@@ -4629,6 +4662,7 @@ fn runWorkflowBsaAnalysis(
         try writeWorkflowJsonlMetadata(allocator, io, metadata_path, name, config);
     }
 
+    warnIgnoredCcdResources(args, effective_classifier_type, load_quiet);
     const ccd_path = resolveWorkflowCcdPath(args, workflow.classifier, effective_classifier_type);
     var ext_ccd: ?ccd_parser.ComponentDict = null;
     if (ccd_path) |path| {
@@ -5560,6 +5594,7 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
     try validateBitmaskCorrectionConfig(resource_config);
     const effective_classifier_type = resource_config.classifier_type;
 
+    warnIgnoredCcdResources(args, effective_classifier_type, load_quiet);
     const ccd_path = resolveWorkflowCcdPath(args, workflow.classifier, effective_classifier_type);
     var ext_ccd: ?ccd_parser.ComponentDict = null;
     if (ccd_path) |path| {
@@ -5794,6 +5829,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
     try validateBitmaskCorrectionConfig(resource_config);
     const effective_classifier_type = resource_config.classifier_type;
 
+    warnIgnoredCcdResources(args, effective_classifier_type, load_quiet);
     const ccd_path = resolveWorkflowCcdPath(args, workflow.classifier, effective_classifier_type);
     var ext_ccd: ?ccd_parser.ComponentDict = null;
     if (ccd_path) |path| {
@@ -6131,6 +6167,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     // Load external CCD dictionary if specified
     var ext_ccd: ?ccd_parser.ComponentDict = null;
     const use_ccd_resources = batchArgsUseCcdResources(args);
+    warnIgnoredCcdResources(args, args.classifier_type, args.quiet);
     if (use_ccd_resources) {
         if (args.ccd_path) |ccd_path| {
             const ccd_data = if (compressed.isCompressed(ccd_path))
@@ -6182,12 +6219,16 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
         std.debug.print("Error: --residue-map is only supported with --format=jsonl\n", .{});
         return error.InvalidArgument;
     };
+    if (jsonlDecimalsNeedJsonl(args)) {
+        std.debug.print("Error: --jsonl-decimals is only supported with --format=jsonl\n", .{});
+        return error.InvalidArgument;
+    }
 
+    if (args.adaptive_sr and !args.use_bitmask) {
+        std.debug.print("Error: --adaptive-sr requires --use-bitmask\n", .{});
+        return error.InvalidArgument;
+    }
     if (args.adaptive_sr) {
-        if (!args.use_bitmask) {
-            std.debug.print("Error: --adaptive-sr requires --use-bitmask\n", .{});
-            return error.InvalidArgument;
-        }
         if (args.algorithm != .sr) {
             std.debug.print("Error: --adaptive-sr requires --algorithm=sr\n", .{});
             return error.InvalidArgument;
@@ -6696,6 +6737,39 @@ test "BatchArgs --altloc modes" {
 
     const occupancy = parseArgs(&occupancy_args, 2);
     try std.testing.expectEqual(mmcif_parser.AltLocMode.highest_occupancy, occupancy.alt_loc_mode);
+}
+
+test "BatchArgs -o=DIR" {
+    const args = [_][]const u8{ "zsasa", "batch", "-o=results/", "input_dir/" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("results/", parsed.output_path.?);
+    try std.testing.expect(parsed.output_path_explicit);
+}
+
+test "batch rejects --jsonl-decimals without --format=jsonl" {
+    const json_args = [_][]const u8{ "zsasa", "batch", "--jsonl-decimals=3", "input_dir/" };
+    try std.testing.expect(jsonlDecimalsNeedJsonl(parseArgs(&json_args, 2)));
+    const jsonl_args = [_][]const u8{ "zsasa", "batch", "--format=jsonl", "--jsonl-decimals=3", "input_dir/" };
+    try std.testing.expect(!jsonlDecimalsNeedJsonl(parseArgs(&jsonl_args, 2)));
+    const plain_args = [_][]const u8{ "zsasa", "batch", "input_dir/" };
+    try std.testing.expect(!jsonlDecimalsNeedJsonl(parseArgs(&plain_args, 2)));
+}
+
+test "validateBitmaskOptions explains an unsupported algorithm or point count" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
+    try validateBitmaskOptions(false, .lr, 5000, false);
+    try validateBitmaskOptions(true, .sr, 100, false);
+    try std.testing.expectError(error.BitmaskRequiresSR, validateBitmaskOptions(true, .lr, 100, false));
+    try std.testing.expectError(error.UnsupportedNPoints, validateBitmaskOptions(true, .sr, 2000, false));
+    try validateBitmaskOptions(true, .sr, 2000, true);
+}
+
+test "ccdResourcesIgnored flags --ccd and --sdf without the ccd classifier" {
+    try std.testing.expect(ccdResourcesIgnored(.{ .ccd_explicit = true, .classifier_type = .naccess }, .naccess));
+    try std.testing.expect(ccdResourcesIgnored(.{ .sdf_explicit = true }, null));
+    try std.testing.expect(!ccdResourcesIgnored(.{ .ccd_explicit = true }, .ccd));
+    try std.testing.expect(!ccdResourcesIgnored(.{}, .naccess));
 }
 
 test "BatchArgs --residue-map" {
@@ -8726,6 +8800,8 @@ test "workflow rejects colliding per-file output names before creating output" {
 }
 
 test "workflow reports errors raised after job setup without freeing job states twice" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
