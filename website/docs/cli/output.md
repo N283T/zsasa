@@ -227,7 +227,7 @@ The per-residue table, the [RSA text format](#rsa-text-calc---formatrsa) and the
 A residue is therefore a run of consecutive atoms, and residues are listed in input order. Residues `10`, `10A` and `10B` are three residues, and so are `GLY 10` and `LYS 10` of one chain.
 
 - **Non-contiguous residues.** If the atoms of a residue are not contiguous in the input, each run is reported as its own entry with the same labels. The entries are not merged, because the residue map describes a residue as an atom range (`residue_atom_start`, `residue_atom_count`).
-- **Multi-model files.** `calc` and `batch` read all models superimposed (`calc --model=N` selects one), so every residue appears once per model. Each copy is its own entry, with the area that this copy has inside the superimposed structure; the copies are not summed. Use `calc --model=N` to get one entry per residue. (When each model consists of a single residue, consecutive models continue the same run and are reported as one entry.)
+- **Multi-model files.** `calc` and `batch` read the first model (`calc --model=N` selects another). With `calc --model=all` every model is read superimposed, so every residue appears once per model. Each copy is its own entry, with the area that this copy has inside the superimposed structure; the copies are not summed. (When each model consists of a single residue, consecutive models continue the same run and are reported as one entry.)
 
 ### RSA Calculation (`--rsa`)
 

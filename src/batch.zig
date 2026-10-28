@@ -1038,6 +1038,8 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             parser.skip_hydrogens = !config.include_hydrogens;
             parser.atom_only = !config.include_hetatm;
             parser.chain_filter = config.chain_filter;
+            // A multi-model file contributes its first model.
+            parser.first_model_only = true;
             parser.use_auth_chain = config.use_auth_chain;
             parser.alt_loc_mode = config.alt_loc_mode;
             parser.alt_loc_id = config.alt_loc_id;
@@ -1059,6 +1061,8 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             parser.skip_hydrogens = !config.include_hydrogens;
             parser.atom_only = !config.include_hetatm;
             parser.chain_filter = config.chain_filter;
+            // A multi-model file contributes its first model.
+            parser.first_model_only = true;
             parser.use_auth_chain = config.use_auth_chain;
             parser.alt_loc_mode = config.alt_loc_mode;
             parser.alt_loc_id = config.alt_loc_id;
@@ -1071,6 +1075,8 @@ fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: Bat
             parser.skip_hydrogens = !config.include_hydrogens;
             parser.atom_only = !config.include_hetatm;
             parser.chain_filter = config.chain_filter;
+            // A multi-model file contributes its first model.
+            parser.first_model_only = true;
             parser.alt_loc_mode = config.alt_loc_mode;
             parser.alt_loc_id = config.alt_loc_id;
             break :blk .{ .input = try parser.parseFileWithInputIo(io, path, input_io_mode) };
@@ -11043,6 +11049,20 @@ test "BatchArgs --input-io" {
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(InputIoMode.read, parsed.input_io);
     try std.testing.expect(parsed.input_io_explicit);
+}
+
+test "readInputFile reads the first model of a multi-model file" {
+    const allocator = std.testing.allocator;
+    var parsed = try readInputFile(allocator, std.testing.io, "test_data/1l2y.pdb", BatchConfig{});
+    defer parsed.deinit();
+
+    var parser = pdb_parser.PdbParser.init(allocator);
+    parser.model_num = 1;
+    var model1 = try parser.parseFile(std.testing.io, "test_data/1l2y.pdb");
+    defer model1.deinit();
+
+    try std.testing.expectEqual(model1.atomCount(), parsed.input.atomCount());
+    try std.testing.expectEqualSlices(f64, model1.x, parsed.input.x);
 }
 
 test "readInputFile preserves AF model atom metadata when fast parsing is requested" {

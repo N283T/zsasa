@@ -557,7 +557,7 @@ The **Used by** column says which command reads the key. A key that the other co
 | `path` | string | none | calc | Input structure file. A positional input argument overrides it. `batch` rejects it: set `dir` |
 | `dir` | string | none | batch | Input directory. A positional `input_dir` overrides it. `calc` rejects it |
 | `chain` | string | all chains | calc, batch | Chain filter such as `"A"` or `"A,B"` (`--chain`). In a batch workflow with `[[jobs]]` it is the default `chains` of every job that has neither `chains` nor `chain_map`; see [`[input] chain` in batch workflows](#input-chain-in-batch). An `[analysis]` workflow rejects it: choose the chains with `partner_a` and `partner_b` |
-| `model` | integer ≥ 1 | all models | calc | Model number (`--model`). `batch` rejects it |
+| `model` | integer ≥ 1 or `"all"` | first model | calc | Model number, or every model superimposed (`--model`). `batch` rejects it and reads the first model |
 | `mol` | string | first molecule | calc | Molecule title or 1-based index in a multi-molecule SDF (`--mol`). `batch` rejects it (it processes every molecule) |
 
 ### `[output]` and `[output.jsonl]`
