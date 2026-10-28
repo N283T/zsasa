@@ -245,8 +245,8 @@ Every option marked `traj` in the [algorithm](#algorithm-options), [classifier](
 | `--include-hydrogens` | Include hydrogen atoms (default, for backward compat) | included |
 | `--altloc=MODE` | [Alternate-location handling](input.md#alternate-locations) for the topology (PDB or mmCIF): `auto`, `none`, `all`, `highest-occupancy`, or one ID such as `A` | `auto` |
 | `--stride=N` | Process every Nth frame (N ≥ 1) | `1` |
-| `--start=N` | Start from frame N | `0` |
-| `--end=N` | End at frame N (inclusive) | all |
+| `--start=N` | Start from frame N (an empty selection is an error) | `0` |
+| `--end=N` | End at frame N (inclusive); must not be before `--start` | all |
 | `--batch-size=N` | Frames per batch for parallel processing (omit for auto, `threads * 2`) | auto |
 | `--bitmask-lut-mode=MODE` | Bitmask LUT reuse mode (`single`, `per-frame`, `cycle`); see [Algorithms](../guide/algorithms.mdx#trajectory-lut-reuse-modes) | `single` |
 | `-o FILE`, `--output=FILE` | Output CSV file (`-o=FILE` and `--output FILE` are also accepted) | `traj_sasa.csv` |
