@@ -228,14 +228,21 @@ class TestProcessDirectory:
 
         assert result.successful > 0
 
-    def test_process_directory_exclude_water(self, tmp_path: Path) -> None:
-        """exclude_water leaves water out, also with include_hetatm."""
+    def test_process_directory_water_and_excluded_residues(self, tmp_path: Path) -> None:
+        """Water is left out unless include_water; exclude_residues removes more."""
         (tmp_path / "w.pdb").write_text(WATER_PDB)
-        counts = {
-            flags: process_directory(tmp_path, include_hetatm=True, exclude_water=flags).n_atoms[0]
-            for flags in (False, True)
-        }
-        assert counts == {False: 3, True: 2}
+
+        def n_atoms(**kwargs: object) -> int:
+            return process_directory(tmp_path, include_hetatm=True, **kwargs).n_atoms[0]
+
+        assert n_atoms() == 2
+        assert n_atoms(include_water=True) == 3
+        assert n_atoms(include_water=True, exclude_residues=["hoh"]) == 2
+
+    def test_process_directory_rejects_bad_residue_names(self, tmp_path: Path) -> None:
+        """A residue name that is blank or contains a comma is an error."""
+        with pytest.raises(ValueError, match="exclude_residues"):
+            process_directory(tmp_path, exclude_residues=["SO4,GOL"])
 
     def test_process_directory_include_hetatm(self) -> None:
         """include_hetatm=True should be accepted without error."""

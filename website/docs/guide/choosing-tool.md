@@ -39,9 +39,9 @@ zsasa batch structures/ results/
 
 For repeated batch analyses with shared settings or named chain-complex jobs, prefer [Workflow Files](workflows.md). Workflow TOML files keep calculation, output, classifier, and per-job settings together so analyses are easier to rerun and review.
 
-The CLI supports basic filtering (`--chain`, `--model` for `calc`, `--altloc`, `--include-hetatm`, `--exclude-water`, `--include-hydrogens`), but has limitations:
+The CLI supports basic filtering (`--chain`, `--model` for `calc`, `--altloc`, `--include-hetatm`, `--include-water`, `--exclude-residues`, `--include-hydrogens`), but has limitations:
 - **Altloc** — one rule for the whole file: `--altloc` keeps altloc `A` or the highest occupancy (`auto`, the default), the highest occupancy, one altloc ID, or every alternate (see [Alternate Locations](../cli/input.md#alternate-locations)). There is no per-residue choice
-- **HETATM** — all HETATM records or none (`--include-hetatm`), with water optionally left out (`--exclude-water`); no selection of individual ligands or other components
+- **HETATM** — all HETATM records or none (`--include-hetatm`), less the water (left out unless `--include-water`) and the residue names given to `--exclude-residues`; no selection by chain or residue number
 - **No programmatic control** — cannot combine with other analysis libraries
 
 ## Python Integrations: Structure Processing Required

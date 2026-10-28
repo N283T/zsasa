@@ -172,17 +172,26 @@ class TestExtractAtoms:
         assert atoms.chain_ids == ["A"] * 5
 
     def test_extract_hetatm_included(self, structure_with_hetatm):
-        """Should include HETATM when requested."""
-        atoms = extract_atoms_from_model(structure_with_hetatm[0], include_hetatm=True)
+        """Should include HETATM, water too with include_water."""
+        atoms = extract_atoms_from_model(
+            structure_with_hetatm[0], include_hetatm=True, include_water=True
+        )
         assert len(atoms) == 2  # CA + water O
 
-    def test_extract_hetatm_without_water(self, structure_with_hetatm):
-        """exclude_water leaves the water out of the included HETATM records."""
-        atoms = extract_atoms_from_model(
-            structure_with_hetatm[0], include_hetatm=True, exclude_water=True
-        )
-        assert len(atoms) == 1  # Only CA
+    def test_extract_hetatm_leaves_water_out_by_default(self, structure_with_hetatm):
+        """Water is left out by default, also with include_hetatm."""
+        atoms = extract_atoms_from_model(structure_with_hetatm[0], include_hetatm=True)
         assert atoms.residue_names == ["ALA"]
+
+    def test_extract_exclude_residues(self, structure_with_hetatm):
+        """exclude_residues leaves out the listed residues, ignoring case."""
+        atoms = extract_atoms_from_model(
+            structure_with_hetatm[0],
+            include_hetatm=True,
+            include_water=True,
+            exclude_residues=["ala"],
+        )
+        assert atoms.residue_names == ["HOH"]
 
     def test_extract_hetatm_excluded(self, structure_with_hetatm):
         """Should exclude HETATM by default."""

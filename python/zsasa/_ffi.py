@@ -211,7 +211,8 @@ _CDEF = """
         const char* input_dir, const char* output_dir,
         int algorithm, uint32_t n_points, double probe_radius,
         size_t n_threads, int classifier_type,
-        int include_hydrogens, int include_hetatm, int exclude_water,
+        int include_hydrogens, int include_hetatm,
+        int include_water, const char* exclude_residues,
         int* error_code
     );
     size_t zsasa_batch_dir_get_total_files(void* handle);

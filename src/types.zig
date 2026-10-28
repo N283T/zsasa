@@ -237,24 +237,25 @@ pub const AtomInput = struct {
         }
     }
 
-    /// Remove the atoms of water residues (`isWaterResidue`) and return how
+    /// Remove the atoms of the residues `exclusion` names and return how
     /// many were removed. Inputs without residue names are left unchanged.
     /// Removing every atom is `error.NoAtomsFound`.
-    pub fn removeWater(self: *AtomInput) !usize {
+    pub fn removeResidues(self: *AtomInput, exclusion: ResidueExclusion) !usize {
         const residues = self.residue orelse return 0;
-        var n_water: usize = 0;
+        if (exclusion.isEmpty()) return 0;
+        var n_removed: usize = 0;
         for (residues) |res| {
-            if (isWaterResidue(res.slice())) n_water += 1;
+            if (exclusion.excludes(res.slice())) n_removed += 1;
         }
-        if (n_water == 0) return 0;
+        if (n_removed == 0) return 0;
         const n = residues.len;
-        if (n_water == n) return error.NoAtomsFound;
+        if (n_removed == n) return error.NoAtomsFound;
 
-        const indices = try self.allocator.alloc(usize, n - n_water);
+        const indices = try self.allocator.alloc(usize, n - n_removed);
         defer self.allocator.free(indices);
         var k: usize = 0;
         for (residues, 0..) |res, i| {
-            if (isWaterResidue(res.slice())) continue;
+            if (exclusion.excludes(res.slice())) continue;
             indices[k] = i;
             k += 1;
         }
@@ -280,7 +281,7 @@ pub const AtomInput = struct {
 
         self.deinit();
         self.* = out;
-        return n_water;
+        return n_removed;
     }
 
     fn gather(comptime T: type, allocator: std.mem.Allocator, src: []const T, indices: []const usize) ![]T {
@@ -340,6 +341,39 @@ pub fn isWaterResidue(name: []const u8) bool {
     const upper = std.ascii.upperString(buf[0..trimmed.len], trimmed);
     return water_residues.has(upper);
 }
+
+/// Residues left out of a calculation: water unless `--include-water`, and
+/// the names of `--exclude-residues` (comma-separated) or of the workflow
+/// `exclude_residues` list. Names compare without surrounding blanks and
+/// case.
+pub const ResidueExclusion = struct {
+    water: bool = true,
+    /// Comma-separated residue names, as given to `--exclude-residues`
+    names_csv: []const u8 = "",
+    names: []const []const u8 = &.{},
+
+    pub fn isEmpty(self: ResidueExclusion) bool {
+        return !self.water and std.mem.trim(u8, self.names_csv, " ,").len == 0 and self.names.len == 0;
+    }
+
+    pub fn excludes(self: ResidueExclusion, residue: []const u8) bool {
+        if (self.water and isWaterResidue(residue)) return true;
+        const name = std.mem.trim(u8, residue, " ");
+        var it = std.mem.tokenizeScalar(u8, self.names_csv, ',');
+        while (it.next()) |listed| {
+            if (sameResidueName(listed, name)) return true;
+        }
+        for (self.names) |listed| {
+            if (sameResidueName(listed, name)) return true;
+        }
+        return false;
+    }
+
+    fn sameResidueName(listed: []const u8, name: []const u8) bool {
+        const trimmed = std.mem.trim(u8, listed, " ");
+        return trimmed.len > 0 and std.ascii.eqlIgnoreCase(trimmed, name);
+    }
+};
 
 /// Generic output data structure for SASA calculation
 pub fn SasaResultGen(comptime T: type) type {
@@ -660,7 +694,7 @@ test "isWaterResidue" {
     }
 }
 
-test "AtomInput.removeWater keeps every field of the other atoms" {
+test "AtomInput.removeResidues keeps every field of the other atoms" {
     const allocator = std.testing.allocator;
     var input = AtomInput{
         .x = try allocator.dupe(f64, &.{ 1, 2, 3 }),
@@ -682,7 +716,7 @@ test "AtomInput.removeWater keeps every field of the other atoms" {
     input.chain_id_full = chains;
     defer input.deinit();
 
-    try std.testing.expectEqual(@as(usize, 1), try input.removeWater());
+    try std.testing.expectEqual(@as(usize, 1), try input.removeResidues(.{}));
     try std.testing.expectEqual(@as(usize, 2), input.atomCount());
     try std.testing.expectEqualSlices(f64, &.{ 1, 3 }, input.x);
     try std.testing.expectEqualSlices(f64, &.{ 1.5, 1.7 }, input.r);
@@ -691,11 +725,13 @@ test "AtomInput.removeWater keeps every field of the other atoms" {
     try std.testing.expectEqualSlices(i32, &.{ 1, 201 }, input.residue_num.?);
     try std.testing.expectEqualStrings("BLONG", input.chain_id_full.?[1]);
 
-    // Nothing left to remove
-    try std.testing.expectEqual(@as(usize, 0), try input.removeWater());
+    // Nothing left to remove, unless a name is listed
+    try std.testing.expectEqual(@as(usize, 0), try input.removeResidues(.{}));
+    try std.testing.expectEqual(@as(usize, 1), try input.removeResidues(.{ .water = false, .names_csv = "SO4, zn" }));
+    try std.testing.expectEqualSlices(f64, &.{1}, input.x);
 }
 
-test "AtomInput.removeWater refuses to remove every atom" {
+test "AtomInput.removeResidues refuses to remove every atom" {
     const allocator = std.testing.allocator;
     var input = AtomInput{
         .x = try allocator.dupe(f64, &.{1}),
@@ -706,6 +742,26 @@ test "AtomInput.removeWater refuses to remove every atom" {
         .allocator = allocator,
     };
     defer input.deinit();
-    try std.testing.expectError(error.NoAtomsFound, input.removeWater());
+    try std.testing.expectError(error.NoAtomsFound, input.removeResidues(.{}));
+    try std.testing.expectEqual(@as(usize, 0), try input.removeResidues(.{ .water = false }));
     try std.testing.expectEqual(@as(usize, 1), input.atomCount());
+}
+
+test "ResidueExclusion matches water by default and listed names" {
+    const default: ResidueExclusion = .{};
+    try std.testing.expect(default.excludes("HOH"));
+    try std.testing.expect(!default.excludes("SO4"));
+    try std.testing.expect(!default.isEmpty());
+
+    const keep_water: ResidueExclusion = .{ .water = false };
+    try std.testing.expect(!keep_water.excludes("HOH"));
+    try std.testing.expect(keep_water.isEmpty());
+
+    const listed: ResidueExclusion = .{ .water = false, .names_csv = "SO4, gol,", .names = &.{"EDO"} };
+    try std.testing.expect(listed.excludes("SO4"));
+    try std.testing.expect(listed.excludes(" GOL"));
+    try std.testing.expect(listed.excludes("edo"));
+    try std.testing.expect(!listed.excludes("HOH"));
+    try std.testing.expect(!listed.excludes("SO"));
+    try std.testing.expect(!(ResidueExclusion{ .water = false, .names_csv = " , " }).excludes(""));
 }

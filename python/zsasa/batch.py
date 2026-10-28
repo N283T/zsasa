@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NoReturn
@@ -105,6 +106,20 @@ class BatchDirResult:
         )
 
 
+def _residue_names_arg(names: Iterable[str] | None) -> bytes | None:
+    """Encode residue names as the comma-separated list the C API takes."""
+    if names is None:
+        return None
+    if isinstance(names, str):
+        names = [names]
+    cleaned = [name.strip() for name in names]
+    for name in cleaned:
+        if not name or "," in name:
+            msg = f"Invalid residue name in exclude_residues: {name!r}"
+            raise ValueError(msg)
+    return ",".join(cleaned).encode("utf-8") if cleaned else None
+
+
 def process_directory(
     input_dir: str | Path,
     *,
@@ -117,7 +132,8 @@ def process_directory(
     classifier: ClassifierType | None = ClassifierType.CCD,
     include_hydrogens: bool = False,
     include_hetatm: bool = False,
-    exclude_water: bool = False,
+    include_water: bool = False,
+    exclude_residues: Iterable[str] | None = None,
 ) -> BatchDirResult:
     """Process all supported structure files in a directory for SASA calculation.
 
@@ -147,8 +163,9 @@ def process_directory(
             ``--ccd``).
         include_hydrogens: Whether to include hydrogen atoms. Default: False.
         include_hetatm: Whether to include HETATM records. Default: False.
-        exclude_water: Leave out water residues (HOH, WAT, SOL, ...), also when
-            HETATM records are included. Default: False.
+        include_water: Keep water residues (HOH, WAT, SOL, ...). Water is left
+            out by default, also when HETATM records are included. Default: False.
+        exclude_residues: Residue names to leave out as well (e.g. ``["SO4", "GOL"]``).
 
     Returns:
         BatchDirResult with per-file details.
@@ -216,7 +233,8 @@ def process_directory(
         classifier_int,
         int(include_hydrogens),
         int(include_hetatm),
-        int(exclude_water),
+        int(include_water),
+        _residue_names_arg(exclude_residues) or ffi.NULL,
         error_code,
     )
 

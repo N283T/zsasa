@@ -591,7 +591,8 @@ The `[output.jsonl]` keys apply to batch JSONL output only. See [JSONL Output Op
 | `precision` | string | `"f64"` | calc, batch | `"f32"` or `"f64"` |
 | `include_hydrogens` | boolean | `false` | calc, batch | Include hydrogen atoms |
 | `include_hetatm` | boolean | `false` | calc, batch | Include HETATM records |
-| `exclude_water` | boolean | `false` | calc, batch | Leave out water residues (`--exclude-water`) |
+| `include_water` | boolean | `false` | calc, batch | Keep water, left out by default (`--include-water`) |
+| `exclude_residues` | string or array of strings | none | calc, batch | Residue names to leave out (`--exclude-residues`), e.g. `["SO4", "GOL"]` |
 | `use_bitmask` | boolean | `false` | calc, batch | Bitmask LUT optimization (SR only, `n_points` 1-1024) |
 | `timing` | boolean | `false` | calc, batch | Print the timing breakdown. In `batch` only an `[analysis]` workflow reports it (the SASA time); a workflow with `[[jobs]]` warns that the key has no effect |
 | `quiet` | boolean | `false` | calc, batch | Suppress progress output. Batch workflows still report [failed inputs and jobs](#failures) |
