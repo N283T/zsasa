@@ -239,6 +239,12 @@ fn validateArgs(args: TrajArgs) !void {
     try checkNPoints(args.n_points);
     try checkNSlices(args.n_slices);
     try checkStride(args.stride);
+    if (args.end_frame) |end| {
+        if (end < args.start_frame) {
+            std.debug.print("Error: --end ({d}) is before --start ({d}): no frames selected\n", .{ end, args.start_frame });
+            return error.InvalidArgument;
+        }
+    }
     if (args.output_path.len == 0) {
         std.debug.print("Error: Output path is empty\n", .{});
         return error.InvalidArgument;
@@ -1330,6 +1336,13 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
         return err;
     };
     try flush_result;
+
+    // A selection past the end of the trajectory leaves a header-only CSV;
+    // that is a failure, not a result.
+    if (processed_count == 0) {
+        std.debug.print("Error: no frames selected: the trajectory has {d} frames, --start={d}\n", .{ frame_idx, args.start_frame });
+        return error.NoFramesSelected;
+    }
 
     const elapsed_ns = timer_start.untilNow(io, .awake).nanoseconds;
     const elapsed_ms = @divTrunc(elapsed_ns, std.time.ns_per_ms);
@@ -2516,6 +2529,32 @@ test "traj run: --start, --end and --stride select the frames, in both paths" {
         try std.testing.expect(std.mem.indexOf(u8, csv, "\n1,") != null);
         try std.testing.expect(std.mem.indexOf(u8, csv, "\n3,") != null);
         try std.testing.expect(std.mem.indexOf(u8, csv, "\n2,") == null);
+    }
+}
+
+test "traj run: a frame selection that matches nothing is an error" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
+    var ws = TestWorkspace.init();
+    defer ws.deinit();
+    const topology = try ws.write("m1.pdb", try ws.firstModelPdb());
+    const output = try ws.path("empty.csv");
+
+    const base = TrajArgs{ .traj_path = test_xtc_path, .topology_path = topology, .output_path = output, .n_points = 32, .quiet = true };
+
+    // --end before --start is rejected before the output file is created.
+    var reversed = base;
+    reversed.start_frame = 5;
+    reversed.end_frame = 2;
+    try std.testing.expectError(error.InvalidArgument, run(std.testing.allocator, std.testing.io, reversed));
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().openFile(std.testing.io, output, .{}));
+
+    // --start past the last frame (the fixture has 38) selects nothing.
+    for ([_]usize{ 1, 2 }) |n_threads| {
+        var past_end = base;
+        past_end.start_frame = 100;
+        past_end.n_threads = n_threads;
+        try std.testing.expectError(error.NoFramesSelected, run(std.testing.allocator, std.testing.io, past_end));
     }
 }
 

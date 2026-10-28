@@ -8,6 +8,11 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+### Fixed
+
+- **`zsasa traj` fails when the frame selection matches nothing**: `--end` before `--start` is rejected before the output file is created, and a `--start` past the last frame exits with an error instead of writing a header-only CSV and exiting 0.
+- **DCD reader**: `DcdReader.readFrame` in the Zig library reports `error.TruncatedFrame` when the file ends inside a frame; `error.EndOfFile` now means a clean end between two frames.
+
 ## [v0.11.0](https://github.com/N283T/zsasa/releases/tag/v0.11.0) — 2026-10-12
 
 ### Upgrade notes

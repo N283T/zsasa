@@ -14,6 +14,8 @@ pub const DcdError = error{
     FileNotFound,
     InvalidMagic,
     EndOfFile,
+    /// The file ends inside a frame (as opposed to between two frames).
+    TruncatedFrame,
     ReadError,
     BadFormat,
     OutOfMemory,
@@ -176,8 +178,17 @@ pub const DcdReader = struct {
         }
     }
 
-    /// Read next frame
+    /// Read next frame. `EndOfFile` means the file ended cleanly between two
+    /// frames; a file that ends inside a frame fails with `TruncatedFrame`.
     pub fn readFrame(self: *Self) !DcdFrame {
+        const start_pos = self.pos;
+        return self.readFrameBody() catch |err| switch (err) {
+            DcdError.EndOfFile => if (self.pos > start_pos) DcdError.TruncatedFrame else DcdError.EndOfFile,
+            else => err,
+        };
+    }
+
+    fn readFrameBody(self: *Self) !DcdFrame {
         const natoms: usize = @intCast(self.natoms);
 
         // Calculate step and time (use i64 to avoid overflow for long trajectories)
@@ -409,4 +420,32 @@ test "read 1l2y.dcd all frames" {
 
     // 1l2y.dcd should have 38 frames (same as XTC)
     try std.testing.expectEqual(@as(usize, 38), frame_count);
+}
+
+test "a DCD cut inside its final frame reports TruncatedFrame, not a clean end" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const full = try std.Io.Dir.cwd().readFileAlloc(io, "test_data/1l2y.dcd", allocator, .limited(8 << 20));
+    defer allocator.free(full);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buf);
+    const cut_path = try std.fs.path.join(allocator, &.{ root_buf[0..root_len], "cut.dcd" });
+    defer allocator.free(cut_path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = cut_path, .data = full[0 .. full.len - 100] });
+
+    var reader = try DcdReader.open(allocator, io, cut_path);
+    defer reader.close();
+
+    var frame_count: usize = 0;
+    const failure = while (true) {
+        var frame = reader.readFrame() catch |err| break err;
+        frame.deinit(allocator);
+        frame_count += 1;
+    };
+    try std.testing.expectEqual(DcdError.TruncatedFrame, failure);
+    try std.testing.expectEqual(@as(usize, 37), frame_count);
 }
