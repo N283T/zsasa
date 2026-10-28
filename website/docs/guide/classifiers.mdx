@@ -219,6 +219,8 @@ The CCD classifier uses a 3-level lookup:
    - **SDF** — bond topology loaded via `--sdf=<path>`
 
    A component defined in more than one of them is taken whole from the first source in the order `--sdf`, `--ccd`, inline CCD; the definitions are not merged.
+
+   Atoms marked as leaving atoms (`pdbx_leaving_atom_flag`) are the ones a residue loses when it links into a polymer. A leaving hydrogen on an atom that stays counts as the link to the neighbouring residue, so the acetyl cap's carbonyl carbon is typed as carrying no hydrogen.
 3. **Element fallback**: If no CCD data is available, a generic van der Waals radius based on the element symbol is used.
 
 :::info[Inline CCD vs External CCD]
@@ -356,7 +358,9 @@ When a classifier cannot find a matching (residue, atom name) pair:
 2. If still unmatched, the atom gets the generic van der Waals radius of its element. The element is read from the input: the element column of a PDB file (or, where that is missing, the [atom name columns](../cli/input.md#pdb-format)), `type_symbol` of mmCIF/BinaryCIF, or the `element` field of JSON
 3. Only when there is no element to read is it guessed from the residue and atom names: JSON input without an `element` field, or, for NACCESS/OONS, an atom whose element is unknown
 
-The CLI reports both groups, for example `Classifier 'NACCESS': 154 atoms classified, 150 fallback` for a 20-residue peptide with 150 explicit hydrogens.
+Element radii come from Mantina et al. (2009) for the elements common in biomolecules and from the same table as the structure parsers for every other element up to lawrencium; `guess_radius(element)` in Python uses the same radii.
+
+The CLI reports both groups, for example `Classifier 'NACCESS': 154 atoms classified, 150 fallback` for a 20-residue peptide with 150 explicit hydrogens. An atom that neither the table nor any element covers (an unknown element, with no name to guess from) keeps the radius the input gave it, and the summary adds `, N kept the input radius`.
 
 The name-based guess in step 3 follows PDB naming:
 

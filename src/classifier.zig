@@ -33,6 +33,7 @@
 //! ```
 
 const std = @import("std");
+const element_table = @import("element.zig");
 const Allocator = std.mem.Allocator;
 
 /// Built-in classifier types
@@ -301,13 +302,40 @@ const atomic_number_radii = blk: {
     break :blk radii;
 };
 
+/// Suffix of the classifier summary line: the atoms that no table and no
+/// element fallback covered, which keep the radius the input gave them.
+pub const KeptRadii = struct {
+    count: usize,
+
+    pub fn format(self: KeptRadii, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        if (self.count > 0) try writer.print(", {d} kept the input radius", .{self.count});
+    }
+};
+
+/// Last atomic number with a radius in the element table (`element.zig`);
+/// the elements after Lr have placeholders only.
+const last_element_with_radius: u8 = 103;
+
 /// Get van der Waals radius from atomic number
 /// Returns null if atomic number is not recognized or out of range
+///
+/// Elements outside the table above take the radius of the element table
+/// the structure parsers use, so every path gives a known element a radius.
 pub fn guessRadiusFromAtomicNumber(atomic_number: u8) ?f64 {
-    if (atomic_number == 0 or atomic_number >= atomic_number_radii.len) return null;
+    if (atomic_number == 0 or atomic_number > last_element_with_radius) return null;
     const radius = atomic_number_radii[atomic_number];
-    if (radius == 0) return null;
-    return radius;
+    if (radius != 0) return radius;
+    return element_table.fromAtomicNumber(atomic_number).vdwRadius();
+}
+
+/// Radius of an element given by its symbol (case-insensitive, trimmed),
+/// for an element column: every element up to Lr, unlike `guessRadius`,
+/// which also serves the guess from atom names and covers only the
+/// elements common in biomolecules.
+pub fn radiusFromElementSymbol(symbol: []const u8) ?f64 {
+    if (guessRadius(symbol)) |r| return r;
+    const e = element_table.fromSymbolExact(std.mem.trim(u8, symbol, " ")) orelse return null;
+    return guessRadiusFromAtomicNumber(e.atomicNumber());
 }
 
 /// van der Waals radii map (O(1) lookup)
@@ -863,8 +891,9 @@ test "guessFallbackRadius element decides over atom name" {
         try std.testing.expectEqual(@as(?f64, 1.40), guessFallbackRadius(ct, 29, "CUA", "CU1"));
         try std.testing.expectEqual(@as(?f64, 1.55), guessFallbackRadius(ct, 80, "HG", "HG"));
 
-        // A known element without a radius is not replaced by a name guess (Si, not S)
-        try std.testing.expectEqual(@as(?f64, null), guessFallbackRadius(ct, 14, "LIG", "SI1"));
+        // An element outside the classifier table takes the parsers' radius,
+        // not a name guess (Si 2.10, not S 1.80)
+        try std.testing.expectEqual(@as(?f64, 2.10), guessFallbackRadius(ct, 14, "LIG", "SI1"));
     }
 }
 
@@ -911,6 +940,34 @@ test "guessRadiusFromAtomicNumber distinguishes CA (Carbon) from Ca (Calcium)" {
 
 test "guessRadiusFromAtomicNumber unknown" {
     try std.testing.expectEqual(@as(?f64, null), guessRadiusFromAtomicNumber(0)); // Invalid
-    try std.testing.expectEqual(@as(?f64, null), guessRadiusFromAtomicNumber(2)); // He (not in our map)
+    try std.testing.expectEqual(@as(?f64, null), guessRadiusFromAtomicNumber(104)); // Rf (placeholder only)
     try std.testing.expectEqual(@as(?f64, null), guessRadiusFromAtomicNumber(118)); // Oganesson
+    try std.testing.expectEqual(@as(?f64, null), guessRadiusFromAtomicNumber(200));
+}
+
+test "guessRadiusFromAtomicNumber covers the elements of the parsers' table" {
+    // Not in the classifier table: the parsers' radius (element.zig)
+    try std.testing.expectApproxEqAbs(@as(f64, 1.40), guessRadiusFromAtomicNumber(2).?, 1e-9); // He
+    try std.testing.expectApproxEqAbs(@as(f64, 1.92), guessRadiusFromAtomicNumber(5).?, 1e-9); // B
+    try std.testing.expectApproxEqAbs(@as(f64, 2.10), guessRadiusFromAtomicNumber(14).?, 1e-9); // Si
+    try std.testing.expectApproxEqAbs(@as(f64, 1.75), guessRadiusFromAtomicNumber(78).?, 1e-9); // Pt
+    // In the classifier table: unchanged (H 1.10, not the parsers' 1.20)
+    try std.testing.expectApproxEqAbs(@as(f64, 1.10), guessRadiusFromAtomicNumber(1).?, 1e-9);
+}
+
+test "KeptRadii appears in the summary only when atoms kept their radius" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("", try std.fmt.bufPrint(&buf, "{f}", .{KeptRadii{ .count = 0 }}));
+    try std.testing.expectEqualStrings(", 3 kept the input radius", try std.fmt.bufPrint(&buf, "{f}", .{KeptRadii{ .count = 3 }}));
+}
+
+test "radiusFromElementSymbol covers every element up to Lr" {
+    try std.testing.expectApproxEqAbs(@as(f64, 1.70), radiusFromElementSymbol("C").?, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.31), radiusFromElementSymbol("Ca").?, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.92), radiusFromElementSymbol("B").?, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.10), radiusFromElementSymbol(" si ").?, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.66), radiusFromElementSymbol("AU").?, 1e-9);
+    try std.testing.expectEqual(@as(?f64, null), radiusFromElementSymbol("XX"));
+    try std.testing.expectEqual(@as(?f64, null), radiusFromElementSymbol("Rf"));
+    try std.testing.expectEqual(@as(?f64, null), radiusFromElementSymbol(""));
 }

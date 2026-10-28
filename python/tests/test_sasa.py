@@ -561,6 +561,12 @@ class TestGuessRadius:
         assert guess_radius("fe") == guess_radius("FE")
         assert guess_radius("Fe") == guess_radius("FE")
 
+    def test_element_outside_classifier_table(self):
+        """Elements outside the classifier table use the parsers' radii."""
+        assert guess_radius("B") == pytest.approx(1.92)
+        assert guess_radius("Si") == pytest.approx(2.10)
+        assert guess_radius("Pt") == pytest.approx(1.75)
+
     def test_unknown_element(self):
         """Unknown element should return None."""
         assert guess_radius("XX") is None

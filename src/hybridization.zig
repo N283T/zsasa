@@ -189,7 +189,8 @@ fn bondValenceHalves(order: BondOrder) u8 {
 ///
 /// Iterates all bonds in the component to find those involving `atom_idx`,
 /// counts heavy-atom vs hydrogen neighbors, and detects double/triple/aromatic
-/// bonds to determine hybridization.
+/// bonds to determine hybridization. A leaving hydrogen (`pdbx_leaving_atom_flag`)
+/// bonded to an atom that is not leaving counts as a heavy neighbor.
 pub fn analyzeBonds(component: *const Component, atom_idx: u16) BondAnalysis {
     var result = BondAnalysis{
         .hybridization = .unknown,
@@ -202,6 +203,7 @@ pub fn analyzeBonds(component: *const Component, atom_idx: u16) BondAnalysis {
     };
 
     var heavy_valence_halves: u16 = 0;
+    const self_leaving = atom_idx < component.atoms.len and component.atoms[atom_idx].leaving;
 
     for (component.bonds) |bond| {
         const neighbor_idx: ?u16 = if (bond.atom_idx_1 == atom_idx)
@@ -215,7 +217,11 @@ pub fn analyzeBonds(component: *const Component, atom_idx: u16) BondAnalysis {
             if (nidx >= component.atoms.len) continue;
 
             const neighbor = &component.atoms[nidx];
-            if (isHydrogen(neighbor.typeSymbolSlice())) {
+            // A leaving hydrogen on an atom that stays is replaced by the
+            // link to the next residue in a polymer (ACE C, amino acid N):
+            // count it as a heavy neighbour.
+            const polymer_link = neighbor.leaving and !self_leaving;
+            if (isHydrogen(neighbor.typeSymbolSlice()) and !polymer_link) {
                 result.h_bond_count +|= 1;
             } else {
                 result.heavy_bond_count +|= 1;
@@ -892,6 +898,42 @@ test "deriveComponentProperties — acetic acid, with and without explicit hydro
     };
     try expectDerivedRadii(&atoms_h, &bonds_h, &expected);
     try expectDerivedRadii(atoms_h[0..4], bonds_h[0..3], &expected);
+}
+
+test "deriveComponentProperties — a leaving hydrogen counts as the polymer link" {
+    // ACE as in the CCD: C(=O)(CH3)H with H a leaving atom. In a capped
+    // peptide that H is the bond to the next residue, so C is C3H0 => 1.61.
+    var atoms = [_]CompAtom{
+        CompAtom.init("C", "C"), // 0
+        CompAtom.init("O", "O"), // 1
+        CompAtom.init("CH3", "C"), // 2
+        CompAtom.init("H", "H"), // 3 (leaving)
+        CompAtom.init("H1", "H"), // 4
+        CompAtom.init("H2", "H"), // 5
+        CompAtom.init("H3", "H"), // 6
+        CompAtom.init("OXT", "O"), // 7 (leaving), unbonded to C here
+        CompAtom.init("HXT", "H"), // 8 (leaving)
+    };
+    atoms[3].leaving = true;
+    atoms[7].leaving = true;
+    atoms[8].leaving = true;
+    const bonds = [_]CompBond{
+        testBond(0, 1, .double),
+        testBond(0, 2, .single),
+        testBond(0, 3, .single),
+        testBond(2, 4, .single),
+        testBond(2, 5, .single),
+        testBond(2, 6, .single),
+        testBond(7, 8, .single),
+    };
+    // A leaving atom keeps its own hydrogens: OXT stays a hydroxyl (1.46).
+    const expected = [_]struct { []const u8, f64 }{
+        .{ "C", 1.61 },
+        .{ "O", 1.42 },
+        .{ "CH3", 1.88 },
+        .{ "OXT", 1.46 },
+    };
+    try expectDerivedRadii(&atoms, &bonds, &expected);
 }
 
 test "deriveComponentProperties — benzene, with and without explicit hydrogens" {
