@@ -2575,3 +2575,22 @@ test "traj run: a DCD trajectory gives the totals of the same frames in the XTC 
         try std.testing.expectApproxEqRel(expected, actual, 1e-3);
     }
 }
+
+test "traj run: a DCD cut inside its last frame fails after writing the complete frames" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
+    var ws = TestWorkspace.init();
+    defer ws.deinit();
+    const topology = try ws.write("m1.pdb", try ws.firstModelPdb());
+
+    const dcd_bytes = try ws.read("test_data/1l2y.dcd");
+    const cut = try ws.write("cut.dcd", dcd_bytes[0 .. dcd_bytes.len - 100]);
+
+    for ([_]usize{ 1, 2 }) |n_threads| {
+        var args = TrajArgs{ .traj_path = cut, .topology_path = topology, .n_points = 16, .n_threads = n_threads, .quiet = true };
+        args.output_path = try ws.path("cut.csv");
+        try std.testing.expectError(error.TruncatedFrame, run(std.testing.allocator, std.testing.io, args));
+        // The fixture has 38 frames; the 37 complete ones are kept.
+        try std.testing.expectEqual(@as(usize, 37), (try ws.totals(try ws.read(args.output_path))).len);
+    }
+}

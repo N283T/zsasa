@@ -45,8 +45,8 @@
               nativeBuildInputs = [ zig ];
               outputHashAlgo = "sha256";
               outputHashMode = "recursive";
-              # zig-deps-fingerprint: 839bd09e1d6ddecfc7326033212218137aab5a744d99c365847bb11b4ff9d867
-              outputHash = "sha256-l4l75mDej5R8oH4246wtB7bgPMaZctS7bIP0WFbzC3Y=";
+              # zig-deps-fingerprint: 10e9e106d4e4a19a0e54b3161037408cdc0edfa42214966585d7cc65da2d075e
+              outputHash = "sha256-JxhOkVdcM9wtvh5CGOxz/PU5RhnHoq7RwwlLXXeCHdY=";
             }
             ''
               export ZIG_GLOBAL_CACHE_DIR=$(mktemp -d)

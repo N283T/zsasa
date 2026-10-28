@@ -29,6 +29,10 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 - **`batch --jsonl-decimals` without `--format=jsonl` is an error**, as `--residue-map` is. Before, the option was accepted and had no effect.
 - **`zsasa traj` fails when the frame selection matches nothing**: `--end` before `--start` is rejected before the output file is created, and a `--start` past the last frame exits with an error instead of writing a header-only CSV and exiting 0.
 - **DCD reader**: `DcdReader.readFrame` in the Zig library reports `error.TruncatedFrame` when the file ends inside a frame; `error.EndOfFile` now means a clean end between two frames.
+- **DCD trajectories (`zsasa traj`, the C API and `zsasa.dcd`) via ztraj** (#423):
+  - A DCD that ends inside a frame is an error (`TruncatedFrame` in `zsasa traj`, `ZSASA_ERROR_INVALID_FORMAT` from `zsasa_dcd_read_frame`, a `RuntimeError` in Python) instead of a clean end of file; the complete frames before it are still written. A file cut inside its last frame used to give one frame less and exit 0.
+  - **The `time` of a DCD frame is in ps (output change)**: (ISTART + i × NSAVC) × DELTA × 0.04888821, as MDTraj and MDAnalysis report it. It was the frame index times the raw DELTA in AKMA units, so `test_data/1l2y.dcd` gave 0, 20.455, 40.91, ... where the same trajectory as XTC gives 1-ps steps. This changes the `time` column of `zsasa traj` CSV output for DCD input and `DcdFrame.time` in Python.
+  - The unit cell from `zsasa_dcd_read_frame` and `DcdFrame.unitcell` carries the angles stored in the file (CHARMM order A, γ, B, β, α, C, in degrees; cosines written by newer CHARMM versions are converted). They were always 90°.
 
 ## [v0.11.0](https://github.com/N283T/zsasa/releases/tag/v0.11.0) — 2026-10-12
 
