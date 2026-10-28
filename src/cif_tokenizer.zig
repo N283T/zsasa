@@ -247,27 +247,23 @@ pub const Tokenizer = struct {
         return .{ .err = "Unterminated quoted string" };
     }
 
-    /// Read semicolon-delimited text block
+    /// Read semicolon-delimited text block. Per the CIF specification the
+    /// value starts right after the opening semicolon (the rest of that line
+    /// belongs to it) and ends before the line break that precedes the
+    /// closing semicolon, so `;A\n;` is `A`.
     fn readSemicolonText(self: *Tokenizer) Token {
         self.pos += 1; // skip opening semicolon
         self.col += 1;
-
-        // Skip to end of first line
-        while (self.pos < self.source.len and self.source[self.pos] != '\n') {
-            self.pos += 1;
-        }
-        if (self.pos < self.source.len) {
-            self.pos += 1; // skip newline
-            self.line += 1;
-            self.col = 1;
-        }
 
         const start = self.pos;
 
         // Find closing semicolon at beginning of line
         while (self.pos < self.source.len) {
             if (self.col == 1 and self.source[self.pos] == ';') {
-                const value = self.source[start..self.pos];
+                // The character before a semicolon in column 1 is the line break
+                var end = self.pos - 1;
+                if (end > start and self.source[end - 1] == '\r') end -= 1;
+                const value = self.source[start..end];
                 self.pos += 1; // skip closing semicolon
                 self.col += 1;
                 return .{ .value = value };
@@ -388,7 +384,25 @@ test "tokenize semicolon text" {
     var tok = Tokenizer.init(source);
     const token = tok.next();
     try std.testing.expectEqual(Token.value, std.meta.activeTag(token));
-    try std.testing.expectEqualStrings("second line\n", token.value);
+    try std.testing.expectEqualStrings("first line\nsecond line", token.value);
+}
+
+test "semicolon text follows the CIF specification" {
+    var single = Tokenizer.init(";A\n;\n");
+    try std.testing.expectEqualStrings("A", single.next().value);
+
+    var empty = Tokenizer.init(";\n;\n");
+    try std.testing.expectEqualStrings("", empty.next().value);
+
+    var crlf = Tokenizer.init(";A\r\nB\r\n;\r\n");
+    try std.testing.expectEqualStrings("A\r\nB", crlf.next().value);
+
+    // A semicolon that is not in column 1 does not close the block
+    var inner = Tokenizer.init(";A\nB;C\n;\n");
+    try std.testing.expectEqualStrings("A\nB;C", inner.next().value);
+
+    var open = Tokenizer.init(";A\nB\n");
+    try std.testing.expectEqual(Token.err, std.meta.activeTag(open.next()));
 }
 
 test "skip comments" {
