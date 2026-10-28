@@ -8,6 +8,15 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+### Fixed
+
+- **`calc` and `batch` take `-o=FILE` / `-o=DIR`**, as `traj` already did. Before, `-o=FILE` was rejected as an unknown option.
+- **`calc --workflow` uses `[classifier] ccd` and `sdf` without `type`**, as `batch` does: an omitted type means the default `ccd` classifier. Before, `calc` ignored them silently.
+- **A workflow with `[classifier] config` but without `type = "custom"` is an error** (`InvalidClassifierConfig`, with an explanation). Before, the key was ignored and the default classifier was used.
+- **`--ccd` and `--sdf` print a warning when the classifier in use is not `ccd`** (`calc` and `batch`). They were ignored without a word; the classifier in use does not change.
+- **`batch --use-bitmask` explains a bad `--n-points` or `--algorithm=lr`** with the message `calc` prints, instead of only the error name.
+- **`batch --jsonl-decimals` without `--format=jsonl` is an error**, as `--residue-map` is. Before, the option was accepted and had no effect.
+
 ## [v0.11.0](https://github.com/N283T/zsasa/releases/tag/v0.11.0) — 2026-10-12
 
 ### Upgrade notes

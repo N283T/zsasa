@@ -639,6 +639,9 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
             }
             result.output_path = args[i];
             result.output_path_explicit = true;
+        } else if (std.mem.startsWith(u8, arg, "-o=")) {
+            result.output_path = arg["-o=".len..];
+            result.output_path_explicit = true;
         } else if (std.mem.startsWith(u8, arg, "--output=")) {
             result.output_path = arg["--output=".len..];
             result.output_path_explicit = true;
@@ -829,9 +832,22 @@ fn classifierUsesCcdResources(effective_classifier_type: ?ClassifierType) bool {
     return classifier_type == .ccd;
 }
 
+/// Whether the classifier this run ends up with reads --ccd / --sdf. An unset
+/// classifier is the default CCD one, as in `batch`, unless a custom config is
+/// given.
 fn calcArgsUseCcdResources(args: CalcArgs) bool {
     if (args.config_path != null) return false;
-    return classifierUsesCcdResources(args.classifier_type);
+    return classifierUsesCcdResources(args.classifier_type orelse .ccd);
+}
+
+/// True when --ccd or --sdf was given but the classifier in use never reads it.
+fn ccdResourcesIgnored(ccd_explicit: bool, sdf_explicit: bool, uses_ccd_resources: bool) bool {
+    return (ccd_explicit or sdf_explicit) and !uses_ccd_resources;
+}
+
+fn warnIgnoredCcdResources(ccd_explicit: bool, sdf_explicit: bool, uses_ccd_resources: bool, quiet: bool) void {
+    if (quiet or !ccdResourcesIgnored(ccd_explicit, sdf_explicit, uses_ccd_resources)) return;
+    std.debug.print("Warning: --ccd and --sdf are used only with the ccd classifier; ignored\n", .{});
 }
 
 // =============================================================================
@@ -1458,6 +1474,12 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
     const effective_classifier: ?ClassifierType = effective_args.classifier_type orelse
         if (effective_args.config_path == null and input_format != .json) .ccd else null;
     effective_args.classifier_type = if (effective_args.validate_only) null else effective_classifier;
+    warnIgnoredCcdResources(
+        effective_args.ccd_explicit,
+        effective_args.sdf_explicit,
+        effective_args.config_path == null and classifierUsesCcdResources(effective_classifier),
+        effective_args.quiet,
+    );
 
     if (effective_classifier) |ct| {
         // CCD/ProtOr use united-atom radii (implicit H) — warn if explicit H included
@@ -2277,6 +2299,13 @@ test "CalcArgs --output FILE (space-separated)" {
     try std.testing.expectEqual(true, parsed.output_path_explicit);
 }
 
+test "CalcArgs -o=FILE" {
+    const args = [_][]const u8{ "zsasa", "calc", "-o=out.json", "input.json" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expectEqualStrings("out.json", parsed.output_path);
+    try std.testing.expect(parsed.output_path_explicit);
+}
+
 test "CalcArgs --workflow=FILE" {
     const args = [_][]const u8{ "zsasa", "calc", "--workflow=calc-workflow.toml" };
     const parsed = parseArgs(&args, 2);
@@ -2774,6 +2803,35 @@ test "calc CLI explicit classifier overrides workflow classifier" {
 
     try std.testing.expectEqual(ClassifierType.naccess, args.classifier_type.?);
     try std.testing.expectEqual(@as(?[]const u8, null), args.config_path);
+}
+
+test "calc workflow ccd and sdf apply without a classifier type, as in batch" {
+    const sdf_paths = [_][]const u8{"workflow-ligand.sdf"};
+    const workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .classifier = .{
+            .ccd = "workflow.zsdc",
+            .sdf = sdf_paths[0..],
+        },
+    };
+    var args = CalcArgs{};
+
+    try applyWorkflowToCalcArgs(&args, workflow);
+
+    try std.testing.expectEqualStrings("workflow.zsdc", args.ccd_path.?);
+    try std.testing.expectEqual(@as(usize, 1), args.sdf_paths.len);
+
+    var custom = CalcArgs{ .config_path = "radii.toml" };
+    try applyWorkflowToCalcArgs(&custom, workflow);
+    try std.testing.expectEqual(@as(?[]const u8, null), custom.ccd_path);
+}
+
+test "ccdResourcesIgnored flags --ccd and --sdf without the ccd classifier" {
+    try std.testing.expect(ccdResourcesIgnored(true, false, false));
+    try std.testing.expect(ccdResourcesIgnored(false, true, false));
+    try std.testing.expect(!ccdResourcesIgnored(true, true, true));
+    try std.testing.expect(!ccdResourcesIgnored(false, false, false));
 }
 
 test "calc workflow applies CCD resources only for CCD classifier" {
