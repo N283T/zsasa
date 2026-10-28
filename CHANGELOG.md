@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`calc` and `batch` read the first model of a multi-model file** (an NMR ensemble, for example) instead of superimposing every model into one structure, which gave a SASA with no physical meaning and no warning: `zsasa calc test_data/1l2y.pdb` computed 38 superimposed models (2179.68 Å²) and now gives model 1 (1813.17 Å², as with `--model=1`). `calc --model=all` (workflow `model = "all"`) keeps the old behavior. `batch`, `process_directory()` and the C API batch functions read the first model as well, as `traj` already did for its topology. The Zig `BcifParser` gains `first_model_only`, like the PDB and mmCIF parsers. **This changes default results for files with more than one model.** (#433)
+
 ### Fixed
 
 - **Classifier follow-ups from #421 and #422**:

@@ -62,7 +62,8 @@ pub const CalcArgs = struct {
     classifier_type: ?ClassifierType = null, // Built-in classifier (naccess/protor/oons/ccd)
     config_path: ?[]const u8 = null, // Custom config file path
     chain_filter: ?[]const u8 = null, // Chain filter (e.g., "A" or "A,B,C")
-    model_num: ?u32 = null, // Model number for NMR structures
+    model_num: ?u32 = null, // Model number for NMR structures; null reads the first model
+    all_models: bool = false, // --model=all: every model, superimposed
     use_auth_chain: bool = false, // Use auth_asym_id instead of label_asym_id
     alt_loc_mode: mmcif_parser.AltLocMode = .auto, // Alternate-location handling (PDB, mmCIF, BinaryCIF)
     alt_loc_id: u8 = 'A', // Selected altLoc ID for --altloc=<ID>
@@ -457,33 +458,14 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
         }
         // --model=N or --model N
         else if (std.mem.startsWith(u8, arg, "--model=")) {
-            const value = arg["--model=".len..];
-            const model = std.fmt.parseInt(u32, value, 10) catch {
-                std.debug.print("Error: Invalid model number: {s}\n", .{value});
-                std.process.exit(1);
-            };
-            if (model == 0) {
-                std.debug.print("Error: Model number must be >= 1\n", .{});
-                std.process.exit(1);
-            }
-            result.model_num = model;
-            result.model_explicit = true;
+            setModelArg(&result, arg["--model=".len..]);
         } else if (std.mem.eql(u8, arg, "--model")) {
             i += 1;
             if (i >= args.len) {
                 std.debug.print("Error: Missing value for --model\n", .{});
                 std.process.exit(1);
             }
-            const model = std.fmt.parseInt(u32, args[i], 10) catch {
-                std.debug.print("Error: Invalid model number: {s}\n", .{args[i]});
-                std.process.exit(1);
-            };
-            if (model == 0) {
-                std.debug.print("Error: Model number must be >= 1\n", .{});
-                std.process.exit(1);
-            }
-            result.model_num = model;
-            result.model_explicit = true;
+            setModelArg(&result, args[i]);
         }
         // --auth-chain (use auth_asym_id instead of label_asym_id)
         else if (std.mem.eql(u8, arg, "--auth-chain")) {
@@ -685,15 +667,22 @@ fn applyWorkflowToCalcArgs(args: *CalcArgs, workflow: workflow_manifest.Workflow
         if (workflow.input.chain) |chain| args.chain_filter = chain;
     }
     if (!args.model_explicit) {
-        if (workflow.input.model) |model| {
-            if (model == 0) {
-                if (!builtin.is_test) {
-                    std.debug.print("Error: workflow model must be >= 1\n", .{});
+        if (workflow.input.model) |selection| switch (selection) {
+            .all => {
+                args.model_num = null;
+                args.all_models = true;
+            },
+            .number => |model| {
+                if (model == 0) {
+                    if (!builtin.is_test) {
+                        std.debug.print("Error: workflow model must be >= 1\n", .{});
+                    }
+                    return error.InvalidArgument;
                 }
-                return error.InvalidArgument;
-            }
-            args.model_num = model;
-        }
+                args.model_num = model;
+                args.all_models = false;
+            },
+        };
     }
     if (!args.mol_explicit) {
         if (workflow.input.mol) |mol| args.mol_selector = mol;
@@ -892,7 +881,7 @@ pub fn printHelp(io: std.Io, program_name: []const u8) void {
         \\                       (default: auto)
         \\    --include-hydrogens Include hydrogen atoms (default: excluded)
         \\    --include-hetatm   Include HETATM records (default: excluded)
-        \\    --model=N          Model number for NMR structures (default: all)
+        \\    --model=N|all      Model of a multi-model file, or all superimposed (default: first)
         \\    --per-residue      Show per-residue SASA aggregation
         \\    --rsa              Show RSA (Relative Solvent Accessibility)
         \\    --polar            Show polar/nonpolar SASA summary
@@ -1012,6 +1001,32 @@ fn selectMolecule(molecules: []const sdf_parser.SdfMolecule, mol_selector: ?[]co
     return 0;
 }
 
+/// Without `--model`, only the first model of a multi-model file is read;
+/// `--model=all` superimposes every model.
+fn readsFirstModelOnly(args: CalcArgs) bool {
+    return args.model_num == null and !args.all_models;
+}
+
+/// Apply the value of `--model`: a model number (>= 1) or `all`.
+fn setModelArg(result: *CalcArgs, value: []const u8) void {
+    result.model_explicit = true;
+    if (std.mem.eql(u8, value, "all")) {
+        result.model_num = null;
+        result.all_models = true;
+        return;
+    }
+    const model = std.fmt.parseInt(u32, value, 10) catch {
+        std.debug.print("Error: Invalid model number: {s} (use a number >= 1 or 'all')\n", .{value});
+        std.process.exit(1);
+    };
+    if (model == 0) {
+        std.debug.print("Error: Model number must be >= 1\n", .{});
+        std.process.exit(1);
+    }
+    result.model_num = model;
+    result.all_models = false;
+}
+
 /// Read input file (auto-detect format)
 fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, args: CalcArgs) !ReadResult {
     const format = format_detect.detectInputFormat(path);
@@ -1020,6 +1035,7 @@ fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, arg
         .bcif => blk: {
             var parser = bcif_parser.BcifParser.init(allocator);
             parser.model_num = args.model_num;
+            parser.first_model_only = readsFirstModelOnly(args);
             parser.use_auth_chain = args.use_auth_chain;
             parser.skip_hydrogens = !args.include_hydrogens;
             parser.atom_only = !args.include_hetatm;
@@ -1041,6 +1057,7 @@ fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, arg
         .mmcif => blk: {
             var parser = mmcif_parser.MmcifParser.init(allocator);
             parser.model_num = args.model_num;
+            parser.first_model_only = readsFirstModelOnly(args);
             parser.use_auth_chain = args.use_auth_chain;
             parser.skip_hydrogens = !args.include_hydrogens;
             parser.atom_only = !args.include_hetatm;
@@ -1062,6 +1079,7 @@ fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, arg
         .pdb => blk: {
             var parser = pdb_parser.PdbParser.init(allocator);
             parser.model_num = args.model_num;
+            parser.first_model_only = readsFirstModelOnly(args);
             parser.skip_hydrogens = !args.include_hydrogens;
             parser.atom_only = !args.include_hetatm;
             parser.alt_loc_mode = args.alt_loc_mode;
@@ -2280,6 +2298,61 @@ test "CalcArgs --model=1" {
     const args = [_][]const u8{ "zsasa", "calc", "--model=1", "input.json" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(@as(u32, 1), parsed.model_num.?);
+    try std.testing.expect(!readsFirstModelOnly(parsed));
+}
+
+test "CalcArgs --model=all and the first-model default" {
+    const all = parseArgs(&.{ "zsasa", "calc", "--model=all", "input.json" }, 2);
+    try std.testing.expect(all.all_models);
+    try std.testing.expect(all.model_num == null);
+    try std.testing.expect(!readsFirstModelOnly(all));
+
+    const all_spaced = parseArgs(&.{ "zsasa", "calc", "--model", "all", "input.json" }, 2);
+    try std.testing.expect(all_spaced.all_models);
+
+    const default = parseArgs(&.{ "zsasa", "calc", "input.json" }, 2);
+    try std.testing.expect(readsFirstModelOnly(default));
+}
+
+test "calc reads the first model of a multi-model file unless --model=all" {
+    const path = "test_data/1l2y.pdb";
+
+    const counts = struct {
+        fn atoms(flags: []const []const u8) !usize {
+            var argv: [4][]const u8 = undefined;
+            argv[0] = "zsasa";
+            argv[1] = "calc";
+            for (flags, 0..) |flag, k| argv[2 + k] = flag;
+            argv[2 + flags.len] = path;
+            const args = parseArgs(argv[0 .. 3 + flags.len], 2);
+            var result = try readInputFile(std.testing.allocator, std.testing.io, path, args);
+            defer result.deinitCcd();
+            defer result.input.deinit();
+            return result.input.atomCount();
+        }
+    };
+    const first = try counts.atoms(&.{});
+    try std.testing.expectEqual(first, try counts.atoms(&.{"--model=1"}));
+    // 38 NMR models
+    try std.testing.expectEqual(first * 38, try counts.atoms(&.{"--model=all"}));
+    try std.testing.expectEqual(first, try counts.atoms(&.{"--model=2"}));
+}
+
+test "calc workflow model = \"all\" reads every model unless --model is given" {
+    const workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .input = .{ .model = .all },
+    };
+    var args = CalcArgs{};
+    try applyWorkflowToCalcArgs(&args, workflow);
+    try std.testing.expect(args.all_models);
+    try std.testing.expect(!readsFirstModelOnly(args));
+
+    var explicit = parseArgs(&.{ "zsasa", "calc", "--model=3", "input.json" }, 2);
+    try applyWorkflowToCalcArgs(&explicit, workflow);
+    try std.testing.expect(!explicit.all_models);
+    try std.testing.expectEqual(@as(u32, 3), explicit.model_num.?);
 }
 
 test "CalcArgs --auth-chain" {
@@ -2847,7 +2920,7 @@ test "calc workflow applies fields when CLI did not override" {
         .input = .{
             .path = "structure.cif",
             .chain = "A,B",
-            .model = 2,
+            .model = .{ .number = 2 },
             .mol = "LIG",
         },
         .output = .{
@@ -3078,7 +3151,7 @@ test "calc workflow rejects zero model number" {
         .allocator = std.testing.allocator,
         .content = "",
         .input = .{
-            .model = 0,
+            .model = .{ .number = 0 },
         },
     };
     var args = CalcArgs{};

@@ -37,11 +37,17 @@ pub fn errorHint(err: anyerror) ?[]const u8 {
 
 pub const Error = WorkflowError || Allocator.Error || toml_parser.Error || std.Io.File.OpenError || std.Io.File.ReadStreamingError || error{ ReadFailed, StreamTooLong };
 
+/// `[input] model`: a model number, or `"all"` for every model superimposed.
+pub const ModelSelection = union(enum) {
+    number: u32,
+    all,
+};
+
 pub const Input = struct {
     path: ?[]const u8 = null,
     dir: ?[]const u8 = null,
     chain: ?[]const u8 = null,
-    model: ?u32 = null,
+    model: ?ModelSelection = null,
     mol: ?[]const u8 = null,
 };
 
@@ -487,7 +493,7 @@ fn parseInput(table: toml_parser.Table) WorkflowError!Input {
         .path = try optionalString(table.entries, "path"),
         .dir = try optionalString(table.entries, "dir"),
         .chain = try optionalString(table.entries, "chain"),
-        .model = try optionalU32(table.entries, "model"),
+        .model = try optionalModel(table.entries, "model"),
         .mol = try optionalString(table.entries, "mol"),
     };
 }
@@ -857,6 +863,15 @@ fn optionalU32(entries: []const toml_parser.Value.Entry, key: []const u8) Workfl
     };
 }
 
+fn optionalModel(entries: []const toml_parser.Value.Entry, key: []const u8) WorkflowError!?ModelSelection {
+    const value = findValue(entries, key) orelse return null;
+    return switch (value) {
+        .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) .{ .number = @intCast(i) } else error.InvalidFieldType,
+        .string => |s| if (std.mem.eql(u8, s, "all")) .all else error.InvalidFieldType,
+        else => error.InvalidFieldType,
+    };
+}
+
 fn optionalU8(entries: []const toml_parser.Value.Entry, key: []const u8) WorkflowError!?u8 {
     const value = findValue(entries, key) orelse return null;
     return switch (value) {
@@ -933,7 +948,7 @@ test "parse sectioned calc workflow" {
     try std.testing.expectEqual(false, workflow.is_legacy_batch_workflow);
     try std.testing.expectEqualStrings("structure.cif", workflow.input.path.?);
     try std.testing.expectEqualStrings("A,B", workflow.input.chain.?);
-    try std.testing.expectEqual(@as(u32, 1), workflow.input.model.?);
+    try std.testing.expectEqual(@as(u32, 1), workflow.input.model.?.number);
     try std.testing.expectEqualStrings("LIG", workflow.input.mol.?);
     try std.testing.expectEqualStrings("result.json", workflow.output.path.?);
     try std.testing.expectEqualStrings("json", workflow.output.format.?);
