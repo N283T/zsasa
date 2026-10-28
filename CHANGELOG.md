@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`zsasa traj` takes `--model=N` and `--include-hetatm`**, with the meaning and syntax they have in `calc`. `--model=N` reads model N of the topology instead of the first one; a model that does not exist is an error (`ModelNotFound`). `--include-hetatm` is accepted for consistency; a `traj` topology has always included its `HETATM` records, so it changes nothing. Default behavior is unchanged. `--chain` and `--auth-chain` are still rejected. (#423)
+
 ### Changed
 
 - **`calc` and `batch` read the first model of a multi-model file** (an NMR ensemble, for example) instead of superimposing every model into one structure, which gave a SASA with no physical meaning and no warning: `zsasa calc test_data/1l2y.pdb` computed 38 superimposed models (2179.68 Å²) and now gives model 1 (1813.17 Å², as with `--model=1`). `calc --model=all` (workflow `model = "all"`) keeps the old behavior. `batch`, `process_directory()` and the C API batch functions read the first model as well, as `traj` already did for its topology. The Zig `BcifParser` gains `first_model_only`, like the PDB and mmCIF parsers. **This changes default results for files with more than one model.** (#433)

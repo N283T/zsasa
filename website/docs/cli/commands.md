@@ -159,14 +159,14 @@ See [Classifiers](../guide/classifiers.mdx) for detailed classifier documentatio
 | Option | Description | Default | Commands |
 |--------|-------------|---------|----------|
 | `--chain=ID` | Filter by chain ID (e.g., `A` or `A,B,C`). In `batch` it cannot be combined with `--workflow`; use the `chains` of a workflow job. `batch` rejects a value without any chain ID, such as `--chain=,` | all chains | calc, batch |
-| `--model=N` | Model of a multi-model file such as an NMR ensemble (≥1), or `all` for every model superimposed | first model | calc |
+| `--model=N` | Model of a multi-model file such as an NMR ensemble (≥1); `calc` also takes `all` for every model superimposed. In `traj`, the model of the topology; a model that does not exist is an error (`ModelNotFound`) | first model | calc, traj |
 | `--auth-chain` | Use auth_asym_id for chain IDs and auth_seq_id for residue numbers (mmCIF/BinaryCIF) | label_asym_id, label_seq_id | calc, batch |
 | `--altloc=MODE` | [Alternate-location handling](input.md#alternate-locations) for PDB, mmCIF and BinaryCIF input: `auto`, `none`, `all`, `highest-occupancy`, or one ID such as `A` | `auto` | calc, batch, traj |
 | `--include-hydrogens` | Include hydrogen atoms | calc/batch: excluded; traj: included | calc, batch, traj |
 | `--no-hydrogens` | Exclude hydrogen atoms (`--exclude-hydrogens` is a synonym) | — | traj |
-| `--include-hetatm` | Include HETATM records | excluded | calc, batch |
+| `--include-hetatm` | Include HETATM records. `traj` accepts it for consistency with `calc`, but always reads them | excluded (`traj`: always included) | calc, batch, traj |
 
-`traj` always reads every `ATOM` and `HETATM` record of the first model of its topology; see [Trajectory Options](#trajectory-options).
+`traj` always reads every `ATOM` and `HETATM` record of its topology, of the first model unless `--model=N` selects another; see [Trajectory Options](#trajectory-options).
 
 ### Analysis Options
 
@@ -236,7 +236,7 @@ The `traj` subcommand has additional options specific to trajectory processing.
 
 ### Options
 
-Every option marked `traj` in the [algorithm](#algorithm-options), [classifier](#classifier-options), [structure filtering](#structure-filtering) and [output](#output-options) tables applies, plus the trajectory-specific options below. For trajectory calculations, `--classifier` defaults to `naccess` (not `ccd`); `traj` has no custom config CLI option, so use a built-in classifier. The structure filters `--chain`, `--model`, `--auth-chain` and `--include-hetatm`, the analysis options, `--format`, `--timing` and `--validate` are not available (`Error: Unknown option`): `traj` writes the total SASA of all topology atoms per frame, and the output file is always given with `-o`/`--output` (there is no positional output argument).
+Every option marked `traj` in the [algorithm](#algorithm-options), [classifier](#classifier-options), [structure filtering](#structure-filtering) and [output](#output-options) tables applies, plus the trajectory-specific options below. For trajectory calculations, `--classifier` defaults to `naccess` (not `ccd`); `traj` has no custom config CLI option, so use a built-in classifier. The structure filters `--chain` and `--auth-chain`, the analysis options, `--format`, `--timing` and `--validate` are not available (`Error: Unknown option`): `traj` writes the total SASA of all topology atoms per frame, and the output file is always given with `-o`/`--output` (there is no positional output argument).
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -256,7 +256,7 @@ Every option marked `traj` in the [algorithm](#algorithm-options), [classifier](
 - Supported trajectory formats: **XTC** and **TRR** (GROMACS), **DCD** (NAMD/CHARMM), and **AMBER NetCDF** (`.nc`, `.ncdf`), auto-detected from extension
 - Coordinates are normalized to Å internally by the ztraj readers before SASA calculation.
 - Hydrogen atoms are **included** by default in trajectory mode; use `--no-hydrogens` to exclude them. The option removes hydrogens from the topology and from every frame, so the trajectory itself must still contain them
-- Topology file provides atom names for radius classification. Every `ATOM` and `HETATM` record of its **first model** is read, in file order; later models of an NMR ensemble are ignored. Solvent, ions and ligands in the topology are therefore part of the calculation
+- Topology file provides atom names for radius classification. Every `ATOM` and `HETATM` record of its **first model** (or of model N with `--model=N`) is read, in file order; the other models of an NMR ensemble are ignored. Solvent, ions and ligands in the topology are therefore part of the calculation
 - The number of atoms in the trajectory must match the topology (before hydrogens are removed)
 - Default precision is `f32` (faster for trajectory processing). `--algorithm` and `--precision` are independent: all four combinations are available
 - Options are validated before the output file is created, so a rejected command leaves an existing output file untouched
@@ -435,7 +435,7 @@ Errors are written to standard error and the command exits with status 1. `<...>
 | `Error: Invalid classifier: <value>` | all | Unknown classifier name |
 | `Error: Invalid precision: <value>` | all | Precision is not `f32` or `f64` |
 | `Error: Invalid lr-trig: <value>` | all | `--lr-trig` is not `exact` or `fast` |
-| `Error: Model number must be >= 1` | calc | `--model` is 0 or negative |
+| `Error: Model number must be >= 1` | calc, traj | `--model` is 0 or negative |
 | `Error: Stride must be >= 1: <value>` | traj | `--stride=0` |
 | `Error: --use-bitmask requires --n-points to be 1..1024 (got <value>)` | calc | Bitmask mode supports 1 to 1024 test points. `batch` reports `Error: UnsupportedNPoints` and `traj` `Error: --use-bitmask requires --n-points=1..1024` |
 | `Error: --use-bitmask is only supported with the sr (shrake-rupley) algorithm` | calc | Bitmask mode with `--algorithm=lr`. `batch` reports `Error: BitmaskRequiresSR` and `traj` `Error: --use-bitmask requires --algorithm=sr` |
@@ -456,7 +456,7 @@ Errors are written to standard error and the command exits with status 1. `<...>
 | `Error: Classifier requires 'residue' and 'atom_name' fields in input` | calc | `--classifier` with JSON input that lacks classification info |
 | `Error: --format=rsa requires chain, residue name, residue number, and insertion code metadata; ...` | calc | `--format=rsa` with JSON input |
 | `Error: Unknown trajectory format. Supported: .xtc, .trr, .dcd, .nc, .ncdf` | traj | The trajectory extension is not recognized |
-| `Error: Atom count mismatch - trajectory has <n> atoms, topology has <m>` | traj | The trajectory and the topology (first model, `ATOM` and `HETATM` records) have different numbers of atoms |
+| `Error: Atom count mismatch - trajectory has <n> atoms, topology has <m>` | traj | The trajectory and the topology (selected model, `ATOM` and `HETATM` records) have different numbers of atoms |
 | `Error: 1 output name is shared by more than one input:` | batch | Several inputs would write the same output file (`<n> output names are ...` for several names); see [Batch Processing](../guide/batch.md#basic-directory-batch) |
 | `Error running workflow job '<job>': <cause>` | batch | A workflow job could not run: `cannot read input directory '<dir>': <name>`, `its inputs share output names (listed above)`, `cannot create output directory '<dir>': <name>` or `cannot create JSONL output '<path>': <name>`. The other jobs still run, `<n> of <m> jobs failed: <jobs>` follows the totals, and the command ends with `Error: WorkflowJobFailed`; see [Workflow Files](../guide/workflows.md#failures) |
 | `<n> of <m> inputs failed:` | batch | Not an error exit: inputs that could not be processed, one per line with the reason, printed at the end of the run also with `--quiet`. A workflow prints `Job '<job>': <n> of <m> inputs failed:` for each job; see [Batch Processing](../guide/batch.md#failed-inputs) |

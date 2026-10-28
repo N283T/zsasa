@@ -72,6 +72,8 @@ zsasa traj trajectory.xtc topology.pdb -o sasa_results.csv
 | `--precision=P` | `f32` (fast) or `f64` (precise) | `f32` |
 | `--no-hydrogens` | Exclude hydrogen atoms from the calculation (`--exclude-hydrogens` is a synonym) | included |
 | `--include-hydrogens` | Include hydrogen atoms (the default) | included |
+| `--model=N` | Read model N of the topology instead of the first (PDB or mmCIF); an unknown model is an error | first model |
+| `--include-hetatm` | Accepted for consistency with `calc`; `HETATM` records are always part of the topology | always included |
 | `--ccd=PATH`, `--sdf=PATH` | External CCD dictionary and SDF bond topology for the `ccd` classifier | none |
 | `--use-bitmask` | [Bitmask LUT optimization](algorithms.mdx#bitmask-lut-optimization) (SR only, `--n-points` 1-1024) | off |
 | `--bitmask-lut-mode=MODE`, `--bitmask-correction`, `--bitmask-correction-coeff=V` | Bitmask variants; see [Algorithms](algorithms.mdx#experimental-bias-correction) | `single`, off, `0.020` |
@@ -96,9 +98,9 @@ These are the first frames of `test_data/1l2y.xtc` with `test_data/1l2y.pdb` as 
 
 ### Topology Requirements
 
-The topology must describe exactly the atoms stored in the trajectory, in the same order. zsasa reads every `ATOM` and `HETATM` record of the **first model** of the topology file and compares the atom count with the trajectory before any frame is processed.
+The topology must describe exactly the atoms stored in the trajectory, in the same order. zsasa reads every `ATOM` and `HETATM` record of the **first model** (or of model `N` with `--model=N`) of the topology file and compares the atom count with the trajectory before any frame is processed.
 
-- A multi-model file (for example an NMR ensemble) can be used directly; only its first model is the topology.
+- A multi-model file (for example an NMR ensemble) can be used directly; only its first model is the topology unless you pick another with `--model=N`. A model that does not exist is an error (`ModelNotFound`), and the trajectory must hold the atoms of the selected model (the atom-count check reports a mismatch if the models differ in size).
 - Solvent, ions and ligands that are part of the trajectory must be listed in the topology, and they are part of the reported SASA. To restrict the calculation to a subset, write a trajectory and topology that contain only those atoms, or use the [MDAnalysis integration](../integrations/mdanalysis.md) with a selection.
 - For residues the classifier does not know, radii fall back to generic atom-name or element-based values, as in `calc`.
 - `--altloc` selects which [alternate locations](../cli/input.md#alternate-locations) of a PDB or mmCIF topology are kept (default `auto`, one per atom). The trajectory must hold the atoms that remain.

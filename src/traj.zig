@@ -155,6 +155,8 @@ pub const TrajArgs = struct {
     include_hydrogens: bool = true, // Include hydrogen atoms (default: include for MD trajectories)
     alt_loc_mode: mmcif_parser.AltLocMode = .auto, // Alternate-location handling for the topology
     alt_loc_id: u8 = 'A',
+    model_num: ?u32 = null, // Topology model to read (null = the first model, whatever its number)
+    include_hetatm: bool = true, // HETATM records are always part of a traj topology; --include-hetatm is accepted for consistency with calc
     batch_size: u32 = 0, // Frames per batch for parallel processing (0 = auto)
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
     bitmask_lut_mode: BitmaskLutMode = .single,
@@ -406,6 +408,19 @@ fn parseArgsChecked(args: []const []const u8, start_idx: usize) ArgError!TrajArg
                 const setting = try parseAltLocSetting(args[i]);
                 result.alt_loc_mode = setting.mode;
                 result.alt_loc_id = setting.id;
+            } else if (std.mem.eql(u8, arg, "--include-hetatm")) {
+                // A traj topology must list every trajectory atom, so HETATM
+                // records are always read; the flag changes nothing.
+                result.include_hetatm = true;
+            } else if (std.mem.startsWith(u8, arg, "--model=")) {
+                result.model_num = try parseModelNumber(arg["--model=".len..]);
+            } else if (std.mem.eql(u8, arg, "--model")) {
+                i += 1;
+                if (i >= args.len) {
+                    std.debug.print("Error: Missing value for --model\n", .{});
+                    return error.InvalidArgument;
+                }
+                result.model_num = try parseModelNumber(args[i]);
             } else if (std.mem.eql(u8, arg, "--use-bitmask")) {
                 result.use_bitmask = true;
             } else if (std.mem.startsWith(u8, arg, "--bitmask-lut-mode=")) {
@@ -493,6 +508,18 @@ fn parseLrTrig(value: []const u8) ArgError!TrigMode {
     };
 }
 
+fn parseModelNumber(value: []const u8) ArgError!u32 {
+    const model = std.fmt.parseInt(u32, value, 10) catch {
+        std.debug.print("Error: Invalid model number: {s}\n", .{value});
+        return error.InvalidArgument;
+    };
+    if (model == 0) {
+        std.debug.print("Error: Model number must be >= 1\n", .{});
+        return error.InvalidArgument;
+    }
+    return model;
+}
+
 fn parsePrecision(value: []const u8) ArgError!Precision {
     if (std.mem.eql(u8, value, "f32")) {
         return .f32;
@@ -560,6 +587,10 @@ pub fn printHelp(io: std.Io, program_name: []const u8) void {
         \\                       in the topology and trajectory files (default: included)
         \\    --include-hydrogens
         \\                       Include hydrogen atoms (default, for backward compat)
+        \\    --model=N          Read model N of the topology instead of the first
+        \\                       (PDB/mmCIF; the trajectory must have that model's atoms)
+        \\    --include-hetatm   Accepted for consistency with calc; HETATM records are
+        \\                       always part of the topology (default behavior)
         \\    --altloc=MODE      Topology alternate-location handling (PDB/mmCIF): auto,
         \\                       none, all, highest-occupancy, or a single ID like A
         \\                       (default: auto)
@@ -1040,11 +1071,22 @@ fn selectTopologyAtoms(allocator: Allocator, full: *const AtomInput, indices: []
     return out;
 }
 
+/// With `--model=N`, a topology without atoms means the model does not exist.
+fn modelError(err: anyerror, args: TrajArgs, path: []const u8) anyerror {
+    if (args.model_num) |model| {
+        if (err == error.NoAtomsFound or err == error.NoAtomSiteLoop or err == error.ModelNotFound) {
+            std.debug.print("Error: Model {d} not found in {s}\n", .{ model, path });
+            return error.ModelNotFound;
+        }
+    }
+    return err;
+}
+
 /// Read the topology.
 ///
 /// A topology has to map one-to-one onto the trajectory atoms, so every atom
-/// record (ATOM and HETATM, hydrogens included) of the first model is read, in
-/// file order. With `--no-hydrogens` the hydrogens are removed afterwards and
+/// record (ATOM and HETATM, hydrogens included) of the selected model (the
+/// first one unless `--model=N` is given) is read, in file order. With `--no-hydrogens` the hydrogens are removed afterwards and
 /// the indices of the remaining atoms are kept, so the same atoms can be
 /// picked out of each frame.
 fn loadTopology(allocator: Allocator, io: std.Io, path: []const u8, args: TrajArgs) !Topology {
@@ -1057,22 +1099,24 @@ fn loadTopology(allocator: Allocator, io: std.Io, path: []const u8, args: TrajAr
             var parser = pdb_parser.PdbParser.init(allocator);
             parser.atom_only = false;
             parser.skip_hydrogens = false;
-            parser.first_model_only = true;
+            parser.first_model_only = args.model_num == null;
+            parser.model_num = args.model_num;
             parser.hydrogen_flags = flags_out;
             parser.alt_loc_mode = args.alt_loc_mode;
             parser.alt_loc_id = args.alt_loc_id;
-            break :blk try parser.parseFile(io, path);
+            break :blk parser.parseFile(io, path) catch |err| return modelError(err, args, path);
         },
         .mmcif => blk: {
             var parser = mmcif_parser.MmcifParser.init(allocator);
             parser.atom_only = false;
             parser.skip_hydrogens = false;
-            parser.first_model_only = true;
+            parser.first_model_only = args.model_num == null;
+            parser.model_num = args.model_num;
             parser.hydrogen_flags = flags_out;
             parser.alt_loc_mode = args.alt_loc_mode;
             parser.alt_loc_id = args.alt_loc_id;
             parser.parse_inline_ccd = false;
-            break :blk try parser.parseFile(io, path);
+            break :blk parser.parseFile(io, path) catch |err| return modelError(err, args, path);
         },
     };
     errdefer full.deinit();
@@ -1240,7 +1284,11 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
             loaded.n_file_atoms,
         });
         std.debug.print("       The topology must list exactly the atoms of the trajectory, in the same order\n", .{});
-        std.debug.print("       (every ATOM and HETATM record of its first model is read).\n", .{});
+        if (args.model_num) |model| {
+            std.debug.print("       (every ATOM and HETATM record of model {d} is read; models can differ in size).\n", .{model});
+        } else {
+            std.debug.print("       (every ATOM and HETATM record of its first model is read; use --model=N for another).\n", .{});
+        }
         if (atom_indices != null and traj_natoms == @as(i32, @intCast(natoms))) {
             std.debug.print("       This trajectory matches the topology without its hydrogens. --no-hydrogens removes\n", .{});
             std.debug.print("       hydrogens from the frames as well, so use a hydrogen-free topology and drop the flag.\n", .{});
@@ -2355,6 +2403,130 @@ test "traj --altloc applies to PDB topologies as it does to mmCIF topologies" {
             loadTopology(std.testing.allocator, std.testing.io, path, none_args),
         );
     }
+}
+
+test "TrajArgs --model and --include-hetatm" {
+    const default = parseArgs(&.{ "zsasa", "traj", "traj.xtc", "topology.pdb" }, 2);
+    try std.testing.expectEqual(@as(?u32, null), default.model_num);
+    try std.testing.expectEqual(true, default.include_hetatm);
+
+    const eq = parseArgs(&.{ "zsasa", "traj", "--model=3", "--include-hetatm", "traj.xtc", "topology.pdb" }, 2);
+    try std.testing.expectEqual(@as(?u32, 3), eq.model_num);
+    try std.testing.expectEqual(true, eq.include_hetatm);
+
+    const spaced = parseArgs(&.{ "zsasa", "traj", "--model", "2", "traj.xtc", "topology.pdb" }, 2);
+    try std.testing.expectEqual(@as(?u32, 2), spaced.model_num);
+}
+
+test "TrajArgs --model rejects bad values and --chain stays rejected" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
+    const bad = [_][]const []const u8{
+        &.{ "zsasa", "traj", "--model=0", "t.xtc", "t.pdb" },
+        &.{ "zsasa", "traj", "--model=x", "t.xtc", "t.pdb" },
+        &.{ "zsasa", "traj", "--model=", "t.xtc", "t.pdb" },
+        &.{ "zsasa", "traj", "t.xtc", "t.pdb", "--model" },
+        &.{ "zsasa", "traj", "--chain=A", "t.xtc", "t.pdb" },
+        &.{ "zsasa", "traj", "--auth-chain", "t.xtc", "t.pdb" },
+    };
+    for (bad) |args| {
+        try std.testing.expectError(error.InvalidArgument, parseArgsChecked(args, 2));
+    }
+}
+
+test "traj --model selects a model of the topology" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
+    var ws = TestWorkspace.init();
+    defer ws.deinit();
+
+    const pdb_path = try ws.write("two_models.pdb",
+        \\MODEL        1
+        \\ATOM      1  N   ALA A   1       1.000   0.000   0.000  1.00 10.00           N
+        \\ATOM      2  CA  ALA A   1       2.000   0.000   0.000  1.00 10.00           C
+        \\ENDMDL
+        \\MODEL        2
+        \\ATOM      1  N   ALA A   1       1.000   0.000   0.000  1.00 10.00           N
+        \\ATOM      2  CA  ALA A   1       2.000   0.000   0.000  1.00 10.00           C
+        \\HETATM    3  O   HOH A   2       5.000   0.000   0.000  1.00 10.00           O
+        \\ENDMDL
+        \\END
+        \\
+    );
+    const cif_path = try ws.write("two_models.cif",
+        \\data_TWO
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_alt_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.label_seq_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\_atom_site.occupancy
+        \\_atom_site.pdbx_PDB_model_num
+        \\ATOM N N  . ALA A 1 1.000 0.000 0.000 1.00 1
+        \\ATOM C CA . ALA A 1 2.000 0.000 0.000 1.00 1
+        \\ATOM N N  . ALA A 1 1.000 0.000 0.000 1.00 2
+        \\ATOM C CA . ALA A 1 2.000 0.000 0.000 1.00 2
+        \\HETATM O O . HOH B 2 5.000 0.000 0.000 1.00 2
+        \\#
+        \\
+    );
+
+    for ([_][]const u8{ pdb_path, cif_path }) |path| {
+        const first = parseArgs(&.{ "zsasa", "traj", "t.xtc", path }, 2);
+        var default_topology = try loadTopology(std.testing.allocator, std.testing.io, path, first);
+        defer default_topology.deinit();
+        try std.testing.expectEqual(@as(usize, 2), default_topology.n_file_atoms);
+
+        const model1 = parseArgs(&.{ "zsasa", "traj", "--model=1", "t.xtc", path }, 2);
+        var topology1 = try loadTopology(std.testing.allocator, std.testing.io, path, model1);
+        defer topology1.deinit();
+        try std.testing.expectEqual(@as(usize, 2), topology1.n_file_atoms);
+        try std.testing.expectEqualSlices(f64, default_topology.atoms.x, topology1.atoms.x);
+
+        const model2 = parseArgs(&.{ "zsasa", "traj", "--model=2", "--include-hetatm", "t.xtc", path }, 2);
+        var topology2 = try loadTopology(std.testing.allocator, std.testing.io, path, model2);
+        defer topology2.deinit();
+        try std.testing.expectEqual(@as(usize, 3), topology2.n_file_atoms);
+
+        const missing = parseArgs(&.{ "zsasa", "traj", "--model=3", "t.xtc", path }, 2);
+        try std.testing.expectError(
+            error.ModelNotFound,
+            loadTopology(std.testing.allocator, std.testing.io, path, missing),
+        );
+
+        // The trajectory (304 atoms) does not match a 3-atom model: clear error
+        try std.testing.expectError(error.AtomCountMismatch, run(std.testing.allocator, std.testing.io, .{
+            .traj_path = test_xtc_path,
+            .topology_path = path,
+            .model_num = 2,
+            .output_path = try ws.path("never.csv"),
+            .quiet = true,
+        }));
+    }
+}
+
+test "traj --model on the 1L2Y fixture reads one model" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
+    var ws = TestWorkspace.init();
+    defer ws.deinit();
+    const base = TrajArgs{ .traj_path = test_xtc_path, .topology_path = test_pdb_path, .n_points = 64, .end_frame = 1, .n_threads = 1 };
+    const default = try ws.runTraj(base, "default.csv");
+    var model1 = base;
+    model1.model_num = 1;
+    try std.testing.expectEqualStrings(default, try ws.runTraj(model1, "model1.csv"));
+    var model2 = base;
+    model2.model_num = 2;
+    try std.testing.expectEqualStrings(default, try ws.runTraj(model2, "model2.csv"));
+    var missing = base;
+    missing.model_num = 99;
+    try std.testing.expectError(error.ModelNotFound, ws.runTraj(missing, "model99.csv"));
 }
 
 test "traj run: multi-model, HETATM and mmCIF topologies map onto the trajectory" {
