@@ -352,8 +352,8 @@ const hardcoded_table = std.StaticStringMap(AtomProperties).initComptime(.{
     .{ "SEP :OG  ", AtomProperties{ .radius = 1.46, .class = .polar } }, // sp3, 0H (bonded to P)
     .{ "SEP :P   ", AtomProperties{ .radius = 1.80, .class = .polar } },
     .{ "SEP :O1P ", AtomProperties{ .radius = 1.42, .class = .polar } }, // sp2, 0H
-    .{ "SEP :O2P ", AtomProperties{ .radius = 1.42, .class = .polar } }, // sp2, 0H
-    .{ "SEP :O3P ", AtomProperties{ .radius = 1.42, .class = .polar } }, // sp2, 0H
+    .{ "SEP :O2P ", AtomProperties{ .radius = 1.46, .class = .polar } }, // sp3, 1H (P-OH as in the CCD definition)
+    .{ "SEP :O3P ", AtomProperties{ .radius = 1.46, .class = .polar } }, // sp3, 1H (P-OH as in the CCD definition)
     .{ "SEP :OXT ", AtomProperties{ .radius = 1.46, .class = .polar } },
 
     // TPO (phosphothreonine) — like THR but OG1 bonded to phosphate
@@ -366,8 +366,8 @@ const hardcoded_table = std.StaticStringMap(AtomProperties).initComptime(.{
     .{ "TPO :OG1 ", AtomProperties{ .radius = 1.46, .class = .polar } }, // sp3, 0H (bonded to P)
     .{ "TPO :P   ", AtomProperties{ .radius = 1.80, .class = .polar } },
     .{ "TPO :O1P ", AtomProperties{ .radius = 1.42, .class = .polar } }, // sp2, 0H
-    .{ "TPO :O2P ", AtomProperties{ .radius = 1.42, .class = .polar } }, // sp2, 0H
-    .{ "TPO :O3P ", AtomProperties{ .radius = 1.42, .class = .polar } }, // sp2, 0H
+    .{ "TPO :O2P ", AtomProperties{ .radius = 1.46, .class = .polar } }, // sp3, 1H (P-OH as in the CCD definition)
+    .{ "TPO :O3P ", AtomProperties{ .radius = 1.46, .class = .polar } }, // sp3, 1H (P-OH as in the CCD definition)
     .{ "TPO :OXT ", AtomProperties{ .radius = 1.46, .class = .polar } },
 
     // PSU (pseudouridine) — like U but C-glycosidic bond (C1'-C5 instead of N1)
@@ -390,13 +390,13 @@ const hardcoded_table = std.StaticStringMap(AtomProperties).initComptime(.{
     .{ "PSU :N3  ", AtomProperties{ .radius = 1.64, .class = .polar } },
     .{ "PSU :C4  ", AtomProperties{ .radius = 1.61, .class = .apolar } },
     .{ "PSU :O4  ", AtomProperties{ .radius = 1.42, .class = .polar } },
-    .{ "PSU :C5  ", AtomProperties{ .radius = 1.76, .class = .apolar } },
+    .{ "PSU :C5  ", AtomProperties{ .radius = 1.61, .class = .apolar } }, // sp2, 0H (bonded to C4, C6 and C1')
     .{ "PSU :C6  ", AtomProperties{ .radius = 1.76, .class = .apolar } },
 
     // === Capping Groups ===
 
     // ACE (acetyl cap) — CH3-C(=O)
-    .{ "ACE :C   ", AtomProperties{ .radius = 1.76, .class = .apolar } }, // sp2, 1H (C3H1 in ProtOr)
+    .{ "ACE :C   ", AtomProperties{ .radius = 1.61, .class = .apolar } }, // sp2, 0H in a capped peptide (the CCD H is a leaving atom)
     .{ "ACE :O   ", AtomProperties{ .radius = 1.42, .class = .polar } }, // sp2, 0H
     .{ "ACE :CH3 ", AtomProperties{ .radius = 1.88, .class = .apolar } }, // sp3, 3H
 
@@ -1082,6 +1082,21 @@ test "CCD new residues — HYP, SEP, TPO, HOH" {
     // TPO phosphate
     try std.testing.expectApproxEqAbs(@as(f64, 1.80), ccd.getRadius("TPO", "P").?, 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 1.42), ccd.getRadius("TPO", "O1P").?, 0.001);
+
+    // O2P and O3P are P-OH in the CCD definitions, like nucleotide OP2
+    for ([_][]const u8{ "SEP", "TPO" }) |res| {
+        try std.testing.expectApproxEqAbs(@as(f64, 1.46), ccd.getRadius(res, "O2P").?, 0.001);
+        try std.testing.expectApproxEqAbs(@as(f64, 1.46), ccd.getRadius(res, "O3P").?, 0.001);
+    }
+}
+
+test "CCD hardcoded PSU C5 and ACE C carry no hydrogen" {
+    var ccd = CcdClassifier.init(std.testing.allocator);
+    defer ccd.deinit();
+
+    // PSU C5 is bonded to C4, C6 and C1'; ACE C to O, CH3 and the next residue's N.
+    try std.testing.expectApproxEqAbs(@as(f64, 1.61), ccd.getRadius("PSU", "C5").?, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.61), ccd.getRadius("ACE", "C").?, 0.001);
 }
 
 test "CCD getProperties returns correct struct" {
