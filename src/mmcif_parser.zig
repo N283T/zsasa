@@ -50,6 +50,11 @@ pub const ParseError = error{
     InvalidCoordinate,
     /// A non-blank altLoc was encountered while altLoc mode is `none`
     UnexpectedAltLoc,
+    /// The _atom_site data contains an unterminated quoted string or text block
+    MalformedAtomSite,
+    /// The last _atom_site row has fewer values than the loop has columns
+    /// (the file is truncated)
+    TruncatedAtomSite,
 };
 
 pub const AltLocMode = altloc.AltLocMode;
@@ -205,7 +210,7 @@ pub const MmcifParser = struct {
         }
 
         // Parse atom data
-        return self.parseAtomData(&tokenizer, loop_info.columns, loop_info.num_cols) catch |err| {
+        return self.parseAtomData(&tokenizer, loop_info.columns, loop_info.num_cols, loop_info.pairs) catch |err| {
             self.deinitCcd();
             return err;
         };
@@ -241,6 +246,9 @@ pub const MmcifParser = struct {
     const LoopInfo = struct {
         columns: AtomSiteColumns,
         num_cols: usize,
+        /// The `_atom_site.*` items are written as tag/value pairs (a single
+        /// atom without `loop_`); the tokenizer is positioned at the first tag.
+        pairs: bool = false,
     };
 
     /// Find the atom_site loop and return column indices
@@ -249,6 +257,11 @@ pub const MmcifParser = struct {
         var columns = AtomSiteColumns{};
         var in_atom_site_loop = false;
         var col_index: usize = 0;
+        // True from `loop_` until the first value: the following tags are a loop header
+        var in_loop_header = false;
+        // `_atom_site.*` items written as tag/value pairs, and where the first one starts
+        var pairs = false;
+        var pairs_start: ?struct { pos: usize, line: usize, col: usize } = null;
 
         while (true) {
             // Save position before reading token
@@ -261,18 +274,28 @@ pub const MmcifParser = struct {
             switch (token) {
                 .eof => {
                     if (in_atom_site_loop and columns.hasRequiredFields()) {
-                        return LoopInfo{ .columns = columns, .num_cols = col_index };
+                        return finishAtomSiteHeader(tokenizer, columns, col_index, pairs, pairs_start, saved_pos, saved_line, saved_col, false);
                     }
                     return ParseError.NoAtomSiteLoop;
                 },
                 .loop => {
+                    if (pairs and columns.hasRequiredFields()) {
+                        return finishAtomSiteHeader(tokenizer, columns, col_index, pairs, pairs_start, saved_pos, saved_line, saved_col, true);
+                    }
                     // Start of a new loop - reset state
+                    in_loop_header = true;
+                    pairs = false;
+                    pairs_start = null;
                     in_atom_site_loop = false;
                     col_index = 0;
                     columns = AtomSiteColumns{};
                 },
                 .tag => |tag| {
                     if (startsWithIgnoreCase(tag, "_atom_site.")) {
+                        if (!in_atom_site_loop) {
+                            pairs = !in_loop_header;
+                            if (pairs) pairs_start = .{ .pos = saved_pos, .line = saved_line, .col = saved_col };
+                        }
                         in_atom_site_loop = true;
                         const field = tag["_atom_site.".len..];
 
@@ -317,13 +340,12 @@ pub const MmcifParser = struct {
                     } else if (in_atom_site_loop) {
                         // New category tag - we're done with atom_site
                         // Restore position so parseAtomData doesn't miss this
-                        tokenizer.pos = saved_pos;
-                        tokenizer.line = saved_line;
-                        tokenizer.col = saved_col;
-                        return LoopInfo{ .columns = columns, .num_cols = col_index };
+                        return finishAtomSiteHeader(tokenizer, columns, col_index, pairs, pairs_start, saved_pos, saved_line, saved_col, true);
                     }
                 },
                 .value => {
+                    if (in_atom_site_loop and pairs) continue;
+                    in_loop_header = false;
                     if (in_atom_site_loop) {
                         // We've hit values - columns are complete
                         // Restore position so parseAtomData reads from the first value
@@ -336,15 +358,39 @@ pub const MmcifParser = struct {
                 .data_block => {
                     // New data block - if we were in atom_site, we're done
                     if (in_atom_site_loop and columns.hasRequiredFields()) {
-                        tokenizer.pos = saved_pos;
-                        tokenizer.line = saved_line;
-                        tokenizer.col = saved_col;
-                        return LoopInfo{ .columns = columns, .num_cols = col_index };
+                        return finishAtomSiteHeader(tokenizer, columns, col_index, pairs, pairs_start, saved_pos, saved_line, saved_col, true);
                     }
                 },
                 else => {},
             }
         }
+    }
+
+    /// Build the result of `findAtomSiteLoop`. The tokenizer is left at the
+    /// token that ended the header (`restore`), or, for `_atom_site` items
+    /// written as tag/value pairs, at the first of those tags.
+    fn finishAtomSiteHeader(
+        tokenizer: *cif.Tokenizer,
+        columns: AtomSiteColumns,
+        num_cols: usize,
+        pairs: bool,
+        pairs_start: anytype,
+        pos: usize,
+        line: usize,
+        col: usize,
+        restore: bool,
+    ) LoopInfo {
+        if (pairs) {
+            const start = pairs_start.?;
+            tokenizer.pos = start.pos;
+            tokenizer.line = start.line;
+            tokenizer.col = start.col;
+        } else if (restore) {
+            tokenizer.pos = pos;
+            tokenizer.line = line;
+            tokenizer.col = col;
+        }
+        return .{ .columns = columns, .num_cols = num_cols, .pairs = pairs };
     }
 
     /// Parse atom data from the loop values
@@ -353,6 +399,7 @@ pub const MmcifParser = struct {
         tokenizer: *cif.Tokenizer,
         columns: AtomSiteColumns,
         num_cols: usize,
+        pairs: bool,
     ) !AtomInput {
         // Dynamic arrays for collecting data
         var x_list = std.ArrayListUnmanaged(f64).empty;
@@ -427,13 +474,18 @@ pub const MmcifParser = struct {
                     // End of atom_site data
                     break;
                 },
-                .tag => {
-                    // New category - end of atom_site
+                .tag => |tag| {
+                    // The items of a single atom written without loop_ are
+                    // tag/value pairs; any other tag is a new category
+                    if (pairs and startsWithIgnoreCase(tag, "_atom_site.")) continue;
                     break;
                 },
+                .err => return ParseError.MalformedAtomSite,
                 else => {},
             }
         }
+        // A row cut short by the end of the data means the file is truncated
+        if (col != 0) return ParseError.TruncatedAtomSite;
 
         const max_output_atoms = atom_records.items.len;
         try x_list.ensureTotalCapacity(self.allocator, max_output_atoms);
@@ -656,7 +708,10 @@ pub const MmcifParser = struct {
     fn isHydrogenRow(row_values: []const []const u8, columns: AtomSiteColumns) bool {
         const col = columns.type_symbol orelse return false;
         const symbol = row_values[col];
-        return !cif.isNull(symbol) and (std.mem.eql(u8, symbol, "H") or std.mem.eql(u8, symbol, "D"));
+        if (cif.isNull(symbol)) return false;
+        // Case-insensitive, and a charge or isotope suffix ("H1+", "D2") does not matter
+        const bare = std.mem.trimEnd(u8, symbol, "+-0123456789");
+        return bare.len == 1 and (bare[0] == 'H' or bare[0] == 'h' or bare[0] == 'D' or bare[0] == 'd');
     }
 
     /// Remember the model of the first atom_site row in `first_model` and
@@ -987,6 +1042,83 @@ test "case insensitive field names" {
 
     try std.testing.expectEqual(@as(usize, 1), input.atomCount());
     try std.testing.expectApproxEqAbs(@as(f64, 10.0), input.x[0], 0.001);
+}
+
+test "a truncated atom_site loop is an error" {
+    const header =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C 10.0 20.0 30.0
+        \\
+    ;
+    var parser = MmcifParser.init(std.testing.allocator);
+
+    // Short final row
+    try std.testing.expectError(ParseError.TruncatedAtomSite, parser.parse(header ++ "2 N 11.0 21.0\n"));
+    // Unterminated quote and text block
+    try std.testing.expectError(ParseError.MalformedAtomSite, parser.parse(header ++ "2 'N 11.0 21.0 31.0\n"));
+    try std.testing.expectError(ParseError.MalformedAtomSite, parser.parse(header ++ "2 N 11.0 21.0\n;31.0\n"));
+
+    // A complete file still parses
+    var input = try parser.parse(header ++ "2 N 11.0 21.0 31.0\n#\n");
+    defer input.deinit();
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+}
+
+test "a single atom written without loop_ is accepted" {
+    const source =
+        \\data_TEST
+        \\_entry.id TEST
+        \\_atom_site.group_PDB ATOM
+        \\_atom_site.id 1
+        \\_atom_site.type_symbol C
+        \\_atom_site.label_atom_id CA
+        \\_atom_site.label_comp_id ALA
+        \\_atom_site.Cartn_x 10.5
+        \\_atom_site.Cartn_y 20.5
+        \\_atom_site.Cartn_z 30.5
+        \\#
+        \\loop_
+        \\_other.a
+        \\_other.b
+        \\1 2
+    ;
+    var parser = MmcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+    try std.testing.expectEqual(@as(usize, 1), input.atomCount());
+    try std.testing.expectApproxEqAbs(@as(f64, 10.5), input.x[0], 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 30.5), input.z[0], 1e-9);
+    try std.testing.expectEqualStrings("ALA", input.residue.?[0].slice());
+}
+
+test "hydrogen filter ignores case and charges" {
+    const source =
+        \\data_TEST
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\1 C 1.0 2.0 3.0
+        \\2 h 4.0 5.0 6.0
+        \\3 H1+ 7.0 8.0 9.0
+        \\4 D 1.0 1.0 1.0
+        \\5 d 2.0 2.0 2.0
+        \\6 He 3.0 3.0 3.0
+        \\7 Dy 4.0 4.0 4.0
+        \\#
+    ;
+    var parser = MmcifParser.init(std.testing.allocator);
+    var input = try parser.parse(source);
+    defer input.deinit();
+    try std.testing.expectEqual(@as(usize, 3), input.atomCount());
 }
 
 test "missing required fields" {

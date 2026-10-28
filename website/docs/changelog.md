@@ -8,6 +8,13 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+### Fixed
+
+- **PDB parser: malformed records are reported**: ATOM/HETATM records that are too short, have a coordinate that is not a number, or have a residue number that cannot be read are still skipped, and a warning with their count is printed to stderr. A coordinate with trailing text such as `1.2abc` is now unparseable instead of being read as `1.2`. **Records that carried such a value were accepted before and are skipped now.**
+- **PDB residue numbers past 9999**: hybrid-36 residue numbers (`A000` is 10000) are decoded. They were read as 0 before, which merged residues. **Results change for files with more than 9999 residues per chain.** A residue number that is neither decimal nor hybrid-36 skips the record (with the warning) instead of becoming 0.
+- **`--model=N` on PDB files**: the model number is read from `MODEL 1` as well as from the fixed columns, so it no longer fails with `NoAtomsFound`. `--model=N` with N other than 1 on a file without MODEL records is an error (`ModelNotFound`) instead of returning all atoms.
+- **mmCIF**: a semicolon text field is read as the CIF specification says (`;A` newline `;` is `A`, without the trailing line break). A file whose `_atom_site` data ends in an unterminated quoted string or text block, or in a row with too few values, is a parse error instead of returning the atoms read so far. **A truncated file that was accepted before now fails.** A single atom written as `_atom_site.*` tag/value pairs without `loop_` is accepted. The hydrogen filter reads `type_symbol` case-insensitively and ignores a charge suffix (`h`, `H1+`).
+
 ## [v0.11.0](https://github.com/N283T/zsasa/releases/tag/v0.11.0) — 2026-10-12
 
 ### Upgrade notes
