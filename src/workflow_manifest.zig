@@ -28,6 +28,9 @@ pub fn errorHint(err: anyerror) ?[]const u8 {
         error.AnalysisWithJobs => "[analysis] and [[jobs]] cannot be combined: an [analysis] " ++
             "workflow runs one BSA analysis and has no jobs; keep one of them and move " ++
             "the other into a separate workflow file",
+        error.InvalidClassifierConfig => "[classifier] config is used only with type = \"custom\" " ++
+            "(and type = \"custom\" needs config); ccd and sdf are used only with type = \"ccd\", " ++
+            "which is the default when type is omitted",
         else => null,
     };
 }
@@ -595,7 +598,11 @@ fn parseAnalysis(allocator: Allocator, table: toml_parser.Table) Error!Analysis 
 }
 
 fn validateClassifier(config: ClassifierConfig) WorkflowError!void {
-    const classifier_type = config.type orelse return;
+    const classifier_type = config.type orelse {
+        // A custom radii file is only used with `type = "custom"`.
+        if (config.config != null) return error.InvalidClassifierConfig;
+        return;
+    };
     if (std.mem.eql(u8, classifier_type, "custom")) {
         if (config.config == null) return error.InvalidClassifierConfig;
         if (config.ccd != null or config.sdf != null) return error.InvalidClassifierConfig;
@@ -1356,6 +1363,17 @@ test "reject duplicate keys in section" {
     ;
 
     try std.testing.expectError(error.UnknownField, parse(std.testing.allocator, input));
+}
+
+test "reject classifier config without type custom" {
+    const config_without_type =
+        \\version = 1
+        \\kind = "workflow"
+        \\
+        \\[classifier]
+        \\config = "my_radii.toml"
+    ;
+    try std.testing.expectError(error.InvalidClassifierConfig, parse(std.testing.allocator, config_without_type));
 }
 
 test "reject invalid classifier combinations" {

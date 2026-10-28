@@ -39,17 +39,16 @@ const altloc = @import("altloc.zig");
 const mmap_reader = @import("mmap_reader.zig");
 const compressed = @import("compressed.zig");
 const types = @import("types.zig");
+const test_support = @import("test_support.zig");
 const AtomInput = types.AtomInput;
 pub const InputIoMode = input_io.InputIoMode;
 
 /// Error types for PDB parsing
 pub const ParseError = error{
-    /// Invalid coordinate value
-    InvalidCoordinate,
     /// No atoms found in file
     NoAtomsFound,
-    /// Line too short for required field
-    LineTooShort,
+    /// `model_num` selects a model other than 1, but the file has no MODEL records
+    ModelNotFound,
     /// A non-blank altLoc was encountered while altLoc mode is `none`
     UnexpectedAltLoc,
 };
@@ -86,6 +85,12 @@ pub const PdbParser = struct {
     /// `skip_hydrogens` would drop (hydrogen and deuterium). The list is owned
     /// by the caller and grown with the parser's allocator.
     hydrogen_flags: ?*std.ArrayListUnmanaged(bool) = null,
+    /// Number of selected ATOM/HETATM records that were dropped because a
+    /// field could not be parsed (short line, bad coordinate or residue
+    /// number). Reset by every `parse`.
+    skipped_records: usize = 0,
+    /// Do not print the warning about skipped records to stderr.
+    quiet: bool = false,
 
     pub fn init(allocator: Allocator) PdbParser {
         return .{ .allocator = allocator };
@@ -136,6 +141,7 @@ pub const PdbParser = struct {
         var in_target_model = true;
         var seen_model = false;
         const want_hydrogen_flags = self.hydrogen_flags != null;
+        self.skipped_records = 0;
         if (self.hydrogen_flags) |flags| flags.clearRetainingCapacity();
 
         // Only consulted for atoms without a usable element column
@@ -171,7 +177,10 @@ pub const PdbParser = struct {
             if (self.atom_only and is_hetatm) continue;
 
             // Parse atom record
-            var atom = try self.parseAtomRecord(line, &name_alignment) orelse continue;
+            var atom = parseAtomRecord(line, &name_alignment) orelse {
+                self.skipped_records += 1;
+                continue;
+            };
             atom.model_num = current_model;
 
             // Hydrogen filtering (also skip deuterium D, an isotope of H)
@@ -203,6 +212,17 @@ pub const PdbParser = struct {
             }
 
             try atom_records.append(self.allocator, atom);
+        }
+
+        if (self.skipped_records > 0 and !self.quiet) {
+            std.debug.print(
+                "Warning: skipped {d} ATOM/HETATM record(s) with a missing or unparseable coordinate or residue number\n",
+                .{self.skipped_records},
+            );
+        }
+
+        if (self.model_num) |target| {
+            if (!seen_model and target != 1) return ParseError.ModelNotFound;
         }
 
         const keep = try self.resolveAltLocs(atom_records.items);
@@ -344,9 +364,7 @@ pub const PdbParser = struct {
     }
 
     /// Parse a single ATOM/HETATM record
-    fn parseAtomRecord(self: *PdbParser, line: []const u8, name_alignment: *NameAlignment) !?AtomRecord {
-        _ = self;
-
+    fn parseAtomRecord(line: []const u8, name_alignment: *NameAlignment) ?AtomRecord {
         // Minimum line length for coordinates (column 54)
         if (line.len < 54) return null;
 
@@ -382,7 +400,7 @@ pub const PdbParser = struct {
 
         // Residue number (columns 23-26)
         const res_num_str = if (line.len >= 26) std.mem.trim(u8, line[22..26], " ") else "";
-        const residue_num = std.fmt.parseInt(i32, res_num_str, 10) catch 0;
+        const residue_num = if (res_num_str.len == 0) 0 else parseResidueNumber(res_num_str) orelse return null;
 
         // Insertion code (column 27, 0-indexed 26) - return slice into line
         const insertion_code: []const u8 = if (line.len > 26 and line[26] != ' ')
@@ -455,16 +473,61 @@ fn parseCoordinate(field: []const u8) ?f64 {
     // Reject sign-only input (e.g., "-" or "+")
     if (!has_int_digits and !has_frac_digits) return null;
 
+    // Only blanks may follow the number ("1.2abc" is not a coordinate)
+    while (start < len) : (start += 1) {
+        if (field[start] != ' ') return null;
+    }
+
     const result = @as(f64, @floatFromInt(int_part)) + frac;
     return if (negative) -result else result;
 }
 
-/// Parse MODEL record to get model number
+/// Parse the model number of a MODEL record. The standard puts it in columns
+/// 11-14, but files written as `MODEL 1` or `MODEL    1` are common, so the
+/// first token after the record name is read instead.
 fn parseModelNumber(line: []const u8) ?u32 {
-    // MODEL record: columns 11-14 contain model serial number
-    if (line.len < 14) return null;
-    const num_str = std.mem.trim(u8, line[10..14], " ");
-    return std.fmt.parseInt(u32, num_str, 10) catch null;
+    if (line.len <= 5) return null;
+    var tokens = std.mem.tokenizeAny(u8, line[5..], " \t\r");
+    const token = tokens.next() orelse return null;
+    return std.fmt.parseInt(u32, token, 10) catch null;
+}
+
+/// Parse a residue sequence number (columns 23-26). Plain decimal numbers
+/// are read as usual; numbers past 9999 use hybrid-36 (`A000` is 10000).
+fn parseResidueNumber(field: []const u8) ?i32 {
+    if (std.fmt.parseInt(i32, field, 10)) |value| return value else |_| {}
+    return decodeHybrid36(field);
+}
+
+/// Decode a hybrid-36 number of 1 to 8 characters: base 36 with digits and
+/// upper-case letters for the range after the decimal numbers, and with
+/// digits and lower-case letters after that.
+fn decodeHybrid36(field: []const u8) ?i32 {
+    const width = field.len;
+    if (width == 0 or width > 8) return null;
+    const first = field[0];
+    const upper = first >= 'A' and first <= 'Z';
+    const lower = first >= 'a' and first <= 'z';
+    if (!upper and !lower) return null;
+
+    var value: i64 = 0;
+    for (field) |c| {
+        const digit: i64 = switch (c) {
+            '0'...'9' => c - '0',
+            'A'...'Z' => if (upper) c - 'A' + 10 else return null,
+            'a'...'z' => if (lower) c - 'a' + 10 else return null,
+            else => return null,
+        };
+        value = value * 36 + digit;
+    }
+
+    var span36: i64 = 1; // 36^(width - 1)
+    var span10: i64 = 1; // 10^width
+    for (1..width) |_| span36 *= 36;
+    for (0..width) |_| span10 *= 10;
+    const decoded = if (upper) value - 10 * span36 + span10 else value + 16 * span36 + span10;
+    if (decoded > std.math.maxInt(i32)) return null;
+    return @intCast(decoded);
 }
 
 /// Read the element symbol field (columns 77-78).
@@ -966,6 +1029,105 @@ test "PdbParser explicit model selection filters requested model" {
 
     try testing.expectEqual(@as(usize, 1), input.atomCount());
     try testing.expectEqualStrings("B", input.chain_id.?[0].slice());
+}
+
+test "parseCoordinate rejects trailing garbage" {
+    const testing = std.testing;
+    try testing.expectEqual(@as(?f64, null), parseCoordinate("  1.2abc"));
+    try testing.expectEqual(@as(?f64, null), parseCoordinate("   1.2.3"));
+    try testing.expectEqual(@as(?f64, null), parseCoordinate("********"));
+    try testing.expectEqual(@as(?f64, null), parseCoordinate("     nan"));
+    try testing.expectEqual(@as(?f64, 1.2), parseCoordinate("1.2     "));
+}
+
+test "parseModelNumber is lenient about the column" {
+    const testing = std.testing;
+    try testing.expectEqual(@as(?u32, 1), parseModelNumber("MODEL        1"));
+    try testing.expectEqual(@as(?u32, 1), parseModelNumber("MODEL 1"));
+    try testing.expectEqual(@as(?u32, 12), parseModelNumber("MODEL    12\r"));
+    try testing.expectEqual(@as(?u32, null), parseModelNumber("MODEL"));
+    try testing.expectEqual(@as(?u32, null), parseModelNumber("MODEL x"));
+}
+
+test "decodeHybrid36 residue numbers" {
+    const testing = std.testing;
+    try testing.expectEqual(@as(?i32, 10000), parseResidueNumber("A000"));
+    try testing.expectEqual(@as(?i32, 10001), parseResidueNumber("A001"));
+    try testing.expectEqual(@as(?i32, 9999), parseResidueNumber("9999"));
+    try testing.expectEqual(@as(?i32, -12), parseResidueNumber("-12"));
+    try testing.expectEqual(@as(?i32, 10000 + 16 * 36 * 36 * 36), parseResidueNumber("Q000"));
+    try testing.expectEqual(@as(?i32, 1223056), parseResidueNumber("a000"));
+    try testing.expectEqual(@as(?i32, null), parseResidueNumber("A0b0"));
+    try testing.expectEqual(@as(?i32, null), parseResidueNumber("!!"));
+}
+
+test "PdbParser reads hybrid-36 residue numbers" {
+    const testing = std.testing;
+    const pdb_content =
+        \\ATOM      1  CA  ALA A9999      10.000  20.000  30.000  1.00 10.00           C
+        \\ATOM      2  CA  ALA AA000      11.000  20.000  30.000  1.00 10.00           C
+        \\ATOM      3  CA  ALA AA001      12.000  20.000  30.000  1.00 10.00           C
+    ;
+    var parser = PdbParser.init(testing.allocator);
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+    try testing.expectEqual(@as(i32, 9999), input.residue_num.?[0]);
+    try testing.expectEqual(@as(i32, 10000), input.residue_num.?[1]);
+    try testing.expectEqual(@as(i32, 10001), input.residue_num.?[2]);
+    try testing.expectEqual(@as(usize, 0), parser.skipped_records);
+}
+
+test "PdbParser counts the records it skips" {
+    const testing = std.testing;
+    const pdb_content =
+        \\ATOM      1  CA  ALA A   1      10.000  20.000  30.000  1.00 10.00           C
+        \\ATOM      2  CA  ALA A   2      ********  20.000  30.000  1.00 10.00           C
+        \\ATOM      3  CA  ALA A   3      11.000  2x.000  30.000  1.00 10.00           C
+        \\ATOM      4  CA  ALA A   4      11.000
+        \\ATOM      5  CA  ALA A  !!      11.000  21.000  31.000  1.00 10.00           C
+        \\HETATM    6  O   HOH A   9       1.000   2.000   3.000
+    ;
+    var muted = test_support.muteStderr();
+    defer muted.restore();
+    var parser = PdbParser.init(testing.allocator);
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+    try testing.expectEqual(@as(usize, 1), input.atomCount());
+    try testing.expectEqual(@as(usize, 4), parser.skipped_records);
+}
+
+test "PdbParser reads MODEL records written as MODEL 1" {
+    const testing = std.testing;
+    const pdb_content =
+        \\MODEL 1
+        \\ATOM      1  CA  ALA A   1      10.000  20.000  30.000  1.00 10.00           C
+        \\ENDMDL
+        \\MODEL 2
+        \\ATOM      2  CA  GLY B   2      11.000  21.000  31.000  1.00 10.00           C
+        \\ENDMDL
+    ;
+    var parser = PdbParser.init(testing.allocator);
+    parser.model_num = 2;
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+    try testing.expectEqual(@as(usize, 1), input.atomCount());
+    try testing.expectEqualStrings("B", input.chain_id.?[0].slice());
+}
+
+test "PdbParser rejects a model number a file without MODEL records cannot have" {
+    const testing = std.testing;
+    const pdb_content =
+        \\ATOM      1  CA  ALA A   1      10.000  20.000  30.000  1.00 10.00           C
+    ;
+    var parser = PdbParser.init(testing.allocator);
+    parser.model_num = 7;
+    try testing.expectError(ParseError.ModelNotFound, parser.parse(pdb_content));
+
+    // The implicit single model is model 1
+    parser.model_num = 1;
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+    try testing.expectEqual(@as(usize, 1), input.atomCount());
 }
 
 test "PdbParser first_model_only stops after the first model whatever its number" {

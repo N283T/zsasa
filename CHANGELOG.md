@@ -16,6 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A hydrogen-free carbon with two delocalized (`DELO`/`POLY`) bonds is counted as C3H1 (1.76 Å) like the aromatic case, not as C3H0 (1.61 Å).
   - The bond counters of the hybridization analysis saturate at 255 on a malformed component instead of wrapping around.
   - The Python classifier example labelled `guess_radius_from_atom_name("CA")` as the alpha carbon (it is calcium) and passed a possible `None` to `np.isnan`.
+- **PDB parser: malformed records are reported**: ATOM/HETATM records that are too short, have a coordinate that is not a number, or have a residue number that cannot be read are still skipped, and a warning with their count is printed to stderr. A coordinate with trailing text such as `1.2abc` is now unparseable instead of being read as `1.2`. **Records that carried such a value were accepted before and are skipped now.**
+- **PDB residue numbers past 9999**: hybrid-36 residue numbers (`A000` is 10000) are decoded. They were read as 0 before, which merged residues. **Results change for files with more than 9999 residues per chain.** A residue number that is neither decimal nor hybrid-36 skips the record (with the warning) instead of becoming 0.
+- **`--model=N` on PDB files**: the model number is read from `MODEL 1` as well as from the fixed columns, so it no longer fails with `NoAtomsFound`. `--model=N` with N other than 1 on a file without MODEL records is an error (`ModelNotFound`) instead of returning all atoms.
+- **mmCIF**: a semicolon text field is read as the CIF specification says (`;A` newline `;` is `A`, without the trailing line break). A file whose `_atom_site` data ends in an unterminated quoted string or text block, or in a row with too few values, is a parse error instead of returning the atoms read so far. **A truncated file that was accepted before now fails.** A single atom written as `_atom_site.*` tag/value pairs without `loop_` is accepted. The hydrogen filter reads `type_symbol` case-insensitively and ignores a charge suffix (`h`, `H1+`).
+- **`calc` and `batch` take `-o=FILE` / `-o=DIR`**, as `traj` already did. Before, `-o=FILE` was rejected as an unknown option.
+- **`calc --workflow` uses `[classifier] ccd` and `sdf` without `type`**, as `batch` does: an omitted type means the default `ccd` classifier. Before, `calc` ignored them silently.
+- **A workflow with `[classifier] config` but without `type = "custom"` is an error** (`InvalidClassifierConfig`, with an explanation). Before, the key was ignored and the default classifier was used.
+- **`--ccd` and `--sdf` print a warning when the classifier in use is not `ccd`** (`calc` and `batch`). They were ignored without a word; the classifier in use does not change.
+- **`batch --use-bitmask` explains a bad `--n-points` or `--algorithm=lr`** with the message `calc` prints, instead of only the error name.
+- **`batch --jsonl-decimals` without `--format=jsonl` is an error**, as `--residue-map` is. Before, the option was accepted and had no effect.
+- **`zsasa traj` fails when the frame selection matches nothing**: `--end` before `--start` is rejected before the output file is created, and a `--start` past the last frame exits with an error instead of writing a header-only CSV and exiting 0.
+- **DCD reader**: `DcdReader.readFrame` in the Zig library reports `error.TruncatedFrame` when the file ends inside a frame; `error.EndOfFile` now means a clean end between two frames.
 
 ## [0.11.0] - 2026-10-12
 
