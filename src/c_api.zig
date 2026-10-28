@@ -207,6 +207,7 @@ fn trajectoryErrorCode(err: anyerror) c_int {
         error.InvalidMagic,
         error.BadFormat,
         error.EndOfFile, // the header of an empty file; `next()` turns a frame-boundary end into null
+        error.TruncatedFrame, // a DCD that ends inside a frame
         error.ReadError,
         error.DecompressionError,
         error.FixedAtomsNotSupported,
@@ -2850,13 +2851,15 @@ export fn zsasa_dcd_read_frame(
 
     // Copy unitcell if present and output buffer provided
     if (unitcell_out) |uc_out| {
-        if (frame.box_vectors) |box| {
-            uc_out[0] = box[0][0];
-            uc_out[1] = 90.0;
-            uc_out[2] = box[1][1];
-            uc_out[3] = 90.0;
-            uc_out[4] = 90.0;
-            uc_out[5] = box[2][2];
+        if (dcd_handle.reader.box_lengths) |len| {
+            // CHARMM order: A, gamma, B, beta, alpha, C (angles in degrees).
+            const ang = dcd_handle.reader.box_angles orelse [3]f32{ 90.0, 90.0, 90.0 };
+            uc_out[0] = len[0];
+            uc_out[1] = ang[2];
+            uc_out[2] = len[1];
+            uc_out[3] = ang[1];
+            uc_out[4] = ang[0];
+            uc_out[5] = len[2];
         } else {
             for (0..6) |i| {
                 uc_out[i] = 0.0;
@@ -2968,6 +2971,41 @@ test "zsasa_dcd_read_all_frames" {
     }
 
     try std.testing.expectEqual(@as(usize, 38), frame_count);
+}
+
+test "zsasa_dcd_read_frame reports a DCD cut inside its last frame as invalid format" {
+    const io = std.testing.io;
+    const full = try std.Io.Dir.cwd().readFileAlloc(io, "test_data/1l2y.dcd", std.testing.allocator, .limited(8 << 20));
+    defer std.testing.allocator.free(full);
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const dir_path = try writeBatchFixtureDir(&tmp_dir, &.{
+        .{ .name = "cut.dcd", .data = full[0 .. full.len - 100] },
+    });
+    defer std.testing.allocator.free(dir_path);
+    const path = try std.fmt.allocPrintSentinel(std.testing.allocator, "{s}/cut.dcd", .{dir_path}, 0);
+    defer std.testing.allocator.free(path);
+
+    var natoms: i32 = 0;
+    var error_code: c_int = 0;
+    const handle = zsasa_dcd_open(path, &natoms, &error_code);
+    try std.testing.expect(handle != null);
+    defer zsasa_dcd_close(handle);
+
+    const coords = try c_allocator.alloc(f32, @as(usize, @intCast(natoms)) * 3);
+    defer c_allocator.free(coords);
+    var step: i32 = 0;
+    var time: f32 = 0;
+
+    var frame_count: usize = 0;
+    const last = while (true) {
+        const result = zsasa_dcd_read_frame(handle, coords.ptr, &step, &time, null);
+        if (result != ZSASA_OK) break result;
+        frame_count += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 37), frame_count);
+    try std.testing.expectEqual(ZSASA_ERROR_INVALID_FORMAT, last);
 }
 
 test "zsasa_dcd_get_natoms null handle" {

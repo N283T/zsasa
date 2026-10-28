@@ -33,8 +33,8 @@
     // internet connectivity.
     .dependencies = .{
         .ztraj = .{
-            .url = "git+https://github.com/N283T/ztraj.git?ref=main#b18c4e3ddf8f07ae348a1f0ce0aaaa36c98e227f",
-            .hash = "ztraj-0.8.0-gW3cDGFrDwD-nnp9izIfabX81qKC4bCm0uW0dOTZMGRs",
+            .url = "git+https://github.com/N283T/ztraj.git?ref=main#f483cc23253cc804d808294ab3b8d3d614a19858",
+            .hash = "ztraj-0.8.0-gW3cDE-WDwBxUyq5Fzg6ik7QR3NxySRNYQm5UEI6uJJI",
         },
     },
     .paths = .{

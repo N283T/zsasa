@@ -303,7 +303,7 @@ from zsasa.dcd import (
 | Name | Description |
 |------|-------------|
 | `DcdReader(path)` | Frame reader with the same interface as `XtcReader`: `natoms`, `read_frame()`, `close()`, iteration and context-manager use. Raises the same exceptions as `XtcReader` (`FileNotFoundError` for a missing file, `ValueError` for an empty, truncated or non-DCD file) |
-| `DcdFrame` | One frame: `step`, `time`, `coords` (`NDArray[float32]`, (n_atoms, 3), Å), `unitcell` (six doubles, or `None` when the file has none) and the `natoms` property |
+| `DcdFrame` | One frame: `step`, `time` (ps), `coords` (`NDArray[float32]`, (n_atoms, 3), Å), `unitcell` (six doubles in CHARMM order A, γ, B, β, α, C, with angles in degrees, or `None` when the file has none) and the `natoms` property |
 | `compute_sasa_trajectory(dcd_path, radii, ...)` | Same parameters and `TrajectorySasaResult` as the XTC function; `dcd_path` replaces `xtc_path` |
 | `compute_sasa_trajectory_summary(dcd_path, radii, ...)` | Same parameters and `TrajectorySasaSummaryResult` as the XTC function, including `atom_to_residue` and `chunk_size` |
 

@@ -64,9 +64,11 @@ class DcdFrame:
 
     Attributes:
         step: Simulation step number.
-        time: Simulation time.
+        time: Simulation time in ps.
         coords: Atom coordinates as (n_atoms, 3) array in Angstroms.
-        unitcell: Unit cell parameters (6 doubles), or None if not present.
+        unitcell: Unit cell parameters (6 doubles) in CHARMM order
+            (A, gamma, B, beta, alpha, C; lengths in Angstroms, angles in
+            degrees), or None if not present.
     """
 
     step: int
