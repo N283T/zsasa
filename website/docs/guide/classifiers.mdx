@@ -216,6 +216,9 @@ The CCD classifier uses a 3-level lookup:
 2. **Runtime CCD analysis**: For non-standard residues, bond topology from CCD data is analyzed at runtime to derive hybridization-aware radii. CCD data comes from two sources:
    - **Inline CCD** — `_chem_comp_atom` / `_chem_comp_bond` loops embedded in mmCIF structure files
    - **External CCD** — a separate CCD dictionary loaded via `--ccd=<path>` (CIF or ZSDC format)
+   - **SDF** — bond topology loaded via `--sdf=<path>`
+
+   A component defined in more than one of them is taken whole from the first source in the order `--sdf`, `--ccd`, inline CCD; the definitions are not merged.
 3. **Element fallback**: If no CCD data is available, a generic van der Waals radius based on the element symbol is used.
 
 :::info[Inline CCD vs External CCD]

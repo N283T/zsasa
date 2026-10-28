@@ -1215,22 +1215,23 @@ fn applyBuiltinClassifier(
 
         if (needed.count() > 0) {
             var loaded: usize = 0;
-            const dicts: [3]?*const ccd_parser.ComponentDict = .{ sdf_ccd, inline_ccd, external_ccd };
-            for (dicts) |maybe_dict| {
-                if (maybe_dict) |dict| {
-                    var it = needed.keyIterator();
-                    while (it.next()) |key_ptr| {
-                        const comp_id = key_ptr.*;
-                        if (dict.get(comp_id)) |comp| {
-                            ccd_clf.?.addComponent(&comp) catch |err| {
-                                if (!quiet) {
-                                    std.debug.print("Warning: Could not derive CCD properties for '{s}': {s}\n", .{ comp_id, @errorName(err) });
-                                }
-                                continue;
-                            };
-                            loaded += 1;
+            // Each component comes from one source, the first that defines
+            // it: --sdf, then --ccd, then the input's inline definitions.
+            const dicts: [3]?*const ccd_parser.ComponentDict = .{ sdf_ccd, external_ccd, inline_ccd };
+            var it = needed.keyIterator();
+            while (it.next()) |key_ptr| {
+                const comp_id = key_ptr.*;
+                for (dicts) |maybe_dict| {
+                    const dict = maybe_dict orelse continue;
+                    const comp = dict.get(comp_id) orelse continue;
+                    ccd_clf.?.addComponent(&comp) catch |err| {
+                        if (!quiet) {
+                            std.debug.print("Warning: Could not derive CCD properties for '{s}': {s}\n", .{ comp_id, @errorName(err) });
                         }
-                    }
+                        continue;
+                    };
+                    loaded += 1;
+                    break;
                 }
             }
             if (!quiet and loaded > 0) {
@@ -2700,6 +2701,77 @@ test "classifiers guess the element from residue and atom name without an elemen
 
         try std.testing.expectEqualSlices(f64, &expected, input.r);
     }
+}
+
+test "ccd classifier takes each component from one source: --sdf, then --ccd, then inline" {
+    const allocator = std.testing.allocator;
+
+    // LIG C1 is a carbon in the SDF, a nitrogen in --ccd and an oxygen
+    // inline; only --ccd defines LIG X1.
+    var sdf_dict = try ccd_parser.parseCcdData(allocator,
+        \\data_LIG
+        \\loop_
+        \\_chem_comp_atom.comp_id
+        \\_chem_comp_atom.atom_id
+        \\_chem_comp_atom.type_symbol
+        \\LIG C1 C
+        \\#
+    , null);
+    defer sdf_dict.deinit();
+    var external_dict = try ccd_parser.parseCcdData(allocator,
+        \\data_LIG
+        \\loop_
+        \\_chem_comp_atom.comp_id
+        \\_chem_comp_atom.atom_id
+        \\_chem_comp_atom.type_symbol
+        \\LIG C1 N
+        \\LIG X1 C
+        \\#
+    , null);
+    defer external_dict.deinit();
+    var inline_dict = try ccd_parser.parseCcdData(allocator,
+        \\data_LIG
+        \\loop_
+        \\_chem_comp_atom.comp_id
+        \\_chem_comp_atom.atom_id
+        \\_chem_comp_atom.type_symbol
+        \\LIG C1 O
+        \\#
+    , null);
+    defer inline_dict.deinit();
+
+    const json_content =
+        \\{"x": [0, 10], "y": [0, 0], "z": [0, 0], "r": [9, 9],
+        \\ "residue": ["LIG", "LIG"], "atom_name": ["C1", "X1"]}
+    ;
+    const Case = struct {
+        sdf: ?*const ccd_parser.ComponentDict,
+        external: ?*const ccd_parser.ComponentDict,
+        inline_ccd: ?*const ccd_parser.ComponentDict,
+    };
+    const cases = [_]Case{
+        .{ .sdf = null, .external = null, .inline_ccd = null },
+        .{ .sdf = &sdf_dict, .external = &external_dict, .inline_ccd = &inline_dict },
+        .{ .sdf = null, .external = &external_dict, .inline_ccd = &inline_dict },
+        .{ .sdf = null, .external = null, .inline_ccd = &inline_dict },
+    };
+    var radii: [cases.len][2]f64 = undefined;
+    for (cases, 0..) |c, k| {
+        var input = try json_parser.parseAtomInput(allocator, json_content);
+        defer input.deinit();
+        try applyBuiltinClassifier(&input, .ccd, c.sdf, c.inline_ccd, c.external, null, true);
+        radii[k] = .{ input.r[0], input.r[1] };
+    }
+
+    // The SDF component wins whole: C1 is its carbon and X1, which only
+    // --ccd defines, is not taken from --ccd.
+    try std.testing.expectApproxEqAbs(@as(f64, 1.88), radii[1][0], 1e-9);
+    try std.testing.expectEqual(radii[0][1], radii[1][1]);
+    // Without --sdf, --ccd wins over the inline definition.
+    try std.testing.expectApproxEqAbs(@as(f64, 1.64), radii[2][0], 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.88), radii[2][1], 1e-9);
+    // The inline definition is used when it is the only one.
+    try std.testing.expect(radii[3][0] != 1.88 and radii[3][0] != 1.64);
 }
 
 test "classifiers give a calcium ion the calcium radius when the element column says calcium" {

@@ -18,7 +18,7 @@ from zsasa.mdanalysis import SASAAnalysis, compute_sasa
 
 ## Overview
 
-**3.4x faster** than mdsasa-bolt on real MD data with controllable thread count.
+About **2 to 3 times faster** than mdsasa-bolt on real MD data (see the [MD benchmarks](../benchmarks/md.md)), with controllable thread count.
 
 ## SASAAnalysis
 

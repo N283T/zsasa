@@ -1141,17 +1141,19 @@ fn applyBuiltinClassifier(
         }
 
         if (needed.count() > 0) {
-            const dicts: [3]?*const ccd_parser.ComponentDict = .{ sdf_ccd, inline_ccd, external_ccd };
-            for (dicts) |maybe_dict| {
-                if (maybe_dict) |dict| {
-                    var it = needed.keyIterator();
-                    while (it.next()) |key_ptr| {
-                        if (dict.get(key_ptr.*)) |comp| {
-                            ccd_clf.?.addComponent(&comp) catch |err| {
-                                std.debug.print("Warning: Could not derive CCD properties for '{s}': {s}\n", .{ key_ptr.*, @errorName(err) });
-                            };
-                        }
-                    }
+            // Each component comes from one source, the first that defines
+            // it: --sdf, then --ccd, then the input's inline definitions.
+            const dicts: [3]?*const ccd_parser.ComponentDict = .{ sdf_ccd, external_ccd, inline_ccd };
+            var it = needed.keyIterator();
+            while (it.next()) |key_ptr| {
+                for (dicts) |maybe_dict| {
+                    const dict = maybe_dict orelse continue;
+                    const comp = dict.get(key_ptr.*) orelse continue;
+                    ccd_clf.?.addComponent(&comp) catch |err| {
+                        std.debug.print("Warning: Could not derive CCD properties for '{s}': {s}\n", .{ key_ptr.*, @errorName(err) });
+                        continue;
+                    };
+                    break;
                 }
             }
         }
