@@ -7,7 +7,7 @@
 //!
 //! ATOM/HETATM records (columns 1-indexed):
 //! - 1-6:   Record name (ATOM/HETATM)
-//! - 7-11:  Atom serial number
+//! - 7-11:  Atom serial number (six-digit serials are also read, see `atomRecordKind`)
 //! - 13-16: Atom name
 //! - 17:    Alternate location indicator
 //! - 18-20: Residue name
@@ -170,14 +170,14 @@ pub const PdbParser = struct {
             if (!in_target_model) continue;
 
             // Check for ATOM/HETATM records
-            const is_atom = std.mem.startsWith(u8, line, "ATOM  ");
-            const is_hetatm = std.mem.startsWith(u8, line, "HETATM");
-
-            if (!is_atom and !is_hetatm) continue;
-            if (self.atom_only and is_hetatm) continue;
+            const kind = atomRecordKind(line) orelse continue;
+            if (self.atom_only and kind.is_hetatm) continue;
+            // Columns 13 onwards, shifted back to the standard columns when
+            // a six-digit serial pushed them to the right
+            const fields = kind.fields;
 
             // Parse atom record
-            var atom = parseAtomRecord(line, &name_alignment) orelse {
+            var atom = parseAtomRecord(fields, &name_alignment) orelse {
                 self.skipped_records += 1;
                 continue;
             };
@@ -187,8 +187,8 @@ pub const PdbParser = struct {
             if (self.skip_hydrogens or want_hydrogen_flags) {
                 var is_hydrogen = atom.element == .H;
                 // Check element column for deuterium (element symbol "D" maps to .X)
-                if (!is_hydrogen and line.len >= 78) {
-                    const elem_sym = std.mem.trim(u8, line[76..78], " ");
+                if (!is_hydrogen and fields.len >= 78) {
+                    const elem_sym = std.mem.trim(u8, fields[76..78], " ");
                     is_hydrogen = std.mem.eql(u8, elem_sym, "D");
                 }
                 if (self.skip_hydrogens and is_hydrogen) continue;
@@ -425,6 +425,42 @@ pub const PdbParser = struct {
     }
 };
 
+const AtomRecordKind = struct {
+    is_hetatm: bool,
+    /// The record with its columns 13 onwards in their standard places. Only
+    /// that part is meaningful: for a record shifted by an overflowing serial
+    /// the slice starts one character into the line.
+    fields: []const u8,
+};
+
+/// Classify a line as an ATOM or HETATM record, or return null for any other
+/// line. Besides the standard `ATOM  ` and `HETATM` prefixes, two layouts of
+/// a six-digit serial number (past 99999, which some writers emit instead of
+/// hybrid-36) are accepted:
+///
+/// - `ATOM 100001  CA ...`: the serial starts in column 6 and overwrites the
+///   last blank of the record name. Everything after it keeps its columns.
+/// - `ATOM  100001  CA ...` and `HETATM100001  CA ...` (`%-6s%5d` with a
+///   six-digit value): the serial runs into column 12 and every later column
+///   moves one to the right. The shift is recognized by the decimal points of
+///   the three coordinates: in a standard record they are in columns 35, 43
+///   and 51, in a shifted one in columns 36, 44 and 52. The serial must
+///   also reach column 12.
+fn atomRecordKind(line: []const u8) ?AtomRecordKind {
+    const is_hetatm = std.mem.startsWith(u8, line, "HETATM");
+    const is_atom = std.mem.startsWith(u8, line, "ATOM  ") or
+        (std.mem.startsWith(u8, line, "ATOM ") and line.len > 5 and std.ascii.isDigit(line[5]));
+    if (!is_atom and !is_hetatm) return null;
+
+    if (line.len >= 55 and std.ascii.isDigit(line[11]) and
+        line[35] == '.' and line[43] == '.' and line[51] == '.' and
+        !(line[34] == '.' and line[42] == '.' and line[50] == '.'))
+    {
+        return .{ .is_hetatm = is_hetatm, .fields = line[1..] };
+    }
+    return .{ .is_hetatm = is_hetatm, .fields = line };
+}
+
 /// Parse a coordinate value from a fixed-width field
 /// Fast implementation avoiding std.fmt.parseFloat overhead
 fn parseCoordinate(field: []const u8) ?f64 {
@@ -593,9 +629,10 @@ fn atomNamesAreColumnAligned(source: []const u8) bool {
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |line| {
         if (line.len < 16) continue;
-        if (!std.mem.startsWith(u8, line, "ATOM  ") and !std.mem.startsWith(u8, line, "HETATM")) continue;
+        const fields = (atomRecordKind(line) orelse continue).fields;
+        if (fields.len < 16) continue;
 
-        const name = line[12..16];
+        const name = fields[12..16];
         // Names from column 14 and four-character names say nothing
         if (!std.ascii.isAlphabetic(name[0]) or name[3] != ' ') continue;
         if (elementFromNamePrefix(name[0..2]) == null) return false;
@@ -963,6 +1000,86 @@ test "PdbParser basic" {
     try testing.expectApproxEqAbs(@as(f64, 11.104), input.x[0], 0.001);
     try testing.expectApproxEqAbs(@as(f64, 6.134), input.y[0], 0.001);
     try testing.expectApproxEqAbs(@as(f64, -6.504), input.z[0], 0.001);
+}
+
+test "PdbParser reads six-digit atom serial numbers" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Standard, serial in column 6-11, and %-6s%5d shifted by one column
+    const pdb_content =
+        \\ATOM  99999  CA  ALA A   1      11.104   6.134  -6.504  1.00 11.68           C
+        \\ATOM 100000  CB  ALA A   1      12.104   7.134  -5.504  1.00 11.68           C
+        \\ATOM  100001  N   GLY B  12      13.104   8.134  -4.504  1.00 11.68           N
+        \\ATOM  100002  CA  GLY B  12      14.639  -9.071  -3.147  1.00  9.13           C
+        \\HETATM100003 ZN    ZN C 300      15.000  16.000  17.000  1.00 20.00          ZN
+        \\ATOM  100004  O   GLY B  12D     16.250  17.500  18.750  1.00  9.13           O
+        \\END
+    ;
+
+    var parser = PdbParser.init(allocator);
+    parser.atom_only = false;
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try testing.expectEqual(@as(usize, 6), input.atomCount());
+    const xs = [_]f64{ 11.104, 12.104, 13.104, 14.639, 15.0, 16.25 };
+    const ys = [_]f64{ 6.134, 7.134, 8.134, -9.071, 16.0, 17.5 };
+    const zs = [_]f64{ -6.504, -5.504, -4.504, -3.147, 17.0, 18.75 };
+    for (xs, ys, zs, 0..) |x, y, z, i| {
+        try testing.expectApproxEqAbs(x, input.x[i], 0.001);
+        try testing.expectApproxEqAbs(y, input.y[i], 0.001);
+        try testing.expectApproxEqAbs(z, input.z[i], 0.001);
+    }
+    try testing.expectEqualStrings("CB", input.atom_name.?[1].slice());
+    try testing.expectEqualStrings("GLY", input.residue.?[2].slice());
+    try testing.expectEqualStrings("B", input.chain_id.?[3].slice());
+    try testing.expectEqual(@as(i32, 300), input.residue_num.?[4]);
+    try testing.expectEqual(@as(u8, 30), input.element.?[4]);
+    try testing.expectEqualStrings("D", input.insertion_code.?[5].slice());
+}
+
+test "PdbParser keeps hybrid-36 serials and standard records unchanged" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const pdb_content =
+        \\ATOM  A0000  CA  ALA A   1      11.104   6.134  -6.504  1.00 11.68           C
+        \\ATOM  99999  CB  ALA A   1      12.104   7.134  -5.504  1.00 11.68           C
+        \\ATOM  A0001  CG  ALA A   1     112.104 -17.134  -5.504  1.00 11.68           C
+        \\END
+    ;
+
+    var parser = PdbParser.init(allocator);
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try testing.expectEqual(@as(usize, 3), input.atomCount());
+    try testing.expectApproxEqAbs(@as(f64, 11.104), input.x[0], 0.001);
+    try testing.expectApproxEqAbs(@as(f64, 112.104), input.x[2], 0.001);
+    try testing.expectApproxEqAbs(@as(f64, -17.134), input.y[2], 0.001);
+}
+
+test "PdbParser still skips ATOM-like lines that are not records" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const pdb_content =
+        \\ATOMIC  note that is not a record
+        \\ATOM 1x
+        \\ATOM  100001  CA  ALA A   1      11.104   6.134  -6.504  1.00 11.68           C
+        \\ATOM  100002  CB  ALA A   1      xxxxxxx   6.134  -6.504  1.00 11.68           C
+        \\END
+    ;
+
+    var muted = test_support.muteStderr();
+    defer muted.restore();
+    var parser = PdbParser.init(allocator);
+    var input = try parser.parse(pdb_content);
+    defer input.deinit();
+
+    try testing.expectEqual(@as(usize, 1), input.atomCount());
+    try testing.expectEqual(@as(usize, 2), parser.skipped_records);
 }
 
 test "PdbParser include HETATM" {
