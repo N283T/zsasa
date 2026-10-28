@@ -20,7 +20,7 @@ from zsasa.mdtraj import compute_sasa, shrake_rupley
 
 A drop-in replacement for `mdtraj.shrake_rupley()` with better performance through SIMD optimization and frame-level parallelization.
 
-**3.4x faster** than mdsasa-bolt on real MD data.
+About **2 to 3 times faster** than mdsasa-bolt on real MD data (see the [MD benchmarks](../benchmarks/md.md)).
 
 ## compute_sasa
 

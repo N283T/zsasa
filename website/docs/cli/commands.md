@@ -150,7 +150,7 @@ The three commands share most of their options but not all of them. The **Comman
 
 When `--classifier` is used, atom radii are assigned based on residue and atom names. For PDB/mmCIF/BinaryCIF/SDF/MOL input, `ccd` is used by default. HETATM records are excluded unless `--include-hetatm` is given, whichever classifier is used.
 
-`--ccd` and `--sdf` only matter for the `ccd` classifier; with another classifier they are ignored, and `calc` and `batch` print a warning.
+`--ccd` and `--sdf` only matter for the `ccd` classifier; with another classifier they are ignored, and `calc` and `batch` print a warning. A component defined in several places is taken whole from the first of `--sdf`, `--ccd` and the input's inline `_chem_comp_*` data.
 
 See [Classifiers](../guide/classifiers.mdx) for detailed classifier documentation.
 
