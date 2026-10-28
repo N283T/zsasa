@@ -467,6 +467,31 @@ pub fn guessRadiusFromResidueAtom(residue: []const u8, atom_name: []const u8) ?f
     return guessRadius(extractElementInResidue(residue, atom_name));
 }
 
+/// Whether an entry of the built-in NACCESS or OONS table agrees with the
+/// atom's element column.
+///
+/// Those tables are keyed by residue and atom name, and a name such as `CA`
+/// is the alpha carbon of a residue and the calcium of a calcium ion alike.
+/// Every table atom is named after its element (C, N, O, S, P, or SE), so when
+/// the element column is known (`atomic_number` non-zero) and names another
+/// element, the entry belongs to a different atom and the element decides.
+/// Returns true when the column is absent, unknown, or consistent.
+pub fn tableEntryMatchesElement(atom_name: []const u8, atomic_number: ?u8) bool {
+    const z = atomic_number orelse return true;
+    if (z == 0) return true;
+    const atom = std.mem.trim(u8, atom_name, " ");
+    if (atom.len == 0) return true;
+    const expected: u8 = switch (std.ascii.toUpper(atom[0])) {
+        'C' => 6,
+        'N' => 7,
+        'O' => 8,
+        'P' => 15,
+        'S' => if (atom.len >= 2 and std.ascii.toUpper(atom[1]) == 'E') 34 else 16,
+        else => return true,
+    };
+    return z == expected;
+}
+
 /// Get the generic radius for an atom that the tables of built-in classifier
 /// `ct` do not cover.
 ///

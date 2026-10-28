@@ -1232,11 +1232,19 @@ fn applyBuiltinClassifier(
 
     for (0..n) |i| {
         // Try built-in classifier lookup: radius and polarity class of the atom
-        const maybe_props: ?classifier.AtomProperties = switch (ct) {
+        var maybe_props: ?classifier.AtomProperties = switch (ct) {
             .naccess => classifier_naccess.getProperties(residues[i].slice(), atom_names[i].slice()),
             .protor, .ccd => if (ccd_clf) |*c| c.getProperties(residues[i].slice(), atom_names[i].slice()) else null,
             .oons => classifier_oons.getProperties(residues[i].slice(), atom_names[i].slice()),
         };
+        // A NACCESS/OONS entry found by name alone (CA in residue CA matches
+        // the alpha carbon) yields to an element column that names another
+        // element (calcium).
+        if (maybe_props != null and (ct == .naccess or ct == .oons) and
+            !classifier.tableEntryMatchesElement(atom_names[i].slice(), if (input.element) |elements| elements[i] else null))
+        {
+            maybe_props = null;
+        }
         if (classes) |out| out[i] = if (maybe_props) |props| props.class else .unknown;
 
         if (maybe_props) |props| {
@@ -2663,6 +2671,43 @@ test "classifiers guess the element from residue and atom name without an elemen
 
         try std.testing.expectEqualSlices(f64, &expected, input.r);
     }
+}
+
+test "classifiers give a calcium ion the calcium radius when the element column says calcium" {
+    const allocator = std.testing.allocator;
+
+    // Calcium ion CA/CA with element 20, alpha carbon of ALA with element 6, and the
+    // same ion without an element column value (0): the name decides there.
+    const json_content =
+        \\{"x": [0, 10, 20], "y": [0, 0, 0], "z": [0, 0, 0],
+        \\ "r": [9, 9, 9],
+        \\ "residue": ["CA", "ALA", "CA"], "atom_name": ["CA", "CA", "CA"],
+        \\ "element": [20, 6, 0]}
+    ;
+    const calcium = classifier.guessRadiusFromAtomicNumber(20).?;
+
+    for ([_]ClassifierType{ .naccess, .oons, .protor, .ccd }) |ct| {
+        var input = try json_parser.parseAtomInput(allocator, json_content);
+        defer input.deinit();
+
+        var classes: [3]classifier.AtomClass = undefined;
+        try applyBuiltinClassifier(&input, ct, null, null, null, &classes, true);
+
+        try std.testing.expectApproxEqAbs(calcium, input.r[0], 1e-9);
+        try std.testing.expect(input.r[1] != calcium);
+        try std.testing.expectEqual(classifier.AtomClass.unknown, classes[0]);
+    }
+}
+
+test "tableEntryMatchesElement accepts the table's own element and rejects calcium under CA" {
+    try std.testing.expect(classifier.tableEntryMatchesElement("CA", null));
+    try std.testing.expect(classifier.tableEntryMatchesElement("CA", 0));
+    try std.testing.expect(classifier.tableEntryMatchesElement(" CA ", 6));
+    try std.testing.expect(!classifier.tableEntryMatchesElement("CA", 20));
+    try std.testing.expect(classifier.tableEntryMatchesElement("SD", 16));
+    try std.testing.expect(classifier.tableEntryMatchesElement("SE", 34));
+    try std.testing.expect(!classifier.tableEntryMatchesElement("SE", 16));
+    try std.testing.expect(classifier.tableEntryMatchesElement("ZN", 30));
 }
 
 test "per-chain summaries prefer full chain IDs over truncated prefixes" {

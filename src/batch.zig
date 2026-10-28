@@ -1161,11 +1161,18 @@ fn applyBuiltinClassifier(
     errdefer input.allocator.free(new_radii);
 
     for (0..n) |i| {
-        const maybe_radius: ?f64 = switch (ct) {
+        var maybe_radius: ?f64 = switch (ct) {
             .naccess => classifier_naccess.getRadius(residues[i].slice(), atom_names[i].slice()),
             .protor, .ccd => if (ccd_clf) |*c| c.getRadius(residues[i].slice(), atom_names[i].slice()) else null,
             .oons => classifier_oons.getRadius(residues[i].slice(), atom_names[i].slice()),
         };
+        // An element column that names another element than the table entry
+        // (calcium under the name CA) decides.
+        if (maybe_radius != null and (ct == .naccess or ct == .oons) and
+            !classifier.tableEntryMatchesElement(atom_names[i].slice(), if (input.element) |elements| elements[i] else null))
+        {
+            maybe_radius = null;
+        }
 
         // Not in the tables: element-based radius, atom name-based without an
         // element, else the input radius
