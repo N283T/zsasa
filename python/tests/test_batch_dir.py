@@ -22,6 +22,12 @@ SMALL_ALA_PDB = (
     "ATOM      5  CB  ALA A   1       1.204  -0.620   1.296  1.00  0.00           C\n"
     "END\n"
 )
+WATER_PDB = (
+    "ATOM      1  N   ALA A   1      -0.966   0.493   1.500  1.00  0.00           N\n"
+    "ATOM      2  CA  ALA A   1       0.257   0.418   0.692  1.00  0.00           C\n"
+    "HETATM    3  O   HOH A 101       5.000   0.000   0.000  1.00  0.00           O\n"
+    "END\n"
+)
 SMALL_GLY_PDB = (
     "ATOM      1  N   GLY A   1      10.000  10.000  10.000  1.00  0.00           N\n"
     "ATOM      2  CA  GLY A   1      11.450  10.000  10.000  1.00  0.00           C\n"
@@ -221,6 +227,15 @@ class TestProcessDirectory:
         result = process_directory(TEST_DATA_DIR, include_hydrogens=True)
 
         assert result.successful > 0
+
+    def test_process_directory_exclude_water(self, tmp_path: Path) -> None:
+        """exclude_water leaves water out, also with include_hetatm."""
+        (tmp_path / "w.pdb").write_text(WATER_PDB)
+        counts = {
+            flags: process_directory(tmp_path, include_hetatm=True, exclude_water=flags).n_atoms[0]
+            for flags in (False, True)
+        }
+        assert counts == {False: 3, True: 2}
 
     def test_process_directory_include_hetatm(self) -> None:
         """include_hetatm=True should be accepted without error."""

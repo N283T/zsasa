@@ -10,6 +10,7 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ### Added
 
+- **`--exclude-water`** for `calc`, `batch` and `traj` (workflow `exclude_water = true`, Python `exclude_water=True` in `process_directory()` and the gemmi, BioPython and Biotite integrations): leaves water out while other HETATM records stay with `--include-hetatm`. Water is identified by residue name (`HOH`, `DOD`, `WAT`, `H2O`, `D2O` and the MD names `SOL`, `TIP`, `TIP3`-`TIP5`, `T3P`-`T5P`, `SPC`, `SPCE`), so it also applies to JSON input and to water written as ATOM records. In `traj` the trajectory keeps its water atoms and they are skipped in each frame. For 1UBQ with `--include-hetatm`, the 58 waters move the total from 4834.72 to 5656.65 Å²; with `--exclude-water` it is 4834.72 Å² again. The C function `zsasa_batch_dir_process` takes a new `exclude_water` argument before `error_code`, so the C ABI version is now 2. (#439)
 - **`zsasa traj` takes `--model=N` and `--include-hetatm`**, with the meaning and syntax they have in `calc`. `--model=N` reads model N of the topology instead of the first one; a model that does not exist is an error (`ModelNotFound`). `--include-hetatm` is accepted for consistency; a `traj` topology has always included its `HETATM` records, so it changes nothing. Default behavior is unchanged. `--chain` and `--auth-chain` are still rejected. (#423)
 
 ### Changed

@@ -117,6 +117,7 @@ def process_directory(
     classifier: ClassifierType | None = ClassifierType.CCD,
     include_hydrogens: bool = False,
     include_hetatm: bool = False,
+    exclude_water: bool = False,
 ) -> BatchDirResult:
     """Process all supported structure files in a directory for SASA calculation.
 
@@ -146,6 +147,8 @@ def process_directory(
             ``--ccd``).
         include_hydrogens: Whether to include hydrogen atoms. Default: False.
         include_hetatm: Whether to include HETATM records. Default: False.
+        exclude_water: Leave out water residues (HOH, WAT, SOL, ...), also when
+            HETATM records are included. Default: False.
 
     Returns:
         BatchDirResult with per-file details.
@@ -213,6 +216,7 @@ def process_directory(
         classifier_int,
         int(include_hydrogens),
         int(include_hetatm),
+        int(exclude_water),
         error_code,
     )
 

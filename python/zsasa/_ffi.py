@@ -26,7 +26,7 @@ ZSASA_ERROR_OUTPUT_DIR = -8
 # the value zsasa_abi_version() returns in the loaded library. Bump it together with
 # ABI_VERSION in src/c_api.zig whenever an existing exported signature or struct
 # layout changes (not for new exports or new error codes).
-_EXPECTED_ABI_VERSION = 1
+_EXPECTED_ABI_VERSION = 2
 
 # Valid n_points range for bitmask algorithm
 _BITMASK_MIN_N_POINTS = 1
@@ -211,7 +211,7 @@ _CDEF = """
         const char* input_dir, const char* output_dir,
         int algorithm, uint32_t n_points, double probe_radius,
         size_t n_threads, int classifier_type,
-        int include_hydrogens, int include_hetatm,
+        int include_hydrogens, int include_hetatm, int exclude_water,
         int* error_code
     );
     size_t zsasa_batch_dir_get_total_files(void* handle);

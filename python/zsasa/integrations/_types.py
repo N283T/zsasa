@@ -20,6 +20,34 @@ from zsasa.classifier import (
 )
 from zsasa.sasa import SasaResult
 
+#: Residue names treated as water by ``exclude_water``, the same list as
+#: ``water_residues`` in ``src/types.zig`` (``--exclude-water`` in the CLI).
+WATER_RESIDUES = frozenset(
+    {
+        "HOH",
+        "DOD",
+        "WAT",
+        "H2O",
+        "D2O",
+        "SOL",
+        "TIP",
+        "TIP3",
+        "TIP4",
+        "TIP5",
+        "T3P",
+        "T4P",
+        "T5P",
+        "SPC",
+        "SPCE",
+    }
+)
+
+
+def is_water_residue(name: str) -> bool:
+    """Whether a residue name is water (``WATER_RESIDUES``), ignoring blanks and case."""
+    return name.strip().upper() in WATER_RESIDUES
+
+
 __all__ = [
     "AtomData",
     "SasaResultWithAtoms",

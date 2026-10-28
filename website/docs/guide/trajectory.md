@@ -74,6 +74,7 @@ zsasa traj trajectory.xtc topology.pdb -o sasa_results.csv
 | `--include-hydrogens` | Include hydrogen atoms (the default) | included |
 | `--model=N` | Read model N of the topology instead of the first (PDB or mmCIF); an unknown model is an error | first model |
 | `--include-hetatm` | Accepted for consistency with `calc`; `HETATM` records are always part of the topology | always included |
+| `--exclude-water` | Leave water residues out of the calculation; the trajectory keeps its water atoms, which are skipped in each frame | water kept |
 | `--ccd=PATH`, `--sdf=PATH` | External CCD dictionary and SDF bond topology for the `ccd` classifier | none |
 | `--use-bitmask` | [Bitmask LUT optimization](algorithms.mdx#bitmask-lut-optimization) (SR only, `--n-points` 1-1024) | off |
 | `--bitmask-lut-mode=MODE`, `--bitmask-correction`, `--bitmask-correction-coeff=V` | Bitmask variants; see [Algorithms](algorithms.mdx#experimental-bias-correction) | `single`, off, `0.020` |

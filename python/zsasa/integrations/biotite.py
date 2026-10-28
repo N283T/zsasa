@@ -25,7 +25,12 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 
 from zsasa.classifier import AtomClass, ClassifierType
-from zsasa.integrations._types import AtomData, SasaResultWithAtoms, classify_atom_data
+from zsasa.integrations._types import (
+    AtomData,
+    SasaResultWithAtoms,
+    classify_atom_data,
+    is_water_residue,
+)
 from zsasa.sasa import calculate_sasa
 
 if TYPE_CHECKING:
@@ -60,6 +65,7 @@ def extract_atoms_from_atom_array(
     atom_array: AtomArray,
     *,
     include_hetatm: bool = False,
+    exclude_water: bool = False,
     include_hydrogens: bool = False,
 ) -> AtomData:
     """Extract atom data from a Biotite AtomArray.
@@ -67,6 +73,8 @@ def extract_atoms_from_atom_array(
     Args:
         atom_array: A Biotite AtomArray object.
         include_hetatm: Whether to include HETATM records (ligands, waters, etc.).
+        exclude_water: Leave out water residues (HOH, WAT, SOL, ...), also
+            when HETATM records are included. Default: False.
         include_hydrogens: Whether to include hydrogen atoms.
 
     Returns:
@@ -86,6 +94,10 @@ def extract_atoms_from_atom_array(
     # Filter HETATM if not requested
     if not include_hetatm:
         mask &= ~atom_array.hetero
+
+    # Filter water if requested
+    if exclude_water:
+        mask &= ~np.array([is_water_residue(str(name)) for name in atom_array.res_name], dtype=bool)
 
     # Filter hydrogens if not requested
     if not include_hydrogens:
@@ -126,6 +138,7 @@ def calculate_sasa_from_atom_array(
     probe_radius: float = 1.4,
     n_threads: int = 0,
     include_hetatm: bool = False,
+    exclude_water: bool = False,
     include_hydrogens: bool = False,
 ) -> SasaResultWithAtoms:
     """Calculate SASA from a Biotite AtomArray.
@@ -144,6 +157,7 @@ def calculate_sasa_from_atom_array(
         probe_radius: Water probe radius in Angstroms. Default: 1.4.
         n_threads: Number of threads (0 = auto). Default: 0.
         include_hetatm: Include HETATM records. Default: False.
+        exclude_water: Leave out water residues (HOH, WAT, SOL, ...). Default: False.
         include_hydrogens: Include hydrogen atoms. Default: False.
 
     Returns:
@@ -161,6 +175,7 @@ def calculate_sasa_from_atom_array(
     atom_data = extract_atoms_from_atom_array(
         atom_array,
         include_hetatm=include_hetatm,
+        exclude_water=exclude_water,
         include_hydrogens=include_hydrogens,
     )
 
@@ -216,6 +231,7 @@ def calculate_sasa_from_structure(
     probe_radius: float = 1.4,
     n_threads: int = 0,
     include_hetatm: bool = False,
+    exclude_water: bool = False,
     include_hydrogens: bool = False,
 ) -> SasaResultWithAtoms:
     """Calculate SASA from a structure file or Biotite AtomArray/AtomArrayStack.
@@ -235,6 +251,7 @@ def calculate_sasa_from_structure(
         probe_radius: Water probe radius in Angstroms. Default: 1.4.
         n_threads: Number of threads (0 = auto). Default: 0.
         include_hetatm: Include HETATM records. Default: False.
+        exclude_water: Leave out water residues (HOH, WAT, SOL, ...). Default: False.
         include_hydrogens: Include hydrogen atoms. Default: False.
 
     Returns:
@@ -287,5 +304,6 @@ def calculate_sasa_from_structure(
         probe_radius=probe_radius,
         n_threads=n_threads,
         include_hetatm=include_hetatm,
+        exclude_water=exclude_water,
         include_hydrogens=include_hydrogens,
     )

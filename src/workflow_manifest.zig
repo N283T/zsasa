@@ -77,6 +77,7 @@ pub const Calculation = struct {
     precision: ?[]const u8 = null,
     include_hydrogens: ?bool = null,
     include_hetatm: ?bool = null,
+    exclude_water: ?bool = null,
     use_bitmask: ?bool = null,
     timing: ?bool = null,
     quiet: ?bool = null,
@@ -536,7 +537,7 @@ fn parseCalculation(table: toml_parser.Table) WorkflowError!Calculation {
         "algorithm",         "threads",        "probe_radius", "n_points", "n_slices",      "precision",
         "include_hydrogens", "include_hetatm", "use_bitmask",  "timing",   "quiet",         "auth_chain",
         "residue_map",       "per_residue",    "rsa",          "polar",    "validate_only", "altloc",
-        "lr_trig",
+        "lr_trig",           "exclude_water",
     });
     const lr_trig = try optionalString(table.entries, "lr_trig");
     if (lr_trig) |value| {
@@ -554,6 +555,7 @@ fn parseCalculation(table: toml_parser.Table) WorkflowError!Calculation {
         .precision = try optionalString(table.entries, "precision"),
         .include_hydrogens = try optionalBool(table.entries, "include_hydrogens"),
         .include_hetatm = try optionalBool(table.entries, "include_hetatm"),
+        .exclude_water = try optionalBool(table.entries, "exclude_water"),
         .use_bitmask = try optionalBool(table.entries, "use_bitmask"),
         .timing = try optionalBool(table.entries, "timing"),
         .quiet = try optionalBool(table.entries, "quiet"),

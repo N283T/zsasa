@@ -126,6 +126,14 @@ class TestExtractAtoms:
         atoms = extract_atoms_from_atom_array(structure_with_hetatm, include_hetatm=True)
         assert len(atoms) == 2  # CA + water O
 
+    def test_extract_hetatm_without_water(self, structure_with_hetatm):
+        """exclude_water leaves the water out of the included HETATM records."""
+        atoms = extract_atoms_from_atom_array(
+            structure_with_hetatm, include_hetatm=True, exclude_water=True
+        )
+        assert len(atoms) == 1  # Only CA
+        assert atoms.residue_names == ["ALA"]
+
     def test_extract_hetatm_excluded(self, structure_with_hetatm):
         """Should exclude HETATM by default."""
         atoms = extract_atoms_from_atom_array(structure_with_hetatm)

@@ -85,6 +85,7 @@ pub const BatchConfig = struct {
     classifier_type: ?ClassifierType = .ccd, // Default: ccd (ProtOr-compatible with CCD extension)
     include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
     include_hetatm: bool = false, // Include HETATM records (default: exclude)
+    exclude_water: bool = false, // Remove water residues (--exclude-water)
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
     bitmask_correction: bool = false, // Experimental exposed-fraction correction for bitmask SR
     bitmask_correction_coeff: f64 = shrake_rupley_bitmask.default_bitmask_correction_coeff,
@@ -1025,6 +1026,16 @@ const ParsedInput = struct {
 };
 
 fn readInputFile(allocator: Allocator, io: std.Io, path: []const u8, config: BatchConfig) !ParsedInput {
+    var parsed = try readInputFileAllAtoms(allocator, io, path, config);
+    if (config.exclude_water) {
+        errdefer parsed.deinit();
+        _ = try parsed.input.removeWater();
+    }
+    return parsed;
+}
+
+/// `readInputFile` before `exclude_water` is applied.
+fn readInputFileAllAtoms(allocator: Allocator, io: std.Io, path: []const u8, config: BatchConfig) !ParsedInput {
     const format = format_detect.detectInputFormat(path);
     // A batch reads each input with one read unless told otherwise. Page
     // faults on a mapping cost more once the file cache has filled memory:
@@ -2893,6 +2904,7 @@ pub const BatchArgs = struct {
     classifier_type: ClassifierType = .ccd, // Default: ccd (ProtOr-compatible with CCD extension)
     include_hydrogens: bool = false,
     include_hetatm: bool = false,
+    exclude_water: bool = false,
     use_bitmask: bool = false,
     bitmask_correction: bool = false,
     bitmask_correction_coeff: f64 = shrake_rupley_bitmask.default_bitmask_correction_coeff,
@@ -2921,6 +2933,7 @@ pub const BatchArgs = struct {
     classifier_explicit: bool = false,
     include_hydrogens_explicit: bool = false,
     include_hetatm_explicit: bool = false,
+    exclude_water_explicit: bool = false,
     alt_loc_explicit: bool = false,
     af_model_fast_explicit: bool = false,
     use_bitmask_explicit: bool = false,
@@ -3581,6 +3594,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
             result.include_hetatm = true;
             result.include_hetatm_explicit = true;
         }
+        // --exclude-water
+        else if (std.mem.eql(u8, arg, "--exclude-water")) {
+            result.exclude_water = true;
+            result.exclude_water_explicit = true;
+        }
         // --use-bitmask
         else if (std.mem.eql(u8, arg, "--use-bitmask")) {
             result.use_bitmask = true;
@@ -3829,6 +3847,7 @@ pub fn printHelp(io: std.Io, program_name: []const u8) void {
         \\    --jsonl-decimals=N  Round JSONL floating-point values to N decimals (0..15)
         \\    --include-hydrogens Include hydrogen atoms (default: exclude)
         \\    --include-hetatm    Include HETATM records (default: exclude)
+        \\    --exclude-water     Leave out water (HOH, WAT, SOL, TIP3, ...)
         \\    --use-bitmask       Use bitmask LUT optimization for SR algorithm
         \\                        (n-points must be 1..1024)
         \\    --bitmask-correction
@@ -3937,6 +3956,9 @@ fn applyWorkflowToBatchConfig(
     if (!args.include_hetatm_explicit) {
         if (calculation.include_hetatm) |v| config.include_hetatm = v;
     }
+    if (!args.exclude_water_explicit) {
+        if (calculation.exclude_water) |v| config.exclude_water = v;
+    }
     if (!args.use_bitmask_explicit) {
         if (calculation.use_bitmask) |v| config.use_bitmask = v;
     }
@@ -3983,6 +4005,7 @@ fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
     }
     if (args.include_hydrogens_explicit) config.include_hydrogens = args.include_hydrogens;
     if (args.include_hetatm_explicit) config.include_hetatm = args.include_hetatm;
+    if (args.exclude_water_explicit) config.exclude_water = args.exclude_water;
     if (args.use_bitmask_explicit) config.use_bitmask = args.use_bitmask;
     if (args.bitmask_correction_explicit) config.bitmask_correction = args.bitmask_correction;
     if (args.bitmask_correction_coeff_explicit) config.bitmask_correction_coeff = args.bitmask_correction_coeff;
@@ -6108,6 +6131,7 @@ fn configFromArgs(args: BatchArgs) BatchConfig {
         .classifier_type = args.classifier_type,
         .include_hydrogens = args.include_hydrogens,
         .include_hetatm = args.include_hetatm,
+        .exclude_water = args.exclude_water,
         .use_bitmask = args.use_bitmask,
         .bitmask_correction = args.bitmask_correction,
         .bitmask_correction_coeff = args.bitmask_correction_coeff,
@@ -11049,6 +11073,38 @@ test "BatchArgs --input-io" {
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(InputIoMode.read, parsed.input_io);
     try std.testing.expect(parsed.input_io_explicit);
+}
+
+test "readInputFile leaves water out with exclude_water" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "water.pdb", .data =
+        \\ATOM      1  N   ALA A   1       1.000   0.000   0.000  1.00 10.00           N
+        \\ATOM      2  CA  ALA A   1       2.000   0.000   0.000  1.00 10.00           C
+        \\HETATM    3  O   HOH A 101       9.000   0.000   0.000  1.00 10.00           O
+        \\HETATM    4 ZN    ZN A 201      12.000   0.000   0.000  1.00 10.00          ZN
+        \\HETATM    5  O   HOH A 102      15.000   0.000   0.000  1.00 10.00           O
+        \\END
+        \\
+    });
+    const path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "water.pdb", allocator);
+    defer allocator.free(path);
+
+    var all = try readInputFile(allocator, std.testing.io, path, .{ .include_hetatm = true });
+    defer all.deinit();
+    try std.testing.expectEqualSlices(f64, &.{ 1, 2, 9, 12, 15 }, all.input.x);
+
+    var dry = try readInputFile(allocator, std.testing.io, path, .{ .include_hetatm = true, .exclude_water = true });
+    defer dry.deinit();
+    try std.testing.expectEqualSlices(f64, &.{ 1, 2, 12 }, dry.input.x);
+}
+
+test "BatchArgs --exclude-water" {
+    const args = [_][]const u8{ "zsasa", "batch", "--exclude-water", "in_dir" };
+    const parsed = parseArgs(&args, 2);
+    try std.testing.expect(parsed.exclude_water);
+    try std.testing.expect(parsed.exclude_water_explicit);
 }
 
 test "readInputFile reads the first model of a multi-model file" {

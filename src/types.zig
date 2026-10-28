@@ -237,6 +237,58 @@ pub const AtomInput = struct {
         }
     }
 
+    /// Remove the atoms of water residues (`isWaterResidue`) and return how
+    /// many were removed. Inputs without residue names are left unchanged.
+    /// Removing every atom is `error.NoAtomsFound`.
+    pub fn removeWater(self: *AtomInput) !usize {
+        const residues = self.residue orelse return 0;
+        var n_water: usize = 0;
+        for (residues) |res| {
+            if (isWaterResidue(res.slice())) n_water += 1;
+        }
+        if (n_water == 0) return 0;
+        const n = residues.len;
+        if (n_water == n) return error.NoAtomsFound;
+
+        const indices = try self.allocator.alloc(usize, n - n_water);
+        defer self.allocator.free(indices);
+        var k: usize = 0;
+        for (residues, 0..) |res, i| {
+            if (isWaterResidue(res.slice())) continue;
+            indices[k] = i;
+            k += 1;
+        }
+
+        var out = AtomInput{ .x = &.{}, .y = &.{}, .z = &.{}, .r = &.{}, .allocator = self.allocator };
+        errdefer out.deinit();
+        out.x = try gather(f64, self.allocator, self.x, indices);
+        out.y = try gather(f64, self.allocator, self.y, indices);
+        out.z = try gather(f64, self.allocator, self.z, indices);
+        out.r = try gather(f64, self.allocator, self.r, indices);
+        out.residue = try gather(FixedString5, self.allocator, residues, indices);
+        if (self.atom_name) |v| out.atom_name = try gather(FixedString4, self.allocator, v, indices);
+        if (self.element) |v| out.element = try gather(u8, self.allocator, v, indices);
+        if (self.chain_id) |v| out.chain_id = try gather(FixedString4, self.allocator, v, indices);
+        if (self.residue_num) |v| out.residue_num = try gather(i32, self.allocator, v, indices);
+        if (self.insertion_code) |v| out.insertion_code = try gather(FixedString4, self.allocator, v, indices);
+        if (self.chain_id_full) |v| {
+            const chains = try self.allocator.alloc([]const u8, indices.len);
+            errdefer self.allocator.free(chains);
+            for (indices, chains) |i, *dst| dst.* = try self.allocator.dupe(u8, v[i]);
+            out.chain_id_full = chains;
+        }
+
+        self.deinit();
+        self.* = out;
+        return n_water;
+    }
+
+    fn gather(comptime T: type, allocator: std.mem.Allocator, src: []const T, indices: []const usize) ![]T {
+        const out = try allocator.alloc(T, indices.len);
+        for (indices, out) |i, *dst| dst.* = src[i];
+        return out;
+    }
+
     /// Free allocated memory
     pub fn deinit(self: *AtomInput) void {
         self.allocator.free(self.x);
@@ -270,6 +322,24 @@ pub const AtomInput = struct {
         }
     }
 };
+
+/// Residue names of water: the PDB names `HOH`, `DOD` (heavy water), `WAT`,
+/// `H2O` and `D2O`, and the names MD force fields give their water models.
+const water_residues = std.StaticStringMap(void).initComptime(.{
+    .{"HOH"}, .{"DOD"}, .{"WAT"},  .{"H2O"},  .{"D2O"},
+    .{"SOL"}, .{"TIP"}, .{"TIP3"}, .{"TIP4"}, .{"TIP5"},
+    .{"T3P"}, .{"T4P"}, .{"T5P"},  .{"SPC"},  .{"SPCE"},
+});
+
+/// Whether a residue name is water (`water_residues`), ignoring surrounding
+/// blanks and case.
+pub fn isWaterResidue(name: []const u8) bool {
+    const trimmed = std.mem.trim(u8, name, " ");
+    if (trimmed.len == 0 or trimmed.len > 5) return false;
+    var buf: [5]u8 = undefined;
+    const upper = std.ascii.upperString(buf[0..trimmed.len], trimmed);
+    return water_residues.has(upper);
+}
 
 /// Generic output data structure for SASA calculation
 pub fn SasaResultGen(comptime T: type) type {
@@ -579,4 +649,63 @@ test "FixedString5 equality" {
     try std.testing.expect(!s1.eql(&s3));
     try std.testing.expect(s1.eqlSlice("ALA"));
     try std.testing.expect(!s1.eqlSlice("GLY"));
+}
+
+test "isWaterResidue" {
+    for ([_][]const u8{ "HOH", "DOD", "WAT", "H2O", "D2O", "SOL", "TIP3", "SPCE", "hoh", " HOH " }) |name| {
+        try std.testing.expect(isWaterResidue(name));
+    }
+    for ([_][]const u8{ "ALA", "HEM", "SO4", "GOL", "", "HOHOHO" }) |name| {
+        try std.testing.expect(!isWaterResidue(name));
+    }
+}
+
+test "AtomInput.removeWater keeps every field of the other atoms" {
+    const allocator = std.testing.allocator;
+    var input = AtomInput{
+        .x = try allocator.dupe(f64, &.{ 1, 2, 3 }),
+        .y = try allocator.dupe(f64, &.{ 4, 5, 6 }),
+        .z = try allocator.dupe(f64, &.{ 7, 8, 9 }),
+        .r = try allocator.dupe(f64, &.{ 1.5, 1.6, 1.7 }),
+        .residue = try allocator.dupe(FixedString5, &.{ FixedString5.fromSlice("ALA"), FixedString5.fromSlice("HOH"), FixedString5.fromSlice("ZN") }),
+        .atom_name = try allocator.dupe(FixedString4, &.{ FixedString4.fromSlice("CA"), FixedString4.fromSlice("O"), FixedString4.fromSlice("ZN") }),
+        .element = try allocator.dupe(u8, &.{ 6, 8, 30 }),
+        .chain_id = try allocator.dupe(FixedString4, &.{ FixedString4.fromSlice("A"), FixedString4.fromSlice("A"), FixedString4.fromSlice("B") }),
+        .residue_num = try allocator.dupe(i32, &.{ 1, 101, 201 }),
+        .insertion_code = try allocator.dupe(FixedString4, &.{ FixedString4.fromSlice(""), FixedString4.fromSlice(""), FixedString4.fromSlice("") }),
+        .allocator = allocator,
+    };
+    const chains = try allocator.alloc([]const u8, 3);
+    chains[0] = try allocator.dupe(u8, "A");
+    chains[1] = try allocator.dupe(u8, "A");
+    chains[2] = try allocator.dupe(u8, "BLONG");
+    input.chain_id_full = chains;
+    defer input.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), try input.removeWater());
+    try std.testing.expectEqual(@as(usize, 2), input.atomCount());
+    try std.testing.expectEqualSlices(f64, &.{ 1, 3 }, input.x);
+    try std.testing.expectEqualSlices(f64, &.{ 1.5, 1.7 }, input.r);
+    try std.testing.expectEqualStrings("ZN", input.residue.?[1].slice());
+    try std.testing.expectEqualSlices(u8, &.{ 6, 30 }, input.element.?);
+    try std.testing.expectEqualSlices(i32, &.{ 1, 201 }, input.residue_num.?);
+    try std.testing.expectEqualStrings("BLONG", input.chain_id_full.?[1]);
+
+    // Nothing left to remove
+    try std.testing.expectEqual(@as(usize, 0), try input.removeWater());
+}
+
+test "AtomInput.removeWater refuses to remove every atom" {
+    const allocator = std.testing.allocator;
+    var input = AtomInput{
+        .x = try allocator.dupe(f64, &.{1}),
+        .y = try allocator.dupe(f64, &.{2}),
+        .z = try allocator.dupe(f64, &.{3}),
+        .r = try allocator.dupe(f64, &.{1.5}),
+        .residue = try allocator.dupe(FixedString5, &.{FixedString5.fromSlice("HOH")}),
+        .allocator = allocator,
+    };
+    defer input.deinit();
+    try std.testing.expectError(error.NoAtomsFound, input.removeWater());
+    try std.testing.expectEqual(@as(usize, 1), input.atomCount());
 }

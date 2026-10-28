@@ -69,6 +69,7 @@ pub const CalcArgs = struct {
     alt_loc_id: u8 = 'A', // Selected altLoc ID for --altloc=<ID>
     include_hydrogens: bool = false, // Include hydrogen atoms (default: exclude)
     include_hetatm: bool = false, // Include HETATM records (default: exclude)
+    exclude_water: bool = false, // Remove water residues (--exclude-water)
     per_residue: bool = false, // Show per-residue SASA
     rsa: bool = false, // Show RSA (Relative Solvent Accessibility)
     polar: bool = false, // Show polar/nonpolar SASA summary
@@ -98,6 +99,7 @@ pub const CalcArgs = struct {
     alt_loc_explicit: bool = false,
     include_hydrogens_explicit: bool = false,
     include_hetatm_explicit: bool = false,
+    exclude_water_explicit: bool = false,
     per_residue_explicit: bool = false,
     rsa_explicit: bool = false,
     polar_explicit: bool = false,
@@ -499,6 +501,11 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) CalcArgs {
             result.include_hetatm = true;
             result.include_hetatm_explicit = true;
         }
+        // --exclude-water (remove water residues)
+        else if (std.mem.eql(u8, arg, "--exclude-water")) {
+            result.exclude_water = true;
+            result.exclude_water_explicit = true;
+        }
         // --per-residue (show per-residue SASA)
         else if (std.mem.eql(u8, arg, "--per-residue")) {
             result.per_residue = true;
@@ -747,6 +754,9 @@ fn applyWorkflowCalculationToCalcArgs(args: *CalcArgs, calculation: workflow_man
     if (!args.include_hetatm_explicit) {
         if (calculation.include_hetatm) |include_hetatm| args.include_hetatm = include_hetatm;
     }
+    if (!args.exclude_water_explicit) {
+        if (calculation.exclude_water) |exclude_water| args.exclude_water = exclude_water;
+    }
     if (!args.use_bitmask_explicit) {
         if (calculation.use_bitmask) |use_bitmask| args.use_bitmask = use_bitmask;
     }
@@ -881,6 +891,7 @@ pub fn printHelp(io: std.Io, program_name: []const u8) void {
         \\                       (default: auto)
         \\    --include-hydrogens Include hydrogen atoms (default: excluded)
         \\    --include-hetatm   Include HETATM records (default: excluded)
+        \\    --exclude-water    Leave out water (HOH, WAT, SOL, TIP3, ...)
         \\    --model=N|all      Model of a multi-model file, or all superimposed (default: first)
         \\    --per-residue      Show per-residue SASA aggregation
         \\    --rsa              Show RSA (Relative Solvent Accessibility)
@@ -1029,6 +1040,20 @@ fn setModelArg(result: *CalcArgs, value: []const u8) void {
 
 /// Read input file (auto-detect format)
 fn readInputFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, args: CalcArgs) !ReadResult {
+    var result = try readInputFileAllAtoms(allocator, io, path, args);
+    if (args.exclude_water) {
+        errdefer {
+            result.deinitCcd();
+            result.input.deinit();
+        }
+        const n_water = try result.input.removeWater();
+        if (!args.quiet and n_water > 0) std.debug.print("Excluded {d} water atoms\n", .{n_water});
+    }
+    return result;
+}
+
+/// `readInputFile` before `--exclude-water` is applied.
+fn readInputFileAllAtoms(allocator: std.mem.Allocator, io: std.Io, path: []const u8, args: CalcArgs) !ReadResult {
     const format = format_detect.detectInputFormat(path);
     return switch (format) {
         .json => .{ .input = try json_parser.readAtomInputFromFile(allocator, io, path) },
@@ -2430,6 +2455,54 @@ fn readAtomAreasLenFromJson(allocator: std.mem.Allocator, path: []const u8) !usi
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
     defer parsed.deinit();
     return parsed.value.object.get("atom_areas").?.array.items.len;
+}
+
+test "calc --exclude-water leaves water out and keeps the other HETATM atoms" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "water.pdb", .data =
+        \\ATOM      1  N   ALA A   1       1.000   0.000   0.000  1.00 10.00           N
+        \\ATOM      2  CA  ALA A   1       2.000   0.000   0.000  1.00 10.00           C
+        \\HETATM    3  O   HOH A 101       9.000   0.000   0.000  1.00 10.00           O
+        \\HETATM    4 ZN    ZN A 201      12.000   0.000   0.000  1.00 10.00          ZN
+        \\HETATM    5  O   HOH A 102      15.000   0.000   0.000  1.00 10.00           O
+        \\END
+        \\
+    });
+    const path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, "water.pdb", allocator);
+    defer allocator.free(path);
+
+    const Case = struct { flags: []const []const u8, x: []const f64 };
+    const cases = [_]Case{
+        .{ .flags = &.{"--include-hetatm"}, .x = &.{ 1, 2, 9, 12, 15 } },
+        .{ .flags = &.{ "--include-hetatm", "--exclude-water" }, .x = &.{ 1, 2, 12 } },
+        .{ .flags = &.{"--exclude-water"}, .x = &.{ 1, 2 } },
+    };
+    for (cases) |case| {
+        var argv: [6][]const u8 = undefined;
+        argv[0] = "zsasa";
+        argv[1] = "calc";
+        argv[2] = "--quiet";
+        for (case.flags, 0..) |flag, k| argv[3 + k] = flag;
+        argv[3 + case.flags.len] = path;
+        const args = parseArgs(argv[0 .. 4 + case.flags.len], 2);
+        var result = try readInputFile(allocator, std.testing.io, path, args);
+        defer result.deinitCcd();
+        defer result.input.deinit();
+        try std.testing.expectEqualSlices(f64, case.x, result.input.x);
+    }
+}
+
+test "calc workflow exclude_water applies unless --exclude-water is given" {
+    const workflow = workflow_manifest.Workflow{
+        .allocator = std.testing.allocator,
+        .content = "",
+        .calculation = .{ .exclude_water = true },
+    };
+    var args = CalcArgs{};
+    try applyWorkflowToCalcArgs(&args, workflow);
+    try std.testing.expect(args.exclude_water);
 }
 
 test "calc --altloc applies to PDB input as it does to mmCIF input" {

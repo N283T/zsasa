@@ -95,7 +95,7 @@ const VERSION = "0.11.0";
 /// or return types, order or count) or an exported struct changes its layout, and
 /// change `_EXPECTED_ABI_VERSION` in `python/zsasa/_ffi.py` together with it.
 /// Adding a new export or a new error code does not require a bump.
-const ABI_VERSION: c_int = 1;
+const ABI_VERSION: c_int = 2;
 
 /// Thread-safe allocator for C API (uses C allocator for simplicity)
 const c_allocator = std.heap.c_allocator;
@@ -3079,6 +3079,7 @@ fn batchErrorCode(err: anyerror, stage: batch.BatchStage) c_int {
 ///   classifier_type: ZSASA_CLASSIFIER_* constant, or -1 to use radii from input files
 ///   include_hydrogens: 0 to exclude, 1 to include hydrogen atoms
 ///   include_hetatm: 0 to exclude, 1 to include HETATM records
+///   exclude_water: 1 to leave out water residues (HOH, WAT, SOL, ...), 0 to keep them
 ///   error_code: Output pointer for error code
 ///
 /// Returns:
@@ -3103,6 +3104,7 @@ export fn zsasa_batch_dir_process(
     classifier_type: c_int,
     include_hydrogens: c_int,
     include_hetatm: c_int,
+    exclude_water: c_int,
     error_code: ?*c_int,
 ) callconv(.c) ?*anyopaque {
     // Helper to set error code safely
@@ -3152,6 +3154,7 @@ export fn zsasa_batch_dir_process(
         .classifier_type = ct,
         .include_hydrogens = include_hydrogens != 0,
         .include_hetatm = include_hetatm != 0,
+        .exclude_water = exclude_water != 0,
     };
 
     const input_dir_slice = std.mem.span(input_dir.?);
@@ -3373,27 +3376,27 @@ test "zsasa_batch_dir_process invalid parameters" {
     var error_code: c_int = ZSASA_OK;
 
     // Null input_dir
-    const h1 = zsasa_batch_dir_process(null, null, ZSASA_ALGORITHM_SR, 100, 1.4, 0, -1, 0, 0, &error_code);
+    const h1 = zsasa_batch_dir_process(null, null, ZSASA_ALGORITHM_SR, 100, 1.4, 0, -1, 0, 0, 0, &error_code);
     try std.testing.expect(h1 == null);
     try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, error_code);
 
     // n_points = 0
-    const h2 = zsasa_batch_dir_process(".", null, ZSASA_ALGORITHM_SR, 0, 1.4, 0, -1, 0, 0, &error_code);
+    const h2 = zsasa_batch_dir_process(".", null, ZSASA_ALGORITHM_SR, 0, 1.4, 0, -1, 0, 0, 0, &error_code);
     try std.testing.expect(h2 == null);
     try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, error_code);
 
     // probe_radius <= 0
-    const h3 = zsasa_batch_dir_process(".", null, ZSASA_ALGORITHM_SR, 100, 0.0, 0, -1, 0, 0, &error_code);
+    const h3 = zsasa_batch_dir_process(".", null, ZSASA_ALGORITHM_SR, 100, 0.0, 0, -1, 0, 0, 0, &error_code);
     try std.testing.expect(h3 == null);
     try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, error_code);
 
     // Invalid algorithm
-    const h4 = zsasa_batch_dir_process(".", null, 99, 100, 1.4, 0, -1, 0, 0, &error_code);
+    const h4 = zsasa_batch_dir_process(".", null, 99, 100, 1.4, 0, -1, 0, 0, 0, &error_code);
     try std.testing.expect(h4 == null);
     try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, error_code);
 
     // Invalid classifier type
-    const h5 = zsasa_batch_dir_process(".", null, ZSASA_ALGORITHM_SR, 100, 1.4, 0, 99, 0, 0, &error_code);
+    const h5 = zsasa_batch_dir_process(".", null, ZSASA_ALGORITHM_SR, 100, 1.4, 0, 99, 0, 0, 0, &error_code);
     try std.testing.expect(h5 == null);
     try std.testing.expectEqual(ZSASA_ERROR_INVALID_INPUT, error_code);
 }
@@ -3411,6 +3414,7 @@ test "zsasa_batch_dir_process nonexistent directory" {
         -1,
         0,
         0,
+        0,
         &error_code,
     );
     try std.testing.expect(handle == null);
@@ -3419,7 +3423,7 @@ test "zsasa_batch_dir_process nonexistent directory" {
 
 test "zsasa_batch_dir_process null error_code" {
     // Should not crash when error_code is null
-    const handle = zsasa_batch_dir_process(null, null, ZSASA_ALGORITHM_SR, 100, 1.4, 0, -1, 0, 0, null);
+    const handle = zsasa_batch_dir_process(null, null, ZSASA_ALGORITHM_SR, 100, 1.4, 0, -1, 0, 0, 0, null);
     try std.testing.expect(handle == null);
 }
 
@@ -3526,6 +3530,7 @@ test "zsasa_batch_dir_process with small directory" {
         ZSASA_CLASSIFIER_PROTOR,
         0, // exclude hydrogens
         0, // exclude HETATM
+        0,
         &error_code,
     );
     try std.testing.expect(handle != null);
@@ -3567,6 +3572,7 @@ test "zsasa_batch_dir_process with LR algorithm" {
         ZSASA_CLASSIFIER_NACCESS,
         0,
         0,
+        0,
         &error_code,
     );
     try std.testing.expect(lr != null);
@@ -3592,6 +3598,7 @@ test "zsasa_batch_dir_process with LR algorithm" {
         1.4,
         1,
         ZSASA_CLASSIFIER_NACCESS,
+        0,
         0,
         0,
         &error_code,
@@ -3655,6 +3662,7 @@ test "zsasa_batch_dir_process classifier_type -1 uses input radii" {
         probe,
         1,
         -1, // use radii from input files
+        0,
         0,
         0,
         &error_code,
@@ -3794,6 +3802,7 @@ test "zsasa_batch_dir_process distinguishes a bad output directory from a bad in
             ZSASA_CLASSIFIER_PROTOR,
             0,
             0,
+            0,
             &error_code,
         );
         try std.testing.expect(handle == null);
@@ -3814,6 +3823,7 @@ test "zsasa_batch_dir_process distinguishes a bad output directory from a bad in
         ZSASA_CLASSIFIER_PROTOR,
         0,
         0,
+        0,
         &error_code,
     );
     try std.testing.expect(handle == null);
@@ -3830,6 +3840,7 @@ test "zsasa_batch_dir_process distinguishes a bad output directory from a bad in
         1.4,
         1,
         ZSASA_CLASSIFIER_PROTOR,
+        0,
         0,
         0,
         &error_code,
@@ -3876,6 +3887,7 @@ const ConcurrentBatchRun = struct {
             1.4,
             2,
             ZSASA_CLASSIFIER_PROTOR,
+            0,
             0,
             0,
             &self.error_code,

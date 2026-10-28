@@ -20,7 +20,12 @@ import numpy as np
 
 from zsasa.classifier import AtomClass, ClassifierType
 from zsasa.integrations._altloc import SiteAtom, keep_auto_altloc
-from zsasa.integrations._types import AtomData, SasaResultWithAtoms, classify_atom_data
+from zsasa.integrations._types import (
+    AtomData,
+    SasaResultWithAtoms,
+    classify_atom_data,
+    is_water_residue,
+)
 from zsasa.sasa import calculate_sasa
 
 if TYPE_CHECKING:
@@ -50,6 +55,7 @@ def extract_atoms_from_model(
     model: "gemmi.Model",  # noqa: UP037
     *,
     include_hetatm: bool = False,
+    exclude_water: bool = False,
     include_hydrogens: bool = False,
 ) -> AtomData:
     """Extract atom data from a gemmi Model.
@@ -64,6 +70,8 @@ def extract_atoms_from_model(
     Args:
         model: A gemmi Model object.
         include_hetatm: Whether to include HETATM records (ligands, waters, etc.).
+        exclude_water: Leave out water residues (HOH, WAT, SOL, ...), also
+            when HETATM records are included. Default: False.
         include_hydrogens: Whether to include hydrogen atoms. Deuterium counts
             as hydrogen.
 
@@ -91,6 +99,8 @@ def extract_atoms_from_model(
         for residue in chain:
             # Skip HETATM if not requested
             if not include_hetatm and residue.het_flag == "H":
+                continue
+            if exclude_water and is_water_residue(residue.name):
                 continue
 
             position = (chain.name, residue.seqid.num, residue.seqid.icode)
@@ -154,6 +164,7 @@ def calculate_sasa_from_model(
     probe_radius: float = 1.4,
     n_threads: int = 0,
     include_hetatm: bool = False,
+    exclude_water: bool = False,
     include_hydrogens: bool = False,
 ) -> SasaResultWithAtoms:
     """Calculate SASA from a gemmi Model.
@@ -172,6 +183,7 @@ def calculate_sasa_from_model(
         probe_radius: Water probe radius in Angstroms. Default: 1.4.
         n_threads: Number of threads (0 = auto). Default: 0.
         include_hetatm: Include HETATM records. Default: False.
+        exclude_water: Leave out water residues (HOH, WAT, SOL, ...). Default: False.
         include_hydrogens: Include hydrogen atoms. Default: False.
 
     Returns:
@@ -189,6 +201,7 @@ def calculate_sasa_from_model(
     atom_data = extract_atoms_from_model(
         model,
         include_hetatm=include_hetatm,
+        exclude_water=exclude_water,
         include_hydrogens=include_hydrogens,
     )
 
@@ -244,6 +257,7 @@ def calculate_sasa_from_structure(
     probe_radius: float = 1.4,
     n_threads: int = 0,
     include_hetatm: bool = False,
+    exclude_water: bool = False,
     include_hydrogens: bool = False,
 ) -> SasaResultWithAtoms:
     """Calculate SASA from a structure file or gemmi Structure.
@@ -263,6 +277,7 @@ def calculate_sasa_from_structure(
         probe_radius: Water probe radius in Angstroms. Default: 1.4.
         n_threads: Number of threads (0 = auto). Default: 0.
         include_hetatm: Include HETATM records. Default: False.
+        exclude_water: Leave out water residues (HOH, WAT, SOL, ...). Default: False.
         include_hydrogens: Include hydrogen atoms. Default: False.
 
     Returns:
@@ -306,5 +321,6 @@ def calculate_sasa_from_structure(
         probe_radius=probe_radius,
         n_threads=n_threads,
         include_hetatm=include_hetatm,
+        exclude_water=exclude_water,
         include_hydrogens=include_hydrogens,
     )

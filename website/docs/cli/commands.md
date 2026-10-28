@@ -165,6 +165,7 @@ See [Classifiers](../guide/classifiers.mdx) for detailed classifier documentatio
 | `--include-hydrogens` | Include hydrogen atoms | calc/batch: excluded; traj: included | calc, batch, traj |
 | `--no-hydrogens` | Exclude hydrogen atoms (`--exclude-hydrogens` is a synonym) | — | traj |
 | `--include-hetatm` | Include HETATM records. `traj` accepts it for consistency with `calc`, but always reads them | excluded (`traj`: always included) | calc, batch, traj |
+| `--exclude-water` | Leave out water, identified by residue name (`HOH`, `DOD`, `WAT`, `H2O`, `D2O`, `SOL`, `TIP`, `TIP3`, `TIP4`, `TIP5`, `T3P`, `T4P`, `T5P`, `SPC` and `SPCE`, any case), whether written as HETATM or ATOM records. Other HETATM records stay with `--include-hetatm`. In `traj` the trajectory keeps its water atoms; they are skipped in each frame | water kept | calc, batch, traj |
 
 `traj` always reads every `ATOM` and `HETATM` record of its topology, of the first model unless `--model=N` selects another; see [Trajectory Options](#trajectory-options).
 
@@ -354,6 +355,9 @@ By default, hydrogen atoms and HETATM records (ligands, ions, waters) are exclud
 
 # Include both
 ./zig-out/bin/zsasa calc --include-hydrogens --include-hetatm structure.pdb output.json
+
+# Ligands and ions, but no crystallographic water
+./zig-out/bin/zsasa calc --include-hetatm --exclude-water structure.pdb output.json
 ```
 
 ### Batch Processing

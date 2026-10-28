@@ -45,6 +45,7 @@ Biotite uses `atom_array` instead of `model`:
 | `probe_radius` | `float` | `1.4` | Probe radius in Å |
 | `n_threads` | `int` | `0` | Threads (0 = auto) |
 | `include_hetatm` | `bool` | `False` | Include HETATM records |
+| `exclude_water` | `bool` | `False` | Leave out water residues (HOH, WAT, SOL, ...), also with `include_hetatm` |
 | `include_hydrogens` | `bool` | `False` | Include hydrogen atoms (deuterium counts as hydrogen) |
 | `model_index` | `int` | `0` | Model index (NMR); `calculate_sasa_from_structure` only |
 
