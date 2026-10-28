@@ -6,6 +6,7 @@ library integrations (BioPython, gemmi, etc.).
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import numpy as np
@@ -19,6 +20,50 @@ from zsasa.classifier import (
     guess_radius,
 )
 from zsasa.sasa import SasaResult
+
+#: Residue names treated as water, left out unless ``include_water``: the same
+#: list as ``water_residues`` in ``src/types.zig`` (``--include-water`` in the CLI).
+WATER_RESIDUES = frozenset(
+    {
+        "HOH",
+        "DOD",
+        "WAT",
+        "H2O",
+        "D2O",
+        "SOL",
+        "TIP",
+        "TIP3",
+        "TIP4",
+        "TIP5",
+        "T3P",
+        "T4P",
+        "T5P",
+        "SPC",
+        "SPCE",
+    }
+)
+
+
+def is_water_residue(name: str) -> bool:
+    """Whether a residue name is water (``WATER_RESIDUES``), ignoring blanks and case."""
+    return name.strip().upper() in WATER_RESIDUES
+
+
+def residue_filter(
+    include_water: bool, exclude_residues: Iterable[str] | None
+) -> Callable[[str], bool]:
+    """Return a test for residue names to leave out: water unless ``include_water``,
+    and the names in ``exclude_residues`` (ignoring blanks and case), as the CLI does."""
+    if isinstance(exclude_residues, str):
+        exclude_residues = [exclude_residues]
+    listed = frozenset(name.strip().upper() for name in exclude_residues or () if name.strip())
+
+    def excluded(name: str) -> bool:
+        key = name.strip().upper()
+        return (not include_water and key in WATER_RESIDUES) or key in listed
+
+    return excluded
+
 
 __all__ = [
     "AtomData",

@@ -265,7 +265,7 @@ If your PDB file contains only standard amino acids and nucleotides, no external
 
 ### HETATM Records
 
-HETATM records (ligands, ions, waters) are excluded by default with every classifier, including CCD. Pass `--include-hetatm` (CLI), `include_hetatm = true` (workflow) or `include_hetatm=True` (Python) to include them; the CCD classifier then assigns radii to ligands from their component definitions. Waters are HETATM records too, so including HETATM also counts crystallographic waters.
+HETATM records (ligands, ions, waters) are excluded by default with every classifier, including CCD. Pass `--include-hetatm` (CLI), `include_hetatm = true` (workflow) or `include_hetatm=True` (Python) to include them; the CCD classifier then assigns radii to ligands from their component definitions. Water is left out even then, unless `--include-water` (CLI), `include_water = true` (workflow) or `include_water=True` (Python) is given; `--exclude-residues` leaves out other components such as `SO4` or `GOL`.
 
 Modified residues that a file records as HETATM inside a polymer chain (for example selenomethionine, `MSE`) are excluded by default as well, which leaves a gap in the chain. Include HETATM when a structure has such residues.
 

@@ -157,6 +157,8 @@ pub const TrajArgs = struct {
     alt_loc_id: u8 = 'A',
     model_num: ?u32 = null, // Topology model to read (null = the first model, whatever its number)
     include_hetatm: bool = true, // HETATM records are always part of a traj topology; --include-hetatm is accepted for consistency with calc
+    include_water: bool = false, // Keep water in the calculation (--include-water); left out by default
+    exclude_residues: []const u8 = "", // --exclude-residues: comma-separated residue names to leave out
     batch_size: u32 = 0, // Frames per batch for parallel processing (0 = auto)
     use_bitmask: bool = false, // Use bitmask LUT optimization for SR (n_points must be 1..1024)
     bitmask_lut_mode: BitmaskLutMode = .single,
@@ -412,6 +414,17 @@ fn parseArgsChecked(args: []const []const u8, start_idx: usize) ArgError!TrajArg
                 // A traj topology must list every trajectory atom, so HETATM
                 // records are always read; the flag changes nothing.
                 result.include_hetatm = true;
+            } else if (std.mem.eql(u8, arg, "--include-water")) {
+                result.include_water = true;
+            } else if (std.mem.startsWith(u8, arg, "--exclude-residues=")) {
+                result.exclude_residues = arg["--exclude-residues=".len..];
+            } else if (std.mem.eql(u8, arg, "--exclude-residues")) {
+                i += 1;
+                if (i >= args.len) {
+                    std.debug.print("Error: Missing value for --exclude-residues\n", .{});
+                    return error.InvalidArgument;
+                }
+                result.exclude_residues = args[i];
             } else if (std.mem.startsWith(u8, arg, "--model=")) {
                 result.model_num = try parseModelNumber(arg["--model=".len..]);
             } else if (std.mem.eql(u8, arg, "--model")) {
@@ -591,6 +604,10 @@ pub fn printHelp(io: std.Io, program_name: []const u8) void {
         \\                       (PDB/mmCIF; the trajectory must have that model's atoms)
         \\    --include-hetatm   Accepted for consistency with calc; HETATM records are
         \\                       always part of the topology (default behavior)
+        \\    --include-water    Keep water (HOH, WAT, SOL, TIP3, ...) in the calculation
+        \\                       (default: left out; the trajectory still has its atoms)
+        \\    --exclude-residues=NAMES
+        \\                       Leave out these residues too, e.g. SO4,NA,CL
         \\    --altloc=MODE      Topology alternate-location handling (PDB/mmCIF): auto,
         \\                       none, all, highest-occupancy, or a single ID like A
         \\                       (default: auto)
@@ -1086,7 +1103,8 @@ fn modelError(err: anyerror, args: TrajArgs, path: []const u8) anyerror {
 ///
 /// A topology has to map one-to-one onto the trajectory atoms, so every atom
 /// record (ATOM and HETATM, hydrogens included) of the selected model (the
-/// first one unless `--model=N` is given) is read, in file order. With `--no-hydrogens` the hydrogens are removed afterwards and
+/// first one unless `--model=N` is given) is read, in file order. With `--no-hydrogens` the hydrogens,
+/// and the water residues (unless `--include-water`) and `--exclude-residues`, are removed afterwards and
 /// the indices of the remaining atoms are kept, so the same atoms can be
 /// picked out of each frame.
 fn loadTopology(allocator: Allocator, io: std.Io, path: []const u8, args: TrajArgs) !Topology {
@@ -1122,20 +1140,33 @@ fn loadTopology(allocator: Allocator, io: std.Io, path: []const u8, args: TrajAr
     errdefer full.deinit();
     const n_file_atoms = full.atomCount();
 
-    const n_hydrogens = std.mem.count(bool, hydrogen_flags.items, &.{true});
-    if (n_hydrogens == 0) {
+    // Atoms left out: hydrogens with --no-hydrogens, water unless
+    // --include-water, and the --exclude-residues names
+    const dropped = try allocator.alloc(bool, n_file_atoms);
+    defer allocator.free(dropped);
+    @memset(dropped, false);
+    if (hydrogen_flags.items.len == n_file_atoms) @memcpy(dropped, hydrogen_flags.items);
+    const exclusion: types.ResidueExclusion = .{ .water = !args.include_water, .names_csv = args.exclude_residues };
+    if (full.residue) |residues| {
+        for (residues, dropped) |res, *drop| {
+            if (exclusion.excludes(res.slice())) drop.* = true;
+        }
+    }
+
+    const n_dropped = std.mem.count(bool, dropped, &.{true});
+    if (n_dropped == 0) {
         return .{ .atoms = full, .n_file_atoms = n_file_atoms, .atom_indices = null, .allocator = allocator };
     }
-    if (n_hydrogens == n_file_atoms) {
-        std.debug.print("Error: --no-hydrogens leaves no atoms: the topology contains only hydrogens\n", .{});
+    if (n_dropped == n_file_atoms) {
+        std.debug.print("Error: no atoms of the topology are left after removing hydrogens, water and excluded residues\n", .{});
         return error.NoAtomsFound;
     }
 
-    const indices = try allocator.alloc(u32, n_file_atoms - n_hydrogens);
+    const indices = try allocator.alloc(u32, n_file_atoms - n_dropped);
     errdefer allocator.free(indices);
     var n_kept: usize = 0;
-    for (hydrogen_flags.items, 0..) |is_hydrogen, i| {
-        if (is_hydrogen) continue;
+    for (dropped, 0..) |drop, i| {
+        if (drop) continue;
         indices[n_kept] = @intCast(i);
         n_kept += 1;
     }
@@ -1857,6 +1888,39 @@ test "traj NACCESS and OONS give a calcium ion the calcium radius" {
         try std.testing.expect(input.r[0] != calcium);
         try std.testing.expectApproxEqAbs(calcium, input.r[1], 1e-9);
     }
+}
+
+test "traj leaves water out of the topology unless --include-water, and keeps the trajectory indices" {
+    var ws = TestWorkspace.init();
+    defer ws.deinit();
+    const path = try ws.write("water.pdb",
+        \\ATOM      1  N   ALA A   1       1.000   0.000   0.000  1.00 10.00           N
+        \\ATOM      2  CA  ALA A   1       2.000   0.000   0.000  1.00 10.00           C
+        \\HETATM    3  O   HOH A 101       9.000   0.000   0.000  1.00 10.00           O
+        \\HETATM    4 ZN    ZN A 201      12.000   0.000   0.000  1.00 10.00          ZN
+        \\HETATM    5  O   HOH A 102      15.000   0.000   0.000  1.00 10.00           O
+        \\END
+    );
+
+    const args = parseArgs(&.{ "zsasa", "traj", "t.xtc", path }, 2);
+    try std.testing.expect(!args.include_water);
+    var topology = try loadTopology(std.testing.allocator, std.testing.io, path, args);
+    defer topology.deinit();
+
+    try std.testing.expectEqual(@as(usize, 5), topology.n_file_atoms);
+    try std.testing.expectEqualSlices(f64, &.{ 1, 2, 12 }, topology.atoms.x);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 1, 3 }, topology.atom_indices.?);
+
+    const keep = parseArgs(&.{ "zsasa", "traj", "--include-water", "t.xtc", path }, 2);
+    var full = try loadTopology(std.testing.allocator, std.testing.io, path, keep);
+    defer full.deinit();
+    try std.testing.expectEqual(@as(usize, 5), full.atoms.atomCount());
+    try std.testing.expect(full.atom_indices == null);
+
+    const no_zinc = parseArgs(&.{ "zsasa", "traj", "--include-water", "--exclude-residues", "zn", "t.xtc", path }, 2);
+    var dry = try loadTopology(std.testing.allocator, std.testing.io, path, no_zinc);
+    defer dry.deinit();
+    try std.testing.expectEqualSlices(u32, &.{ 0, 1, 2, 4 }, dry.atom_indices.?);
 }
 
 test "TrajArgs progress defaults to visible" {

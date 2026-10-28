@@ -13,13 +13,19 @@ Example:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
 from zsasa.classifier import AtomClass, ClassifierType
-from zsasa.integrations._types import AtomData, SasaResultWithAtoms, classify_atom_data
+from zsasa.integrations._types import (
+    AtomData,
+    SasaResultWithAtoms,
+    classify_atom_data,
+    residue_filter,
+)
 from zsasa.sasa import calculate_sasa
 
 if TYPE_CHECKING:
@@ -86,6 +92,8 @@ def extract_atoms_from_model(
     model: Model,
     *,
     include_hetatm: bool = False,
+    include_water: bool = False,
+    exclude_residues: Iterable[str] | None = None,
     include_hydrogens: bool = False,
 ) -> AtomData:
     """Extract atom data from a BioPython Model.
@@ -93,6 +101,9 @@ def extract_atoms_from_model(
     Args:
         model: A BioPython Model object.
         include_hetatm: Whether to include HETATM records (ligands, waters, etc.).
+        include_water: Keep water residues (HOH, WAT, SOL, ...). Water is left
+            out by default, also when HETATM records are included. Default: False.
+        exclude_residues: Residue names to leave out as well (e.g. ``["SO4", "GOL"]``).
         include_hydrogens: Whether to include hydrogen atoms.
 
     Returns:
@@ -115,6 +126,7 @@ def extract_atoms_from_model(
     insertion_codes = []
     elements = []
 
+    excluded = residue_filter(include_water, exclude_residues)
     for chain in model:
         chain_id = chain.get_id()
 
@@ -126,6 +138,8 @@ def extract_atoms_from_model(
                 continue
 
             res_name = residue.get_resname()
+            if excluded(res_name):
+                continue
             res_seq = res_id[1]  # (hetfield, resseq, icode)
             # BioPython writes a blank for a residue without an insertion code
             insertion_code = res_id[2].strip()
@@ -165,6 +179,8 @@ def calculate_sasa_from_model(
     probe_radius: float = 1.4,
     n_threads: int = 0,
     include_hetatm: bool = False,
+    include_water: bool = False,
+    exclude_residues: Iterable[str] | None = None,
     include_hydrogens: bool = False,
 ) -> SasaResultWithAtoms:
     """Calculate SASA from a BioPython Model.
@@ -183,6 +199,8 @@ def calculate_sasa_from_model(
         probe_radius: Water probe radius in Angstroms. Default: 1.4.
         n_threads: Number of threads (0 = auto). Default: 0.
         include_hetatm: Include HETATM records. Default: False.
+        include_water: Keep water residues (HOH, WAT, SOL, ...). Default: False.
+        exclude_residues: Residue names to leave out as well. Default: None.
         include_hydrogens: Include hydrogen atoms. Default: False.
 
     Returns:
@@ -201,6 +219,8 @@ def calculate_sasa_from_model(
     atom_data = extract_atoms_from_model(
         model,
         include_hetatm=include_hetatm,
+        include_water=include_water,
+        exclude_residues=exclude_residues,
         include_hydrogens=include_hydrogens,
     )
 
@@ -256,6 +276,8 @@ def calculate_sasa_from_structure(
     probe_radius: float = 1.4,
     n_threads: int = 0,
     include_hetatm: bool = False,
+    include_water: bool = False,
+    exclude_residues: Iterable[str] | None = None,
     include_hydrogens: bool = False,
 ) -> SasaResultWithAtoms:
     """Calculate SASA from a structure file or BioPython Structure.
@@ -275,6 +297,8 @@ def calculate_sasa_from_structure(
         probe_radius: Water probe radius in Angstroms. Default: 1.4.
         n_threads: Number of threads (0 = auto). Default: 0.
         include_hetatm: Include HETATM records. Default: False.
+        include_water: Keep water residues (HOH, WAT, SOL, ...). Default: False.
+        exclude_residues: Residue names to leave out as well. Default: None.
         include_hydrogens: Include hydrogen atoms. Default: False.
 
     Returns:
@@ -327,5 +351,7 @@ def calculate_sasa_from_structure(
         probe_radius=probe_radius,
         n_threads=n_threads,
         include_hetatm=include_hetatm,
+        include_water=include_water,
+        exclude_residues=exclude_residues,
         include_hydrogens=include_hydrogens,
     )

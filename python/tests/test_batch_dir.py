@@ -22,6 +22,12 @@ SMALL_ALA_PDB = (
     "ATOM      5  CB  ALA A   1       1.204  -0.620   1.296  1.00  0.00           C\n"
     "END\n"
 )
+WATER_PDB = (
+    "ATOM      1  N   ALA A   1      -0.966   0.493   1.500  1.00  0.00           N\n"
+    "ATOM      2  CA  ALA A   1       0.257   0.418   0.692  1.00  0.00           C\n"
+    "HETATM    3  O   HOH A 101       5.000   0.000   0.000  1.00  0.00           O\n"
+    "END\n"
+)
 SMALL_GLY_PDB = (
     "ATOM      1  N   GLY A   1      10.000  10.000  10.000  1.00  0.00           N\n"
     "ATOM      2  CA  GLY A   1      11.450  10.000  10.000  1.00  0.00           C\n"
@@ -221,6 +227,22 @@ class TestProcessDirectory:
         result = process_directory(TEST_DATA_DIR, include_hydrogens=True)
 
         assert result.successful > 0
+
+    def test_process_directory_water_and_excluded_residues(self, tmp_path: Path) -> None:
+        """Water is left out unless include_water; exclude_residues removes more."""
+        (tmp_path / "w.pdb").write_text(WATER_PDB)
+
+        def n_atoms(**kwargs: object) -> int:
+            return process_directory(tmp_path, include_hetatm=True, **kwargs).n_atoms[0]
+
+        assert n_atoms() == 2
+        assert n_atoms(include_water=True) == 3
+        assert n_atoms(include_water=True, exclude_residues=["hoh"]) == 2
+
+    def test_process_directory_rejects_bad_residue_names(self, tmp_path: Path) -> None:
+        """A residue name that is blank or contains a comma is an error."""
+        with pytest.raises(ValueError, match="exclude_residues"):
+            process_directory(tmp_path, exclude_residues=["SO4,GOL"])
 
     def test_process_directory_include_hetatm(self) -> None:
         """include_hetatm=True should be accepted without error."""

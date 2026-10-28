@@ -13,6 +13,7 @@ Example:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -20,7 +21,12 @@ import numpy as np
 
 from zsasa.classifier import AtomClass, ClassifierType
 from zsasa.integrations._altloc import SiteAtom, keep_auto_altloc
-from zsasa.integrations._types import AtomData, SasaResultWithAtoms, classify_atom_data
+from zsasa.integrations._types import (
+    AtomData,
+    SasaResultWithAtoms,
+    classify_atom_data,
+    residue_filter,
+)
 from zsasa.sasa import calculate_sasa
 
 if TYPE_CHECKING:
@@ -50,6 +56,8 @@ def extract_atoms_from_model(
     model: "gemmi.Model",  # noqa: UP037
     *,
     include_hetatm: bool = False,
+    include_water: bool = False,
+    exclude_residues: Iterable[str] | None = None,
     include_hydrogens: bool = False,
 ) -> AtomData:
     """Extract atom data from a gemmi Model.
@@ -64,6 +72,9 @@ def extract_atoms_from_model(
     Args:
         model: A gemmi Model object.
         include_hetatm: Whether to include HETATM records (ligands, waters, etc.).
+        include_water: Keep water residues (HOH, WAT, SOL, ...). Water is left
+            out by default, also when HETATM records are included. Default: False.
+        exclude_residues: Residue names to leave out as well (e.g. ``["SO4", "GOL"]``).
         include_hydrogens: Whether to include hydrogen atoms. Deuterium counts
             as hydrogen.
 
@@ -87,10 +98,13 @@ def extract_atoms_from_model(
     elements = []
     site_atoms = []
 
+    excluded = residue_filter(include_water, exclude_residues)
     for chain in model:
         for residue in chain:
             # Skip HETATM if not requested
             if not include_hetatm and residue.het_flag == "H":
+                continue
+            if excluded(residue.name):
                 continue
 
             position = (chain.name, residue.seqid.num, residue.seqid.icode)
@@ -154,6 +168,8 @@ def calculate_sasa_from_model(
     probe_radius: float = 1.4,
     n_threads: int = 0,
     include_hetatm: bool = False,
+    include_water: bool = False,
+    exclude_residues: Iterable[str] | None = None,
     include_hydrogens: bool = False,
 ) -> SasaResultWithAtoms:
     """Calculate SASA from a gemmi Model.
@@ -172,6 +188,8 @@ def calculate_sasa_from_model(
         probe_radius: Water probe radius in Angstroms. Default: 1.4.
         n_threads: Number of threads (0 = auto). Default: 0.
         include_hetatm: Include HETATM records. Default: False.
+        include_water: Keep water residues (HOH, WAT, SOL, ...). Default: False.
+        exclude_residues: Residue names to leave out as well. Default: None.
         include_hydrogens: Include hydrogen atoms. Default: False.
 
     Returns:
@@ -189,6 +207,8 @@ def calculate_sasa_from_model(
     atom_data = extract_atoms_from_model(
         model,
         include_hetatm=include_hetatm,
+        include_water=include_water,
+        exclude_residues=exclude_residues,
         include_hydrogens=include_hydrogens,
     )
 
@@ -244,6 +264,8 @@ def calculate_sasa_from_structure(
     probe_radius: float = 1.4,
     n_threads: int = 0,
     include_hetatm: bool = False,
+    include_water: bool = False,
+    exclude_residues: Iterable[str] | None = None,
     include_hydrogens: bool = False,
 ) -> SasaResultWithAtoms:
     """Calculate SASA from a structure file or gemmi Structure.
@@ -263,6 +285,8 @@ def calculate_sasa_from_structure(
         probe_radius: Water probe radius in Angstroms. Default: 1.4.
         n_threads: Number of threads (0 = auto). Default: 0.
         include_hetatm: Include HETATM records. Default: False.
+        include_water: Keep water residues (HOH, WAT, SOL, ...). Default: False.
+        exclude_residues: Residue names to leave out as well. Default: None.
         include_hydrogens: Include hydrogen atoms. Default: False.
 
     Returns:
@@ -306,5 +330,7 @@ def calculate_sasa_from_structure(
         probe_radius=probe_radius,
         n_threads=n_threads,
         include_hetatm=include_hetatm,
+        include_water=include_water,
+        exclude_residues=exclude_residues,
         include_hydrogens=include_hydrogens,
     )

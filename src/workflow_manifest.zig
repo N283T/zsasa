@@ -77,6 +77,9 @@ pub const Calculation = struct {
     precision: ?[]const u8 = null,
     include_hydrogens: ?bool = null,
     include_hetatm: ?bool = null,
+    include_water: ?bool = null,
+    /// Residue names to leave out (`--exclude-residues`)
+    exclude_residues: ?[]const []const u8 = null,
     use_bitmask: ?bool = null,
     timing: ?bool = null,
     quiet: ?bool = null,
@@ -128,6 +131,7 @@ pub const Workflow = struct {
 
     pub fn deinit(self: *Workflow) void {
         if (self.classifier.sdf) |items| self.allocator.free(items);
+        if (self.calculation.exclude_residues) |items| self.allocator.free(items);
         if (self.analysis) |analysis| {
             if (analysis.partner_a) |items| self.allocator.free(items);
             if (analysis.partner_b) |items| self.allocator.free(items);
@@ -409,7 +413,7 @@ fn parseOwned(allocator: Allocator, owned_content: []const u8) Error!Workflow {
         if (doc.getTable("input")) |table| workflow.input = try parseInput(table);
         if (doc.getTable("output")) |table| workflow.output = try parseOutput(table);
         if (doc.getTable("output.jsonl")) |table| workflow.output.jsonl = try parseOutputJsonl(table);
-        if (doc.getTable("calculation")) |table| workflow.calculation = try parseCalculation(table);
+        if (doc.getTable("calculation")) |table| workflow.calculation = try parseCalculation(allocator, table);
         if (doc.getTable("classifier")) |table| workflow.classifier = try parseClassifier(allocator, table);
         if (doc.getTable("analysis")) |table| workflow.analysis = try parseAnalysis(allocator, table);
     }
@@ -531,12 +535,12 @@ fn validateOutputJsonl(output: JsonlOutput) WorkflowError!void {
     }
 }
 
-fn parseCalculation(table: toml_parser.Table) WorkflowError!Calculation {
+fn parseCalculation(allocator: Allocator, table: toml_parser.Table) Error!Calculation {
     try rejectUnknownFields(table.entries, &.{
-        "algorithm",         "threads",        "probe_radius", "n_points", "n_slices",      "precision",
-        "include_hydrogens", "include_hetatm", "use_bitmask",  "timing",   "quiet",         "auth_chain",
-        "residue_map",       "per_residue",    "rsa",          "polar",    "validate_only", "altloc",
-        "lr_trig",
+        "algorithm",         "threads",        "probe_radius",     "n_points", "n_slices",      "precision",
+        "include_hydrogens", "include_hetatm", "use_bitmask",      "timing",   "quiet",         "auth_chain",
+        "residue_map",       "per_residue",    "rsa",              "polar",    "validate_only", "altloc",
+        "lr_trig",           "include_water",  "exclude_residues",
     });
     const lr_trig = try optionalString(table.entries, "lr_trig");
     if (lr_trig) |value| {
@@ -554,6 +558,8 @@ fn parseCalculation(table: toml_parser.Table) WorkflowError!Calculation {
         .precision = try optionalString(table.entries, "precision"),
         .include_hydrogens = try optionalBool(table.entries, "include_hydrogens"),
         .include_hetatm = try optionalBool(table.entries, "include_hetatm"),
+        .include_water = try optionalBool(table.entries, "include_water"),
+        .exclude_residues = try optionalStringOrStringArray(allocator, table.entries, "exclude_residues"),
         .use_bitmask = try optionalBool(table.entries, "use_bitmask"),
         .timing = try optionalBool(table.entries, "timing"),
         .quiet = try optionalBool(table.entries, "quiet"),

@@ -149,9 +149,26 @@ class TestExtractAtoms:
         assert atoms.chain_ids == ["A"] * 5
 
     def test_extract_hetatm_included(self, structure_with_hetatm):
-        """Should include HETATM when requested."""
-        atoms = extract_atoms_from_model(structure_with_hetatm[0], include_hetatm=True)
+        """Should include HETATM, water too with include_water."""
+        atoms = extract_atoms_from_model(
+            structure_with_hetatm[0], include_hetatm=True, include_water=True
+        )
         assert len(atoms) == 2  # CA + water O
+
+    def test_extract_hetatm_leaves_water_out_by_default(self, structure_with_hetatm):
+        """Water is left out by default, also with include_hetatm."""
+        atoms = extract_atoms_from_model(structure_with_hetatm[0], include_hetatm=True)
+        assert atoms.residue_names == ["ALA"]
+
+    def test_extract_exclude_residues(self, structure_with_hetatm):
+        """exclude_residues leaves out the listed residues, ignoring case."""
+        atoms = extract_atoms_from_model(
+            structure_with_hetatm[0],
+            include_hetatm=True,
+            include_water=True,
+            exclude_residues=["ala"],
+        )
+        assert atoms.residue_names == ["HOH"]
 
     def test_extract_hetatm_excluded(self, structure_with_hetatm):
         """Should exclude HETATM by default."""
@@ -253,7 +270,9 @@ class TestAlternateLocations:
     def test_filters_apply_before_conformers_are_chosen(self):
         """HETATM and hydrogen alternates are resolved when they are included."""
         structure = gemmi.read_pdb_string(ALTLOC_PDB)
-        atoms = extract_atoms_from_model(structure[0], include_hetatm=True, include_hydrogens=True)
+        atoms = extract_atoms_from_model(
+            structure[0], include_hetatm=True, include_hydrogens=True, include_water=True
+        )
 
         assert atoms.coords[:, 0].tolist() == [1.0, 2.0, 5.0, 6.0, 8.0, 10.0]
         assert atoms.residue_names == ["ALA"] * 5 + ["HOH"]

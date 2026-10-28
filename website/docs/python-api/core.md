@@ -162,6 +162,8 @@ def process_directory(
     classifier: ClassifierType | None = ClassifierType.CCD,
     include_hydrogens: bool = False,
     include_hetatm: bool = False,
+    include_water: bool = False,
+    exclude_residues: Iterable[str] | None = None,
 ) -> BatchDirResult
 ```
 
@@ -181,6 +183,8 @@ Process all supported structure files (.pdb, .cif, .mmcif, .bcif, .ent, .json, .
 | `classifier` | `ClassifierType \| None` | `CCD` | Classifier for radii. `None` = use input radii |
 | `include_hydrogens` | `bool` | `False` | Include hydrogen atoms |
 | `include_hetatm` | `bool` | `False` | Include HETATM records |
+| `include_water` | `bool` | `False` | Keep water residues (HOH, WAT, SOL, ...), which are left out by default, also with `include_hetatm` |
+| `exclude_residues` | `Iterable[str] \| None` | `None` | Residue names to leave out as well, e.g. `["SO4", "GOL"]` |
 
 **Returns:** `BatchDirResult`
 
