@@ -159,7 +159,7 @@ See [Classifiers](../guide/classifiers.mdx) for detailed classifier documentatio
 | Option | Description | Default | Commands |
 |--------|-------------|---------|----------|
 | `--chain=ID` | Filter by chain ID (e.g., `A` or `A,B,C`). In `batch` it cannot be combined with `--workflow`; use the `chains` of a workflow job. `batch` rejects a value without any chain ID, such as `--chain=,` | all chains | calc, batch |
-| `--model=N` | Model number for NMR structures (≥1). In `traj`, the model of the topology to read; a model that does not exist is an error (`ModelNotFound`) | all models (`traj`: the first model) | calc, traj |
+| `--model=N` | Model of a multi-model file such as an NMR ensemble (≥1); `calc` also takes `all` for every model superimposed. In `traj`, the model of the topology; a model that does not exist is an error (`ModelNotFound`) | first model | calc, traj |
 | `--auth-chain` | Use auth_asym_id for chain IDs and auth_seq_id for residue numbers (mmCIF/BinaryCIF) | label_asym_id, label_seq_id | calc, batch |
 | `--altloc=MODE` | [Alternate-location handling](input.md#alternate-locations) for PDB, mmCIF and BinaryCIF input: `auto`, `none`, `all`, `highest-occupancy`, or one ID such as `A` | `auto` | calc, batch, traj |
 | `--include-hydrogens` | Include hydrogen atoms | calc/batch: excluded; traj: included | calc, batch, traj |
@@ -331,8 +331,11 @@ Every option marked `traj` in the [algorithm](#algorithm-options), [classifier](
 # Multiple chains
 ./zig-out/bin/zsasa calc --chain=A,B,C structure.cif output.json
 
-# Specific model (NMR)
-./zig-out/bin/zsasa calc --model=1 nmr_structure.cif output.json
+# Specific model (NMR); without --model the first model is read
+./zig-out/bin/zsasa calc --model=2 nmr_structure.cif output.json
+
+# Every model superimposed into one structure
+./zig-out/bin/zsasa calc --model=all nmr_structure.cif output.json
 
 # Use auth chain IDs
 ./zig-out/bin/zsasa calc --auth-chain --chain=A structure.cif output.json

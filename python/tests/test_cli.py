@@ -1186,7 +1186,7 @@ RESIDUE_CASES: dict[str, tuple[str, list[ResidueKey]]] = {
         + "END\n",
         [("A", "ALA", 1, "", 1), ("B", "GLY", 2, "", 1), ("A", "ALA", 1, "", 1)],
     ),
-    # All models are read superimposed by default: one entry per residue and model
+    # Only the first model is read by default (calc --model=all superimposes them)
     "two_models": (
         "MODEL        1\n"
         + pdb_atom(1, "N", "MET", "A", "1", 0.0)
@@ -1197,12 +1197,7 @@ RESIDUE_CASES: dict[str, tuple[str, list[ResidueKey]]] = {
         + pdb_atom(2, "CA", "MET", "A", "1", 1.958)
         + pdb_atom(3, "N", "GLY", "A", "2", 20.5)
         + "ENDMDL\nEND\n",
-        [
-            ("A", "MET", 1, "", 2),
-            ("A", "GLY", 2, "", 1),
-            ("A", "MET", 1, "", 2),
-            ("A", "GLY", 2, "", 1),
-        ],
+        [("A", "MET", 1, "", 2), ("A", "GLY", 2, "", 1)],
     ),
 }
 

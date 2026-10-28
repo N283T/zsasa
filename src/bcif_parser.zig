@@ -743,6 +743,10 @@ pub const BcifParser = struct {
     alt_loc_mode: altloc.AltLocMode = .auto,
     alt_loc_id: u8 = 'A',
     model_num: ?u32 = null,
+    /// Keep only the atoms of the model of the first `_atom_site` row
+    /// (ignored when `model_num` is set). Files without
+    /// `pdbx_PDB_model_num` are read in full.
+    first_model_only: bool = false,
     chain_filter: ?[]const []const u8 = null,
     /// Use auth_asym_id instead of label_asym_id for chain, and auth_seq_id
     /// instead of label_seq_id for residue numbers
@@ -843,8 +847,10 @@ pub const BcifParser = struct {
         var atom_records = std.ArrayListUnmanaged(AtomRecord).empty;
         defer atom_records.deinit(self.allocator);
 
+        var first_model: ?i64 = null;
         var row: usize = 0;
         while (row < row_count) : (row += 1) {
+            if (self.first_model_only and self.model_num == null and !isFirstModelRow(decoded, columns, row, &first_model)) continue;
             if (!self.shouldIncludeAtom(decoded, columns, row)) continue;
             const atom = try self.atomRecordFromRow(decoded, columns, row);
             if (self.alt_loc_mode == .none and atom.alt_loc != ' ') {
@@ -1053,6 +1059,16 @@ pub const BcifParser = struct {
             .mode = self.alt_loc_mode,
             .id = self.alt_loc_id,
         });
+    }
+
+    /// Remember the model of the first row in `first_model` and report
+    /// whether this row belongs to it. A row without a model value does.
+    fn isFirstModelRow(decoded: []const DecodedColumn, columns: AtomSiteColumns, row: usize, first_model: *?i64) bool {
+        const col = columns.pdbx_pdb_model_num orelse return true;
+        const model = scalarInt(decoded[col], row) orelse return true;
+        if (first_model.*) |first| return model == first;
+        first_model.* = model;
+        return true;
     }
 
     fn shouldIncludeAtom(self: *BcifParser, decoded: []const DecodedColumn, columns: AtomSiteColumns, row: usize) bool {
@@ -3294,6 +3310,28 @@ test "parse BinaryCIF reports missing coordinate field" {
 
     var parser = BcifParser.init(std.testing.allocator);
     try std.testing.expectError(ParseError.MissingCoordinateField, parser.parse(source));
+}
+
+test "parse BinaryCIF first_model_only keeps the first model" {
+    const source = try buildMinimalBcif(.{ .include_second_model = true });
+    defer std.testing.allocator.free(source);
+
+    var all = BcifParser.init(std.testing.allocator);
+    var all_input = try all.parse(source);
+    defer all_input.deinit();
+
+    var parser = BcifParser.init(std.testing.allocator);
+    parser.first_model_only = true;
+    var input = try parser.parse(source);
+    defer input.deinit();
+
+    try std.testing.expect(input.atomCount() < all_input.atomCount());
+
+    var model1 = BcifParser.init(std.testing.allocator);
+    model1.model_num = 1;
+    var model1_input = try model1.parse(source);
+    defer model1_input.deinit();
+    try std.testing.expectEqual(model1_input.atomCount(), input.atomCount());
 }
 
 test "parse BinaryCIF model filter ignores absent model column" {
