@@ -10,6 +10,13 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ### Fixed
 
+- **Classifier follow-ups from #421 and #422**:
+  - A calcium ion (`CA` in residue `CA`) under NACCESS and OONS got the aliphatic carbon radius (1.87 / 2.00 Å) even when the element column said calcium, because the name matched the `CA` table entry first. When the element is known and is not the element the table entry is named after, the element now decides, as it already did for CCD and ProtOr. **This changes SASA values for NACCESS and OONS runs over inputs with an element column and an atom whose name contradicts it**, such as calcium ions named `CA`; standard residues are unchanged.
+  - CCD components with five-character IDs no longer overwrite each other's atoms of the same name (`A1AAA` and `A1AAB`): the lookup key was cut to four characters.
+  - A `_chem_comp_atom` or `_chem_comp_bond` category written as a single row without `loop_` is parsed. A component with exactly one bond (for example CMO) kept no bond, and a single-atom component was dropped.
+  - A hydrogen-free carbon with two delocalized (`DELO`/`POLY`) bonds is counted as C3H1 (1.76 Å) like the aromatic case, not as C3H0 (1.61 Å).
+  - The bond counters of the hybridization analysis saturate at 255 on a malformed component instead of wrapping around.
+  - The Python classifier example labelled `guess_radius_from_atom_name("CA")` as the alpha carbon (it is calcium) and passed a possible `None` to `np.isnan`.
 - **PDB parser: malformed records are reported**: ATOM/HETATM records that are too short, have a coordinate that is not a number, or have a residue number that cannot be read are still skipped, and a warning with their count is printed to stderr. A coordinate with trailing text such as `1.2abc` is now unparseable instead of being read as `1.2`. **Records that carried such a value were accepted before and are skipped now.**
 - **PDB residue numbers past 9999**: hybrid-36 residue numbers (`A000` is 10000) are decoded. They were read as 0 before, which merged residues. **Results change for files with more than 9999 residues per chain.** A residue number that is neither decimal nor hybrid-36 skips the record (with the warning) instead of becoming 0.
 - **`--model=N` on PDB files**: the model number is read from `MODEL 1` as well as from the fixed columns, so it no longer fails with `NoAtomsFound`. `--model=N` with N other than 1 on a file without MODEL records is an error (`ModelNotFound`) instead of returning all atoms.

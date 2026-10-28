@@ -371,6 +371,7 @@ To avoid ambiguity (e.g., "CA" = Carbon-alpha vs Calcium), include an `element` 
 
 ```json
 {
+  "residue": ["ALA", "CA"],
   "atom_name": ["CA", "CA"],
   "element": [6, 20]
 }
@@ -378,6 +379,8 @@ To avoid ambiguity (e.g., "CA" = Carbon-alpha vs Calcium), include an `element` 
 
 - Atomic number 6 = Carbon (Cα)
 - Atomic number 20 = Calcium (metal ion)
+
+With every built-in classifier the element column decides here: the calcium ion gets the calcium radius, not the carbon radius of the `CA` entry in the NACCESS and OONS tables. An entry of those two tables is used only when the element column agrees with the element the table names the atom after (C, N, O, S, P, Se), or has no value for the atom.
 
 ## References
 

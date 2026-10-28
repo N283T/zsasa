@@ -755,21 +755,35 @@ const hardcoded_residues = std.StaticStringMap(void).initComptime(.{
 // Key formatting
 // =============================================================================
 
-/// Convert (residue, atom) to 9-char key for StaticStringMap lookup.
-/// Format: "RES :ATOM" — 4 chars residue (left-justified, space-padded) + ':' + 4 chars atom (left-justified, space-padded)
-pub fn formatKey(residue: []const u8, atom: []const u8) [9]u8 {
-    var key: [9]u8 = .{ ' ', ' ', ' ', ' ', ':', ' ', ' ', ' ', ' ' };
+/// Convert (residue, atom) to a 10-char key for the runtime map.
+/// Format: "RES  :ATOM" — 5 chars residue (left-justified, space-padded) + ':' + 4 chars atom
+/// (left-justified, space-padded). Five characters hold every wwPDB component ID,
+/// so extended IDs such as `A1AAA` and `A1AAB` do not collide.
+pub fn formatKey(residue: []const u8, atom: []const u8) [10]u8 {
+    var key: [10]u8 = .{ ' ', ' ', ' ', ' ', ' ', ':', ' ', ' ', ' ', ' ' };
 
-    const res_len = @min(residue.len, 4);
+    const res_len = @min(residue.len, 5);
     for (residue[0..res_len], 0..) |c, i| {
         key[i] = c;
     }
 
     const atom_len = @min(atom.len, 4);
     for (atom[0..atom_len], 0..) |c, i| {
-        key[5 + i] = c;
+        key[6 + i] = c;
     }
 
+    return key;
+}
+
+/// Convert (residue, atom) to the 9-char key of the hardcoded table, whose
+/// residue field is 4 chars wide. Returns null for a 5-character
+/// residue name, which cannot be in that table.
+fn hardcodedKey(residue: []const u8, atom: []const u8) ?[9]u8 {
+    if (residue.len > 4) return null;
+    var key: [9]u8 = .{ ' ', ' ', ' ', ' ', ':', ' ', ' ', ' ', ' ' };
+    @memcpy(key[0..residue.len], residue);
+    const atom_len = @min(atom.len, 4);
+    @memcpy(key[5..][0..atom_len], atom[0..atom_len]);
     return key;
 }
 
@@ -782,7 +796,7 @@ const RuntimeEntry = struct {
     props: AtomProperties,
 };
 
-/// Runtime component storage: maps formatted 9-char keys to properties.
+/// Runtime component storage: maps formatted 10-char keys to properties.
 const RuntimeMap = std.StringHashMapUnmanaged(RuntimeEntry);
 
 // =============================================================================
@@ -831,10 +845,12 @@ pub const CcdClassifier = struct {
     /// 3. Return null (caller uses element fallback)
     pub fn getProperties(self: *const CcdClassifier, residue: []const u8, atom: []const u8) ?AtomProperties {
         // 1. Hardcoded lookup
-        const key = formatKey(residue, atom);
-        if (hardcoded_table.get(&key)) |props| {
-            return props;
+        if (hardcodedKey(residue, atom)) |hkey| {
+            if (hardcoded_table.get(&hkey)) |props| {
+                return props;
+            }
         }
+        const key = formatKey(residue, atom);
 
         // 2. Runtime lookup
         if (self.runtime_components.get(&key)) |entry| {
@@ -867,7 +883,7 @@ pub const CcdClassifier = struct {
             if (self.runtime_components.getPtr(&key)) |value_ptr| {
                 value_ptr.* = RuntimeEntry{ .props = entry.props };
             } else {
-                const key_copy = try self.allocator.alloc(u8, 9);
+                const key_copy = try self.allocator.alloc(u8, key.len);
                 @memcpy(key_copy, &key);
                 self.runtime_components.put(self.allocator, key_copy, RuntimeEntry{ .props = entry.props }) catch |err| {
                     self.allocator.free(key_copy);
@@ -934,6 +950,21 @@ test "CCD isHardcoded" {
     try std.testing.expect(!CcdClassifier.isHardcoded("ZZZ"));
     try std.testing.expect(!CcdClassifier.isHardcoded("LIG"));
     try std.testing.expect(!CcdClassifier.isHardcoded(""));
+}
+
+test "CCD runtime — five-character component IDs do not collide" {
+    var ccd = CcdClassifier.init(std.testing.allocator);
+    defer ccd.deinit();
+
+    const atoms_a = [_]CompAtom{CompAtom.init("C1", "C")};
+    const atoms_b = [_]CompAtom{CompAtom.init("C1", "N")};
+    const comp_a = Component{ .comp_id = "A1AAA".*, .comp_id_len = 5, .atoms = &atoms_a, .bonds = &.{} };
+    const comp_b = Component{ .comp_id = "A1AAB".*, .comp_id_len = 5, .atoms = &atoms_b, .bonds = &.{} };
+    try ccd.addComponent(&comp_a);
+    try ccd.addComponent(&comp_b);
+
+    try std.testing.expectApproxEqAbs(@as(f64, 1.88), ccd.getRadius("A1AAA", "C1").?, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.64), ccd.getRadius("A1AAB", "C1").?, 0.001);
 }
 
 test "CCD runtime component via addComponent" {
@@ -1009,23 +1040,27 @@ test "CCD HOH lookup" {
 test "CCD formatKey" {
     // Standard 3-letter residue + short atom name
     const key1 = formatKey("ALA", "N");
-    try std.testing.expectEqualStrings("ALA :N   ", &key1);
+    try std.testing.expectEqualStrings("ALA  :N   ", &key1);
 
     // 3-letter residue + 2-char atom
     const key2 = formatKey("ALA", "CA");
-    try std.testing.expectEqualStrings("ALA :CA  ", &key2);
+    try std.testing.expectEqualStrings("ALA  :CA  ", &key2);
 
     // 1-letter residue (nucleic acid)
     const key3 = formatKey("A", "P");
-    try std.testing.expectEqualStrings("A   :P   ", &key3);
+    try std.testing.expectEqualStrings("A    :P   ", &key3);
 
     // 2-letter residue (DNA)
     const key4 = formatKey("DA", "C1'");
-    try std.testing.expectEqualStrings("DA  :C1' ", &key4);
+    try std.testing.expectEqualStrings("DA   :C1' ", &key4);
 
     // 4-char atom name
     const key5 = formatKey("ALA", "OXT");
-    try std.testing.expectEqualStrings("ALA :OXT ", &key5);
+    try std.testing.expectEqualStrings("ALA  :OXT ", &key5);
+
+    // 5-char component ID is kept whole
+    const key6 = formatKey("A1AAA", "C1");
+    try std.testing.expectEqualStrings("A1AAA:C1  ", &key6);
 }
 
 test "CCD new residues — HYP, SEP, TPO, HOH" {
