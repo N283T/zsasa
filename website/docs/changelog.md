@@ -8,6 +8,10 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+### Added
+
+- **`zsasa traj` takes `--model=N` and `--include-hetatm`**, with the meaning and syntax they have in `calc`. `--model=N` reads model N of the topology instead of the first one; a model that does not exist is an error (`ModelNotFound`). `--include-hetatm` is accepted for consistency; a `traj` topology has always included its `HETATM` records, so it changes nothing. Default behavior is unchanged. `--chain` and `--auth-chain` are still rejected. (#423)
+
 ### Fixed
 
 - **Classifier follow-ups from #421 and #422**:
