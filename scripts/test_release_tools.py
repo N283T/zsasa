@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
 def load_script(name: str):
     path = ROOT.joinpath("scripts", name)
     spec = importlib.util.spec_from_file_location(name.replace(".py", ""), path)
@@ -24,13 +25,17 @@ class ReleaseBumpTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="zsasa-release-test-"))
         self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
         self.write_minimal_repo(self.tmp)
-        subprocess.run(["git", "init"], cwd=self.tmp, check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(
+            ["git", "init"], cwd=self.tmp, check=True, stdout=subprocess.DEVNULL
+        )
         subprocess.run(
             ["git", "config", "user.email", "test@example.invalid"],
             cwd=self.tmp,
             check=True,
         )
-        subprocess.run(["git", "config", "user.name", "Test User"], cwd=self.tmp, check=True)
+        subprocess.run(
+            ["git", "config", "user.name", "Test User"], cwd=self.tmp, check=True
+        )
         subprocess.run(["git", "add", "."], cwd=self.tmp, check=True)
         subprocess.run(
             ["git", "commit", "-m", "initial"],
@@ -53,10 +58,16 @@ class ReleaseBumpTests(unittest.TestCase):
             """)
         )
         root.joinpath("flake.nix").write_text('version = "0.7.1";\n')
-        root.joinpath("python", "pyproject.toml").write_text('[project]\nname = "zsasa"\nversion = "0.7.1"\n')
-        root.joinpath("python", "uv.lock").write_text('[[package]]\nname = "zsasa"\nversion = "0.7.1"\n')
+        root.joinpath("python", "pyproject.toml").write_text(
+            '[project]\nname = "zsasa"\nversion = "0.7.1"\n'
+        )
+        root.joinpath("python", "uv.lock").write_text(
+            '[[package]]\nname = "zsasa"\nversion = "0.7.1"\n'
+        )
         root.joinpath("src", "c_api.zig").write_text('const VERSION = "0.7.1";\n')
-        root.joinpath("CITATION.cff").write_text('version: "0.7.1"\ndate-released: "2026-06-29"\n')
+        root.joinpath("CITATION.cff").write_text(
+            'version: "0.7.1"\ndate-released: "2026-06-29"\n'
+        )
         root.joinpath("CHANGELOG.md").write_text(
             textwrap.dedent("""\
             # Changelog
@@ -101,7 +112,9 @@ class ReleaseBumpTests(unittest.TestCase):
 
     def test_bump_updates_known_version_files_and_promotes_unreleased_notes(self):
         bump = load_script("release_bump.py")
-        result = bump.run(self.tmp, "0.8.0", release_date="2026-07-01", check_clean=True)
+        result = bump.run(
+            self.tmp, "0.8.0", release_date="2026-07-01", check_clean=True
+        )
 
         self.assertEqual(result.version, "0.8.0")
         self.assertEqual(result.tag, "v0.8.0")
@@ -118,7 +131,9 @@ class ReleaseBumpTests(unittest.TestCase):
             if rel != "build.zig.zon":
                 self.assertNotIn("0.7.1", self.tmp.joinpath(rel).read_text(), rel)
 
-        self.assertIn("example-0.7.1-abcdef", self.tmp.joinpath("build.zig.zon").read_text())
+        self.assertIn(
+            "example-0.7.1-abcdef", self.tmp.joinpath("build.zig.zon").read_text()
+        )
 
         changelog = self.tmp.joinpath("CHANGELOG.md").read_text()
         self.assertIn("## [Unreleased]\n\n## [0.8.0] - 2026-07-01", changelog)
@@ -127,7 +142,9 @@ class ReleaseBumpTests(unittest.TestCase):
             "[Unreleased]: https://github.com/N283T/zsasa/compare/v0.8.0...HEAD",
             changelog,
         )
-        self.assertIn("[0.8.0]: https://github.com/N283T/zsasa/compare/v0.7.1...v0.8.0", changelog)
+        self.assertIn(
+            "[0.8.0]: https://github.com/N283T/zsasa/compare/v0.7.1...v0.8.0", changelog
+        )
 
         website = self.tmp.joinpath("website/docs/changelog.md").read_text()
         self.assertIn(
@@ -176,7 +193,9 @@ class CheckNixDepsHashTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="zsasa-nix-test-"))
         self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
         self.script = load_script("check_nix_deps_hash.py")
-        self.write(zon=ZON.replace("VERSION", "0.1.0"), flake=FLAKE.replace("ZIG", "0.16.0"))
+        self.write(
+            zon=ZON.replace("VERSION", "0.1.0"), flake=FLAKE.replace("ZIG", "0.16.0")
+        )
 
     def write(self, *, zon: str | None = None, flake: str | None = None):
         if zon is not None:
@@ -204,7 +223,11 @@ class CheckNixDepsHashTests(unittest.TestCase):
         zon = ZON.replace("VERSION", "0.1.0")
         base = self.fingerprint()
         # A new package version and edited comments leave the dependencies as they were.
-        self.write(zon=ZON.replace("VERSION", "0.2.0").replace("The package version", "Edited comment"))
+        self.write(
+            zon=ZON.replace("VERSION", "0.2.0").replace(
+                "The package version", "Edited comment"
+            )
+        )
         self.assertEqual(self.fingerprint(), base)
         for old, new in [
             ("dep-0.1.0-AAAA", "dep-0.2.0-BBBB"),
@@ -218,16 +241,24 @@ class CheckNixDepsHashTests(unittest.TestCase):
 
     def test_dependency_urls_with_double_slash_are_not_cut_as_comments(self):
         lines = self.script.dependency_lines(ZON.replace("VERSION", "0.1.0"))
-        self.assertIn('dep.url="git+https://example.invalid/dep.git?ref=main#abc"', lines)
+        self.assertIn(
+            'dep.url="git+https://example.invalid/dep.git?ref=main#abc"', lines
+        )
         self.assertIn('other.path="../other"', lines)
         self.assertEqual(self.script.dependency_lines(".{ .name = .x }"), [])
 
     def test_check_needs_a_matching_fingerprint(self):
         self.assertFalse(self.script.check(self.tmp))  # nothing recorded yet
         flake = self.tmp.joinpath("flake.nix")
-        flake.write_text(self.script.set_fingerprint(flake.read_text(), self.fingerprint()))
+        flake.write_text(
+            self.script.set_fingerprint(flake.read_text(), self.fingerprint())
+        )
         self.assertTrue(self.script.check(self.tmp))
-        self.write(zon=ZON.replace("VERSION", "0.1.0").replace("dep-0.1.0-AAAA", "dep-0.2.0-BBBB"))
+        self.write(
+            zon=ZON.replace("VERSION", "0.1.0").replace(
+                "dep-0.1.0-AAAA", "dep-0.2.0-BBBB"
+            )
+        )
         self.assertFalse(self.script.check(self.tmp))
 
     def test_refresh_records_the_hash_and_the_fingerprint(self):
@@ -235,7 +266,9 @@ class CheckNixDepsHashTests(unittest.TestCase):
         build, seen = self.fake_build(real)
         self.assertEqual(self.script.refresh(self.tmp, build), real)
 
-        self.assertIn(f'outputHash = "{self.script.FAKE_HASH}"', seen[0])  # built with the fake hash
+        self.assertIn(
+            f'outputHash = "{self.script.FAKE_HASH}"', seen[0]
+        )  # built with the fake hash
         flake = self.tmp.joinpath("flake.nix").read_text()
         self.assertIn(f'outputHash = "{real}";', flake)
         self.assertIn(
@@ -245,12 +278,16 @@ class CheckNixDepsHashTests(unittest.TestCase):
         self.assertTrue(self.script.check(self.tmp))
         # A second refresh updates the marker in place instead of adding another.
         self.script.refresh(self.tmp, build)
-        self.assertEqual(self.tmp.joinpath("flake.nix").read_text().count("zig-deps-fingerprint"), 1)
+        self.assertEqual(
+            self.tmp.joinpath("flake.nix").read_text().count("zig-deps-fingerprint"), 1
+        )
 
     def test_refresh_restores_flake_when_nix_gives_no_hash(self):
         original = self.tmp.joinpath("flake.nix").read_text()
         with self.assertRaisesRegex(RuntimeError, "did not report a hash mismatch"):
-            self.script.refresh(self.tmp, lambda root: "error: attribute 'zsasa' missing\n")
+            self.script.refresh(
+                self.tmp, lambda root: "error: attribute 'zsasa' missing\n"
+            )
         self.assertEqual(self.tmp.joinpath("flake.nix").read_text(), original)
 
         def interrupted(root: Path) -> str:
