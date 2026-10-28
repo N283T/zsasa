@@ -206,6 +206,12 @@ pub fn parseCcdData(
                     else => {},
                 }
             },
+            .tag => |tag_str| {
+                // Non-loop category: a single row written as tag/value pairs.
+                if (isAtomTag(tag_str) or isBondTag(tag_str)) {
+                    try parseSingleRow(allocator, &tokenizer, tag_str, &builders, filter);
+                }
+            },
             else => {},
         }
     }
@@ -328,31 +334,7 @@ fn parseAtomLoop(
                 col_idx += 1;
                 if (col_idx >= cols.total) {
                     // End of row — emit atom.
-                    if (row_comp_id) |cid| {
-                        if (row_atom_id) |aid| {
-                            if (row_type_symbol) |ts| {
-                                if (!isFiltered(cid, filter)) {
-                                    const builder = try getOrCreateBuilder(allocator, builders, cid);
-                                    var atom = CompAtom.init(aid, ts);
-                                    atom.aromatic = row_aromatic;
-                                    atom.leaving = row_leaving;
-
-                                    // Atom indices and the ZSDC atom count are u16: a
-                                    // larger component would wrap and corrupt bond lookups.
-                                    if (builder.atoms.items.len >= std.math.maxInt(u16)) return error.TooManyAtoms;
-                                    const atom_idx: u16 = @intCast(builder.atoms.items.len);
-                                    try builder.atoms.append(allocator, atom);
-
-                                    // Store atom name -> index mapping for bond resolution.
-                                    const name_key = try allocator.dupe(u8, aid);
-                                    builder.atom_name_map.put(allocator, name_key, atom_idx) catch |e| {
-                                        allocator.free(name_key);
-                                        return e;
-                                    };
-                                }
-                            }
-                        }
-                    }
+                    try emitAtom(allocator, builders, filter, row_comp_id, row_atom_id, row_type_symbol, row_aromatic, row_leaving);
 
                     // Reset for next row.
                     col_idx = 0;
@@ -471,33 +453,7 @@ fn parseBondLoop(
                 col_idx += 1;
                 if (col_idx >= cols.total) {
                     // End of row — emit bond.
-                    if (row_comp_id) |cid| {
-                        if (row_atom_id_1) |aid1| {
-                            if (row_atom_id_2) |aid2| {
-                                if (!isFiltered(cid, filter)) {
-                                    const builder = try getOrCreateBuilder(allocator, builders, cid);
-
-                                    // Resolve atom names to indices.
-                                    const idx1 = builder.atom_name_map.get(aid1);
-                                    const idx2 = builder.atom_name_map.get(aid2);
-
-                                    if (idx1 != null and idx2 != null) {
-                                        const order = if (row_value_order) |vo|
-                                            BondOrder.fromString(vo)
-                                        else
-                                            BondOrder.unknown;
-
-                                        try builder.bonds.append(allocator, .{
-                                            .atom_idx_1 = idx1.?,
-                                            .atom_idx_2 = idx2.?,
-                                            .order = order,
-                                            .aromatic = row_aromatic,
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    try emitBond(allocator, builders, filter, row_comp_id, row_atom_id_1, row_atom_id_2, row_value_order, row_aromatic);
 
                     // Reset for next row.
                     col_idx = 0;
@@ -547,6 +503,149 @@ fn classifyBondTag(tag: []const u8, idx: usize, cols: *BondColumns) void {
 // =============================================================================
 // Helpers
 // =============================================================================
+
+/// Add one atom row to its component. Rows missing a required field are dropped.
+fn emitAtom(
+    allocator: Allocator,
+    builders: *std.StringHashMapUnmanaged(ComponentBuilder),
+    filter: ?[]const []const u8,
+    comp_id: ?[]const u8,
+    atom_id: ?[]const u8,
+    type_symbol: ?[]const u8,
+    aromatic: bool,
+    leaving: bool,
+) !void {
+    const cid = comp_id orelse return;
+    const aid = atom_id orelse return;
+    const ts = type_symbol orelse return;
+    if (isFiltered(cid, filter)) return;
+
+    const builder = try getOrCreateBuilder(allocator, builders, cid);
+    var atom = CompAtom.init(aid, ts);
+    atom.aromatic = aromatic;
+    atom.leaving = leaving;
+
+    // Atom indices and the ZSDC atom count are u16: a
+    // larger component would wrap and corrupt bond lookups.
+    if (builder.atoms.items.len >= std.math.maxInt(u16)) return error.TooManyAtoms;
+    const atom_idx: u16 = @intCast(builder.atoms.items.len);
+    try builder.atoms.append(allocator, atom);
+
+    // Store atom name -> index mapping for bond resolution.
+    const name_key = try allocator.dupe(u8, aid);
+    builder.atom_name_map.put(allocator, name_key, atom_idx) catch |e| {
+        allocator.free(name_key);
+        return e;
+    };
+}
+
+/// Add one bond row to its component. Bonds naming an unknown atom are dropped.
+fn emitBond(
+    allocator: Allocator,
+    builders: *std.StringHashMapUnmanaged(ComponentBuilder),
+    filter: ?[]const []const u8,
+    comp_id: ?[]const u8,
+    atom_id_1: ?[]const u8,
+    atom_id_2: ?[]const u8,
+    value_order: ?[]const u8,
+    aromatic: bool,
+) !void {
+    const cid = comp_id orelse return;
+    const aid1 = atom_id_1 orelse return;
+    const aid2 = atom_id_2 orelse return;
+    if (isFiltered(cid, filter)) return;
+
+    const builder = try getOrCreateBuilder(allocator, builders, cid);
+    const idx1 = builder.atom_name_map.get(aid1) orelse return;
+    const idx2 = builder.atom_name_map.get(aid2) orelse return;
+    const order = if (value_order) |vo| BondOrder.fromString(vo) else BondOrder.unknown;
+
+    try builder.bonds.append(allocator, .{
+        .atom_idx_1 = idx1,
+        .atom_idx_2 = idx2,
+        .order = order,
+        .aromatic = aromatic,
+    });
+}
+
+fn isYes(val: []const u8) bool {
+    return val.len == 1 and (val[0] == 'Y' or val[0] == 'y');
+}
+
+/// Parse a non-loop `_chem_comp_atom` / `_chem_comp_bond` category, where the
+/// tags are followed directly by the values of its single row. `first_tag`
+/// was already consumed by the caller.
+fn parseSingleRow(
+    allocator: Allocator,
+    tokenizer: *Tokenizer,
+    first_tag: []const u8,
+    builders: *std.StringHashMapUnmanaged(ComponentBuilder),
+    filter: ?[]const []const u8,
+) !void {
+    const is_atom = isAtomTag(first_tag);
+    var tag: []const u8 = first_tag;
+
+    var comp_id: ?[]const u8 = null;
+    var atom_id: ?[]const u8 = null;
+    var type_symbol: ?[]const u8 = null;
+    var atom_id_1: ?[]const u8 = null;
+    var atom_id_2: ?[]const u8 = null;
+    var value_order: ?[]const u8 = null;
+    var aromatic = false;
+    var leaving = false;
+
+    while (true) {
+        const val = switch (tokenizer.next()) {
+            .value => |v| v,
+            else => return, // malformed: tag without a value
+        };
+        const prefix_len = "_chem_comp_atom.".len;
+        const field = if (tag.len > prefix_len) tag[prefix_len..] else "";
+        if (std.mem.eql(u8, field, "comp_id")) {
+            comp_id = val;
+        } else if (is_atom and std.mem.eql(u8, field, "atom_id")) {
+            atom_id = val;
+        } else if (is_atom and std.mem.eql(u8, field, "type_symbol")) {
+            type_symbol = val;
+        } else if (is_atom and std.mem.eql(u8, field, "pdbx_aromatic_flag")) {
+            aromatic = isYes(val);
+        } else if (is_atom and std.mem.eql(u8, field, "pdbx_leaving_atom_flag")) {
+            leaving = isYes(val);
+        } else if (!is_atom and std.mem.eql(u8, field, "atom_id_1")) {
+            atom_id_1 = val;
+        } else if (!is_atom and std.mem.eql(u8, field, "atom_id_2")) {
+            atom_id_2 = val;
+        } else if (!is_atom and std.mem.eql(u8, field, "value_order")) {
+            value_order = val;
+        } else if (!is_atom and std.mem.eql(u8, field, "pdbx_aromatic_flag")) {
+            aromatic = isYes(val);
+        }
+
+        // Continue while the next token is another tag of the same category.
+        const saved_pos = tokenizer.pos;
+        const saved_line = tokenizer.line;
+        const saved_col = tokenizer.col;
+        switch (tokenizer.next()) {
+            .tag => |t| {
+                if (is_atom == isAtomTag(t) and (isAtomTag(t) or isBondTag(t))) {
+                    tag = t;
+                    continue;
+                }
+            },
+            else => {},
+        }
+        tokenizer.pos = saved_pos;
+        tokenizer.line = saved_line;
+        tokenizer.col = saved_col;
+        break;
+    }
+
+    if (is_atom) {
+        try emitAtom(allocator, builders, filter, comp_id, atom_id, type_symbol, aromatic, leaving);
+    } else {
+        try emitBond(allocator, builders, filter, comp_id, atom_id_1, atom_id_2, value_order, aromatic);
+    }
+}
 
 /// Return true if `comp_id` should be SKIPPED (not in filter list).
 fn isFiltered(comp_id: []const u8, filter: ?[]const []const u8) bool {
@@ -867,4 +966,67 @@ test "ComponentDict — empty source" {
     var dict = try parseCcdData(std.testing.allocator, "", null);
     defer dict.deinit();
     try std.testing.expectEqual(@as(usize, 0), dict.count());
+}
+
+test "parseCcdData — single-row (non-loop) atom category, single-atom component" {
+    // A bond to an atom that is not defined is still dropped.
+    const src =
+        \\data_CMO
+        \\_chem_comp_atom.comp_id CMO
+        \\_chem_comp_atom.atom_id C
+        \\_chem_comp_atom.type_symbol C
+        \\_chem_comp_bond.comp_id CMO
+        \\_chem_comp_bond.atom_id_1 C
+        \\_chem_comp_bond.atom_id_2 O
+        \\_chem_comp_bond.value_order TRIP
+        \\#
+        \\data_NA
+        \\_chem_comp_atom.comp_id NA
+        \\_chem_comp_atom.atom_id NA
+        \\_chem_comp_atom.type_symbol NA
+        \\_chem_comp_atom.pdbx_aromatic_flag N
+        \\_chem_comp_atom.pdbx_leaving_atom_flag N
+        \\#
+    ;
+    const alloc = std.testing.allocator;
+    var dict = try parseCcdData(alloc, src, null);
+    defer dict.deinit();
+
+    // The single-atom component NA is kept.
+    const na = dict.get("NA").?;
+    try std.testing.expectEqual(@as(usize, 1), na.atoms.len);
+    try std.testing.expectEqualStrings("NA", na.atoms[0].typeSymbolSlice());
+
+    // CMO has one atom (O is never defined in this fixture), so the bond is dropped.
+    const cmo = dict.get("CMO").?;
+    try std.testing.expectEqual(@as(usize, 1), cmo.atoms.len);
+    try std.testing.expectEqual(@as(usize, 0), cmo.bonds.len);
+}
+
+test "parseCcdData — single-row bond with both atoms defined" {
+    const src =
+        \\data_CMO
+        \\loop_
+        \\_chem_comp_atom.comp_id
+        \\_chem_comp_atom.atom_id
+        \\_chem_comp_atom.type_symbol
+        \\CMO C C
+        \\CMO O O
+        \\#
+        \\_chem_comp_bond.comp_id CMO
+        \\_chem_comp_bond.atom_id_1 C
+        \\_chem_comp_bond.atom_id_2 O
+        \\_chem_comp_bond.value_order TRIP
+        \\_chem_comp_bond.pdbx_aromatic_flag N
+        \\#
+    ;
+    const alloc = std.testing.allocator;
+    var dict = try parseCcdData(alloc, src, null);
+    defer dict.deinit();
+
+    const cmo = dict.get("CMO").?;
+    try std.testing.expectEqual(@as(usize, 2), cmo.atoms.len);
+    try std.testing.expectEqual(@as(usize, 1), cmo.bonds.len);
+    try std.testing.expectEqual(BondOrder.triple, cmo.bonds[0].order);
+    try std.testing.expect(!cmo.bonds[0].aromatic);
 }

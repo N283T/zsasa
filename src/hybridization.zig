@@ -172,14 +172,15 @@ fn normalizeElement(type_symbol: []const u8, buf: *[4]u8) u3 {
 
 /// Valence consumed by a bond, in half units so that an aromatic bond can
 /// count as 1.5 (a ring atom with two aromatic bonds uses 3 valence units,
-/// like one single plus one double bond in the Kekule form).
+/// like one single plus one double bond in the Kekule form). A delocalized
+/// (DELO/POLY) bond is counted the same way.
 fn bondValenceHalves(order: BondOrder) u8 {
     return switch (order) {
         .single => 2,
         .double => 4,
         .triple => 6,
         .aromatic => 3,
-        .delocalized => 4,
+        .delocalized => 3,
         .unknown => 2,
     };
 }
@@ -215,9 +216,9 @@ pub fn analyzeBonds(component: *const Component, atom_idx: u16) BondAnalysis {
 
             const neighbor = &component.atoms[nidx];
             if (isHydrogen(neighbor.typeSymbolSlice())) {
-                result.h_bond_count += 1;
+                result.h_bond_count +|= 1;
             } else {
-                result.heavy_bond_count += 1;
+                result.heavy_bond_count +|= 1;
                 heavy_valence_halves +|= bondValenceHalves(bond.order);
             }
 
@@ -958,6 +959,48 @@ test "deriveComponentProperties — aromatic bond orders, substituted and fused 
         .{ "C4A", 1.61 }, .{ "C5", 1.76 },  .{ "C6", 1.76 }, .{ "C7", 1.76 },
         .{ "C8", 1.76 },  .{ "C8A", 1.61 }, .{ "CM", 1.88 },
     });
+}
+
+test "deriveComponentProperties — delocalized bonds count like aromatic ones" {
+    // A hydrogen-free CH with two delocalized bonds: 1.5 + 1.5 valence units
+    // leave one hydrogen, so C3H1 (1.76) rather than C3H0 (1.61).
+    const atoms = [_]CompAtom{
+        CompAtom.init("C1", "C"), // 0
+        CompAtom.init("C2", "C"), // 1
+        CompAtom.init("C3", "C"), // 2
+    };
+    const bonds = [_]CompBond{
+        testBond(0, 1, .delocalized),
+        testBond(1, 2, .delocalized),
+    };
+    try expectDerivedRadii(&atoms, &bonds, &.{
+        .{ "C1", 1.76 },
+        .{ "C2", 1.76 },
+        .{ "C3", 1.76 },
+    });
+}
+
+test "analyzeBonds — bond counters saturate instead of wrapping" {
+    // 300 hydrogens and 300 heavy neighbours bonded to atom 0.
+    const n = 300;
+    var atoms: [1 + 2 * n]CompAtom = undefined;
+    var bonds: [2 * n]CompBond = undefined;
+    atoms[0] = CompAtom.init("C1", "C");
+    for (0..n) |i| {
+        atoms[1 + i] = CompAtom.init("H", "H");
+        atoms[1 + n + i] = CompAtom.init("C", "C");
+        bonds[i] = testBond(0, @intCast(1 + i), .single);
+        bonds[n + i] = testBond(0, @intCast(1 + n + i), .single);
+    }
+    const comp = Component{
+        .comp_id = .{ 'X', 0, 0, 0, 0 },
+        .comp_id_len = 1,
+        .atoms = &atoms,
+        .bonds = &bonds,
+    };
+    const result = analyzeBonds(&comp, 0);
+    try std.testing.expectEqual(@as(u8, 255), result.h_bond_count);
+    try std.testing.expectEqual(@as(u8, 255), result.heavy_bond_count);
 }
 
 test "deriveComponentProperties — partially listed hydrogens" {
