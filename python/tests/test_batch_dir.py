@@ -50,8 +50,7 @@ class TestProcessDirectory:
     def test_process_directory_lr(self, tmp_path: Path) -> None:
         """LR on a small directory matches `zsasa calc --algorithm=lr` and differs from SR.
 
-        test_data/1l2y.pdb (38 NMR models, of which only the first is read) takes
-        seconds with Lee-Richards, so this uses two tiny structures instead.
+        Two tiny structures keep Lee-Richards fast.
         """
         (tmp_path / "ala.pdb").write_text(SMALL_ALA_PDB)
         (tmp_path / "gly.ent").write_text(SMALL_GLY_PDB)
