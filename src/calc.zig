@@ -1135,6 +1135,7 @@ fn applyClassifier(
 
     var classified_count: usize = 0;
     var fallback_count: usize = 0;
+    var kept_count: usize = 0;
 
     for (0..n) |i| {
         // Try classifier lookup
@@ -1151,6 +1152,7 @@ fn applyClassifier(
             } else {
                 // Keep original radius
                 new_radii[i] = input.r[i];
+                kept_count += 1;
             }
         } else if (classifier.guessRadiusFromResidueAtom(residues[i].slice(), atom_names[i].slice())) |r| {
             // Fall back to atom name-based radius
@@ -1159,6 +1161,7 @@ fn applyClassifier(
         } else {
             // Keep original radius
             new_radii[i] = input.r[i];
+            kept_count += 1;
         }
     }
 
@@ -1167,10 +1170,11 @@ fn applyClassifier(
     input.r = new_radii;
 
     if (!quiet) {
-        std.debug.print("Classifier '{s}': {d} atoms classified, {d} fallback\n", .{
+        std.debug.print("Classifier '{s}': {d} atoms classified, {d} fallback{f}\n", .{
             custom_classifier.name,
             classified_count,
             fallback_count,
+            classifier.KeptRadii{ .count = kept_count },
         });
     }
 }
@@ -1246,6 +1250,7 @@ fn applyBuiltinClassifier(
 
     var classified_count: usize = 0;
     var fallback_count: usize = 0;
+    var kept_count: usize = 0;
 
     for (0..n) |i| {
         // Try built-in classifier lookup: radius and polarity class of the atom
@@ -1279,6 +1284,7 @@ fn applyBuiltinClassifier(
         } else {
             // Keep original radius
             new_radii[i] = input.r[i];
+            kept_count += 1;
         }
     }
 
@@ -1287,10 +1293,11 @@ fn applyBuiltinClassifier(
     input.r = new_radii;
 
     if (!quiet) {
-        std.debug.print("Classifier '{s}': {d} atoms classified, {d} fallback\n", .{
+        std.debug.print("Classifier '{s}': {d} atoms classified, {d} fallback{f}\n", .{
             ct.name(),
             classified_count,
             fallback_count,
+            classifier.KeptRadii{ .count = kept_count },
         });
     }
 }

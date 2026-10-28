@@ -1208,6 +1208,7 @@ fn applyCustomClassifier(input: *AtomInput, custom_classifier: *const classifier
 
     var classified_count: usize = 0;
     var fallback_count: usize = 0;
+    var kept_count: usize = 0;
 
     for (0..n) |i| {
         if (custom_classifier.getRadius(residues[i].slice(), atom_names[i].slice())) |r| {
@@ -1219,12 +1220,14 @@ fn applyCustomClassifier(input: *AtomInput, custom_classifier: *const classifier
                 fallback_count += 1;
             } else {
                 new_radii[i] = input.r[i];
+                kept_count += 1;
             }
         } else if (classifier.guessRadiusFromResidueAtom(residues[i].slice(), atom_names[i].slice())) |r| {
             new_radii[i] = r;
             fallback_count += 1;
         } else {
             new_radii[i] = input.r[i];
+            kept_count += 1;
         }
     }
 
@@ -1232,10 +1235,11 @@ fn applyCustomClassifier(input: *AtomInput, custom_classifier: *const classifier
     input.r = new_radii;
 
     if (!quiet) {
-        std.debug.print("Classifier '{s}': {d} atoms classified, {d} fallback\n", .{
+        std.debug.print("Classifier '{s}': {d} atoms classified, {d} fallback{f}\n", .{
             custom_classifier.name,
             classified_count,
             fallback_count,
+            classifier.KeptRadii{ .count = kept_count },
         });
     }
 }

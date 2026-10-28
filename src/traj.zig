@@ -1716,13 +1716,21 @@ fn applyBuiltinClassifier(
 
     var classified_count: usize = 0;
     var fallback_count: usize = 0;
+    var kept_count: usize = 0;
 
     for (0..n) |i| {
-        const radius_opt: ?f64 = switch (ct) {
+        var radius_opt: ?f64 = switch (ct) {
             .naccess => classifier_naccess.getRadius(residues[i].slice(), atom_names[i].slice()),
             .protor, .ccd => if (ccd_clf) |*c| c.getRadius(residues[i].slice(), atom_names[i].slice()) else null,
             .oons => classifier_oons.getRadius(residues[i].slice(), atom_names[i].slice()),
         };
+        // An element column that names another element than the table entry
+        // (calcium under the name CA) decides.
+        if (radius_opt != null and (ct == .naccess or ct == .oons) and
+            !classifier.tableEntryMatchesElement(atom_names[i].slice(), if (input.element) |elements| elements[i] else null))
+        {
+            radius_opt = null;
+        }
         if (radius_opt) |r| {
             input.r[i] = r;
             classified_count += 1;
@@ -1735,14 +1743,17 @@ fn applyBuiltinClassifier(
             // Fall back to element-based radius, or atom name-based without an element
             input.r[i] = r;
             fallback_count += 1;
+        } else {
+            kept_count += 1;
         }
     }
 
     if (!quiet) {
-        std.debug.print("Classifier '{s}': {d} atoms classified, {d} fallback\n", .{
+        std.debug.print("Classifier '{s}': {d} atoms classified, {d} fallback{f}\n", .{
             ct.name(),
             classified_count,
             fallback_count,
+            classifier.KeptRadii{ .count = kept_count },
         });
     }
 }
@@ -1773,6 +1784,30 @@ test "traj NACCESS and OONS take the element of unlisted atoms from the element 
         try applyBuiltinClassifier(allocator, &input, ct, null, null, true);
 
         try std.testing.expectEqualSlices(f64, &expected, input.r);
+    }
+}
+
+test "traj NACCESS and OONS give a calcium ion the calcium radius" {
+    const allocator = std.testing.allocator;
+
+    // Calcium ion CA/CA and the alpha carbon of ALA, both with an element column
+    const pdb_content =
+        \\ATOM      1  CA  ALA A   1      10.000   0.000   0.000  1.00 20.00           C
+        \\HETATM    2 CA    CA A   2      20.000   0.000   0.000  1.00 20.00          CA
+        \\END
+    ;
+    const calcium = classifier.guessRadiusFromAtomicNumber(20).?;
+
+    for ([_]ClassifierType{ .naccess, .oons }) |ct| {
+        var parser = pdb_parser.PdbParser.init(allocator);
+        parser.atom_only = false;
+        var input = try parser.parse(pdb_content);
+        defer input.deinit();
+
+        try applyBuiltinClassifier(allocator, &input, ct, null, null, true);
+
+        try std.testing.expect(input.r[0] != calcium);
+        try std.testing.expectApproxEqAbs(calcium, input.r[1], 1e-9);
     }
 }
 

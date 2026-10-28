@@ -1600,7 +1600,7 @@ export fn zsasa_guess_radius(
     element: [*:0]const u8,
 ) callconv(.c) f64 {
     const element_slice = std.mem.span(element);
-    return classifier.guessRadius(element_slice) orelse std.math.nan(f64);
+    return classifier.radiusFromElementSymbol(element_slice) orelse std.math.nan(f64);
 }
 
 /// Guess van der Waals radius from PDB-style atom name.
@@ -2487,6 +2487,10 @@ test "zsasa_guess_radius" {
     // Two-character elements
     try std.testing.expectApproxEqAbs(1.26, zsasa_guess_radius("FE"), 0.01);
     try std.testing.expectApproxEqAbs(1.39, zsasa_guess_radius("ZN"), 0.01);
+
+    // Elements outside the classifier table use the parsers' radii
+    try std.testing.expectApproxEqAbs(1.92, zsasa_guess_radius("B"), 0.001);
+    try std.testing.expectApproxEqAbs(1.75, zsasa_guess_radius("Pt"), 0.001);
 
     // Unknown element returns NaN
     const unknown = zsasa_guess_radius("XX");
