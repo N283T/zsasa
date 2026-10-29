@@ -8,6 +8,8 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+## [v0.12.1](https://github.com/N283T/zsasa/releases/tag/v0.12.1) — 2026-10-29
+
 ### Added
 
 - **Zig API: SASA from atoms in the kernels' layout.** `types.AtomsGen(T)` holds one `Vec3Gen(T)` and one radius per atom, and `types.gatherPositions` fills it from separate x/y/z arrays of f32 or f64, optionally selecting atoms, in one pass. `ShrakeRupleyGen(T)` and `LeeRichardsGen(T)` take it through `calculateSasaAtoms` and `calculateSasaParallelAtoms`, and `ShrakeRupleyBitmaskGen(T)` through `calculateSasaAtomsWithCorrection`, `calculateSasaAtomsWithLutAndCorrection` and `calculateSasaParallelAtomsWithCorrection`. A caller with f32 coordinates, such as a trajectory reader, no longer converts them to f64 first. The `AtomInput` entry points are unchanged and give the same results.

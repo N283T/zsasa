@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-10-29
+
 ### Added
 
 - **Zig API: SASA from atoms in the kernels' layout.** `types.AtomsGen(T)` holds one `Vec3Gen(T)` and one radius per atom, and `types.gatherPositions` fills it from separate x/y/z arrays of f32 or f64, optionally selecting atoms, in one pass. `ShrakeRupleyGen(T)` and `LeeRichardsGen(T)` take it through `calculateSasaAtoms` and `calculateSasaParallelAtoms`, and `ShrakeRupleyBitmaskGen(T)` through `calculateSasaAtomsWithCorrection`, `calculateSasaAtomsWithLutAndCorrection` and `calculateSasaParallelAtomsWithCorrection`. A caller with f32 coordinates, such as a trajectory reader, no longer converts them to f64 first. The `AtomInput` entry points are unchanged and give the same results.
@@ -874,7 +876,8 @@ This release follows a full audit of the code base. Several defaults and output 
   - `calc_reference_sasa.py` - Generate reference SASA
   - `benchmark.py` - Performance benchmarking
 
-[Unreleased]: https://github.com/N283T/zsasa/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/N283T/zsasa/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/N283T/zsasa/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/N283T/zsasa/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/N283T/zsasa/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/N283T/zsasa/compare/v0.10.0...v0.10.1
