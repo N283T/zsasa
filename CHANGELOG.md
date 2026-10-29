@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-29
+
+### Upgrade notes
+
+Some defaults changed, so results from 0.11.x may differ for the same input. The entries below explain each change; this list only says where to look.
+
+**Results that change with the same input**
+
+- Water is left out by default, also with `--include-hetatm` (`calc`, `batch`, `traj`, workflows, Python). `--include-water` / `include_water=True` restores the previous results. `traj` on a solvated topology no longer includes the solvent.
+- `calc` and `batch` read the first model of a multi-model file instead of superimposing every model. `--model=all` (workflow `model = "all"`) restores the previous behavior.
+- Radii changed for `PSU`, `ACE`, `SEP` and `TPO` with the `ccd` and `protor` classifiers, and for atoms whose name contradicts their element (such as calcium ions named `CA`) with NACCESS and OONS.
+- PDB files with more than 99999 atoms or 9999 residues per chain are read correctly now, and malformed ATOM/HETATM records are skipped with a warning instead of being read partly.
+
+**Output and interfaces**
+
+- `chain_map` workflows write JSONL rows in a different order, also with one thread. Join on `filename` and `id`.
+- The C ABI version is 2: `zsasa_batch_dir_process` takes `include_water` and `exclude_residues` before `error_code`.
+- A truncated mmCIF file that was accepted before now fails to parse.
+
 ### Added
 
 - **`zsasa traj` takes `--model=N` and `--include-hetatm`**, with the meaning and syntax they have in `calc`. `--model=N` reads model N of the topology instead of the first one; a model that does not exist is an error (`ModelNotFound`). `--include-hetatm` is accepted for consistency; a `traj` topology has always included its `HETATM` records, so it changes nothing. Default behavior is unchanged. `--chain` and `--auth-chain` are still rejected. (#423)
@@ -843,7 +862,8 @@ This release follows a full audit of the code base. Several defaults and output 
   - `calc_reference_sasa.py` - Generate reference SASA
   - `benchmark.py` - Performance benchmarking
 
-[Unreleased]: https://github.com/N283T/zsasa/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/N283T/zsasa/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/N283T/zsasa/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/N283T/zsasa/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/N283T/zsasa/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/N283T/zsasa/compare/v0.9.1...v0.10.0
