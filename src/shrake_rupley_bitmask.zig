@@ -4,6 +4,7 @@ const test_points = @import("test_points.zig");
 const neighbor_list = @import("neighbor_list.zig");
 const bitmask_lut = @import("bitmask_lut.zig");
 const thread_pool = @import("thread_pool.zig");
+const test_support = @import("test_support.zig");
 
 const Vec3 = types.Vec3;
 const Vec3Gen = types.Vec3Gen;
@@ -468,6 +469,8 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
     const NList = NeighborListGen(T);
     const Lut = BitmaskLutGen(T);
     const Correction = BitmaskCorrectionGen(T);
+    const Atoms = types.AtomsGen(T);
+    const AtomsBuffer = types.AtomsBufferGen(T);
 
     return struct {
         const Self = @This();
@@ -765,7 +768,9 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
 
             var lut = try Lut.init(allocator, config.n_points);
             defer lut.deinit();
-            return calculateSasaCore(allocator, input, config, &lut);
+            var buffer = try AtomsBuffer.fromInput(allocator, input);
+            defer buffer.deinit();
+            return calculateSasaCore(allocator, buffer.atoms(), config, &lut);
         }
 
         /// Calculate SASA with optional experimental bitmask bias correction.
@@ -781,7 +786,9 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
 
             var lut = try Lut.init(allocator, config.n_points);
             defer lut.deinit();
-            return calculateSasaCoreWithCorrection(allocator, input, config, &lut, correction);
+            var buffer = try AtomsBuffer.fromInput(allocator, input);
+            defer buffer.deinit();
+            return calculateSasaCoreWithCorrection(allocator, buffer.atoms(), config, &lut, correction);
         }
 
         /// Calculate SASA with a pre-built LUT (single-threaded, generic precision).
@@ -796,7 +803,9 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             const n_atoms = input.atomCount();
             if (n_atoms == 0) return error.NoAtoms;
             std.debug.assert(config.n_points == lut.n_points);
-            return calculateSasaCore(allocator, input, config, lut);
+            var buffer = try AtomsBuffer.fromInput(allocator, input);
+            defer buffer.deinit();
+            return calculateSasaCore(allocator, buffer.atoms(), config, lut);
         }
 
         /// Calculate SASA with a pre-built LUT and optional experimental correction.
@@ -810,7 +819,9 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             const n_atoms = input.atomCount();
             if (n_atoms == 0) return error.NoAtoms;
             std.debug.assert(config.n_points == lut.n_points);
-            return calculateSasaCoreWithCorrection(allocator, input, config, lut, correction);
+            var buffer = try AtomsBuffer.fromInput(allocator, input);
+            defer buffer.deinit();
+            return calculateSasaCoreWithCorrection(allocator, buffer.atoms(), config, lut, correction);
         }
 
         pub fn calculateSasaAdaptiveWithLuts(
@@ -826,43 +837,81 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             try adaptive.validate();
             std.debug.assert(adaptive.coarse_points == coarse_lut.n_points);
             std.debug.assert(adaptive.fine_points == fine_lut.n_points);
-            return calculateSasaAdaptiveCore(allocator, input, config, adaptive, coarse_lut, fine_lut);
+            var buffer = try AtomsBuffer.fromInput(allocator, input);
+            defer buffer.deinit();
+            return calculateSasaAdaptiveCore(allocator, buffer.atoms(), config, adaptive, coarse_lut, fine_lut);
         }
 
-        fn calculateSasaCore(
+        /// `calculateSasaWithCorrection` for atoms already in the kernels' layout.
+        pub fn calculateSasaAtomsWithCorrection(
             allocator: Allocator,
-            input: AtomInput,
+            atoms: Atoms,
             config: Cfg,
-            lut: *const Lut,
+            correction: Correction,
         ) !Result {
-            return calculateSasaCoreWithCorrection(allocator, input, config, lut, .{});
+            try validateAtoms(atoms, config);
+            if (!bitmask_lut.isSupportedNPoints(config.n_points)) return error.UnsupportedNPoints;
+
+            var lut = try Lut.init(allocator, config.n_points);
+            defer lut.deinit();
+            return calculateSasaCoreWithCorrection(allocator, atoms, config, &lut, correction);
         }
 
-        fn calculateSasaCoreWithCorrection(
+        /// `calculateSasaWithLutAndCorrection` for atoms already in the kernels' layout.
+        pub fn calculateSasaAtomsWithLutAndCorrection(
             allocator: Allocator,
-            input: AtomInput,
+            atoms: Atoms,
             config: Cfg,
             lut: *const Lut,
             correction: Correction,
         ) !Result {
-            const n_atoms = input.atomCount();
+            try validateAtoms(atoms, config);
+            std.debug.assert(config.n_points == lut.n_points);
+            return calculateSasaCoreWithCorrection(allocator, atoms, config, lut, correction);
+        }
 
-            const positions = try allocator.alloc(Vec, n_atoms);
-            defer allocator.free(positions);
+        /// `calculateSasaParallelWithCorrection` for atoms already in the kernels' layout.
+        pub fn calculateSasaParallelAtomsWithCorrection(
+            allocator: Allocator,
+            atoms: Atoms,
+            config: Cfg,
+            n_threads: usize,
+            correction: Correction,
+        ) !Result {
+            try validateAtoms(atoms, config);
+            if (!bitmask_lut.isSupportedNPoints(config.n_points)) return error.UnsupportedNPoints;
 
-            for (0..n_atoms) |i| {
-                positions[i] = Vec{
-                    .x = @floatCast(input.x[i]),
-                    .y = @floatCast(input.y[i]),
-                    .z = @floatCast(input.z[i]),
-                };
-            }
+            var lut = try Lut.init(allocator, config.n_points);
+            defer lut.deinit();
+            return calculateSasaParallelCoreWithCorrection(allocator, atoms, config, n_threads, &lut, correction);
+        }
 
-            const radii = try allocator.alloc(T, n_atoms);
-            defer allocator.free(radii);
-            for (0..n_atoms) |i| {
-                radii[i] = @floatCast(input.r[i]);
-            }
+        fn validateAtoms(atoms: Atoms, config: Cfg) !void {
+            if (atoms.atomCount() == 0) return error.NoAtoms;
+            try types.validateProbeRadius(T, config.probe_radius);
+            try atoms.validateFiniteAndRange();
+        }
+
+        fn calculateSasaCore(
+            allocator: Allocator,
+            atoms: Atoms,
+            config: Cfg,
+            lut: *const Lut,
+        ) !Result {
+            return calculateSasaCoreWithCorrection(allocator, atoms, config, lut, .{});
+        }
+
+        fn calculateSasaCoreWithCorrection(
+            allocator: Allocator,
+            atoms: Atoms,
+            config: Cfg,
+            lut: *const Lut,
+            correction: Correction,
+        ) !Result {
+            const n_atoms = atoms.atomCount();
+
+            const positions = atoms.positions;
+            const radii = atoms.radii;
 
             var neighbor_list_data = try NList.init(allocator, positions, radii, config.probe_radius);
             defer neighbor_list_data.deinit();
@@ -904,29 +953,16 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
 
         fn calculateSasaAdaptiveCore(
             allocator: Allocator,
-            input: AtomInput,
+            atoms: Atoms,
             config: Cfg,
             adaptive: AdaptiveConfig,
             coarse_lut: *const Lut,
             fine_lut: *const Lut,
         ) !Result {
-            const n_atoms = input.atomCount();
+            const n_atoms = atoms.atomCount();
 
-            const positions = try allocator.alloc(Vec, n_atoms);
-            defer allocator.free(positions);
-            for (0..n_atoms) |i| {
-                positions[i] = Vec{
-                    .x = @floatCast(input.x[i]),
-                    .y = @floatCast(input.y[i]),
-                    .z = @floatCast(input.z[i]),
-                };
-            }
-
-            const radii = try allocator.alloc(T, n_atoms);
-            defer allocator.free(radii);
-            for (0..n_atoms) |i| {
-                radii[i] = @floatCast(input.r[i]);
-            }
+            const positions = atoms.positions;
+            const radii = atoms.radii;
 
             var neighbor_list_data = try NList.init(allocator, positions, radii, config.probe_radius);
             defer neighbor_list_data.deinit();
@@ -988,7 +1024,9 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
 
             var lut = try Lut.init(allocator, config.n_points);
             defer lut.deinit();
-            return calculateSasaParallelCore(allocator, input, config, n_threads, &lut);
+            var buffer = try AtomsBuffer.fromInput(allocator, input);
+            defer buffer.deinit();
+            return calculateSasaParallelCore(allocator, buffer.atoms(), config, n_threads, &lut);
         }
 
         /// Calculate SASA in parallel with optional experimental bitmask bias correction.
@@ -1005,7 +1043,9 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
 
             var lut = try Lut.init(allocator, config.n_points);
             defer lut.deinit();
-            return calculateSasaParallelCoreWithCorrection(allocator, input, config, n_threads, &lut, correction);
+            var buffer = try AtomsBuffer.fromInput(allocator, input);
+            defer buffer.deinit();
+            return calculateSasaParallelCoreWithCorrection(allocator, buffer.atoms(), config, n_threads, &lut, correction);
         }
 
         /// Calculate SASA with a pre-built LUT (parallel, generic precision).
@@ -1020,7 +1060,9 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             const n_atoms = input.atomCount();
             if (n_atoms == 0) return error.NoAtoms;
             std.debug.assert(config.n_points == lut.n_points);
-            return calculateSasaParallelCore(allocator, input, config, n_threads, lut);
+            var buffer = try AtomsBuffer.fromInput(allocator, input);
+            defer buffer.deinit();
+            return calculateSasaParallelCore(allocator, buffer.atoms(), config, n_threads, lut);
         }
 
         /// Calculate SASA in parallel with a pre-built LUT and optional correction.
@@ -1035,7 +1077,9 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             const n_atoms = input.atomCount();
             if (n_atoms == 0) return error.NoAtoms;
             std.debug.assert(config.n_points == lut.n_points);
-            return calculateSasaParallelCoreWithCorrection(allocator, input, config, n_threads, lut, correction);
+            var buffer = try AtomsBuffer.fromInput(allocator, input);
+            defer buffer.deinit();
+            return calculateSasaParallelCoreWithCorrection(allocator, buffer.atoms(), config, n_threads, lut, correction);
         }
 
         pub fn calculateSasaAdaptiveParallelWithLuts(
@@ -1052,49 +1096,37 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
             try adaptive.validate();
             std.debug.assert(adaptive.coarse_points == coarse_lut.n_points);
             std.debug.assert(adaptive.fine_points == fine_lut.n_points);
-            return calculateSasaAdaptiveParallelCore(allocator, input, config, adaptive, n_threads, coarse_lut, fine_lut);
+            var buffer = try AtomsBuffer.fromInput(allocator, input);
+            defer buffer.deinit();
+            return calculateSasaAdaptiveParallelCore(allocator, buffer.atoms(), config, adaptive, n_threads, coarse_lut, fine_lut);
         }
 
         fn calculateSasaParallelCore(
             allocator: Allocator,
-            input: AtomInput,
+            atoms: Atoms,
             config: Cfg,
             n_threads: usize,
             lut: *const Lut,
         ) !Result {
-            return calculateSasaParallelCoreWithCorrection(allocator, input, config, n_threads, lut, .{});
+            return calculateSasaParallelCoreWithCorrection(allocator, atoms, config, n_threads, lut, .{});
         }
 
         fn calculateSasaParallelCoreWithCorrection(
             allocator: Allocator,
-            input: AtomInput,
+            atoms: Atoms,
             config: Cfg,
             n_threads: usize,
             lut: *const Lut,
             correction: Correction,
         ) !Result {
-            const n_atoms = input.atomCount();
+            const n_atoms = atoms.atomCount();
             const actual_threads = if (n_threads == 0)
                 try std.Thread.getCpuCount()
             else
                 n_threads;
 
-            const positions = try allocator.alloc(Vec, n_atoms);
-            defer allocator.free(positions);
-
-            for (0..n_atoms) |i| {
-                positions[i] = Vec{
-                    .x = @floatCast(input.x[i]),
-                    .y = @floatCast(input.y[i]),
-                    .z = @floatCast(input.z[i]),
-                };
-            }
-
-            const radii = try allocator.alloc(T, n_atoms);
-            defer allocator.free(radii);
-            for (0..n_atoms) |i| {
-                radii[i] = @floatCast(input.r[i]);
-            }
+            const positions = atoms.positions;
+            const radii = atoms.radii;
 
             var neighbor_list_data = try NList.init(allocator, positions, radii, config.probe_radius);
             defer neighbor_list_data.deinit();
@@ -1144,34 +1176,21 @@ pub fn ShrakeRupleyBitmaskGen(comptime T: type) type {
 
         fn calculateSasaAdaptiveParallelCore(
             allocator: Allocator,
-            input: AtomInput,
+            atoms: Atoms,
             config: Cfg,
             adaptive: AdaptiveConfig,
             n_threads: usize,
             coarse_lut: *const Lut,
             fine_lut: *const Lut,
         ) !Result {
-            const n_atoms = input.atomCount();
+            const n_atoms = atoms.atomCount();
             const actual_threads = if (n_threads == 0)
                 try std.Thread.getCpuCount()
             else
                 n_threads;
 
-            const positions = try allocator.alloc(Vec, n_atoms);
-            defer allocator.free(positions);
-            for (0..n_atoms) |i| {
-                positions[i] = Vec{
-                    .x = @floatCast(input.x[i]),
-                    .y = @floatCast(input.y[i]),
-                    .z = @floatCast(input.z[i]),
-                };
-            }
-
-            const radii = try allocator.alloc(T, n_atoms);
-            defer allocator.free(radii);
-            for (0..n_atoms) |i| {
-                radii[i] = @floatCast(input.r[i]);
-            }
+            const positions = atoms.positions;
+            const radii = atoms.radii;
 
             var neighbor_list_data = try NList.init(allocator, positions, radii, config.probe_radius);
             defer neighbor_list_data.deinit();
@@ -2189,4 +2208,73 @@ test "adaptive bitmask f32 total_area is the f64 sum of the per-atom areas, for 
         try std.testing.expectEqualSlices(f32, sequential.atom_areas, parallel.atom_areas);
         try std.testing.expectEqual(expected, parallel.total_area);
     }
+}
+
+const cluster_n_atoms = 300;
+
+test "bitmask Atoms entry points from f32 coordinates match the AtomInput ones, in f32 and f64" {
+    const allocator = std.testing.allocator;
+    var xf: [cluster_n_atoms]f32 = undefined;
+    var yf: [cluster_n_atoms]f32 = undefined;
+    var zf: [cluster_n_atoms]f32 = undefined;
+    var r: [cluster_n_atoms]f64 = undefined;
+    test_support.fillCluster(&xf, &yf, &zf, &r);
+    var x: [cluster_n_atoms]f64 = undefined;
+    var y: [cluster_n_atoms]f64 = undefined;
+    var z: [cluster_n_atoms]f64 = undefined;
+    for (0..cluster_n_atoms) |i| {
+        x[i] = xf[i];
+        y[i] = yf[i];
+        z[i] = zf[i];
+    }
+    const input = AtomInput{ .x = &x, .y = &y, .z = &z, .r = &r, .allocator = allocator };
+
+    inline for (.{ f32, f64 }) |T| {
+        const Bitmask = ShrakeRupleyBitmaskGen(T);
+        var positions: [cluster_n_atoms]Vec3Gen(T) = undefined;
+        try types.gatherPositions(T, &positions, &xf, &yf, &zf, null);
+        var radii: [cluster_n_atoms]T = undefined;
+        for (&radii, r) |*dst, ri| dst.* = @floatCast(ri);
+        const atoms = types.AtomsGen(T){ .positions = &positions, .radii = &radii };
+        const config = ConfigGen(T){ .n_points = 128 };
+        const correction = BitmaskCorrectionGen(T){ .enabled = true, .coeff = @floatCast(default_bitmask_correction_coeff) };
+
+        var expected = try Bitmask.calculateSasaWithCorrection(allocator, input, config, correction);
+        defer expected.deinit();
+
+        var with_lut_built = try Bitmask.calculateSasaAtomsWithCorrection(allocator, atoms, config, correction);
+        defer with_lut_built.deinit();
+        try std.testing.expectEqualSlices(T, expected.atom_areas, with_lut_built.atom_areas);
+        try std.testing.expectEqual(expected.total_area, with_lut_built.total_area);
+
+        var lut = try BitmaskLutGen(T).init(allocator, config.n_points);
+        defer lut.deinit();
+        var with_lut = try Bitmask.calculateSasaAtomsWithLutAndCorrection(allocator, atoms, config, &lut, correction);
+        defer with_lut.deinit();
+        try std.testing.expectEqualSlices(T, expected.atom_areas, with_lut.atom_areas);
+
+        var parallel = try Bitmask.calculateSasaParallelAtomsWithCorrection(allocator, atoms, config, 4, correction);
+        defer parallel.deinit();
+        try std.testing.expectEqualSlices(T, expected.atom_areas, parallel.atom_areas);
+    }
+
+    // ztraj and the f64 C entry point use the non-generic f64 implementation;
+    // ShrakeRupleyBitmaskGen(f64) must give the same areas.
+    var reference = try calculateSasa(allocator, input, .{ .n_points = 128 });
+    defer reference.deinit();
+    var generic = try ShrakeRupleyBitmaskGen(f64).calculateSasaWithCorrection(allocator, input, .{ .n_points = 128 }, .{});
+    defer generic.deinit();
+    try std.testing.expectEqualSlices(f64, reference.atom_areas, generic.atom_areas);
+}
+
+test "bitmask Atoms entry points reject empty, non-finite and unsupported input" {
+    const allocator = std.testing.allocator;
+    const Bitmask = ShrakeRupleyBitmaskGen(f32);
+    const nan = [_]types.Vec3f32{.{ .x = std.math.nan(f32), .y = 0, .z = 0 }};
+    const one = [_]types.Vec3f32{.{ .x = 0, .y = 0, .z = 0 }};
+    const radius = [_]f32{1.5};
+
+    try std.testing.expectError(error.NoAtoms, Bitmask.calculateSasaAtomsWithCorrection(allocator, .{ .positions = &.{}, .radii = &.{} }, .{}, .{}));
+    try std.testing.expectError(error.InvalidInput, Bitmask.calculateSasaAtomsWithCorrection(allocator, .{ .positions = &nan, .radii = &radius }, .{}, .{}));
+    try std.testing.expectError(error.UnsupportedNPoints, Bitmask.calculateSasaParallelAtomsWithCorrection(allocator, .{ .positions = &one, .radii = &radius }, .{ .n_points = 5000 }, 2, .{}));
 }

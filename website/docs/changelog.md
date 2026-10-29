@@ -8,6 +8,14 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+### Added
+
+- **Zig API: SASA from atoms in the kernels' layout.** `types.AtomsGen(T)` holds one `Vec3Gen(T)` and one radius per atom, and `types.gatherPositions` fills it from separate x/y/z arrays of f32 or f64, optionally selecting atoms, in one pass. `ShrakeRupleyGen(T)` and `LeeRichardsGen(T)` take it through `calculateSasaAtoms` and `calculateSasaParallelAtoms`, and `ShrakeRupleyBitmaskGen(T)` through `calculateSasaAtomsWithCorrection`, `calculateSasaAtomsWithLutAndCorrection` and `calculateSasaParallelAtomsWithCorrection`. A caller with f32 coordinates, such as a trajectory reader, no longer converts them to f64 first. The `AtomInput` entry points are unchanged and give the same results.
+
+### Changed
+
+- **`traj` and the C batch functions copy each frame once.** `traj` read a frame as separate x/y/z arrays, copied it into interleaved f32, then into f64 arrays, then into the kernels' layout; with `--precision=f32` the coordinates went from f32 to f64 and back. Each frame is now copied once, from the reader into the kernels' layout in the calculation precision, and the radii are converted once per run instead of once per frame. The `zsasa_calc_*_batch*` functions of the C ABI likewise go straight from the caller's f32 coordinates to the kernels' layout. Results are the same.
+
 ### Fixed
 
 - **The Nix flake builds for a fixed CPU**: `x86_64_v3` (AVX2, FMA) on x86-64 and the baseline elsewhere, as the release binaries are. Before, Zig compiled for the CPU of the machine that built the package, so a binary copied from a cache or another machine could fault on an older CPU. (#437)

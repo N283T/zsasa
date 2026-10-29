@@ -4,9 +4,11 @@ const test_points = @import("test_points.zig");
 const neighbor_list = @import("neighbor_list.zig");
 const simd = @import("simd.zig");
 const thread_pool = @import("thread_pool.zig");
+const test_support = @import("test_support.zig");
 
 const Vec3 = types.Vec3;
 const Vec3Gen = types.Vec3Gen;
+const Vec3f32 = types.Vec3f32;
 const NeighborList = neighbor_list.NeighborList;
 const NeighborListGen = neighbor_list.NeighborListGen;
 const AtomInput = types.AtomInput;
@@ -505,6 +507,8 @@ pub fn ShrakeRupleyGen(comptime T: type) type {
     const IsPointBuriedBatch16 = simd.isPointBuriedBatch16Gen(T);
     const IsPointBuriedBatch8 = simd.isPointBuriedBatch8Gen(T);
     const IsPointBuriedBatch4 = simd.isPointBuriedBatch4Gen(T);
+    const Atoms = types.AtomsGen(T);
+    const AtomsBuffer = types.AtomsBufferGen(T);
 
     return struct {
         const Self = @This();
@@ -722,34 +726,44 @@ pub fn ShrakeRupleyGen(comptime T: type) type {
             input: AtomInput,
             config: Cfg,
         ) !Result {
-            const n_atoms = input.atomCount();
-            if (n_atoms == 0) return error.NoAtoms;
+            if (input.atomCount() == 0) return error.NoAtoms;
+            try validateConfig(config);
+            try input.validateFiniteAndRange();
+
+            var buffer = try AtomsBuffer.fromInput(allocator, input);
+            defer buffer.deinit();
+            return sasaSequential(allocator, buffer.atoms(), config);
+        }
+
+        /// `calculateSasa` for atoms already in the kernels' layout.
+        pub fn calculateSasaAtoms(
+            allocator: Allocator,
+            atoms: Atoms,
+            config: Cfg,
+        ) !Result {
+            if (atoms.atomCount() == 0) return error.NoAtoms;
+            try validateConfig(config);
+            try atoms.validateFiniteAndRange();
+            return sasaSequential(allocator, atoms, config);
+        }
+
+        fn validateConfig(config: Cfg) !void {
             if (config.n_points == 0) return error.InvalidInput;
             try types.validateProbeRadius(T, config.probe_radius);
-            try input.validateFiniteAndRange();
+        }
+
+        fn sasaSequential(
+            allocator: Allocator,
+            atoms: Atoms,
+            config: Cfg,
+        ) !Result {
+            const n_atoms = atoms.atomCount();
+            const positions = atoms.positions;
+            const radii = atoms.radii;
 
             // Generate test points
             const test_points_array = try TestPointsGen.generate(allocator, config.n_points);
             defer allocator.free(test_points_array);
-
-            // Convert input to Vec positions (cast from f64)
-            const positions = try allocator.alloc(Vec, n_atoms);
-            defer allocator.free(positions);
-
-            for (0..n_atoms) |i| {
-                positions[i] = Vec{
-                    .x = @floatCast(input.x[i]),
-                    .y = @floatCast(input.y[i]),
-                    .z = @floatCast(input.z[i]),
-                };
-            }
-
-            // Convert radii (cast from f64)
-            const radii = try allocator.alloc(T, n_atoms);
-            defer allocator.free(radii);
-            for (0..n_atoms) |i| {
-                radii[i] = @floatCast(input.r[i]);
-            }
 
             // Build neighbor list
             var neighbor_list_data = try NList.init(allocator, positions, radii, config.probe_radius);
@@ -799,11 +813,37 @@ pub fn ShrakeRupleyGen(comptime T: type) type {
             config: Cfg,
             n_threads: usize,
         ) !Result {
-            const n_atoms = input.atomCount();
-            if (n_atoms == 0) return error.NoAtoms;
-            if (config.n_points == 0) return error.InvalidInput;
-            try types.validateProbeRadius(T, config.probe_radius);
+            if (input.atomCount() == 0) return error.NoAtoms;
+            try validateConfig(config);
             try input.validateFiniteAndRange();
+
+            var buffer = try AtomsBuffer.fromInput(allocator, input);
+            defer buffer.deinit();
+            return sasaParallel(allocator, buffer.atoms(), config, n_threads);
+        }
+
+        /// `calculateSasaParallel` for atoms already in the kernels' layout.
+        pub fn calculateSasaParallelAtoms(
+            allocator: Allocator,
+            atoms: Atoms,
+            config: Cfg,
+            n_threads: usize,
+        ) !Result {
+            if (atoms.atomCount() == 0) return error.NoAtoms;
+            try validateConfig(config);
+            try atoms.validateFiniteAndRange();
+            return sasaParallel(allocator, atoms, config, n_threads);
+        }
+
+        fn sasaParallel(
+            allocator: Allocator,
+            atoms: Atoms,
+            config: Cfg,
+            n_threads: usize,
+        ) !Result {
+            const n_atoms = atoms.atomCount();
+            const positions = atoms.positions;
+            const radii = atoms.radii;
 
             // Auto-detect thread count if 0
             const actual_threads = if (n_threads == 0)
@@ -814,25 +854,6 @@ pub fn ShrakeRupleyGen(comptime T: type) type {
             // Generate test points
             const test_points_array = try TestPointsGen.generate(allocator, config.n_points);
             defer allocator.free(test_points_array);
-
-            // Convert input to Vec positions (cast from f64)
-            const positions = try allocator.alloc(Vec, n_atoms);
-            defer allocator.free(positions);
-
-            for (0..n_atoms) |i| {
-                positions[i] = Vec{
-                    .x = @floatCast(input.x[i]),
-                    .y = @floatCast(input.y[i]),
-                    .z = @floatCast(input.z[i]),
-                };
-            }
-
-            // Convert radii (cast from f64)
-            const radii = try allocator.alloc(T, n_atoms);
-            defer allocator.free(radii);
-            for (0..n_atoms) |i| {
-                radii[i] = @floatCast(input.r[i]);
-            }
 
             // Build neighbor list
             var neighbor_list_data = try NList.init(allocator, positions, radii, config.probe_radius);
@@ -2031,4 +2052,87 @@ test "f32 total_area is the f64 sum of the per-atom areas, for any thread count"
     var as_f64 = try sequential.toF64(allocator);
     defer as_f64.deinit();
     try std.testing.expectEqual(expected, as_f64.total_area);
+}
+
+const cluster_n_atoms = 300;
+
+/// The cluster of `test_support.fillCluster`, as an `AtomInput` (coordinates
+/// widened to f64) and as f32 coordinate arrays.
+const TestCluster = struct {
+    xf: [cluster_n_atoms]f32 = undefined,
+    yf: [cluster_n_atoms]f32 = undefined,
+    zf: [cluster_n_atoms]f32 = undefined,
+    x: [cluster_n_atoms]f64 = undefined,
+    y: [cluster_n_atoms]f64 = undefined,
+    z: [cluster_n_atoms]f64 = undefined,
+    r: [cluster_n_atoms]f64 = undefined,
+
+    fn fill(self: *TestCluster) void {
+        test_support.fillCluster(&self.xf, &self.yf, &self.zf, &self.r);
+        for (0..cluster_n_atoms) |i| {
+            self.x[i] = self.xf[i];
+            self.y[i] = self.yf[i];
+            self.z[i] = self.zf[i];
+        }
+    }
+
+    fn input(self: *TestCluster, allocator: Allocator) AtomInput {
+        return .{ .x = &self.x, .y = &self.y, .z = &self.z, .r = &self.r, .allocator = allocator };
+    }
+};
+
+test "calculateSasaAtoms from f32 coordinates matches calculateSasa, in f32 and f64" {
+    const allocator = std.testing.allocator;
+    var cluster = TestCluster{};
+    cluster.fill();
+    const input = cluster.input(allocator);
+
+    inline for (.{ f32, f64 }) |T| {
+        const Sr = ShrakeRupleyGen(T);
+        var positions: [cluster_n_atoms]Vec3Gen(T) = undefined;
+        try types.gatherPositions(T, &positions, &cluster.xf, &cluster.yf, &cluster.zf, null);
+        var radii: [cluster_n_atoms]T = undefined;
+        for (&radii, cluster.r) |*dst, r| dst.* = @floatCast(r);
+        const atoms = types.AtomsGen(T){ .positions = &positions, .radii = &radii };
+        const config = ConfigGen(T){ .n_points = 100 };
+
+        var expected = try Sr.calculateSasa(allocator, input, config);
+        defer expected.deinit();
+
+        var sequential = try Sr.calculateSasaAtoms(allocator, atoms, config);
+        defer sequential.deinit();
+        try std.testing.expectEqualSlices(T, expected.atom_areas, sequential.atom_areas);
+        try std.testing.expectEqual(expected.total_area, sequential.total_area);
+
+        var parallel = try Sr.calculateSasaParallelAtoms(allocator, atoms, config, 4);
+        defer parallel.deinit();
+        try std.testing.expectEqualSlices(T, expected.atom_areas, parallel.atom_areas);
+    }
+}
+
+test "ShrakeRupleyGen(f64) gives the same areas as calculateSasa" {
+    // The trajectory and C batch paths calculate f64 through ShrakeRupleyGen(f64).
+    const allocator = std.testing.allocator;
+    var cluster = TestCluster{};
+    cluster.fill();
+    const input = cluster.input(allocator);
+
+    var reference = try calculateSasa(allocator, input, .{ .n_points = 100 });
+    defer reference.deinit();
+    var generic = try ShrakeRupleyGen(f64).calculateSasa(allocator, input, .{ .n_points = 100 });
+    defer generic.deinit();
+    try std.testing.expectEqualSlices(f64, reference.atom_areas, generic.atom_areas);
+}
+
+test "calculateSasaAtoms rejects empty, non-finite and misaligned atoms" {
+    const allocator = std.testing.allocator;
+    const Sr = ShrakeRupleyGen(f32);
+    const config = ConfigGen(f32){};
+    const one = [_]Vec3f32{.{ .x = 0, .y = 0, .z = 0 }};
+    const nan = [_]Vec3f32{.{ .x = std.math.nan(f32), .y = 0, .z = 0 }};
+
+    try std.testing.expectError(error.NoAtoms, Sr.calculateSasaAtoms(allocator, .{ .positions = &.{}, .radii = &.{} }, config));
+    try std.testing.expectError(error.InvalidInput, Sr.calculateSasaAtoms(allocator, .{ .positions = &nan, .radii = &[_]f32{1.5} }, config));
+    try std.testing.expectError(error.InvalidInput, Sr.calculateSasaParallelAtoms(allocator, .{ .positions = &one, .radii = &[_]f32{ 1.5, 1.5 } }, config, 2));
+    try std.testing.expectError(error.InvalidInput, Sr.calculateSasaAtoms(allocator, .{ .positions = &one, .radii = &[_]f32{1.5} }, .{ .n_points = 0 }));
 }

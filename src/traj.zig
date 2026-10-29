@@ -33,8 +33,6 @@ const test_support = @import("test_support.zig");
 
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
-const Config = types.Config;
-const Configf32 = types.Configf32;
 const Precision = types.Precision;
 const ClassifierType = classifier.ClassifierType;
 
@@ -66,17 +64,6 @@ pub fn detectTrajectoryFormat(path: []const u8) ?TrajectoryFormat {
     return null;
 }
 
-/// Common frame type for trajectory readers
-const TrajectoryFrame = struct {
-    step: i32,
-    time: f32,
-    coords: []f32, // flat array of x,y,z coordinates (length = natoms * 3)
-
-    fn deinit(self: *TrajectoryFrame, allocator: Allocator) void {
-        allocator.free(self.coords);
-    }
-};
-
 /// Unified trajectory reader wrapping ztraj trajectory readers
 const TrajectoryReader = struct {
     xtc_reader: ?*xtc.XtcReader = null,
@@ -85,42 +72,16 @@ const TrajectoryReader = struct {
     nc_reader: ?*nc.NcReader = null,
     format: TrajectoryFormat,
 
-    /// Coordinate scale factor. ztraj readers yield coordinates in Å.
-    fn coordScale(self: *const TrajectoryReader) f64 {
-        _ = self;
-        return 1.0;
-    }
-
-    /// Read next frame, returning null-like via EndOfFile error
-    fn readFrame(self: *TrajectoryReader, allocator: Allocator) !TrajectoryFrame {
-        const frame = switch (self.format) {
-            .xtc => try self.xtc_reader.?.next() orelse return error.EndOfFile,
-            .dcd => try self.dcd_reader.?.next() orelse return error.EndOfFile,
-            .trr => try self.trr_reader.?.next() orelse return error.EndOfFile,
-            .nc => try self.nc_reader.?.next() orelse return error.EndOfFile,
+    /// Read the next frame, or null at the end of the trajectory. The frame
+    /// belongs to the reader and stays valid until the next call. ztraj
+    /// readers yield coordinates in Å.
+    fn readFrame(self: *TrajectoryReader) !?*const ztraj.types.Frame {
+        return switch (self.format) {
+            .xtc => try self.xtc_reader.?.next(),
+            .dcd => try self.dcd_reader.?.next(),
+            .trr => try self.trr_reader.?.next(),
+            .nc => try self.nc_reader.?.next(),
         };
-
-        const natoms = frame.x.len;
-        const coords = try allocator.alloc(f32, natoms * 3);
-        errdefer allocator.free(coords);
-
-        for (0..natoms) |i| {
-            coords[i * 3 + 0] = frame.x[i];
-            coords[i * 3 + 1] = frame.y[i];
-            coords[i * 3 + 2] = frame.z[i];
-        }
-
-        return .{
-            .step = frame.step,
-            .time = frame.time,
-            .coords = coords,
-        };
-    }
-
-    /// Check if a read error is an EOF condition
-    fn isEof(self: *const TrajectoryReader, err: anyerror) bool {
-        _ = self;
-        return err == error.EndOfFile;
     }
 };
 
@@ -756,6 +717,10 @@ const TrajLuts = struct {
         return null;
     }
 
+    fn lutPtr(self: *const TrajLuts, comptime T: type, frame_idx: usize) ?*const bitmask_lut.BitmaskLutGen(T) {
+        return if (T == f32) self.f32Ptr(frame_idx) else self.f64Ptr(frame_idx);
+    }
+
     fn reusableLutCount(self: *const TrajLuts) usize {
         if (self.cycle_len > 0) return self.cycle_len;
         if (self.lut_f64 != null or self.lut_f32 != null) return 1;
@@ -763,221 +728,141 @@ const TrajLuts = struct {
     }
 };
 
-/// Worker arguments for batch frame processing
-const BatchWorkerArgs = struct {
-    coord_pool: []const f32,
-    frame_data: []const FrameData,
-    results: []FrameResult,
-    batch_count: usize,
-    natoms: usize,
-    radii: []f64,
-    error_flag: *std.atomic.Value(bool),
-    error_msg: *[128]u8,
-    thread_id: usize,
-    n_threads: usize,
+/// SASA settings shared by every frame of a run.
+const FrameSasa = struct {
     algorithm: Algorithm,
-    precision: Precision,
     probe_radius: f64,
     n_points: u32,
     n_slices: u32,
-    lr_trig: TrigMode = .exact,
-    coord_scale: f64, // ztraj readers already yield Å; kept for reader abstraction
-    use_bitmask: bool = false,
-    bitmask_luts: ?*const TrajLuts = null,
-    bitmask_lut_f64: ?*const bitmask_lut.BitmaskLut = null,
-    bitmask_lut_f32: ?*const bitmask_lut.BitmaskLutGen(f32) = null,
-    bitmask_correction: bool = false,
-    bitmask_correction_coeff: f64 = shrake_rupley_bitmask.default_bitmask_correction_coeff,
+    lr_trig: TrigMode,
+    use_bitmask: bool,
+    bitmask_correction: bool,
+    bitmask_correction_coeff: f64,
+    luts: *const TrajLuts,
+
+    fn init(args: TrajArgs, luts: *const TrajLuts) FrameSasa {
+        return .{
+            .algorithm = args.algorithm,
+            .probe_radius = args.probe_radius,
+            .n_points = args.n_points,
+            .n_slices = args.n_slices,
+            .lr_trig = args.lr_trig,
+            .use_bitmask = args.use_bitmask,
+            .bitmask_correction = args.bitmask_correction,
+            .bitmask_correction_coeff = args.bitmask_correction_coeff,
+            .luts = luts,
+        };
+    }
+
+    /// Name of the calculation for error messages.
+    fn label(self: FrameSasa) []const u8 {
+        return switch (self.algorithm) {
+            .sr => if (self.use_bitmask) "bitmask" else "SR",
+            .lr => "LR",
+        };
+    }
+
+    /// Total SASA of one frame, calculated in `T` on the calling thread.
+    /// `frame_idx` picks the bitmask LUT in the per-frame and cycle modes.
+    fn total(self: FrameSasa, comptime T: type, allocator: Allocator, atoms: types.AtomsGen(T), frame_idx: usize) !f64 {
+        var result = switch (self.algorithm) {
+            .sr => sr: {
+                const config = types.ConfigGen(T){
+                    .probe_radius = @floatCast(self.probe_radius),
+                    .n_points = self.n_points,
+                };
+                const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(T){
+                    .enabled = self.bitmask_correction,
+                    .coeff = @floatCast(self.bitmask_correction_coeff),
+                };
+                const Bitmask = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(T);
+                if (self.luts.lutPtr(T, frame_idx)) |lut| {
+                    break :sr try Bitmask.calculateSasaAtomsWithLutAndCorrection(allocator, atoms, config, lut, correction);
+                }
+                if (self.use_bitmask) {
+                    break :sr try Bitmask.calculateSasaAtomsWithCorrection(allocator, atoms, config, correction);
+                }
+                break :sr try shrake_rupley.ShrakeRupleyGen(T).calculateSasaAtoms(allocator, atoms, config);
+            },
+            .lr => try lee_richards.LeeRichardsGen(T).calculateSasaAtoms(allocator, atoms, .{
+                .probe_radius = @floatCast(self.probe_radius),
+                .n_slices = self.n_slices,
+                .trig = self.lr_trig,
+            }),
+        };
+        defer result.deinit();
+        return result.total_area;
+    }
 };
 
-/// Set error flag and store a descriptive message (first writer wins).
-fn setWorkerError(args: BatchWorkerArgs, comptime fmt: []const u8, fmt_args: anytype) void {
-    // Only the first error writes the message
-    if (!args.error_flag.load(.acquire)) {
-        _ = std.fmt.bufPrint(args.error_msg, fmt, fmt_args) catch {};
-    }
-    args.error_flag.store(true, .release);
+/// The topology radii converted to the calculation precision, once per run.
+fn convertRadii(comptime T: type, allocator: Allocator, radii: []const f64) ![]T {
+    const out = try allocator.alloc(T, radii.len);
+    for (out, radii) |*dst, r| dst.* = @floatCast(r);
+    return out;
 }
 
-/// Worker function for batch frame processing.
-/// Each thread processes frames at indices: thread_id, thread_id + n_threads, ...
-/// Allocates coordinate buffers per frame; arena reset retains backing memory.
-fn batchWorkerFn(args: BatchWorkerArgs) void {
-    // Use smp_allocator as arena backing to avoid mmap/munmap syscall contention
-    // that page_allocator causes under multi-threaded workloads.
-    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
-    defer arena.deinit();
-    const thread_alloc = arena.allocator();
+/// Worker of the batch path. Each thread processes the frames at indices
+/// thread_id, thread_id + n_threads, ... of the batch.
+fn BatchWorker(comptime T: type) type {
+    return struct {
+        const Self = @This();
 
-    // Process assigned frames (stride distribution across threads)
-    var batch_idx = args.thread_id;
-    while (batch_idx < args.batch_count) : (batch_idx += args.n_threads) {
-        if (args.error_flag.load(.acquire)) return;
+        /// Positions of the batch, `natoms` per frame, in frame order.
+        positions: []const types.Vec3Gen(T),
+        radii: []const T,
+        frame_data: []const FrameData,
+        results: []FrameResult,
+        batch_count: usize,
+        natoms: usize,
+        sasa: FrameSasa,
+        error_flag: *std.atomic.Value(bool),
+        error_msg: *[128]u8,
+        thread_id: usize,
+        n_threads: usize,
 
-        // Allocate coordinate buffers per frame (free after arena reset;
-        // re-alloc is ~free with retain_capacity since the backing memory persists)
-        const x = thread_alloc.alloc(f64, args.natoms) catch {
-            setWorkerError(args, "thread {d}: failed to allocate x buffer", .{args.thread_id});
-            return;
-        };
-        const y = thread_alloc.alloc(f64, args.natoms) catch {
-            setWorkerError(args, "thread {d}: failed to allocate y buffer", .{args.thread_id});
-            return;
-        };
-        const z = thread_alloc.alloc(f64, args.natoms) catch {
-            setWorkerError(args, "thread {d}: failed to allocate z buffer", .{args.thread_id});
-            return;
-        };
-
-        const coord_offset = batch_idx * args.natoms * 3;
-
-        // Convert f32 coordinates to f64. ztraj readers already yield Å.
-        const scale = args.coord_scale;
-        for (0..args.natoms) |i| {
-            x[i] = @as(f64, args.coord_pool[coord_offset + i * 3 + 0]) * scale;
-            y[i] = @as(f64, args.coord_pool[coord_offset + i * 3 + 1]) * scale;
-            z[i] = @as(f64, args.coord_pool[coord_offset + i * 3 + 2]) * scale;
+        /// Set the error flag and store a message (first writer wins).
+        fn fail(self: Self, comptime fmt: []const u8, fmt_args: anytype) void {
+            if (!self.error_flag.load(.acquire)) {
+                _ = std.fmt.bufPrint(self.error_msg, fmt, fmt_args) catch {};
+            }
+            self.error_flag.store(true, .release);
         }
 
-        const input = AtomInput{
-            .x = x,
-            .y = y,
-            .z = z,
-            .r = args.radii,
-            .allocator = thread_alloc,
-        };
+        fn run(self: Self) void {
+            // Use smp_allocator as arena backing to avoid mmap/munmap syscall contention
+            // that page_allocator causes under multi-threaded workloads.
+            var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+            defer arena.deinit();
+            const thread_alloc = arena.allocator();
 
-        // Calculate SASA (single-threaded per frame)
-        var total_sasa: f64 = 0;
-        const frame_id = args.frame_data[batch_idx].frame_idx;
-        const frame_slot: usize = @intCast(frame_id);
+            var batch_idx = self.thread_id;
+            while (batch_idx < self.batch_count) : (batch_idx += self.n_threads) {
+                if (self.error_flag.load(.acquire)) return;
 
-        if (args.precision == .f32) {
-            if (args.algorithm == .sr) {
-                const config = Configf32{
-                    .probe_radius = @floatCast(args.probe_radius),
-                    .n_points = args.n_points,
+                const frame = self.frame_data[batch_idx];
+                const atoms = types.AtomsGen(T){
+                    .positions = self.positions[batch_idx * self.natoms ..][0..self.natoms],
+                    .radii = self.radii,
                 };
-                const lut_opt = if (args.bitmask_luts) |luts| luts.f32Ptr(frame_slot) else args.bitmask_lut_f32;
-                if (lut_opt) |lut| {
-                    const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f32){
-                        .enabled = args.bitmask_correction,
-                        .coeff = @floatCast(args.bitmask_correction_coeff),
-                    };
-                    var result = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithLutAndCorrection(thread_alloc, input, config, lut, correction) catch |err| {
-                        setWorkerError(args, "frame {d}: bitmask-f32 failed: {s}", .{ frame_id, @errorName(err) });
-                        return;
-                    };
-                    total_sasa = result.total_area;
-                    result.deinit();
-                } else if (args.use_bitmask) {
-                    const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f32){
-                        .enabled = args.bitmask_correction,
-                        .coeff = @floatCast(args.bitmask_correction_coeff),
-                    };
-                    var result = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithCorrection(thread_alloc, input, config, correction) catch |err| {
-                        setWorkerError(args, "frame {d}: bitmask-f32 failed: {s}", .{ frame_id, @errorName(err) });
-                        return;
-                    };
-                    total_sasa = result.total_area;
-                    result.deinit();
-                } else {
-                    var result = shrake_rupley.calculateSasaf32(thread_alloc, input, config) catch |err| {
-                        setWorkerError(args, "frame {d}: SR-f32 SASA failed: {s}", .{ frame_id, @errorName(err) });
-                        return;
-                    };
-                    total_sasa = result.total_area;
-                    result.deinit();
-                }
-            } else {
-                const config = lee_richards.LeeRichardsConfigf32{
-                    .probe_radius = @floatCast(args.probe_radius),
-                    .n_slices = args.n_slices,
-                    .trig = args.lr_trig,
-                };
-                var result = lee_richards.calculateSasaf32(thread_alloc, input, config) catch |err| {
-                    setWorkerError(args, "frame {d}: LR-f32 SASA failed: {s}", .{ frame_id, @errorName(err) });
+                const total_sasa = self.sasa.total(T, thread_alloc, atoms, frame.frame_idx) catch |err| {
+                    self.fail("frame {d}: {s}-{s} SASA failed: {s}", .{ frame.frame_idx, self.sasa.label(), @typeName(T), @errorName(err) });
                     return;
                 };
-                total_sasa = result.total_area;
-                result.deinit();
-            }
-        } else {
-            if (args.algorithm == .sr) {
-                const config = Config{
-                    .probe_radius = args.probe_radius,
-                    .n_points = args.n_points,
+
+                self.results[batch_idx] = .{
+                    .frame_idx = frame.frame_idx,
+                    .step = frame.step,
+                    .time = frame.time,
+                    .total_sasa = total_sasa,
+                    .done = true,
                 };
-                const lut_opt = if (args.bitmask_luts) |luts| luts.f64Ptr(frame_slot) else args.bitmask_lut_f64;
-                if (lut_opt) |lut| {
-                    const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f64){
-                        .enabled = args.bitmask_correction,
-                        .coeff = args.bitmask_correction_coeff,
-                    };
-                    var result = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).calculateSasaWithLutAndCorrection(thread_alloc, input, config, lut, correction) catch |err| {
-                        setWorkerError(args, "frame {d}: bitmask-f64 failed: {s}", .{ frame_id, @errorName(err) });
-                        return;
-                    };
-                    total_sasa = result.total_area;
-                    result.deinit();
-                } else if (args.use_bitmask) {
-                    const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f64){
-                        .enabled = args.bitmask_correction,
-                        .coeff = args.bitmask_correction_coeff,
-                    };
-                    var result = shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).calculateSasaWithCorrection(thread_alloc, input, config, correction) catch |err| {
-                        setWorkerError(args, "frame {d}: bitmask-f64 failed: {s}", .{ frame_id, @errorName(err) });
-                        return;
-                    };
-                    total_sasa = result.total_area;
-                    result.deinit();
-                } else {
-                    var result = shrake_rupley.calculateSasa(thread_alloc, input, config) catch |err| {
-                        setWorkerError(args, "frame {d}: SR-f64 SASA failed: {s}", .{ frame_id, @errorName(err) });
-                        return;
-                    };
-                    total_sasa = result.total_area;
-                    result.deinit();
-                }
-            } else {
-                const config = lee_richards.LeeRichardsConfig{
-                    .probe_radius = args.probe_radius,
-                    .n_slices = args.n_slices,
-                    .trig = args.lr_trig,
-                };
-                var result = lee_richards.calculateSasa(thread_alloc, input, config) catch |err| {
-                    setWorkerError(args, "frame {d}: LR SASA failed: {s}", .{ frame_id, @errorName(err) });
-                    return;
-                };
-                total_sasa = result.total_area;
-                result.deinit();
+
+                // Reset arena for next frame (retain backing memory to avoid syscalls)
+                _ = arena.reset(.retain_capacity);
             }
         }
-
-        args.results[batch_idx] = .{
-            .frame_idx = frame_id,
-            .step = args.frame_data[batch_idx].step,
-            .time = args.frame_data[batch_idx].time,
-            .total_sasa = total_sasa,
-            .done = true,
-        };
-
-        // Reset arena for next frame (retain backing memory to avoid syscalls)
-        _ = arena.reset(.retain_capacity);
-    }
-}
-
-/// Copy the coordinates of one frame, keeping only the atoms selected from the
-/// topology. `atom_indices` holds the trajectory atom index of each kept atom
-/// (null = every atom, in order). `dst` holds `natoms * 3` values.
-fn gatherFrameCoords(dst: []f32, src: []const f32, atom_indices: ?[]const u32) void {
-    if (atom_indices) |indices| {
-        for (indices, 0..) |src_atom, i| {
-            dst[i * 3 ..][0..3].* = src[@as(usize, src_atom) * 3 ..][0..3].*;
-        }
-    } else {
-        @memcpy(dst, src[0..dst.len]);
-    }
+    };
 }
 
 /// Outcome of `readBatch`.
@@ -991,12 +876,14 @@ const BatchRead = struct {
     read_error: ?anyerror = null,
 };
 
-/// Read frames into batch buffer, applying stride/start/end filtering.
-/// Returns the number of frames read and whether EOF was reached.
+/// Read frames into the batch buffers, applying stride/start/end filtering.
+/// The positions of batch frame `i` go to `positions[i * natoms ..]`, keeping
+/// only the atoms selected from the topology: `atom_indices` holds the
+/// trajectory atom index of each kept atom (null = every atom, in order).
 fn readBatch(
+    comptime T: type,
     reader: *TrajectoryReader,
-    allocator: Allocator,
-    coord_pool: []f32,
+    positions: []types.Vec3Gen(T),
     frame_data: []FrameData,
     batch_size: usize,
     natoms: usize,
@@ -1007,11 +894,10 @@ fn readBatch(
     var batch_count: usize = 0;
 
     while (batch_count < batch_size) {
-        var frame = reader.readFrame(allocator) catch |err| {
-            if (reader.isEof(err)) return .{ .count = batch_count, .eof = true };
+        const maybe_frame = reader.readFrame() catch |err| {
             return .{ .count = batch_count, .eof = true, .read_error = err };
         };
-        defer frame.deinit(allocator);
+        const frame = maybe_frame orelse return .{ .count = batch_count, .eof = true };
 
         // Apply frame range filter
         if (frame_idx.* < traj_args.start_frame) {
@@ -1028,9 +914,10 @@ fn readBatch(
             continue;
         }
 
-        // Copy coordinates to pool
-        const offset = batch_count * natoms * 3;
-        gatherFrameCoords(coord_pool[offset .. offset + natoms * 3], frame.coords, atom_indices);
+        const dst = positions[batch_count * natoms ..][0..natoms];
+        types.gatherPositions(T, dst, frame.x, frame.y, frame.z, atom_indices) catch |err| {
+            return .{ .count = batch_count, .eof = true, .read_error = err };
+        };
 
         frame_data[batch_count] = .{
             .frame_idx = frame_idx.*,
@@ -1396,12 +1283,17 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
             .none;
         defer progress_root.end();
 
-        if (n_threads <= 1) {
-            // Sequential path: single-threaded SASA per frame
-            break :blk runSequential(allocator, &traj_reader, writer, topology, atom_indices, args, &luts, &frame_idx, &processed_count, progress_root);
-        } else {
-            // Batch parallel path: frame-level parallelism across threads
-            break :blk runBatchParallel(allocator, &traj_reader, writer, topology, atom_indices, args, &luts, n_threads, natoms, &frame_idx, &processed_count, progress_root);
+        switch (args.precision) {
+            inline else => |precision| {
+                const T = if (precision == .f32) f32 else f64;
+                if (n_threads <= 1) {
+                    // Sequential path: single-threaded SASA per frame
+                    break :blk runSequential(T, allocator, &traj_reader, writer, topology, atom_indices, args, &luts, &frame_idx, &processed_count, progress_root);
+                } else {
+                    // Batch parallel path: frame-level parallelism across threads
+                    break :blk runBatchParallel(T, allocator, &traj_reader, writer, topology, atom_indices, args, &luts, n_threads, natoms, &frame_idx, &processed_count, progress_root);
+                }
+            },
         }
     };
 
@@ -1438,6 +1330,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: TrajArgs) !void {
 
 /// Sequential frame processing (single-threaded SASA per frame)
 fn runSequential(
+    comptime T: type,
     allocator: Allocator,
     reader: *TrajectoryReader,
     writer: anytype,
@@ -1450,38 +1343,14 @@ fn runSequential(
     progress_node: std.Progress.Node,
 ) !void {
     const natoms = topology.atomCount();
+    const sasa = FrameSasa.init(args, luts);
 
-    // Allocate mutable coordinate buffers
-    const frame_x = try allocator.alloc(f64, natoms);
-    defer allocator.free(frame_x);
-    const frame_y = try allocator.alloc(f64, natoms);
-    defer allocator.free(frame_y);
-    const frame_z = try allocator.alloc(f64, natoms);
-    defer allocator.free(frame_z);
+    const radii = try convertRadii(T, allocator, topology.r);
+    defer allocator.free(radii);
+    const positions = try allocator.alloc(types.Vec3Gen(T), natoms);
+    defer allocator.free(positions);
 
-    const frame_input = AtomInput{
-        .x = frame_x,
-        .y = frame_y,
-        .z = frame_z,
-        .r = topology.r,
-        .residue = topology.residue,
-        .atom_name = topology.atom_name,
-        .element = topology.element,
-        .chain_id = topology.chain_id,
-        .residue_num = topology.residue_num,
-        .insertion_code = topology.insertion_code,
-        .allocator = allocator,
-    };
-
-    const scale = reader.coordScale();
-
-    while (true) {
-        var frame = reader.readFrame(allocator) catch |err| {
-            if (reader.isEof(err)) break;
-            return err;
-        };
-        defer frame.deinit(allocator);
-
+    while (try reader.readFrame()) |frame| {
         // Check frame range
         if (frame_idx.* < args.start_frame) {
             frame_idx.* += 1;
@@ -1497,100 +1366,11 @@ fn runSequential(
             continue;
         }
 
-        // Update frame coordinates, keeping only the atoms selected from the
-        // topology. ztraj readers already yield Å.
-        for (0..natoms) |i| {
-            const src: usize = if (atom_indices) |indices| indices[i] else i;
-            frame_x[i] = @as(f64, frame.coords[src * 3 + 0]) * scale;
-            frame_y[i] = @as(f64, frame.coords[src * 3 + 1]) * scale;
-            frame_z[i] = @as(f64, frame.coords[src * 3 + 2]) * scale;
-        }
+        // Keep only the atoms selected from the topology.
+        try types.gatherPositions(T, positions, frame.x, frame.y, frame.z, atom_indices);
 
         // Calculate SASA (single-threaded)
-        const total_sasa: f64 = switch (args.precision) {
-            .f32 => blk: {
-                switch (args.algorithm) {
-                    .sr => {
-                        const config = Configf32{
-                            .probe_radius = @floatCast(args.probe_radius),
-                            .n_points = args.n_points,
-                        };
-                        if (luts.f32Ptr(@intCast(frame_idx.*))) |lut| {
-                            const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f32){
-                                .enabled = args.bitmask_correction,
-                                .coeff = @floatCast(args.bitmask_correction_coeff),
-                            };
-                            var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithLutAndCorrection(allocator, frame_input, config, lut, correction);
-                            defer result.deinit();
-                            break :blk result.total_area;
-                        } else if (args.use_bitmask) {
-                            const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f32){
-                                .enabled = args.bitmask_correction,
-                                .coeff = @floatCast(args.bitmask_correction_coeff),
-                            };
-                            var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f32).calculateSasaWithCorrection(allocator, frame_input, config, correction);
-                            defer result.deinit();
-                            break :blk result.total_area;
-                        } else {
-                            var result = try shrake_rupley.calculateSasaf32(allocator, frame_input, config);
-                            defer result.deinit();
-                            break :blk result.total_area;
-                        }
-                    },
-                    .lr => {
-                        const config = lee_richards.LeeRichardsConfigf32{
-                            .probe_radius = @floatCast(args.probe_radius),
-                            .n_slices = args.n_slices,
-                            .trig = args.lr_trig,
-                        };
-                        var result = try lee_richards.calculateSasaf32(allocator, frame_input, config);
-                        defer result.deinit();
-                        break :blk result.total_area;
-                    },
-                }
-            },
-            .f64 => blk: {
-                switch (args.algorithm) {
-                    .sr => {
-                        const config = Config{
-                            .probe_radius = args.probe_radius,
-                            .n_points = args.n_points,
-                        };
-                        if (luts.f64Ptr(@intCast(frame_idx.*))) |lut| {
-                            const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f64){
-                                .enabled = args.bitmask_correction,
-                                .coeff = args.bitmask_correction_coeff,
-                            };
-                            var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).calculateSasaWithLutAndCorrection(allocator, frame_input, config, lut, correction);
-                            defer result.deinit();
-                            break :blk result.total_area;
-                        } else if (args.use_bitmask) {
-                            const correction = shrake_rupley_bitmask.BitmaskCorrectionGen(f64){
-                                .enabled = args.bitmask_correction,
-                                .coeff = args.bitmask_correction_coeff,
-                            };
-                            var result = try shrake_rupley_bitmask.ShrakeRupleyBitmaskGen(f64).calculateSasaWithCorrection(allocator, frame_input, config, correction);
-                            defer result.deinit();
-                            break :blk result.total_area;
-                        } else {
-                            var result = try shrake_rupley.calculateSasa(allocator, frame_input, config);
-                            defer result.deinit();
-                            break :blk result.total_area;
-                        }
-                    },
-                    .lr => {
-                        const config = lee_richards.LeeRichardsConfig{
-                            .probe_radius = args.probe_radius,
-                            .n_slices = args.n_slices,
-                            .trig = args.lr_trig,
-                        };
-                        var result = try lee_richards.calculateSasa(allocator, frame_input, config);
-                        defer result.deinit();
-                        break :blk result.total_area;
-                    },
-                }
-            },
-        };
+        const total_sasa = try sasa.total(T, allocator, .{ .positions = positions, .radii = radii }, frame_idx.*);
 
         // Write result
         try writer.print("{d},{d},{d:.3},{d:.2}\n", .{
@@ -1609,6 +1389,7 @@ fn runSequential(
 
 /// Batch parallel frame processing (frame-level parallelism)
 fn runBatchParallel(
+    comptime T: type,
     allocator: Allocator,
     reader: *TrajectoryReader,
     writer: anytype,
@@ -1628,9 +1409,13 @@ fn runBatchParallel(
         std.debug.print("Batch size: {d} frames\n", .{batch_size});
     }
 
+    const sasa = FrameSasa.init(args, luts);
+    const radii = try convertRadii(T, allocator, topology.r);
+    defer allocator.free(radii);
+
     // Pre-allocate batch buffers
-    const coord_pool = try allocator.alloc(f32, batch_size * natoms * 3);
-    defer allocator.free(coord_pool);
+    const positions = try allocator.alloc(types.Vec3Gen(T), batch_size * natoms);
+    defer allocator.free(positions);
     const frame_data = try allocator.alloc(FrameData, batch_size);
     defer allocator.free(frame_data);
     const frame_results = try allocator.alloc(FrameResult, batch_size);
@@ -1639,9 +1424,9 @@ fn runBatchParallel(
     while (true) {
         // Phase 1: Read batch of frames (sequential, with filtering)
         const read_result = readBatch(
+            T,
             reader,
-            allocator,
-            coord_pool,
+            positions,
             frame_data,
             batch_size,
             natoms,
@@ -1665,28 +1450,18 @@ fn runBatchParallel(
         defer allocator.free(threads);
 
         for (0..thread_count) |i| {
-            threads[i] = std.Thread.spawn(.{}, batchWorkerFn, .{BatchWorkerArgs{
-                .coord_pool = coord_pool,
+            threads[i] = std.Thread.spawn(.{}, BatchWorker(T).run, .{BatchWorker(T){
+                .positions = positions,
+                .radii = radii,
                 .frame_data = frame_data,
                 .results = frame_results,
                 .batch_count = read_result.count,
                 .natoms = natoms,
-                .radii = topology.r,
+                .sasa = sasa,
                 .error_flag = &error_flag,
                 .error_msg = &error_msg,
                 .thread_id = i,
                 .n_threads = thread_count,
-                .algorithm = args.algorithm,
-                .precision = args.precision,
-                .probe_radius = args.probe_radius,
-                .n_points = args.n_points,
-                .n_slices = args.n_slices,
-                .lr_trig = args.lr_trig,
-                .coord_scale = reader.coordScale(),
-                .use_bitmask = args.use_bitmask,
-                .bitmask_luts = luts,
-                .bitmask_correction = args.bitmask_correction,
-                .bitmask_correction_coeff = args.bitmask_correction_coeff,
             }}) catch {
                 error_flag.store(true, .release);
                 for (threads[0..i]) |thread| {
@@ -2004,17 +1779,6 @@ test "TrajArgs quiet suppresses progress even when show_progress defaults true" 
     const args = TrajArgs{ .quiet = true };
     try std.testing.expectEqual(false, shouldShowProgress(args));
 }
-test "TrajectoryReader uses angstrom coordinates from ztraj readers" {
-    const xtc_reader = TrajectoryReader{ .format = .xtc };
-    const dcd_reader = TrajectoryReader{ .format = .dcd };
-    const trr_reader = TrajectoryReader{ .format = .trr };
-    const nc_reader = TrajectoryReader{ .format = .nc };
-    try std.testing.expectEqual(@as(f64, 1.0), xtc_reader.coordScale());
-    try std.testing.expectEqual(@as(f64, 1.0), dcd_reader.coordScale());
-    try std.testing.expectEqual(@as(f64, 1.0), trr_reader.coordScale());
-    try std.testing.expectEqual(@as(f64, 1.0), nc_reader.coordScale());
-}
-
 test "detectTrajectoryFormat recognizes ztraj-backed formats" {
     try std.testing.expectEqual(TrajectoryFormat.xtc, detectTrajectoryFormat("traj.xtc").?);
     try std.testing.expectEqual(TrajectoryFormat.dcd, detectTrajectoryFormat("traj.dcd").?);
