@@ -4939,7 +4939,122 @@ const SelectionMapContext = struct {
     counter: SelectionMapCounter = .{},
     worker_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     io: std.Io,
+    /// Guards `next_file`, `preparing` and `sources`: what an idle worker
+    /// does next depends on all three.
+    schedule_mutex: std.Io.Mutex = .init,
+    /// Broadcast when a source is published or retired, when a file fails
+    /// before publication, and when a source's last running group finishes.
+    schedule_changed: std.Io.Condition = .init,
+    /// Files claimed whose source is not yet published (or failed).
+    preparing: usize = 0,
+    /// Published sources, one slot per worker. Each worker owns at most one
+    /// source at a time, so the number of parsed structures stays bounded by
+    /// the worker count.
+    sources: []?*SharedSelectionSource = &.{},
 };
+
+/// A parsed, classified structure whose selection groups any worker may
+/// calculate. Immutable after publication except for `next_group` and
+/// `running`, which only change under `SelectionMapContext.schedule_mutex`.
+/// The owner frees it only after retiring it with no group running.
+const SharedSelectionSource = struct {
+    filename: []const u8,
+    input: AtomInput,
+    chain_index: *const ChainAtomIndex,
+    /// Map entry whose chains define each group.
+    group_representatives: []const usize,
+    /// Map entries of group g: `group_entries[group_offsets[g]..group_offsets[g + 1]]`,
+    /// in map order.
+    group_offsets: []const usize,
+    group_entries: []const usize,
+    next_group: usize = 0,
+    running: usize = 0,
+
+    fn groupCount(self: *const SharedSelectionSource) usize {
+        return self.group_representatives.len;
+    }
+};
+
+const SelectionWork = union(enum) {
+    file: []const u8,
+    group: struct { source: *SharedSelectionSource, index: usize },
+};
+
+/// Claim the next unit of work: the next file in LPT order while any are
+/// left, otherwise a group of a published source. Waits while other workers
+/// are still preparing sources that may bring groups. Null when nothing is
+/// left to do.
+fn nextSelectionWork(ctx: *SelectionMapContext) ?SelectionWork {
+    ctx.schedule_mutex.lockUncancelable(ctx.io);
+    defer ctx.schedule_mutex.unlock(ctx.io);
+    while (true) {
+        if (claimSelectionMapFile(ctx.files, &ctx.next_file)) |filename| {
+            ctx.preparing += 1;
+            return .{ .file = filename };
+        }
+        for (ctx.sources) |slot| {
+            const source = slot orelse continue;
+            if (claimSourceGroupLocked(source)) |index| return .{ .group = .{ .source = source, .index = index } };
+        }
+        if (ctx.preparing == 0) return null;
+        ctx.schedule_changed.waitUncancelable(ctx.io, &ctx.schedule_mutex);
+    }
+}
+
+fn claimSourceGroupLocked(source: *SharedSelectionSource) ?usize {
+    if (source.next_group >= source.groupCount()) return null;
+    const index = source.next_group;
+    source.next_group += 1;
+    source.running += 1;
+    return index;
+}
+
+fn claimSourceGroup(ctx: *SelectionMapContext, source: *SharedSelectionSource) ?usize {
+    ctx.schedule_mutex.lockUncancelable(ctx.io);
+    defer ctx.schedule_mutex.unlock(ctx.io);
+    return claimSourceGroupLocked(source);
+}
+
+fn finishSourceGroup(ctx: *SelectionMapContext, source: *SharedSelectionSource) void {
+    ctx.schedule_mutex.lockUncancelable(ctx.io);
+    defer ctx.schedule_mutex.unlock(ctx.io);
+    source.running -= 1;
+    if (source.running == 0) ctx.schedule_changed.broadcast(ctx.io);
+}
+
+/// A claimed file failed before its source was published.
+fn abandonPreparingSource(ctx: *SelectionMapContext) void {
+    ctx.schedule_mutex.lockUncancelable(ctx.io);
+    defer ctx.schedule_mutex.unlock(ctx.io);
+    ctx.preparing -= 1;
+    ctx.schedule_changed.broadcast(ctx.io);
+}
+
+fn publishSource(ctx: *SelectionMapContext, source: *SharedSelectionSource) void {
+    ctx.schedule_mutex.lockUncancelable(ctx.io);
+    defer ctx.schedule_mutex.unlock(ctx.io);
+    ctx.preparing -= 1;
+    for (ctx.sources) |*slot| {
+        if (slot.* == null) {
+            slot.* = source;
+            break;
+        }
+    } else unreachable; // one slot per worker, and a worker owns one source
+    ctx.schedule_changed.broadcast(ctx.io);
+}
+
+/// Stop further claims on `source`, wait until no worker is calculating one
+/// of its groups, and remove it from the published sources.
+fn retireSource(ctx: *SelectionMapContext, source: *SharedSelectionSource) void {
+    ctx.schedule_mutex.lockUncancelable(ctx.io);
+    defer ctx.schedule_mutex.unlock(ctx.io);
+    source.next_group = source.groupCount();
+    while (source.running > 0) ctx.schedule_changed.waitUncancelable(ctx.io, &ctx.schedule_mutex);
+    for (ctx.sources) |*slot| {
+        if (slot.* == source) slot.* = null;
+    }
+    ctx.schedule_changed.broadcast(ctx.io);
+}
 
 fn chainsContain(chains: []const []const u8, target: []const u8) bool {
     for (chains) |chain| {
@@ -5252,7 +5367,19 @@ fn calculateSelectionGroup(
     };
 }
 
-fn processSelectionMapFile(ctx: *SelectionMapContext, allocator: Allocator, filename: []const u8) !void {
+/// Read, parse and classify one structure, publish its selection groups so
+/// that idle workers can share them, calculate groups until none are left
+/// and wait for the ones other workers took. `task_arena` holds one group's
+/// calculation at a time.
+fn processSelectionMapFile(
+    ctx: *SelectionMapContext,
+    allocator: Allocator,
+    task_arena: *std.heap.ArenaAllocator,
+    filename: []const u8,
+) !void {
+    var published = false;
+    defer if (!published) abandonPreparingSource(ctx);
+
     const map_indices = ctx.map.getIndices(filename) orelse
         return writeSelectionSourceErrorRows(ctx, allocator, filename, null, "selection chain map entry not found");
 
@@ -5290,24 +5417,70 @@ fn processSelectionMapFile(ctx: *SelectionMapContext, allocator: Allocator, file
     var chain_index = try ChainAtomIndex.init(allocator, source_parsed.input);
     defer chain_index.deinit(allocator);
 
-    // One calculation per distinct chain set; every map row points at its group.
-    var groups = std.ArrayListUnmanaged(SelectionGroup).empty;
+    // One calculation per distinct chain set, in order of first appearance;
+    // each group lists its map rows in map order.
+    var representatives = std.ArrayListUnmanaged(usize).empty;
     var group_by_chain_set = std.StringHashMapUnmanaged(usize).empty;
     const entry_groups = try allocator.alloc(usize, map_indices.len);
     for (map_indices, entry_groups) |entry_index, *entry_group| {
         const key = try canonicalChainSetKey(allocator, ctx.map.entries[entry_index].chains);
         const slot = try group_by_chain_set.getOrPut(allocator, key);
         if (!slot.found_existing) {
-            slot.value_ptr.* = groups.items.len;
-            try groups.append(allocator, calculateSelectionGroup(ctx, allocator, filename, source_parsed.input, &chain_index, entry_index));
+            slot.value_ptr.* = representatives.items.len;
+            try representatives.append(allocator, entry_index);
         }
         entry_group.* = slot.value_ptr.*;
     }
+    const group_count = representatives.items.len;
+    const group_offsets = try allocator.alloc(usize, group_count + 1);
+    @memset(group_offsets, 0);
+    for (entry_groups) |group| group_offsets[group + 1] += 1;
+    for (1..group_offsets.len) |i| group_offsets[i] += group_offsets[i - 1];
+    const fill = try allocator.dupe(usize, group_offsets[0..group_count]);
+    const group_entries = try allocator.alloc(usize, map_indices.len);
+    for (map_indices, entry_groups) |entry_index, group| {
+        group_entries[fill[group]] = entry_index;
+        fill[group] += 1;
+    }
 
-    for (map_indices, entry_groups) |entry_index, group_index| {
+    var source = SharedSelectionSource{
+        .filename = filename,
+        .input = source_parsed.input,
+        .chain_index = &chain_index,
+        .group_representatives = representatives.items,
+        .group_offsets = group_offsets,
+        .group_entries = group_entries,
+    };
+    publishSource(ctx, &source);
+    published = true;
+    defer retireSource(ctx, &source);
+
+    while (claimSourceGroup(ctx, &source)) |group_index| {
+        defer _ = task_arena.reset(.retain_capacity);
+        try runSelectionGroup(ctx, task_arena.allocator(), &source, group_index);
+    }
+}
+
+/// Calculate one claimed group of `source` and write the rows of every map
+/// entry in it.
+fn runSelectionGroup(
+    ctx: *SelectionMapContext,
+    allocator: Allocator,
+    source: *SharedSelectionSource,
+    group_index: usize,
+) !void {
+    defer finishSourceGroup(ctx, source);
+
+    const group = calculateSelectionGroup(
+        ctx,
+        allocator,
+        source.filename,
+        source.input,
+        source.chain_index,
+        source.group_representatives[group_index],
+    );
+    for (source.group_entries[source.group_offsets[group_index]..source.group_offsets[group_index + 1]]) |entry_index| {
         const entry = ctx.map.entries[entry_index];
-        const group = groups.items[group_index];
-
         if (group.result.status == .ok) {
             try writeSelectionSuccess(ctx.jsonl_stream, allocator, entry, group.result, group.atom_identity);
             _ = ctx.counter.successful.fetchAdd(1, .monotonic);
@@ -5315,38 +5488,44 @@ fn processSelectionMapFile(ctx: *SelectionMapContext, allocator: Allocator, file
             try failSelection(
                 ctx,
                 allocator,
-                filename,
-                entry.id orelse filename,
+                source.filename,
+                entry.id orelse source.filename,
                 entry.chains,
                 group.result.error_msg orelse "unknown error",
             );
         }
     }
-
-    for (groups.items) |group| {
-        if (group.result.status == .ok) {
-            _ = ctx.counter.total_sasa_time_ns.fetchAdd(group.result.sasa_time_ns, .monotonic);
-        }
+    if (group.result.status == .ok) {
+        _ = ctx.counter.total_sasa_time_ns.fetchAdd(group.result.sasa_time_ns, .monotonic);
     }
 }
 
 fn selectionMapWorker(ctx: *SelectionMapContext) void {
     var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
     defer arena.deinit();
+    var task_arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer task_arena.deinit();
 
-    while (true) {
-        const filename = claimSelectionMapFile(ctx.files, &ctx.next_file) orelse break;
-        defer {
-            _ = ctx.processed_count.fetchAdd(1, .release);
-            ctx.progress_node.completeOne();
-        }
-
-        processSelectionMapFile(ctx, arena.allocator(), filename) catch |err| {
-            ctx.worker_failed.store(true, .release);
-            std.debug.print("Error running selection map on '{s}': {s}\n", .{ filename, @errorName(err) });
-        };
-        _ = arena.reset(.retain_capacity);
-    }
+    while (nextSelectionWork(ctx)) |work| switch (work) {
+        .file => |filename| {
+            defer {
+                _ = ctx.processed_count.fetchAdd(1, .release);
+                ctx.progress_node.completeOne();
+                _ = arena.reset(.retain_capacity);
+            }
+            processSelectionMapFile(ctx, arena.allocator(), &task_arena, filename) catch |err| {
+                ctx.worker_failed.store(true, .release);
+                std.debug.print("Error running selection map on '{s}': {s}\n", .{ filename, @errorName(err) });
+            };
+        },
+        .group => |claim| {
+            defer _ = task_arena.reset(.retain_capacity);
+            runSelectionGroup(ctx, task_arena.allocator(), claim.source, claim.index) catch |err| {
+                ctx.worker_failed.store(true, .release);
+                std.debug.print("Error running selection map on '{s}': {s}\n", .{ claim.source.filename, @errorName(err) });
+            };
+        },
+    };
 }
 
 fn runSelectionMapBatch(
@@ -5407,6 +5586,10 @@ fn runSelectionMapBatch(
         .progress_node = progress_root,
         .io = io,
     };
+    const source_slots = try allocator.alloc(?*SharedSelectionSource, @max(file_threads, 1));
+    defer allocator.free(source_slots);
+    @memset(source_slots, null);
+    ctx.sources = source_slots;
 
     if (file_threads > 1 and files.len > 1) {
         const threads = try allocator.alloc(std.Thread, file_threads);
@@ -9380,7 +9563,8 @@ test "selection map parses and classifies once, reuses chain sets, and emits joi
 
     const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(65536));
     defer allocator.free(content);
-    const expected_ids = [_][]const u8{ "a", "bc", "abc", "bc-copy", "bad", "absent" };
+    // Rows of one chain set are written together, groups in order of first appearance.
+    const expected_ids = [_][]const u8{ "a", "bc", "bc-copy", "abc", "bad", "absent" };
     var row_index: usize = 0;
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
@@ -9478,6 +9662,177 @@ test "selection map parallelizes files and keeps internal SASA single-threaded" 
         row_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), row_count);
+}
+
+fn testSelectionScheduleContext(files: []const []const u8, sources: []?*SharedSelectionSource) SelectionMapContext {
+    return .{
+        .files = files,
+        .input_dir = "",
+        .map = undefined,
+        .config = .{},
+        .sasa_threads = 1,
+        .luts = undefined,
+        .jsonl_stream = undefined,
+        .next_file = std.atomic.Value(usize).init(0),
+        .processed_count = std.atomic.Value(usize).init(0),
+        .progress_node = .none,
+        .io = std.testing.io,
+        .sources = sources,
+    };
+}
+
+fn testSharedSelectionSource(group_count: comptime_int) SharedSelectionSource {
+    const representatives = comptime blk: {
+        var values: [group_count]usize = undefined;
+        for (&values, 0..) |*value, i| value.* = i;
+        break :blk values;
+    };
+    const offsets = comptime blk: {
+        var values: [group_count + 1]usize = undefined;
+        for (&values, 0..) |*value, i| value.* = i;
+        break :blk values;
+    };
+    return .{
+        .filename = "heavy.pdb",
+        .input = undefined,
+        .chain_index = undefined,
+        .group_representatives = &representatives,
+        .group_offsets = &offsets,
+        .group_entries = &representatives,
+    };
+}
+
+test "selection schedule admits files first, then hands out groups of published sources" {
+    const files = [_][]const u8{"heavy.pdb"};
+    var slots = [_]?*SharedSelectionSource{ null, null };
+    var ctx = testSelectionScheduleContext(&files, &slots);
+    var source = testSharedSelectionSource(3);
+
+    const first = nextSelectionWork(&ctx).?;
+    try std.testing.expectEqualStrings("heavy.pdb", first.file);
+    try std.testing.expectEqual(@as(usize, 1), ctx.preparing);
+
+    publishSource(&ctx, &source);
+    try std.testing.expectEqual(@as(usize, 0), ctx.preparing);
+    try std.testing.expectEqual(@as(?*SharedSelectionSource, &source), slots[0]);
+
+    // The owner and an idle worker draw from the same counter.
+    try std.testing.expectEqual(@as(?usize, 0), claimSourceGroup(&ctx, &source));
+    const stolen = nextSelectionWork(&ctx).?;
+    try std.testing.expectEqual(&source, stolen.group.source);
+    try std.testing.expectEqual(@as(usize, 1), stolen.group.index);
+    try std.testing.expectEqual(@as(?usize, 2), claimSourceGroup(&ctx, &source));
+    try std.testing.expectEqual(@as(?usize, null), claimSourceGroup(&ctx, &source));
+    try std.testing.expect(nextSelectionWork(&ctx) == null);
+    try std.testing.expectEqual(@as(usize, 3), source.running);
+
+    for (0..3) |_| finishSourceGroup(&ctx, &source);
+    retireSource(&ctx, &source);
+    try std.testing.expectEqual(@as(?*SharedSelectionSource, null), slots[0]);
+}
+
+test "selection schedule wakes an idle worker when a source is published or abandoned" {
+    var slots = [_]?*SharedSelectionSource{ null, null };
+    var ctx = testSelectionScheduleContext(&.{}, &slots);
+    var source = testSharedSelectionSource(1);
+
+    const Waiter = struct {
+        fn run(context: *SelectionMapContext, out: *?SelectionWork) void {
+            out.* = nextSelectionWork(context);
+        }
+    };
+
+    // Another worker is preparing a source: the idle worker waits for it.
+    ctx.preparing = 1;
+    var got: ?SelectionWork = null;
+    var thread = try std.Thread.spawn(.{}, Waiter.run, .{ &ctx, &got });
+    publishSource(&ctx, &source);
+    thread.join();
+    try std.testing.expectEqual(&source, got.?.group.source);
+    try std.testing.expectEqual(@as(usize, 0), got.?.group.index);
+    finishSourceGroup(&ctx, &source);
+    retireSource(&ctx, &source);
+
+    // The preparing file fails before publication: the idle worker stops.
+    ctx.preparing = 1;
+    got = null;
+    thread = try std.Thread.spawn(.{}, Waiter.run, .{ &ctx, &got });
+    abandonPreparingSource(&ctx);
+    thread.join();
+    try std.testing.expect(got == null);
+}
+
+test "selection map shares a heavy structure's groups across workers with the same rows" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root = root_buf[0..root_len];
+    const input_dir = try std.fs.path.join(allocator, &.{ root, "input" });
+    defer allocator.free(input_dir);
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, input_dir);
+
+    // A heavy structure with eight chains, every chain and chain pair selected,
+    // and a light one.
+    const chain_names = "ABCDEFGH";
+    var pdb = std.ArrayListUnmanaged(u8).empty;
+    defer pdb.deinit(allocator);
+    var csv = std.ArrayListUnmanaged(u8).empty;
+    defer csv.deinit(allocator);
+    try csv.appendSlice(allocator, "filename,id,chains\nlight.pdb,light,A\n");
+    for (chain_names, 0..) |chain, i| {
+        const x: f64 = @as(f64, @floatFromInt(i)) * 3.0;
+        try pdb.print(allocator, "ATOM  {d:>5}  N   GLY {c}   1    {d:>8.3}   0.000   0.000  1.00 20.00           N  \n", .{ 2 * i + 1, chain, x });
+        try pdb.print(allocator, "ATOM  {d:>5}  CA  GLY {c}   1    {d:>8.3}   1.500   0.000  1.00 20.00           C  \n", .{ 2 * i + 2, chain, x });
+        try csv.print(allocator, "heavy.pdb,{c},{c}\n", .{ chain, chain });
+        for (chain_names[i + 1 ..]) |other| {
+            try csv.print(allocator, "heavy.pdb,{c}{c},\"{c},{c}\"\n", .{ chain, other, other, chain });
+        }
+    }
+    try pdb.appendSlice(allocator, "END\n");
+    for ([_][]const u8{ "heavy.pdb", "light.pdb" }) |filename| {
+        const path = try std.fs.path.join(allocator, &.{ input_dir, filename });
+        defer allocator.free(path);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = pdb.items });
+    }
+    var map = try chain_map.parseCsv(allocator, csv.items);
+    defer map.deinit();
+
+    var outputs: [2][]u8 = undefined;
+    for ([_]usize{ 1, 4 }, &outputs) |threads, *output| {
+        const output_path = try std.fmt.allocPrint(allocator, "{s}/t{d}.jsonl", .{ root, threads });
+        defer allocator.free(output_path);
+        const stats = try runSelectionMapBatch(allocator, std.testing.io, input_dir, .{
+            .n_threads = threads,
+            .n_points = 32,
+            .classifier_type = .naccess,
+            .output_format = .jsonl,
+            .store_atom_areas = true,
+            .quiet = true,
+        }, output_path, &map, null);
+        try std.testing.expectEqual(@as(usize, 37), stats.successful);
+        try std.testing.expectEqual(@as(usize, 0), stats.failed);
+        try std.testing.expectEqual(@as(usize, 2), stats.read_parse_count);
+        try std.testing.expectEqual(@as(usize, 2), stats.classifier_count);
+        try std.testing.expectEqual(@as(usize, 37), stats.calculation_count);
+
+        const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(1 << 20));
+        defer allocator.free(content);
+        var lines = std.ArrayListUnmanaged([]const u8).empty;
+        defer lines.deinit(allocator);
+        var it = std.mem.splitScalar(u8, content, '\n');
+        while (it.next()) |line| if (line.len > 0) try lines.append(allocator, line);
+        std.mem.sort([]const u8, lines.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.lessThan(u8, a, b);
+            }
+        }.lessThan);
+        output.* = try std.mem.join(allocator, "\n", lines.items);
+    }
+    defer for (outputs) |output| allocator.free(output);
+    try std.testing.expectEqualStrings(outputs[0], outputs[1]);
 }
 
 test "workflow BSA analysis writes analysis JSONL" {
