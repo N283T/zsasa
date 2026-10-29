@@ -66,10 +66,17 @@
             dontConfigure = true;
             dontFixup = true;
 
+            # Without -Dcpu, Zig targets the CPU of the machine that builds the
+            # package, so a binary from a cache or another machine could fault
+            # on an older CPU. Match the release binaries: x86_64_v3 (AVX2,
+            # FMA) on x86-64 and the baseline elsewhere.
+            zigCpu = if pkgs.stdenv.hostPlatform.isx86_64 then "x86_64_v3" else "baseline";
+
             buildPhase = ''
               export ZIG_GLOBAL_CACHE_DIR=$(mktemp -d)
               zig build \
                 -Doptimize=ReleaseFast \
+                -Dcpu=$zigCpu \
                 --system ${zigDeps} \
                 --prefix $out \
                 -j$NIX_BUILD_CORES

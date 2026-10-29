@@ -80,4 +80,4 @@ A pushed `vX.Y.Z` tag publishes to PyPI, GitHub Releases, GHCR, Homebrew and Sco
 
 6. conda-forge builds zsasa from the source archive of the tag, with the Zig dependencies of `build.zig.zon` (`ztraj` and what it depends on) listed as extra sources in the recipe. If a release changed those dependencies, update the recipe's extra sources as well; a plain version bump needs only the new version and checksum. The recipe is in `conda-forge/zsasa-feedstock`, whose bot opens the pull request for a new version; changes go through a fork of the feedstock, followed by a re-render.
 
-A failed publish run can be repeated for one part with `workflow_dispatch` (`target=pypi` and the job to repeat); `target=testpypi` uploads to TestPyPI only.
+A failed publish run can be repeated for one part with `workflow_dispatch` (`target=pypi` and the job to repeat); `target=testpypi` uploads to TestPyPI only. The `pypi` environment accepts only `v*` tags and needs the maintainer's approval, so start such a run from the tag (`gh workflow run publish.yml --ref vX.Y.Z -f release_tag=vX.Y.Z -f target=pypi -f jobs=pypi`), and expect a tag push to wait at the PyPI job until it is approved.

@@ -8,6 +8,10 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+### Fixed
+
+- **The Nix flake builds for a fixed CPU**: `x86_64_v3` (AVX2, FMA) on x86-64 and the baseline elsewhere, as the release binaries are. Before, Zig compiled for the CPU of the machine that built the package, so a binary copied from a cache or another machine could fault on an older CPU. (#437)
+
 ## [v0.12.0](https://github.com/N283T/zsasa/releases/tag/v0.12.0) — 2026-10-29
 
 ### Upgrade notes

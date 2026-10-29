@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Nix flake builds for a fixed CPU**: `x86_64_v3` (AVX2, FMA) on x86-64 and the baseline elsewhere, as the release binaries are. Before, Zig compiled for the CPU of the machine that built the package, so a binary copied from a cache or another machine could fault on an older CPU. (#437)
+
 ## [0.12.0] - 2026-10-29
 
 ### Upgrade notes
