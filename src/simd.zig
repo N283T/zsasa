@@ -389,8 +389,19 @@ pub fn CirclesOverlapBatch(comptime T: type, comptime N: usize) type {
 
             // Cross-platform packed bit layout: @Vector(N, bool) layout is target-defined
             // in Zig 0.16+. Forcing through @Vector(N, u1) before @bitCast guarantees a
-            // packed uN result on all platforms (Linux x86_64 regression caught in CI).
-            return @bitCast(@as(@Vector(N, u1), @intFromBool(overlaps)));
+            // packed uN result with LLVM (Linux x86_64 regression caught in CI). The
+            // self-hosted x86_64 backend (Debug builds on Linux) leaves the padding
+            // bits of a u4 result set for f32 lanes, so other backends build the
+            // mask lane by lane.
+            if (builtin.zig_backend == .stage2_llvm) {
+                return @bitCast(@as(@Vector(N, u1), @intFromBool(overlaps)));
+            }
+            const Mask = std.meta.Int(.unsigned, N);
+            var mask: Mask = 0;
+            inline for (0..N) |i| {
+                if (overlaps[i]) mask |= @as(Mask, 1) << i;
+            }
+            return mask;
         }
     };
 }
