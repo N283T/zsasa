@@ -192,10 +192,16 @@ selection count before file workers claim them. Filename order breaks equal-cost
 ties deterministically. This longest-processing-time-first estimate starts
 selection-heavy structures early to reduce the file-level tail without reading
 or parsing inputs during scheduling. Generic batch scans, BSA workflows, and
-legacy one-row-per-file maps keep their existing order. Selection calculations
-within a structure remain serial, so exceptionally heavy final structures can
-still leave residual tail latency; bounded parse-once work stealing is tracked
-in [GitHub issue #413](https://github.com/N283T/zsasa/issues/413).
+legacy one-row-per-file maps keep their existing order.
+
+Once every structure has been claimed, idle workers help with the selections of
+structures that are still running instead of stopping, so one large assembly
+with thousands of selections no longer finishes on a single core. Each
+structure is still read, parsed and classified exactly once; at most one parsed
+structure per worker is held at a time. Rows are written as their selections
+finish: the rows of one chain set come out together, and rows of different
+selections or files can appear in any order. Join on `filename` and `id` rather
+than relying on row order.
 
 Multi-selection maps require JSONL output. Each requested selection produces a
 complete, non-interleaved success or error row:
