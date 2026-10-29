@@ -1923,18 +1923,17 @@ test "traj leaves water out of the topology unless --include-water, and keeps th
     try std.testing.expectEqualSlices(u32, &.{ 0, 1, 2, 4 }, dry.atom_indices.?);
 }
 
-test "TrajArgs progress defaults to visible" {
-    const args = [_][]const u8{ "zsasa", "traj", "traj.xtc", "topology.pdb" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(false, parsed.quiet);
-    try std.testing.expectEqual(true, parsed.show_progress);
-}
-
-test "TrajArgs quiet disables progress" {
-    const args = [_][]const u8{ "zsasa", "traj", "--quiet", "traj.xtc", "topology.pdb" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(true, parsed.quiet);
-    try std.testing.expectEqual(false, parsed.show_progress);
+test "TrajArgs --quiet and the progress default" {
+    // .{ argv, expected quiet, expected show_progress }
+    const cases = .{
+        .{ &.{ "zsasa", "traj", "traj.xtc", "topology.pdb" }, false, true },
+        .{ &.{ "zsasa", "traj", "--quiet", "traj.xtc", "topology.pdb" }, true, false },
+    };
+    inline for (cases) |c| {
+        const parsed = parseArgs(c[0], 2);
+        try std.testing.expectEqual(c[1], parsed.quiet);
+        try std.testing.expectEqual(c[2], parsed.show_progress);
+    }
 }
 
 test "TrajArgs --altloc modes" {

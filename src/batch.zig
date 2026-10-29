@@ -6904,6 +6904,69 @@ test "calculatePreparedInputResult computes total for selected input" {
     try std.testing.expect(result.total_sasa > 0.0);
 }
 
+// Byte-identical `_atom_site` loop headers shared by the mmCIF fixtures below.
+// Each ends with a newline, so the atom rows follow directly.
+const test_atom_site_header_group_first_id_auth_11 =
+    \\_atom_site.group_PDB
+    \\_atom_site.id
+    \\_atom_site.type_symbol
+    \\_atom_site.label_atom_id
+    \\_atom_site.label_comp_id
+    \\_atom_site.label_asym_id
+    \\_atom_site.auth_asym_id
+    \\_atom_site.label_seq_id
+    \\_atom_site.Cartn_x
+    \\_atom_site.Cartn_y
+    \\_atom_site.Cartn_z
+    \\
+;
+
+const test_atom_site_header_group_first_id_noauth_10 =
+    \\_atom_site.group_PDB
+    \\_atom_site.id
+    \\_atom_site.type_symbol
+    \\_atom_site.label_atom_id
+    \\_atom_site.label_comp_id
+    \\_atom_site.label_asym_id
+    \\_atom_site.label_seq_id
+    \\_atom_site.Cartn_x
+    \\_atom_site.Cartn_y
+    \\_atom_site.Cartn_z
+    \\
+;
+
+const test_atom_site_header_group_first_noid_noauth_11 =
+    \\_atom_site.group_PDB
+    \\_atom_site.type_symbol
+    \\_atom_site.label_atom_id
+    \\_atom_site.label_alt_id
+    \\_atom_site.label_comp_id
+    \\_atom_site.label_asym_id
+    \\_atom_site.label_seq_id
+    \\_atom_site.Cartn_x
+    \\_atom_site.Cartn_y
+    \\_atom_site.Cartn_z
+    \\_atom_site.occupancy
+    \\
+;
+
+const test_atom_site_header_group_first_id_noauth_13 =
+    \\_atom_site.group_PDB
+    \\_atom_site.id
+    \\_atom_site.type_symbol
+    \\_atom_site.label_atom_id
+    \\_atom_site.label_alt_id
+    \\_atom_site.label_comp_id
+    \\_atom_site.label_asym_id
+    \\_atom_site.label_entity_id
+    \\_atom_site.label_seq_id
+    \\_atom_site.pdbx_PDB_ins_code
+    \\_atom_site.Cartn_x
+    \\_atom_site.Cartn_y
+    \\_atom_site.Cartn_z
+    \\
+;
+
 test "BatchConfig default values" {
     const config = BatchConfig{};
 
@@ -6983,13 +7046,6 @@ test "BatchArgs defaults" {
     try std.testing.expectEqual(false, parsed.show_timing);
 }
 
-test "BatchArgs with output dir" {
-    const args = [_][]const u8{ "zsasa", "batch", "input_dir/", "output_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqualStrings("input_dir/", parsed.input_path.?);
-    try std.testing.expectEqualStrings("output_dir/", parsed.output_path.?);
-}
-
 test "BatchArgs with options" {
     const args = [_][]const u8{
         "zsasa",            "batch",
@@ -7050,43 +7106,6 @@ test "BatchArgs --passive-io" {
     try std.testing.expectEqualStrings("input_dir/", parsed.input_path.?);
 }
 
-test "BatchArgs help flag" {
-    const args = [_][]const u8{ "zsasa", "batch", "--help" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(true, parsed.show_help);
-}
-
-test "BatchArgs --manifest compatibility alias" {
-    const args = [_][]const u8{ "zsasa", "batch", "--manifest", "bsa.toml" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqualStrings("bsa.toml", parsed.workflow_path.?);
-}
-
-test "BatchArgs --workflow=FILE" {
-    const args = [_][]const u8{ "zsasa", "batch", "--workflow=batch-workflow.toml" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqualStrings("batch-workflow.toml", parsed.workflow_path.?);
-}
-
-test "BatchArgs --workflow FILE" {
-    const args = [_][]const u8{ "zsasa", "batch", "--workflow", "batch-workflow.toml" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqualStrings("batch-workflow.toml", parsed.workflow_path.?);
-}
-
-test "BatchArgs --chain=A" {
-    const args = [_][]const u8{ "zsasa", "batch", "--chain=A", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqualStrings("A", parsed.chain_filter.?);
-    try std.testing.expectEqualStrings("input_dir/", parsed.input_path.?);
-}
-
-test "BatchArgs --auth-chain" {
-    const args = [_][]const u8{ "zsasa", "batch", "--auth-chain", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(true, parsed.use_auth_chain);
-}
-
 test "BatchArgs --altloc modes" {
     const none_args = [_][]const u8{ "zsasa", "batch", "--altloc=none", "input_dir/" };
     const all_args = [_][]const u8{ "zsasa", "batch", "--altloc", "all", "input_dir/" };
@@ -7105,13 +7124,6 @@ test "BatchArgs --altloc modes" {
 
     const occupancy = parseArgs(&occupancy_args, 2);
     try std.testing.expectEqual(mmcif_parser.AltLocMode.highest_occupancy, occupancy.alt_loc_mode);
-}
-
-test "BatchArgs -o=DIR" {
-    const args = [_][]const u8{ "zsasa", "batch", "-o=results/", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqualStrings("results/", parsed.output_path.?);
-    try std.testing.expect(parsed.output_path_explicit);
 }
 
 test "batch rejects --jsonl-decimals without --format=jsonl" {
@@ -7138,13 +7150,6 @@ test "ccdResourcesIgnored flags --ccd and --sdf without the ccd classifier" {
     try std.testing.expect(ccdResourcesIgnored(.{ .sdf_explicit = true }, null));
     try std.testing.expect(!ccdResourcesIgnored(.{ .ccd_explicit = true }, .ccd));
     try std.testing.expect(!ccdResourcesIgnored(.{}, .naccess));
-}
-
-test "BatchArgs --residue-map" {
-    const args = [_][]const u8{ "zsasa", "batch", "--format=jsonl", "--residue-map", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(OutputFormat.jsonl, parsed.output_format);
-    try std.testing.expectEqual(true, parsed.residue_map);
 }
 
 test "parseBatchChainFilter splits comma-separated chains" {
@@ -9279,17 +9284,8 @@ test "workflow chain map selects per-file PDB and mmCIF chain complexes" {
     const cif_template =
         \\data_CHAIN_MAP
         \\loop_
-        \\_atom_site.group_PDB
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.auth_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_atom_site_header_group_first_id_auth_11 ++
         \\ATOM 1 N N ALA L1 A 1 0.000 0.000 0.000
         \\ATOM 2 N N ALA L2 B 1 4.000 0.000 0.000
         \\ATOM 3 N N ALA L3 C 1 8.000 0.000 0.000
@@ -9923,22 +9919,14 @@ test "workflow BSA analysis writes chain IDs longer than four characters in full
         .data =
         \\data_LONG
         \\loop_
-        \\_atom_site.group_PDB
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
-        \\ATOM 1 N N  GLY LONGA 1 0.000 0.000 0.000
-        \\ATOM 2 C CA GLY LONGA 1 1.500 0.000 0.000
-        \\ATOM 3 N N  ALA LONGB 2 3.000 0.000 0.000
-        \\ATOM 4 C CA ALA LONGB 2 4.500 0.000 0.000
-        \\#
         \\
+        ++ test_atom_site_header_group_first_id_noauth_10 ++
+            \\ATOM 1 N N  GLY LONGA 1 0.000 0.000 0.000
+            \\ATOM 2 C CA GLY LONGA 1 1.500 0.000 0.000
+            \\ATOM 3 N N  ALA LONGB 2 3.000 0.000 0.000
+            \\ATOM 4 C CA ALA LONGB 2 4.500 0.000 0.000
+            \\#
+            \\
         ,
     });
 
@@ -10016,23 +10004,14 @@ test "workflow BSA analysis uses per-file multi-chain interface map" {
         .data =
         \\data_ABCD
         \\loop_
-        \\_atom_site.group_PDB
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.auth_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
-        \\ATOM 1 N N GLY L1 A 1 0.000 0.000 0.000
-        \\ATOM 2 N N GLY L2 B 1 2.000 0.000 0.000
-        \\ATOM 3 N N GLY L3 C 1 4.000 0.000 0.000
-        \\ATOM 4 N N GLY L4 D 1 6.000 0.000 0.000
-        \\#
         \\
+        ++ test_atom_site_header_group_first_id_auth_11 ++
+            \\ATOM 1 N N GLY L1 A 1 0.000 0.000 0.000
+            \\ATOM 2 N N GLY L2 B 1 2.000 0.000 0.000
+            \\ATOM 3 N N GLY L3 C 1 4.000 0.000 0.000
+            \\ATOM 4 N N GLY L4 D 1 6.000 0.000 0.000
+            \\#
+            \\
         ,
     });
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{
@@ -10439,20 +10418,12 @@ test "workflow mmCIF chain filters preserve long chain IDs" {
         .data =
         \\data_LONG_CHAIN
         \\loop_
-        \\_atom_site.group_PDB
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
-        \\ATOM 1 N N ALA ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg 1 0.000 0.000 0.000
-        \\ATOM 2 C CA ALA ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg 1 1.500 0.000 0.000
-        \\#
         \\
+        ++ test_atom_site_header_group_first_id_noauth_10 ++
+            \\ATOM 1 N N ALA ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg 1 0.000 0.000 0.000
+            \\ATOM 2 C CA ALA ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg 1 1.500 0.000 0.000
+            \\#
+            \\
         ,
     });
     try std.Io.Dir.cwd().writeFile(std.testing.io, .{
@@ -10460,20 +10431,12 @@ test "workflow mmCIF chain filters preserve long chain IDs" {
         .data =
         \\data_LONG_CHAIN_2
         \\loop_
-        \\_atom_site.group_PDB
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
-        \\ATOM 1 N N ALA ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef 1 0.000 1.000 0.000
-        \\ATOM 2 C CA ALA ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef 1 1.500 1.000 0.000
-        \\#
         \\
+        ++ test_atom_site_header_group_first_id_noauth_10 ++
+            \\ATOM 1 N N ALA ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef 1 0.000 1.000 0.000
+            \\ATOM 2 C CA ALA ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef 1 1.500 1.000 0.000
+            \\#
+            \\
         ,
     });
 
@@ -11036,17 +10999,8 @@ const altloc_workflow_pdb =
 const altloc_workflow_cif =
     \\data_ALTLOC
     \\loop_
-    \\_atom_site.group_PDB
-    \\_atom_site.type_symbol
-    \\_atom_site.label_atom_id
-    \\_atom_site.label_alt_id
-    \\_atom_site.label_comp_id
-    \\_atom_site.label_asym_id
-    \\_atom_site.label_seq_id
-    \\_atom_site.Cartn_x
-    \\_atom_site.Cartn_y
-    \\_atom_site.Cartn_z
-    \\_atom_site.occupancy
+    \\
+++ test_atom_site_header_group_first_noid_noauth_11 ++
     \\ATOM N N  . ALA A 1 1.000 0.000 0.000 1.00
     \\ATOM C CA A ALA A 1 2.000 0.000 0.000 0.30
     \\ATOM C CA B ALA A 1 3.000 0.000 0.000 0.70
@@ -11332,22 +11286,82 @@ test "batch on an empty directory leaves an empty JSONL file whatever the thread
     try sandbox.expectTree(&.{ "input/", "out1/", "out4/", "results.jsonl" });
 }
 
-test "BatchArgs explicit option flags" {
-    const args = [_][]const u8{
-        "zsasa", "batch", "--threads=8", "--n-points=128", "--format=jsonl", "--use-bitmask", "input_dir/",
-    };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(true, parsed.threads_explicit);
-    try std.testing.expectEqual(true, parsed.n_points_explicit);
-    try std.testing.expectEqual(true, parsed.format_explicit);
-    try std.testing.expectEqual(true, parsed.use_bitmask_explicit);
+/// Parse `argv` and check that `field` of the result equals `expected`.
+/// Strings (also optional ones) are compared by content.
+fn expectParsedField(argv: []const []const u8, comptime field: []const u8, expected: anytype) !void {
+    const actual = @field(parseArgs(argv, 2), field);
+    const T = @TypeOf(actual);
+    if (T == []const u8) {
+        try std.testing.expectEqualStrings(expected, actual);
+    } else if (T == ?[]const u8) {
+        try std.testing.expectEqualStrings(expected, actual.?);
+    } else {
+        try std.testing.expectEqual(@as(T, expected), actual);
+    }
 }
 
-test "BatchArgs output via -o flag" {
-    const args = [_][]const u8{ "zsasa", "batch", "-o", "results/", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqualStrings("input_dir/", parsed.input_path.?);
-    try std.testing.expectEqualStrings("results/", parsed.output_path.?);
+test "BatchArgs boolean flags" {
+    // .{ argv, field, expected }
+    const cases = .{
+        .{ &.{ "zsasa", "batch", "--help" }, "show_help", true },
+        .{ &.{ "zsasa", "batch", "--auth-chain", "input_dir/" }, "use_auth_chain", true },
+        .{ &.{ "zsasa", "batch", "--include-hydrogens", "input_dir/" }, "include_hydrogens", true },
+        .{ &.{ "zsasa", "batch", "--include-hetatm", "input_dir/" }, "include_hetatm", true },
+        .{ &.{ "zsasa", "batch", "--use-bitmask", "input_dir/" }, "use_bitmask", true },
+        .{ &.{ "zsasa", "batch", "--af-model-fast", "input_dir/" }, "af_model_fast", true },
+        .{ &.{ "zsasa", "batch", "--format=jsonl", "--residue-map", "input_dir/" }, "residue_map", true },
+        .{ &.{ "zsasa", "batch", "--format=jsonl", "--jsonl-decimals=3", "input_dir/" }, "jsonl_decimals_explicit", true },
+        .{ &.{ "zsasa", "batch", "--input-io=read", "input_dir/" }, "input_io_explicit", true },
+        // Options given on the command line are remembered as explicit.
+        .{ &.{ "zsasa", "batch", "--threads=8", "--n-points=128", "--format=jsonl", "--use-bitmask", "input_dir/" }, "threads_explicit", true },
+        .{ &.{ "zsasa", "batch", "--threads=8", "--n-points=128", "--format=jsonl", "--use-bitmask", "input_dir/" }, "n_points_explicit", true },
+        .{ &.{ "zsasa", "batch", "--threads=8", "--n-points=128", "--format=jsonl", "--use-bitmask", "input_dir/" }, "format_explicit", true },
+        .{ &.{ "zsasa", "batch", "--threads=8", "--n-points=128", "--format=jsonl", "--use-bitmask", "input_dir/" }, "use_bitmask_explicit", true },
+    };
+    inline for (cases) |c| try expectParsedField(c[0], c[1], c[2]);
+}
+
+test "BatchArgs numeric options" {
+    const cases = .{
+        .{ &.{ "zsasa", "batch", "--probe-radius=2.0", "input_dir/" }, "probe_radius", @as(f64, 2.0) },
+        .{ &.{ "zsasa", "batch", "--n-points=200", "input_dir/" }, "n_points", @as(u32, 200) },
+        .{ &.{ "zsasa", "batch", "--n-slices=40", "input_dir/" }, "n_slices", @as(u32, 40) },
+        .{ &.{ "zsasa", "batch", "--format=jsonl", "--jsonl-decimals=3", "input_dir/" }, "jsonl_decimals", @as(?u8, 3) },
+    };
+    inline for (cases) |c| try expectParsedField(c[0], c[1], c[2]);
+}
+
+test "BatchArgs enum options" {
+    const cases = .{
+        .{ &.{ "zsasa", "batch", "--format=csv", "input_dir/" }, "output_format", OutputFormat.csv },
+        .{ &.{ "zsasa", "batch", "--format=jsonl", "-o", "out.jsonl", "input_dir/" }, "output_format", OutputFormat.jsonl },
+        .{ &.{ "zsasa", "batch", "--format=jsonl", "--residue-map", "input_dir/" }, "output_format", OutputFormat.jsonl },
+        .{ &.{ "zsasa", "batch", "--classifier=naccess", "input_dir/" }, "classifier_type", ClassifierType.naccess },
+        .{ &.{ "zsasa", "batch", "--precision=f32", "input_dir/" }, "precision", Precision.f32 },
+        .{ &.{ "zsasa", "batch", "--algorithm=shrake-rupley", "input_dir/" }, "algorithm", Algorithm.sr },
+        .{ &.{ "zsasa", "batch", "--input-io=read", "input_dir/" }, "input_io", InputIoMode.read },
+    };
+    inline for (cases) |c| try expectParsedField(c[0], c[1], c[2]);
+}
+
+test "BatchArgs path and string options" {
+    const cases = .{
+        .{ &.{ "zsasa", "batch", "input_dir/", "output_dir/" }, "input_path", "input_dir/" },
+        .{ &.{ "zsasa", "batch", "input_dir/", "output_dir/" }, "output_path", "output_dir/" },
+        .{ &.{ "zsasa", "batch", "-o", "results/", "input_dir/" }, "input_path", "input_dir/" },
+        .{ &.{ "zsasa", "batch", "-o", "results/", "input_dir/" }, "output_path", "results/" },
+        .{ &.{ "zsasa", "batch", "-o=results/", "input_dir/" }, "output_path", "results/" },
+        .{ &.{ "zsasa", "batch", "-o=results/", "input_dir/" }, "output_path_explicit", true },
+        .{ &.{ "zsasa", "batch", "--output=results/", "input_dir/" }, "output_path", "results/" },
+        .{ &.{ "zsasa", "batch", "--output=results/", "input_dir/" }, "output_path_explicit", true },
+        .{ &.{ "zsasa", "batch", "--format=jsonl", "-o", "out.jsonl", "input_dir/" }, "output_path", "out.jsonl" },
+        .{ &.{ "zsasa", "batch", "--manifest", "bsa.toml" }, "workflow_path", "bsa.toml" },
+        .{ &.{ "zsasa", "batch", "--workflow=batch-workflow.toml" }, "workflow_path", "batch-workflow.toml" },
+        .{ &.{ "zsasa", "batch", "--workflow", "batch-workflow.toml" }, "workflow_path", "batch-workflow.toml" },
+        .{ &.{ "zsasa", "batch", "--chain=A", "input_dir/" }, "chain_filter", "A" },
+        .{ &.{ "zsasa", "batch", "--chain=A", "input_dir/" }, "input_path", "input_dir/" },
+    };
+    inline for (cases) |c| try expectParsedField(c[0], c[1], c[2]);
 }
 
 test "BatchArgs -o takes precedence over positional output" {
@@ -11355,24 +11369,6 @@ test "BatchArgs -o takes precedence over positional output" {
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqualStrings("explicit/", parsed.output_path.?);
     try std.testing.expectEqual(true, parsed.output_path_explicit);
-}
-
-test "BatchArgs --probe-radius=R" {
-    const args = [_][]const u8{ "zsasa", "batch", "--probe-radius=2.0", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(@as(f64, 2.0), parsed.probe_radius);
-}
-
-test "BatchArgs --n-points=N" {
-    const args = [_][]const u8{ "zsasa", "batch", "--n-points=200", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(@as(u32, 200), parsed.n_points);
-}
-
-test "BatchArgs --n-slices=N" {
-    const args = [_][]const u8{ "zsasa", "batch", "--n-slices=40", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(@as(u32, 40), parsed.n_slices);
 }
 
 test "BatchArgs --lr-trig defaults to exact" {
@@ -11436,50 +11432,6 @@ test "workflow lr_trig applies to the batch config unless --lr-trig was given, a
     }
 }
 
-test "BatchArgs --format=csv" {
-    const args = [_][]const u8{ "zsasa", "batch", "--format=csv", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(OutputFormat.csv, parsed.output_format);
-}
-
-test "BatchArgs --format=jsonl" {
-    const args = [_][]const u8{ "zsasa", "batch", "--format=jsonl", "-o", "out.jsonl", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(OutputFormat.jsonl, parsed.output_format);
-    try std.testing.expectEqualStrings("out.jsonl", parsed.output_path.?);
-}
-
-test "BatchArgs --jsonl-decimals" {
-    const args = [_][]const u8{ "zsasa", "batch", "--format=jsonl", "--jsonl-decimals=3", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(@as(?u8, 3), parsed.jsonl_decimals);
-    try std.testing.expectEqual(true, parsed.jsonl_decimals_explicit);
-}
-
-test "BatchArgs --classifier=naccess" {
-    const args = [_][]const u8{ "zsasa", "batch", "--classifier=naccess", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(ClassifierType.naccess, parsed.classifier_type);
-}
-
-test "BatchArgs --precision=f32" {
-    const args = [_][]const u8{ "zsasa", "batch", "--precision=f32", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(Precision.f32, parsed.precision);
-}
-
-test "BatchArgs --include-hydrogens" {
-    const args = [_][]const u8{ "zsasa", "batch", "--include-hydrogens", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(true, parsed.include_hydrogens);
-}
-
-test "BatchArgs --include-hetatm" {
-    const args = [_][]const u8{ "zsasa", "batch", "--include-hetatm", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(true, parsed.include_hetatm);
-}
-
 test "BatchArgs adaptive bitmask options" {
     const args = [_][]const u8{
         "zsasa", "batch", "--use-bitmask", "--adaptive-sr", "--coarse-points=64", "--fine-points", "256", "--adaptive-low=0.10", "--adaptive-high", "0.90", "input_dir/",
@@ -11503,12 +11455,6 @@ test "BatchArgs adaptive defaults use 64 and 256" {
     try std.testing.expectEqual(@as(u32, 256), parsed.fine_points);
     try std.testing.expectEqual(@as(f64, 0.10), parsed.adaptive_low);
     try std.testing.expectEqual(@as(f64, 0.90), parsed.adaptive_high);
-}
-
-test "BatchArgs --use-bitmask" {
-    const args = [_][]const u8{ "zsasa", "batch", "--use-bitmask", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(true, parsed.use_bitmask);
 }
 
 test "BatchArgs --bitmask-correction-coeff" {
@@ -11540,36 +11486,10 @@ test "BatchConfig bitmask correction rejects adaptive SR" {
     );
 }
 
-test "BatchArgs --output=DIR (equals form)" {
-    const args = [_][]const u8{ "zsasa", "batch", "--output=results/", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqualStrings("results/", parsed.output_path.?);
-    try std.testing.expectEqual(true, parsed.output_path_explicit);
-}
-
-test "BatchArgs --algorithm=shrake-rupley (long form)" {
-    const args = [_][]const u8{ "zsasa", "batch", "--algorithm=shrake-rupley", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(Algorithm.sr, parsed.algorithm);
-}
-
 test "BatchArgs classifier_type defaults to ccd" {
     const args = [_][]const u8{ "zsasa", "batch", "input_dir/" };
     const parsed = parseArgs(&args, 2);
     try std.testing.expectEqual(ClassifierType.ccd, parsed.classifier_type);
-}
-
-test "BatchArgs --af-model-fast" {
-    const args = [_][]const u8{ "zsasa", "batch", "--af-model-fast", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expect(parsed.af_model_fast);
-}
-
-test "BatchArgs --input-io" {
-    const args = [_][]const u8{ "zsasa", "batch", "--input-io=read", "input_dir/" };
-    const parsed = parseArgs(&args, 2);
-    try std.testing.expectEqual(InputIoMode.read, parsed.input_io);
-    try std.testing.expect(parsed.input_io_explicit);
 }
 
 test "readInputFile leaves water out unless include_water, and excluded residues" {
@@ -11632,19 +11552,8 @@ test "readInputFile preserves AF model atom metadata when fast parsing is reques
     const source =
         \\data_AF_FAST
         \\loop_
-        \\_atom_site.group_PDB
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_alt_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_entity_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.pdbx_PDB_ins_code
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_atom_site_header_group_first_id_noauth_13 ++
         \\ATOM 1 N N  . GLY A 1 1 ? 1.000 2.000 3.000
         \\ATOM 2 C CA . GLY A 1 1 ? 2.000 3.000 4.000
         \\ATOM 3 N N  . ALA B 2 1 ? 4.000 5.000 6.000
@@ -11692,17 +11601,8 @@ test "batch --altloc applies to PDB input as it does to mmCIF input" {
     try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "altloc.cif", .data =
         \\data_ALTLOC
         \\loop_
-        \\_atom_site.group_PDB
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_alt_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
-        \\_atom_site.occupancy
+        \\
+    ++ test_atom_site_header_group_first_noid_noauth_11 ++
         \\ATOM N N  . ALA A 1 1.000 0.000 0.000 1.00
         \\ATOM C CA A ALA A 1 2.000 0.000 0.000 0.30
         \\ATOM C CA B ALA A 1 3.000 0.000 0.000 0.70
@@ -11796,19 +11696,8 @@ test "AF model fast parser leaves files to the generic parser when HETATM is inc
     const source =
         \\data_AF_HETATM
         \\loop_
-        \\_atom_site.group_PDB
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_alt_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_entity_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.pdbx_PDB_ins_code
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_atom_site_header_group_first_id_noauth_13 ++
         \\ATOM   1 N  N  . GLY A 1 1 ? 1.000 2.000 3.000
         \\ATOM   2 C  CA . GLY A 1 1 ? 2.000 3.000 4.000
         \\HETATM 3 ZN ZN . ZN  B 2 . ? 9.000 9.000 9.000
