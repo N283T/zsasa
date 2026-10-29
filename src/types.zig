@@ -375,6 +375,101 @@ pub const ResidueExclusion = struct {
     }
 };
 
+/// Atom centres and radii in the layout the SASA kernels read: one
+/// `Vec3Gen(T)` per atom, so the three coordinates of a neighbour are fetched
+/// together. A caller that keeps its coordinates in this form passes them
+/// without a copy; `gatherPositions` fills one from separate x/y/z arrays.
+pub fn AtomsGen(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        positions: []const Vec3Gen(T),
+        radii: []const T,
+
+        pub fn atomCount(self: Self) usize {
+            return self.positions.len;
+        }
+
+        /// The checks of `AtomInput.validateFiniteAndRange`, made on the
+        /// values in `T`: a coordinate that does not fit in `T` is rejected
+        /// instead of being calculated as infinity.
+        pub fn validateFiniteAndRange(self: Self) !void {
+            if (self.radii.len != self.positions.len) return error.InvalidInput;
+            for (self.positions, self.radii) |p, r| {
+                if (!std.math.isFinite(p.x) or
+                    !std.math.isFinite(p.y) or
+                    !std.math.isFinite(p.z) or
+                    !std.math.isFinite(r) or
+                    r < 0.0)
+                {
+                    return error.InvalidInput;
+                }
+            }
+        }
+    };
+}
+
+/// Write the coordinates `x`, `y`, `z` (slices of f32 or f64) into `dst`,
+/// converted to `T`. With `indices`, `dst[i]` takes atom `indices[i]`;
+/// without, atom `i`. This is the one copy between coordinates kept as
+/// separate arrays and the layout of `AtomsGen(T)`.
+pub fn gatherPositions(
+    comptime T: type,
+    dst: []Vec3Gen(T),
+    x: anytype,
+    y: anytype,
+    z: anytype,
+    indices: ?[]const u32,
+) !void {
+    if (y.len != x.len or z.len != x.len) return error.InvalidInput;
+    if (indices) |idx| {
+        if (idx.len != dst.len) return error.InvalidInput;
+        for (idx, dst) |src, *p| {
+            if (src >= x.len) return error.InvalidInput;
+            p.* = .{ .x = @floatCast(x[src]), .y = @floatCast(y[src]), .z = @floatCast(z[src]) };
+        }
+    } else {
+        if (x.len != dst.len) return error.InvalidInput;
+        for (dst, x, y, z) |*p, xi, yi, zi| {
+            p.* = .{ .x = @floatCast(xi), .y = @floatCast(yi), .z = @floatCast(zi) };
+        }
+    }
+}
+
+/// `AtomsGen(T)` with storage of its own, for the entry points that take an
+/// `AtomInput`.
+pub fn AtomsBufferGen(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        positions: []Vec3Gen(T),
+        radii: []T,
+        allocator: std.mem.Allocator,
+
+        /// Copy the coordinates and radii of `input`, converted to `T`.
+        /// Values are not checked; validate `input` first.
+        pub fn fromInput(allocator: std.mem.Allocator, input: AtomInput) !Self {
+            const n_atoms = input.atomCount();
+            if (input.r.len != n_atoms) return error.InvalidInput;
+            const positions = try allocator.alloc(Vec3Gen(T), n_atoms);
+            errdefer allocator.free(positions);
+            try gatherPositions(T, positions, input.x, input.y, input.z, null);
+            const radii = try allocator.alloc(T, n_atoms);
+            for (radii, input.r) |*dst, r| dst.* = @floatCast(r);
+            return .{ .positions = positions, .radii = radii, .allocator = allocator };
+        }
+
+        pub fn atoms(self: Self) AtomsGen(T) {
+            return .{ .positions = self.positions, .radii = self.radii };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.allocator.free(self.positions);
+            self.allocator.free(self.radii);
+        }
+    };
+}
+
 /// Generic output data structure for SASA calculation
 pub fn SasaResultGen(comptime T: type) type {
     return struct {
@@ -764,4 +859,45 @@ test "ResidueExclusion matches water by default and listed names" {
     try std.testing.expect(!listed.excludes("HOH"));
     try std.testing.expect(!listed.excludes("SO"));
     try std.testing.expect(!(ResidueExclusion{ .water = false, .names_csv = " , " }).excludes(""));
+}
+
+test "gatherPositions converts the coordinates and selects atoms" {
+    const x = [_]f32{ 1.5, 2.5, 3.5 };
+    const y = [_]f32{ -1.0, 0.0, 1.0 };
+    const z = [_]f32{ 10.0, 20.0, 30.0 };
+
+    var all: [3]Vec3 = undefined;
+    try gatherPositions(f64, &all, &x, &y, &z, null);
+    try std.testing.expectEqual(Vec3{ .x = 2.5, .y = 0.0, .z = 20.0 }, all[1]);
+
+    var picked: [2]Vec3f32 = undefined;
+    try gatherPositions(f32, &picked, &x, &y, &z, &[_]u32{ 2, 0 });
+    try std.testing.expectEqual(Vec3f32{ .x = 3.5, .y = 1.0, .z = 30.0 }, picked[0]);
+    try std.testing.expectEqual(Vec3f32{ .x = 1.5, .y = -1.0, .z = 10.0 }, picked[1]);
+}
+
+test "gatherPositions rejects mismatched lengths and out-of-range indices" {
+    const x = [_]f64{ 1.0, 2.0, 3.0 };
+    const short = [_]f64{ 1.0, 2.0 };
+    var dst: [2]Vec3 = undefined;
+
+    try std.testing.expectError(error.InvalidInput, gatherPositions(f64, &dst, &x, &x, &x, null));
+    try std.testing.expectError(error.InvalidInput, gatherPositions(f64, &dst, &x, &short, &x, &[_]u32{ 0, 1 }));
+    try std.testing.expectError(error.InvalidInput, gatherPositions(f64, &dst, &x, &x, &x, &[_]u32{ 0, 3 }));
+    try std.testing.expectError(error.InvalidInput, gatherPositions(f64, &dst, &x, &x, &x, &[_]u32{0}));
+}
+
+test "AtomsGen.validateFiniteAndRange checks the values in the calculation precision" {
+    // 1e39 is finite in f64 but does not fit in f32.
+    const big = [_]f64{1e39};
+    const zero = [_]f64{0.0};
+    var pos: [1]Vec3f32 = undefined;
+    try gatherPositions(f32, &pos, &big, &zero, &zero, null);
+    try std.testing.expectError(error.InvalidInput, (AtomsGen(f32){ .positions = &pos, .radii = &[_]f32{1.5} }).validateFiniteAndRange());
+
+    const ok = [_]Vec3f32{.{ .x = 0, .y = 0, .z = 0 }};
+    try (AtomsGen(f32){ .positions = &ok, .radii = &[_]f32{0.0} }).validateFiniteAndRange();
+    try std.testing.expectError(error.InvalidInput, (AtomsGen(f32){ .positions = &ok, .radii = &[_]f32{-1.0} }).validateFiniteAndRange());
+    try std.testing.expectError(error.InvalidInput, (AtomsGen(f32){ .positions = &ok, .radii = &[_]f32{ 1.0, 1.0 } }).validateFiniteAndRange());
+    try std.testing.expectError(error.InvalidInput, (AtomsGen(f32){ .positions = &.{.{ .x = std.math.nan(f32), .y = 0, .z = 0 }}, .radii = &[_]f32{1.0} }).validateFiniteAndRange());
 }

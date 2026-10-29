@@ -3,6 +3,7 @@ const types = @import("types.zig");
 const neighbor_list_mod = @import("neighbor_list.zig");
 const thread_pool = @import("thread_pool.zig");
 const simd = @import("simd.zig");
+const test_support = @import("test_support.zig");
 
 const Allocator = std.mem.Allocator;
 const AtomInput = types.AtomInput;
@@ -754,10 +755,11 @@ pub fn LeeRichardsConfigGen(comptime T: type) type {
 
 /// Generic Lee-Richards algorithm implementation supporting both f32 and f64 precision.
 pub fn LeeRichardsGen(comptime T: type) type {
-    const Vec = Vec3Gen(T);
     const Result = SasaResultGen(T);
     const Cfg = LeeRichardsConfigGen(T);
     const NList = NeighborListGen(T);
+    const Atoms = types.AtomsGen(T);
+    const AtomsBuffer = types.AtomsBufferGen(T);
 
     return struct {
         const Self = @This();
@@ -1233,34 +1235,53 @@ pub fn LeeRichardsGen(comptime T: type) type {
             input: AtomInput,
             config: Cfg,
         ) !Result {
-            const n_atoms = input.atomCount();
-            if (n_atoms == 0) {
-                return Result{
-                    .total_area = 0.0,
-                    .atom_areas = try allocator.alloc(T, 0),
-                    .allocator = allocator,
-                };
-            }
-            if (config.n_slices == 0) return error.InvalidInput;
-            try types.validateProbeRadius(T, config.probe_radius);
+            if (input.atomCount() == 0) return emptyResult(allocator);
+            try validateConfig(config);
             try input.validateFiniteAndRange();
 
-            // Convert to Vec positions (cast from f64)
-            const positions = try allocator.alloc(Vec, n_atoms);
-            defer allocator.free(positions);
-            for (0..n_atoms) |i| {
-                positions[i] = Vec{
-                    .x = @floatCast(input.x[i]),
-                    .y = @floatCast(input.y[i]),
-                    .z = @floatCast(input.z[i]),
-                };
-            }
+            var buffer = try AtomsBuffer.fromInput(allocator, input);
+            defer buffer.deinit();
+            return sasaSequential(allocator, buffer.atoms(), config);
+        }
+
+        /// `calculateSasa` for atoms already in the kernels' layout.
+        pub fn calculateSasaAtoms(
+            allocator: Allocator,
+            atoms: Atoms,
+            config: Cfg,
+        ) !Result {
+            if (atoms.atomCount() == 0) return emptyResult(allocator);
+            try validateConfig(config);
+            try atoms.validateFiniteAndRange();
+            return sasaSequential(allocator, atoms, config);
+        }
+
+        fn emptyResult(allocator: Allocator) !Result {
+            return Result{
+                .total_area = 0.0,
+                .atom_areas = try allocator.alloc(T, 0),
+                .allocator = allocator,
+            };
+        }
+
+        fn validateConfig(config: Cfg) !void {
+            if (config.n_slices == 0) return error.InvalidInput;
+            try types.validateProbeRadius(T, config.probe_radius);
+        }
+
+        fn sasaSequential(
+            allocator: Allocator,
+            atoms: Atoms,
+            config: Cfg,
+        ) !Result {
+            const n_atoms = atoms.atomCount();
+            const positions = atoms.positions;
 
             // Pre-compute effective radii (atom radius + probe radius)
             const radii = try allocator.alloc(T, n_atoms);
             defer allocator.free(radii);
             for (0..n_atoms) |i| {
-                radii[i] = @as(T, @floatCast(input.r[i])) + config.probe_radius;
+                radii[i] = atoms.radii[i] + config.probe_radius;
             }
 
             // Convert x, y, z to T arrays for atomArea
@@ -1271,9 +1292,9 @@ pub fn LeeRichardsGen(comptime T: type) type {
             const z_t = try allocator.alloc(T, n_atoms);
             defer allocator.free(z_t);
             for (0..n_atoms) |i| {
-                x_t[i] = @floatCast(input.x[i]);
-                y_t[i] = @floatCast(input.y[i]);
-                z_t[i] = @floatCast(input.z[i]);
+                x_t[i] = positions[i].x;
+                y_t[i] = positions[i].y;
+                z_t[i] = positions[i].z;
             }
 
             // Build neighbor list with effective radii
@@ -1322,17 +1343,36 @@ pub fn LeeRichardsGen(comptime T: type) type {
             config: Cfg,
             n_threads: usize,
         ) !Result {
-            const n_atoms = input.atomCount();
-            if (n_atoms == 0) {
-                return Result{
-                    .total_area = 0.0,
-                    .atom_areas = try allocator.alloc(T, 0),
-                    .allocator = allocator,
-                };
-            }
-            if (config.n_slices == 0) return error.InvalidInput;
-            try types.validateProbeRadius(T, config.probe_radius);
+            if (input.atomCount() == 0) return emptyResult(allocator);
+            try validateConfig(config);
             try input.validateFiniteAndRange();
+
+            var buffer = try AtomsBuffer.fromInput(allocator, input);
+            defer buffer.deinit();
+            return sasaParallel(allocator, buffer.atoms(), config, n_threads);
+        }
+
+        /// `calculateSasaParallel` for atoms already in the kernels' layout.
+        pub fn calculateSasaParallelAtoms(
+            allocator: Allocator,
+            atoms: Atoms,
+            config: Cfg,
+            n_threads: usize,
+        ) !Result {
+            if (atoms.atomCount() == 0) return emptyResult(allocator);
+            try validateConfig(config);
+            try atoms.validateFiniteAndRange();
+            return sasaParallel(allocator, atoms, config, n_threads);
+        }
+
+        fn sasaParallel(
+            allocator: Allocator,
+            atoms: Atoms,
+            config: Cfg,
+            n_threads: usize,
+        ) !Result {
+            const n_atoms = atoms.atomCount();
+            const positions = atoms.positions;
 
             // Auto-detect thread count if 0
             const actual_threads = if (n_threads == 0)
@@ -1340,22 +1380,11 @@ pub fn LeeRichardsGen(comptime T: type) type {
             else
                 n_threads;
 
-            // Convert to Vec positions (cast from f64)
-            const positions = try allocator.alloc(Vec, n_atoms);
-            defer allocator.free(positions);
-            for (0..n_atoms) |i| {
-                positions[i] = Vec{
-                    .x = @floatCast(input.x[i]),
-                    .y = @floatCast(input.y[i]),
-                    .z = @floatCast(input.z[i]),
-                };
-            }
-
             // Pre-compute effective radii (atom radius + probe radius)
             const radii = try allocator.alloc(T, n_atoms);
             defer allocator.free(radii);
             for (0..n_atoms) |i| {
-                radii[i] = @as(T, @floatCast(input.r[i])) + config.probe_radius;
+                radii[i] = atoms.radii[i] + config.probe_radius;
             }
 
             // Convert x, y, z to T arrays
@@ -1366,9 +1395,9 @@ pub fn LeeRichardsGen(comptime T: type) type {
             const z_t = try allocator.alloc(T, n_atoms);
             defer allocator.free(z_t);
             for (0..n_atoms) |i| {
-                x_t[i] = @floatCast(input.x[i]);
-                y_t[i] = @floatCast(input.y[i]);
-                z_t[i] = @floatCast(input.z[i]);
+                x_t[i] = positions[i].x;
+                y_t[i] = positions[i].y;
+                z_t[i] = positions[i].z;
             }
 
             // Build neighbor list with effective radii
@@ -2800,4 +2829,64 @@ test "Lee-Richards f32 total_area is the f64 sum of the per-atom areas, for any 
             try std.testing.expectEqual(expected, parallel.total_area);
         }
     }
+}
+
+const cluster_n_atoms = 300;
+
+test "Lee-Richards Atoms entry points from f32 coordinates match the AtomInput ones, in f32 and f64" {
+    const allocator = std.testing.allocator;
+    var xf: [cluster_n_atoms]f32 = undefined;
+    var yf: [cluster_n_atoms]f32 = undefined;
+    var zf: [cluster_n_atoms]f32 = undefined;
+    var r: [cluster_n_atoms]f64 = undefined;
+    test_support.fillCluster(&xf, &yf, &zf, &r);
+    var x: [cluster_n_atoms]f64 = undefined;
+    var y: [cluster_n_atoms]f64 = undefined;
+    var z: [cluster_n_atoms]f64 = undefined;
+    for (0..cluster_n_atoms) |i| {
+        x[i] = xf[i];
+        y[i] = yf[i];
+        z[i] = zf[i];
+    }
+    const input = AtomInput{ .x = &x, .y = &y, .z = &z, .r = &r, .allocator = allocator };
+
+    inline for (.{ f32, f64 }) |T| {
+        const Lr = LeeRichardsGen(T);
+        var positions: [cluster_n_atoms]Vec3Gen(T) = undefined;
+        try types.gatherPositions(T, &positions, &xf, &yf, &zf, null);
+        var radii: [cluster_n_atoms]T = undefined;
+        for (&radii, r) |*dst, ri| dst.* = @floatCast(ri);
+        const atoms = types.AtomsGen(T){ .positions = &positions, .radii = &radii };
+        const config = LeeRichardsConfigGen(T){ .n_slices = 20 };
+
+        var expected = try Lr.calculateSasa(allocator, input, config);
+        defer expected.deinit();
+
+        var sequential = try Lr.calculateSasaAtoms(allocator, atoms, config);
+        defer sequential.deinit();
+        try std.testing.expectEqualSlices(T, expected.atom_areas, sequential.atom_areas);
+        try std.testing.expectEqual(expected.total_area, sequential.total_area);
+
+        var parallel = try Lr.calculateSasaParallelAtoms(allocator, atoms, config, 4);
+        defer parallel.deinit();
+        try std.testing.expectEqualSlices(T, expected.atom_areas, parallel.atom_areas);
+    }
+
+    // The trajectory and C batch paths calculate f64 through LeeRichardsGen(f64).
+    var reference = try calculateSasa(allocator, input, .{ .n_slices = 20 });
+    defer reference.deinit();
+    var generic = try LeeRichardsGen(f64).calculateSasa(allocator, input, .{ .n_slices = 20 });
+    defer generic.deinit();
+    try std.testing.expectEqualSlices(f64, reference.atom_areas, generic.atom_areas);
+}
+
+test "Lee-Richards Atoms entry points return an empty result for no atoms and reject non-finite input" {
+    const allocator = std.testing.allocator;
+    const Lr = LeeRichardsGen(f32);
+    var empty = try Lr.calculateSasaAtoms(allocator, .{ .positions = &.{}, .radii = &.{} }, .{});
+    defer empty.deinit();
+    try std.testing.expectEqual(@as(usize, 0), empty.atom_areas.len);
+
+    const nan = [_]types.Vec3f32{.{ .x = std.math.nan(f32), .y = 0, .z = 0 }};
+    try std.testing.expectError(error.InvalidInput, Lr.calculateSasaParallelAtoms(allocator, .{ .positions = &nan, .radii = &[_]f32{1.5} }, .{}, 2));
 }

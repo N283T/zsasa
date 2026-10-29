@@ -67,3 +67,17 @@ fn posixDup2(old: i32, new: i32) bool {
 fn posixClose(fd: i32) void {
     _ = std.posix.system.close(fd);
 }
+
+/// Fill an irregular cluster of overlapping atoms: coordinates in f32, as
+/// trajectory readers deliver them, and radii in f64, as the topology holds
+/// them. The same seed gives the same cluster on every run.
+pub fn fillCluster(x: []f32, y: []f32, z: []f32, r: []f64) void {
+    var prng = std.Random.DefaultPrng.init(0x5a5a);
+    const random = prng.random();
+    for (x, y, z, r) |*xi, *yi, *zi, *ri| {
+        xi.* = random.float(f32) * 18.0 - 9.0;
+        yi.* = random.float(f32) * 18.0 - 9.0;
+        zi.* = random.float(f32) * 18.0 - 9.0;
+        ri.* = 1.2 + random.float(f64) * 0.8;
+    }
+}
