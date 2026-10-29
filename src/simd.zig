@@ -132,630 +132,109 @@ pub fn fastAtan2(y: f64, x: f64) f64 {
     return atan_r;
 }
 
-/// SIMD-optimized batch distance squared calculation.
-/// Process 4 positions simultaneously using @Vector(4, f64).
-///
-/// # Parameters
-/// - `point`: The test point to measure distances from
-/// - `positions`: Array of 4 Vec3 positions to measure to
-///
-/// # Returns
-/// Array of 4 squared distances
-pub fn distanceSquaredBatch4(
-    point: Vec3,
-    positions: [4]Vec3,
-) [4]f64 {
-    // Splat point coordinates into vectors
-    const px: @Vector(4, f64) = @splat(point.x);
-    const py: @Vector(4, f64) = @splat(point.y);
-    const pz: @Vector(4, f64) = @splat(point.z);
+// ============================================================================
+// Shrake-Rupley SIMD helpers
+// ============================================================================
+//
+// Each helper is written once, generic over the float type `T` (f32 or f64)
+// and the vector width `N`. The width-specific names further down
+// (`distanceSquaredBatch4`, `isPointBuriedBatch8Gen`, ...) are aliases of it.
 
-    // Load other positions into vectors
-    const ox = @Vector(4, f64){ positions[0].x, positions[1].x, positions[2].x, positions[3].x };
-    const oy = @Vector(4, f64){ positions[0].y, positions[1].y, positions[2].y, positions[3].y };
-    const oz = @Vector(4, f64){ positions[0].z, positions[1].z, positions[2].z, positions[3].z };
+/// SIMD batch squared-distance calculation: dx² + dy² + dz² from `point` to
+/// each of `N` positions, computed in one @Vector(N, T).
+pub fn DistanceSquaredBatch(comptime T: type, comptime N: usize) type {
+    const Vec = Vec3Gen(T);
+    return struct {
+        pub fn compute(point: Vec, positions: [N]Vec) [N]T {
+            // Splat point coordinates into vectors
+            const px: @Vector(N, T) = @splat(point.x);
+            const py: @Vector(N, T) = @splat(point.y);
+            const pz: @Vector(N, T) = @splat(point.z);
 
-    // Calculate differences
-    const dx = px - ox;
-    const dy = py - oy;
-    const dz = pz - oz;
+            // Load other positions into vectors
+            var ox: @Vector(N, T) = undefined;
+            var oy: @Vector(N, T) = undefined;
+            var oz: @Vector(N, T) = undefined;
+            inline for (0..N) |i| {
+                ox[i] = positions[i].x;
+                oy[i] = positions[i].y;
+                oz[i] = positions[i].z;
+            }
 
-    // Calculate squared distances: dx² + dy² + dz²
-    const dist_sq = dx * dx + dy * dy + dz * dz;
+            // Calculate differences
+            const dx = px - ox;
+            const dy = py - oy;
+            const dz = pz - oz;
 
-    return dist_sq;
-}
-
-/// Check if point is buried by any of 4 atoms.
-///
-/// # Parameters
-/// - `point`: The test point to check
-/// - `positions`: Array of 4 atom positions
-/// - `radii_sq`: Array of 4 pre-computed (radius + probe)² values
-///
-/// # Returns
-/// true if point is inside any of the 4 atoms, false otherwise
-pub fn isPointBuriedBatch4(
-    point: Vec3,
-    positions: [4]Vec3,
-    radii_sq: [4]f64,
-) bool {
-    const dist_sq = distanceSquaredBatch4(point, positions);
-    const radii_v: @Vector(4, f64) = radii_sq;
-    const dist_v: @Vector(4, f64) = dist_sq;
-
-    // Check if any distance < radius (point inside atom)
-    const inside = dist_v < radii_v;
-    return @reduce(.Or, inside);
-}
-
-/// SIMD-optimized batch distance squared calculation for 8 atoms.
-/// Process 8 positions simultaneously using @Vector(8, f64).
-///
-/// # Parameters
-/// - `point`: The test point to measure distances from
-/// - `positions`: Array of 8 Vec3 positions to measure to
-///
-/// # Returns
-/// Array of 8 squared distances
-pub fn distanceSquaredBatch8(
-    point: Vec3,
-    positions: [8]Vec3,
-) [8]f64 {
-    // Splat point coordinates into vectors
-    const px: @Vector(8, f64) = @splat(point.x);
-    const py: @Vector(8, f64) = @splat(point.y);
-    const pz: @Vector(8, f64) = @splat(point.z);
-
-    // Load other positions into vectors
-    const ox = @Vector(8, f64){
-        positions[0].x, positions[1].x, positions[2].x, positions[3].x,
-        positions[4].x, positions[5].x, positions[6].x, positions[7].x,
-    };
-    const oy = @Vector(8, f64){
-        positions[0].y, positions[1].y, positions[2].y, positions[3].y,
-        positions[4].y, positions[5].y, positions[6].y, positions[7].y,
-    };
-    const oz = @Vector(8, f64){
-        positions[0].z, positions[1].z, positions[2].z, positions[3].z,
-        positions[4].z, positions[5].z, positions[6].z, positions[7].z,
-    };
-
-    // Calculate differences
-    const dx = px - ox;
-    const dy = py - oy;
-    const dz = pz - oz;
-
-    // Calculate squared distances: dx² + dy² + dz²
-    const dist_sq = dx * dx + dy * dy + dz * dz;
-
-    return dist_sq;
-}
-
-/// Check if point is buried by any of 8 atoms.
-///
-/// # Parameters
-/// - `point`: The test point to check
-/// - `positions`: Array of 8 atom positions
-/// - `radii_sq`: Array of 8 pre-computed (radius + probe)² values
-///
-/// # Returns
-/// true if point is inside any of the 8 atoms, false otherwise
-pub fn isPointBuriedBatch8(
-    point: Vec3,
-    positions: [8]Vec3,
-    radii_sq: [8]f64,
-) bool {
-    const dist_sq = distanceSquaredBatch8(point, positions);
-    const radii_v: @Vector(8, f64) = radii_sq;
-    const dist_v: @Vector(8, f64) = dist_sq;
-
-    // Check if any distance < radius (point inside atom)
-    const inside = dist_v < radii_v;
-    return @reduce(.Or, inside);
-}
-
-/// SIMD-optimized batch distance squared calculation for 16 atoms.
-/// Process 16 positions simultaneously using @Vector(16, f64).
-/// Best performance on AVX-512 enabled CPUs.
-///
-/// # Parameters
-/// - `point`: The test point to measure distances from
-/// - `positions`: Array of 16 Vec3 positions to measure to
-///
-/// # Returns
-/// Array of 16 squared distances
-pub fn distanceSquaredBatch16(
-    point: Vec3,
-    positions: [16]Vec3,
-) [16]f64 {
-    // Splat point coordinates into vectors
-    const px: @Vector(16, f64) = @splat(point.x);
-    const py: @Vector(16, f64) = @splat(point.y);
-    const pz: @Vector(16, f64) = @splat(point.z);
-
-    // Load other positions into vectors
-    const ox = @Vector(16, f64){
-        positions[0].x,  positions[1].x,  positions[2].x,  positions[3].x,
-        positions[4].x,  positions[5].x,  positions[6].x,  positions[7].x,
-        positions[8].x,  positions[9].x,  positions[10].x, positions[11].x,
-        positions[12].x, positions[13].x, positions[14].x, positions[15].x,
-    };
-    const oy = @Vector(16, f64){
-        positions[0].y,  positions[1].y,  positions[2].y,  positions[3].y,
-        positions[4].y,  positions[5].y,  positions[6].y,  positions[7].y,
-        positions[8].y,  positions[9].y,  positions[10].y, positions[11].y,
-        positions[12].y, positions[13].y, positions[14].y, positions[15].y,
-    };
-    const oz = @Vector(16, f64){
-        positions[0].z,  positions[1].z,  positions[2].z,  positions[3].z,
-        positions[4].z,  positions[5].z,  positions[6].z,  positions[7].z,
-        positions[8].z,  positions[9].z,  positions[10].z, positions[11].z,
-        positions[12].z, positions[13].z, positions[14].z, positions[15].z,
-    };
-
-    // Calculate differences
-    const dx = px - ox;
-    const dy = py - oy;
-    const dz = pz - oz;
-
-    // Calculate squared distances: dx² + dy² + dz²
-    const dist_sq = dx * dx + dy * dy + dz * dz;
-
-    return dist_sq;
-}
-
-/// Check if point is buried by any of 16 atoms.
-///
-/// # Parameters
-/// - `point`: The test point to check
-/// - `positions`: Array of 16 atom positions
-/// - `radii_sq`: Array of 16 pre-computed (radius + probe)² values
-///
-/// # Returns
-/// true if point is inside any of the 16 atoms, false otherwise
-pub fn isPointBuriedBatch16(
-    point: Vec3,
-    positions: [16]Vec3,
-    radii_sq: [16]f64,
-) bool {
-    const dist_sq = distanceSquaredBatch16(point, positions);
-    const radii_v: @Vector(16, f64) = radii_sq;
-    const dist_v: @Vector(16, f64) = dist_sq;
-
-    // Check if any distance < radius (point inside atom)
-    const inside = dist_v < radii_v;
-    return @reduce(.Or, inside);
-}
-
-// Tests
-
-test "distanceSquaredBatch4 - correctness" {
-    const point = Vec3{ .x = 0, .y = 0, .z = 0 };
-    const positions = [4]Vec3{
-        Vec3{ .x = 1, .y = 0, .z = 0 }, // dist² = 1
-        Vec3{ .x = 0, .y = 2, .z = 0 }, // dist² = 4
-        Vec3{ .x = 0, .y = 0, .z = 3 }, // dist² = 9
-        Vec3{ .x = 1, .y = 1, .z = 1 }, // dist² = 3
-    };
-
-    const result = distanceSquaredBatch4(point, positions);
-    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result[0], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 4.0), result[1], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 9.0), result[2], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 3.0), result[3], 1e-10);
-}
-
-test "distanceSquaredBatch4 - non-origin point" {
-    const point = Vec3{ .x = 1, .y = 2, .z = 3 };
-    const positions = [4]Vec3{
-        Vec3{ .x = 1, .y = 2, .z = 3 }, // dist² = 0
-        Vec3{ .x = 2, .y = 2, .z = 3 }, // dist² = 1
-        Vec3{ .x = 1, .y = 4, .z = 3 }, // dist² = 4
-        Vec3{ .x = 4, .y = 6, .z = 3 }, // dist² = 9 + 16 = 25
-    };
-
-    const result = distanceSquaredBatch4(point, positions);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.0), result[0], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result[1], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 4.0), result[2], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 25.0), result[3], 1e-10);
-}
-
-test "isPointBuriedBatch4 - none inside" {
-    const point = Vec3{ .x = 0, .y = 0, .z = 0 };
-    const positions = [4]Vec3{
-        Vec3{ .x = 10, .y = 0, .z = 0 }, // dist² = 100
-        Vec3{ .x = 0, .y = 10, .z = 0 }, // dist² = 100
-        Vec3{ .x = 0, .y = 0, .z = 10 }, // dist² = 100
-        Vec3{ .x = 10, .y = 10, .z = 10 }, // dist² = 300
-    };
-    const radii_sq = [4]f64{ 1.0, 1.0, 1.0, 1.0 }; // All radii² = 1
-
-    try std.testing.expect(!isPointBuriedBatch4(point, positions, radii_sq));
-}
-
-test "isPointBuriedBatch4 - one inside (first)" {
-    const point = Vec3{ .x = 0.5, .y = 0, .z = 0 };
-    const positions = [4]Vec3{
-        Vec3{ .x = 0, .y = 0, .z = 0 }, // dist² = 0.25 < 1.0
-        Vec3{ .x = 10, .y = 0, .z = 0 }, // far
-        Vec3{ .x = 10, .y = 0, .z = 0 }, // far
-        Vec3{ .x = 10, .y = 0, .z = 0 }, // far
-    };
-    const radii_sq = [4]f64{ 1.0, 1.0, 1.0, 1.0 };
-
-    try std.testing.expect(isPointBuriedBatch4(point, positions, radii_sq));
-}
-
-test "isPointBuriedBatch4 - one inside (last)" {
-    const point = Vec3{ .x = 0.5, .y = 0, .z = 0 };
-    const positions = [4]Vec3{
-        Vec3{ .x = 10, .y = 0, .z = 0 }, // far
-        Vec3{ .x = 10, .y = 0, .z = 0 }, // far
-        Vec3{ .x = 10, .y = 0, .z = 0 }, // far
-        Vec3{ .x = 0, .y = 0, .z = 0 }, // dist² = 0.25 < 1.0
-    };
-    const radii_sq = [4]f64{ 1.0, 1.0, 1.0, 1.0 };
-
-    try std.testing.expect(isPointBuriedBatch4(point, positions, radii_sq));
-}
-
-test "isPointBuriedBatch4 - boundary case (exactly on radius)" {
-    const point = Vec3{ .x = 1.0, .y = 0, .z = 0 };
-    const positions = [4]Vec3{
-        Vec3{ .x = 0, .y = 0, .z = 0 }, // dist² = 1.0 == radius²
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-    };
-    const radii_sq = [4]f64{ 1.0, 1.0, 1.0, 1.0 };
-
-    // dist² == radius² means NOT inside (we use < not <=)
-    try std.testing.expect(!isPointBuriedBatch4(point, positions, radii_sq));
-}
-
-test "isPointBuriedBatch4 - all inside" {
-    const point = Vec3{ .x = 0, .y = 0, .z = 0 };
-    const positions = [4]Vec3{
-        Vec3{ .x = 0.1, .y = 0, .z = 0 },
-        Vec3{ .x = 0, .y = 0.1, .z = 0 },
-        Vec3{ .x = 0, .y = 0, .z = 0.1 },
-        Vec3{ .x = 0.05, .y = 0.05, .z = 0 },
-    };
-    const radii_sq = [4]f64{ 1.0, 1.0, 1.0, 1.0 };
-
-    try std.testing.expect(isPointBuriedBatch4(point, positions, radii_sq));
-}
-
-test "distanceSquaredBatch8 - correctness" {
-    const point = Vec3{ .x = 0, .y = 0, .z = 0 };
-    const positions = [8]Vec3{
-        Vec3{ .x = 1, .y = 0, .z = 0 }, // dist² = 1
-        Vec3{ .x = 0, .y = 2, .z = 0 }, // dist² = 4
-        Vec3{ .x = 0, .y = 0, .z = 3 }, // dist² = 9
-        Vec3{ .x = 1, .y = 1, .z = 1 }, // dist² = 3
-        Vec3{ .x = 2, .y = 0, .z = 0 }, // dist² = 4
-        Vec3{ .x = 0, .y = 3, .z = 0 }, // dist² = 9
-        Vec3{ .x = 0, .y = 0, .z = 4 }, // dist² = 16
-        Vec3{ .x = 1, .y = 1, .z = 0 }, // dist² = 2
-    };
-
-    const result = distanceSquaredBatch8(point, positions);
-    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result[0], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 4.0), result[1], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 9.0), result[2], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 3.0), result[3], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 4.0), result[4], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 9.0), result[5], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 16.0), result[6], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 2.0), result[7], 1e-10);
-}
-
-test "isPointBuriedBatch8 - none inside" {
-    const point = Vec3{ .x = 0, .y = 0, .z = 0 };
-    const positions = [8]Vec3{
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 0, .y = 10, .z = 0 },
-        Vec3{ .x = 0, .y = 0, .z = 10 },
-        Vec3{ .x = 10, .y = 10, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 10 },
-        Vec3{ .x = 0, .y = 10, .z = 10 },
-        Vec3{ .x = 10, .y = 10, .z = 10 },
-        Vec3{ .x = 5, .y = 5, .z = 5 },
-    };
-    const radii_sq = [8]f64{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
-
-    try std.testing.expect(!isPointBuriedBatch8(point, positions, radii_sq));
-}
-
-test "isPointBuriedBatch8 - one inside (first)" {
-    const point = Vec3{ .x = 0.5, .y = 0, .z = 0 };
-    const positions = [8]Vec3{
-        Vec3{ .x = 0, .y = 0, .z = 0 }, // dist² = 0.25 < 1.0
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-    };
-    const radii_sq = [8]f64{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
-
-    try std.testing.expect(isPointBuriedBatch8(point, positions, radii_sq));
-}
-
-test "isPointBuriedBatch8 - one inside (last)" {
-    const point = Vec3{ .x = 0.5, .y = 0, .z = 0 };
-    const positions = [8]Vec3{
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 0, .y = 0, .z = 0 }, // dist² = 0.25 < 1.0
-    };
-    const radii_sq = [8]f64{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
-
-    try std.testing.expect(isPointBuriedBatch8(point, positions, radii_sq));
-}
-
-test "isPointBuriedBatch8 - boundary case (exactly on radius)" {
-    const point = Vec3{ .x = 1.0, .y = 0, .z = 0 };
-    const positions = [8]Vec3{
-        Vec3{ .x = 0, .y = 0, .z = 0 }, // dist² = 1.0 == radius²
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-        Vec3{ .x = 10, .y = 0, .z = 0 },
-    };
-    const radii_sq = [8]f64{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
-
-    // dist² == radius² means NOT inside (we use < not <=)
-    try std.testing.expect(!isPointBuriedBatch8(point, positions, radii_sq));
-}
-
-test "distanceSquaredBatch16 - correctness" {
-    const point = Vec3{ .x = 0, .y = 0, .z = 0 };
-    const positions = [16]Vec3{
-        Vec3{ .x = 1, .y = 0, .z = 0 }, // dist² = 1
-        Vec3{ .x = 0, .y = 2, .z = 0 }, // dist² = 4
-        Vec3{ .x = 0, .y = 0, .z = 3 }, // dist² = 9
-        Vec3{ .x = 1, .y = 1, .z = 1 }, // dist² = 3
-        Vec3{ .x = 2, .y = 0, .z = 0 }, // dist² = 4
-        Vec3{ .x = 0, .y = 3, .z = 0 }, // dist² = 9
-        Vec3{ .x = 0, .y = 0, .z = 4 }, // dist² = 16
-        Vec3{ .x = 1, .y = 1, .z = 0 }, // dist² = 2
-        Vec3{ .x = 3, .y = 0, .z = 0 }, // dist² = 9
-        Vec3{ .x = 0, .y = 4, .z = 0 }, // dist² = 16
-        Vec3{ .x = 0, .y = 0, .z = 5 }, // dist² = 25
-        Vec3{ .x = 2, .y = 2, .z = 0 }, // dist² = 8
-        Vec3{ .x = 1, .y = 2, .z = 2 }, // dist² = 9
-        Vec3{ .x = 2, .y = 1, .z = 2 }, // dist² = 9
-        Vec3{ .x = 2, .y = 2, .z = 1 }, // dist² = 9
-        Vec3{ .x = 1, .y = 0, .z = 1 }, // dist² = 2
-    };
-
-    const result = distanceSquaredBatch16(point, positions);
-    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result[0], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 4.0), result[1], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 9.0), result[2], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 3.0), result[3], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 4.0), result[4], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 9.0), result[5], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 16.0), result[6], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 2.0), result[7], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 9.0), result[8], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 16.0), result[9], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 25.0), result[10], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 8.0), result[11], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 9.0), result[12], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 9.0), result[13], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 9.0), result[14], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 2.0), result[15], 1e-10);
-}
-
-test "isPointBuriedBatch16 - none inside" {
-    const point = Vec3{ .x = 0, .y = 0, .z = 0 };
-    var positions: [16]Vec3 = undefined;
-    for (0..16) |i| {
-        positions[i] = Vec3{
-            .x = 10.0 + @as(f64, @floatFromInt(i)),
-            .y = 0,
-            .z = 0,
-        };
-    }
-    const radii_sq = [16]f64{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
-
-    try std.testing.expect(!isPointBuriedBatch16(point, positions, radii_sq));
-}
-
-test "isPointBuriedBatch16 - one inside (first)" {
-    const point = Vec3{ .x = 0.5, .y = 0, .z = 0 };
-    var positions: [16]Vec3 = undefined;
-    positions[0] = Vec3{ .x = 0, .y = 0, .z = 0 }; // dist² = 0.25 < 1.0
-    for (1..16) |i| {
-        positions[i] = Vec3{ .x = 10, .y = 0, .z = 0 }; // far
-    }
-    const radii_sq = [16]f64{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
-
-    try std.testing.expect(isPointBuriedBatch16(point, positions, radii_sq));
-}
-
-test "isPointBuriedBatch16 - one inside (last)" {
-    const point = Vec3{ .x = 0.5, .y = 0, .z = 0 };
-    var positions: [16]Vec3 = undefined;
-    for (0..15) |i| {
-        positions[i] = Vec3{ .x = 10, .y = 0, .z = 0 }; // far
-    }
-    positions[15] = Vec3{ .x = 0, .y = 0, .z = 0 }; // dist² = 0.25 < 1.0
-    const radii_sq = [16]f64{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
-
-    try std.testing.expect(isPointBuriedBatch16(point, positions, radii_sq));
-}
-
-test "isPointBuriedBatch16 - one inside (middle)" {
-    const point = Vec3{ .x = 0.5, .y = 0, .z = 0 };
-    var positions: [16]Vec3 = undefined;
-    for (0..16) |i| {
-        if (i == 8) {
-            positions[i] = Vec3{ .x = 0, .y = 0, .z = 0 }; // dist² = 0.25 < 1.0
-        } else {
-            positions[i] = Vec3{ .x = 10, .y = 0, .z = 0 }; // far
+            // Calculate squared distances: dx² + dy² + dz²
+            return dx * dx + dy * dy + dz * dz;
         }
-    }
-    const radii_sq = [16]f64{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
-
-    try std.testing.expect(isPointBuriedBatch16(point, positions, radii_sq));
+    };
 }
 
-// ============================================================================
-// Generic SIMD functions (f32/f64)
-// ============================================================================
+/// Check if a point is buried by any of `N` atoms.
+///
+/// `compute(point, positions, radii_sq)` returns true if the squared distance
+/// from `point` to some position is below its pre-computed (radius + probe)²
+/// in `radii_sq`. A point exactly on the radius is not buried.
+pub fn IsPointBuriedBatch(comptime T: type, comptime N: usize) type {
+    const Vec = Vec3Gen(T);
+    return struct {
+        pub fn compute(point: Vec, positions: [N]Vec, radii_sq: [N]T) bool {
+            const dist_sq = DistanceSquaredBatch(T, N).compute(point, positions);
+            const radii_v: @Vector(N, T) = radii_sq;
+            const dist_v: @Vector(N, T) = dist_sq;
 
-/// Generic SIMD-optimized batch distance squared calculation (4-wide).
-/// Works with both f32 and f64.
+            // Check if any distance < radius (point inside atom)
+            const inside = dist_v < radii_v;
+            return @reduce(.Or, inside);
+        }
+    };
+}
+
+/// Squared distances from `point` to 4 positions (f64).
+pub const distanceSquaredBatch4 = DistanceSquaredBatch(f64, 4).compute;
+/// Squared distances from `point` to 8 positions (f64).
+pub const distanceSquaredBatch8 = DistanceSquaredBatch(f64, 8).compute;
+/// Squared distances from `point` to 16 positions (f64). Best on AVX-512.
+pub const distanceSquaredBatch16 = DistanceSquaredBatch(f64, 16).compute;
+
+/// Whether `point` is buried by any of 4 atoms (f64).
+pub const isPointBuriedBatch4 = IsPointBuriedBatch(f64, 4).compute;
+/// Whether `point` is buried by any of 8 atoms (f64).
+pub const isPointBuriedBatch8 = IsPointBuriedBatch(f64, 8).compute;
+/// Whether `point` is buried by any of 16 atoms (f64). Best on AVX-512.
+pub const isPointBuriedBatch16 = IsPointBuriedBatch(f64, 16).compute;
+
+/// `DistanceSquaredBatch(T, 4)`.
 pub fn distanceSquaredBatch4Gen(comptime T: type) type {
-    const Vec = Vec3Gen(T);
-    return struct {
-        pub fn compute(point: Vec, positions: [4]Vec) [4]T {
-            const px: @Vector(4, T) = @splat(point.x);
-            const py: @Vector(4, T) = @splat(point.y);
-            const pz: @Vector(4, T) = @splat(point.z);
-
-            const ox = @Vector(4, T){ positions[0].x, positions[1].x, positions[2].x, positions[3].x };
-            const oy = @Vector(4, T){ positions[0].y, positions[1].y, positions[2].y, positions[3].y };
-            const oz = @Vector(4, T){ positions[0].z, positions[1].z, positions[2].z, positions[3].z };
-
-            const dx = px - ox;
-            const dy = py - oy;
-            const dz = pz - oz;
-
-            return dx * dx + dy * dy + dz * dz;
-        }
-    };
+    return DistanceSquaredBatch(T, 4);
 }
-
-/// Generic check if point is buried by any of 4 atoms.
-pub fn isPointBuriedBatch4Gen(comptime T: type) type {
-    const Vec = Vec3Gen(T);
-    return struct {
-        pub fn compute(point: Vec, positions: [4]Vec, radii_sq: [4]T) bool {
-            const dist_sq = distanceSquaredBatch4Gen(T).compute(point, positions);
-            const radii_v: @Vector(4, T) = radii_sq;
-            const dist_v: @Vector(4, T) = dist_sq;
-
-            const inside = dist_v < radii_v;
-            return @reduce(.Or, inside);
-        }
-    };
-}
-
-/// Generic SIMD-optimized batch distance squared calculation (8-wide).
-/// Works with both f32 and f64.
+/// `DistanceSquaredBatch(T, 8)`.
 pub fn distanceSquaredBatch8Gen(comptime T: type) type {
-    const Vec = Vec3Gen(T);
-    return struct {
-        pub fn compute(point: Vec, positions: [8]Vec) [8]T {
-            const px: @Vector(8, T) = @splat(point.x);
-            const py: @Vector(8, T) = @splat(point.y);
-            const pz: @Vector(8, T) = @splat(point.z);
-
-            const ox = @Vector(8, T){
-                positions[0].x, positions[1].x, positions[2].x, positions[3].x,
-                positions[4].x, positions[5].x, positions[6].x, positions[7].x,
-            };
-            const oy = @Vector(8, T){
-                positions[0].y, positions[1].y, positions[2].y, positions[3].y,
-                positions[4].y, positions[5].y, positions[6].y, positions[7].y,
-            };
-            const oz = @Vector(8, T){
-                positions[0].z, positions[1].z, positions[2].z, positions[3].z,
-                positions[4].z, positions[5].z, positions[6].z, positions[7].z,
-            };
-
-            const dx = px - ox;
-            const dy = py - oy;
-            const dz = pz - oz;
-
-            return dx * dx + dy * dy + dz * dz;
-        }
-    };
+    return DistanceSquaredBatch(T, 8);
 }
-
-/// Generic check if point is buried by any of 8 atoms.
-pub fn isPointBuriedBatch8Gen(comptime T: type) type {
-    const Vec = Vec3Gen(T);
-    return struct {
-        pub fn compute(point: Vec, positions: [8]Vec, radii_sq: [8]T) bool {
-            const dist_sq = distanceSquaredBatch8Gen(T).compute(point, positions);
-            const radii_v: @Vector(8, T) = radii_sq;
-            const dist_v: @Vector(8, T) = dist_sq;
-
-            const inside = dist_v < radii_v;
-            return @reduce(.Or, inside);
-        }
-    };
-}
-
-/// Generic SIMD-optimized batch distance squared calculation (16-wide).
-/// Works with both f32 and f64. Best performance on AVX-512 enabled CPUs.
+/// `DistanceSquaredBatch(T, 16)`.
 pub fn distanceSquaredBatch16Gen(comptime T: type) type {
-    const Vec = Vec3Gen(T);
-    return struct {
-        pub fn compute(point: Vec, positions: [16]Vec) [16]T {
-            const px: @Vector(16, T) = @splat(point.x);
-            const py: @Vector(16, T) = @splat(point.y);
-            const pz: @Vector(16, T) = @splat(point.z);
-
-            const ox = @Vector(16, T){
-                positions[0].x,  positions[1].x,  positions[2].x,  positions[3].x,
-                positions[4].x,  positions[5].x,  positions[6].x,  positions[7].x,
-                positions[8].x,  positions[9].x,  positions[10].x, positions[11].x,
-                positions[12].x, positions[13].x, positions[14].x, positions[15].x,
-            };
-            const oy = @Vector(16, T){
-                positions[0].y,  positions[1].y,  positions[2].y,  positions[3].y,
-                positions[4].y,  positions[5].y,  positions[6].y,  positions[7].y,
-                positions[8].y,  positions[9].y,  positions[10].y, positions[11].y,
-                positions[12].y, positions[13].y, positions[14].y, positions[15].y,
-            };
-            const oz = @Vector(16, T){
-                positions[0].z,  positions[1].z,  positions[2].z,  positions[3].z,
-                positions[4].z,  positions[5].z,  positions[6].z,  positions[7].z,
-                positions[8].z,  positions[9].z,  positions[10].z, positions[11].z,
-                positions[12].z, positions[13].z, positions[14].z, positions[15].z,
-            };
-
-            const dx = px - ox;
-            const dy = py - oy;
-            const dz = pz - oz;
-
-            return dx * dx + dy * dy + dz * dz;
-        }
-    };
+    return DistanceSquaredBatch(T, 16);
 }
 
-/// Generic check if point is buried by any of 16 atoms.
+/// `IsPointBuriedBatch(T, 4)`.
+pub fn isPointBuriedBatch4Gen(comptime T: type) type {
+    return IsPointBuriedBatch(T, 4);
+}
+/// `IsPointBuriedBatch(T, 8)`.
+pub fn isPointBuriedBatch8Gen(comptime T: type) type {
+    return IsPointBuriedBatch(T, 8);
+}
+/// `IsPointBuriedBatch(T, 16)`.
 pub fn isPointBuriedBatch16Gen(comptime T: type) type {
-    const Vec = Vec3Gen(T);
-    return struct {
-        pub fn compute(point: Vec, positions: [16]Vec, radii_sq: [16]T) bool {
-            const dist_sq = distanceSquaredBatch16Gen(T).compute(point, positions);
-            const radii_v: @Vector(16, T) = radii_sq;
-            const dist_v: @Vector(16, T) = dist_sq;
-
-            const inside = dist_v < radii_v;
-            return @reduce(.Or, inside);
-        }
-    };
+    return IsPointBuriedBatch(T, 16);
 }
+
+// ============================================================================
+// Generic fast approximate trigonometric functions (f32/f64)
+// ============================================================================
 
 /// Generic fast approximate acos using polynomial approximation.
 /// Same polynomial as `fastAcos`. Max error, measured over [-1, 1] for f32 and
@@ -826,235 +305,333 @@ pub fn fastAtan2Gen(comptime T: type) type {
 // ============================================================================
 // Lee-Richards SIMD helpers
 // ============================================================================
+//
+// Written once, generic over the float type `T` and the vector width `N`, as
+// above; the width-specific names further down are aliases.
 
-/// SIMD-optimized batch xy-distance calculation for Lee-Richards.
-/// Computes sqrt(dx² + dy²) for 4 neighbors simultaneously.
+/// SIMD batch xy-distance calculation for Lee-Richards.
 ///
-/// # Parameters
-/// - `xi`, `yi`: Coordinates of the reference atom
-/// - `x_neighbors`, `y_neighbors`: Arrays of 4 neighbor x/y coordinates
-///
-/// # Returns
-/// Array of 4 xy-distances
-pub fn xyDistanceBatch4(
-    xi: f64,
-    yi: f64,
-    x_neighbors: [4]f64,
-    y_neighbors: [4]f64,
-) [4]f64 {
-    const px: @Vector(4, f64) = @splat(xi);
-    const py: @Vector(4, f64) = @splat(yi);
+/// `compute(xi, yi, x_neighbors, y_neighbors)` returns sqrt(dx² + dy²) from
+/// the reference atom at (`xi`, `yi`) to each of `N` neighbors.
+pub fn XyDistanceBatch(comptime T: type, comptime N: usize) type {
+    return struct {
+        pub fn compute(
+            xi: T,
+            yi: T,
+            x_neighbors: [N]T,
+            y_neighbors: [N]T,
+        ) [N]T {
+            const px: @Vector(N, T) = @splat(xi);
+            const py: @Vector(N, T) = @splat(yi);
 
-    const nx: @Vector(4, f64) = x_neighbors;
-    const ny: @Vector(4, f64) = y_neighbors;
+            const nx: @Vector(N, T) = x_neighbors;
+            const ny: @Vector(N, T) = y_neighbors;
 
-    const dx = nx - px;
-    const dy = ny - py;
+            const dx = nx - px;
+            const dy = ny - py;
 
-    const dist_sq = dx * dx + dy * dy;
-    const dist = @sqrt(dist_sq);
-
-    return dist;
+            const dist_sq = dx * dx + dy * dy;
+            const result: @Vector(N, T) = @sqrt(dist_sq);
+            return result;
+        }
+    };
 }
 
-/// Compute slice radii (Rj' = sqrt(Rj² - dj²)) for 4 neighbors.
-/// Returns 0 for neighbors that don't intersect the slice (dj >= Rj).
+/// Slice radii (Rj' = sqrt(Rj² - dj²)) for `N` neighbors.
 ///
-/// # Parameters
-/// - `slice_z`: Z-coordinate of the current slice
-/// - `z_neighbors`: Array of 4 neighbor z-coordinates
-/// - `radii`: Array of 4 neighbor radii
+/// `compute(slice_z, z_neighbors, radii)` returns 0 for a neighbor that does
+/// not intersect the slice at `slice_z` (dj >= Rj).
+pub fn SliceRadiiBatch(comptime T: type, comptime N: usize) type {
+    return struct {
+        pub fn compute(
+            slice_z: T,
+            z_neighbors: [N]T,
+            radii: [N]T,
+        ) [N]T {
+            const sz: @Vector(N, T) = @splat(slice_z);
+            const zn: @Vector(N, T) = z_neighbors;
+            const rn: @Vector(N, T) = radii;
+
+            const dz = zn - sz;
+            const dz_sq = dz * dz;
+            const r_sq = rn * rn;
+
+            // Rj_prime² = Rj² - dj²
+            const rp_sq = r_sq - dz_sq;
+
+            // Clamp negative values to 0 (no intersection)
+            const zero: @Vector(N, T) = @splat(0.0);
+            const rp_sq_clamped = @max(rp_sq, zero);
+
+            const result: @Vector(N, T) = @sqrt(rp_sq_clamped);
+            return result;
+        }
+    };
+}
+
+/// Check if circles overlap (dij < Ri' + Rj') for `N` neighbors.
 ///
-/// # Returns
-/// Array of 4 slice radii (0 if no intersection)
-pub fn sliceRadiiBatch4(
-    slice_z: f64,
-    z_neighbors: [4]f64,
-    radii: [4]f64,
-) [4]f64 {
-    const sz: @Vector(4, f64) = @splat(slice_z);
-    const zn: @Vector(4, f64) = z_neighbors;
-    const rn: @Vector(4, f64) = radii;
+/// `compute(dij, ri_prime, rj_primes)` returns a bitmask in which bit i is set
+/// if the circle of neighbor i overlaps the one of the reference atom.
+pub fn CirclesOverlapBatch(comptime T: type, comptime N: usize) type {
+    return struct {
+        pub fn compute(
+            dij: [N]T,
+            ri_prime: T,
+            rj_primes: [N]T,
+        ) std.meta.Int(.unsigned, N) {
+            const d: @Vector(N, T) = dij;
+            const ri: @Vector(N, T) = @splat(ri_prime);
+            const rj: @Vector(N, T) = rj_primes;
 
-    const dz = zn - sz;
-    const dz_sq = dz * dz;
-    const r_sq = rn * rn;
+            const sum_radii = ri + rj;
+            const overlaps = d < sum_radii;
 
-    // Rj_prime² = Rj² - dj²
-    const rp_sq = r_sq - dz_sq;
+            // Cross-platform packed bit layout: @Vector(N, bool) layout is target-defined
+            // in Zig 0.16+. Forcing through @Vector(N, u1) before @bitCast guarantees a
+            // packed uN result on all platforms (Linux x86_64 regression caught in CI).
+            return @bitCast(@as(@Vector(N, u1), @intFromBool(overlaps)));
+        }
+    };
+}
 
-    // Clamp negative values to 0 (no intersection)
-    const zero: @Vector(4, f64) = @splat(0.0);
-    const rp_sq_clamped = @max(rp_sq, zero);
+/// xy-distances to 4 neighbors (f64).
+pub const xyDistanceBatch4 = XyDistanceBatch(f64, 4).compute;
+/// xy-distances to 8 neighbors (f64).
+pub const xyDistanceBatch8 = XyDistanceBatch(f64, 8).compute;
+/// Slice radii of 4 neighbors (f64).
+pub const sliceRadiiBatch4 = SliceRadiiBatch(f64, 4).compute;
+/// Slice radii of 8 neighbors (f64).
+pub const sliceRadiiBatch8 = SliceRadiiBatch(f64, 8).compute;
+/// Overlap bitmask (u4) of 4 neighbors (f64).
+pub const circlesOverlapBatch4 = CirclesOverlapBatch(f64, 4).compute;
+/// Overlap bitmask (u8) of 8 neighbors (f64).
+pub const circlesOverlapBatch8 = CirclesOverlapBatch(f64, 8).compute;
 
-    const result: @Vector(4, f64) = @sqrt(rp_sq_clamped);
+/// `XyDistanceBatch(T, 4)`.
+pub fn xyDistanceBatch4Gen(comptime T: type) type {
+    return XyDistanceBatch(T, 4);
+}
+/// `XyDistanceBatch(T, 8)`.
+pub fn xyDistanceBatch8Gen(comptime T: type) type {
+    return XyDistanceBatch(T, 8);
+}
+/// `SliceRadiiBatch(T, 4)`.
+pub fn sliceRadiiBatch4Gen(comptime T: type) type {
+    return SliceRadiiBatch(T, 4);
+}
+/// `SliceRadiiBatch(T, 8)`.
+pub fn sliceRadiiBatch8Gen(comptime T: type) type {
+    return SliceRadiiBatch(T, 8);
+}
+/// `CirclesOverlapBatch(T, 4)`.
+pub fn circlesOverlapBatch4Gen(comptime T: type) type {
+    return CirclesOverlapBatch(T, 4);
+}
+/// `CirclesOverlapBatch(T, 8)`.
+pub fn circlesOverlapBatch8Gen(comptime T: type) type {
+    return CirclesOverlapBatch(T, 8);
+}
+
+// ============================================================================
+// Batch helper tests, run for every width and both float types
+// ============================================================================
+
+const float_types = .{ f64, f32 };
+const sr_widths = .{ 4, 8, 16 };
+const lr_widths = .{ 4, 8 };
+
+fn testTolerance(comptime T: type) T {
+    return if (T == f64) 1e-10 else 1e-5;
+}
+
+fn testVec(comptime T: type, x: f64, y: f64, z: f64) Vec3Gen(T) {
+    return .{ .x = @floatCast(x), .y = @floatCast(y), .z = @floatCast(z) };
+}
+
+/// The first `n` values of `values`, as `T`.
+fn testArray(comptime T: type, comptime n: usize, values: anytype) [n]T {
+    var result: [n]T = undefined;
+    for (&result, values[0..n]) |*r, v| r.* = @floatCast(v);
     return result;
 }
 
-/// Check if circles overlap (dij < Ri' + Rj') for 4 neighbors.
-///
-/// # Parameters
-/// - `dij`: Array of 4 xy-distances
-/// - `ri_prime`: Slice radius of reference atom
-/// - `rj_primes`: Array of 4 neighbor slice radii
-///
-/// # Returns
-/// Bitmask where bit i is set if circles overlap
-pub fn circlesOverlapBatch4(
-    dij: [4]f64,
-    ri_prime: f64,
-    rj_primes: [4]f64,
-) u4 {
-    const d: @Vector(4, f64) = dij;
-    const ri: @Vector(4, f64) = @splat(ri_prime);
-    const rj: @Vector(4, f64) = rj_primes;
-
-    const sum_radii = ri + rj;
-    const overlaps = d < sum_radii;
-
-    // Cross-platform packed bit layout: @Vector(N, bool) layout is target-defined
-    // in Zig 0.16+. Forcing through @Vector(N, u1) before @bitCast guarantees a
-    // packed uN result on all platforms (Linux x86_64 regression caught in CI).
-    return @bitCast(@as(@Vector(4, u1), @intFromBool(overlaps)));
+/// A batch of `n` atoms at (10, 0, 0), far from points near the origin, all
+/// with radius² 1.
+fn FarBatch(comptime T: type, comptime n: usize) type {
+    return struct {
+        positions: [n]Vec3Gen(T) = @splat(.{ .x = 10, .y = 0, .z = 0 }),
+        radii_sq: [n]T = @splat(1.0),
+    };
 }
 
-/// SIMD-optimized batch xy-distance calculation for Lee-Richards (8-wide).
-/// Computes sqrt(dx² + dy²) for 8 neighbors simultaneously.
-///
-/// # Parameters
-/// - `xi`, `yi`: Coordinates of the reference atom
-/// - `x_neighbors`, `y_neighbors`: Arrays of 8 neighbor x/y coordinates
-///
-/// # Returns
-/// Array of 8 xy-distances
-pub fn xyDistanceBatch8(
-    xi: f64,
-    yi: f64,
-    x_neighbors: [8]f64,
-    y_neighbors: [8]f64,
-) [8]f64 {
-    const px: @Vector(8, f64) = @splat(xi);
-    const py: @Vector(8, f64) = @splat(yi);
+// Positions around the origin and their squared distances to it. A width-n
+// test uses the first n.
+const test_dist_sq_positions = [16][3]f64{
+    .{ 1, 0, 0 }, .{ 0, 2, 0 }, .{ 0, 0, 3 }, .{ 1, 1, 1 },
+    .{ 2, 0, 0 }, .{ 0, 3, 0 }, .{ 0, 0, 4 }, .{ 1, 1, 0 },
+    .{ 3, 0, 0 }, .{ 0, 4, 0 }, .{ 0, 0, 5 }, .{ 2, 2, 0 },
+    .{ 1, 2, 2 }, .{ 2, 1, 2 }, .{ 2, 2, 1 }, .{ 1, 0, 1 },
+};
+const test_dist_sq_expected = [16]f64{ 1, 4, 9, 3, 4, 9, 16, 2, 9, 16, 25, 8, 9, 9, 9, 2 };
 
-    const nx: @Vector(8, f64) = x_neighbors;
-    const ny: @Vector(8, f64) = y_neighbors;
+test "DistanceSquaredBatch - correctness" {
+    inline for (float_types) |T| {
+        inline for (sr_widths) |n| {
+            var positions: [n]Vec3Gen(T) = undefined;
+            for (&positions, test_dist_sq_positions[0..n]) |*p, c| p.* = testVec(T, c[0], c[1], c[2]);
 
-    const dx = nx - px;
-    const dy = ny - py;
-
-    const dist_sq = dx * dx + dy * dy;
-    const dist = @sqrt(dist_sq);
-
-    return dist;
+            const result = DistanceSquaredBatch(T, n).compute(testVec(T, 0, 0, 0), positions);
+            for (result, test_dist_sq_expected[0..n]) |actual, expected| {
+                try std.testing.expectApproxEqAbs(@as(T, @floatCast(expected)), actual, testTolerance(T));
+            }
+        }
+    }
 }
 
-/// Compute slice radii (Rj' = sqrt(Rj² - dj²)) for 8 neighbors.
-/// Returns 0 for neighbors that don't intersect the slice (dj >= Rj).
-///
-/// # Parameters
-/// - `slice_z`: Z-coordinate of the current slice
-/// - `z_neighbors`: Array of 8 neighbor z-coordinates
-/// - `radii`: Array of 8 neighbor radii
-///
-/// # Returns
-/// Array of 8 slice radii (0 if no intersection)
-pub fn sliceRadiiBatch8(
-    slice_z: f64,
-    z_neighbors: [8]f64,
-    radii: [8]f64,
-) [8]f64 {
-    const sz: @Vector(8, f64) = @splat(slice_z);
-    const zn: @Vector(8, f64) = z_neighbors;
-    const rn: @Vector(8, f64) = radii;
+test "DistanceSquaredBatch - non-origin point" {
+    inline for (float_types) |T| {
+        const positions = [4]Vec3Gen(T){
+            testVec(T, 1, 2, 3), // dist² = 0
+            testVec(T, 2, 2, 3), // dist² = 1
+            testVec(T, 1, 4, 3), // dist² = 4
+            testVec(T, 4, 6, 3), // dist² = 9 + 16 = 25
+        };
 
-    const dz = zn - sz;
-    const dz_sq = dz * dz;
-    const r_sq = rn * rn;
-
-    // Rj_prime² = Rj² - dj²
-    const rp_sq = r_sq - dz_sq;
-
-    // Clamp negative values to 0 (no intersection)
-    const zero: @Vector(8, f64) = @splat(0.0);
-    const rp_sq_clamped = @max(rp_sq, zero);
-
-    const result: @Vector(8, f64) = @sqrt(rp_sq_clamped);
-    return result;
+        const result = distanceSquaredBatch4Gen(T).compute(testVec(T, 1, 2, 3), positions);
+        const expected = [4]T{ 0, 1, 4, 25 };
+        for (result, expected) |a, e| try std.testing.expectApproxEqAbs(e, a, testTolerance(T));
+    }
 }
 
-/// Check if circles overlap (dij < Ri' + Rj') for 8 neighbors.
-///
-/// # Parameters
-/// - `dij`: Array of 8 xy-distances
-/// - `ri_prime`: Slice radius of reference atom
-/// - `rj_primes`: Array of 8 neighbor slice radii
-///
-/// # Returns
-/// Bitmask where bit i is set if circles overlap
-pub fn circlesOverlapBatch8(
-    dij: [8]f64,
-    ri_prime: f64,
-    rj_primes: [8]f64,
-) u8 {
-    const d: @Vector(8, f64) = dij;
-    const ri: @Vector(8, f64) = @splat(ri_prime);
-    const rj: @Vector(8, f64) = rj_primes;
+test "IsPointBuriedBatch - none inside" {
+    inline for (float_types) |T| {
+        inline for (sr_widths) |n| {
+            var b: FarBatch(T, n) = .{};
+            for (&b.positions, 0..) |*p, i| p.* = testVec(T, 10.0 + @as(f64, @floatFromInt(i)), 0, 0);
 
-    const sum_radii = ri + rj;
-    const overlaps = d < sum_radii;
-
-    // See circlesOverlapBatch4 comment on @Vector(N, bool) layout fix.
-    return @bitCast(@as(@Vector(8, u1), @intFromBool(overlaps)));
+            try std.testing.expect(!IsPointBuriedBatch(T, n).compute(testVec(T, 0, 0, 0), b.positions, b.radii_sq));
+        }
+    }
 }
 
-// Lee-Richards SIMD tests
+test "IsPointBuriedBatch - one inside, in each lane" {
+    inline for (float_types) |T| {
+        inline for (sr_widths) |n| {
+            for (0..n) |lane| {
+                var b: FarBatch(T, n) = .{};
+                b.positions[lane] = testVec(T, 0, 0, 0); // dist² = 0.25 < 1.0
 
-test "xyDistanceBatch4 - correctness" {
-    const result = xyDistanceBatch4(
-        0.0,
-        0.0,
-        [4]f64{ 3.0, 0.0, 1.0, 3.0 },
-        [4]f64{ 4.0, 5.0, 0.0, 4.0 },
-    );
-
-    try std.testing.expectApproxEqAbs(@as(f64, 5.0), result[0], 1e-10); // 3-4-5 triangle
-    try std.testing.expectApproxEqAbs(@as(f64, 5.0), result[1], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result[2], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 5.0), result[3], 1e-10);
+                try std.testing.expect(IsPointBuriedBatch(T, n).compute(testVec(T, 0.5, 0, 0), b.positions, b.radii_sq));
+            }
+        }
+    }
 }
 
-test "sliceRadiiBatch4 - correctness" {
-    const result = sliceRadiiBatch4(
-        0.0, // slice at z=0
-        [4]f64{ 0.0, 0.6, 0.8, 2.0 }, // z-coords
-        [4]f64{ 1.0, 1.0, 1.0, 1.0 }, // radii (R=1)
-    );
+test "IsPointBuriedBatch - boundary case (exactly on radius)" {
+    inline for (float_types) |T| {
+        inline for (sr_widths) |n| {
+            for (0..n) |lane| {
+                var b: FarBatch(T, n) = .{};
+                b.positions[lane] = testVec(T, 0, 0, 0); // dist² = 1.0 == radius²
 
-    // R' = sqrt(R² - d²)
-    // Neighbor 0: sqrt(1 - 0) = 1.0
-    // Neighbor 1: sqrt(1 - 0.36) = sqrt(0.64) = 0.8
-    // Neighbor 2: sqrt(1 - 0.64) = sqrt(0.36) = 0.6
-    // Neighbor 3: sqrt(1 - 4) -> clamped to 0
-    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result[0], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.8), result[1], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.6), result[2], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.0), result[3], 1e-10);
+                // dist² == radius² means NOT inside (we use < not <=)
+                try std.testing.expect(!IsPointBuriedBatch(T, n).compute(testVec(T, 1, 0, 0), b.positions, b.radii_sq));
+            }
+        }
+    }
 }
 
-test "circlesOverlapBatch4 - mixed" {
-    const result = circlesOverlapBatch4(
-        [4]f64{ 1.0, 3.0, 0.5, 2.0 }, // xy-distances
-        1.0, // Ri'
-        [4]f64{ 1.0, 1.0, 1.0, 1.0 }, // Rj' values
-    );
+test "IsPointBuriedBatch - all inside" {
+    inline for (float_types) |T| {
+        inline for (sr_widths) |n| {
+            var b: FarBatch(T, n) = .{};
+            for (&b.positions, 0..) |*p, i| p.* = switch (i % 3) {
+                0 => testVec(T, 0.1, 0, 0),
+                1 => testVec(T, 0, 0.1, 0),
+                else => testVec(T, 0.05, 0.05, 0),
+            };
 
-    // Ri' + Rj' = 2.0 for all
-    // dij < 2.0?
-    // Neighbor 0: 1.0 < 2.0 -> overlaps
-    // Neighbor 1: 3.0 < 2.0 -> no
-    // Neighbor 2: 0.5 < 2.0 -> overlaps
-    // Neighbor 3: 2.0 < 2.0 -> no (equal, not less)
-    try std.testing.expectEqual(@as(u4, 0b0101), result);
+            try std.testing.expect(IsPointBuriedBatch(T, n).compute(testVec(T, 0, 0, 0), b.positions, b.radii_sq));
+        }
+    }
+}
+
+test "width-specific aliases" {
+    const d4 = distanceSquaredBatch4(Vec3{ .x = 1, .y = 2, .z = 3 }, @splat(Vec3{ .x = 4, .y = 6, .z = 3 }));
+    const d8 = distanceSquaredBatch8(Vec3{ .x = 1, .y = 2, .z = 3 }, @splat(Vec3{ .x = 4, .y = 6, .z = 3 }));
+    const d16 = distanceSquaredBatch16(Vec3{ .x = 1, .y = 2, .z = 3 }, @splat(Vec3{ .x = 4, .y = 6, .z = 3 }));
+    try std.testing.expectApproxEqAbs(@as(f64, 25.0), d4[3], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 25.0), d8[7], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 25.0), d16[15], 1e-10);
+
+    const point = Vec3{ .x = 0.5, .y = 0, .z = 0 };
+    var b4: FarBatch(f64, 4) = .{};
+    var b8: FarBatch(f64, 8) = .{};
+    var b16: FarBatch(f64, 16) = .{};
+    try std.testing.expect(!isPointBuriedBatch4(point, b4.positions, b4.radii_sq));
+    try std.testing.expect(!isPointBuriedBatch8(point, b8.positions, b8.radii_sq));
+    try std.testing.expect(!isPointBuriedBatch16(point, b16.positions, b16.radii_sq));
+    b4.positions[3] = Vec3{ .x = 0, .y = 0, .z = 0 };
+    b8.positions[7] = Vec3{ .x = 0, .y = 0, .z = 0 };
+    b16.positions[15] = Vec3{ .x = 0, .y = 0, .z = 0 };
+    try std.testing.expect(isPointBuriedBatch4(point, b4.positions, b4.radii_sq));
+    try std.testing.expect(isPointBuriedBatch8(point, b8.positions, b8.radii_sq));
+    try std.testing.expect(isPointBuriedBatch16(point, b16.positions, b16.radii_sq));
+}
+
+// Lee-Richards inputs for 8 neighbors and the expected results. A width-n test
+// uses the first n.
+const test_xy_x = [8]f64{ 3.0, 0.0, 1.0, 3.0, 4.0, 0.0, 5.0, 6.0 };
+const test_xy_y = [8]f64{ 4.0, 5.0, 0.0, 4.0, 3.0, 12.0, 12.0, 8.0 };
+const test_xy_expected = [8]f64{ 5.0, 5.0, 1.0, 5.0, 5.0, 12.0, 13.0, 10.0 }; // 3-4-5, 5-12-13, 6-8-10
+
+const test_slice_z = [8]f64{ 0.0, 0.6, 0.8, 2.0, 0.0, 0.3, 0.4, 1.5 };
+const test_slice_r = [8]f64{ 1.0, 1.0, 1.0, 1.0, 0.5, 0.5, 0.5, 1.0 };
+// R' = sqrt(R² - d²), clamped to 0 where d >= R (lanes 3 and 7)
+const test_slice_expected = [8]f64{ 1.0, 0.8, 0.6, 0.0, 0.5, 0.4, 0.3, 0.0 };
+
+// With Ri' = Rj' = 1, a circle overlaps if dij < 2.0; 2.0 itself does not.
+const test_overlap_dij = [8]f64{ 1.0, 3.0, 0.5, 2.0, 1.5, 2.5, 0.1, 1.9 };
+const test_overlap_expected: u8 = 0b11010101;
+
+test "XyDistanceBatch - correctness" {
+    inline for (float_types) |T| {
+        inline for (lr_widths) |n| {
+            const result = XyDistanceBatch(T, n).compute(0.0, 0.0, testArray(T, n, test_xy_x), testArray(T, n, test_xy_y));
+            for (result, testArray(T, n, test_xy_expected)) |a, e| try std.testing.expectApproxEqAbs(e, a, testTolerance(T));
+        }
+    }
+    const r4 = xyDistanceBatch4(0.0, 0.0, test_xy_x[0..4].*, test_xy_y[0..4].*);
+    const r8 = xyDistanceBatch8(0.0, 0.0, test_xy_x, test_xy_y);
+    try std.testing.expectApproxEqAbs(@as(f64, 5.0), r4[3], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), r8[7], 1e-10);
+}
+
+test "SliceRadiiBatch - correctness" {
+    inline for (float_types) |T| {
+        inline for (lr_widths) |n| {
+            const result = SliceRadiiBatch(T, n).compute(0.0, testArray(T, n, test_slice_z), testArray(T, n, test_slice_r));
+            for (result, testArray(T, n, test_slice_expected)) |a, e| try std.testing.expectApproxEqAbs(e, a, testTolerance(T));
+        }
+    }
+    const r4 = sliceRadiiBatch4(0.0, test_slice_z[0..4].*, test_slice_r[0..4].*);
+    const r8 = sliceRadiiBatch8(0.0, test_slice_z, test_slice_r);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.6), r4[2], 1e-10);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.3), r8[6], 1e-10);
+}
+
+test "CirclesOverlapBatch - mixed" {
+    inline for (float_types) |T| {
+        inline for (lr_widths) |n| {
+            const Mask = std.meta.Int(.unsigned, n);
+            const result = CirclesOverlapBatch(T, n).compute(testArray(T, n, test_overlap_dij), 1.0, @splat(1.0));
+            try std.testing.expectEqual(@as(Mask, @truncate(test_overlap_expected)), result);
+        }
+    }
+    const ones: [8]f64 = @splat(1.0);
+    try std.testing.expectEqual(@as(u4, 0b0101), circlesOverlapBatch4(test_overlap_dij[0..4].*, 1.0, ones[0..4].*));
+    try std.testing.expectEqual(@as(u8, 0b11010101), circlesOverlapBatch8(test_overlap_dij, 1.0, ones));
 }
 
 // Fast approximation tests
@@ -1158,164 +735,6 @@ test "fastAtan2 - edge cases" {
     try std.testing.expectApproxEqAbs(-std.math.pi / 2.0, fastAtan2(-1.0, 0.0), tolerance);
 }
 
-// Lee-Richards 8-wide SIMD tests
-
-test "xyDistanceBatch8 - correctness" {
-    const result = xyDistanceBatch8(
-        0.0,
-        0.0,
-        [8]f64{ 3.0, 0.0, 1.0, 3.0, 4.0, 0.0, 5.0, 6.0 },
-        [8]f64{ 4.0, 5.0, 0.0, 4.0, 3.0, 12.0, 12.0, 8.0 },
-    );
-
-    try std.testing.expectApproxEqAbs(@as(f64, 5.0), result[0], 1e-10); // 3-4-5 triangle
-    try std.testing.expectApproxEqAbs(@as(f64, 5.0), result[1], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result[2], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 5.0), result[3], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 5.0), result[4], 1e-10); // 4-3-5
-    try std.testing.expectApproxEqAbs(@as(f64, 12.0), result[5], 1e-10);
-    try std.testing.expectApproxEqAbs(@as(f64, 13.0), result[6], 1e-10); // 5-12-13
-    try std.testing.expectApproxEqAbs(@as(f64, 10.0), result[7], 1e-10); // 6-8-10
-}
-
-test "sliceRadiiBatch8 - correctness" {
-    const result = sliceRadiiBatch8(
-        0.0, // slice at z=0
-        [8]f64{ 0.0, 0.6, 0.8, 2.0, 0.0, 0.3, 0.4, 1.5 }, // z-coords
-        [8]f64{ 1.0, 1.0, 1.0, 1.0, 0.5, 0.5, 0.5, 1.0 }, // radii
-    );
-
-    // R' = sqrt(R² - d²)
-    try std.testing.expectApproxEqAbs(@as(f64, 1.0), result[0], 1e-10); // sqrt(1 - 0)
-    try std.testing.expectApproxEqAbs(@as(f64, 0.8), result[1], 1e-10); // sqrt(1 - 0.36)
-    try std.testing.expectApproxEqAbs(@as(f64, 0.6), result[2], 1e-10); // sqrt(1 - 0.64)
-    try std.testing.expectApproxEqAbs(@as(f64, 0.0), result[3], 1e-10); // clamped
-    try std.testing.expectApproxEqAbs(@as(f64, 0.5), result[4], 1e-10); // sqrt(0.25 - 0)
-    try std.testing.expectApproxEqAbs(@as(f64, 0.4), result[5], 1e-10); // sqrt(0.25 - 0.09)
-    try std.testing.expectApproxEqAbs(@as(f64, 0.3), result[6], 1e-10); // sqrt(0.25 - 0.16)
-    try std.testing.expectApproxEqAbs(@as(f64, 0.0), result[7], 1e-10); // clamped
-}
-
-test "circlesOverlapBatch8 - mixed" {
-    const result = circlesOverlapBatch8(
-        [8]f64{ 1.0, 3.0, 0.5, 2.0, 1.5, 2.5, 0.1, 1.9 }, // xy-distances
-        1.0, // Ri'
-        [8]f64{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 }, // Rj' values
-    );
-
-    // Ri' + Rj' = 2.0 for all
-    // dij < 2.0?
-    // 0: 1.0 < 2.0 -> yes (bit 0)
-    // 1: 3.0 < 2.0 -> no
-    // 2: 0.5 < 2.0 -> yes (bit 2)
-    // 3: 2.0 < 2.0 -> no
-    // 4: 1.5 < 2.0 -> yes (bit 4)
-    // 5: 2.5 < 2.0 -> no
-    // 6: 0.1 < 2.0 -> yes (bit 6)
-    // 7: 1.9 < 2.0 -> yes (bit 7)
-    try std.testing.expectEqual(@as(u8, 0b11010101), result);
-}
-
-// ============================================================================
-// Generic SIMD tests (f32)
-// ============================================================================
-
-test "distanceSquaredBatch4Gen f32 - correctness" {
-    const point = Vec3f32{ .x = 0, .y = 0, .z = 0 };
-    const positions = [4]Vec3f32{
-        Vec3f32{ .x = 1, .y = 0, .z = 0 }, // dist² = 1
-        Vec3f32{ .x = 0, .y = 2, .z = 0 }, // dist² = 4
-        Vec3f32{ .x = 0, .y = 0, .z = 3 }, // dist² = 9
-        Vec3f32{ .x = 1, .y = 1, .z = 1 }, // dist² = 3
-    };
-
-    const result = distanceSquaredBatch4Gen(f32).compute(point, positions);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0), result[0], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 4.0), result[1], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 9.0), result[2], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 3.0), result[3], 1e-5);
-}
-
-test "isPointBuriedBatch4Gen f32 - one inside" {
-    const point = Vec3f32{ .x = 0.5, .y = 0, .z = 0 };
-    const positions = [4]Vec3f32{
-        Vec3f32{ .x = 0, .y = 0, .z = 0 }, // dist² = 0.25 < 1.0
-        Vec3f32{ .x = 10, .y = 0, .z = 0 }, // far
-        Vec3f32{ .x = 10, .y = 0, .z = 0 }, // far
-        Vec3f32{ .x = 10, .y = 0, .z = 0 }, // far
-    };
-    const radii_sq = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
-
-    try std.testing.expect(isPointBuriedBatch4Gen(f32).compute(point, positions, radii_sq));
-}
-
-test "isPointBuriedBatch8Gen f32 - one inside" {
-    const point = Vec3f32{ .x = 0.5, .y = 0, .z = 0 };
-    const positions = [8]Vec3f32{
-        Vec3f32{ .x = 0, .y = 0, .z = 0 }, // dist² = 0.25 < 1.0
-        Vec3f32{ .x = 10, .y = 0, .z = 0 },
-        Vec3f32{ .x = 10, .y = 0, .z = 0 },
-        Vec3f32{ .x = 10, .y = 0, .z = 0 },
-        Vec3f32{ .x = 10, .y = 0, .z = 0 },
-        Vec3f32{ .x = 10, .y = 0, .z = 0 },
-        Vec3f32{ .x = 10, .y = 0, .z = 0 },
-        Vec3f32{ .x = 10, .y = 0, .z = 0 },
-    };
-    const radii_sq = [8]f32{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
-
-    try std.testing.expect(isPointBuriedBatch8Gen(f32).compute(point, positions, radii_sq));
-}
-
-test "distanceSquaredBatch16Gen f32 - correctness" {
-    const point = Vec3f32{ .x = 0, .y = 0, .z = 0 };
-    var positions: [16]Vec3f32 = undefined;
-    positions[0] = Vec3f32{ .x = 1, .y = 0, .z = 0 }; // dist² = 1
-    positions[1] = Vec3f32{ .x = 0, .y = 2, .z = 0 }; // dist² = 4
-    positions[2] = Vec3f32{ .x = 0, .y = 0, .z = 3 }; // dist² = 9
-    positions[3] = Vec3f32{ .x = 1, .y = 1, .z = 1 }; // dist² = 3
-    for (4..16) |i| {
-        const fi: f32 = @floatFromInt(i);
-        positions[i] = Vec3f32{ .x = fi, .y = 0, .z = 0 }; // dist² = i²
-    }
-
-    const result = distanceSquaredBatch16Gen(f32).compute(point, positions);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0), result[0], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 4.0), result[1], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 9.0), result[2], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 3.0), result[3], 1e-5);
-    for (4..16) |i| {
-        const fi: f32 = @floatFromInt(i);
-        try std.testing.expectApproxEqAbs(fi * fi, result[i], 1e-5);
-    }
-}
-
-test "isPointBuriedBatch16Gen f32 - one inside" {
-    const point = Vec3f32{ .x = 0.5, .y = 0, .z = 0 };
-    var positions: [16]Vec3f32 = undefined;
-    positions[0] = Vec3f32{ .x = 0, .y = 0, .z = 0 }; // dist² = 0.25 < 1.0
-    for (1..16) |i| {
-        positions[i] = Vec3f32{ .x = 10, .y = 0, .z = 0 }; // far
-    }
-    const radii_sq = [16]f32{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
-
-    try std.testing.expect(isPointBuriedBatch16Gen(f32).compute(point, positions, radii_sq));
-}
-
-test "isPointBuriedBatch16Gen f32 - none inside" {
-    const point = Vec3f32{ .x = 0, .y = 0, .z = 0 };
-    var positions: [16]Vec3f32 = undefined;
-    for (0..16) |i| {
-        positions[i] = Vec3f32{
-            .x = 10.0 + @as(f32, @floatFromInt(i)),
-            .y = 0,
-            .z = 0,
-        };
-    }
-    const radii_sq = [16]f32{ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
-
-    try std.testing.expect(!isPointBuriedBatch16Gen(f32).compute(point, positions, radii_sq));
-}
-
 // ============================================================================
 // CPU feature detection tests
 // ============================================================================
@@ -1371,200 +790,4 @@ test "fastAtan2Gen f32 - accuracy" {
         const actual = fastAtan2Gen(f32).compute(y, x);
         try std.testing.expectApproxEqAbs(expected, actual, tolerance);
     }
-}
-
-// ============================================================================
-// Generic Lee-Richards SIMD helpers (f32/f64)
-// ============================================================================
-
-/// Generic SIMD-optimized batch xy-distance calculation for Lee-Richards (4-wide).
-pub fn xyDistanceBatch4Gen(comptime T: type) type {
-    return struct {
-        pub fn compute(
-            xi: T,
-            yi: T,
-            x_neighbors: [4]T,
-            y_neighbors: [4]T,
-        ) [4]T {
-            const px: @Vector(4, T) = @splat(xi);
-            const py: @Vector(4, T) = @splat(yi);
-
-            const nx: @Vector(4, T) = x_neighbors;
-            const ny: @Vector(4, T) = y_neighbors;
-
-            const dx = nx - px;
-            const dy = ny - py;
-
-            const dist_sq = dx * dx + dy * dy;
-            const result: @Vector(4, T) = @sqrt(dist_sq);
-            return result;
-        }
-    };
-}
-
-/// Generic compute slice radii (Rj' = sqrt(Rj² - dj²)) for 4 neighbors.
-pub fn sliceRadiiBatch4Gen(comptime T: type) type {
-    return struct {
-        pub fn compute(
-            slice_z: T,
-            z_neighbors: [4]T,
-            radii: [4]T,
-        ) [4]T {
-            const sz: @Vector(4, T) = @splat(slice_z);
-            const zn: @Vector(4, T) = z_neighbors;
-            const rn: @Vector(4, T) = radii;
-
-            const dz = zn - sz;
-            const dz_sq = dz * dz;
-            const r_sq = rn * rn;
-
-            const rp_sq = r_sq - dz_sq;
-
-            const zero: @Vector(4, T) = @splat(0.0);
-            const rp_sq_clamped = @max(rp_sq, zero);
-
-            const result: @Vector(4, T) = @sqrt(rp_sq_clamped);
-            return result;
-        }
-    };
-}
-
-/// Generic check if circles overlap (dij < Ri' + Rj') for 4 neighbors.
-pub fn circlesOverlapBatch4Gen(comptime T: type) type {
-    return struct {
-        pub fn compute(
-            dij: [4]T,
-            ri_prime: T,
-            rj_primes: [4]T,
-        ) u4 {
-            const d: @Vector(4, T) = dij;
-            const ri: @Vector(4, T) = @splat(ri_prime);
-            const rj: @Vector(4, T) = rj_primes;
-
-            const sum_radii = ri + rj;
-            const overlaps = d < sum_radii;
-
-            // See circlesOverlapBatch4 comment on @Vector(N, bool) layout fix.
-            return @bitCast(@as(@Vector(4, u1), @intFromBool(overlaps)));
-        }
-    };
-}
-
-/// Generic SIMD-optimized batch xy-distance calculation for Lee-Richards (8-wide).
-pub fn xyDistanceBatch8Gen(comptime T: type) type {
-    return struct {
-        pub fn compute(
-            xi: T,
-            yi: T,
-            x_neighbors: [8]T,
-            y_neighbors: [8]T,
-        ) [8]T {
-            const px: @Vector(8, T) = @splat(xi);
-            const py: @Vector(8, T) = @splat(yi);
-
-            const nx: @Vector(8, T) = x_neighbors;
-            const ny: @Vector(8, T) = y_neighbors;
-
-            const dx = nx - px;
-            const dy = ny - py;
-
-            const dist_sq = dx * dx + dy * dy;
-            const result: @Vector(8, T) = @sqrt(dist_sq);
-            return result;
-        }
-    };
-}
-
-/// Generic compute slice radii (Rj' = sqrt(Rj² - dj²)) for 8 neighbors.
-pub fn sliceRadiiBatch8Gen(comptime T: type) type {
-    return struct {
-        pub fn compute(
-            slice_z: T,
-            z_neighbors: [8]T,
-            radii: [8]T,
-        ) [8]T {
-            const sz: @Vector(8, T) = @splat(slice_z);
-            const zn: @Vector(8, T) = z_neighbors;
-            const rn: @Vector(8, T) = radii;
-
-            const dz = zn - sz;
-            const dz_sq = dz * dz;
-            const r_sq = rn * rn;
-
-            const rp_sq = r_sq - dz_sq;
-
-            const zero: @Vector(8, T) = @splat(0.0);
-            const rp_sq_clamped = @max(rp_sq, zero);
-
-            const result: @Vector(8, T) = @sqrt(rp_sq_clamped);
-            return result;
-        }
-    };
-}
-
-/// Generic check if circles overlap (dij < Ri' + Rj') for 8 neighbors.
-pub fn circlesOverlapBatch8Gen(comptime T: type) type {
-    return struct {
-        pub fn compute(
-            dij: [8]T,
-            ri_prime: T,
-            rj_primes: [8]T,
-        ) u8 {
-            const d: @Vector(8, T) = dij;
-            const ri: @Vector(8, T) = @splat(ri_prime);
-            const rj: @Vector(8, T) = rj_primes;
-
-            const sum_radii = ri + rj;
-            const overlaps = d < sum_radii;
-
-            // See circlesOverlapBatch4 comment on @Vector(N, bool) layout fix.
-            return @bitCast(@as(@Vector(8, u1), @intFromBool(overlaps)));
-        }
-    };
-}
-
-// Generic Lee-Richards SIMD tests
-
-test "xyDistanceBatch4Gen f32 - correctness" {
-    const result = xyDistanceBatch4Gen(f32).compute(
-        0.0,
-        0.0,
-        [4]f32{ 3.0, 0.0, 1.0, 3.0 },
-        [4]f32{ 4.0, 5.0, 0.0, 4.0 },
-    );
-
-    try std.testing.expectApproxEqAbs(@as(f32, 5.0), result[0], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 5.0), result[1], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0), result[2], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 5.0), result[3], 1e-5);
-}
-
-test "sliceRadiiBatch4Gen f32 - correctness" {
-    const result = sliceRadiiBatch4Gen(f32).compute(
-        0.0,
-        [4]f32{ 0.0, 0.6, 0.8, 2.0 },
-        [4]f32{ 1.0, 1.0, 1.0, 1.0 },
-    );
-
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0), result[0], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.8), result[1], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.6), result[2], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.0), result[3], 1e-5);
-}
-
-test "sliceRadiiBatch8Gen f32 - correctness" {
-    const result = sliceRadiiBatch8Gen(f32).compute(
-        0.0,
-        [8]f32{ 0.0, 0.6, 0.8, 2.0, 0.0, 0.3, 0.4, 1.5 },
-        [8]f32{ 1.0, 1.0, 1.0, 1.0, 0.5, 0.5, 0.5, 1.0 },
-    );
-
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0), result[0], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.8), result[1], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.6), result[2], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.0), result[3], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.5), result[4], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.4), result[5], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.3), result[6], 1e-5);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.0), result[7], 1e-5);
 }
