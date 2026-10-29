@@ -862,18 +862,114 @@ fn startsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
 // Tests
 // ============================================================================
 
+/// Shared `_atom_site` header (with its `loop_` line) for tests; columns: id, element, atom, residue, xyz.
+const test_header_atom_comp =
+    \\loop_
+    \\_atom_site.id
+    \\_atom_site.type_symbol
+    \\_atom_site.label_atom_id
+    \\_atom_site.label_comp_id
+    \\_atom_site.Cartn_x
+    \\_atom_site.Cartn_y
+    \\_atom_site.Cartn_z
+    \\
+;
+
+/// Shared `_atom_site` header (with its `loop_` line) for tests; columns: id, element, atom, residue, chain, xyz.
+const test_header_asym =
+    \\loop_
+    \\_atom_site.id
+    \\_atom_site.type_symbol
+    \\_atom_site.label_atom_id
+    \\_atom_site.label_comp_id
+    \\_atom_site.label_asym_id
+    \\_atom_site.Cartn_x
+    \\_atom_site.Cartn_y
+    \\_atom_site.Cartn_z
+    \\
+;
+
+/// Shared `_atom_site` header (with its `loop_` line) for tests; columns: id, element, xyz.
+const test_header_id_xyz =
+    \\loop_
+    \\_atom_site.id
+    \\_atom_site.type_symbol
+    \\_atom_site.Cartn_x
+    \\_atom_site.Cartn_y
+    \\_atom_site.Cartn_z
+    \\
+;
+
+/// Shared `_atom_site` header (with its `loop_` line) for tests; columns: id, element, atom, residue, group_PDB, xyz.
+const test_header_comp_group =
+    \\loop_
+    \\_atom_site.id
+    \\_atom_site.type_symbol
+    \\_atom_site.label_atom_id
+    \\_atom_site.label_comp_id
+    \\_atom_site.group_PDB
+    \\_atom_site.Cartn_x
+    \\_atom_site.Cartn_y
+    \\_atom_site.Cartn_z
+    \\
+;
+
+/// Shared `_atom_site` header (with its `loop_` line) for tests; columns: id, element, atom, residue, chain, label_seq_id, model number, xyz.
+const test_header_model_num =
+    \\loop_
+    \\_atom_site.id
+    \\_atom_site.type_symbol
+    \\_atom_site.label_atom_id
+    \\_atom_site.label_comp_id
+    \\_atom_site.label_asym_id
+    \\_atom_site.label_seq_id
+    \\_atom_site.pdbx_PDB_model_num
+    \\_atom_site.Cartn_x
+    \\_atom_site.Cartn_y
+    \\_atom_site.Cartn_z
+    \\
+;
+
+/// Shared `_atom_site` header (with its `loop_` line) for tests; columns: id, element, atom, residue, chain, label_seq_id, altloc, occupancy, xyz.
+const test_header_altloc_occupancy =
+    \\loop_
+    \\_atom_site.id
+    \\_atom_site.type_symbol
+    \\_atom_site.label_atom_id
+    \\_atom_site.label_comp_id
+    \\_atom_site.label_asym_id
+    \\_atom_site.label_seq_id
+    \\_atom_site.label_alt_id
+    \\_atom_site.occupancy
+    \\_atom_site.Cartn_x
+    \\_atom_site.Cartn_y
+    \\_atom_site.Cartn_z
+    \\
+;
+
+/// Shared `_atom_site` header (with its `loop_` line) for tests; columns: group_PDB, element, atom, residue, chain, label_seq_id, xyz, auth_seq_id, auth_asym_id.
+const test_header_auth_chain =
+    \\loop_
+    \\_atom_site.group_PDB
+    \\_atom_site.type_symbol
+    \\_atom_site.label_atom_id
+    \\_atom_site.label_comp_id
+    \\_atom_site.label_asym_id
+    \\_atom_site.label_seq_id
+    \\_atom_site.Cartn_x
+    \\_atom_site.Cartn_y
+    \\_atom_site.Cartn_z
+    \\_atom_site.auth_seq_id
+    \\_atom_site.auth_asym_id
+    \\
+;
+
 test "parse simple mmCIF" {
     const source =
         \\data_TEST
         \\#
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_atom_comp ++
         \\1 C CA ALA 10.000 20.000 30.000
         \\2 N N  ALA 11.000 21.000 31.000
         \\3 O O  ALA 12.000 22.000 32.000
@@ -912,15 +1008,8 @@ test "parse simple mmCIF" {
 test "parse mmCIF keeps extended chain IDs when label_asym_id exceeds four characters" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_asym ++
         \\1 C CA ALA ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefg 10.000 20.000 30.000
         \\2 N N  ALA ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef  11.000 21.000 31.000
         \\#
@@ -940,15 +1029,8 @@ test "parse mmCIF keeps extended chain IDs when label_asym_id exceeds four chara
 test "parse mmCIF backfills extended chain IDs after short chains" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_asym ++
         \\1 C CA ALA A         10.000 20.000 30.000
         \\2 N N  GLY LONGCHAIN 11.000 21.000 31.000
         \\3 O O  SER B         12.000 22.000 32.000
@@ -1003,12 +1085,8 @@ test "parse with alternate locations" {
 test "parse with parenthetical uncertainty" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_id_xyz ++
         \\1 C 10.123(45) 20.456(67) 30.789(89)
         \\#
     ;
@@ -1047,12 +1125,8 @@ test "case insensitive field names" {
 test "a truncated atom_site loop is an error" {
     const header =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_id_xyz ++
         \\1 C 10.0 20.0 30.0
         \\
     ;
@@ -1100,12 +1174,8 @@ test "a single atom written without loop_ is accepted" {
 test "hydrogen filter ignores case and charges" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_id_xyz ++
         \\1 C 1.0 2.0 3.0
         \\2 h 4.0 5.0 6.0
         \\3 H1+ 7.0 8.0 9.0
@@ -1156,15 +1226,8 @@ test "no atom_site loop" {
 test "parse with HETATM filter (default atom_only=true)" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.group_PDB
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_comp_group ++
         \\1 N N   ALA ATOM   10.0 20.0 30.0
         \\2 C CA  ALA ATOM   11.0 21.0 31.0
         \\3 O O   HOH HETATM 12.0 22.0 32.0
@@ -1190,17 +1253,8 @@ test "parse with HETATM filter (default atom_only=true)" {
 test "parse mmCIF default model selection includes all models" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.pdbx_PDB_model_num
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_model_num ++
         \\1 C CA ALA A 1 1 10.0 20.0 30.0
         \\2 C CA GLY B 2 2 11.0 21.0 31.0
         \\#
@@ -1218,17 +1272,8 @@ test "parse mmCIF default model selection includes all models" {
 test "parse mmCIF explicit model selection filters requested model" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.pdbx_PDB_model_num
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_model_num ++
         \\1 C CA ALA A 1 1 10.0 20.0 30.0
         \\2 C CA GLY B 2 2 11.0 21.0 31.0
         \\#
@@ -1280,14 +1325,8 @@ test "parse mmCIF hydrogen_flags marks the atoms skip_hydrogens would drop" {
     const allocator = std.testing.allocator;
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_atom_comp ++
         \\1 N N  ALA 10.0 20.0 30.0
         \\2 H H  ALA 10.5 20.5 30.5
         \\3 D D  ALA 11.0 21.0 31.0
@@ -1318,15 +1357,8 @@ test "parse mmCIF hydrogen_flags marks the atoms skip_hydrogens would drop" {
 test "parse mmCIF handles quoted atom_site values" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_asym ++
         \\1 C "C A" "M ET" "A#1" 10.0 20.0 30.0
         \\2 N 'N''X' GLY B 11.0 21.0 31.0
         \\#
@@ -1376,20 +1408,12 @@ test "parse mmCIF skips semicolon text in ignored atom_site column" {
 test "parse mmCIF atom_site stops at new data block" {
     const source =
         \\data_ONE
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_id_xyz ++
         \\1 C 10.0 20.0 30.0
         \\data_TWO
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_id_xyz ++
         \\2 N 11.0 21.0 31.0
         \\#
     ;
@@ -1405,12 +1429,8 @@ test "parse mmCIF atom_site stops at new data block" {
 test "parse mmCIF null coordinate is invalid" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_id_xyz ++
         \\1 C . 20.0 30.0
         \\#
     ;
@@ -1477,18 +1497,8 @@ test "parse mmCIF auth chain filter uses auth_asym_id" {
 test "parse mmCIF altLoc selection keeps highest occupancy without A" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.label_alt_id
-        \\_atom_site.occupancy
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_altloc_occupancy ++
         \\1 C CB ALA A 1 B 0.40 10.0 20.0 30.0
         \\2 C CB ALA A 1 C 0.70 11.0 21.0 31.0
         \\#
@@ -1505,18 +1515,8 @@ test "parse mmCIF altLoc selection keeps highest occupancy without A" {
 test "parse mmCIF null altLoc is treated as blank" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.label_alt_id
-        \\_atom_site.occupancy
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_altloc_occupancy ++
         \\1 C CB ALA A 1 ? 1.00 10.0 20.0 30.0
         \\2 C CB ALA A 1 B 0.50 11.0 21.0 31.0
         \\#
@@ -1533,18 +1533,8 @@ test "parse mmCIF null altLoc is treated as blank" {
 test "parse mmCIF altLoc all mode keeps every alternate" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.label_alt_id
-        \\_atom_site.occupancy
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_altloc_occupancy ++
         \\1 C CB ALA A 1 A 0.60 10.0 20.0 30.0
         \\2 C CB ALA A 1 B 0.40 11.0 21.0 31.0
         \\#
@@ -1563,18 +1553,8 @@ test "parse mmCIF altLoc all mode keeps every alternate" {
 test "parse mmCIF altLoc none mode rejects non-blank alternate" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.label_alt_id
-        \\_atom_site.occupancy
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_altloc_occupancy ++
         \\1 C CB ALA A 1 A 0.60 10.0 20.0 30.0
         \\#
     ;
@@ -1588,18 +1568,8 @@ test "parse mmCIF altLoc none mode rejects non-blank alternate" {
 test "parse mmCIF altLoc none mode accepts blank alternates" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.label_alt_id
-        \\_atom_site.occupancy
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_altloc_occupancy ++
         \\1 C CB ALA A 1 . 1.00 10.0 20.0 30.0
         \\2 C CG ALA A 1 ? 1.00 11.0 21.0 31.0
         \\#
@@ -1616,18 +1586,8 @@ test "parse mmCIF altLoc none mode accepts blank alternates" {
 test "parse mmCIF altLoc selected ID keeps blank and requested alternate" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.label_alt_id
-        \\_atom_site.occupancy
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_altloc_occupancy ++
         \\1 C CA ALA A 1 . 1.00 9.0 19.0 29.0
         \\2 C CB ALA A 1 A 0.60 10.0 20.0 30.0
         \\3 C CB ALA A 1 B 0.40 11.0 21.0 31.0
@@ -1648,18 +1608,8 @@ test "parse mmCIF altLoc selected ID keeps blank and requested alternate" {
 test "parse mmCIF altLoc highest occupancy mode ignores A preference" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.label_alt_id
-        \\_atom_site.occupancy
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_altloc_occupancy ++
         \\1 C CB ALA A 1 A 0.40 10.0 20.0 30.0
         \\2 C CB ALA A 1 B 0.70 11.0 21.0 31.0
         \\#
@@ -1679,18 +1629,8 @@ test "parse mmCIF altLoc highest occupancy mode keeps the first alternate of a t
     // residue 2 a tie whose first alternate is B.
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.label_alt_id
-        \\_atom_site.occupancy
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_altloc_occupancy ++
         \\1 N N  ALA A 1 . 1.00 1.0 0.0 0.0
         \\2 C CA ALA A 1 A 0.50 2.0 0.0 0.0
         \\3 C CA ALA A 1 B 0.50 3.0 0.0 0.0
@@ -1781,18 +1721,8 @@ test "parse mmCIF altLoc highest occupancy mode keeps every atom without an altL
 test "parse mmCIF altLoc selection is per atom site and keeps later B-only sites" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.label_alt_id
-        \\_atom_site.occupancy
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_altloc_occupancy ++
         \\1 C CA ALA A 1 A 0.60 10.0 20.0 30.0
         \\2 C CA ALA A 1 B 0.40 12.0 22.0 32.0
         \\3 C CA GLY A 2 B 0.50 14.0 24.0 34.0
@@ -1846,18 +1776,8 @@ test "parse mmCIF altLoc keeps one residue where alternates are different residu
     // The x coordinate is the atom's row number.
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.label_alt_id
-        \\_atom_site.occupancy
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_altloc_occupancy ++
         \\1  N N   GLY A 1 . 1.00 1.0  0.0 0.0
         \\2  C CA  GLY A 1 . 1.00 2.0  0.0 0.0
         \\3  N N   PRO A 2 . 1.00 3.0  0.0 0.0
@@ -2096,18 +2016,8 @@ test "parse mmCIF auth chains report auth_seq_id and separate altLoc sites" {
 test "parse mmCIF auth chains fall back to label_seq_id without a usable auth_seq_id" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.group_PDB
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
-        \\_atom_site.auth_seq_id
-        \\_atom_site.auth_asym_id
+        \\
+    ++ test_header_auth_chain ++
         \\ATOM   C CA GLY A 5 1.0 0.0 0.0 25 A
         \\ATOM   C CA ALA A 6 2.0 0.0 0.0 ?  A
         \\ATOM   C CA SER A 7 3.0 0.0 0.0 .  A
@@ -2154,18 +2064,8 @@ test "parse mmCIF auth chains keep a water apart from a polymer residue with its
     // one residue in per-residue output.
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.group_PDB
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.label_asym_id
-        \\_atom_site.label_seq_id
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
-        \\_atom_site.auth_seq_id
-        \\_atom_site.auth_asym_id
+        \\
+    ++ test_header_auth_chain ++
         \\ATOM   N N  GLY A 21 1.0 0.0 0.0 1  A
         \\ATOM   C CA GLY A 21 2.0 0.0 0.0 1  A
         \\ATOM   C C  GLY A 21 3.0 0.0 0.0 1  A
@@ -2277,15 +2177,8 @@ test "parse mmCIF numbers a row 0 when label_seq_id and auth_seq_id are both nul
 test "parse with hydrogen filter (default skip_hydrogens=true)" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.group_PDB
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_comp_group ++
         \\1 N N   ALA ATOM 10.0 20.0 30.0
         \\2 C CA  ALA ATOM 11.0 21.0 31.0
         \\3 H H   ALA ATOM 12.0 22.0 32.0
@@ -2313,14 +2206,8 @@ test "parse with hydrogen filter (default skip_hydrogens=true)" {
 test "parse with deuterium filter" {
     const source =
         \\data_TEST
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_atom_comp ++
         \\1 N N  ALA 10.0 20.0 30.0
         \\2 D D  ALA 11.0 21.0 31.0
         \\3 C CA ALA 12.0 22.0 32.0
@@ -2397,15 +2284,8 @@ test "parse mmCIF with inline CCD data" {
         \\ALA C   O   DOUB
         \\ALA C   OXT SING
         \\#
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.group_PDB
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_comp_group ++
         \\1 N N  ALA ATOM 10.0 20.0 30.0
         \\2 C CA ALA ATOM 11.0 21.0 31.0
         \\3 C C  ALA ATOM 12.0 22.0 32.0
@@ -2446,14 +2326,8 @@ test "parse mmCIF without inline CCD — getInlineCcd returns null" {
     const source =
         \\data_TEST
         \\#
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_atom_comp ++
         \\1 C CA ALA 10.0 20.0 30.0
         \\2 N N  ALA 11.0 21.0 31.0
         \\#
@@ -2476,15 +2350,8 @@ test "parse mmCIF with inline CCD after atom_site" {
     const source =
         \\data_TEST
         \\#
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.group_PDB
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_comp_group ++
         \\1 N N  GLY ATOM 10.0 20.0 30.0
         \\2 C CA GLY ATOM 11.0 21.0 31.0
         \\#
@@ -2539,15 +2406,8 @@ test "parse mmCIF can skip inline CCD extraction" {
         \\LIG C1 C
         \\LIG O1 O
         \\#
-        \\loop_
-        \\_atom_site.id
-        \\_atom_site.type_symbol
-        \\_atom_site.label_atom_id
-        \\_atom_site.label_comp_id
-        \\_atom_site.group_PDB
-        \\_atom_site.Cartn_x
-        \\_atom_site.Cartn_y
-        \\_atom_site.Cartn_z
+        \\
+    ++ test_header_comp_group ++
         \\1 C C1 LIG ATOM 10.0 20.0 30.0
         \\2 O O1 LIG ATOM 11.0 21.0 31.0
         \\#
