@@ -941,7 +941,14 @@ fn countSelectedAtoms(input: AtomInput, chains: ?[]const []const u8) usize {
 }
 
 fn copySelectedAtomInput(allocator: Allocator, input: AtomInput, chains: ?[]const []const u8) !AtomInput {
-    const selected_count = countSelectedAtoms(input, chains);
+    const indices = try selectedSourceAtomIndices(allocator, input, chains);
+    defer allocator.free(indices);
+    return copyAtomInputIndices(allocator, input, indices);
+}
+
+/// Copy the atoms at `indices` (source indices, in the order given) into a new input.
+fn copyAtomInputIndices(allocator: Allocator, input: AtomInput, indices: []const usize) !AtomInput {
+    const selected_count = indices.len;
 
     const x = try allocator.alloc(f64, selected_count);
     errdefer allocator.free(x);
@@ -971,9 +978,7 @@ fn copySelectedAtomInput(allocator: Allocator, input: AtomInput, chains: ?[]cons
     const insertion_code = if (input.insertion_code != null) try allocator.alloc(types.FixedString4, selected_count) else null;
     errdefer if (insertion_code) |v| allocator.free(v);
 
-    var out_i: usize = 0;
-    for (0..input.atomCount()) |i| {
-        if (!atomSelectedByChains(input, i, chains)) continue;
+    for (indices, 0..) |i, out_i| {
         x[out_i] = input.x[i];
         y[out_i] = input.y[i];
         z[out_i] = input.z[i];
@@ -988,7 +993,6 @@ fn copySelectedAtomInput(allocator: Allocator, input: AtomInput, chains: ?[]cons
         }
         if (residue_num) |v| v[out_i] = input.residue_num.?[i];
         if (insertion_code) |v| v[out_i] = input.insertion_code.?[i];
-        out_i += 1;
     }
 
     return AtomInput{
@@ -4944,37 +4948,96 @@ fn chainsContain(chains: []const []const u8, target: []const u8) bool {
     return false;
 }
 
-fn uniqueChainCount(chains: []const []const u8) usize {
-    var count: usize = 0;
-    for (chains, 0..) |chain, i| {
-        var seen = false;
-        for (chains[0..i]) |previous| {
-            if (std.mem.eql(u8, chain, previous)) {
-                seen = true;
-                break;
-            }
+/// Key that is equal for two chain lists exactly when they name the same set
+/// of chains: the unique chain IDs, sorted and NUL-separated.
+fn canonicalChainSetKey(allocator: Allocator, chains: []const []const u8) ![]const u8 {
+    const sorted = try allocator.dupe([]const u8, chains);
+    defer allocator.free(sorted);
+    std.mem.sort([]const u8, sorted, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
         }
-        if (!seen) count += 1;
+    }.lessThan);
+
+    var key = std.ArrayListUnmanaged(u8).empty;
+    errdefer key.deinit(allocator);
+    for (sorted, 0..) |chain, i| {
+        if (i > 0 and std.mem.eql(u8, chain, sorted[i - 1])) continue;
+        if (key.items.len > 0) try key.append(allocator, 0);
+        try key.appendSlice(allocator, chain);
     }
-    return count;
+    return key.toOwnedSlice(allocator);
 }
 
-fn sameCanonicalChainSet(a: []const []const u8, b: []const []const u8) bool {
-    if (uniqueChainCount(a) != uniqueChainCount(b)) return false;
-    for (a) |chain| {
-        if (!chainsContain(b, chain)) return false;
-    }
-    return true;
+/// Chain ID of one atom as selections match it: the extended ID when the
+/// parser kept one, otherwise the fixed-width ID.
+fn atomChainKey(input: AtomInput, index: usize) ?[]const u8 {
+    if (input.chain_id_full) |chains| return chains[index];
+    if (input.chain_id) |chains| return chains[index].slice();
+    return null;
 }
 
-fn missingSelectedChain(input: AtomInput, chains: []const []const u8) ?[]const u8 {
+/// Source atom indices of every chain of one structure, in source order.
+/// Built once per structure, so a selection of a few chains of a large
+/// assembly costs the size of the selection rather than a scan of every atom.
+const ChainAtomIndex = struct {
+    by_chain: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(usize)) = .empty,
+
+    fn init(allocator: Allocator, input: AtomInput) !ChainAtomIndex {
+        var self = ChainAtomIndex{};
+        errdefer self.deinit(allocator);
+        for (0..input.atomCount()) |i| {
+            const chain = atomChainKey(input, i) orelse break;
+            const entry = try self.by_chain.getOrPut(allocator, chain);
+            if (!entry.found_existing) entry.value_ptr.* = .empty;
+            try entry.value_ptr.append(allocator, i);
+        }
+        return self;
+    }
+
+    fn deinit(self: *ChainAtomIndex, allocator: Allocator) void {
+        var it = self.by_chain.valueIterator();
+        while (it.next()) |indices| indices.deinit(allocator);
+        self.by_chain.deinit(allocator);
+    }
+
+    fn contains(self: *const ChainAtomIndex, chain: []const u8) bool {
+        return self.by_chain.contains(chain);
+    }
+
+    /// Source indices of the atoms in `chains`, ascending. Chains that the
+    /// structure lacks or that are listed twice add nothing.
+    fn selectedIndices(self: *const ChainAtomIndex, allocator: Allocator, chains: []const []const u8) ![]usize {
+        var count: usize = 0;
+        for (chains, 0..) |chain, i| {
+            if (chainsContain(chains[0..i], chain)) continue;
+            if (self.by_chain.get(chain)) |indices| count += indices.items.len;
+        }
+
+        const selected = try allocator.alloc(usize, count);
+        var n: usize = 0;
+        var parts: usize = 0;
+        for (chains, 0..) |chain, i| {
+            if (chainsContain(chains[0..i], chain)) continue;
+            const indices = self.by_chain.get(chain) orelse continue;
+            @memcpy(selected[n..][0..indices.items.len], indices.items);
+            n += indices.items.len;
+            parts += 1;
+        }
+        // Chains can interleave in the source file; keep source order.
+        if (parts > 1) std.mem.sort(usize, selected, {}, std.sort.asc(usize));
+        return selected;
+    }
+};
+
+fn missingSelectedChain(chain_index: *const ChainAtomIndex, chains: []const []const u8) ?[]const u8 {
     for (chains) |chain| {
-        if (!bsaInputContainsChain(input, chain)) return chain;
+        if (!chain_index.contains(chain)) return chain;
     }
     return null;
 }
 
-fn selectedSourceAtomIndices(allocator: Allocator, source_input: AtomInput, chains: []const []const u8) ![]const usize {
+fn selectedSourceAtomIndices(allocator: Allocator, source_input: AtomInput, chains: ?[]const []const u8) ![]const usize {
     const count = countSelectedAtoms(source_input, chains);
     const indices = try allocator.alloc(usize, count);
     var out_index: usize = 0;
@@ -5110,26 +5173,24 @@ fn calculateSelectionGroup(
     allocator: Allocator,
     filename: []const u8,
     source_input: AtomInput,
+    chain_index: *const ChainAtomIndex,
     representative_entry_index: usize,
 ) SelectionGroup {
     const entry = ctx.map.entries[representative_entry_index];
-    if (missingSelectedChain(source_input, entry.chains)) |missing_chain| {
+    if (missingSelectedChain(chain_index, entry.chains)) |missing_chain| {
         return .{
             .representative_entry_index = representative_entry_index,
             .result = selectionErrorResult(allocator, filename, "selected chain not found: {s}", .{missing_chain}),
         };
     }
 
-    const source_indices: []const usize = if (ctx.config.jsonl_include_atom_identity)
-        selectedSourceAtomIndices(allocator, source_input, entry.chains) catch |err| {
-            return .{
-                .representative_entry_index = representative_entry_index,
-                .result = selectionErrorResult(allocator, filename, "selection source-index mapping failed: {s}", .{@errorName(err)}),
-            };
-        }
-    else
-        &.{};
-    const selected_input = copySelectedAtomInput(allocator, source_input, entry.chains) catch |err| {
+    const source_indices = chain_index.selectedIndices(allocator, entry.chains) catch |err| {
+        return .{
+            .representative_entry_index = representative_entry_index,
+            .result = selectionErrorResult(allocator, filename, "selection source-index mapping failed: {s}", .{@errorName(err)}),
+        };
+    };
+    const selected_input = copyAtomInputIndices(allocator, source_input, source_indices) catch |err| {
         return .{
             .representative_entry_index = representative_entry_index,
             .result = selectionErrorResult(allocator, filename, "selection failed: {s}", .{@errorName(err)}),
@@ -5226,28 +5287,26 @@ fn processSelectionMapFile(ctx: *SelectionMapContext, allocator: Allocator, file
         return writeSelectionSourceErrorRows(ctx, allocator, filename, map_indices, message);
     };
 
+    var chain_index = try ChainAtomIndex.init(allocator, source_parsed.input);
+    defer chain_index.deinit(allocator);
+
+    // One calculation per distinct chain set; every map row points at its group.
     var groups = std.ArrayListUnmanaged(SelectionGroup).empty;
-    for (map_indices) |entry_index| {
-        const entry = ctx.map.entries[entry_index];
-        var group_index: ?usize = null;
-        for (groups.items, 0..) |group, i| {
-            const representative = ctx.map.entries[group.representative_entry_index];
-            if (sameCanonicalChainSet(entry.chains, representative.chains)) {
-                group_index = i;
-                break;
-            }
+    var group_by_chain_set = std.StringHashMapUnmanaged(usize).empty;
+    const entry_groups = try allocator.alloc(usize, map_indices.len);
+    for (map_indices, entry_groups) |entry_index, *entry_group| {
+        const key = try canonicalChainSetKey(allocator, ctx.map.entries[entry_index].chains);
+        const slot = try group_by_chain_set.getOrPut(allocator, key);
+        if (!slot.found_existing) {
+            slot.value_ptr.* = groups.items.len;
+            try groups.append(allocator, calculateSelectionGroup(ctx, allocator, filename, source_parsed.input, &chain_index, entry_index));
         }
-        if (group_index == null) {
-            try groups.append(allocator, calculateSelectionGroup(ctx, allocator, filename, source_parsed.input, entry_index));
-        }
+        entry_group.* = slot.value_ptr.*;
     }
 
-    for (map_indices) |entry_index| {
+    for (map_indices, entry_groups) |entry_index, group_index| {
         const entry = ctx.map.entries[entry_index];
-        const group = for (groups.items) |candidate| {
-            const representative = ctx.map.entries[candidate.representative_entry_index];
-            if (sameCanonicalChainSet(entry.chains, representative.chains)) break candidate;
-        } else unreachable;
+        const group = groups.items[group_index];
 
         if (group.result.status == .ok) {
             try writeSelectionSuccess(ctx.jsonl_stream, allocator, entry, group.result, group.atom_identity);
@@ -6572,6 +6631,67 @@ test "copySelectedAtomInput keeps extended chain IDs lossless beyond fixed buffe
     try std.testing.expectEqual(@as(usize, 1), selected_prefix.atomCount());
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), selected_prefix.x[0], 1e-12);
     try std.testing.expectEqualStrings("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", selected_prefix.chain_id_full.?[0]);
+}
+
+test "canonicalChainSetKey equates chain lists naming the same set" {
+    const allocator = std.testing.allocator;
+    const a = try canonicalChainSetKey(allocator, &.{ "B", "A", "B" });
+    defer allocator.free(a);
+    const b = try canonicalChainSetKey(allocator, &.{ "A", "B" });
+    defer allocator.free(b);
+    const one = try canonicalChainSetKey(allocator, &.{"A"});
+    defer allocator.free(one);
+    const joined = try canonicalChainSetKey(allocator, &.{"AB"});
+    defer allocator.free(joined);
+
+    try std.testing.expectEqualStrings(a, b);
+    try std.testing.expect(!std.mem.eql(u8, a, one));
+    try std.testing.expect(!std.mem.eql(u8, a, joined));
+}
+
+test "ChainAtomIndex selects interleaved chains in source order" {
+    const allocator = std.testing.allocator;
+    var input = try makeTestAtomInput(allocator, &.{ "A", "B", "A", "C", "B" });
+    defer input.deinit();
+    var index = try ChainAtomIndex.init(allocator, input);
+    defer index.deinit(allocator);
+
+    const selected = try index.selectedIndices(allocator, &.{ "C", "A", "C", "Z" });
+    defer allocator.free(selected);
+    try std.testing.expectEqualSlices(usize, &.{ 0, 2, 3 }, selected);
+    try std.testing.expect(index.contains("B"));
+    try std.testing.expect(!index.contains("Z"));
+    try std.testing.expectEqualStrings("Z", missingSelectedChain(&index, &.{ "A", "Z" }).?);
+    try std.testing.expect(missingSelectedChain(&index, &.{ "A", "B" }) == null);
+}
+
+test "ChainAtomIndex matches the atoms copySelectedAtomInput selects" {
+    const allocator = std.testing.allocator;
+    var input = try makeTestAtomInput(allocator, &.{ "ABCD", "ABCD", "B", "ABCD" });
+    defer input.deinit();
+    const chain_id_full = try allocator.alloc([]const u8, 4);
+    chain_id_full[0] = try allocator.dupe(u8, "ABCDE");
+    chain_id_full[1] = try allocator.dupe(u8, "ABCD");
+    chain_id_full[2] = try allocator.dupe(u8, "B");
+    chain_id_full[3] = try allocator.dupe(u8, "ABCDE");
+    input.chain_id_full = chain_id_full;
+
+    var index = try ChainAtomIndex.init(allocator, input);
+    defer index.deinit(allocator);
+
+    const selections = [_][]const []const u8{ &.{"ABCDE"}, &.{"ABCD"}, &.{ "B", "ABCDE" }, &.{ "ABCD", "B" } };
+    for (selections) |chains| {
+        var expected = try copySelectedAtomInput(allocator, input, chains);
+        defer expected.deinit();
+        const indices = try index.selectedIndices(allocator, chains);
+        defer allocator.free(indices);
+        var actual = try copyAtomInputIndices(allocator, input, indices);
+        defer actual.deinit();
+
+        try std.testing.expectEqualSlices(f64, expected.x, actual.x);
+        try std.testing.expectEqual(expected.chain_id_full.?.len, actual.chain_id_full.?.len);
+        for (expected.chain_id_full.?, actual.chain_id_full.?) |e, a| try std.testing.expectEqualStrings(e, a);
+    }
 }
 
 test "calculatePreparedInputResult computes total for selected input" {
