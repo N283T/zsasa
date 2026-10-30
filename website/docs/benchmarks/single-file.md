@@ -6,7 +6,7 @@ Single-file benchmarks time one `calc` invocation per structure, from process st
 
 <div data-chart="single/atoms"></div>
 
-At 10 threads `zsasa` f64 is the fastest tool on every structure in both formats, and it has the lowest peak memory. On the smallest structures the bitmask modes are slower than exact f64, because building the lookup table is a fixed cost that a single small structure does not repay.
+At 10 threads `zsasa` f64 is faster than every comparator on every mmCIF input and on every PDB input except the smallest, where RustSASA matches it (0.021 s for both). `zsasa` has the lowest peak memory on every structure. On the smallest structures the bitmask modes are slower than exact f64, because building the lookup table is a fixed cost that a single small structure does not repay.
 
 <div data-chart="single/bars"></div>
 
@@ -43,7 +43,7 @@ Lahuta is excluded from this suite because the benchmarked SASA command targets 
 
 ## Caveats
 
-- `zsasa` and PDBTools.jl were measured in the 0.9.0 rerun. The FreeSASA and RustSASA values for PDB input are unchanged comparator measurements retained from the 0.6.0 suite.
+- `zsasa` was measured with 0.12.1. The comparator rows are retained from earlier sessions on the same machine: FreeSASA and RustSASA for PDB input from the 0.6.0 session, PDBTools.jl and all mmCIF comparator rows from the 0.9.0 session. Ratios against them compare measurements from different sessions.
 - The 8rbs FreeSASA result for PDB input exposes fixed-width coordinate overflow: coordinates wider than the PDB 8.3 field are misread by the pinned FreeSASA parser, which produces a pathological setup time. The mmCIF form of 8rbs does not show it.
 - The 5vyc RustSASA result for PDB input is dominated by parser time. The mmCIF form does not show it.
 - FreeSASA did not complete the two AFDB-derived two-chain structures in mmCIF form, because it aborted without assigning atomic radii.

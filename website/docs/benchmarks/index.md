@@ -5,10 +5,10 @@ sidebar_label: "Overview"
 
 # Benchmarks
 
-These pages report the `zsasa` 0.9.0 benchmark suite: agreement with established SASA implementations, proteome-scale batch throughput, large single structures, and MD trajectories. Every chart and table is generated from the result tables of [`zsasa-benchmarks`](https://github.com/N283T/zsasa-benchmarks), archived at [doi:10.5281/zenodo.23306698](https://doi.org/10.5281/zenodo.23306698).
+These pages report the `zsasa` 0.12.1 benchmark suite: agreement with established SASA implementations, proteome-scale batch throughput, large single structures, and MD trajectories. Every chart and table is generated from the result tables of [`zsasa-benchmarks`](https://github.com/N283T/zsasa-benchmarks), archived at [doi:10.5281/zenodo.23788710](https://doi.org/10.5281/zenodo.23788710).
 
 :::info[Numbers differ from the preprint]
-The current [bioRxiv preprint](https://doi.org/10.64898/2026.06.29.733683) reports the `zsasa` 0.6.0 suite. These pages use the 0.9.0 rerun, so headline values differ slightly from that version; a revision of the preprint based on the 0.9.0 suite is in preparation. The 0.6.0 archive remains available at [doi:10.5281/zenodo.20577561](https://doi.org/10.5281/zenodo.20577561).
+The current [bioRxiv preprint](https://doi.org/10.64898/2026.06.29.733683) reports the `zsasa` 0.6.0 suite. These pages use the 0.12.1 rerun, so headline values differ slightly from that version; a revision of the preprint based on the 0.12.1 suite is in preparation. The 0.6.0 archive remains available at [doi:10.5281/zenodo.20577561](https://doi.org/10.5281/zenodo.20577561).
 :::
 
 <div data-chart="batch/map"></div>
@@ -47,13 +47,13 @@ All runs were collected on one consumer laptop:
 | OS | macOS 26.2 |
 | Timing | hyperfine 1.20.0, three measured runs per condition, `--prepare sync` |
 | Tool pinning | Nix for native tools, uv for Python dependencies |
-| `zsasa` version | 0.9.0; 0.11.0 for the mmCIF batch rows and one SwissProt row, named as such |
+| `zsasa` version | 0.12.1; 0.9.0 for the SwissProt comparison under the default disk I/O policy |
 
-Batch FreeSASA timings use a `freesasa_batch` wrapper, because upstream FreeSASA has no native directory mode. The pinned comparator builds did not change between `zsasa` releases, so their batch timings are retained from the 0.6.0 session on the same machine; validation, single-file and trajectory runs were repeated for all tools.
+Batch FreeSASA timings use a `freesasa_batch` wrapper, because upstream FreeSASA has no native directory mode. Validation, batch and trajectory comparators were measured in the 0.12.1 session. The pinned comparator builds did not change between `zsasa` releases, so the single-file comparator timings and mdsasa-bolt on 5vz0_A are retained from earlier sessions on the same machine: FreeSASA and RustSASA on PDB input from the 0.6.0 session, the other rows from the 0.9.0 session.
 
 ## Evidence sources
 
 - Benchmark harness and result tables: [`N283T/zsasa-benchmarks`](https://github.com/N283T/zsasa-benchmarks)
-- Archived results: [doi:10.5281/zenodo.23306698](https://doi.org/10.5281/zenodo.23306698)
+- Archived results: [doi:10.5281/zenodo.23788710](https://doi.org/10.5281/zenodo.23788710) ([`v0.12.1-benchmark-archive`](https://github.com/N283T/zsasa-benchmarks/releases/tag/v0.12.1-benchmark-archive))
 - Preprint: [Nagae and Tomii, *bioRxiv* (2026)](https://doi.org/10.64898/2026.06.29.733683)
 - Feature comparison: [Comparison with Other Tools](/docs/comparison)

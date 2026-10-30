@@ -51,7 +51,7 @@ RustSASA relies on `pdbtbx`; the benchmark input preparation had to normalize la
 
 FreeSASA has no native directory mode. The current pinned batch benchmarks therefore use `freesasa_batch`, a thin wrapper around the pinned FreeSASA C API, so that comparisons are multi-file workloads rather than shell loops.
 
-Results at 10 threads and 128 sphere points, from the `zsasa` 0.9.0 suite:
+Results at 10 threads and 128 sphere points, from the `zsasa` 0.12.1 suite:
 
 <div data-chart="batch/bars"></div>
 
