@@ -58,7 +58,7 @@ At 10 threads `zsasa` 0.12.1 bitmask f32 processes the collection in 5.7 minutes
 
 Since 0.11.0, [`--passive-io`](../guide/batch.md#file-scanners-on-macos) requests the passive policy from within `zsasa`.
 
-The same commands under the default I/O policy were measured in July 2026 with `zsasa` 0.9.0 and not repeated with 0.12.1. Under that policy both tools were slower on this machine and the order at 10 threads was reversed: `zsasa` 0.9.0 bitmask f32 ran at 821 structures/s and Lahuta bitmask at 935. The [investigation notes](https://github.com/N283T/zsasa-benchmarks/tree/main/investigations/swissprot-open-latency) in the benchmark repository have the measurements behind this.
+The same commands under the default I/O policy were measured with `zsasa` 0.12.1 in a separate session. Under that policy both tools were slower on this machine: at 10 threads `zsasa` bitmask f32 ran at 1,029 structures/s and Lahuta bitmask at 916. With `zsasa` 0.9.0, in July 2026, the order at 10 threads was reversed (821 against 935 structures/s). The [investigation notes](https://github.com/N283T/zsasa-benchmarks/tree/main/investigations/swissprot-open-latency) in the benchmark repository have the measurements behind this.
 
 ## Reproducing these results
 
