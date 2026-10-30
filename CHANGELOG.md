@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **Benchmark pages report the `zsasa` 0.12.1 rerun.** The charts, tables and landing-page figures are regenerated from `zsasa-benchmarks` at 049050a, the prose quotes the new numbers, and the pages cite the v0.12.1 benchmark archive ([doi:10.5281/zenodo.23788710](https://doi.org/10.5281/zenodo.23788710)). The SwissProt comparison under the default disk I/O policy stays on the 0.9.0 session. `website/scripts/export_benchmarks.py` selects the 0.12.1 run sets.
+
 ## [0.12.1] - 2026-10-29
 
 ### Added

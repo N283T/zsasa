@@ -1,6 +1,6 @@
 # MD Trajectory Benchmarks
 
-Trajectory benchmarks time frame-by-frame SASA over a whole trajectory, including reading the trajectory. All runs use `zsasa` 0.9.0, 128 sphere points, stride 1, the NACCESS classifier and explicit hydrogens.
+Trajectory benchmarks time frame-by-frame SASA over a whole trajectory, including reading the trajectory. All runs use `zsasa` 0.12.1, 128 sphere points, stride 1, the NACCESS classifier and explicit hydrogens.
 
 ## Throughput summary
 
@@ -38,7 +38,7 @@ The native trajectory path accepts more worker threads than the machine has core
 
 <div data-chart="md/overcommit"></div>
 
-Extra workers help a little here: 40 workers are 2% to 11% faster than 10, with the largest gain on the smallest system. Per-frame SASA values were identical at 10, 20 and 40 workers.
+Extra workers help a little here: 40 workers are 1% to 12% faster than 10, with the largest gain on the smallest system.
 
 ## Workloads
 

@@ -1,6 +1,6 @@
 # SASA Validation
 
-Validation compares total SASA from `zsasa` with established implementations on the same inputs: FreeSASA for static structures and MDTraj for trajectory frames. All values are from `zsasa` 0.9.0.
+Validation compares total SASA from `zsasa` with established implementations on the same inputs: FreeSASA for static structures and MDTraj for trajectory frames. All values are from `zsasa` 0.12.1.
 
 ## Static structure validation against FreeSASA
 
@@ -28,11 +28,11 @@ Trajectory validation uses 1,001 frames of the 5wvo_C ATLAS trajectory, with exp
 
 Called through its MDTraj integration, which uses MDTraj's element radii, `zsasa` agrees with MDTraj without bias: the median difference is within 0.02% at every point count. The band narrows as the point count rises, because the two tools place their sphere points along different axes and that difference averages out.
 
-The CLI differs from MDTraj by a constant −0.3%. That offset comes from the radius set, not the algorithm: the CLI runs use the NACCESS classifier, and MDTraj uses its own element radii.
+The CLI differs from MDTraj by a nearly constant −0.17% to −0.20%. That offset comes from the radius set, not the algorithm: the CLI runs use the NACCESS classifier, and MDTraj uses its own element radii.
 
 <div data-chart="validation/md-bitmask"></div>
 
-On this explicit-hydrogen trajectory the raw bitmask result is about 1.7% below exact `zsasa`, a larger offset than for static structures. Bitmask mode is therefore not recommended for explicit-hydrogen trajectories. An experimental bias-correction option removes most of the offset; it may change or be removed in a later release.
+On this explicit-hydrogen trajectory the raw bitmask result is about 1.9% below exact `zsasa`, a larger offset than for static structures. Bitmask mode is therefore not recommended for explicit-hydrogen trajectories. An experimental bias-correction option removes most of the offset; it may change or be removed in a later release.
 
 <div data-table="validation/md-summary"></div>
 

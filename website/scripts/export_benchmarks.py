@@ -26,7 +26,7 @@ import numpy as np
 
 OUT = Path(__file__).resolve().parents[1] / "data" / "benchmarks"
 
-ZSASA_VERSION = "0.9.0"
+ZSASA_VERSION = "0.12.1"
 
 # SwissProt is reported under the passive disk I/O policy, as in the paper: the benchmark
 # machine scans every file on first open, and the default policy slows that scan down.
@@ -38,12 +38,11 @@ BATCH_DATASETS = {
     SWISSPROT: "SwissProt AFDB",
 }
 # zsasa mmCIF parser-path variants are bitmask f32 runs; their names do not say so.
-# They were measured with 0.11.0, the first release whose batch runs apply --input-io.
 BITMASK_VARIANTS = {
-    "zsasa_0_11_0_generic_read",
-    "zsasa_0_11_0_generic_mmap",
-    "zsasa_0_11_0_af_fast_read",
-    "zsasa_0_11_0_af_fast_mmap",
+    "zsasa_0_12_1_generic_read",
+    "zsasa_0_12_1_generic_mmap",
+    "zsasa_0_12_1_af_fast_read",
+    "zsasa_0_12_1_af_fast_mmap",
 }
 TRAJECTORIES = ["5wvo_C", "6sup_A", "5vz0_A"]
 POINTS = [64, 128, 256, 512, 1024]
@@ -219,8 +218,8 @@ def export_batch(t: Tables) -> dict:
     }
 
     story = [
-        "zsasa_0_9_0_f64",
-        "zsasa_0_9_0_bitmask_f32",
+        "zsasa_0_12_1_f64",
+        "zsasa_0_12_1_bitmask_f32",
         "freesasa_batch",
         "rustsasa",
         "lahuta_bitmask",
@@ -344,7 +343,7 @@ def export_batch(t: Tables) -> dict:
         }
 
     def headline(key: str) -> dict[str, str]:
-        r = next(r for r in t10[key] if r["variant"] == "zsasa_0_9_0_bitmask_f32")
+        r = next(r for r in t10[key] if r["variant"] == "zsasa_0_12_1_bitmask_f32")
         return {
             "structures": f"{int(r['expected_count']):,}",
             "runtime": f"{num(r, 'runtime_mean_s'):.1f}",
