@@ -1205,13 +1205,21 @@ code {
   max-width: 50rem;
 }
 
-/* `layout: wide` pages (the SASA explorer) drop the table of contents. */
-.doc--wide {
-  grid-template-columns: 236px minmax(0, 1fr);
-}
-
+/* `layout: wide` pages (the SASA explorer) take the whole width: no table of
+   contents, and no sidebar where it would be a column. Below 900px the
+   sidebar is the menu drawer and stays. */
 .doc--wide .toc {
   display: none;
+}
+
+@media (min-width: 901px) {
+  .doc.doc--wide {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .doc--wide .side {
+    display: none;
+  }
 }
 
 /* On a docs page the nav follows the columns below it: the logo sits above

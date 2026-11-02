@@ -467,7 +467,9 @@ class Site:
             "desc": html.escape(
                 page.description or f"{page.title}: zsasa documentation."
             ),
-            "docs_current": ' aria-current="page"',
+            # The explorer has its own entry in the nav; every other page is under Docs.
+            "docs_current": "" if page.doc_id == "data/explorer" else ' aria-current="page"',
+            "explorer_current": ' aria-current="page"' if page.doc_id == "data/explorer" else "",
             "menu_hidden": "",
         }
         values |= self.chrome(values, page.root)
@@ -507,6 +509,7 @@ class Site:
             "title": "zsasa: solvent accessible surface area at proteome scale",
             "desc": "High-performance SASA calculation in Zig, with a CLI and Python bindings.",
             "docs_current": "",
+            "explorer_current": "",
             "menu_hidden": " hidden",
         }
         values |= self.chrome(values, root)
@@ -524,6 +527,7 @@ class Site:
             "title": "Page not found · zsasa",
             "desc": "Page not found.",
             "docs_current": "",
+            "explorer_current": "",
             "menu_hidden": " hidden",
         }
         values |= self.chrome(values, BASE_PATH)
