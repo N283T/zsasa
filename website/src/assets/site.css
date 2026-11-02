@@ -2238,7 +2238,7 @@ code {
 
 .explorer__range-value {
   font: 14px var(--mono);
-  color: var(--ink-3);
+  color: var(--ink-2);
   font-variant-numeric: tabular-nums;
 }
 
@@ -2346,8 +2346,11 @@ code {
   min-width: 0;
 }
 
+/* The explorer's control labels are read while working, so they are one step
+   stronger than the site's muted labels. */
 .explorer .label {
   font-size: 13.5px;
+  color: var(--ink-2);
 }
 
 .explorer .seg button {
