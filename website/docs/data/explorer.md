@@ -6,17 +6,19 @@ description: "Search interface burial and polar/apolar SASA for 623,242 AFDB hum
 
 # SASA explorer
 
-Search the SASA, interface burial and polar/apolar split that `zsasa` computed for AFDB human heterodimers, homo-dimers and SwissProt models. Narrow the results with the sliders, click a column header to sort, and select a dimer row to see its full breakdown.
+Search the SASA, interface burial and polar/apolar split that `zsasa` computed for AFDB human heterodimers, homo-dimers and SwissProt models. Narrow the results with the sliders or by dragging a rectangle on the density plot, click a column header to sort, and select a dimer row to see its full breakdown.
 
 <nav class="jump" aria-label="On this page">
 <a href="#search">Search</a>
-<a href="#download">Download the tables</a>
+<a href="#download">Download full data</a>
 <a href="#the-data">The data</a>
 <a href="#what-the-columns-mean">Columns</a>
 <a href="#how-the-values-were-computed">How the values were computed</a>
 </nav>
 
 <div id="search" data-explorer></div>
+
+The histogram above each slider shows the distribution of that measure under the other filters, so you can see where the slider cuts. The density plot shows two measures of the current results against each other; pick its axes above it. Each slider ends at the 99.5th percentile of its measure, and a thumb left at an end sets no limit on that side, so the long tails (ΔSASA reaches 54,000 Å²) stay in the results.
 
 ## Download {#download}
 

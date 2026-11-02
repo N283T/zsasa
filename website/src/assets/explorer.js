@@ -74,6 +74,7 @@ const DATASETS = {
       ...DIMER_AREAS,
     ],
     sort: ["delta_sasa", "desc"],
+    axes: ["delta_sasa", "ipsae_min"],
     dimer: true,
   },
   homodimers: {
@@ -90,6 +91,7 @@ const DATASETS = {
       ...DIMER_AREAS,
     ],
     sort: ["delta_sasa", "desc"],
+    axes: ["delta_sasa", "ipsae_min"],
     dimer: true,
   },
   swissprot: {
@@ -117,6 +119,7 @@ const DATASETS = {
       col("plddt", "pLDDT", (r) => score(r.plddt, 1), "plddt", { show: false }),
     ],
     sort: ["sasa", "desc"],
+    axes: ["n_residues", "sasa"],
     dimer: false,
   },
 };
@@ -128,6 +131,8 @@ const state = {
   ranges: {},
   query: "",
   sort: DATASETS.heterodimers.sort,
+  // The x and y measures of the density plot
+  axes: DATASETS.heterodimers.axes,
   offset: 0,
 };
 
@@ -188,8 +193,10 @@ function orderBy(ds) {
   return `${column.sort} ${dir === "asc" ? "ASC" : "DESC"} NULLS LAST, model_id`;
 }
 
-// The WHERE clause of the current state and its parameters, in order.
-function where() {
+// The WHERE clause of the current state and its parameters, in order. The range
+// of filter `skip` is left out (a histogram shows the distribution under the
+// other filters).
+function where(skip = null) {
   const ds = DATASETS[state.dataset];
   const clauses = [];
   const params = [];
@@ -201,9 +208,16 @@ function where() {
   if (ds.dimer && state.hq) clauses.push("high_quality");
   for (const f of ds.filters) {
     const span = state.ranges[f.key];
-    if (!span) continue;
-    clauses.push(`(${f.expr}) BETWEEN ? AND ?`);
-    params.push(span[0], span[1]);
+    if (!span || f.key === skip) continue;
+    const [lo, hi] = ds.bounds?.[f.key] ?? [-Infinity, Infinity];
+    if (span[0] > lo) {
+      clauses.push(`(${f.expr}) >= ?`);
+      params.push(span[0]);
+    }
+    if (span[1] < hi) {
+      clauses.push(`(${f.expr}) <= ?`);
+      params.push(span[1]);
+    }
   }
   return [clauses.length ? `WHERE ${clauses.join(" AND ")}` : "", params];
 }
@@ -236,8 +250,13 @@ async function load(ds, status) {
   ds.loading = (async () => {
     await conn.query(`CREATE TABLE ${ds.name} AS SELECT *, ${text} FROM read_parquet('${ds.file}')`);
     ds.table = ds.name;
-    // The slider ends: the range of each filter, on its step
-    const bounds = ds.filters.map((f) => `min(${f.expr}) AS "${f.key}_lo", max(${f.expr}) AS "${f.key}_hi"`).join(", ");
+    // The slider ends: from the minimum to the 99.5th percentile of each filter,
+    // on its step. Long tails (ΔSASA reaches 54,000 Å² with a median of 2,900)
+    // would otherwise squeeze the slider and the charts into their first bins;
+    // a thumb at either end means no limit on that side.
+    const bounds = ds.filters
+      .map((f) => `min(${f.expr}) AS "${f.key}_lo", quantile_cont(${f.expr}, 0.995) AS "${f.key}_hi"`)
+      .join(", ");
     const [row] = (await conn.query(`SELECT ${bounds} FROM ${ds.name}`)).toArray().map((r) => r.toJSON());
     // Rounded to the decimals of the step, so 0.94 does not come out as 0.9400000000000001
     const onStep = (v, f) => Number(v.toFixed((String(f.step).split(".")[1] ?? "").length));
@@ -316,6 +335,219 @@ function toCsv(rows) {
   return [keys.join(","), ...rows.map((r) => keys.map((k) => cell(r[k])).join(","))].join("\n");
 }
 
+const HIST_BINS = 40;
+const GRID_X = 64;
+const GRID_Y = 40;
+const SVG = "http://www.w3.org/2000/svg";
+
+function svg(tag, attrs = {}) {
+  const node = document.createElementNS(SVG, tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  return node;
+}
+
+// Counts per bin of `expr` over [lo, hi] for the rows of `clause`.
+async function binCounts(ds, expr, [lo, hi], bins, clause, params) {
+  const width = (hi - lo) / bins || 1;
+  const rows = await run(
+    `SELECT least(greatest(floor((x - ?) / ?), 0), ${bins - 1})::INTEGER AS b, count(*) AS n
+     FROM (SELECT (${expr}) AS x FROM ${ds.table} ${clause}) WHERE x IS NOT NULL GROUP BY b`,
+    [lo, width, ...params],
+  );
+  const counts = new Array(bins).fill(0);
+  for (const r of rows) counts[r.b] = Number(r.n);
+  return counts;
+}
+
+// Five round tick values over [lo, hi].
+function ticks(lo, hi, n = 5) {
+  const raw = (hi - lo) / n || 1;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw);
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + step / 1e6; v += step) out.push(Number(v.toFixed(10)));
+  return out;
+}
+
+// One tooltip per explorer, in the site's chart style.
+function tooltip(host) {
+  const tip = el("div", { class: "chart__tip" });
+  tip.hidden = true;
+  host.append(tip);
+  return {
+    show(x, y, title, rows) {
+      tip.replaceChildren(el("div", { class: "chart__tip-t" }, esc(title)));
+      for (const [value, label] of rows) {
+        const row = el("div", { class: "chart__tip-r" });
+        row.append(el("b", {}, esc(value)), el("span", {}, esc(label)));
+        tip.append(row);
+      }
+      tip.hidden = false;
+      const box = host.getBoundingClientRect();
+      const w = tip.offsetWidth;
+      const h = tip.offsetHeight;
+      tip.style.left = `${Math.max(0, Math.min(box.width - w, x + 14 + w > box.width ? x - w - 14 : x + 14))}px`;
+      tip.style.top = `${Math.max(0, y - h - 10 < 0 ? y + 14 : y - h - 10)}px`;
+    },
+    hide() {
+      tip.hidden = true;
+    },
+  };
+}
+
+// The histogram above a slider: bins inside the slider's range in the accent,
+// the others muted. Hover shows the bin and its count.
+function drawHistogram(host, f, bounds, counts, range, tip) {
+  const [lo, hi] = bounds;
+  const width = (hi - lo) / counts.length;
+  const max = Math.max(...counts, 1);
+  const w = host.clientWidth || 200;
+  const h = 36;
+  const bar = w / counts.length;
+  const plot = svg("svg", { viewBox: `0 0 ${w} ${h}`, width: w, height: h });
+  counts.forEach((n, i) => {
+    const x0 = lo + i * width;
+    const inside = !range || (x0 + width > range[0] && x0 < range[1]);
+    const bh = n ? Math.max(1.5, (h - 2) * (n / max)) : 0;
+    const rect = svg("rect", {
+      x: i * bar + 0.5,
+      y: h - bh,
+      width: Math.max(0.5, bar - 1),
+      height: bh,
+      class: inside ? "on" : "off",
+    });
+    const hit = svg("rect", { x: i * bar, y: 0, width: bar, height: h, class: "hit" });
+    hit.addEventListener("pointermove", (e) => {
+      const box = host.closest(".explorer").getBoundingClientRect();
+      tip.show(e.clientX - box.left, e.clientY - box.top, f.label, [
+        [n.toLocaleString("en-US"), "models"],
+        [i === counts.length - 1 ? `≥ ${f.fmt(x0)}` : `${f.fmt(x0)} – ${f.fmt(x0 + width)}`, "range"],
+      ]);
+    });
+    hit.addEventListener("pointerleave", () => tip.hide());
+    plot.append(rect, hit);
+  });
+  host.replaceChildren(plot);
+}
+
+// The 2D density of two measures: one cell per bin pair, its opacity scaled to
+// the squared log of its count. Hover reads a cell; dragging a rectangle calls
+// `onBrush` with the x and y ranges it covers.
+function drawDensity(host, xf, yf, xb, yb, cells, tip, onBrush) {
+  const W = Math.max(host.clientWidth, 240);
+  // Taller on wide screens, never so tall that a phone shows nothing else
+  const H = Math.round(Math.min(560, Math.max(260, W * 0.45)));
+  const m = { l: 64, r: 16, t: 10, b: 44 };
+  const pw = W - m.l - m.r;
+  const ph = H - m.t - m.b;
+  const cw = pw / GRID_X;
+  const ch = ph / GRID_Y;
+  const [x0, x1] = xb;
+  const [y0, y1] = yb;
+  const sx = (v) => m.l + ((v - x0) / (x1 - x0 || 1)) * pw;
+  const sy = (v) => m.t + ph - ((v - y0) / (y1 - y0 || 1)) * ph;
+  const max = Math.max(1, ...cells.map((c) => c.n));
+  const logMax = Math.log(max + 1);
+  const plot = svg("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: "explorer__density-svg" });
+
+  for (const v of ticks(x0, x1)) {
+    plot.append(svg("line", { x1: sx(v), x2: sx(v), y1: m.t, y2: m.t + ph, class: "grid" }));
+    const t = svg("text", { x: sx(v), y: m.t + ph + 18, "text-anchor": "middle", class: "tick-label" });
+    t.textContent = xf.fmt(v);
+    plot.append(t);
+  }
+  for (const v of ticks(y0, y1)) {
+    plot.append(svg("line", { x1: m.l, x2: m.l + pw, y1: sy(v), y2: sy(v), class: "grid" }));
+    const t = svg("text", { x: m.l - 8, y: sy(v) + 4, "text-anchor": "end", class: "tick-label" });
+    t.textContent = yf.fmt(v);
+    plot.append(t);
+  }
+  const xt = svg("text", { x: m.l + pw / 2, y: H - 6, "text-anchor": "middle", class: "axis-label" });
+  xt.textContent = xf.label;
+  const yt = svg("text", { x: 14, y: m.t + ph / 2, "text-anchor": "middle", transform: `rotate(-90 14 ${m.t + ph / 2})`, class: "axis-label" });
+  yt.textContent = yf.label;
+  plot.append(xt, yt);
+
+  const byCell = new Map();
+  for (const c of cells) {
+    byCell.set(`${c.bx},${c.by}`, c.n);
+    plot.append(
+      svg("rect", {
+        x: m.l + c.bx * cw,
+        y: m.t + (GRID_Y - 1 - c.by) * ch,
+        width: cw + 0.3,
+        height: ch + 0.3,
+        class: "cell",
+        // log count, squared so that dense areas stand out from the many sparse cells
+        "fill-opacity": (0.05 + 0.95 * (Math.log(c.n + 1) / logMax) ** 2).toFixed(3),
+      }),
+    );
+  }
+  plot.append(svg("rect", { x: m.l, y: m.t, width: pw, height: ph, class: "frame" }));
+  const mark = svg("rect", { width: cw, height: ch, class: "hover", visibility: "hidden" });
+  const brush = svg("rect", { class: "brush", visibility: "hidden" });
+  const overlay = svg("rect", { x: m.l, y: m.t, width: pw, height: ph, class: "overlay" });
+  plot.append(mark, brush, overlay);
+
+  const xw = (x1 - x0) / GRID_X;
+  const yw = (y1 - y0) / GRID_Y;
+  const local = (e) => {
+    const box = plot.getBoundingClientRect();
+    return [
+      Math.min(Math.max(((e.clientX - box.left) / box.width) * W, m.l), m.l + pw),
+      Math.min(Math.max(((e.clientY - box.top) / box.height) * H, m.t), m.t + ph),
+    ];
+  };
+  const value = ([px, py]) => [x0 + ((px - m.l) / pw) * (x1 - x0), y0 + ((m.t + ph - py) / ph) * (y1 - y0)];
+  let start = null;
+  overlay.addEventListener("pointerdown", (e) => {
+    start = local(e);
+    try {
+      overlay.setPointerCapture(e.pointerId);
+    } catch {
+      // Not every pointer can be captured; the drag still works inside the plot
+    }
+  });
+  overlay.addEventListener("pointermove", (e) => {
+    const p = local(e);
+    if (start) {
+      brush.setAttribute("x", Math.min(start[0], p[0]));
+      brush.setAttribute("y", Math.min(start[1], p[1]));
+      brush.setAttribute("width", Math.abs(p[0] - start[0]));
+      brush.setAttribute("height", Math.abs(p[1] - start[1]));
+      brush.setAttribute("visibility", "visible");
+      tip.hide();
+      return;
+    }
+    const bx = Math.min(GRID_X - 1, Math.floor((p[0] - m.l) / cw));
+    const by = Math.min(GRID_Y - 1, Math.floor((m.t + ph - p[1]) / ch));
+    mark.setAttribute("x", m.l + bx * cw);
+    mark.setAttribute("y", m.t + (GRID_Y - 1 - by) * ch);
+    mark.setAttribute("visibility", "visible");
+    const host = plot.closest(".explorer").getBoundingClientRect();
+    tip.show(e.clientX - host.left, e.clientY - host.top, `${xf.label} × ${yf.label}`, [
+      [(byCell.get(`${bx},${by}`) ?? 0).toLocaleString("en-US"), "models"],
+      [`${xf.fmt(x0 + bx * xw)} – ${xf.fmt(x0 + (bx + 1) * xw)}`, xf.label],
+      [`${yf.fmt(y0 + by * yw)} – ${yf.fmt(y0 + (by + 1) * yw)}`, yf.label],
+    ]);
+  });
+  overlay.addEventListener("pointerleave", () => {
+    mark.setAttribute("visibility", "hidden");
+    tip.hide();
+  });
+  overlay.addEventListener("pointerup", (e) => {
+    if (!start) return;
+    const end = local(e);
+    const dragged = Math.abs(end[0] - start[0]) > 4 && Math.abs(end[1] - start[1]) > 4;
+    brush.setAttribute("visibility", "hidden");
+    const [a, b] = [value(start), value(end)];
+    start = null;
+    if (dragged) onBrush([Math.min(a[0], b[0]), Math.max(a[0], b[0])], [Math.min(a[1], b[1]), Math.max(a[1], b[1])]);
+  });
+  host.replaceChildren(plot);
+  return max;
+}
+
 // A two-thumb slider over `bounds` for one range filter. `value` is the
 // narrowed range or undefined; `onChange` gets the new range, or undefined when
 // both thumbs are back at the ends.
@@ -333,13 +565,14 @@ function rangeSlider(f, bounds, value, onChange) {
   low.value = String(value?.[0] ?? min);
   high.value = String(value?.[1] ?? max);
   track.append(fill, low, high);
-  wrap.append(head, track);
+  const hist = el("div", { class: "explorer__hist", "aria-hidden": "true" });
+  wrap.append(head, hist, track);
   const show = () => {
     const [a, b] = [Number(low.value), Number(high.value)];
     const span = max - min || 1;
     fill.style.left = `${(100 * (a - min)) / span}%`;
     fill.style.right = `${(100 * (max - b)) / span}%`;
-    out.textContent = `${f.fmt(a)} – ${f.fmt(b)}`;
+    out.textContent = b >= max ? `${f.fmt(a)} – ${f.fmt(b)}+` : `${f.fmt(a)} – ${f.fmt(b)}`;
     wrap.classList.toggle("is-set", narrowed(a, b));
   };
   const narrowed = (a, b) => a > min + f.step / 2 || b < max - f.step / 2;
@@ -381,7 +614,15 @@ async function main() {
   const resultsHead = el("div", { class: "explorer__results-head" });
   const results = el("div", { class: "explorer__panel explorer__panel--results" });
   results.append(resultsHead, tableWrap, pager);
-  root.append(tabs, search, results);
+  // The density of two measures, for the rows of the current search
+  const chartHead = el("div", { class: "explorer__chart-head" });
+  const chartHost = el("div", { class: "explorer__density" });
+  const chartNote = el("p", { class: "explorer__sub explorer__chart-note" });
+  const chart = el("div", { class: "explorer__panel explorer__panel--chart" });
+  chart.append(chartHead, chartHost, chartNote);
+  root.append(tabs, search, chart, results);
+  const tip = tooltip(root);
+  const histHosts = {};
 
   let timer = null;
   const refresh = () => {
@@ -408,6 +649,7 @@ async function main() {
         if (key === state.dataset) return;
         state.dataset = key;
         state.sort = ds.sort;
+        state.axes = ds.axes;
         state.ranges = {};
         buildControls();
         refresh();
@@ -459,13 +701,100 @@ async function main() {
       const bounds = ds.bounds[f.key];
       const value = state.ranges[f.key];
       if (value) state.ranges[f.key] = [Math.max(value[0], bounds[0]), Math.min(value[1], bounds[1])];
-      sliders.append(
-        rangeSlider(f, bounds, state.ranges[f.key], (span) => {
-          if (span) state.ranges[f.key] = span;
-          else delete state.ranges[f.key];
-          refresh();
-        }),
+      const field = rangeSlider(f, bounds, state.ranges[f.key], (span) => {
+        if (span) state.ranges[f.key] = span;
+        else delete state.ranges[f.key];
+        refresh();
+      });
+      histHosts[f.key] = field.querySelector(".explorer__hist");
+      sliders.append(field);
+    }
+    buildChartHead();
+  }
+
+  function buildChartHead() {
+    const ds = DATASETS[state.dataset];
+    if (!ds.filters.some((f) => f.key === state.axes?.[0]) || !ds.filters.some((f) => f.key === state.axes?.[1])) {
+      state.axes = ds.axes;
+    }
+    const pick = (label, index) => {
+      const wrap = el("label", { class: "explorer__ctl explorer__axis" });
+      wrap.append(el("span", { class: "label" }, esc(label)));
+      const select = el("select");
+      for (const f of ds.filters) {
+        const option = el("option", { value: f.key }, esc(f.label));
+        option.selected = f.key === state.axes[index];
+        select.append(option);
+      }
+      select.addEventListener("change", () => {
+        state.axes = index ? [state.axes[0], select.value] : [select.value, state.axes[1]];
+        drawCharts(DATASETS[state.dataset], generation);
+      });
+      wrap.append(select);
+      return wrap;
+    };
+    chartHead.replaceChildren(
+      el("span", { class: "label explorer__chart-title" }, "Density"),
+      pick("X", 0),
+      pick("Y", 1),
+      el(
+        "span",
+        { class: "explorer__legend" },
+        '<i aria-hidden="true"></i><span class="explorer__legend-text">models per cell</span>',
+      ),
+    );
+  }
+
+  // Histograms above the sliders and the density plot, for the current search.
+  // Each histogram leaves out its own filter, so it shows where that slider cuts.
+  async function drawCharts(ds, mine) {
+    if (!ds.bounds) return;
+    try {
+      for (const f of ds.filters) {
+        const [clause, params] = where(f.key);
+        const counts = await binCounts(ds, f.expr, ds.bounds[f.key], HIST_BINS, clause, params);
+        if (mine !== generation) return;
+        if (histHosts[f.key]) drawHistogram(histHosts[f.key], f, ds.bounds[f.key], counts, state.ranges[f.key], tip);
+      }
+      const [xf, yf] = state.axes.map((k) => ds.filters.find((f) => f.key === k));
+      // A narrowed range zooms the plot in on it
+      const xb = state.ranges[xf.key] ?? ds.bounds[xf.key];
+      const yb = state.ranges[yf.key] ?? ds.bounds[yf.key];
+      const [clause, params] = where();
+      const xw = (xb[1] - xb[0]) / GRID_X || 1;
+      const yw = (yb[1] - yb[0]) / GRID_Y || 1;
+      const rows = await run(
+        `SELECT least(greatest(floor((x - ?) / ?), 0), ${GRID_X - 1})::INTEGER AS cx,
+                least(greatest(floor((y - ?) / ?), 0), ${GRID_Y - 1})::INTEGER AS cy, count(*) AS n
+         FROM (SELECT (${xf.expr}) AS x, (${yf.expr}) AS y FROM ${ds.table} ${clause})
+         WHERE x IS NOT NULL AND y IS NOT NULL GROUP BY cx, cy`,
+        // Values past the slider ends (the top 0.5%) fall in the edge cells
+        [xb[0], xw, yb[0], yw, ...params],
       );
+      if (mine !== generation) return;
+      const cells = rows.map((r) => ({ bx: r.cx, by: r.cy, n: Number(r.n) }));
+      const max = drawDensity(chartHost, xf, yf, xb, yb, cells, tip, (xs, ys) => {
+        const snap = (f, [a, b]) => {
+          const bounds = ds.bounds[f.key];
+          const d = (String(f.step).split(".")[1] ?? "").length;
+          return [
+            Number(Math.max(bounds[0], Math.floor(a / f.step) * f.step).toFixed(d)),
+            Number(Math.min(bounds[1], Math.ceil(b / f.step) * f.step).toFixed(d)),
+          ];
+        };
+        state.ranges[xf.key] = snap(xf, xs);
+        state.ranges[yf.key] = snap(yf, ys);
+        buildSliders();
+        refresh();
+      });
+      const shown = cells.reduce((a, c) => a + c.n, 0);
+      chartHead.querySelector(".explorer__legend-text").textContent = `1 – ${max.toLocaleString("en-US")} models per cell`;
+      chartNote.textContent =
+        `${shown.toLocaleString("en-US")} models with both values. The last row and column also hold the values ` +
+        "past the slider ends. Drag a rectangle to filter to it; Reset filters zooms back out.";
+    } catch (err) {
+      if (mine !== generation) return;
+      chartNote.textContent = `The chart failed: ${err.message}`;
     }
   }
 
@@ -549,6 +878,7 @@ async function main() {
       csv.disabled = !n;
       render(ds, rows);
       renderPager(n);
+      drawCharts(ds, mine);
     } catch (err) {
       if (mine !== generation) return;
       status.textContent = `The query failed: ${err.message}`;
