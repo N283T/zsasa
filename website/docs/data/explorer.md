@@ -32,11 +32,11 @@ The same files, with the runs and scripts behind them, are archived on Zenodo: [
 
 The values are derived from AlphaFold Database models, which are available under [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/). When you reuse them, cite the data archive, `zsasa` and the sources of the models:
 
+- Heterodimer and homo-dimer models and their scores (AFDB/NVIDIA complex release): Han, Y. *et al.* AlphaFold Database Expands to Proteome-Scale Quaternary Structures. *bioRxiv* (2026). [doi:10.64898/2026.03.27.714458](https://doi.org/10.64898/2026.03.27.714458)
 - Data: Nagae, T. *Benchmark dataset and analysis artifacts for zsasa v0.12.1* (revision 3). Zenodo 2026. [doi:10.5281/zenodo.23898582](https://doi.org/10.5281/zenodo.23898582)
 - `zsasa`: see [Citation](../citation.md).
 - AlphaFold: Jumper, J. *et al.* Highly accurate protein structure prediction with AlphaFold. *Nature* **596**, 583–589 (2021). [doi:10.1038/s41586-021-03819-2](https://doi.org/10.1038/s41586-021-03819-2)
 - AlphaFold Database: Varadi, M. *et al.* AlphaFold Protein Structure Database in 2024: providing structure coverage for over 214 million protein sequences. *Nucleic Acids Res.* **52**, D368–D375 (2024). [doi:10.1093/nar/gkad1011](https://doi.org/10.1093/nar/gkad1011); Bertoni, D. *et al.* AlphaFold Protein Structure Database 2025: a redesigned interface and updated structural coverage. *Nucleic Acids Res.* **54**, D358–D362 (2026). [doi:10.1093/nar/gkaf1226](https://doi.org/10.1093/nar/gkaf1226)
-- AFDB/NVIDIA complex release (the dimer models and scores): Han, Y. *et al.* AlphaFold Database Expands to Proteome-Scale Quaternary Structures. *bioRxiv* (2026). [doi:10.64898/2026.03.27.714458](https://doi.org/10.64898/2026.03.27.714458)
 
 ## The data
 
