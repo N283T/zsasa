@@ -38,6 +38,16 @@ The values are derived from AlphaFold Database models, which are available under
 - **Homo-dimers**: the 91,637 human homo-dimer models of the same release.
 - **SwissProt**: the 550,122 SwissProt models of AFDB v6, with the SASA of each model and its polar/apolar split.
 
+The model files come from:
+
+| Set | Source |
+| --- | --- |
+| Heterodimers | AFDB/NVIDIA FTP release: [`heterodimers/`](https://ftp.ebi.ac.uk/pub/databases/alphafold/collaborations/nvda/heterodimers/) (tar shards), scores in [`heterodimer_metadata.csv`](https://ftp.ebi.ac.uk/pub/databases/alphafold/collaborations/nvda/) |
+| Homo-dimers | AFDB/NVIDIA FTP release: the human (taxon 9606) models of [`homodimers/`](https://ftp.ebi.ac.uk/pub/databases/alphafold/collaborations/nvda/homodimers/) (tar chunks of every species), scores in [`homodimer_metadata.csv`](https://ftp.ebi.ac.uk/pub/databases/alphafold/collaborations/nvda/) |
+| SwissProt | AFDB v6 bulk download: [`swissprot_pdb_v6.tar`](https://ftp.ebi.ac.uk/pub/databases/alphafold/latest/) (27 GB); see the [AFDB download page](https://alphafold.ebi.ac.uk/download) |
+
+The [README of the AFDB/NVIDIA release](https://ftp.ebi.ac.uk/pub/databases/alphafold/collaborations/nvda/README.txt) describes its files and score columns. Most dimer models are only in this FTP release, not on the AFDB website.
+
 The two dimer sets are the models of the large-scale workflow in the `zsasa` manuscript. Each dimer row has the SASA of chain A alone, chain B alone and the complex, the interface burial ΔSASA, the buried surface area (BSA), the polar/apolar split of each of these areas, and the AFDB/NVIDIA confidence scores.
 
 The search runs in your browser on [DuckDB-WASM](https://duckdb.org/docs/api/wasm/overview). The first search of a set downloads its table (9 to 44 MB) into the browser; later searches run locally.
