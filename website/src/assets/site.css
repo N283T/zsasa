@@ -1216,18 +1216,12 @@ code {
 }
 
 /* The nav follows the columns of a docs page on every page: the logo sits
-   above the sidebar, with the sidebar's rule running up through the nav, and
-   the links start where the content column starts. */
+   above the sidebar and the links start where the content column starts. */
 @media (min-width: 901px) {
   .nav__in {
     display: grid;
     grid-template-columns: 236px minmax(0, 1fr) auto;
     column-gap: clamp(28px, 4vw, 64px);
-  }
-
-  .nav .brand {
-    align-self: stretch;
-    border-right: 1px solid var(--line);
   }
 }
 
