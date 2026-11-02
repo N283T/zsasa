@@ -412,10 +412,22 @@ complex), `atom_partner`, chain, residue and atom identity, element,
 `atom_sasa_isolated`, `atom_sasa_complex`, and
 `atom_delta_sasa`. Atom and residue ΔSASA arrays reconcile to the unhalved
 `delta_sasa_total` within floating-point tolerance before optional JSONL
-decimal rounding. Polar/apolar decomposition
-is not emitted; the atom metadata is available for downstream classification.
+decimal rounding.
 The schema does not use normal SASA JSONL `total_area` and `atom_areas` fields,
 because those names are ambiguous for interface analysis.
+
+With `polar = true` under `[calculation]` (or `--polar`), each row also splits
+its areas into polar and apolar parts, written after `bsa`:
+
+| Field | Value |
+| --- | --- |
+| `sasa_partner_a_polar`, `sasa_partner_a_apolar` | split of `sasa_partner_a` |
+| `sasa_partner_b_polar`, `sasa_partner_b_apolar` | split of `sasa_partner_b` |
+| `sasa_complex_polar`, `sasa_complex_apolar` | split of `sasa_complex` |
+| `delta_sasa_polar`, `delta_sasa_apolar` | `partner_a + partner_b - complex` of each part; they add up to `delta_sasa_total` |
+
+The atoms are classed as in [Polar/Apolar Split in JSONL](batch.md#polar-split).
+Like `delta_sasa_total`, the two ΔSASA parts are not halved.
 
 ## Failures and Exit Status {#failures}
 
@@ -607,7 +619,7 @@ The `[output.jsonl]` keys apply to batch JSONL output only. See [JSONL Output Op
 | `residue_map` | boolean | `false` | batch | Add residue map arrays to JSONL rows (`--residue-map`). `calc` rejects `true`, and so does an `[analysis]` workflow |
 | `per_residue` | boolean | `false` | calc | Per-residue aggregation. `batch` rejects `true` |
 | `rsa` | boolean | `false` | calc | Relative solvent accessibility; implies `per_residue`. `batch` rejects `true` |
-| `polar` | boolean | `false` | calc | Polar/nonpolar summary; implies `per_residue`. `batch` rejects `true` |
+| `polar` | boolean | `false` | calc, batch | `calc`: polar/nonpolar summary; implies `per_residue`. `batch`: split the areas of each JSONL row into polar and apolar parts (`--polar`); needs JSONL output |
 | `validate_only` | boolean | `false` | calc | Validate the input without calculating (`--validate`). `batch` rejects `true` |
 
 ### `[classifier]`
@@ -669,7 +681,7 @@ zsasa does not drop a key silently. When a command meets a key it does not read,
 | Command | Errors | Warnings |
 |---------|--------|----------|
 | `calc --workflow` | `[analysis]`, `[[jobs]]`, `[input] dir`, `[calculation] residue_map = true`: the file is a batch workflow, run it with `zsasa batch --workflow` | `[output] dir`, `[output.jsonl]` (calc writes `[output] path` and no JSONL) |
-| `batch --workflow` | `[input] path`, `model`, `mol`; `[calculation] rsa`, `per_residue`, `polar`, `validate_only` set to `true`: only `calc` reads them, run the file with `zsasa calc --workflow` | `[output] path`; `[calculation] timing = true` and `--timing` with `[[jobs]]`; `--profile-stages` |
+| `batch --workflow` | `[input] path`, `model`, `mol`; `[calculation] rsa`, `per_residue`, `validate_only` set to `true`: only `calc` reads them, run the file with `zsasa calc --workflow` | `[output] path`; `[calculation] timing = true` and `--timing` with `[[jobs]]`; `--profile-stages` |
 | `batch --workflow` with `[analysis]` | `[input] chain`; `[calculation] residue_map = true`; `[output.jsonl] atom_identity = true`; `--residue-map`; `--format` other than `jsonl` | `[output] path`; `--profile-stages` |
 
 The legacy flat-root keys follow the key they stand for (`input_dir` is `[input] dir`, `output_dir` is `[output] dir`).

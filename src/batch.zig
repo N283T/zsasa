@@ -15,6 +15,7 @@ const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
 const bitmask_lut = @import("bitmask_lut.zig");
 const lee_richards = @import("lee_richards.zig");
 const classifier = @import("classifier.zig");
+const sasa_analysis = @import("analysis.zig");
 const classifier_parser = @import("classifier_parser.zig");
 const classifier_naccess = @import("classifier_naccess.zig");
 const classifier_oons = @import("classifier_oons.zig");
@@ -107,6 +108,8 @@ pub const BatchConfig = struct {
     alt_loc_id: u8 = 'A',
     af_model_fast: bool = false,
     residue_map: bool = false,
+    /// Split each area into polar and apolar parts (`--polar`, JSONL only)
+    polar: bool = false,
     jsonl_decimals: ?u8 = null,
     jsonl_include_atom_areas: bool = true,
     jsonl_include_atom_identity: bool = false,
@@ -503,6 +506,7 @@ pub const FileResult = struct {
     error_msg: ?[]const u8 = null,
     atom_areas: ?[]const f64 = null, // Populated for jsonl output
     residue_map: ?json_writer.ResidueMap = null, // Populated for jsonl residue-map output
+    polar: ?sasa_analysis.PolarAreas = null, // Populated for --polar
     read_parse_time_ns: u64 = 0,
     classifier_time_ns: u64 = 0,
 
@@ -977,6 +981,8 @@ fn copyAtomInputIndices(allocator: Allocator, input: AtomInput, indices: []const
     errdefer if (residue_num) |v| allocator.free(v);
     const insertion_code = if (input.insertion_code != null) try allocator.alloc(types.FixedString4, selected_count) else null;
     errdefer if (insertion_code) |v| allocator.free(v);
+    const polar = if (input.polar != null) try allocator.alloc(bool, selected_count) else null;
+    errdefer if (polar) |v| allocator.free(v);
 
     for (indices, 0..) |i, out_i| {
         x[out_i] = input.x[i];
@@ -993,6 +999,7 @@ fn copyAtomInputIndices(allocator: Allocator, input: AtomInput, indices: []const
         }
         if (residue_num) |v| v[out_i] = input.residue_num.?[i];
         if (insertion_code) |v| v[out_i] = input.insertion_code.?[i];
+        if (polar) |v| v[out_i] = input.polar.?[i];
     }
 
     return AtomInput{
@@ -1007,6 +1014,7 @@ fn copyAtomInputIndices(allocator: Allocator, input: AtomInput, indices: []const
         .chain_id_full = chain_id_full,
         .residue_num = residue_num,
         .insertion_code = insertion_code,
+        .polar = polar,
         .allocator = allocator,
     };
 }
@@ -1134,17 +1142,23 @@ fn shouldFallbackAfModelFastError(err: anyerror) bool {
     return err == error.UnsupportedLayout;
 }
 
-/// Apply built-in classifier to replace radii based on residue/atom names
+/// Apply built-in classifier to replace radii based on residue/atom names.
+/// `classes`, when given, has one entry per atom and receives the polarity
+/// class of the atom, or `.unknown` for an atom outside the classifier's tables.
 fn applyBuiltinClassifier(
     input: *AtomInput,
     ct: ClassifierType,
     sdf_ccd: ?*const ccd_parser.ComponentDict,
     inline_ccd: ?*const ccd_parser.ComponentDict,
     external_ccd: ?*const ccd_parser.ComponentDict,
+    classes: ?[]classifier.AtomClass,
 ) !void {
     const n = input.atomCount();
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
+    if (classes) |out| {
+        if (out.len != n) return error.LengthMismatch;
+    }
 
     // CCD and ProtOr share the static ProtOr-compatible table. Only CCD may
     // extend it with runtime component topology.
@@ -1185,22 +1199,23 @@ fn applyBuiltinClassifier(
     errdefer input.allocator.free(new_radii);
 
     for (0..n) |i| {
-        var maybe_radius: ?f64 = switch (ct) {
-            .naccess => classifier_naccess.getRadius(residues[i].slice(), atom_names[i].slice()),
-            .protor, .ccd => if (ccd_clf) |*c| c.getRadius(residues[i].slice(), atom_names[i].slice()) else null,
-            .oons => classifier_oons.getRadius(residues[i].slice(), atom_names[i].slice()),
+        var maybe_props: ?classifier.AtomProperties = switch (ct) {
+            .naccess => classifier_naccess.getProperties(residues[i].slice(), atom_names[i].slice()),
+            .protor, .ccd => if (ccd_clf) |*c| c.getProperties(residues[i].slice(), atom_names[i].slice()) else null,
+            .oons => classifier_oons.getProperties(residues[i].slice(), atom_names[i].slice()),
         };
         // An element column that names another element than the table entry
         // (calcium under the name CA) decides.
-        if (maybe_radius != null and (ct == .naccess or ct == .oons) and
+        if (maybe_props != null and (ct == .naccess or ct == .oons) and
             !classifier.tableEntryMatchesElement(atom_names[i].slice(), if (input.element) |elements| elements[i] else null))
         {
-            maybe_radius = null;
+            maybe_props = null;
         }
+        if (classes) |out| out[i] = if (maybe_props) |props| props.class else .unknown;
 
         // Not in the tables: element-based radius, atom name-based without an
         // element, else the input radius
-        new_radii[i] = maybe_radius orelse classifier.guessFallbackRadius(
+        new_radii[i] = if (maybe_props) |props| props.radius else classifier.guessFallbackRadius(
             ct,
             if (input.element) |elements| elements[i] else null,
             residues[i].slice(),
@@ -1213,17 +1228,22 @@ fn applyBuiltinClassifier(
 }
 
 /// Apply the CCD classifier to one SDF/MOL molecule: radii from the
-/// molecule's own bond topology (`sdf_parser.applyTopologyRadii`).
-fn applySdfTopologyClassifier(input: *AtomInput, own_component: *const ccd_parser.StoredComponent) !void {
+/// molecule's own bond topology (`sdf_parser.applyTopologyRadiiAndClasses`).
+/// `classes` is as in `applyBuiltinClassifier`.
+fn applySdfTopologyClassifier(input: *AtomInput, own_component: *const ccd_parser.StoredComponent, classes: ?[]classifier.AtomClass) !void {
     const view = own_component.view();
-    _ = try sdf_parser.applyTopologyRadii(input, &view);
+    _ = try sdf_parser.applyTopologyRadiiAndClasses(input, &view, classes);
 }
 
 /// Apply custom classifier to replace radii based on residue/atom names.
-fn applyCustomClassifier(input: *AtomInput, custom_classifier: *const classifier.Classifier, quiet: bool) !void {
+/// `classes` is as in `applyBuiltinClassifier`.
+fn applyCustomClassifier(input: *AtomInput, custom_classifier: *const classifier.Classifier, classes: ?[]classifier.AtomClass, quiet: bool) !void {
     const n = input.atomCount();
     const residues = input.residue orelse return error.MissingClassificationInfo;
     const atom_names = input.atom_name orelse return error.MissingClassificationInfo;
+    if (classes) |out| {
+        if (out.len != n) return error.LengthMismatch;
+    }
 
     const new_radii = try input.allocator.alloc(f64, n);
     errdefer input.allocator.free(new_radii);
@@ -1233,8 +1253,10 @@ fn applyCustomClassifier(input: *AtomInput, custom_classifier: *const classifier
     var kept_count: usize = 0;
 
     for (0..n) |i| {
-        if (custom_classifier.getRadius(residues[i].slice(), atom_names[i].slice())) |r| {
-            new_radii[i] = r;
+        const maybe_props = custom_classifier.getProperties(residues[i].slice(), atom_names[i].slice());
+        if (classes) |out| out[i] = if (maybe_props) |props| props.class else .unknown;
+        if (maybe_props) |props| {
+            new_radii[i] = props.radius;
             classified_count += 1;
         } else if (input.element) |elements| {
             if (classifier.guessRadiusFromAtomicNumber(elements[i])) |r| {
@@ -1276,6 +1298,23 @@ fn attachResidueMap(
     result.residue_map = json_writer.buildResidueMap(arena, input, atom_areas) catch |err| {
         result.status = .err;
         result.error_msg = std.fmt.allocPrint(result_allocator, "residue map failed: {s}", .{@errorName(err)}) catch null;
+        return false;
+    };
+    return true;
+}
+
+/// Split the area of `result` into polar and apolar parts by `input.polar`
+/// (`markAtomPolarity`). On failure, marks `result` as failed and returns false.
+fn attachPolarAreas(atom_areas: anytype, result_allocator: Allocator, input: AtomInput, result: *FileResult) bool {
+    const T = @typeInfo(@TypeOf(atom_areas)).pointer.child;
+    const polar = input.polar orelse {
+        result.status = .err;
+        result.error_msg = std.fmt.allocPrint(result_allocator, "polar split failed: atom polarity unavailable", .{}) catch null;
+        return false;
+    };
+    result.polar = sasa_analysis.sumPolarAreas(T, atom_areas, polar) catch |err| {
+        result.status = .err;
+        result.error_msg = std.fmt.allocPrint(result_allocator, "polar split failed: {s}", .{@errorName(err)}) catch null;
         return false;
     };
     return true;
@@ -1465,6 +1504,7 @@ fn calculatePreparedInputResult(
     defer sasa_result.deinit();
     result.sasa_time_ns = @intCast(sasa_timer.untilNow(io, .awake).nanoseconds);
     result.total_sasa = sasa_result.total_area;
+    if (config.polar and !attachPolarAreas(sasa_result.atom_areas, result_allocator, input, &result)) return result;
 
     if (config.store_atom_areas) {
         if (T == f64) {
@@ -1574,26 +1614,12 @@ fn processOneFile(
     // Apply classifier for PDB/mmCIF input (skip JSON unless classification info exists).
     var classifier_timer: std.Io.Timestamp = undefined;
     if (file_config.profile_stages) classifier_timer = std.Io.Timestamp.now(io, .awake);
-    if (file_config.custom_classifier) |custom_classifier| {
-        if (parsed.input.hasClassificationInfo()) {
-            applyCustomClassifier(&parsed.input, custom_classifier, file_config.quiet) catch |err| {
-                if (file_config.profile_stages) result.classifier_time_ns = @intCast(classifier_timer.untilNow(io, .awake).nanoseconds);
-                result.status = .err;
-                result.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
-                return result;
-            };
-        }
-    } else if (file_config.classifier_type) |ct| {
-        const format = format_detect.detectInputFormat(input_path);
-        if (format != .json and parsed.input.hasClassificationInfo()) {
-            applyBuiltinClassifier(&parsed.input, ct, file_config.sdf_ccd, parsed.inlineCcdPtr(), file_config.external_ccd) catch |err| {
-                if (file_config.profile_stages) result.classifier_time_ns = @intCast(classifier_timer.untilNow(io, .awake).nanoseconds);
-                result.status = .err;
-                result.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
-                return result;
-            };
-        }
-    }
+    classifyInput(&parsed.input, parsed.inlineCcdPtr(), input_path, file_config) catch |err| {
+        if (file_config.profile_stages) result.classifier_time_ns = @intCast(classifier_timer.untilNow(io, .awake).nanoseconds);
+        result.status = .err;
+        result.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
+        return result;
+    };
     if (file_config.profile_stages) result.classifier_time_ns = @intCast(classifier_timer.untilNow(io, .awake).nanoseconds);
 
     var calc_result = switch (file_config.precision) {
@@ -1704,9 +1730,15 @@ fn processOneSdfMoleculeInner(
     var res = result.*;
 
     // Apply classifier (SDF molecules normally have classification info)
+    const classes = polarityClassBuffer(input.*, config) catch |err| {
+        res.status = .err;
+        res.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
+        return res;
+    };
+    defer if (classes) |c| input.allocator.free(c);
     if (config.custom_classifier) |custom_classifier| {
         if (input.hasClassificationInfo()) {
-            applyCustomClassifier(input, custom_classifier, config.quiet) catch |err| {
+            applyCustomClassifier(input, custom_classifier, classes, config.quiet) catch |err| {
                 res.status = .err;
                 res.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
                 return res;
@@ -1718,9 +1750,9 @@ fn processOneSdfMoleculeInner(
             // matched to its own bond topology, not looked up by residue
             // name, so --sdf and --ccd have nothing to add.
             const classified: anyerror!void = if (sdf_component) |own_component|
-                applySdfTopologyClassifier(input, own_component)
+                applySdfTopologyClassifier(input, own_component, classes)
             else
-                applyBuiltinClassifier(input, ct, config.sdf_ccd, null, config.external_ccd);
+                applyBuiltinClassifier(input, ct, config.sdf_ccd, null, config.external_ccd, classes);
             classified catch |err| {
                 res.status = .err;
                 res.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
@@ -1728,6 +1760,11 @@ fn processOneSdfMoleculeInner(
             };
         }
     }
+    markAtomPolarity(input, classes, config) catch |err| {
+        res.status = .err;
+        res.error_msg = std.fmt.allocPrint(result_allocator, "classifier failed: {s}", .{@errorName(err)}) catch null;
+        return res;
+    };
 
     res.n_atoms = input.atomCount();
 
@@ -1755,6 +1792,7 @@ fn processOneSdfMoleculeInner(
             defer sasa_result.deinit();
             res.sasa_time_ns = @intCast(sasa_timer.untilNow(io, .awake).nanoseconds);
             total_area = sasa_result.total_area;
+            if (config.polar and !attachPolarAreas(sasa_result.atom_areas, result_allocator, input.*, &res)) return res;
 
             if (config.store_atom_areas) {
                 res.atom_areas = arena.dupe(f64, sasa_result.atom_areas) catch {
@@ -1797,6 +1835,7 @@ fn processOneSdfMoleculeInner(
             defer sasa_result.deinit();
             res.sasa_time_ns = @intCast(sasa_timer.untilNow(io, .awake).nanoseconds);
             total_area = sasa_result.total_area;
+            if (config.polar and !attachPolarAreas(sasa_result.atom_areas, result_allocator, input.*, &res)) return res;
 
             if (config.store_atom_areas) {
                 const areas_f32 = sasa_result.atom_areas;
@@ -1960,10 +1999,10 @@ fn fileResultToJsonlLineOptions(allocator: Allocator, result: *FileResult, optio
     }
     if (result.residue_map) |map| {
         const areas = result.atom_areas orelse if (options.include_atom_areas) return error.MissingAtomAreas else &.{};
-        return json_writer.fileResultWithResidueMapToJsonlLineOptions(allocator, result.filename, result.total_sasa, areas, map, options);
+        return json_writer.fileResultWithResidueMapToJsonlLineOptions(allocator, result.filename, result.total_sasa, result.polar, areas, map, options);
     }
     const areas = result.atom_areas orelse if (options.include_atom_areas) return error.MissingAtomAreas else &.{};
-    return json_writer.fileResultToJsonlLineOptions(allocator, result.filename, result.total_sasa, areas, options);
+    return json_writer.fileResultToJsonlLineOptions(allocator, result.filename, result.total_sasa, result.polar, areas, options);
 }
 
 fn writeJsonlResult(
@@ -2897,6 +2936,7 @@ pub const BatchArgs = struct {
     alt_loc_id: u8 = 'A',
     af_model_fast: bool = false,
     residue_map: bool = false,
+    polar: bool = false,
     jsonl_decimals: ?u8 = null,
     n_threads: usize = 0,
     probe_radius: f64 = 1.4,
@@ -2985,6 +3025,13 @@ fn validateWorkflowNSlices(n: u32) !u32 {
 
 fn validateResidueMapFormat(output_format: OutputFormat, residue_map: bool) !void {
     if (residue_map and output_format != .jsonl) {
+        return error.InvalidArgument;
+    }
+}
+
+/// The polar/apolar split is written only to JSONL rows.
+fn validatePolarFormat(output_format: OutputFormat, polar: bool) !void {
+    if (polar and output_format != .jsonl) {
         return error.InvalidArgument;
     }
 }
@@ -3591,6 +3638,10 @@ pub fn parseArgs(args: []const []const u8, start_idx: usize) BatchArgs {
         else if (std.mem.eql(u8, arg, "--residue-map")) {
             result.residue_map = true;
         }
+        // --polar
+        else if (std.mem.eql(u8, arg, "--polar")) {
+            result.polar = true;
+        }
         // --include-hydrogens
         else if (std.mem.eql(u8, arg, "--include-hydrogens")) {
             result.include_hydrogens = true;
@@ -3852,6 +3903,7 @@ pub fn printHelp(io: std.Io, program_name: []const u8) void {
         \\                        all, highest-occupancy, or a single ID like A
         \\                        (default: auto)
         \\    --residue-map       Include compact residue map arrays in JSONL output
+        \\    --polar             Split areas into polar and apolar parts in JSONL output
         \\    --probe-radius=R    Probe radius in Angstroms (default: 1.4)
         \\    --n-points=N        Test points per atom (default: 100, for sr)
         \\    --n-slices=N        Slices per atom diameter (default: 20, for lr)
@@ -3996,6 +4048,7 @@ fn applyWorkflowToBatchConfig(
     }
     if (args.af_model_fast_explicit) config.af_model_fast = args.af_model_fast;
     if (calculation.residue_map) |v| config.residue_map = v;
+    if (calculation.polar) |v| config.polar = v;
 
     try applyWorkflowClassifierToBatchConfig(config, args, classifier_config);
 }
@@ -4041,6 +4094,7 @@ fn applyCliOverrides(config: *BatchConfig, args: BatchArgs) void {
         config.alt_loc_id = args.alt_loc_id;
     }
     if (args.residue_map) config.residue_map = true;
+    if (args.polar) config.polar = true;
     if (args.jsonl_decimals_explicit) config.jsonl_decimals = args.jsonl_decimals;
 }
 
@@ -4356,6 +4410,23 @@ fn writeBsaInterfaceError(
     };
 }
 
+/// Polar/apolar split of the two partners and the complex of a BSA interface,
+/// by the atom polarity that each selected input carries (`markAtomPolarity`).
+fn bsaPolarAreas(
+    partner_a_input: AtomInput,
+    partner_a_areas: []const f64,
+    partner_b_input: AtomInput,
+    partner_b_areas: []const f64,
+    complex_input: AtomInput,
+    complex_areas: []const f64,
+) !json_writer.BsaPolarAreas {
+    return .{
+        .partner_a = try sasa_analysis.sumPolarAreas(f64, partner_a_areas, partner_a_input.polar orelse return error.MissingAtomPolarity),
+        .partner_b = try sasa_analysis.sumPolarAreas(f64, partner_b_areas, partner_b_input.polar orelse return error.MissingAtomPolarity),
+        .complex = try sasa_analysis.sumPolarAreas(f64, complex_areas, complex_input.polar orelse return error.MissingAtomPolarity),
+    };
+}
+
 fn processBsaInterface(
     allocator: Allocator,
     io: std.Io,
@@ -4448,6 +4519,14 @@ fn processBsaInterface(
         };
     }
 
+    var polar: ?json_writer.BsaPolarAreas = null;
+    if (config.polar) {
+        polar = bsaPolarAreas(partner_a_input, partner_a_areas, partner_b_input, partner_b_areas, complex_input, complex_areas) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "polar split failed: {s}", .{@errorName(err)});
+            return writeBsaInterfaceError(jsonl_stream, allocator, filename, selection.id, name, message);
+        };
+    }
+
     const delta_total = partner_a_result.total_sasa + partner_b_result.total_sasa - complex_result.total_sasa;
     try writeBsaAnalysisJsonl(jsonl_stream, allocator, .{
         .filename = filename,
@@ -4460,6 +4539,7 @@ fn processBsaInterface(
         .sasa_complex = complex_result.total_sasa,
         .delta_sasa_total = delta_total,
         .bsa = delta_total / 2.0,
+        .polar = polar,
         .delta_sasa_level = level,
         .atom_output = atom_output,
         .residue_partner = residue_arrays.residue_partner,
@@ -4599,7 +4679,7 @@ fn processBsaFile(ctx: *BsaParallelContext, allocator: Allocator, filename: []co
     };
     defer source_parsed.deinit();
 
-    workflowClassifySourceInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
+    classifyInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
         const message = try std.fmt.allocPrint(allocator, "classifier failed: {s}", .{@errorName(err)});
         return writeBsaSourceErrorRows(ctx, allocator, filename, map_indices, message);
     };
@@ -5243,6 +5323,7 @@ fn writeSelectionSuccess(
         .id = entry.id orelse entry.filename,
         .chains = entry.chains,
         .total_area = result.total_sasa,
+        .polar = result.polar,
         .atom_areas = result.atom_areas orelse &.{},
         .residue_map = result.residue_map,
         .atom_identity = identity,
@@ -5409,7 +5490,7 @@ fn processSelectionMapFile(
     defer source_parsed.deinit();
 
     _ = ctx.counter.classifier_count.fetchAdd(1, .monotonic);
-    workflowClassifySourceInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
+    classifyInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
         const message = try std.fmt.allocPrint(allocator, "classifier failed: {s}", .{@errorName(err)});
         return writeSelectionSourceErrorRows(ctx, allocator, filename, map_indices, message);
     };
@@ -5703,22 +5784,47 @@ fn workflowFailAllJobs(
     for (ctx.runtimes) |*runtime| workflowFailJob(ctx.io, runtime, arena, filename, message);
 }
 
-fn workflowClassifySourceInput(
+/// Apply the classifier of `config` to `input`, read from `input_path`
+/// (JSON input keeps its radii), and record the polarity of its atoms when
+/// `config.polar` is set.
+fn classifyInput(
     input: *AtomInput,
     inline_ccd: ?*const ccd_parser.ComponentDict,
     input_path: []const u8,
     config: BatchConfig,
 ) !void {
+    const classes = try polarityClassBuffer(input.*, config);
+    defer if (classes) |c| input.allocator.free(c);
     if (config.custom_classifier) |custom| {
         if (input.hasClassificationInfo()) {
-            try applyCustomClassifier(input, custom, config.quiet);
+            try applyCustomClassifier(input, custom, classes, config.quiet);
         }
     } else if (config.classifier_type) |ct| {
         const format = format_detect.detectInputFormat(input_path);
         if (format != .json and input.hasClassificationInfo()) {
-            try applyBuiltinClassifier(input, ct, config.sdf_ccd, inline_ccd, config.external_ccd);
+            try applyBuiltinClassifier(input, ct, config.sdf_ccd, inline_ccd, config.external_ccd, classes);
         }
     }
+    try markAtomPolarity(input, classes, config);
+}
+
+/// A buffer for the classifier to record the polarity class of every atom of
+/// `input` in, when `config.polar` is set; null otherwise. Atoms that no
+/// classifier classes stay `.unknown`. Allocated with `input.allocator`.
+fn polarityClassBuffer(input: AtomInput, config: BatchConfig) !?[]classifier.AtomClass {
+    if (!config.polar) return null;
+    const classes = try input.allocator.alloc(classifier.AtomClass, input.atomCount());
+    @memset(classes, .unknown);
+    return classes;
+}
+
+/// Record the polarity of every atom in `input.polar` when `config.polar` is
+/// set: the class in `classes`, else the element (`analysis.atomPolarity`).
+fn markAtomPolarity(input: *AtomInput, classes: ?[]const classifier.AtomClass, config: BatchConfig) !void {
+    if (!config.polar) return;
+    const polar = try sasa_analysis.atomPolarity(input.allocator, input.*, classes);
+    if (input.polar) |old| input.allocator.free(old);
+    input.polar = polar;
 }
 
 fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
@@ -5746,7 +5852,7 @@ fn workflowParallelWorker(ctx: *WorkflowParallelContext) void {
             continue;
         };
 
-        workflowClassifySourceInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
+        classifyInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
             workflowFailAllJobs(ctx, arena.allocator(), filename, "classifier", err);
             source_parsed.deinit();
             _ = ctx.processed_count.fetchAdd(1, .release);
@@ -5974,6 +6080,10 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
             std.debug.print("Error: residue_map is only supported with format = \"jsonl\"\n", .{});
             return error.InvalidArgument;
         };
+        validatePolarFormat(config.output_format, config.polar) catch {
+            std.debug.print("Error: polar is only supported with format = \"jsonl\"\n", .{});
+            return error.InvalidArgument;
+        };
 
         if ((config.classifier_type == .ccd or config.classifier_type == .protor) and config.include_hydrogens and !config.quiet) {
             std.debug.print("Warning: --include-hydrogens with CCD classifier may give inaccurate results\n", .{});
@@ -6199,6 +6309,10 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
             std.debug.print("Error: residue_map is only supported with format = \"jsonl\"\n", .{});
             return error.InvalidArgument;
         };
+        validatePolarFormat(config.output_format, config.polar) catch {
+            std.debug.print("Error: polar is only supported with format = \"jsonl\"\n", .{});
+            return error.InvalidArgument;
+        };
 
         if ((config.classifier_type == .ccd or config.classifier_type == .protor) and config.include_hydrogens and !config.quiet) {
             std.debug.print("Warning: --include-hydrogens with CCD classifier may give inaccurate results\n", .{});
@@ -6327,7 +6441,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
             continue;
         };
 
-        workflowClassifySourceInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
+        classifyInput(&source_parsed.input, source_parsed.inlineCcdPtr(), input_path, source_config) catch |err| {
             try workflowFailAllJobsSequential(io, arena.allocator(), states, filename, "classifier", err);
             source_parsed.deinit();
             _ = arena.reset(.retain_capacity);
@@ -6410,6 +6524,7 @@ fn configFromArgs(args: BatchArgs) BatchConfig {
         .alt_loc_id = args.alt_loc_id,
         .af_model_fast = args.af_model_fast,
         .residue_map = args.residue_map,
+        .polar = args.polar,
         .jsonl_decimals = args.jsonl_decimals,
     };
 }
@@ -6524,6 +6639,10 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
     };
     validateResidueMapFormat(args.output_format, args.residue_map) catch {
         std.debug.print("Error: --residue-map is only supported with --format=jsonl\n", .{});
+        return error.InvalidArgument;
+    };
+    validatePolarFormat(args.output_format, args.polar) catch {
+        std.debug.print("Error: --polar is only supported with --format=jsonl\n", .{});
         return error.InvalidArgument;
     };
     if (jsonlDecimalsNeedJsonl(args)) {
@@ -7257,6 +7376,13 @@ test "validateResidueMapFormat rejects non-JSONL residue map" {
     try std.testing.expectError(error.InvalidArgument, validateResidueMapFormat(.json, true));
     try std.testing.expectError(error.InvalidArgument, validateResidueMapFormat(.compact, true));
     try std.testing.expectError(error.InvalidArgument, validateResidueMapFormat(.csv, true));
+}
+
+test "validatePolarFormat accepts only JSONL with the polar split" {
+    try validatePolarFormat(.jsonl, true);
+    try validatePolarFormat(.json, false);
+    try std.testing.expectError(error.InvalidArgument, validatePolarFormat(.json, true));
+    try std.testing.expectError(error.InvalidArgument, validatePolarFormat(.csv, true));
 }
 
 test "validateBatchOutputFormat rejects single-calc compatibility formats" {
@@ -8406,7 +8532,7 @@ test "batch mmCIF CCD classifier uses inline CCD while ProtOr skips it" {
     });
     defer ccd_parsed.deinit();
     try std.testing.expect(ccd_parsed.inlineCcdPtr() != null);
-    try applyBuiltinClassifier(&ccd_parsed.input, .ccd, null, ccd_parsed.inlineCcdPtr(), null);
+    try applyBuiltinClassifier(&ccd_parsed.input, .ccd, null, ccd_parsed.inlineCcdPtr(), null, null);
     try std.testing.expectApproxEqAbs(@as(f64, 1.64), ccd_parsed.input.r[1], 0.001);
 
     var protor_parsed = try readInputFile(allocator, std.testing.io, cif_path, .{
@@ -8415,7 +8541,7 @@ test "batch mmCIF CCD classifier uses inline CCD while ProtOr skips it" {
     });
     defer protor_parsed.deinit();
     try std.testing.expect(protor_parsed.inlineCcdPtr() == null);
-    try applyBuiltinClassifier(&protor_parsed.input, .protor, null, protor_parsed.inlineCcdPtr(), null);
+    try applyBuiltinClassifier(&protor_parsed.input, .protor, null, protor_parsed.inlineCcdPtr(), null, null);
     try std.testing.expect(protor_parsed.input.r[1] != 1.64);
 }
 
@@ -8442,7 +8568,7 @@ test "batch NACCESS and OONS take the element of unlisted atoms from the element
         var input = try parser.parse(pdb_content);
         defer input.deinit();
 
-        try applyBuiltinClassifier(&input, ct, null, null, null);
+        try applyBuiltinClassifier(&input, ct, null, null, null, null);
 
         try std.testing.expectEqualSlices(f64, &expected, input.r);
     }
@@ -11310,6 +11436,7 @@ test "BatchArgs boolean flags" {
         .{ &.{ "zsasa", "batch", "--use-bitmask", "input_dir/" }, "use_bitmask", true },
         .{ &.{ "zsasa", "batch", "--af-model-fast", "input_dir/" }, "af_model_fast", true },
         .{ &.{ "zsasa", "batch", "--format=jsonl", "--residue-map", "input_dir/" }, "residue_map", true },
+        .{ &.{ "zsasa", "batch", "--format=jsonl", "--polar", "input_dir/" }, "polar", true },
         .{ &.{ "zsasa", "batch", "--format=jsonl", "--jsonl-decimals=3", "input_dir/" }, "jsonl_decimals_explicit", true },
         .{ &.{ "zsasa", "batch", "--input-io=read", "input_dir/" }, "input_io_explicit", true },
         // Options given on the command line are remembered as explicit.
@@ -11880,7 +12007,6 @@ test "workflow rejects keys that batch cannot honor before running anything" {
         .{ .input_extra = "path = \"two.pdb\"\n" },
         .{ .calc_extra = "rsa = true\n" },
         .{ .calc_extra = "per_residue = true\n" },
-        .{ .calc_extra = "polar = true\n" },
         .{ .calc_extra = "validate_only = true\n" },
     };
     for (cases) |case| {
@@ -12058,4 +12184,140 @@ test "workflow rejects [analysis] with [[jobs]] and a [[jobs]] table without a n
         );
     }
     try sandbox.expectTree(&.{ "input/", "input/two.pdb", "workflow.toml" });
+}
+
+/// Read every row of the JSONL file at `path` below the sandbox root.
+/// Rows are allocated from `arena`.
+fn readTestJsonlRows(sandbox: NamingSandbox, arena: Allocator, name: []const u8) ![]std.json.ObjectMap {
+    const path = try std.fs.path.join(arena, &.{ sandbox.root, name });
+    const content = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, arena, .limited(1024 * 1024));
+    var rows = std.ArrayListUnmanaged(std.json.ObjectMap).empty;
+    var lines = std.mem.tokenizeScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, line, .{});
+        try rows.append(arena, parsed.object);
+    }
+    return rows.toOwnedSlice(arena);
+}
+
+test "batch --polar splits total_area by the classifier's atom classes" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("two.pdb", test_two_chain_pdb);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const jsonl_path = try sandbox.path("polar.jsonl");
+    defer std.testing.allocator.free(jsonl_path);
+
+    for ([_]Precision{ .f64, .f32 }) |precision| {
+        for (test_naming_threads) |n_threads| {
+            var config = NamingSandbox.config(n_threads);
+            config.output_format = .jsonl;
+            config.store_atom_areas = true;
+            config.classifier_type = .naccess;
+            config.precision = precision;
+            config.polar = true;
+            var result = try runBatch(std.testing.allocator, std.testing.io, sandbox.input_dir, null, config, jsonl_path);
+            defer result.deinit();
+
+            const rows = try readTestJsonlRows(sandbox, arena, "polar.jsonl");
+            try std.testing.expectEqual(@as(usize, 1), rows.len);
+            const row = rows[0];
+            // N is polar and CA apolar in NACCESS: atoms 0, 2 and 1, 3
+            const areas = row.get("atom_areas").?.array.items;
+            try std.testing.expectApproxEqAbs(testJsonNumber(areas[0]) + testJsonNumber(areas[2]), testJsonNumber(row.get("polar_area").?), 1e-6);
+            try std.testing.expectApproxEqAbs(testJsonNumber(areas[1]) + testJsonNumber(areas[3]), testJsonNumber(row.get("apolar_area").?), 1e-6);
+            try std.testing.expectApproxEqAbs(
+                testJsonNumber(row.get("total_area").?),
+                testJsonNumber(row.get("polar_area").?) + testJsonNumber(row.get("apolar_area").?),
+                1e-6,
+            );
+        }
+    }
+
+    // Without --polar the rows keep their fields
+    var config = NamingSandbox.config(1);
+    config.output_format = .jsonl;
+    config.store_atom_areas = true;
+    var result = try runBatch(std.testing.allocator, std.testing.io, sandbox.input_dir, null, config, jsonl_path);
+    defer result.deinit();
+    const rows = try readTestJsonlRows(sandbox, arena, "polar.jsonl");
+    try std.testing.expect(rows[0].get("polar_area") == null);
+    try std.testing.expect(rows[0].get("apolar_area") == null);
+}
+
+test "workflow polar = true splits job rows and BSA rows" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("two.pdb", test_two_chain_pdb);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    for (test_workflow_runners) |runner| {
+        const body = try std.fmt.allocPrint(arena, "[[jobs]]\nname = \"everything\"\n{s}", .{runner.jobOption()});
+        const workflow_path = try writeKeyWorkflow(sandbox, arena, "", "polar = true\n", body);
+        try runWorkflow(std.testing.allocator, std.testing.io, .{ .workflow_path = workflow_path });
+        const rows = try readTestJsonlRows(sandbox, arena, "output/everything.jsonl");
+        try std.testing.expectEqual(@as(usize, 1), rows.len);
+        try std.testing.expectApproxEqAbs(
+            testJsonNumber(rows[0].get("total_area").?),
+            testJsonNumber(rows[0].get("polar_area").?) + testJsonNumber(rows[0].get("apolar_area").?),
+            1e-9,
+        );
+        try std.testing.expect(testJsonNumber(rows[0].get("polar_area").?) > 0);
+        try std.testing.expect(testJsonNumber(rows[0].get("apolar_area").?) > 0);
+    }
+
+    const workflow_path = try writeKeyWorkflow(sandbox, arena, "", "polar = true\n", test_bsa_analysis);
+    try runWorkflow(std.testing.allocator, std.testing.io, .{ .workflow_path = workflow_path });
+    const rows = try readTestJsonlRows(sandbox, arena, "output/bsa.jsonl");
+    try std.testing.expectEqual(@as(usize, 1), rows.len);
+    const row = rows[0];
+    try std.testing.expectEqualStrings("ok", row.get("status").?.string);
+    inline for (.{ "sasa_partner_a", "sasa_partner_b", "sasa_complex" }) |area| {
+        try std.testing.expectApproxEqAbs(
+            testJsonNumber(row.get(area).?),
+            testJsonNumber(row.get(area ++ "_polar").?) + testJsonNumber(row.get(area ++ "_apolar").?),
+            1e-9,
+        );
+    }
+    inline for (.{ "polar", "apolar" }) |class| {
+        try std.testing.expectApproxEqAbs(
+            testJsonNumber(row.get("sasa_partner_a_" ++ class).?) + testJsonNumber(row.get("sasa_partner_b_" ++ class).?) -
+                testJsonNumber(row.get("sasa_complex_" ++ class).?),
+            testJsonNumber(row.get("delta_sasa_" ++ class).?),
+            1e-9,
+        );
+    }
+    try std.testing.expectApproxEqAbs(
+        testJsonNumber(row.get("delta_sasa_total").?),
+        testJsonNumber(row.get("delta_sasa_polar").?) + testJsonNumber(row.get("delta_sasa_apolar").?),
+        1e-9,
+    );
+}
+
+test "workflow polar = true needs JSONL output" {
+    var muted = test_support.muteStderr();
+    defer muted.restore();
+    var sandbox = try NamingSandbox.init();
+    defer sandbox.deinit();
+    try sandbox.writeInput("two.pdb", test_two_chain_pdb);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    for (test_workflow_runners) |runner| {
+        const body = try std.fmt.allocPrint(arena, "[[jobs]]\nname = \"everything\"\n{s}", .{runner.jobOption()});
+        const workflow_path = try writeKeyWorkflow(sandbox, arena, "", "polar = true\n", body);
+        try std.testing.expectError(
+            error.InvalidArgument,
+            runWorkflow(std.testing.allocator, std.testing.io, .{ .workflow_path = workflow_path, .output_format = .json, .format_explicit = true }),
+        );
+    }
 }

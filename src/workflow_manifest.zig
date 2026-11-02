@@ -309,10 +309,6 @@ fn checkBatchKeys(workflow: Workflow, mode: Mode, findings: *Findings) void {
             "(only calc writes per-residue output; batch has residue_map with JSONL output): " ++
             "remove it, or " ++ calc_hint);
     }
-    if (calculation.polar orelse false) {
-        findings.add(.err, "[calculation] polar = true is not supported by batch " ++
-            "(only calc writes the polar/apolar split): remove it, or " ++ calc_hint);
-    }
     if (calculation.validate_only orelse false) {
         findings.add(.err, "[calculation] validate_only = true is not supported by batch " ++
             "(batch would run the calculation): remove it, or " ++ calc_hint);
@@ -1749,7 +1745,7 @@ test "checkKeys: batch rejects keys it cannot honor and says what to do" {
         try expectFinding(findings, .err, case[2]);
     }
 
-    inline for (.{ "rsa", "per_residue", "polar", "validate_only" }) |key| {
+    inline for (.{ "rsa", "per_residue", "validate_only" }) |key| {
         inline for (.{ Mode.batch_jobs, Mode.batch_analysis }) |mode| {
             const tail = if (mode == .batch_jobs) job else "\n[analysis]\ntype = \"bsa\"\npartner_a = [\"A\"]\npartner_b = [\"B\"]\n";
             var workflow = try parse(allocator, header ++ "[calculation]\n" ++ key ++ " = true\n" ++ tail);
@@ -1759,6 +1755,14 @@ test "checkKeys: batch rejects keys it cannot honor and says what to do" {
             try expectFinding(findings, .err, "[calculation] " ++ key ++ " = true");
             try expectFinding(findings, .err, "zsasa calc --workflow");
         }
+    }
+
+    // batch writes the polar/apolar split to its JSONL rows
+    inline for (.{ Mode.batch_jobs, Mode.batch_analysis }) |mode| {
+        const tail = if (mode == .batch_jobs) job else "\n[analysis]\ntype = \"bsa\"\npartner_a = [\"A\"]\npartner_b = [\"B\"]\n";
+        var workflow = try parse(allocator, header ++ "[calculation]\npolar = true\n" ++ tail);
+        defer workflow.deinit();
+        try std.testing.expectEqual(@as(usize, 0), checkKeys(workflow, mode).len);
     }
 
     // Where the output goes is a warning

@@ -270,6 +270,45 @@ pub fn calculateAtomPolarSummary(
     return summary;
 }
 
+/// Polarity of every atom of `input` by `isPolarAtom`: true for a polar atom.
+/// `atom_classes` is as in `calculateAtomPolarSummary`. Caller owns the slice.
+pub fn atomPolarity(
+    allocator: std.mem.Allocator,
+    input: types.AtomInput,
+    atom_classes: ?[]const AtomClass,
+) ![]bool {
+    const n = input.atomCount();
+    if (atom_classes) |classes| {
+        if (classes.len != n) return error.LengthMismatch;
+    }
+    const polar = try allocator.alloc(bool, n);
+    for (polar, 0..) |*out, i| {
+        out.* = isPolarAtom(
+            atomClassAt(atom_classes, i),
+            if (input.atom_name) |names| names[i].slice() else null,
+            if (input.element) |elements| elements[i] else null,
+        );
+    }
+    return polar;
+}
+
+/// Polar and apolar parts of a surface area, by the polarity of each atom.
+pub const PolarAreas = struct {
+    polar: f64 = 0,
+    apolar: f64 = 0,
+};
+
+/// Sum `atom_areas` by the polarity in `polar` (`atomPolarity`).
+pub fn sumPolarAreas(comptime T: type, atom_areas: []const T, polar: []const bool) !PolarAreas {
+    if (atom_areas.len != polar.len) return error.LengthMismatch;
+    var areas = PolarAreas{};
+    for (atom_areas, polar) |area, is_polar| {
+        const value: f64 = if (T == f64) area else @floatCast(area);
+        if (is_polar) areas.polar += value else areas.apolar += value;
+    }
+    return areas;
+}
+
 /// Print the polar/non-polar SASA by atom class below the summary by residue
 /// type. The areas are those of the `TOTAL` row of the RSA file.
 pub fn printAtomPolarSummary(summary: AtomPolarSummary, classifier_name: []const u8) void {
@@ -870,4 +909,39 @@ test "calculatePolarSummary" {
     // Fractions: polar = 50/140, nonpolar = 90/140
     try std.testing.expectApproxEqRel(50.0 / 140.0, summary.polarFraction(), 0.001);
     try std.testing.expectApproxEqRel(90.0 / 140.0, summary.nonpolarFraction(), 0.001);
+}
+
+test "atomPolarity follows the classifier, then the element" {
+    const allocator = std.testing.allocator;
+    var x = [_]f64{ 0, 0, 0, 0 };
+    var r = [_]f64{ 1, 1, 1, 1 };
+    const names = [_]types.FixedString4{
+        types.FixedString4.fromSlice("C"),
+        types.FixedString4.fromSlice("SG"),
+        types.FixedString4.fromSlice("O"),
+        types.FixedString4.fromSlice("X1"),
+    };
+    // The element column decides for atoms the classifier does not class
+    const elements = [_]u8{ 6, 16, 8, 7 };
+    const input = types.AtomInput{ .x = &x, .y = &x, .z = &x, .r = &r, .atom_name = &names, .element = &elements, .allocator = allocator };
+
+    // OONS-like classes: carbonyl carbon polar, sulfur apolar
+    const classes = [_]AtomClass{ .polar, .apolar, .unknown, .unknown };
+    const by_class = try atomPolarity(allocator, input, &classes);
+    defer allocator.free(by_class);
+    try std.testing.expectEqualSlices(bool, &.{ true, false, true, true }, by_class);
+
+    const by_element = try atomPolarity(allocator, input, null);
+    defer allocator.free(by_element);
+    try std.testing.expectEqualSlices(bool, &.{ false, true, true, true }, by_element);
+
+    try std.testing.expectError(error.LengthMismatch, atomPolarity(allocator, input, classes[0..2]));
+}
+
+test "sumPolarAreas splits the total" {
+    const areas = [_]f32{ 1.5, 2.25, 4.0 };
+    const split = try sumPolarAreas(f32, &areas, &.{ true, false, true });
+    try std.testing.expectEqual(@as(f64, 5.5), split.polar);
+    try std.testing.expectEqual(@as(f64, 2.25), split.apolar);
+    try std.testing.expectError(error.LengthMismatch, sumPolarAreas(f32, &areas, &.{true}));
 }

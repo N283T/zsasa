@@ -232,7 +232,24 @@ This adds these arrays to each JSONL result:
 
 Each entry is a run of consecutive atoms with the same chain ID, residue number, insertion code and residue name, the same definition as in the per-residue table and the RSA text format of `calc`; see [Residue Identity](../cli/output.md#residue-identity) for non-contiguous residues and multi-model files.
 
-Without `--residue-map`, result rows include only `status`, `filename`, `total_area`, and `atom_areas`.
+Without `--residue-map` and `--polar`, result rows include only `status`, `filename`, `total_area`, and `atom_areas`.
+
+## Polar/Apolar Split in JSONL {#polar-split}
+
+Add `--polar` (or `polar = true` under `[calculation]` in a workflow) to split each area into its polar and apolar parts:
+
+```bash
+zsasa batch structures/ \
+  --format=jsonl \
+  --output=results.jsonl \
+  --polar
+```
+
+```json
+{"status":"ok","filename":"1ubq.pdb","total_area":4834.716264864688,"polar_area":2515.8212382307715,"apolar_area":2318.8950266339166,"atom_areas":[...]}
+```
+
+`polar_area` and `apolar_area` follow `total_area` and add up to it. Each atom is classed as in the atom summary of `calc --polar` and the `Non-polar` and `All polar` columns of the [RSA text format](../cli/output.md#rsa-text-calc---formatrsa): by the polarity class that the active classifier gives it, so the split depends on `--classifier`, and by element for an atom that the classifier does not class (N, O, P and S polar, everything else apolar). Chain-map job rows get the same two fields, and a [BSA analysis](workflows.md#bsa-analysis) row gets the split of each of its areas. `--polar` needs JSONL output; with another format `batch` stops with an error.
 
 ## Chain Filters
 

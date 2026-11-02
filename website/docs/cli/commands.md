@@ -176,7 +176,7 @@ See [Classifiers](../guide/classifiers.mdx) for detailed classifier documentatio
 |--------|-------------|----------|
 | `--per-residue` | Show per-residue SASA aggregation | calc |
 | `--rsa` | Calculate Relative Solvent Accessibility (enables `--per-residue`) | calc |
-| `--polar` | Show polar/nonpolar SASA summary (enables `--per-residue`) | calc |
+| `--polar` | `calc`: show the polar/nonpolar SASA summary (enables `--per-residue`). `batch`: split each area of a JSONL row into polar and apolar parts by the classifier's atom classes; needs `--format=jsonl`. See [Polar/Apolar Split in JSONL](../guide/batch.md#polar-split) | calc, batch |
 
 See [Output & Analysis](output.md#analysis-features) for detailed output descriptions.
 
