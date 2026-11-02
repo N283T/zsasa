@@ -126,8 +126,7 @@ button {
   padding-inline: var(--gutter);
 }
 
-/* The nav, and every part of a docs page, use the wider frame of the docs. */
-.nav .wrap,
+/* Docs pages use a wider frame than the landing page, nav and footer included. */
 .wrap.doc,
 body:has(> .wrap.doc) .wrap {
   max-width: 1680px;
@@ -1215,10 +1214,10 @@ code {
   display: none;
 }
 
-/* The nav follows the columns of a docs page on every page: the logo sits
-   above the sidebar and the links start where the content column starts. */
+/* On a docs page the nav follows the columns below it: the logo sits above
+   the sidebar and the links start where the content column starts. */
 @media (min-width: 901px) {
-  .nav__in {
+  body:has(> .wrap.doc) .nav__in {
     display: grid;
     grid-template-columns: 236px minmax(0, 1fr) auto;
     column-gap: clamp(28px, 4vw, 64px);
@@ -1226,7 +1225,7 @@ code {
 }
 
 @media (min-width: 901px) and (max-width: 1100px) {
-  .nav__in {
+  body:has(> .wrap.doc) .nav__in {
     grid-template-columns: 220px minmax(0, 1fr) auto;
   }
 }
