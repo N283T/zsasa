@@ -116,8 +116,8 @@ function where() {
   const params = [];
   const q = state.query.trim();
   if (q) {
-    clauses.push(`(${ds.match.map((c) => `${c} ILIKE ?`).join(" OR ")})`);
-    for (let i = 0; i < ds.match.length; i++) params.push(`%${q}%`);
+    clauses.push("contains(search_text, ?)");
+    params.push(q.toLowerCase());
   }
   if (state.dataset === "dimers") {
     if (state.kind !== "all") {
@@ -153,10 +153,24 @@ async function connect(status) {
   URL.revokeObjectURL(workerUrl);
   for (const [name, ds] of Object.entries(DATASETS)) {
     await db.registerFileURL(ds.file, new URL(ds.file, DATA).href, duckdb.DuckDBDataProtocol.HTTP, false);
-    ds.table = `read_parquet('${ds.file}')`;
     ds.name = name;
   }
   return db.connect();
+}
+
+// Copy a dataset into DuckDB's memory the first time it is searched, with the
+// searched columns joined into one lower-case column. Over HTTP every search
+// would read and scan those columns again.
+async function load(ds, status) {
+  if (ds.loading) return ds.loading;
+  status.textContent = `Loading the ${ds.label} table…`;
+  const text = `lower(concat_ws(' ', ${ds.match.join(", ")})) AS search_text`;
+  ds.loading = conn
+    .query(`CREATE TABLE ${ds.name} AS SELECT *, ${text} FROM read_parquet('${ds.file}')`)
+    .then(() => {
+      ds.table = ds.name;
+    });
+  return ds.loading;
 }
 
 async function run(sql, params) {
@@ -341,22 +355,24 @@ async function main() {
     const ds = DATASETS[state.dataset];
     writeHash();
     const [clause, params] = where();
-    status.textContent = "Searching…";
     try {
+      await load(ds, status);
+      if (mine !== generation) return;
+      status.textContent = "Searching…";
       const summary = state.dataset === "dimers"
         ? "median(delta_sasa) AS median_value"
         : "median(sasa) AS median_value";
       // One connection runs one statement at a time
       const [stats] = await run(`SELECT count(*) AS n, ${summary} FROM ${ds.table} ${clause}`, params);
       const rows = await run(
-        `SELECT * FROM ${ds.table} ${clause} ORDER BY ${ds.orders[state.order][1]} LIMIT ${PAGE_SIZE} OFFSET ${state.offset}`,
+        `SELECT * EXCLUDE (search_text) FROM ${ds.table} ${clause} ORDER BY ${ds.orders[state.order][1]} LIMIT ${PAGE_SIZE} OFFSET ${state.offset}`,
         params,
       );
       if (mine !== generation) return;
       const n = Number(stats.n);
       const median = state.dataset === "dimers" ? "median ΔSASA" : "median SASA";
       status.textContent = n
-        ? `${n.toLocaleString("en-US")} models match · ${median} ${area(stats.median_value)} Å²`
+        ? `${n.toLocaleString("en-US")} ${n === 1 ? "model matches" : "models match"} · ${median} ${area(stats.median_value)} Å²`
         : "No model matches.";
       render(ds, rows);
       renderPager(ds, n, clause, params);
@@ -425,7 +441,7 @@ async function main() {
       csv.disabled = true;
       try {
         const rows = await run(
-          `SELECT * FROM ${ds.table} ${clause} ORDER BY ${ds.orders[state.order][1]} LIMIT ${CSV_LIMIT}`,
+          `SELECT * EXCLUDE (search_text) FROM ${ds.table} ${clause} ORDER BY ${ds.orders[state.order][1]} LIMIT ${CSV_LIMIT}`,
           params,
         );
         const link = el("a", {
