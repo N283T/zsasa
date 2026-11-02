@@ -194,6 +194,10 @@ pub const AtomInput = struct {
     residue_num: ?[]const i32 = null,
     /// Insertion codes (e.g., "", "A", "B") - optional, for per-residue analysis
     insertion_code: ?[]const FixedString4 = null,
+    /// Polarity of each atom (true = polar), for the polar/apolar split of
+    /// batch output. Set after classification (`analysis.atomPolarity`);
+    /// null when the split is not requested.
+    polar: ?[]const bool = null,
     allocator: std.mem.Allocator,
 
     /// Get number of atoms
@@ -272,6 +276,7 @@ pub const AtomInput = struct {
         if (self.chain_id) |v| out.chain_id = try gather(FixedString4, self.allocator, v, indices);
         if (self.residue_num) |v| out.residue_num = try gather(i32, self.allocator, v, indices);
         if (self.insertion_code) |v| out.insertion_code = try gather(FixedString4, self.allocator, v, indices);
+        if (self.polar) |v| out.polar = try gather(bool, self.allocator, v, indices);
         if (self.chain_id_full) |v| {
             const chains = try self.allocator.alloc([]const u8, indices.len);
             errdefer self.allocator.free(chains);
@@ -320,6 +325,9 @@ pub const AtomInput = struct {
         }
         if (self.insertion_code) |codes| {
             self.allocator.free(codes);
+        }
+        if (self.polar) |polar| {
+            self.allocator.free(polar);
         }
     }
 };

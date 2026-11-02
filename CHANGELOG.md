@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`batch --polar`: polar/apolar split in JSONL rows (new optional output fields).** `zsasa batch --polar`, or `polar = true` under `[calculation]` in a batch workflow, adds `polar_area` and `apolar_area` after `total_area` in every JSONL result row, chain-map job rows included. A BSA `[analysis]` row gets `sasa_partner_a_polar`, `sasa_partner_a_apolar`, `sasa_partner_b_polar`, `sasa_partner_b_apolar`, `sasa_complex_polar`, `sasa_complex_apolar`, `delta_sasa_polar` and `delta_sasa_apolar` after `bsa`; the two ΔSASA parts add up to `delta_sasa_total`. Atoms are classed as by `calc --polar` and the RSA columns: by the active classifier's polarity class, else by element. `--polar` needs JSONL output. Rows without the option are unchanged, and the option does not change any total. `batch` rejected `polar = true` before.
+
 ### Documentation
 
 - **Benchmark pages report the `zsasa` 0.12.1 rerun.** The charts, tables and landing-page figures are regenerated from `zsasa-benchmarks` at 049050a, the prose quotes the new numbers, and the pages cite revision 1 of the v0.12.1 benchmark archive ([doi:10.5281/zenodo.23794793](https://doi.org/10.5281/zenodo.23794793)). The SwissProt comparison under the default disk I/O policy quotes the 0.12.1 measurement of that revision. `website/scripts/export_benchmarks.py` selects the 0.12.1 run sets.

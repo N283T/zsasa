@@ -796,10 +796,11 @@ pub fn buildResidueMap(allocator: Allocator, input: AtomInput, atom_areas: []con
 
 /// Serialize a single batch result as a JSONL line: {"filename":"...","total_area":...,"atom_areas":[...]}
 pub fn fileResultToJsonlLine(allocator: Allocator, filename: []const u8, total_area: f64, atom_areas: []const f64) ![]u8 {
-    return fileResultToJsonlLineOptions(allocator, filename, total_area, atom_areas, .{});
+    return fileResultToJsonlLineOptions(allocator, filename, total_area, null, atom_areas, .{});
 }
 
-pub fn fileResultToJsonlLineOptions(allocator: Allocator, filename: []const u8, total_area: f64, atom_areas: []const f64, options: JsonlOptions) ![]u8 {
+/// `polar`, when given, adds `polar_area` and `apolar_area` after `total_area`.
+pub fn fileResultToJsonlLineOptions(allocator: Allocator, filename: []const u8, total_area: f64, polar: ?analysis.PolarAreas, atom_areas: []const f64, options: JsonlOptions) ![]u8 {
     const output_areas = try maybeRoundJsonlFloatSlice(allocator, atom_areas, options);
     defer if (options.decimals != null) allocator.free(output_areas);
 
@@ -808,42 +809,57 @@ pub fn fileResultToJsonlLineOptions(allocator: Allocator, filename: []const u8, 
             status: []const u8,
             filename: []const u8,
             total_area: f64,
+            polar_area: ?f64 = null,
+            apolar_area: ?f64 = null,
         };
         return stringifyFinite(allocator, JsonlEntry{
             .status = "ok",
             .filename = filename,
             .total_area = maybeRoundJsonlFloat(total_area, options),
-        }, .{});
+
+            .polar_area = if (polar) |p| maybeRoundJsonlFloat(p.polar, options) else null,
+            .apolar_area = if (polar) |p| maybeRoundJsonlFloat(p.apolar, options) else null,
+        }, .{ .emit_null_optional_fields = false });
     }
 
     if (!options.include_total_area and options.include_atom_areas) {
         const JsonlEntry = struct {
             status: []const u8,
             filename: []const u8,
+            polar_area: ?f64 = null,
+            apolar_area: ?f64 = null,
             atom_areas: []const f64,
         };
         return stringifyFinite(allocator, JsonlEntry{
             .status = "ok",
             .filename = filename,
+            .polar_area = if (polar) |p| maybeRoundJsonlFloat(p.polar, options) else null,
+            .apolar_area = if (polar) |p| maybeRoundJsonlFloat(p.apolar, options) else null,
             .atom_areas = output_areas,
-        }, .{});
+        }, .{ .emit_null_optional_fields = false });
     }
 
     if (!options.include_total_area and !options.include_atom_areas) {
         const JsonlEntry = struct {
             status: []const u8,
             filename: []const u8,
+            polar_area: ?f64 = null,
+            apolar_area: ?f64 = null,
         };
         return stringifyFinite(allocator, JsonlEntry{
             .status = "ok",
             .filename = filename,
-        }, .{});
+            .polar_area = if (polar) |p| maybeRoundJsonlFloat(p.polar, options) else null,
+            .apolar_area = if (polar) |p| maybeRoundJsonlFloat(p.apolar, options) else null,
+        }, .{ .emit_null_optional_fields = false });
     }
 
     const JsonlEntry = struct {
         status: []const u8,
         filename: []const u8,
         total_area: f64,
+        polar_area: ?f64 = null,
+        apolar_area: ?f64 = null,
         atom_areas: []const f64,
     };
 
@@ -851,10 +867,13 @@ pub fn fileResultToJsonlLineOptions(allocator: Allocator, filename: []const u8, 
         .status = "ok",
         .filename = filename,
         .total_area = maybeRoundJsonlFloat(total_area, options),
+
+        .polar_area = if (polar) |p| maybeRoundJsonlFloat(p.polar, options) else null,
+        .apolar_area = if (polar) |p| maybeRoundJsonlFloat(p.apolar, options) else null,
         .atom_areas = output_areas,
     };
 
-    return stringifyFinite(allocator, entry, .{});
+    return stringifyFinite(allocator, entry, .{ .emit_null_optional_fields = false });
 }
 
 pub fn fileErrorToJsonlLine(allocator: Allocator, filename: []const u8, error_msg: []const u8) ![]u8 {
@@ -878,13 +897,15 @@ pub fn fileResultWithResidueMapToJsonlLine(
     atom_areas: []const f64,
     residue_map: ResidueMap,
 ) ![]u8 {
-    return fileResultWithResidueMapToJsonlLineOptions(allocator, filename, total_area, atom_areas, residue_map, .{});
+    return fileResultWithResidueMapToJsonlLineOptions(allocator, filename, total_area, null, atom_areas, residue_map, .{});
 }
 
+/// `polar` is as in `fileResultToJsonlLineOptions`.
 pub fn fileResultWithResidueMapToJsonlLineOptions(
     allocator: Allocator,
     filename: []const u8,
     total_area: f64,
+    polar: ?analysis.PolarAreas,
     atom_areas: []const f64,
     residue_map: ResidueMap,
     options: JsonlOptions,
@@ -914,6 +935,8 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
             status: []const u8,
             filename: []const u8,
             total_area: f64,
+            polar_area: ?f64 = null,
+            apolar_area: ?f64 = null,
             atom_areas: []const f64,
             residue_chain: []const []const u8,
             residue_name: []const []const u8,
@@ -927,6 +950,9 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
             .status = "ok",
             .filename = filename,
             .total_area = maybeRoundJsonlFloat(total_area, options),
+
+            .polar_area = if (polar) |p| maybeRoundJsonlFloat(p.polar, options) else null,
+            .apolar_area = if (polar) |p| maybeRoundJsonlFloat(p.apolar, options) else null,
             .atom_areas = output_areas,
             .residue_chain = residue_chain,
             .residue_name = residue_name,
@@ -935,7 +961,7 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
             .residue_atom_start = residue_map.residue_atom_start,
             .residue_atom_count = residue_map.residue_atom_count,
             .residue_sasa = output_residue_sasa,
-        }, .{});
+        }, .{ .emit_null_optional_fields = false });
     }
 
     if (options.include_total_area and !options.include_atom_areas) {
@@ -943,6 +969,8 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
             status: []const u8,
             filename: []const u8,
             total_area: f64,
+            polar_area: ?f64 = null,
+            apolar_area: ?f64 = null,
             residue_chain: []const []const u8,
             residue_name: []const []const u8,
             residue_number: []const i32,
@@ -955,6 +983,9 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
             .status = "ok",
             .filename = filename,
             .total_area = maybeRoundJsonlFloat(total_area, options),
+
+            .polar_area = if (polar) |p| maybeRoundJsonlFloat(p.polar, options) else null,
+            .apolar_area = if (polar) |p| maybeRoundJsonlFloat(p.apolar, options) else null,
             .residue_chain = residue_chain,
             .residue_name = residue_name,
             .residue_number = residue_map.residue_number,
@@ -962,13 +993,15 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
             .residue_atom_start = residue_map.residue_atom_start,
             .residue_atom_count = residue_map.residue_atom_count,
             .residue_sasa = output_residue_sasa,
-        }, .{});
+        }, .{ .emit_null_optional_fields = false });
     }
 
     if (!options.include_total_area and options.include_atom_areas) {
         const JsonlEntry = struct {
             status: []const u8,
             filename: []const u8,
+            polar_area: ?f64 = null,
+            apolar_area: ?f64 = null,
             atom_areas: []const f64,
             residue_chain: []const []const u8,
             residue_name: []const []const u8,
@@ -981,6 +1014,8 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
         return stringifyFinite(allocator, JsonlEntry{
             .status = "ok",
             .filename = filename,
+            .polar_area = if (polar) |p| maybeRoundJsonlFloat(p.polar, options) else null,
+            .apolar_area = if (polar) |p| maybeRoundJsonlFloat(p.apolar, options) else null,
             .atom_areas = output_areas,
             .residue_chain = residue_chain,
             .residue_name = residue_name,
@@ -989,12 +1024,14 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
             .residue_atom_start = residue_map.residue_atom_start,
             .residue_atom_count = residue_map.residue_atom_count,
             .residue_sasa = output_residue_sasa,
-        }, .{});
+        }, .{ .emit_null_optional_fields = false });
     }
 
     const JsonlEntry = struct {
         status: []const u8,
         filename: []const u8,
+        polar_area: ?f64 = null,
+        apolar_area: ?f64 = null,
         residue_chain: []const []const u8,
         residue_name: []const []const u8,
         residue_number: []const i32,
@@ -1006,6 +1043,8 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
     return stringifyFinite(allocator, JsonlEntry{
         .status = "ok",
         .filename = filename,
+        .polar_area = if (polar) |p| maybeRoundJsonlFloat(p.polar, options) else null,
+        .apolar_area = if (polar) |p| maybeRoundJsonlFloat(p.apolar, options) else null,
         .residue_chain = residue_chain,
         .residue_name = residue_name,
         .residue_number = residue_map.residue_number,
@@ -1013,7 +1052,7 @@ pub fn fileResultWithResidueMapToJsonlLineOptions(
         .residue_atom_start = residue_map.residue_atom_start,
         .residue_atom_count = residue_map.residue_atom_count,
         .residue_sasa = output_residue_sasa,
-    }, .{});
+    }, .{ .emit_null_optional_fields = false });
 }
 
 pub const SelectionAtomIdentity = struct {
@@ -1031,6 +1070,8 @@ pub const SelectionResultJsonl = struct {
     id: []const u8,
     chains: []const []const u8,
     total_area: f64,
+    /// Polar/apolar split of `total_area` (`--polar`), or null
+    polar: ?analysis.PolarAreas = null,
     atom_areas: []const f64 = &.{},
     residue_map: ?ResidueMap = null,
     atom_identity: ?SelectionAtomIdentity = null,
@@ -1104,6 +1145,8 @@ pub fn selectionResultToJsonlLineOptions(
                 id: []const u8,
                 chains: []const []const u8,
                 total_area: f64,
+                polar_area: ?f64 = null,
+                apolar_area: ?f64 = null,
                 atom_areas: []const f64,
                 source_atom_index: []const usize,
                 atom_chain: []const []const u8,
@@ -1126,6 +1169,8 @@ pub fn selectionResultToJsonlLineOptions(
                 .id = row.id,
                 .chains = row.chains,
                 .total_area = maybeRoundJsonlFloat(row.total_area, options),
+                .polar_area = if (row.polar) |p| maybeRoundJsonlFloat(p.polar, options) else null,
+                .apolar_area = if (row.polar) |p| maybeRoundJsonlFloat(p.apolar, options) else null,
                 .atom_areas = output_areas,
                 .source_atom_index = identity.source_atom_index,
                 .atom_chain = identity.atom_chain,
@@ -1141,7 +1186,7 @@ pub fn selectionResultToJsonlLineOptions(
                 .residue_atom_start = map.residue_atom_start,
                 .residue_atom_count = map.residue_atom_count,
                 .residue_sasa = output_residue_sasa,
-            }, .{});
+            }, .{ .emit_null_optional_fields = false });
         }
         const Entry = struct {
             status: []const u8,
@@ -1149,6 +1194,8 @@ pub fn selectionResultToJsonlLineOptions(
             id: []const u8,
             chains: []const []const u8,
             total_area: f64,
+            polar_area: ?f64 = null,
+            apolar_area: ?f64 = null,
             atom_areas: []const f64,
             source_atom_index: []const usize,
             atom_chain: []const []const u8,
@@ -1164,6 +1211,8 @@ pub fn selectionResultToJsonlLineOptions(
             .id = row.id,
             .chains = row.chains,
             .total_area = maybeRoundJsonlFloat(row.total_area, options),
+            .polar_area = if (row.polar) |p| maybeRoundJsonlFloat(p.polar, options) else null,
+            .apolar_area = if (row.polar) |p| maybeRoundJsonlFloat(p.apolar, options) else null,
             .atom_areas = output_areas,
             .source_atom_index = identity.source_atom_index,
             .atom_chain = identity.atom_chain,
@@ -1172,7 +1221,7 @@ pub fn selectionResultToJsonlLineOptions(
             .atom_insertion_code = identity.atom_insertion_code,
             .atom_name = identity.atom_name,
             .atom_element = identity.atom_element,
-        }, .{});
+        }, .{ .emit_null_optional_fields = false });
     }
 
     if (row.residue_map) |map| {
@@ -1183,6 +1232,8 @@ pub fn selectionResultToJsonlLineOptions(
                 id: []const u8,
                 chains: []const []const u8,
                 total_area: f64,
+                polar_area: ?f64 = null,
+                apolar_area: ?f64 = null,
                 atom_areas: []const f64,
                 residue_chain: []const []const u8,
                 residue_name: []const []const u8,
@@ -1198,6 +1249,8 @@ pub fn selectionResultToJsonlLineOptions(
                 .id = row.id,
                 .chains = row.chains,
                 .total_area = maybeRoundJsonlFloat(row.total_area, options),
+                .polar_area = if (row.polar) |p| maybeRoundJsonlFloat(p.polar, options) else null,
+                .apolar_area = if (row.polar) |p| maybeRoundJsonlFloat(p.apolar, options) else null,
                 .atom_areas = output_areas,
                 .residue_chain = residue_chain,
                 .residue_name = residue_name,
@@ -1206,7 +1259,7 @@ pub fn selectionResultToJsonlLineOptions(
                 .residue_atom_start = map.residue_atom_start,
                 .residue_atom_count = map.residue_atom_count,
                 .residue_sasa = output_residue_sasa,
-            }, .{});
+            }, .{ .emit_null_optional_fields = false });
         }
         const Entry = struct {
             status: []const u8,
@@ -1214,6 +1267,8 @@ pub fn selectionResultToJsonlLineOptions(
             id: []const u8,
             chains: []const []const u8,
             total_area: f64,
+            polar_area: ?f64 = null,
+            apolar_area: ?f64 = null,
             residue_chain: []const []const u8,
             residue_name: []const []const u8,
             residue_number: []const i32,
@@ -1228,6 +1283,8 @@ pub fn selectionResultToJsonlLineOptions(
             .id = row.id,
             .chains = row.chains,
             .total_area = maybeRoundJsonlFloat(row.total_area, options),
+            .polar_area = if (row.polar) |p| maybeRoundJsonlFloat(p.polar, options) else null,
+            .apolar_area = if (row.polar) |p| maybeRoundJsonlFloat(p.apolar, options) else null,
             .residue_chain = residue_chain,
             .residue_name = residue_name,
             .residue_number = map.residue_number,
@@ -1235,7 +1292,7 @@ pub fn selectionResultToJsonlLineOptions(
             .residue_atom_start = map.residue_atom_start,
             .residue_atom_count = map.residue_atom_count,
             .residue_sasa = output_residue_sasa,
-        }, .{});
+        }, .{ .emit_null_optional_fields = false });
     }
 
     if (options.include_atom_areas) {
@@ -1245,6 +1302,8 @@ pub fn selectionResultToJsonlLineOptions(
             id: []const u8,
             chains: []const []const u8,
             total_area: f64,
+            polar_area: ?f64 = null,
+            apolar_area: ?f64 = null,
             atom_areas: []const f64,
         };
         return stringifyFinite(allocator, Entry{
@@ -1253,8 +1312,10 @@ pub fn selectionResultToJsonlLineOptions(
             .id = row.id,
             .chains = row.chains,
             .total_area = maybeRoundJsonlFloat(row.total_area, options),
+            .polar_area = if (row.polar) |p| maybeRoundJsonlFloat(p.polar, options) else null,
+            .apolar_area = if (row.polar) |p| maybeRoundJsonlFloat(p.apolar, options) else null,
             .atom_areas = output_areas,
-        }, .{});
+        }, .{ .emit_null_optional_fields = false });
     }
 
     const Entry = struct {
@@ -1263,6 +1324,8 @@ pub fn selectionResultToJsonlLineOptions(
         id: []const u8,
         chains: []const []const u8,
         total_area: f64,
+        polar_area: ?f64 = null,
+        apolar_area: ?f64 = null,
     };
     return stringifyFinite(allocator, Entry{
         .status = "ok",
@@ -1270,7 +1333,9 @@ pub fn selectionResultToJsonlLineOptions(
         .id = row.id,
         .chains = row.chains,
         .total_area = maybeRoundJsonlFloat(row.total_area, options),
-    }, .{});
+        .polar_area = if (row.polar) |p| maybeRoundJsonlFloat(p.polar, options) else null,
+        .apolar_area = if (row.polar) |p| maybeRoundJsonlFloat(p.apolar, options) else null,
+    }, .{ .emit_null_optional_fields = false });
 }
 
 pub const BsaAnalysisJsonl = struct {
@@ -1284,6 +1349,8 @@ pub const BsaAnalysisJsonl = struct {
     sasa_complex: f64,
     delta_sasa_total: f64,
     bsa: f64,
+    /// Polar/apolar split of A, B and the complex (`--polar`), or null
+    polar: ?BsaPolarAreas = null,
     delta_sasa_level: []const u8,
     atom_output: bool = false,
     residue_partner: []const []const u8 = &.{},
@@ -1305,6 +1372,39 @@ pub const BsaAnalysisJsonl = struct {
     atom_sasa_isolated: []const f64 = &.{},
     atom_sasa_complex: []const f64 = &.{},
     atom_delta_sasa: []const f64 = &.{},
+};
+
+/// Polar and apolar parts of the three areas of a BSA row.
+pub const BsaPolarAreas = struct {
+    partner_a: analysis.PolarAreas,
+    partner_b: analysis.PolarAreas,
+    complex: analysis.PolarAreas,
+};
+
+/// The polar/apolar fields of a BSA row, written after `bsa`.
+const BsaPolarFields = struct {
+    sasa_partner_a_polar: ?f64 = null,
+    sasa_partner_a_apolar: ?f64 = null,
+    sasa_partner_b_polar: ?f64 = null,
+    sasa_partner_b_apolar: ?f64 = null,
+    sasa_complex_polar: ?f64 = null,
+    sasa_complex_apolar: ?f64 = null,
+    delta_sasa_polar: ?f64 = null,
+    delta_sasa_apolar: ?f64 = null,
+
+    fn init(polar: ?BsaPolarAreas, options: JsonlOptions) BsaPolarFields {
+        const p = polar orelse return .{};
+        return .{
+            .sasa_partner_a_polar = maybeRoundJsonlFloat(p.partner_a.polar, options),
+            .sasa_partner_a_apolar = maybeRoundJsonlFloat(p.partner_a.apolar, options),
+            .sasa_partner_b_polar = maybeRoundJsonlFloat(p.partner_b.polar, options),
+            .sasa_partner_b_apolar = maybeRoundJsonlFloat(p.partner_b.apolar, options),
+            .sasa_complex_polar = maybeRoundJsonlFloat(p.complex.polar, options),
+            .sasa_complex_apolar = maybeRoundJsonlFloat(p.complex.apolar, options),
+            .delta_sasa_polar = maybeRoundJsonlFloat(p.partner_a.polar + p.partner_b.polar - p.complex.polar, options),
+            .delta_sasa_apolar = maybeRoundJsonlFloat(p.partner_a.apolar + p.partner_b.apolar - p.complex.apolar, options),
+        };
+    }
 };
 
 pub const BsaAnalysisErrorJsonl = struct {
@@ -1338,6 +1438,7 @@ pub fn bsaAnalysisToJsonlLine(allocator: Allocator, row: BsaAnalysisJsonl) ![]u8
 }
 
 pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl, options: JsonlOptions) ![]u8 {
+    const polar_fields = BsaPolarFields.init(row.polar, options);
     const output_residue_sasa_isolated = try maybeRoundJsonlFloatSlice(allocator, row.residue_sasa_isolated, options);
     defer if (options.decimals != null) allocator.free(output_residue_sasa_isolated);
     const output_residue_sasa_complex = try maybeRoundJsonlFloatSlice(allocator, row.residue_sasa_complex, options);
@@ -1366,6 +1467,14 @@ pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl
                 sasa_complex: f64,
                 delta_sasa_total: f64,
                 bsa: f64,
+                sasa_partner_a_polar: ?f64 = null,
+                sasa_partner_a_apolar: ?f64 = null,
+                sasa_partner_b_polar: ?f64 = null,
+                sasa_partner_b_apolar: ?f64 = null,
+                sasa_complex_polar: ?f64 = null,
+                sasa_complex_apolar: ?f64 = null,
+                delta_sasa_polar: ?f64 = null,
+                delta_sasa_apolar: ?f64 = null,
                 delta_sasa_level: []const u8,
                 residue_partner: []const []const u8,
                 residue_chain: []const []const u8,
@@ -1400,6 +1509,14 @@ pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl
                 .sasa_complex = maybeRoundJsonlFloat(row.sasa_complex, options),
                 .delta_sasa_total = maybeRoundJsonlFloat(row.delta_sasa_total, options),
                 .bsa = maybeRoundJsonlFloat(row.bsa, options),
+                .sasa_partner_a_polar = polar_fields.sasa_partner_a_polar,
+                .sasa_partner_a_apolar = polar_fields.sasa_partner_a_apolar,
+                .sasa_partner_b_polar = polar_fields.sasa_partner_b_polar,
+                .sasa_partner_b_apolar = polar_fields.sasa_partner_b_apolar,
+                .sasa_complex_polar = polar_fields.sasa_complex_polar,
+                .sasa_complex_apolar = polar_fields.sasa_complex_apolar,
+                .delta_sasa_polar = polar_fields.delta_sasa_polar,
+                .delta_sasa_apolar = polar_fields.delta_sasa_apolar,
                 .delta_sasa_level = row.delta_sasa_level,
                 .residue_partner = row.residue_partner,
                 .residue_chain = row.residue_chain,
@@ -1420,7 +1537,7 @@ pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl
                 .atom_sasa_isolated = output_atom_sasa_isolated,
                 .atom_sasa_complex = output_atom_sasa_complex,
                 .atom_delta_sasa = output_atom_delta_sasa,
-            }, .{});
+            }, .{ .emit_null_optional_fields = false });
         }
         const Entry = struct {
             status: []const u8,
@@ -1435,6 +1552,14 @@ pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl
             sasa_complex: f64,
             delta_sasa_total: f64,
             bsa: f64,
+            sasa_partner_a_polar: ?f64 = null,
+            sasa_partner_a_apolar: ?f64 = null,
+            sasa_partner_b_polar: ?f64 = null,
+            sasa_partner_b_apolar: ?f64 = null,
+            sasa_complex_polar: ?f64 = null,
+            sasa_complex_apolar: ?f64 = null,
+            delta_sasa_polar: ?f64 = null,
+            delta_sasa_apolar: ?f64 = null,
             delta_sasa_level: []const u8,
             residue_partner: []const []const u8,
             residue_chain: []const []const u8,
@@ -1458,6 +1583,14 @@ pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl
             .sasa_complex = maybeRoundJsonlFloat(row.sasa_complex, options),
             .delta_sasa_total = maybeRoundJsonlFloat(row.delta_sasa_total, options),
             .bsa = maybeRoundJsonlFloat(row.bsa, options),
+            .sasa_partner_a_polar = polar_fields.sasa_partner_a_polar,
+            .sasa_partner_a_apolar = polar_fields.sasa_partner_a_apolar,
+            .sasa_partner_b_polar = polar_fields.sasa_partner_b_polar,
+            .sasa_partner_b_apolar = polar_fields.sasa_partner_b_apolar,
+            .sasa_complex_polar = polar_fields.sasa_complex_polar,
+            .sasa_complex_apolar = polar_fields.sasa_complex_apolar,
+            .delta_sasa_polar = polar_fields.delta_sasa_polar,
+            .delta_sasa_apolar = polar_fields.delta_sasa_apolar,
             .delta_sasa_level = row.delta_sasa_level,
             .residue_partner = row.residue_partner,
             .residue_chain = row.residue_chain,
@@ -1467,7 +1600,7 @@ pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl
             .residue_sasa_isolated = output_residue_sasa_isolated,
             .residue_sasa_complex = output_residue_sasa_complex,
             .residue_delta_sasa = output_residue_delta_sasa,
-        }, .{});
+        }, .{ .emit_null_optional_fields = false });
     }
 
     const Entry = struct {
@@ -1483,6 +1616,14 @@ pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl
         sasa_complex: f64,
         delta_sasa_total: f64,
         bsa: f64,
+        sasa_partner_a_polar: ?f64 = null,
+        sasa_partner_a_apolar: ?f64 = null,
+        sasa_partner_b_polar: ?f64 = null,
+        sasa_partner_b_apolar: ?f64 = null,
+        sasa_complex_polar: ?f64 = null,
+        sasa_complex_apolar: ?f64 = null,
+        delta_sasa_polar: ?f64 = null,
+        delta_sasa_apolar: ?f64 = null,
         delta_sasa_level: []const u8,
     };
     return stringifyFinite(allocator, Entry{
@@ -1498,8 +1639,16 @@ pub fn bsaAnalysisToJsonlLineOptions(allocator: Allocator, row: BsaAnalysisJsonl
         .sasa_complex = maybeRoundJsonlFloat(row.sasa_complex, options),
         .delta_sasa_total = maybeRoundJsonlFloat(row.delta_sasa_total, options),
         .bsa = maybeRoundJsonlFloat(row.bsa, options),
+        .sasa_partner_a_polar = polar_fields.sasa_partner_a_polar,
+        .sasa_partner_a_apolar = polar_fields.sasa_partner_a_apolar,
+        .sasa_partner_b_polar = polar_fields.sasa_partner_b_polar,
+        .sasa_partner_b_apolar = polar_fields.sasa_partner_b_apolar,
+        .sasa_complex_polar = polar_fields.sasa_complex_polar,
+        .sasa_complex_apolar = polar_fields.sasa_complex_apolar,
+        .delta_sasa_polar = polar_fields.delta_sasa_polar,
+        .delta_sasa_apolar = polar_fields.delta_sasa_apolar,
         .delta_sasa_level = row.delta_sasa_level,
-    }, .{});
+    }, .{ .emit_null_optional_fields = false });
 }
 
 // Tests
@@ -3162,7 +3311,7 @@ test "fileResultToJsonlLine basic" {
 test "fileResultToJsonlLine rounds floats when decimals option is set" {
     const allocator = std.testing.allocator;
     const areas = [_]f64{ 1.23456, 2.55555, 0.004 };
-    const line = try fileResultToJsonlLineOptions(allocator, "test.pdb", 6.789, &areas, .{ .decimals = 2 });
+    const line = try fileResultToJsonlLineOptions(allocator, "test.pdb", 6.789, null, &areas, .{ .decimals = 2 });
     defer allocator.free(line);
 
     try std.testing.expectEqualStrings(
@@ -3174,7 +3323,7 @@ test "fileResultToJsonlLine rounds floats when decimals option is set" {
 test "fileResultToJsonlLine can omit atom areas" {
     const allocator = std.testing.allocator;
     const areas = [_]f64{ 1.0, 2.0 };
-    const line = try fileResultToJsonlLineOptions(allocator, "summary.pdb", 3.0, &areas, .{
+    const line = try fileResultToJsonlLineOptions(allocator, "summary.pdb", 3.0, null, &areas, .{
         .include_atom_areas = false,
     });
     defer allocator.free(line);
@@ -3188,13 +3337,27 @@ test "fileResultToJsonlLine can omit atom areas" {
 test "fileResultToJsonlLine can omit total area" {
     const allocator = std.testing.allocator;
     const areas = [_]f64{ 1.0, 2.0 };
-    const line = try fileResultToJsonlLineOptions(allocator, "areas.pdb", 3.0, &areas, .{
+    const line = try fileResultToJsonlLineOptions(allocator, "areas.pdb", 3.0, null, &areas, .{
         .include_total_area = false,
     });
     defer allocator.free(line);
 
     try std.testing.expectEqualStrings(
         "{\"status\":\"ok\",\"filename\":\"areas.pdb\",\"atom_areas\":[1,2]}",
+        line,
+    );
+}
+
+test "fileResultToJsonlLine writes the polar split after total_area" {
+    const allocator = std.testing.allocator;
+    const areas = [_]f64{ 1.0, 2.0 };
+    const line = try fileResultToJsonlLineOptions(allocator, "polar.pdb", 3.0, .{ .polar = 1.0, .apolar = 2.0 }, &areas, .{
+        .include_atom_areas = false,
+    });
+    defer allocator.free(line);
+
+    try std.testing.expectEqualStrings(
+        "{\"status\":\"ok\",\"filename\":\"polar.pdb\",\"total_area\":3,\"polar_area\":1,\"apolar_area\":2}",
         line,
     );
 }

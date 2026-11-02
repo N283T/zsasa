@@ -778,7 +778,6 @@ class TestWorkflowIgnoredKeys:
             ('path = "two.pdb"\n', "", "[input] path"),
             ("", "rsa = true\n", "[calculation] rsa = true"),
             ("", "per_residue = true\n", "[calculation] per_residue = true"),
-            ("", "polar = true\n", "[calculation] polar = true"),
             ("", "validate_only = true\n", "[calculation] validate_only = true"),
         ],
     )
@@ -1390,3 +1389,47 @@ class TestPolarPartition:
         assert totals["naccess"] == pytest.approx((2469.4, 2353.9), abs=0.11)
         assert totals["oons"] == pytest.approx((2542.6, 2236.9), abs=0.11)
         assert totals["ccd"] == pytest.approx((2318.9, 2515.8), abs=0.11)
+
+    @pytest.mark.parametrize("classifier", ["naccess", "oons", "ccd"])
+    def test_batch_polar_split_matches_the_rsa_totals(self, tmp_path: Path, classifier: str):
+        """batch --polar writes the split of the RSA TOTAL row to each JSONL row."""
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        (input_dir / "1ubq.pdb").write_bytes((EXAMPLES_DIR / "1ubq.pdb").read_bytes())
+        rsa_file = tmp_path / "out.rsa"
+        result = run_zsasa(
+            "calc",
+            "--quiet",
+            "--format=rsa",
+            f"--classifier={classifier}",
+            str(input_dir / "1ubq.pdb"),
+            str(rsa_file),
+        )
+        assert result.returncode == 0, result.stderr
+        total_row = next(
+            line for line in rsa_file.read_text().splitlines() if line.startswith("TOTAL")
+        )
+
+        jsonl_file = tmp_path / "out.jsonl"
+        result = run_zsasa(
+            "batch",
+            "--quiet",
+            "--format=jsonl",
+            "--polar",
+            f"--classifier={classifier}",
+            str(input_dir),
+            str(jsonl_file),
+        )
+        assert result.returncode == 0, result.stderr
+        (row,) = [json.loads(line) for line in jsonl_file.read_text().splitlines()]
+        assert row["apolar_area"] == pytest.approx(float(total_row[50:60]), abs=0.051)
+        assert row["polar_area"] == pytest.approx(float(total_row[63:73]), abs=0.051)
+        assert row["polar_area"] + row["apolar_area"] == pytest.approx(row["total_area"])
+
+    def test_batch_polar_needs_jsonl(self, tmp_path: Path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        (input_dir / "1ubq.pdb").write_bytes((EXAMPLES_DIR / "1ubq.pdb").read_bytes())
+        result = run_zsasa("batch", "--polar", str(input_dir), str(tmp_path / "out"))
+        assert result.returncode == 1
+        assert "--polar is only supported with --format=jsonl" in result.stderr
