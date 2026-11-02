@@ -18,31 +18,42 @@ const esc = (s) =>
 const uniprot = (acc) =>
   acc ? `<a class="ext" href="https://www.uniprot.org/uniprotkb/${encodeURIComponent(acc)}" rel="noopener">${esc(acc)}</a>` : "–";
 const afdb = (id) => `<a class="ext" href="https://alphafold.ebi.ac.uk/entry/${encodeURIComponent(id)}" rel="noopener">${esc(id)}</a>`;
-const gene = (g) => `<b>${esc(g || "–")}</b>`;
+const gene = (g) => `<b title="${esc(g)}">${esc(g || "–")}</b>`;
 
 // A column: key, header, cell formatter, SQL sort expression (null: not
-// sortable), text alignment, and whether it is shown before the reader picks.
-// `fixed` columns are always shown.
-const col = (key, label, fmt, sort, opts = {}) => ({ key, label, fmt, sort, num: true, show: true, ...opts });
+// sortable), text alignment, whether it is shown before the reader picks, and
+// its width in px. `fixed` columns are always shown. The widths are fixed so
+// that the columns do not move when the values change; they fit the header
+// with its sort mark and the widest usual value.
+const col = (key, label, fmt, sort, opts = {}) => ({
+  key,
+  label,
+  fmt,
+  sort,
+  num: true,
+  show: true,
+  w: opts.num === false ? 124 : 88,
+  ...opts,
+});
 
 const DIMER_AREAS = [
-  col("sasa_a", "SASA A", (r) => area(r.sasa_a), "sasa_a"),
-  col("sasa_b", "SASA B", (r) => area(r.sasa_b), "sasa_b"),
-  col("sasa_ab", "SASA AB", (r) => area(r.sasa_ab), "sasa_ab"),
-  col("delta_sasa", "ΔSASA", (r) => `<b>${area(r.delta_sasa)}</b>`, "delta_sasa"),
-  col("bsa", "BSA", (r) => area(r.bsa), "bsa", { show: false }),
-  col("delta_sasa_polar", "ΔSASA polar", (r) => area(r.delta_sasa_polar), "delta_sasa_polar", { show: false }),
-  col("delta_sasa_apolar", "ΔSASA apolar", (r) => area(r.delta_sasa_apolar), "delta_sasa_apolar", { show: false }),
-  col("apolar_pct", "Apolar %", (r) => pct(r.delta_sasa_apolar, r.delta_sasa), "delta_sasa_apolar / nullif(delta_sasa, 0)"),
-  col("ipsae_min", "ipSAEmin", (r) => score(r.ipsae_min), "ipsae_min"),
-  col("iptm", "ipTM", (r) => score(r.iptm), "iptm"),
-  col("pdockq", "pDockQ", (r) => score(r.pdockq), "pdockq", { show: false }),
-  col("plddt", "pLDDT", (r) => score(r.plddt, 1), "plddt", { show: false }),
-  col("high_quality", "HQ", (r) => (r.high_quality ? '<span class="explorer__hq">HQ</span>' : ""), "high_quality"),
+  col("sasa_a", "SASA A", (r) => area(r.sasa_a), "sasa_a", { w: 84 }),
+  col("sasa_b", "SASA B", (r) => area(r.sasa_b), "sasa_b", { w: 84 }),
+  col("sasa_ab", "SASA AB", (r) => area(r.sasa_ab), "sasa_ab", { w: 92 }),
+  col("delta_sasa", "ΔSASA", (r) => `<b>${area(r.delta_sasa)}</b>`, "delta_sasa", { w: 75 }),
+  col("bsa", "BSA", (r) => area(r.bsa), "bsa", { show: false, w: 73 }),
+  col("delta_sasa_polar", "ΔSASA polar", (r) => area(r.delta_sasa_polar), "delta_sasa_polar", { show: false, w: 127 }),
+  col("delta_sasa_apolar", "ΔSASA apolar", (r) => area(r.delta_sasa_apolar), "delta_sasa_apolar", { show: false, w: 135 }),
+  col("apolar_pct", "Apolar %", (r) => pct(r.delta_sasa_apolar, r.delta_sasa), "delta_sasa_apolar / nullif(delta_sasa, 0)", { w: 101 }),
+  col("ipsae_min", "ipSAEmin", (r) => score(r.ipsae_min), "ipsae_min", { w: 101 }),
+  col("iptm", "ipTM", (r) => score(r.iptm), "iptm", { w: 66 }),
+  col("pdockq", "pDockQ", (r) => score(r.pdockq), "pdockq", { show: false, w: 84 }),
+  col("plddt", "pLDDT", (r) => score(r.plddt, 1), "plddt", { show: false, w: 75 }),
+  col("high_quality", "HQ", (r) => (r.high_quality ? '<span class="explorer__hq">HQ</span>' : ""), "high_quality", { w: 49 }),
 ];
 
 // Most dimer models are only in the AFDB/NVIDIA FTP release, so the ID is not a link
-const MODEL = col("model_id", "Model", (r) => `<span class="explorer__id">${esc(r.model_id)}</span>`, "model_id", { num: false, fixed: true });
+const MODEL = col("model_id", "Model", (r) => `<span class="explorer__id">${esc(r.model_id)}</span>`, "model_id", { num: false, fixed: true, w: 182 });
 
 // A range filter: key, label, SQL expression, slider step and value formatter.
 const range = (key, label, expr, step, fmt) => ({ key, label, expr, step, fmt });
@@ -67,10 +78,10 @@ const DATASETS = {
     match: ["accession_a", "accession_b", "gene_a", "gene_b", "model_id", "description_a", "description_b"],
     columns: [
       MODEL,
-      col("gene_a", "Gene A", (r) => gene(r.gene_a), "gene_a", { num: false, fixed: true }),
-      col("accession_a", "UniProt A", (r) => uniprot(r.accession_a), "accession_a", { num: false }),
-      col("gene_b", "Gene B", (r) => gene(r.gene_b), "gene_b", { num: false, fixed: true }),
-      col("accession_b", "UniProt B", (r) => uniprot(r.accession_b), "accession_b", { num: false }),
+      col("gene_a", "Gene A", (r) => gene(r.gene_a), "gene_a", { num: false, fixed: true, w: 98 }),
+      col("accession_a", "UniProt A", (r) => uniprot(r.accession_a), "accession_a", { num: false, w: 122 }),
+      col("gene_b", "Gene B", (r) => gene(r.gene_b), "gene_b", { num: false, fixed: true, w: 98 }),
+      col("accession_b", "UniProt B", (r) => uniprot(r.accession_b), "accession_b", { num: false, w: 122 }),
       ...DIMER_AREAS,
     ],
     sort: ["delta_sasa", "desc"],
@@ -86,8 +97,8 @@ const DATASETS = {
     match: ["accession_a", "gene_a", "model_id", "description_a"],
     columns: [
       MODEL,
-      col("gene_a", "Gene", (r) => gene(r.gene_a), "gene_a", { num: false, fixed: true }),
-      col("accession_a", "UniProt", (r) => uniprot(r.accession_a), "accession_a", { num: false }),
+      col("gene_a", "Gene", (r) => gene(r.gene_a), "gene_a", { num: false, fixed: true, w: 98 }),
+      col("accession_a", "UniProt", (r) => uniprot(r.accession_a), "accession_a", { num: false, w: 122 }),
       ...DIMER_AREAS,
     ],
     sort: ["delta_sasa", "desc"],
@@ -107,16 +118,16 @@ const DATASETS = {
     search: "UniProt accession, protein name or organism",
     match: ["accession", "model_id", "description", "organism"],
     columns: [
-      col("accession", "UniProt", (r) => uniprot(r.accession), "accession", { num: false, fixed: true }),
-      col("model_id", "AFDB", (r) => afdb(r.model_id), "model_id", { num: false }),
-      col("protein", "Protein", (r) => `${esc(r.description)}<br><span class="explorer__sub">${esc(r.organism)}</span>`, "description", { num: false, fixed: true }),
-      col("n_residues", "Residues", (r) => Number(r.n_residues).toLocaleString("en-US"), "n_residues"),
-      col("sasa", "SASA", (r) => `<b>${area(r.sasa)}</b>`, "sasa"),
-      col("sasa_polar", "Polar", (r) => area(r.sasa_polar), "sasa_polar"),
-      col("sasa_apolar", "Apolar", (r) => area(r.sasa_apolar), "sasa_apolar"),
-      col("apolar_pct", "Apolar %", (r) => pct(r.sasa_apolar, r.sasa), "sasa_apolar / nullif(sasa, 0)"),
-      col("per_residue", "SASA / residue", (r) => (r.n_residues ? score(r.sasa / Number(r.n_residues), 1) : "–"), "sasa / nullif(n_residues, 0)"),
-      col("plddt", "pLDDT", (r) => score(r.plddt, 1), "plddt", { show: false }),
+      col("accession", "UniProt", (r) => uniprot(r.accession), "accession", { num: false, fixed: true, w: 122 }),
+      col("model_id", "AFDB", (r) => afdb(r.model_id), "model_id", { num: false, w: 186 }),
+      col("protein", "Protein", (r) => `<span title="${esc(r.description)}">${esc(r.description)}</span><br><span class="explorer__sub" title="${esc(r.organism)}">${esc(r.organism)}</span>`, "description", { num: false, fixed: true, w: 320 }),
+      col("n_residues", "Residues", (r) => Number(r.n_residues).toLocaleString("en-US"), "n_residues", { w: 101 }),
+      col("sasa", "SASA", (r) => `<b>${area(r.sasa)}</b>`, "sasa", { w: 73 }),
+      col("sasa_polar", "Polar", (r) => area(r.sasa_polar), "sasa_polar", { w: 75 }),
+      col("sasa_apolar", "Apolar", (r) => area(r.sasa_apolar), "sasa_apolar", { w: 84 }),
+      col("apolar_pct", "Apolar %", (r) => pct(r.sasa_apolar, r.sasa), "sasa_apolar / nullif(sasa, 0)", { w: 101 }),
+      col("per_residue", "SASA / residue", (r) => (r.n_residues ? score(r.sasa / Number(r.n_residues), 1) : "–"), "sasa / nullif(n_residues, 0)", { w: 153 }),
+      col("plddt", "pLDDT", (r) => score(r.plddt, 1), "plddt", { show: false, w: 75 }),
     ],
     sort: ["sasa", "desc"],
     axes: ["n_residues", "sasa"],
@@ -927,7 +938,17 @@ async function main() {
           "</tr>",
       )
       .join("");
-    tableWrap.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    // Fixed layout: the column widths come from the column definitions, not from
+    // the values on this page; extra room is shared out in the same proportions
+    const width = columns.reduce((sum, c) => sum + c.w, 0);
+    const cols = columns.map((c) => `<col style="width:${c.w}px">`).join("");
+    tableWrap.innerHTML =
+      `<table style="width:${width}px"><colgroup>${cols}</colgroup>` +
+      `<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    // A table that fits its panel keeps its header in view while the page
+    // scrolls; a wider one scrolls sideways in the panel, where a sticky header
+    // cannot work.
+    tableWrap.classList.toggle("explorer__table--fits", width <= tableWrap.clientWidth);
 
     // A first click sorts numbers from the largest and text from A
     for (const button of tableWrap.querySelectorAll(".explorer__sort")) {
@@ -1004,7 +1025,16 @@ async function main() {
     status.textContent = `DuckDB could not start in this browser: ${err.message}`;
     return;
   }
-  // A link to another search on this page changes only the hash; a link to a
+  // The panel's width decides whether the table fits it (see render)
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      const table = tableWrap.querySelector("table");
+      if (table) tableWrap.classList.toggle("explorer__table--fits", table.offsetWidth <= tableWrap.clientWidth);
+    }, 150);
+  });
+    // A link to another search on this page changes only the hash; a link to a
   // section (#download) is not a search and leaves the explorer as it is
   window.addEventListener("hashchange", () => {
     if (!new URLSearchParams(location.hash.slice(1)).has("set")) return;

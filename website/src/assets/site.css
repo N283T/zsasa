@@ -2411,11 +2411,31 @@ code {
 }
 
 .explorer__table table {
+  /* Column widths come from the <colgroup> the script writes, so they stay put
+     when the values change; the table fills the panel when it is wider. */
+  min-width: 100%;
+  table-layout: fixed;
   font-size: 17px;
+}
+
+.explorer__table :is(td, th) {
+  padding-right: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.explorer__table td > span,
+.explorer__table td > b {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
 }
 
 .explorer__table th {
   font-size: 13.5px;
+  letter-spacing: 0.04em;
 }
 
 .explorer__table td,
@@ -2423,20 +2443,18 @@ code {
   white-space: nowrap;
 }
 
-/* Where the table fits the page, its header stays under the nav while the
-   rows scroll. A narrower page scrolls the table sideways instead, and a
-   sticky header does not work inside that scroll box. */
-@media (min-width: 1400px) {
-  .explorer__table {
-    overflow: visible;
-  }
+/* The script marks a table that fits its panel: its header stays under the
+   nav while the rows scroll. A wider table scrolls sideways in the panel
+   instead, and a sticky header does not work inside that scroll box. */
+.explorer__table--fits {
+  overflow: visible;
+}
 
-  .explorer__table thead th {
-    position: sticky;
-    top: var(--nav-h);
-    z-index: 2;
-    background: var(--bg-2);
-  }
+.explorer__table--fits thead th {
+  position: sticky;
+  top: var(--nav-h);
+  z-index: 2;
+  background: var(--bg-2);
 }
 
 .explorer__sort {
