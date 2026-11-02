@@ -1,0 +1,23 @@
+{
+  "doi": "10.5281/zenodo.23898582",
+  "files": [
+    {
+      "name": "afdb_heterodimers.parquet",
+      "url": "https://zenodo.org/records/23898582/files/afdb_heterodimers.parquet?download=1",
+      "size": 43718745,
+      "sha256": "a8f658820605a2db0df7ce4f5fbf7ab166cbc8d347f17401b9d70757db2511bb"
+    },
+    {
+      "name": "afdb_homodimers.parquet",
+      "url": "https://zenodo.org/records/23898582/files/afdb_homodimers.parquet?download=1",
+      "size": 8589240,
+      "sha256": "21de9180ce47de65a6272acb458b33018678d778b02f38019d0b63c38cd0eb3d"
+    },
+    {
+      "name": "swissprot.parquet",
+      "url": "https://zenodo.org/records/23898582/files/swissprot.parquet?download=1",
+      "size": 16524997,
+      "sha256": "62ece049e7df37b4a6bc5973cc153eeb5abc81cc45a4daac323f3e9bb64e22e9"
+    }
+  ]
+}
