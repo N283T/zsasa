@@ -6,7 +6,7 @@ description: "Search interface burial and polar/apolar SASA for 623,242 AFDB hum
 
 # SASA explorer
 
-Search the SASA, interface burial and polar/apolar split that `zsasa` computed for AFDB human heterodimers, homo-dimers and SwissProt models. Narrow the results with the sliders or by dragging a rectangle on the density plot, click a column header to sort, and select a dimer row to see its full breakdown.
+Search the SASA, interface burial and polar/apolar split that `zsasa` computed for AFDB human heterodimers, homo-dimers and SwissProt models. Narrow the results with the sliders or by selecting cells on the density plot, click a column header to sort, and select a dimer row to see its full breakdown.
 
 <nav class="jump" aria-label="On this page">
 <a href="#search">Search</a>

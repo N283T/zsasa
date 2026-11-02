@@ -498,10 +498,27 @@ function drawDensity(host, xf, yf, xb, yb, cells, tip, onBrush) {
       Math.min(Math.max(((e.clientY - box.top) / box.height) * H, m.t), m.t + ph),
     ];
   };
-  const value = ([px, py]) => [x0 + ((px - m.l) / pw) * (x1 - x0), y0 + ((m.t + ph - py) / ph) * (y1 - y0)];
+  // The cell under a point, clamped to the grid
+  const cellAt = ([px, py]) => [
+    Math.min(GRID_X - 1, Math.max(0, Math.floor((px - m.l) / cw))),
+    Math.min(GRID_Y - 1, Math.max(0, Math.floor((m.t + ph - py) / ch))),
+  ];
+  // The cells between two cells, inclusive: [x0, x1, y0, y1]
+  const span = (a, b) => [Math.min(a[0], b[0]), Math.max(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[1], b[1])];
+  const outline = (rect, [cx0, cx1, cy0, cy1]) => {
+    rect.setAttribute("x", m.l + cx0 * cw);
+    rect.setAttribute("y", m.t + (GRID_Y - 1 - cy1) * ch);
+    rect.setAttribute("width", (cx1 - cx0 + 1) * cw);
+    rect.setAttribute("height", (cy1 - cy0 + 1) * ch);
+    rect.setAttribute("visibility", "visible");
+  };
+  // A drag selects whole cells, and a click selects the cell under it
   let start = null;
   overlay.addEventListener("pointerdown", (e) => {
-    start = local(e);
+    start = cellAt(local(e));
+    outline(brush, span(start, start));
+    mark.setAttribute("visibility", "hidden");
+    tip.hide();
     try {
       overlay.setPointerCapture(e.pointerId);
     } catch {
@@ -509,21 +526,13 @@ function drawDensity(host, xf, yf, xb, yb, cells, tip, onBrush) {
     }
   });
   overlay.addEventListener("pointermove", (e) => {
-    const p = local(e);
+    const cell = cellAt(local(e));
     if (start) {
-      brush.setAttribute("x", Math.min(start[0], p[0]));
-      brush.setAttribute("y", Math.min(start[1], p[1]));
-      brush.setAttribute("width", Math.abs(p[0] - start[0]));
-      brush.setAttribute("height", Math.abs(p[1] - start[1]));
-      brush.setAttribute("visibility", "visible");
-      tip.hide();
+      outline(brush, span(start, cell));
       return;
     }
-    const bx = Math.min(GRID_X - 1, Math.floor((p[0] - m.l) / cw));
-    const by = Math.min(GRID_Y - 1, Math.floor((m.t + ph - p[1]) / ch));
-    mark.setAttribute("x", m.l + bx * cw);
-    mark.setAttribute("y", m.t + (GRID_Y - 1 - by) * ch);
-    mark.setAttribute("visibility", "visible");
+    const [bx, by] = cell;
+    outline(mark, [bx, bx, by, by]);
     const host = plot.closest(".explorer").getBoundingClientRect();
     tip.show(e.clientX - host.left, e.clientY - host.top, `${xf.label} × ${yf.label}`, [
       [(byCell.get(`${bx},${by}`) ?? 0).toLocaleString("en-US"), "models"],
@@ -532,17 +541,16 @@ function drawDensity(host, xf, yf, xb, yb, cells, tip, onBrush) {
     ]);
   });
   overlay.addEventListener("pointerleave", () => {
+    if (start) return;
     mark.setAttribute("visibility", "hidden");
     tip.hide();
   });
   overlay.addEventListener("pointerup", (e) => {
     if (!start) return;
-    const end = local(e);
-    const dragged = Math.abs(end[0] - start[0]) > 4 && Math.abs(end[1] - start[1]) > 4;
-    brush.setAttribute("visibility", "hidden");
-    const [a, b] = [value(start), value(end)];
+    const [cx0, cx1, cy0, cy1] = span(start, cellAt(local(e)));
     start = null;
-    if (dragged) onBrush([Math.min(a[0], b[0]), Math.max(a[0], b[0])], [Math.min(a[1], b[1]), Math.max(a[1], b[1])]);
+    brush.setAttribute("visibility", "hidden");
+    onBrush([x0 + cx0 * xw, x0 + (cx1 + 1) * xw], [y0 + cy0 * yw, y0 + (cy1 + 1) * yw]);
   });
   host.replaceChildren(plot);
   return max;
@@ -733,10 +741,19 @@ async function main() {
       wrap.append(select);
       return wrap;
     };
+    // Clears the ranges of the two axes only, so the plot shows them in full
+    // again while the other filters stay
+    const zoomOut = el("button", { type: "button", class: "explorer__btn explorer__zoom-reset" }, "Reset zoom");
+    zoomOut.addEventListener("click", () => {
+      for (const key of state.axes) delete state.ranges[key];
+      buildSliders();
+      refresh();
+    });
     chartHead.replaceChildren(
       el("span", { class: "label explorer__chart-title" }, "Density"),
       pick("X", 0),
       pick("Y", 1),
+      zoomOut,
       el(
         "span",
         { class: "explorer__legend" },
@@ -787,11 +804,13 @@ async function main() {
         buildSliders();
         refresh();
       });
+      const zoomOut = chartHead.querySelector(".explorer__zoom-reset");
+      if (zoomOut) zoomOut.disabled = !(state.ranges[xf.key] || state.ranges[yf.key]);
       const shown = cells.reduce((a, c) => a + c.n, 0);
       chartHead.querySelector(".explorer__legend-text").textContent = `1 – ${max.toLocaleString("en-US")} models per cell`;
       chartNote.textContent =
         `${shown.toLocaleString("en-US")} models with both values. The last row and column also hold the values ` +
-        "past the slider ends. Drag a rectangle to filter to it; Reset filters zooms back out.";
+        "past the slider ends. Drag across cells, or click one, to zoom in on them; Reset zoom shows both axes in full again.";
     } catch (err) {
       if (mine !== generation) return;
       chartNote.textContent = `The chart failed: ${err.message}`;
@@ -853,12 +872,14 @@ async function main() {
     const mine = ++generation;
     const ds = DATASETS[state.dataset];
     writeHash();
-    const [clause, params] = where();
     try {
       const fresh = !ds.table;
       await load(ds, status);
       if (mine !== generation) return;
       if (fresh || !sliders.childElementCount) buildSliders();
+      // After the load: a range that reaches a slider end is open on that side,
+      // and the ends are known only once the table is in
+      const [clause, params] = where();
       status.textContent = "Searching…";
       const summary = ds.dimer ? "median(delta_sasa)" : "median(sasa)";
       // One connection runs one statement at a time
