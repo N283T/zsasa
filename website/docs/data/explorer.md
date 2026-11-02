@@ -6,14 +6,16 @@ description: "Search interface burial and polar/apolar SASA for 623,242 AFDB hum
 
 # SASA explorer
 
-Search the solvent accessible surface area that `zsasa` computed for two sets of AlphaFold Database (AFDB) models:
+Search the SASA, interface burial and polar/apolar split that `zsasa` computed for 623,242 AFDB human dimer models and 550,122 SwissProt models. Select a dimer row to see its full breakdown.
+
+<div data-explorer></div>
+
+## The data
 
 - **AFDB human dimers**: the 91,637 human homo-dimer models and 531,605 human–human heterodimer models of the AFDB/NVIDIA complex release. These are the models of the large-scale workflow in the `zsasa` manuscript. Each row has the SASA of chain A alone, chain B alone and the complex, the interface burial ΔSASA, the buried surface area (BSA), the polar/apolar split of each of these areas, and the AFDB/NVIDIA confidence scores.
 - **SwissProt**: the 550,122 SwissProt models of AFDB v6, with the SASA of each model and its polar/apolar split.
 
-The search runs in your browser on [DuckDB-WASM](https://duckdb.org/docs/api/wasm/overview), which reads only the parts of the data files that a query needs. Select a dimer row to see its full polar/apolar breakdown.
-
-<div data-explorer></div>
+The search runs in your browser on [DuckDB-WASM](https://duckdb.org/docs/api/wasm/overview), which reads only the parts of the data files that a query needs.
 
 ## What the columns mean
 

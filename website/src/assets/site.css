@@ -1212,6 +1212,10 @@ code {
   display: none;
 }
 
+.doc--wide .prose > :is(p, ul, ol, blockquote) {
+  max-width: none;
+}
+
 @media (min-width: 901px) {
   .doc.doc--wide {
     grid-template-columns: minmax(0, 1fr);
