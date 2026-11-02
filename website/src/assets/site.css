@@ -2206,6 +2206,11 @@ code {
   color: var(--ink-3);
 }
 
+.explorer__id {
+  font: 13px var(--mono);
+  color: var(--ink-2);
+}
+
 .explorer__hq {
   padding: 1px 5px;
   font: 500 11.5px var(--mono);

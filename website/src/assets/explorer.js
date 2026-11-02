@@ -17,7 +17,7 @@ const esc = (s) =>
 const uniprot = (acc) =>
   acc ? `<a class="ext" href="https://www.uniprot.org/uniprotkb/${encodeURIComponent(acc)}" rel="noopener">${esc(acc)}</a>` : "–";
 const afdb = (id) => `<a class="ext" href="https://alphafold.ebi.ac.uk/entry/${encodeURIComponent(id)}" rel="noopener">${esc(id)}</a>`;
-const protein = (gene, acc) => `<b>${esc(gene || "–")}</b><br><span class="explorer__sub">${uniprot(acc)}</span>`;
+const gene = (g) => `<b>${esc(g || "–")}</b>`;
 
 // A column: key, header, cell formatter, SQL sort expression (null: not
 // sortable), text alignment, and whether it is shown before the reader picks.
@@ -40,7 +40,8 @@ const DIMER_AREAS = [
   col("high_quality", "HQ", (r) => (r.high_quality ? '<span class="explorer__hq">HQ</span>' : ""), "high_quality"),
 ];
 
-const MODEL = col("model_id", "Model", (r) => afdb(r.model_id), "model_id", { num: false, fixed: true });
+// Most dimer models are only in the AFDB/NVIDIA FTP release, so the ID is not a link
+const MODEL = col("model_id", "Model", (r) => `<span class="explorer__id">${esc(r.model_id)}</span>`, "model_id", { num: false, fixed: true });
 
 // Each dataset: its file, the columns of the result table, the columns a search
 // term is matched in, and its first order.
@@ -52,8 +53,10 @@ const DATASETS = {
     match: ["accession_a", "accession_b", "gene_a", "gene_b", "model_id", "description_a", "description_b"],
     columns: [
       MODEL,
-      col("chain_a", "Chain A", (r) => protein(r.gene_a, r.accession_a), "gene_a", { num: false, fixed: true }),
-      col("chain_b", "Chain B", (r) => protein(r.gene_b, r.accession_b), "gene_b", { num: false, fixed: true }),
+      col("gene_a", "Gene A", (r) => gene(r.gene_a), "gene_a", { num: false, fixed: true }),
+      col("accession_a", "UniProt A", (r) => uniprot(r.accession_a), "accession_a", { num: false }),
+      col("gene_b", "Gene B", (r) => gene(r.gene_b), "gene_b", { num: false, fixed: true }),
+      col("accession_b", "UniProt B", (r) => uniprot(r.accession_b), "accession_b", { num: false }),
       ...DIMER_AREAS,
     ],
     sort: ["delta_sasa", "desc"],
@@ -66,7 +69,8 @@ const DATASETS = {
     match: ["accession_a", "gene_a", "model_id", "description_a"],
     columns: [
       MODEL,
-      col("protein", "Protein", (r) => protein(r.gene_a, r.accession_a), "gene_a", { num: false, fixed: true }),
+      col("gene_a", "Gene", (r) => gene(r.gene_a), "gene_a", { num: false, fixed: true }),
+      col("accession_a", "UniProt", (r) => uniprot(r.accession_a), "accession_a", { num: false }),
       ...DIMER_AREAS,
     ],
     sort: ["delta_sasa", "desc"],
@@ -78,7 +82,8 @@ const DATASETS = {
     search: "UniProt accession, protein name or organism",
     match: ["accession", "model_id", "description", "organism"],
     columns: [
-      col("accession", "Accession", (r) => `${uniprot(r.accession)}<br><span class="explorer__sub">${afdb(r.model_id)}</span>`, "accession", { num: false, fixed: true }),
+      col("accession", "UniProt", (r) => uniprot(r.accession), "accession", { num: false, fixed: true }),
+      col("model_id", "AFDB", (r) => afdb(r.model_id), "model_id", { num: false }),
       col("protein", "Protein", (r) => `${esc(r.description)}<br><span class="explorer__sub">${esc(r.organism)}</span>`, "description", { num: false, fixed: true }),
       col("n_residues", "Residues", (r) => Number(r.n_residues).toLocaleString("en-US"), "n_residues"),
       col("sasa", "SASA", (r) => `<b>${area(r.sasa)}</b>`, "sasa"),
@@ -103,20 +108,23 @@ const state = {
   offset: 0,
 };
 
-// The columns a reader chose to see, kept per dataset in this browser only.
+// The columns a reader chose to see, kept per dataset in this browser only. The
+// choice is stored as the columns turned on and off, so a column added later
+// starts as its default.
 function shownColumns(ds) {
   let saved = null;
   try {
-    saved = JSON.parse(localStorage.getItem(`zsasa-explorer-columns-${ds.name}`));
+    saved = JSON.parse(localStorage.getItem(`zsasa-explorer-cols-${ds.name}`));
   } catch {
     saved = null;
   }
-  return ds.columns.filter((c) => c.fixed || (Array.isArray(saved) ? saved.includes(c.key) : c.show));
+  const choice = saved && typeof saved === "object" ? saved : {};
+  return ds.columns.filter((c) => c.fixed || (choice[c.key] ?? c.show));
 }
 
-function saveColumns(ds, keys) {
+function saveColumns(ds, choice) {
   try {
-    localStorage.setItem(`zsasa-explorer-columns-${ds.name}`, JSON.stringify(keys));
+    localStorage.setItem(`zsasa-explorer-cols-${ds.name}`, JSON.stringify(choice));
   } catch {
     // Storage may be unavailable (private window); the choice lasts for this page
   }
@@ -364,10 +372,10 @@ async function main() {
       const box = el("input", { type: "checkbox" });
       box.checked = shown.has(c.key);
       box.addEventListener("change", () => {
-        const keys = [...picker.querySelectorAll("input")].flatMap((b, i) =>
-          b.checked ? [ds.columns.filter((c) => !c.fixed)[i].key] : [],
+        const choice = Object.fromEntries(
+          [...picker.querySelectorAll("input")].map((b, i) => [ds.columns.filter((c) => !c.fixed)[i].key, b.checked]),
         );
-        saveColumns(ds, keys);
+        saveColumns(ds, choice);
         render(ds, lastRows);
       });
       chip.append(box, document.createTextNode(c.label));
