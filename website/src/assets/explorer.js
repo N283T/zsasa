@@ -435,7 +435,8 @@ function drawHistogram(host, f, bounds, counts, range, tip) {
 // `onBrush` with the x and y ranges it covers.
 function drawDensity(host, xf, yf, xb, yb, cells, tip, onBrush) {
   const W = Math.max(host.clientWidth, 240);
-  const H = 360;
+  // Taller on wide screens, never so tall that a phone shows nothing else
+  const H = Math.round(Math.min(560, Math.max(260, W * 0.45)));
   const m = { l: 64, r: 16, t: 10, b: 44 };
   const pw = W - m.l - m.r;
   const ph = H - m.t - m.b;
