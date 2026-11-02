@@ -8,6 +8,8 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+## [v0.13.0](https://github.com/N283T/zsasa/releases/tag/v0.13.0) — 2026-11-03
+
 ### Added
 
 - **`batch --polar`: polar/apolar split in JSONL rows (new optional output fields).** `zsasa batch --polar`, or `polar = true` under `[calculation]` in a batch workflow, adds `polar_area` and `apolar_area` after `total_area` in every JSONL result row, chain-map job rows included. A BSA `[analysis]` row gets `sasa_partner_a_polar`, `sasa_partner_a_apolar`, `sasa_partner_b_polar`, `sasa_partner_b_apolar`, `sasa_complex_polar`, `sasa_complex_apolar`, `delta_sasa_polar` and `delta_sasa_apolar` after `bsa`; the two ΔSASA parts add up to `delta_sasa_total`. Atoms are classed as by `calc --polar` and the RSA columns: by the active classifier's polarity class, else by element. `--polar` needs JSONL output. Rows without the option are unchanged, and the option does not change any total. `batch` rejected `polar = true` before.
