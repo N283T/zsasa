@@ -100,6 +100,7 @@ NAV: list[tuple[str, list]] = [
             "benchmarks/single-file",
         ],
     ),
+    ("Data", ["data/explorer"]),
     ("Project", ["citation", "comparison", "changelog"]),
 ]
 LABELS = {"index": "Introduction"}
@@ -120,6 +121,9 @@ PLACEHOLDER = re.compile(r"\{\{([\w:/.-]+)\}\}")
 CHART = re.compile(r'<div data-chart="([\w-]+)/([\w-]+)"></div>')
 TABLE = re.compile(r'<div data-table="([\w-]+)/([\w-]+)"></div>')
 CHARTS_SCRIPT = '<script src="{root}assets/charts.js" defer></script>'
+# The SASA explorer (docs/data/explorer.md); its data files are fetched by
+# scripts/fetch_explorer_data.py into static/data/explorer/.
+EXPLORER_SCRIPT = '<script type="module" src="{root}assets/explorer.js"></script>'
 
 
 @dataclass
@@ -132,6 +136,8 @@ class Page:
     description: str = ""
     body: str = ""
     toc: list[tuple[str, str, str]] = field(default_factory=list)
+    # `layout: wide` in the front matter: no table of contents, full-width column.
+    wide: bool = False
     anchors: set[str] = field(default_factory=set)
     # (target doc id, fragment, original href) for every link to a heading.
     refs: list[tuple[str, str, str]] = field(default_factory=list)
@@ -344,6 +350,7 @@ class Site:
 
         if m := re.search(r"^title:\s*[\"']?(.+?)[\"']?\s*$", meta, re.M):
             page.title = m.group(1)
+        page.wide = re.search(r"^layout:\s*wide\s*$", meta, re.M) is not None
         label = re.search(r"^sidebar_label:\s*[\"']?(.+?)[\"']?\s*$", meta, re.M)
         page.label = LABELS.get(page.doc_id) or (
             label.group(1) if label else page.title
@@ -460,11 +467,14 @@ class Site:
             "desc": html.escape(
                 page.description or f"{page.title}: zsasa documentation."
             ),
-            "docs_current": ' aria-current="page"',
+            # The explorer has its own entry in the nav; every other page is under Docs.
+            "docs_current": "" if page.doc_id == "data/explorer" else ' aria-current="page"',
+            "explorer_current": ' aria-current="page"' if page.doc_id == "data/explorer" else "",
             "menu_hidden": "",
         }
         values |= self.chrome(values, page.root)
         values |= {
+            "doc_class": " doc--wide" if page.wide else "",
             "crumbs": f"<span>{page.group}</span><span>{html.escape(page.title)}</span>",
             "sidebar": self.sidebar(page),
             "content": page.body,
@@ -474,9 +484,16 @@ class Site:
             ),
             "pager": "".join(pager),
             "edit": f"{EDIT}/{page.source.relative_to(DOCS).as_posix()}",
-            "scripts": CHARTS_SCRIPT.format(root=page.root)
-            if 'class="chart"' in page.body
-            else "",
+            "scripts": (
+                CHARTS_SCRIPT.format(root=page.root)
+                if 'class="chart"' in page.body
+                else ""
+            )
+            + (
+                EXPLORER_SCRIPT.format(root=page.root)
+                if "data-explorer" in page.body
+                else ""
+            ),
         }
         out_dir = DIST / page.path
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -492,6 +509,7 @@ class Site:
             "title": "zsasa: solvent accessible surface area at proteome scale",
             "desc": "High-performance SASA calculation in Zig, with a CLI and Python bindings.",
             "docs_current": "",
+            "explorer_current": "",
             "menu_hidden": " hidden",
         }
         values |= self.chrome(values, root)
@@ -509,6 +527,7 @@ class Site:
             "title": "Page not found · zsasa",
             "desc": "Page not found.",
             "docs_current": "",
+            "explorer_current": "",
             "menu_hidden": " hidden",
         }
         values |= self.chrome(values, BASE_PATH)

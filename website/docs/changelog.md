@@ -8,6 +8,11 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+### Documentation
+
+- **SASA explorer.** A new page, linked as `Explorer` in the top bar, searches the SASA that `zsasa` 0.13.0 computed for the AFDB/NVIDIA human heterodimers (531,605) and homo-dimers (91,637) of the manuscript and the 550,122 SwissProt models of AFDB v6: SASA of chain A, chain B and the complex, ΔSASA and BSA with their polar/apolar split, UniProt accessions and genes, and the AFDB/NVIDIA confidence scores. It runs DuckDB-WASM 1.32.0 in the browser, with dataset tabs, range sliders, header sorting, a column picker, a per-row breakdown and a CSV download of the matching rows. The three Parquet tables are archived on Zenodo ([doi:10.5281/zenodo.23898582](https://doi.org/10.5281/zenodo.23898582)); `website/scripts/fetch_explorer_data.py` fetches them before the docs build and checks their SHA-256 against `website/data/explorer.json`.
+- **Wider docs layout.** Docs pages use a 1,680 px frame instead of 1,320 px and drop the 800 px column limit; running text keeps its line length while tables, charts and code use the full column. On docs pages the nav lines up with the sidebar and content columns. A page can set `layout: wide` to drop the sidebar and table of contents, as the explorer does. The landing page is unchanged.
+
 ## [v0.13.0](https://github.com/N283T/zsasa/releases/tag/v0.13.0) — 2026-11-03
 
 ### Added

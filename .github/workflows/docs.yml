@@ -55,6 +55,17 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
 
+      # The explorer tables come from Zenodo, which is slow; keep them between
+      # runs until website/data/explorer.json changes.
+      - name: Cache SASA explorer data
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: website/static/data/explorer
+          key: explorer-data-${{ hashFiles('website/data/explorer.json') }}
+
+      - name: Fetch SASA explorer data
+        run: uv run website/scripts/fetch_explorer_data.py
+
       - name: Build site
         run: uv run website/build.py
 
