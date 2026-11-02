@@ -1,5 +1,6 @@
 ---
 sidebar_label: "SASA explorer"
+layout: wide
 description: "Search interface burial and polar/apolar SASA for 623,242 AFDB human dimer models and 550,122 SwissProt AFDB models, computed with zsasa."
 ---
 

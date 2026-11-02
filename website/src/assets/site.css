@@ -1188,10 +1188,31 @@ code {
   border-left-color: var(--accent);
 }
 
+/* Docs pages are wider than the landing page; the nav and footer of a docs
+   page line up with them. */
+.wrap.doc,
+body:has(> .wrap.doc) .wrap {
+  max-width: 1680px;
+}
+
 .article {
   min-width: 0;
   padding: 36px 0 80px;
-  max-width: 800px;
+}
+
+/* Running text keeps a readable measure; tables, charts and code use the
+   whole column. */
+.prose > :is(p, ul, ol, blockquote) {
+  max-width: 50rem;
+}
+
+/* `layout: wide` pages (the SASA explorer) drop the table of contents. */
+.doc--wide {
+  grid-template-columns: 236px minmax(0, 1fr);
+}
+
+.doc--wide .toc {
+  display: none;
 }
 
 .crumbs {

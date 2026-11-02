@@ -136,6 +136,8 @@ class Page:
     description: str = ""
     body: str = ""
     toc: list[tuple[str, str, str]] = field(default_factory=list)
+    # `layout: wide` in the front matter: no table of contents, full-width column.
+    wide: bool = False
     anchors: set[str] = field(default_factory=set)
     # (target doc id, fragment, original href) for every link to a heading.
     refs: list[tuple[str, str, str]] = field(default_factory=list)
@@ -348,6 +350,7 @@ class Site:
 
         if m := re.search(r"^title:\s*[\"']?(.+?)[\"']?\s*$", meta, re.M):
             page.title = m.group(1)
+        page.wide = re.search(r"^layout:\s*wide\s*$", meta, re.M) is not None
         label = re.search(r"^sidebar_label:\s*[\"']?(.+?)[\"']?\s*$", meta, re.M)
         page.label = LABELS.get(page.doc_id) or (
             label.group(1) if label else page.title
@@ -469,6 +472,7 @@ class Site:
         }
         values |= self.chrome(values, page.root)
         values |= {
+            "doc_class": " doc--wide" if page.wide else "",
             "crumbs": f"<span>{page.group}</span><span>{html.escape(page.title)}</span>",
             "sidebar": self.sidebar(page),
             "content": page.body,
