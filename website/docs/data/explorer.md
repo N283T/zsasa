@@ -6,9 +6,31 @@ description: "Search interface burial and polar/apolar SASA for 623,242 AFDB hum
 
 # SASA explorer
 
-Search the SASA, interface burial and polar/apolar split that `zsasa` computed for AFDB human heterodimers, homo-dimers and SwissProt models. Click a column header to sort, pick the columns to show above the table, and select a dimer row to see its full breakdown.
+Search the SASA, interface burial and polar/apolar split that `zsasa` computed for AFDB human heterodimers, homo-dimers and SwissProt models. Narrow the results with the sliders, click a column header to sort, and select a dimer row to see its full breakdown.
 
-<div data-explorer></div>
+<nav class="jump" aria-label="On this page">
+<a href="#search">Search</a>
+<a href="#download">Download the tables</a>
+<a href="#the-data">The data</a>
+<a href="#what-the-columns-mean">Columns</a>
+<a href="#how-the-values-were-computed">How the values were computed</a>
+</nav>
+
+<div id="search" data-explorer></div>
+
+## Download {#download}
+
+**Download CSV** above the table saves the rows that match the current search and filters (up to 100,000 rows). The full tables are Parquet files:
+
+- [afdb_heterodimers.parquet](pathname:///zsasa/data/explorer/afdb_heterodimers.parquet): one row per heterodimer model (44 MB)
+- [afdb_homodimers.parquet](pathname:///zsasa/data/explorer/afdb_homodimers.parquet): one row per homo-dimer model (9 MB)
+- [swissprot.parquet](pathname:///zsasa/data/explorer/swissprot.parquet): one row per SwissProt model (17 MB)
+
+The same files, with the runs and scripts behind them, are archived on Zenodo: [doi:10.5281/zenodo.23898582](https://doi.org/10.5281/zenodo.23898582).
+
+### Licence
+
+The values are derived from AlphaFold Database models, which are available under [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/). When you reuse them, cite the AlphaFold Database, the AFDB/NVIDIA complex release for the dimers, and `zsasa`.
 
 ## The data
 
@@ -54,13 +76,3 @@ Every value comes from `zsasa` 0.13.0, the release that added the [polar/apolar 
 The bitmask mode at 128 points gives total SASA about 0.7% below the exact mode on static structures. The ΔSASA totals equal those of the `zsasa` 0.12.1 runs reported in the manuscript.
 
 Chain accessions, genes, descriptions and pLDDT were read from the model files. ipTM, ipSAE, pDockQ and backbone clashes come from the score tables of the AFDB/NVIDIA release. The workflow files, scripts and tables are archived with the benchmark data; see [Citation](../citation.md).
-
-## Data and licence
-
-Download the full tables as Parquet:
-
-- [afdb_heterodimers.parquet](pathname:///zsasa/data/explorer/afdb_heterodimers.parquet): one row per heterodimer model (44 MB)
-- [afdb_homodimers.parquet](pathname:///zsasa/data/explorer/afdb_homodimers.parquet): one row per homo-dimer model (9 MB)
-- [swissprot.parquet](pathname:///zsasa/data/explorer/swissprot.parquet): one row per SwissProt model (17 MB)
-
-The values are derived from AlphaFold Database models, which are available under [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/). When you reuse them, cite the AlphaFold Database, the AFDB/NVIDIA complex release for the dimers, and `zsasa`.

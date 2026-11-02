@@ -5,7 +5,8 @@
 const DUCKDB = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm";
 const DATA = new URL("../data/explorer/", import.meta.url);
 const PAGE_SIZE = 50;
-const CSV_LIMIT = 10000;
+// The full tables are the Parquet downloads; a CSV holds the matching rows up to this
+const CSV_LIMIT = 100000;
 
 const area = (v) => (v == null ? "–" : Math.round(v).toLocaleString("en-US"));
 const score = (v, digits = 2) => (v == null ? "–" : Number(v).toFixed(digits));
@@ -43,12 +44,25 @@ const DIMER_AREAS = [
 // Most dimer models are only in the AFDB/NVIDIA FTP release, so the ID is not a link
 const MODEL = col("model_id", "Model", (r) => `<span class="explorer__id">${esc(r.model_id)}</span>`, "model_id", { num: false, fixed: true });
 
-// Each dataset: its file, the columns of the result table, the columns a search
-// term is matched in, and its first order.
+// A range filter: key, label, SQL expression, slider step and value formatter.
+const range = (key, label, expr, step, fmt) => ({ key, label, expr, step, fmt });
+const int = (v) => Math.round(v).toLocaleString("en-US");
+const DIMER_FILTERS = [
+  range("delta_sasa", "ΔSASA (Å²)", "delta_sasa", 50, int),
+  range("apolar_pct", "Apolar %", "100 * delta_sasa_apolar / nullif(delta_sasa, 0)", 1, (v) => `${Math.round(v)}%`),
+  range("ipsae_min", "ipSAEmin", "ipsae_min", 0.01, (v) => v.toFixed(2)),
+  range("iptm", "ipTM", "iptm", 0.01, (v) => v.toFixed(2)),
+  range("plddt", "pLDDT", "plddt", 1, (v) => v.toFixed(0)),
+];
+
+// Each dataset: its file, model count, the columns of the result table, the
+// columns a search term is matched in, its range filters and its first order.
 const DATASETS = {
   heterodimers: {
     label: "Heterodimers",
     file: "afdb_heterodimers.parquet",
+    count: 531605,
+    filters: DIMER_FILTERS,
     search: "UniProt accession, gene, AF model ID or protein name",
     match: ["accession_a", "accession_b", "gene_a", "gene_b", "model_id", "description_a", "description_b"],
     columns: [
@@ -65,6 +79,8 @@ const DATASETS = {
   homodimers: {
     label: "Homo-dimers",
     file: "afdb_homodimers.parquet",
+    count: 91637,
+    filters: DIMER_FILTERS,
     search: "UniProt accession, gene, AF model ID or protein name",
     match: ["accession_a", "gene_a", "model_id", "description_a"],
     columns: [
@@ -79,6 +95,13 @@ const DATASETS = {
   swissprot: {
     label: "SwissProt",
     file: "swissprot.parquet",
+    count: 550122,
+    filters: [
+      range("n_residues", "Residues", "n_residues", 1, int),
+      range("sasa", "SASA (Å²)", "sasa", 50, int),
+      range("apolar_pct", "Apolar %", "100 * sasa_apolar / nullif(sasa, 0)", 1, (v) => `${Math.round(v)}%`),
+      range("plddt", "pLDDT", "plddt", 1, (v) => v.toFixed(0)),
+    ],
     search: "UniProt accession, protein name or organism",
     match: ["accession", "model_id", "description", "organism"],
     columns: [
@@ -101,8 +124,8 @@ const DATASETS = {
 const state = {
   dataset: "heterodimers",
   hq: false,
-  minDelta: "",
-  minIpsae: "",
+  // Narrowed range filters of the current dataset: key -> [low, high]
+  ranges: {},
   query: "",
   sort: DATASETS.heterodimers.sort,
   offset: 0,
@@ -137,12 +160,25 @@ function readHash() {
   state.query = params.get("q") ?? "";
   const [key, dir] = (params.get("sort") ?? "").split("-");
   state.sort = ds.columns.some((c) => c.key === key && c.sort) && ["asc", "desc"].includes(dir) ? [key, dir] : ds.sort;
+  state.hq = params.get("hq") === "1";
+  // r=delta_sasa:1000~5000,ipsae_min:0.6~1
+  state.ranges = {};
+  for (const item of (params.get("r") ?? "").split(",")) {
+    const [k, span] = item.split(":");
+    const [lo, hi] = (span ?? "").split("~").map(Number);
+    if (ds.filters.some((f) => f.key === k) && Number.isFinite(lo) && Number.isFinite(hi) && lo <= hi) {
+      state.ranges[k] = [lo, hi];
+    }
+  }
 }
 
 function writeHash() {
   const params = new URLSearchParams({ set: state.dataset });
   if (state.query) params.set("q", state.query);
   params.set("sort", state.sort.join("-"));
+  if (state.hq && DATASETS[state.dataset].dimer) params.set("hq", "1");
+  const ranges = Object.entries(state.ranges).map(([k, [lo, hi]]) => `${k}:${lo}~${hi}`);
+  if (ranges.length) params.set("r", ranges.join(","));
   history.replaceState(null, "", `#${params}`);
 }
 
@@ -162,18 +198,12 @@ function where() {
     clauses.push("contains(search_text, ?)");
     params.push(q.toLowerCase());
   }
-  if (ds.dimer) {
-    if (state.hq) clauses.push("high_quality");
-    const minDelta = Number.parseFloat(state.minDelta);
-    if (Number.isFinite(minDelta)) {
-      clauses.push("delta_sasa >= ?");
-      params.push(minDelta);
-    }
-    const minIpsae = Number.parseFloat(state.minIpsae);
-    if (Number.isFinite(minIpsae)) {
-      clauses.push("ipsae_min >= ?");
-      params.push(minIpsae);
-    }
+  if (ds.dimer && state.hq) clauses.push("high_quality");
+  for (const f of ds.filters) {
+    const span = state.ranges[f.key];
+    if (!span) continue;
+    clauses.push(`(${f.expr}) BETWEEN ? AND ?`);
+    params.push(span[0], span[1]);
   }
   return [clauses.length ? `WHERE ${clauses.join(" AND ")}` : "", params];
 }
@@ -203,11 +233,24 @@ async function load(ds, status) {
   if (ds.loading) return ds.loading;
   status.textContent = `Loading the ${ds.label} table…`;
   const text = `lower(concat_ws(' ', ${ds.match.join(", ")})) AS search_text`;
-  ds.loading = conn
-    .query(`CREATE TABLE ${ds.name} AS SELECT *, ${text} FROM read_parquet('${ds.file}')`)
-    .then(() => {
-      ds.table = ds.name;
-    });
+  ds.loading = (async () => {
+    await conn.query(`CREATE TABLE ${ds.name} AS SELECT *, ${text} FROM read_parquet('${ds.file}')`);
+    ds.table = ds.name;
+    // The slider ends: the range of each filter, on its step
+    const bounds = ds.filters.map((f) => `min(${f.expr}) AS "${f.key}_lo", max(${f.expr}) AS "${f.key}_hi"`).join(", ");
+    const [row] = (await conn.query(`SELECT ${bounds} FROM ${ds.name}`)).toArray().map((r) => r.toJSON());
+    // Rounded to the decimals of the step, so 0.94 does not come out as 0.9400000000000001
+    const onStep = (v, f) => Number(v.toFixed((String(f.step).split(".")[1] ?? "").length));
+    ds.bounds = Object.fromEntries(
+      ds.filters.map((f) => [
+        f.key,
+        [
+          onStep(Math.floor(Number(row[`${f.key}_lo`]) / f.step) * f.step, f),
+          onStep(Math.ceil(Number(row[`${f.key}_hi`]) / f.step) * f.step, f),
+        ],
+      ]),
+    );
+  })();
   return ds.loading;
 }
 
@@ -226,23 +269,6 @@ function el(tag, attrs = {}, html = "") {
   for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
   node.innerHTML = html;
   return node;
-}
-
-function seg(label, options, current, onPick) {
-  const wrap = el("div", { class: "explorer__ctl" });
-  wrap.append(el("span", { class: "label" }, esc(label)));
-  const group = el("div", { class: "seg", role: "group", "aria-label": label });
-  for (const [value, text] of options) {
-    const b = el("button", { type: "button", "aria-pressed": String(value === current) }, esc(text));
-    b.addEventListener("click", () => {
-      for (const other of group.children) other.setAttribute("aria-pressed", "false");
-      b.setAttribute("aria-pressed", "true");
-      onPick(value);
-    });
-    group.append(b);
-  }
-  wrap.append(group);
-  return wrap;
 }
 
 function field(label, attrs, value, onInput) {
@@ -290,6 +316,48 @@ function toCsv(rows) {
   return [keys.join(","), ...rows.map((r) => keys.map((k) => cell(r[k])).join(","))].join("\n");
 }
 
+// A two-thumb slider over `bounds` for one range filter. `value` is the
+// narrowed range or undefined; `onChange` gets the new range, or undefined when
+// both thumbs are back at the ends.
+function rangeSlider(f, bounds, value, onChange) {
+  const [min, max] = bounds;
+  const wrap = el("div", { class: "explorer__range-field" });
+  const head = el("div", { class: "explorer__range-head" });
+  const out = el("output", { class: "explorer__range-value" });
+  head.append(el("span", { class: "label" }, esc(f.label)), out);
+  const track = el("div", { class: "explorer__slider" });
+  const fill = el("div", { class: "explorer__slider-fill" });
+  const attrs = { type: "range", min: String(min), max: String(max), step: String(f.step) };
+  const low = el("input", { ...attrs, "aria-label": `${f.label}, minimum` });
+  const high = el("input", { ...attrs, "aria-label": `${f.label}, maximum` });
+  low.value = String(value?.[0] ?? min);
+  high.value = String(value?.[1] ?? max);
+  track.append(fill, low, high);
+  wrap.append(head, track);
+  const show = () => {
+    const [a, b] = [Number(low.value), Number(high.value)];
+    const span = max - min || 1;
+    fill.style.left = `${(100 * (a - min)) / span}%`;
+    fill.style.right = `${(100 * (max - b)) / span}%`;
+    out.textContent = `${f.fmt(a)} – ${f.fmt(b)}`;
+    wrap.classList.toggle("is-set", narrowed(a, b));
+  };
+  const narrowed = (a, b) => a > min + f.step / 2 || b < max - f.step / 2;
+  const changed = (moved, other, keepBelow) => {
+    // The thumbs do not cross
+    if (keepBelow ? Number(moved.value) > Number(other.value) : Number(moved.value) < Number(other.value)) {
+      moved.value = other.value;
+    }
+    show();
+    const [a, b] = [Number(low.value), Number(high.value)];
+    onChange(narrowed(a, b) ? [a, b] : undefined);
+  };
+  low.addEventListener("input", () => changed(low, high, true));
+  high.addEventListener("input", () => changed(high, low, false));
+  show();
+  return wrap;
+}
+
 async function main() {
   const root = document.querySelector("[data-explorer]");
   if (!root) return;
@@ -298,18 +366,20 @@ async function main() {
   root.classList.add("explorer");
   root.innerHTML = "";
 
-  const controls = el("div", { class: "explorer__controls" });
-  const filters = el("div", { class: "explorer__controls" });
+  // The datasets get a row of their own; more may be added later
+  const tabs = el("div", { class: "explorer__tabs", role: "tablist", "aria-label": "Dataset" });
+  const top = el("div", { class: "explorer__top" });
+  const sliders = el("div", { class: "explorer__ranges" });
+  const options = el("div", { class: "explorer__options" });
   const picker = el("fieldset", { class: "explorer__columns" });
   const status = el("p", { class: "explorer__status", role: "status" });
   const tableWrap = el("div", { class: "table explorer__table" });
   const pager = el("div", { class: "explorer__pager" });
-  // The search panel stays in view while the results scroll under it
   const search = el("div", { class: "explorer__panel explorer__panel--search", role: "search" });
-  search.append(controls, filters, picker);
+  search.append(top, sliders, options, picker);
   const results = el("div", { class: "explorer__panel explorer__panel--results" });
   results.append(status, tableWrap, pager);
-  root.append(search, results);
+  root.append(tabs, search, results);
 
   let timer = null;
   const refresh = () => {
@@ -319,37 +389,42 @@ async function main() {
   };
   let lastRows = [];
 
+  const csv = el("button", { type: "button", class: "explorer__btn explorer__btn--primary" }, "Download CSV");
+  csv.addEventListener("click", () => downloadCsv());
+
+  function buildTabs() {
+    tabs.replaceChildren();
+    for (const [key, ds] of Object.entries(DATASETS)) {
+      const tab = el(
+        "button",
+        { type: "button", role: "tab", class: "explorer__tab", "aria-selected": String(key === state.dataset) },
+        `${esc(ds.label)}<span>${ds.count.toLocaleString("en-US")}</span>`,
+      );
+      tab.addEventListener("click", () => {
+        if (key === state.dataset) return;
+        state.dataset = key;
+        state.sort = ds.sort;
+        state.ranges = {};
+        buildControls();
+        refresh();
+      });
+      tabs.append(tab);
+    }
+  }
+
   function buildControls() {
     const ds = DATASETS[state.dataset];
-    controls.replaceChildren(
-      seg(
-        "Data",
-        Object.entries(DATASETS).map(([k, v]) => [k, v.label]),
-        state.dataset,
-        (v) => {
-          state.dataset = v;
-          state.sort = DATASETS[v].sort;
-          buildControls();
-          refresh();
-        },
-      ),
+    buildTabs();
+    top.replaceChildren(
       field("Search", { type: "search", placeholder: ds.search, class: "explorer__search" }, state.query, (v) => {
         state.query = v;
         refresh();
       }),
+      csv,
     );
-    filters.replaceChildren();
+    buildSliders();
+    options.replaceChildren();
     if (ds.dimer) {
-      filters.append(
-        field("Min ΔSASA (Å²)", { type: "number", min: "0", step: "100", inputmode: "decimal" }, state.minDelta, (v) => {
-          state.minDelta = v;
-          refresh();
-        }),
-        field("Min ipSAEmin", { type: "number", min: "0", max: "1", step: "0.1", inputmode: "decimal" }, state.minIpsae, (v) => {
-          state.minIpsae = v;
-          refresh();
-        }),
-      );
       const hq = el("label", { class: "explorer__check" });
       const box = el("input", { type: "checkbox" });
       box.checked = state.hq;
@@ -358,9 +433,67 @@ async function main() {
         refresh();
       });
       hq.append(box, document.createTextNode(" AFDB high quality only"));
-      filters.append(hq);
+      options.append(hq);
     }
+    const reset = el("button", { type: "button", class: "explorer__btn" }, "Reset filters");
+    reset.addEventListener("click", () => {
+      state.ranges = {};
+      state.hq = false;
+      state.query = "";
+      buildControls();
+      refresh();
+    });
+    options.append(reset);
     buildPicker();
+  }
+
+  // The sliders need the range of each filter, known once the table is loaded
+  function buildSliders() {
+    const ds = DATASETS[state.dataset];
+    sliders.replaceChildren();
+    if (!ds.bounds) return;
+    for (const f of ds.filters) {
+      const bounds = ds.bounds[f.key];
+      const value = state.ranges[f.key];
+      if (value) state.ranges[f.key] = [Math.max(value[0], bounds[0]), Math.min(value[1], bounds[1])];
+      sliders.append(
+        rangeSlider(f, bounds, state.ranges[f.key], (span) => {
+          if (span) state.ranges[f.key] = span;
+          else delete state.ranges[f.key];
+          refresh();
+        }),
+      );
+    }
+  }
+
+  async function downloadCsv() {
+    const ds = DATASETS[state.dataset];
+    if (!ds.table) return;
+    const [clause, params] = where();
+    csv.disabled = true;
+    const label = csv.textContent;
+    csv.textContent = "Preparing CSV…";
+    try {
+      const rows = await run(
+        `SELECT * EXCLUDE (search_text) FROM ${ds.table} ${clause} ORDER BY ${orderBy(ds)} LIMIT ${CSV_LIMIT}`,
+        params,
+      );
+      const link = el("a", {
+        href: URL.createObjectURL(new Blob([toCsv(rows)], { type: "text/csv" })),
+        download: `zsasa-${ds.name}.csv`,
+      });
+      link.click();
+      URL.revokeObjectURL(link.href);
+    } finally {
+      csv.disabled = false;
+      csv.textContent = label;
+    }
+  }
+
+  function csvLabel(n) {
+    if (!n) return "Download CSV";
+    const rows = Math.min(n, CSV_LIMIT).toLocaleString("en-US");
+    return n > CSV_LIMIT ? `Download CSV (first ${rows} rows)` : `Download CSV (${rows} rows)`;
   }
 
   function buildPicker() {
@@ -390,8 +523,10 @@ async function main() {
     writeHash();
     const [clause, params] = where();
     try {
+      const fresh = !ds.table;
       await load(ds, status);
       if (mine !== generation) return;
+      if (fresh || !sliders.childElementCount) buildSliders();
       status.textContent = "Searching…";
       const summary = ds.dimer ? "median(delta_sasa)" : "median(sasa)";
       // One connection runs one statement at a time
@@ -407,8 +542,10 @@ async function main() {
         ? `${n.toLocaleString("en-US")} ${n === 1 ? "model matches" : "models match"} · ${median} ${area(stats.median_value)} Å²`
         : "No model matches.";
       lastRows = rows;
+      csv.textContent = csvLabel(n);
+      csv.disabled = !n;
       render(ds, rows);
-      renderPager(ds, n, clause, params);
+      renderPager(n);
     } catch (err) {
       if (mine !== generation) return;
       status.textContent = `The query failed: ${err.message}`;
@@ -476,7 +613,7 @@ async function main() {
     }
   }
 
-  function renderPager(ds, n, clause, params) {
+  function renderPager(n) {
     pager.replaceChildren();
     if (!n) return;
     const first = state.offset + 1;
@@ -493,31 +630,13 @@ async function main() {
       state.offset += PAGE_SIZE;
       update();
     });
-    const csv = el("button", { type: "button", class: "explorer__btn" }, `Download CSV (first ${Math.min(n, CSV_LIMIT).toLocaleString("en-US")})`);
-    csv.addEventListener("click", async () => {
-      csv.disabled = true;
-      try {
-        const rows = await run(
-          `SELECT * EXCLUDE (search_text) FROM ${ds.table} ${clause} ORDER BY ${orderBy(ds)} LIMIT ${CSV_LIMIT}`,
-          params,
-        );
-        const link = el("a", {
-          href: URL.createObjectURL(new Blob([toCsv(rows)], { type: "text/csv" })),
-          download: `zsasa-${ds.name}.csv`,
-        });
-        link.click();
-        URL.revokeObjectURL(link.href);
-      } finally {
-        csv.disabled = false;
-      }
-    });
     pager.append(
       prev,
       el("span", { class: "explorer__range" }, `${first.toLocaleString("en-US")}–${last.toLocaleString("en-US")} of ${n.toLocaleString("en-US")}`),
       next,
-      csv,
     );
   }
+
 
   buildControls();
   try {
@@ -531,8 +650,10 @@ async function main() {
     status.textContent = `DuckDB could not start in this browser: ${err.message}`;
     return;
   }
-  // A link to another search on this page changes only the hash
+  // A link to another search on this page changes only the hash; a link to a
+  // section (#download) is not a search and leaves the explorer as it is
   window.addEventListener("hashchange", () => {
+    if (!new URLSearchParams(location.hash.slice(1)).has("set")) return;
     readHash();
     state.offset = 0;
     buildControls();
