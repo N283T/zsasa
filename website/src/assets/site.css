@@ -224,6 +224,7 @@ body:has(> .wrap.doc) .wrap {
 
 .brand {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   text-decoration: none;
 }
@@ -259,6 +260,7 @@ body:has(> .wrap.doc) .wrap {
 .nav__aux > a:not(.cut) {
   display: block;
   padding: 6px 0;
+  white-space: nowrap;
   font: 600 13px var(--display);
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -1228,17 +1230,12 @@ code {
 
 /* On a docs page the nav follows the columns below it: the logo sits above
    the sidebar and the links start where the content column starts. */
-@media (min-width: 901px) {
+/* Below 1101px the links would not fit beside the sidebar column. */
+@media (min-width: 1101px) {
   body:has(> .wrap.doc) .nav__in {
     display: grid;
     grid-template-columns: 236px minmax(0, 1fr) auto;
     column-gap: clamp(28px, 4vw, 64px);
-  }
-}
-
-@media (min-width: 901px) and (max-width: 1100px) {
-  body:has(> .wrap.doc) .nav__in {
-    grid-template-columns: 220px minmax(0, 1fr) auto;
   }
 }
 
@@ -1543,6 +1540,11 @@ code {
 @media (max-width: 1100px) {
   .doc {
     grid-template-columns: 220px minmax(0, 1fr);
+  }
+
+  .nav__in,
+  .nav__links {
+    gap: 16px;
   }
 
   .toc {
@@ -2262,6 +2264,14 @@ code {
   padding-bottom: 6px;
   font-size: 16px;
   color: var(--ink-2);
+}
+
+.explorer__results-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 18px;
 }
 
 .explorer__status {

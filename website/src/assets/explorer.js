@@ -377,8 +377,10 @@ async function main() {
   const pager = el("div", { class: "explorer__pager" });
   const search = el("div", { class: "explorer__panel explorer__panel--search", role: "search" });
   search.append(top, sliders, options, picker);
+  // The count of the results, and the CSV of them at its right
+  const resultsHead = el("div", { class: "explorer__results-head" });
   const results = el("div", { class: "explorer__panel explorer__panel--results" });
-  results.append(status, tableWrap, pager);
+  results.append(resultsHead, tableWrap, pager);
   root.append(tabs, search, results);
 
   let timer = null;
@@ -390,7 +392,9 @@ async function main() {
   let lastRows = [];
 
   const csv = el("button", { type: "button", class: "explorer__btn explorer__btn--primary" }, "Download CSV");
+  csv.disabled = true;
   csv.addEventListener("click", () => downloadCsv());
+  resultsHead.append(status, csv);
 
   function buildTabs() {
     tabs.replaceChildren();
@@ -420,7 +424,6 @@ async function main() {
         state.query = v;
         refresh();
       }),
-      csv,
     );
     buildSliders();
     options.replaceChildren();
