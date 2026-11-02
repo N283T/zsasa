@@ -6,16 +6,19 @@ description: "Search interface burial and polar/apolar SASA for 623,242 AFDB hum
 
 # SASA explorer
 
-Search the SASA, interface burial and polar/apolar split that `zsasa` computed for 623,242 AFDB human dimer models and 550,122 SwissProt models. Select a dimer row to see its full breakdown.
+Search the SASA, interface burial and polar/apolar split that `zsasa` computed for AFDB human heterodimers, homo-dimers and SwissProt models. Click a column header to sort, pick the columns to show above the table, and select a dimer row to see its full breakdown.
 
 <div data-explorer></div>
 
 ## The data
 
-- **AFDB human dimers**: the 91,637 human homo-dimer models and 531,605 human–human heterodimer models of the AFDB/NVIDIA complex release. These are the models of the large-scale workflow in the `zsasa` manuscript. Each row has the SASA of chain A alone, chain B alone and the complex, the interface burial ΔSASA, the buried surface area (BSA), the polar/apolar split of each of these areas, and the AFDB/NVIDIA confidence scores.
+- **Heterodimers**: the 531,605 human–human heterodimer models of the AFDB/NVIDIA complex release.
+- **Homo-dimers**: the 91,637 human homo-dimer models of the same release.
 - **SwissProt**: the 550,122 SwissProt models of AFDB v6, with the SASA of each model and its polar/apolar split.
 
-The search runs in your browser on [DuckDB-WASM](https://duckdb.org/docs/api/wasm/overview), which reads only the parts of the data files that a query needs.
+The two dimer sets are the models of the large-scale workflow in the `zsasa` manuscript. Each dimer row has the SASA of chain A alone, chain B alone and the complex, the interface burial ΔSASA, the buried surface area (BSA), the polar/apolar split of each of these areas, and the AFDB/NVIDIA confidence scores.
+
+The search runs in your browser on [DuckDB-WASM](https://duckdb.org/docs/api/wasm/overview). The first search of a set downloads its table (9 to 44 MB) into the browser; later searches run locally.
 
 ## What the columns mean
 
@@ -56,7 +59,8 @@ Chain accessions, genes, descriptions and pLDDT were read from the model files. 
 
 Download the full tables as Parquet:
 
-- [afdb_dimers.parquet](pathname:///zsasa/data/explorer/afdb_dimers.parquet): one row per dimer model
-- [swissprot.parquet](pathname:///zsasa/data/explorer/swissprot.parquet): one row per SwissProt model
+- [afdb_heterodimers.parquet](pathname:///zsasa/data/explorer/afdb_heterodimers.parquet): one row per heterodimer model (44 MB)
+- [afdb_homodimers.parquet](pathname:///zsasa/data/explorer/afdb_homodimers.parquet): one row per homo-dimer model (9 MB)
+- [swissprot.parquet](pathname:///zsasa/data/explorer/swissprot.parquet): one row per SwissProt model (17 MB)
 
 The values are derived from AlphaFold Database models, which are available under [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/). When you reuse them, cite the AlphaFold Database, the AFDB/NVIDIA complex release for the dimers, and `zsasa`.

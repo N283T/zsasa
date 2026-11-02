@@ -1,6 +1,6 @@
 // SASA explorer: search the AFDB dimer and SwissProt tables with DuckDB-WASM.
-// The Parquet files live next to the site (data/explorer/); DuckDB reads them
-// with HTTP range requests, so a query fetches only the columns it needs.
+// The Parquet files live next to the site (data/explorer/); a table is copied
+// into DuckDB's memory the first time it is searched.
 
 const DUCKDB = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm";
 const DATA = new URL("../data/explorer/", import.meta.url);
@@ -17,41 +17,60 @@ const esc = (s) =>
 const uniprot = (acc) =>
   acc ? `<a class="ext" href="https://www.uniprot.org/uniprotkb/${encodeURIComponent(acc)}" rel="noopener">${esc(acc)}</a>` : "–";
 const afdb = (id) => `<a class="ext" href="https://alphafold.ebi.ac.uk/entry/${encodeURIComponent(id)}" rel="noopener">${esc(id)}</a>`;
+const protein = (gene, acc) => `<b>${esc(gene || "–")}</b><br><span class="explorer__sub">${uniprot(acc)}</span>`;
 
-const partner = (gene, acc) => `<b>${esc(gene || "–")}</b><br><span class="explorer__sub">${uniprot(acc)}</span>`;
+// A column: key, header, cell formatter, SQL sort expression (null: not
+// sortable), text alignment, and whether it is shown before the reader picks.
+// `fixed` columns are always shown.
+const col = (key, label, fmt, sort, opts = {}) => ({ key, label, fmt, sort, num: true, show: true, ...opts });
 
-// Each dataset: its file, the columns of the result table, how a search term
-// matches, the extra filters it offers and the orders a reader can pick.
+const DIMER_AREAS = [
+  col("sasa_a", "SASA A", (r) => area(r.sasa_a), "sasa_a"),
+  col("sasa_b", "SASA B", (r) => area(r.sasa_b), "sasa_b"),
+  col("sasa_ab", "SASA AB", (r) => area(r.sasa_ab), "sasa_ab"),
+  col("delta_sasa", "ΔSASA", (r) => `<b>${area(r.delta_sasa)}</b>`, "delta_sasa"),
+  col("bsa", "BSA", (r) => area(r.bsa), "bsa", { show: false }),
+  col("delta_sasa_polar", "ΔSASA polar", (r) => area(r.delta_sasa_polar), "delta_sasa_polar", { show: false }),
+  col("delta_sasa_apolar", "ΔSASA apolar", (r) => area(r.delta_sasa_apolar), "delta_sasa_apolar", { show: false }),
+  col("apolar_pct", "Apolar %", (r) => pct(r.delta_sasa_apolar, r.delta_sasa), "delta_sasa_apolar / nullif(delta_sasa, 0)"),
+  col("ipsae_min", "ipSAEmin", (r) => score(r.ipsae_min), "ipsae_min"),
+  col("iptm", "ipTM", (r) => score(r.iptm), "iptm"),
+  col("pdockq", "pDockQ", (r) => score(r.pdockq), "pdockq", { show: false }),
+  col("plddt", "pLDDT", (r) => score(r.plddt, 1), "plddt", { show: false }),
+  col("high_quality", "HQ", (r) => (r.high_quality ? '<span class="explorer__hq">HQ</span>' : ""), "high_quality"),
+];
+
+const MODEL = col("model_id", "Model", (r) => afdb(r.model_id), "model_id", { num: false, fixed: true });
+
+// Each dataset: its file, the columns of the result table, the columns a search
+// term is matched in, and its first order.
 const DATASETS = {
-  dimers: {
-    label: "AFDB human dimers",
-    file: "afdb_dimers.parquet",
+  heterodimers: {
+    label: "Heterodimers",
+    file: "afdb_heterodimers.parquet",
     search: "UniProt accession, gene, AF model ID or protein name",
     match: ["accession_a", "accession_b", "gene_a", "gene_b", "model_id", "description_a", "description_b"],
     columns: [
-      ["Model", (r) => `${afdb(r.model_id)}<br><span class="explorer__sub">${r.kind}-dimer</span>`],
-      ["Chain A", (r) => partner(r.gene_a, r.accession_a)],
-      ["Chain B", (r) => partner(r.gene_b, r.accession_b)],
-      ["SASA A", (r) => area(r.sasa_a), "num"],
-      ["SASA B", (r) => area(r.sasa_b), "num"],
-      ["SASA AB", (r) => area(r.sasa_ab), "num"],
-      ["ΔSASA", (r) => `<b>${area(r.delta_sasa)}</b>`, "num"],
-      ["BSA", (r) => area(r.bsa), "num"],
-      ["Apolar %", (r) => pct(r.delta_sasa_apolar, r.delta_sasa), "num"],
-      ["ipSAEmin", (r) => score(r.ipsae_min), "num"],
-      ["ipTM", (r) => score(r.iptm), "num"],
-      ["pLDDT", (r) => score(r.plddt, 1), "num"],
-      ["HQ", (r) => (r.high_quality ? '<span class="explorer__hq">HQ</span>' : ""), "num"],
+      MODEL,
+      col("chain_a", "Chain A", (r) => protein(r.gene_a, r.accession_a), "gene_a", { num: false, fixed: true }),
+      col("chain_b", "Chain B", (r) => protein(r.gene_b, r.accession_b), "gene_b", { num: false, fixed: true }),
+      ...DIMER_AREAS,
     ],
-    orders: {
-      delta: ["ΔSASA, largest first", "delta_sasa DESC"],
-      ipsae: ["ipSAEmin, highest first", "ipsae_min DESC NULLS LAST, delta_sasa DESC"],
-      apolar: ["Apolar %, highest first", "delta_sasa_apolar / nullif(delta_sasa, 0) DESC NULLS LAST"],
-      polar: ["Polar %, highest first", "delta_sasa_polar / nullif(delta_sasa, 0) DESC NULLS LAST"],
-      plddt: ["pLDDT, highest first", "plddt DESC NULLS LAST"],
-      gene: ["Gene A, A–Z", "gene_a, gene_b, model_id"],
-    },
-    detail: true,
+    sort: ["delta_sasa", "desc"],
+    dimer: true,
+  },
+  homodimers: {
+    label: "Homo-dimers",
+    file: "afdb_homodimers.parquet",
+    search: "UniProt accession, gene, AF model ID or protein name",
+    match: ["accession_a", "gene_a", "model_id", "description_a"],
+    columns: [
+      MODEL,
+      col("protein", "Protein", (r) => protein(r.gene_a, r.accession_a), "gene_a", { num: false, fixed: true }),
+      ...DIMER_AREAS,
+    ],
+    sort: ["delta_sasa", "desc"],
+    dimer: true,
   },
   swissprot: {
     label: "SwissProt",
@@ -59,54 +78,70 @@ const DATASETS = {
     search: "UniProt accession, protein name or organism",
     match: ["accession", "model_id", "description", "organism"],
     columns: [
-      ["Accession", (r) => `${uniprot(r.accession)}<br><span class="explorer__sub">${afdb(r.model_id)}</span>`],
-      ["Protein", (r) => `${esc(r.description)}<br><span class="explorer__sub">${esc(r.organism)}</span>`],
-      ["Residues", (r) => Number(r.n_residues).toLocaleString("en-US"), "num"],
-      ["SASA", (r) => `<b>${area(r.sasa)}</b>`, "num"],
-      ["Polar", (r) => area(r.sasa_polar), "num"],
-      ["Apolar", (r) => area(r.sasa_apolar), "num"],
-      ["Apolar %", (r) => pct(r.sasa_apolar, r.sasa), "num"],
-      ["SASA / residue", (r) => (r.n_residues ? score(r.sasa / Number(r.n_residues), 1) : "–"), "num"],
-      ["pLDDT", (r) => score(r.plddt, 1), "num"],
+      col("accession", "Accession", (r) => `${uniprot(r.accession)}<br><span class="explorer__sub">${afdb(r.model_id)}</span>`, "accession", { num: false, fixed: true }),
+      col("protein", "Protein", (r) => `${esc(r.description)}<br><span class="explorer__sub">${esc(r.organism)}</span>`, "description", { num: false, fixed: true }),
+      col("n_residues", "Residues", (r) => Number(r.n_residues).toLocaleString("en-US"), "n_residues"),
+      col("sasa", "SASA", (r) => `<b>${area(r.sasa)}</b>`, "sasa"),
+      col("sasa_polar", "Polar", (r) => area(r.sasa_polar), "sasa_polar"),
+      col("sasa_apolar", "Apolar", (r) => area(r.sasa_apolar), "sasa_apolar"),
+      col("apolar_pct", "Apolar %", (r) => pct(r.sasa_apolar, r.sasa), "sasa_apolar / nullif(sasa, 0)"),
+      col("per_residue", "SASA / residue", (r) => (r.n_residues ? score(r.sasa / Number(r.n_residues), 1) : "–"), "sasa / nullif(n_residues, 0)"),
+      col("plddt", "pLDDT", (r) => score(r.plddt, 1), "plddt", { show: false }),
     ],
-    orders: {
-      sasa: ["SASA, largest first", "sasa DESC"],
-      apolar: ["Apolar %, highest first", "sasa_apolar / nullif(sasa, 0) DESC"],
-      polar: ["Polar %, highest first", "sasa_polar / nullif(sasa, 0) DESC"],
-      per_residue: ["SASA / residue, highest first", "sasa / nullif(n_residues, 0) DESC"],
-      plddt: ["pLDDT, highest first", "plddt DESC NULLS LAST"],
-      accession: ["Accession, A–Z", "accession, fragment"],
-    },
-    detail: false,
+    sort: ["sasa", "desc"],
+    dimer: false,
   },
 };
 
 const state = {
-  dataset: "dimers",
-  kind: "all",
+  dataset: "heterodimers",
   hq: false,
   minDelta: "",
   minIpsae: "",
   query: "",
-  order: "delta",
+  sort: DATASETS.heterodimers.sort,
   offset: 0,
 };
+
+// The columns a reader chose to see, kept per dataset in this browser only.
+function shownColumns(ds) {
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(`zsasa-explorer-columns-${ds.name}`));
+  } catch {
+    saved = null;
+  }
+  return ds.columns.filter((c) => c.fixed || (Array.isArray(saved) ? saved.includes(c.key) : c.show));
+}
+
+function saveColumns(ds, keys) {
+  try {
+    localStorage.setItem(`zsasa-explorer-columns-${ds.name}`, JSON.stringify(keys));
+  } catch {
+    // Storage may be unavailable (private window); the choice lasts for this page
+  }
+}
 
 function readHash() {
   const params = new URLSearchParams(location.hash.slice(1));
   if (params.get("set") in DATASETS) state.dataset = params.get("set");
-  if (["all", "homo", "hetero"].includes(params.get("kind"))) state.kind = params.get("kind");
+  const ds = DATASETS[state.dataset];
   state.query = params.get("q") ?? "";
-  if (params.get("order") in DATASETS[state.dataset].orders) state.order = params.get("order");
-  else state.order = Object.keys(DATASETS[state.dataset].orders)[0];
+  const [key, dir] = (params.get("sort") ?? "").split("-");
+  state.sort = ds.columns.some((c) => c.key === key && c.sort) && ["asc", "desc"].includes(dir) ? [key, dir] : ds.sort;
 }
 
 function writeHash() {
   const params = new URLSearchParams({ set: state.dataset });
-  if (state.dataset === "dimers" && state.kind !== "all") params.set("kind", state.kind);
   if (state.query) params.set("q", state.query);
-  params.set("order", state.order);
+  params.set("sort", state.sort.join("-"));
   history.replaceState(null, "", `#${params}`);
+}
+
+function orderBy(ds) {
+  const [key, dir] = state.sort;
+  const column = ds.columns.find((c) => c.key === key) ?? ds.columns.find((c) => c.key === ds.sort[0]);
+  return `${column.sort} ${dir === "asc" ? "ASC" : "DESC"} NULLS LAST, model_id`;
 }
 
 // The WHERE clause of the current state and its parameters, in order.
@@ -119,11 +154,7 @@ function where() {
     clauses.push("contains(search_text, ?)");
     params.push(q.toLowerCase());
   }
-  if (state.dataset === "dimers") {
-    if (state.kind !== "all") {
-      clauses.push("kind = ?");
-      params.push(state.kind);
-    }
+  if (ds.dimer) {
     if (state.hq) clauses.push("high_quality");
     const minDelta = Number.parseFloat(state.minDelta);
     if (Number.isFinite(minDelta)) {
@@ -151,9 +182,8 @@ async function connect(status) {
   const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), new Worker(workerUrl));
   await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
   URL.revokeObjectURL(workerUrl);
-  for (const [name, ds] of Object.entries(DATASETS)) {
+  for (const ds of Object.values(DATASETS)) {
     await db.registerFileURL(ds.file, new URL(ds.file, DATA).href, duckdb.DuckDBDataProtocol.HTTP, false);
-    ds.name = name;
   }
   return db.connect();
 }
@@ -232,15 +262,13 @@ function detailTable(r) {
         `<td class="num">${area(apolar)}</td><td class="num">${pct(apolar, total)}</td></tr>`,
     )
     .join("");
-  const names = [
-    `<p><b>A</b> ${esc(r.description_a)} (${esc(r.entry_name_a)}, ${Number(r.n_residues_a)} residues)</p>`,
-    `<p><b>B</b> ${esc(r.description_b)} (${esc(r.entry_name_b)}, ${Number(r.n_residues_b)} residues)</p>`,
-  ].join("");
+  const chain = (label, desc, code, n) => `<p><b>${label}</b> ${esc(desc)} (${esc(code)}, ${Number(n)} residues)</p>`;
   return (
-    `<div class="explorer__detail">${names}` +
+    `<div class="explorer__detail">${chain("A", r.description_a, r.entry_name_a, r.n_residues_a)}` +
+    `${chain("B", r.description_b, r.entry_name_b, r.n_residues_b)}` +
     `<table><thead><tr><th>Area (Å²)</th><th class="num">Total</th><th class="num">Polar</th>` +
     `<th class="num">Apolar</th><th class="num">Apolar %</th></tr></thead><tbody>${body}</tbody></table>` +
-    `<p class="explorer__sub">pDockQ ${score(r.pdockq)} · backbone clashes ${r.n_clash_backbone ?? "–"}</p></div>`
+    `<p class="explorer__sub">pLDDT ${score(r.plddt, 1)} · pDockQ ${score(r.pdockq)} · backbone clashes ${r.n_clash_backbone ?? "–"}</p></div>`
   );
 }
 
@@ -257,28 +285,31 @@ function toCsv(rows) {
 async function main() {
   const root = document.querySelector("[data-explorer]");
   if (!root) return;
+  for (const [name, ds] of Object.entries(DATASETS)) ds.name = name;
   readHash();
   root.classList.add("explorer");
   root.innerHTML = "";
 
   const controls = el("div", { class: "explorer__controls" });
   const filters = el("div", { class: "explorer__controls" });
+  const picker = el("fieldset", { class: "explorer__columns" });
   const status = el("p", { class: "explorer__status", role: "status" });
   const tableWrap = el("div", { class: "table explorer__table" });
   const pager = el("div", { class: "explorer__pager" });
   // The search panel stays in view while the results scroll under it
   const search = el("div", { class: "explorer__panel explorer__panel--search", role: "search" });
-  search.append(controls, filters);
+  search.append(controls, filters, picker);
   const results = el("div", { class: "explorer__panel explorer__panel--results" });
   results.append(status, tableWrap, pager);
   root.append(search, results);
 
   let timer = null;
-  const refresh = (resetOffset = true) => {
-    if (resetOffset) state.offset = 0;
+  const refresh = () => {
+    state.offset = 0;
     clearTimeout(timer);
     timer = setTimeout(update, 250);
   };
+  let lastRows = [];
 
   function buildControls() {
     const ds = DATASETS[state.dataset];
@@ -289,7 +320,7 @@ async function main() {
         state.dataset,
         (v) => {
           state.dataset = v;
-          state.order = Object.keys(DATASETS[v].orders)[0];
+          state.sort = DATASETS[v].sort;
           buildControls();
           refresh();
         },
@@ -299,35 +330,9 @@ async function main() {
         refresh();
       }),
     );
-    const order = el("label", { class: "explorer__ctl" });
-    order.append(el("span", { class: "label" }, "Sort"));
-    const select = el("select");
-    for (const [k, [text]] of Object.entries(ds.orders)) {
-      const option = el("option", { value: k }, esc(text));
-      option.selected = k === state.order;
-      select.append(option);
-    }
-    select.addEventListener("change", () => {
-      state.order = select.value;
-      refresh();
-    });
-    order.append(select);
-    filters.replaceChildren(order);
-    if (state.dataset === "dimers") {
+    filters.replaceChildren();
+    if (ds.dimer) {
       filters.append(
-        seg(
-          "Set",
-          [
-            ["all", "All"],
-            ["homo", "Homo"],
-            ["hetero", "Hetero"],
-          ],
-          state.kind,
-          (v) => {
-            state.kind = v;
-            refresh();
-          },
-        ),
         field("Min ΔSASA (Å²)", { type: "number", min: "0", step: "100", inputmode: "decimal" }, state.minDelta, (v) => {
           state.minDelta = v;
           refresh();
@@ -347,6 +352,27 @@ async function main() {
       hq.append(box, document.createTextNode(" AFDB high quality only"));
       filters.append(hq);
     }
+    buildPicker();
+  }
+
+  function buildPicker() {
+    const ds = DATASETS[state.dataset];
+    const shown = new Set(shownColumns(ds).map((c) => c.key));
+    picker.replaceChildren(el("legend", { class: "label" }, "Columns"));
+    for (const c of ds.columns.filter((c) => !c.fixed)) {
+      const chip = el("label", { class: "explorer__chip" });
+      const box = el("input", { type: "checkbox" });
+      box.checked = shown.has(c.key);
+      box.addEventListener("change", () => {
+        const keys = [...picker.querySelectorAll("input")].flatMap((b, i) =>
+          b.checked ? [ds.columns.filter((c) => !c.fixed)[i].key] : [],
+        );
+        saveColumns(ds, keys);
+        render(ds, lastRows);
+      });
+      chip.append(box, document.createTextNode(c.label));
+      picker.append(chip);
+    }
   }
 
   let generation = 0;
@@ -359,21 +385,20 @@ async function main() {
       await load(ds, status);
       if (mine !== generation) return;
       status.textContent = "Searching…";
-      const summary = state.dataset === "dimers"
-        ? "median(delta_sasa) AS median_value"
-        : "median(sasa) AS median_value";
+      const summary = ds.dimer ? "median(delta_sasa)" : "median(sasa)";
       // One connection runs one statement at a time
-      const [stats] = await run(`SELECT count(*) AS n, ${summary} FROM ${ds.table} ${clause}`, params);
+      const [stats] = await run(`SELECT count(*) AS n, ${summary} AS median_value FROM ${ds.table} ${clause}`, params);
       const rows = await run(
-        `SELECT * EXCLUDE (search_text) FROM ${ds.table} ${clause} ORDER BY ${ds.orders[state.order][1]} LIMIT ${PAGE_SIZE} OFFSET ${state.offset}`,
+        `SELECT * EXCLUDE (search_text) FROM ${ds.table} ${clause} ORDER BY ${orderBy(ds)} LIMIT ${PAGE_SIZE} OFFSET ${state.offset}`,
         params,
       );
       if (mine !== generation) return;
       const n = Number(stats.n);
-      const median = state.dataset === "dimers" ? "median ΔSASA" : "median SASA";
+      const median = ds.dimer ? "median ΔSASA" : "median SASA";
       status.textContent = n
         ? `${n.toLocaleString("en-US")} ${n === 1 ? "model matches" : "models match"} · ${median} ${area(stats.median_value)} Å²`
         : "No model matches.";
+      lastRows = rows;
       render(ds, rows);
       renderPager(ds, n, clause, params);
     } catch (err) {
@@ -383,17 +408,41 @@ async function main() {
   }
 
   function render(ds, rows) {
-    const head = ds.columns.map(([name, , cls]) => `<th${cls ? ` class="${cls}"` : ""}>${esc(name)}</th>`).join("");
+    const columns = shownColumns(ds);
+    const [sortKey, sortDir] = state.sort;
+    const head = columns
+      .map((c) => {
+        const cls = c.num ? ' class="num"' : "";
+        if (!c.sort) return `<th${cls}>${esc(c.label)}</th>`;
+        const active = c.key === sortKey;
+        const ariaSort = active ? (sortDir === "asc" ? "ascending" : "descending") : "none";
+        const mark = active ? (sortDir === "asc" ? " ▲" : " ▼") : "";
+        return `<th${cls} aria-sort="${ariaSort}"><button type="button" class="explorer__sort" data-key="${c.key}">${esc(c.label)}${mark}</button></th>`;
+      })
+      .join("");
     const body = rows
       .map(
         (r, i) =>
-          `<tr data-row="${i}"${ds.detail ? ' class="explorer__row" tabindex="0" aria-expanded="false"' : ""}>` +
-          ds.columns.map(([, fmt, cls]) => `<td${cls ? ` class="${cls}"` : ""}>${fmt(r)}</td>`).join("") +
+          `<tr data-row="${i}"${ds.dimer ? ' class="explorer__row" tabindex="0" aria-expanded="false"' : ""}>` +
+          columns.map((c) => `<td${c.num ? ' class="num"' : ""}>${c.fmt(r)}</td>`).join("") +
           "</tr>",
       )
       .join("");
     tableWrap.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
-    if (!ds.detail) return;
+
+    // A first click sorts numbers from the largest and text from A
+    for (const button of tableWrap.querySelectorAll(".explorer__sort")) {
+      button.addEventListener("click", () => {
+        const key = button.dataset.key;
+        const column = ds.columns.find((c) => c.key === key);
+        const dir = state.sort[0] === key ? (state.sort[1] === "desc" ? "asc" : "desc") : column.num ? "desc" : "asc";
+        state.sort = [key, dir];
+        state.offset = 0;
+        update();
+      });
+    }
+
+    if (!ds.dimer) return;
     const toggle = (tr) => {
       const next = tr.nextElementSibling;
       if (next?.classList.contains("explorer__open")) {
@@ -402,7 +451,7 @@ async function main() {
         return;
       }
       const detail = el("tr", { class: "explorer__open" });
-      detail.append(el("td", { colspan: String(ds.columns.length) }, detailTable(rows[Number(tr.dataset.row)])));
+      detail.append(el("td", { colspan: String(columns.length) }, detailTable(rows[Number(tr.dataset.row)])));
       tr.after(detail);
       tr.setAttribute("aria-expanded", "true");
     };
@@ -441,7 +490,7 @@ async function main() {
       csv.disabled = true;
       try {
         const rows = await run(
-          `SELECT * EXCLUDE (search_text) FROM ${ds.table} ${clause} ORDER BY ${ds.orders[state.order][1]} LIMIT ${CSV_LIMIT}`,
+          `SELECT * EXCLUDE (search_text) FROM ${ds.table} ${clause} ORDER BY ${orderBy(ds)} LIMIT ${CSV_LIMIT}`,
           params,
         );
         const link = el("a", {
@@ -465,7 +514,7 @@ async function main() {
   buildControls();
   try {
     conn = await connect(status);
-    const probe = await fetch(new URL(DATASETS.dimers.file, DATA), { method: "HEAD" });
+    const probe = await fetch(new URL(DATASETS[state.dataset].file, DATA), { method: "HEAD" });
     if (!probe.ok) {
       status.textContent = "The data files are not part of this build of the site.";
       return;
