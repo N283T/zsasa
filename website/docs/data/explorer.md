@@ -10,7 +10,7 @@ Search the SASA, interface burial and polar/apolar split that `zsasa` computed f
 
 <nav class="jump" aria-label="On this page">
 <a href="#search">Search</a>
-<a href="#download">Download the tables</a>
+<a href="#download">Download full data</a>
 <a href="#the-data">The data</a>
 <a href="#what-the-columns-mean">Columns</a>
 <a href="#how-the-values-were-computed">How the values were computed</a>
