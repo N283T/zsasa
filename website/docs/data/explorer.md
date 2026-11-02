@@ -73,7 +73,7 @@ For a dimer with chains A and B:
 | ipSAEmin | the smaller of the two directional ipSAE scores |
 | ipTM, pDockQ | interface confidence scores from the AFDB/NVIDIA release |
 | pLDDT | global pLDDT of the model, the mean over all residues |
-| HQ | AFDB high-quality complex: ipSAEmin ≥ 0.6, pLDDT ≥ 70 and at most 10 backbone clashes |
+| HQ | high-quality complex as defined for the AFDB/NVIDIA release ([Han *et al.* 2026](https://doi.org/10.64898/2026.03.27.714458)): ipSAEmin ≥ 0.6, pLDDT ≥ 70 and at most 10 backbone clashes |
 
 The SwissProt table has the SASA of the whole model and its polar/apolar split, with the model's residue count and mean pLDDT.
 
