@@ -2030,10 +2030,28 @@ code {
 /* ---------- SASA explorer (docs/data/explorer.md) ---------- */
 
 .explorer {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   margin: 1.6em 0 2em;
+}
+
+.explorer__panel {
   padding: 18px;
   border: 1px solid var(--line);
   background: var(--bg-2);
+}
+
+.explorer__panel--search {
+  position: sticky;
+  top: var(--nav-h);
+  z-index: 5;
+  padding-bottom: 6px;
+  border-top: 2px solid var(--accent);
+}
+
+.explorer__panel--results {
+  padding-top: 14px;
 }
 
 .explorer__controls {
@@ -2086,7 +2104,7 @@ code {
 }
 
 .explorer__status {
-  margin: 4px 0 0 !important;
+  margin: 0 !important;
   font: 12.5px var(--mono);
   color: var(--ink-2);
 }
@@ -2184,8 +2202,13 @@ code {
 }
 
 @media (max-width: 620px) {
-  .explorer {
+  .explorer__panel {
     padding: 12px;
+  }
+
+  /* On a phone the stacked controls would cover most of the screen */
+  .explorer__panel--search {
+    position: static;
   }
 
   .explorer input[type="number"] {

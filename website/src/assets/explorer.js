@@ -252,7 +252,12 @@ async function main() {
   const status = el("p", { class: "explorer__status", role: "status" });
   const tableWrap = el("div", { class: "table explorer__table" });
   const pager = el("div", { class: "explorer__pager" });
-  root.append(controls, filters, status, tableWrap, pager);
+  // The search panel stays in view while the results scroll under it
+  const search = el("div", { class: "explorer__panel explorer__panel--search", role: "search" });
+  search.append(controls, filters);
+  const results = el("div", { class: "explorer__panel explorer__panel--results" });
+  results.append(status, tableWrap, pager);
+  root.append(search, results);
 
   let timer = null;
   const refresh = (resetOffset = true) => {
