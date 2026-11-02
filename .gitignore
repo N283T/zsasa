@@ -102,3 +102,6 @@ docs/seminar-draft.md
 docs/examples/
 
 .worktrees/
+
+# SASA explorer data, fetched by website/scripts/fetch_explorer_data.py
+website/static/data/explorer/

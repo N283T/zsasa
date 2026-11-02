@@ -100,6 +100,7 @@ NAV: list[tuple[str, list]] = [
             "benchmarks/single-file",
         ],
     ),
+    ("Data", ["data/explorer"]),
     ("Project", ["citation", "comparison", "changelog"]),
 ]
 LABELS = {"index": "Introduction"}
@@ -120,6 +121,9 @@ PLACEHOLDER = re.compile(r"\{\{([\w:/.-]+)\}\}")
 CHART = re.compile(r'<div data-chart="([\w-]+)/([\w-]+)"></div>')
 TABLE = re.compile(r'<div data-table="([\w-]+)/([\w-]+)"></div>')
 CHARTS_SCRIPT = '<script src="{root}assets/charts.js" defer></script>'
+# The SASA explorer (docs/data/explorer.md); its data files are fetched by
+# scripts/fetch_explorer_data.py into static/data/explorer/.
+EXPLORER_SCRIPT = '<script type="module" src="{root}assets/explorer.js"></script>'
 
 
 @dataclass
@@ -474,9 +478,16 @@ class Site:
             ),
             "pager": "".join(pager),
             "edit": f"{EDIT}/{page.source.relative_to(DOCS).as_posix()}",
-            "scripts": CHARTS_SCRIPT.format(root=page.root)
-            if 'class="chart"' in page.body
-            else "",
+            "scripts": (
+                CHARTS_SCRIPT.format(root=page.root)
+                if 'class="chart"' in page.body
+                else ""
+            )
+            + (
+                EXPLORER_SCRIPT.format(root=page.root)
+                if "data-explorer" in page.body
+                else ""
+            ),
         }
         out_dir = DIST / page.path
         out_dir.mkdir(parents=True, exist_ok=True)

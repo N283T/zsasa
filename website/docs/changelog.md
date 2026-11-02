@@ -8,6 +8,10 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+### Documentation
+
+- **SASA explorer page.** The new page `Data > SASA explorer` searches the SASA that `zsasa` 0.13.0 computed for the 623,242 AFDB human dimer models of the manuscript and the 550,122 SwissProt models of AFDB v6: SASA of chain A, chain B and the complex, ΔSASA and BSA with their polar/apolar split, and the AFDB/NVIDIA confidence scores. It queries two Parquet tables in the browser with DuckDB-WASM 1.32.0. The tables come from `zsasa-benchmarks` and are archived on Zenodo; `website/scripts/fetch_explorer_data.py` fetches them before the docs build and checks their SHA-256 against `website/data/explorer.json`.
+
 ## [v0.13.0](https://github.com/N283T/zsasa/releases/tag/v0.13.0) — 2026-11-03
 
 ### Added

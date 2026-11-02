@@ -1978,3 +1978,169 @@ code {
   font-size: 13px;
   color: var(--ink-3);
 }
+
+/* ---------- SASA explorer (docs/data/explorer.md) ---------- */
+
+.explorer {
+  margin: 1.6em 0 2em;
+  padding: 18px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+}
+
+.explorer__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px 18px;
+  margin-bottom: 12px;
+}
+
+.explorer__ctl {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.explorer__ctl:has(.explorer__search) {
+  flex: 1 1 260px;
+}
+
+.explorer input:not([type="checkbox"]),
+.explorer select {
+  padding: 6px 9px;
+  font: 13px var(--sans);
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  border-radius: 0;
+}
+
+.explorer input[type="number"] {
+  width: 9em;
+}
+
+.explorer input:focus-visible,
+.explorer select:focus-visible,
+.explorer__row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.explorer__check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 6px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.explorer__status {
+  margin: 4px 0 0 !important;
+  font: 12.5px var(--mono);
+  color: var(--ink-2);
+}
+
+.explorer__table {
+  margin: 10px 0 0;
+}
+
+.explorer__table td,
+.explorer__table th {
+  white-space: nowrap;
+}
+
+.explorer__table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.explorer__row {
+  cursor: pointer;
+}
+
+.explorer__row:hover td {
+  background: var(--bg-3);
+}
+
+.explorer__sub {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.explorer__hq {
+  padding: 1px 5px;
+  font: 500 10.5px var(--mono);
+  color: var(--on-accent);
+  background: var(--accent);
+}
+
+.explorer__open > td {
+  white-space: normal;
+}
+
+.explorer__detail {
+  padding: 4px 0 8px;
+  font-size: 13px;
+}
+
+.explorer__detail p {
+  margin: 0 0 6px;
+}
+
+.explorer__detail table {
+  width: auto;
+  margin: 8px 0;
+}
+
+.explorer__detail :is(th, td) {
+  padding: 4px 16px 4px 0;
+}
+
+.explorer__pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-top: 12px;
+}
+
+.explorer__pager:empty {
+  display: none;
+}
+
+.explorer__range {
+  font: 12.5px var(--mono);
+  color: var(--ink-2);
+}
+
+.explorer__btn {
+  padding: 5px 10px;
+  font: 500 11.5px var(--mono);
+  color: var(--ink-2);
+  background: none;
+  border: 1px solid var(--line-2);
+  cursor: pointer;
+}
+
+.explorer__btn:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--ink-3);
+}
+
+.explorer__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+@media (max-width: 620px) {
+  .explorer {
+    padding: 12px;
+  }
+
+  .explorer input[type="number"] {
+    width: 7em;
+  }
+}

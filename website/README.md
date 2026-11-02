@@ -10,6 +10,7 @@ The site at <https://n283t.github.io/zsasa/> is built from this directory by a s
 | `templates/` | Shared page chrome and the docs page template |
 | `static/` | Files copied to the site root as they are |
 | `data/benchmarks/` | Chart and table data for the benchmark pages (generated) |
+| `data/explorer.json` | Download list of the SASA explorer's Parquet tables |
 | `build.py` | The builder |
 
 ## Build and preview
@@ -40,3 +41,19 @@ uv run website/build.py
 ```
 
 Do not edit the JSON by hand. The headline numbers on the landing page come from the same files.
+
+## SASA explorer data
+
+The [SASA explorer](docs/data/explorer.md) queries two Parquet tables in the browser with DuckDB-WASM (`src/assets/explorer.js`). The tables are built in `zsasa-benchmarks` (`scripts/build_explorer_tables.py`) and archived on Zenodo; `data/explorer.json` lists their URLs and SHA-256 checksums. They are not tracked here: fetch them into `static/data/explorer/` before building, as the docs workflow does:
+
+```bash
+uv run website/scripts/fetch_explorer_data.py
+uv run website/build.py
+```
+
+`--from DIR` copies the files from a local directory, such as the benchmark repository's `workflows/sasa-explorer/tables`, and checks the same checksums. The explorer needs a server that answers HTTP range requests; `python3 -m http.server` does not, so preview the page with, for example:
+
+```bash
+cd website/dist && uv run --no-project --with rangehttpserver python -m RangeHTTPServer 4321
+```
+
