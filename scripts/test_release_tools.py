@@ -153,6 +153,31 @@ class ReleaseBumpTests(unittest.TestCase):
         )
         self.assertIn("- Something changed. (#1)", website)
 
+    def test_bump_ignores_other_packages_that_share_the_old_version(self):
+        bump = load_script("release_bump.py")
+        lock = self.tmp.joinpath("python", "uv.lock")
+        lock.write_text(
+            '[[package]]\nname = "cycler"\nversion = "0.7.1"\n\n' + lock.read_text()
+        )
+
+        bump.run(self.tmp, "0.8.0", release_date="2026-07-01", check_clean=False)
+
+        text = lock.read_text()
+        self.assertIn('name = "cycler"\nversion = "0.7.1"', text)
+        self.assertIn('name = "zsasa"\nversion = "0.8.0"', text)
+
+    def test_stale_check_reports_the_zsasa_entry_of_uv_lock(self):
+        bump = load_script("release_bump.py")
+        self.tmp.joinpath("python", "uv.lock").write_text(
+            '[[package]]\nname = "cycler"\nversion = "0.7.1"\n\n'
+            '[[package]]\nname = "zsasa"\nversion = "0.7.1"\n'
+        )
+
+        stale = bump.collect_stale_refs(self.tmp, "0.7.1")
+
+        self.assertIn('python/uv.lock:7:version = "0.7.1"', stale)
+        self.assertNotIn('python/uv.lock:3:version = "0.7.1"', stale)
+
     def test_bump_rejects_dirty_tree_when_requested(self):
         bump = load_script("release_bump.py")
         self.tmp.joinpath("README.md").write_text("dirty\n")
