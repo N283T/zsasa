@@ -215,12 +215,16 @@ def collect_stale_refs(root: Path, old: str) -> tuple[str, ...]:
         "src/c_api.zig": re.compile(rf'^const VERSION = "{re.escape(old)}";$'),
         "CITATION.cff": re.compile(rf'^version: "{re.escape(old)}"$'),
     }
+    # uv.lock lists every dependency; only the zsasa entry carries our version.
+    preceded_by = {"python/uv.lock": 'name = "zsasa"'}
     stale: list[str] = []
     for rel, pattern in active_patterns.items():
         path = root.joinpath(rel)
+        previous = ""
         for number, line in enumerate(path.read_text().splitlines(), start=1):
-            if pattern.match(line):
+            if pattern.match(line) and preceded_by.get(rel, previous) == previous:
                 stale.append(f"{rel}:{number}:{line}")
+            previous = line
     return tuple(stale)
 
 
