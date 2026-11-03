@@ -248,6 +248,25 @@ body:has(> .wrap.doc) .wrap {
   display: block;
 }
 
+/* Phones show the square icon instead of the wordmark, so the nav fits. */
+.brand__word {
+  display: contents;
+}
+
+.brand .brand__icon {
+  display: none;
+}
+
+@media (max-width: 480px) {
+  .brand__word {
+    display: none;
+  }
+
+  .brand .brand__icon {
+    display: block;
+  }
+}
+
 .nav__links {
   display: flex;
   gap: 26px;
