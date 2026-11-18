@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`release_bump.py` stopped on unrelated packages in `uv.lock`.** The check for version references left at the old version flagged any `version = "<old>"` line in `python/uv.lock`, so a dependency that shared the previous zsasa version (`cycler 0.12.1` during the 0.13.0 bump) stopped the script after its edits. It now looks only at the `zsasa` entry. (#509)
+- **Output paths through a directory symlink failed with `NotDir`.** `calc` stopped with `Error creating output directory ... NotDir` when the output file's parent directory was a symbolic link to a directory, as macOS `/tmp` is (`zsasa calc in.pdb /tmp/out.json`), and `batch` stopped the same way when its output directory was such a link. Existing directory symlinks are now accepted, also as a parent of directories still to be created; a path through a regular file, or a link to one, still fails. (#517)
 
 ## [0.13.0] - 2026-11-03
 

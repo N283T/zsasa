@@ -27,6 +27,7 @@ const sdf_parser = @import("sdf_parser.zig");
 const compressed = @import("compressed.zig");
 const workflow_manifest = @import("workflow_manifest.zig");
 const test_support = @import("test_support.zig");
+const output_fs = @import("output_fs.zig");
 
 const Config = types.Config;
 const Configf32 = types.Configf32;
@@ -1499,7 +1500,7 @@ fn printPerChainResults(chain_ids: []const types.FixedString4, chain_ids_full: ?
 fn ensureCalcOutputParentDir(io: std.Io, output_path: []const u8) !void {
     const parent = std.fs.path.dirname(output_path) orelse return;
     if (parent.len == 0) return;
-    try std.Io.Dir.cwd().createDirPath(io, parent);
+    try output_fs.createDirPath(io, parent);
 }
 
 fn algorithmName(algorithm: Algorithm) []const u8 {
@@ -2303,6 +2304,30 @@ test "ensureCalcOutputParentDir creates nested output parent directories" {
     try std.testing.expectEqual(std.Io.File.Kind.directory, stat.kind);
     // Only the parent is created, not the output file itself.
     try std.testing.expectError(error.FileNotFound, tmp_dir.dir.statFile(std.testing.io, "nested/deeper/result.json", .{}));
+}
+
+test "ensureCalcOutputParentDir accepts a parent that is a symlink to a directory" {
+    // macOS /tmp is a symlink to /private/tmp (#517).
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDir(std.testing.io, "real", .default_dir);
+    try tmp_dir.dir.symLink(std.testing.io, "real", "link", .{ .is_directory = true });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPath(std.testing.io, &root_buf);
+    const root = root_buf[0..root_len];
+
+    const direct = try std.fs.path.join(allocator, &.{ root, "link", "result.json" });
+    defer allocator.free(direct);
+    try ensureCalcOutputParentDir(std.testing.io, direct);
+
+    const nested = try std.fs.path.join(allocator, &.{ root, "link", "nested", "result.json" });
+    defer allocator.free(nested);
+    try ensureCalcOutputParentDir(std.testing.io, nested);
+    const stat = try tmp_dir.dir.statFile(std.testing.io, "real/nested", .{});
+    try std.testing.expectEqual(std.Io.File.Kind.directory, stat.kind);
 }
 
 fn readAtomAreasLenFromJson(allocator: std.mem.Allocator, path: []const u8) !usize {

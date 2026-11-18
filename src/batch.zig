@@ -26,6 +26,7 @@ const ccd_binary = @import("ccd_binary.zig");
 const sdf_parser = @import("sdf_parser.zig");
 const compressed = @import("compressed.zig");
 const input_io = @import("input_io.zig");
+const output_fs = @import("output_fs.zig");
 const element_module = @import("element.zig");
 const test_support = @import("test_support.zig");
 
@@ -2224,7 +2225,7 @@ fn runPreparedSequential(
 
     // Create output directory if specified
     if (output_dir) |out_dir| {
-        try std.Io.Dir.cwd().createDirPath(io, out_dir);
+        try output_fs.createDirPath(io, out_dir);
     }
 
     // Sequential mode writes JSONL as each file completes.
@@ -2732,7 +2733,7 @@ fn runPrepared(
 
     // Create output directory if specified
     if (output_dir) |out_dir| {
-        try std.Io.Dir.cwd().createDirPath(io, out_dir);
+        try output_fs.createDirPath(io, out_dir);
     }
 
     // Allocate results (one per work item)
@@ -2911,7 +2912,7 @@ pub fn runBatchReportingStage(
 
     if (output_dir) |dir| {
         stage.* = .create_output_dir;
-        try std.Io.Dir.cwd().createDirPath(io, dir);
+        try output_fs.createDirPath(io, dir);
     }
 
     stage.* = .process;
@@ -4782,7 +4783,7 @@ fn runWorkflowBsaAnalysis(
         return error.InvalidArgument;
     };
 
-    try std.Io.Dir.cwd().createDirPath(io, output_dir);
+    try output_fs.createDirPath(io, output_dir);
     const jsonl_output_path = try workflowAnalysisJsonlOutputPath(allocator, output_dir, name);
     defer allocator.free(jsonl_output_path);
     try truncateJsonlOutput(io, jsonl_output_path);
@@ -6097,7 +6098,7 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
 
         if (config.output_format == .jsonl) {
             if (output_dir) |out| {
-                try std.Io.Dir.cwd().createDirPath(io, out);
+                try output_fs.createDirPath(io, out);
                 jsonl_output_path = try workflowJsonlOutputPath(allocator, out, job.name);
                 if (config.jsonl_metadata == .sidecar) {
                     const metadata_path = try workflowJsonlMetadataPath(allocator, out, job.name);
@@ -6166,7 +6167,7 @@ fn runWorkflowJobFirst(allocator: Allocator, io: std.Io, args: BatchArgs) !void 
         defer prepared.deinit(allocator);
 
         if (job_output_dir) |dir| {
-            std.Io.Dir.cwd().createDirPath(io, dir) catch |err| {
+            output_fs.createDirPath(io, dir) catch |err| {
                 printWorkflowJobError(job.name, "cannot create output directory '{s}': {s}", .{ dir, @errorName(err) });
                 try failed_jobs.append(allocator, job.name);
                 continue;
@@ -6326,7 +6327,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
 
         if (config.output_format == .jsonl) {
             if (output_dir) |out| {
-                try std.Io.Dir.cwd().createDirPath(io, out);
+                try output_fs.createDirPath(io, out);
                 jsonl_output_path = try workflowJsonlOutputPath(allocator, out, job.name);
                 try truncateJsonlOutput(io, jsonl_output_path.?);
                 if (config.jsonl_metadata == .sidecar) {
@@ -6338,7 +6339,7 @@ fn runWorkflowFileFirst(allocator: Allocator, io: std.Io, args: BatchArgs, pre_s
         } else if (output_dir) |out| {
             try validateUniqueFileOutputNames(allocator, files, out, config);
             job_output_dir = try workflowPerFileOutputDir(allocator, out, job.name);
-            try std.Io.Dir.cwd().createDirPath(io, job_output_dir.?);
+            try output_fs.createDirPath(io, job_output_dir.?);
         }
 
         states[i] = .{
