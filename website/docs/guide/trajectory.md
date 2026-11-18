@@ -109,7 +109,7 @@ The topology must describe exactly the atoms stored in the trajectory, in the sa
 
 ### Hydrogens
 
-Hydrogens are included by default, because MD trajectories carry explicit hydrogens and the default `naccess` classifier has radii for them. `--no-hydrogens` removes the hydrogen atoms of the topology and skips their coordinates in every frame, so it works on a normal all-atom trajectory: the trajectory and the topology still have to contain the same atoms, hydrogens included. If the trajectory has already been stripped of hydrogens, pass a hydrogen-free topology and leave the option out.
+Hydrogens are included by default, because MD trajectories carry explicit hydrogens. The default `naccess` classifier has no hydrogen entries, so each hydrogen gets the element radius (1.10 Å) next to the united-atom heavy-atom radii; see [Explicit Hydrogens](classifiers.mdx#explicit-hydrogens) for what this convention means and for a consistent all-atom alternative. `--no-hydrogens` removes the hydrogen atoms of the topology and skips their coordinates in every frame, so it works on a normal all-atom trajectory: the trajectory and the topology still have to contain the same atoms, hydrogens included. If the trajectory has already been stripped of hydrogens, pass a hydrogen-free topology and leave the option out.
 
 ### Failures
 

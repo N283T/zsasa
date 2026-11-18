@@ -13,7 +13,7 @@ Classifiers assign van der Waals radii and polarity classes to atoms based on re
 
 - **CCD** (default for `calc`/`batch`): ProtOr-compatible hybridization-based radii (Tsai et al. 1999), extended with CCD bond topology analysis for non-standard residues. Uses united-atom radii (implicit H). Recommended for crystal structures.
 - **ProtOr**: Static ProtOr-compatible radii only. Use this for protein-only structures such as AFDB models when runtime CCD bond-topology analysis is unnecessary.
-- **NACCESS** (default for `traj`): Use for MD trajectories with explicit hydrogens, or when reproducing NACCESS-based studies.
+- **NACCESS** (default for `traj`): Use when reproducing NACCESS-based studies, or to follow the `traj` convention for MD trajectories with explicit hydrogens. Its heavy-atom radii are united-atom radii too; see [Explicit Hydrogens](#explicit-hydrogens) for what that means with explicit H.
 - **OONS**: Larger aliphatic carbon radii (2.00 Å). Use when reproducing or comparing with OONS-based studies.
 
 ## How Classifiers Work
@@ -26,12 +26,10 @@ Classifiers assign van der Waals radii and polarity classes to atoms based on re
 
 ### Radii Reference Table
 
-All classifiers use united-atom radii (implicit hydrogens) — heavy atom radii already account for the volume of attached hydrogen atoms. The CCD column differentiates radii by hybridization state and implicit hydrogen count, following [Tsai et al. 1999](https://doi.org/10.1006/jmbi.1999.2829).
+All classifiers use united-atom radii (implicit hydrogens) — heavy atom radii already account for the volume of attached hydrogen atoms. None of them has entries for hydrogen atoms. The CCD column differentiates radii by hybridization state and implicit hydrogen count, following [Tsai et al. 1999](https://doi.org/10.1006/jmbi.1999.2829).
 
 :::warning[Explicit hydrogens and united-atom radii]
-CCD and ProtOr use **united-atom** radii where heavy atom radii already include the contribution of implicit hydrogens (e.g., C sp3 with 3 implicit H = 1.88 Å). Using `--include-hydrogens` with CCD/ProtOr causes double-counting and inaccurate SASA values. A warning is printed if this combination is detected.
-
-For **MD trajectories** with explicit hydrogens, use `zsasa traj` which defaults to NACCESS. NACCESS has no hydrogen entries, so every explicit H atom gets the element-based fallback radius (H = 1.10 Å), whatever its name (`H`, `HA`, `HG21`, ...).
+The heavy-atom radii of every built-in classifier already include the contribution of implicit hydrogens (e.g., C sp3 with 3 implicit H = 1.88 Å in CCD/ProtOr, 1.87 Å in NACCESS). Adding explicit hydrogen atoms on top of them counts the hydrogen volume twice. `calc`, `batch` and `traj` print a warning when hydrogens are included with CCD or ProtOr; there is no such warning for NACCESS or OONS. See [Explicit Hydrogens](#explicit-hydrogens) for the two ways to handle all-atom input.
 :::
 
 | Element | Context | ProtOr / CCD | NACCESS | OONS | Polarity |
@@ -66,6 +64,44 @@ NACCESS treats S, Se, and P as **apolar**, while ProtOr, OONS, and CCD treat the
 :::info[ProtOr skips CCD resource parsing]
 `--classifier=protor` uses the static ProtOr-compatible radii table and does not load inline, external, or SDF-derived CCD resources. Prefer it for protein-only mmCIF/PDB inputs where CCD topology analysis is unnecessary.
 :::
+
+## Explicit Hydrogens
+
+A structure or trajectory with explicit hydrogen atoms can be handled in two ways, and they answer different questions.
+
+**Reproduce the NACCESS / `traj` convention.** `zsasa traj` includes hydrogens and uses NACCESS by default. NACCESS has no hydrogen entries, so every explicit H atom gets the element radius (H = 1.10 Å), whatever its name (`H`, `HA`, `HG21`, ...), while the heavy atoms keep their united-atom NACCESS radii (aliphatic C = 1.87 Å). This is a compatibility convention, not a consistent all-atom radius set: the heavy-atom radii already contain the hydrogen volume. Use it to compare with earlier `traj` results or with tools that follow the same convention, and compare such values only with values computed the same way.
+
+**Use a consistent all-atom model.** To give every atom, hydrogens included, its element van der Waals radius, bypass the classifiers and pass the radii yourself. The element radii are the ones of [Handling Unknown Atoms](#handling-unknown-atoms):
+
+| Element | H | C | N | O | S | P | Se |
+|---------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Radius (Å) | 1.10 | 1.70 | 1.55 | 1.52 | 1.80 | 1.80 | 1.90 |
+
+<Tabs>
+  <TabItem value="python" label="Python" default>
+
+```python
+import numpy as np
+from zsasa import calculate_sasa, guess_radius
+
+# elements: one symbol per atom, hydrogens included
+radii = np.array([guess_radius(e) for e in elements], dtype=np.float64)
+result = calculate_sasa(coords, radii)
+```
+
+  </TabItem>
+  <TabItem value="cli" label="CLI">
+
+Write the element radii into the `r` field of a [JSON input](../cli/input.md#json-format) without `residue` and `atom_name`; `calc` then uses them as given:
+
+```bash
+zsasa calc all_atom.json output.json
+```
+
+  </TabItem>
+</Tabs>
+
+Values from this model are not comparable with united-atom values of the same structure without hydrogens: the per-atom areas are split between heavy atoms and hydrogens, and the radii differ (aliphatic C 1.70 Å instead of 1.87–1.88 Å). Compare implicit-H and explicit-H calculations only after choosing the same model for both.
 
 ## Usage
 
