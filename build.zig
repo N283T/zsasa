@@ -12,11 +12,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    // Only ztraj's file I/O is needed. `io_only` exposes just the `ztraj-io`
+    // module, so ztraj's own (lazy) zsasa dependency is never fetched.
     const ztraj_dep = b.dependency("ztraj", .{
         .target = target,
         .optimize = optimize,
+        .io_only = true,
     });
-    const ztraj_mod = ztraj_dep.module("ztraj");
+    const ztraj_mod = ztraj_dep.module("ztraj-io");
 
     // CLI executable
     const options = b.addOptions();
