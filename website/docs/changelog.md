@@ -17,6 +17,10 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 - **SASA explorer.** A new page, linked as `Explorer` in the top bar, searches the SASA that `zsasa` 0.13.0 computed for the AFDB/NVIDIA human heterodimers (531,605) and homo-dimers (91,637) of the manuscript and the 550,122 SwissProt models of AFDB v6: SASA of chain A, chain B and the complex, ΔSASA and BSA with their polar/apolar split, UniProt accessions and genes, and the AFDB/NVIDIA confidence scores. It runs DuckDB-WASM 1.32.0 in the browser, with dataset tabs, range sliders, header sorting, a column picker, a per-row breakdown and a CSV download of the matching rows. The three Parquet tables are archived on Zenodo ([doi:10.5281/zenodo.23898582](https://doi.org/10.5281/zenodo.23898582)); `website/scripts/fetch_explorer_data.py` fetches them before the docs build and checks their SHA-256 against `website/data/explorer.json`.
 - **Wider docs layout.** Docs pages use a 1,680 px frame instead of 1,320 px and drop the 800 px column limit; running text keeps its line length while tables, charts and code use the full column. On docs pages the nav lines up with the sidebar and content columns. A page can set `layout: wide` to drop the sidebar and table of contents, as the explorer does. The landing page is unchanged.
 
+### Changed
+
+- **Build: zsasa no longer fetches a second copy of itself through ztraj.** zsasa now takes only the standalone `ztraj-io` module of ztraj 0.9.0 (`.io_only = true`), the trajectory readers it uses. Before, building zsasa also fetched ztraj's own dependency on an older zsasa (0.2.11). SASA results and trajectory output are unchanged.
+
 ### Fixed
 
 - **`release_bump.py` stopped on unrelated packages in `uv.lock`.** The check for version references left at the old version flagged any `version = "<old>"` line in `python/uv.lock`, so a dependency that shared the previous zsasa version (`cycler 0.12.1` during the 0.13.0 bump) stopped the script after its edits. It now looks only at the `zsasa` entry. (#509)
