@@ -8,6 +8,11 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ## Unreleased
 
+### Added
+
+- **`calc --format=cif` writes the areas into the input mmCIF file.** The output is the input mmCIF with two columns added to `_atom_site`, `zsasa_value` (area in Å²) and `zsasa_radius` (radius in Å), and the categories `_zsasa_parameters` and `_zsasa_results` (total, polar and apolar areas, and the area of each chain) added to its data block, as FreeSASA does with `--format=cif`. Every other line of the input is kept; atom rows that were not part of the calculation (hydrogens, HETATM, water, other models, unselected alternate locations or chains) keep their row and get `?`. Running it on its own output replaces the values instead of adding columns again. It needs mmCIF input (`.cif`, `.mmcif`, also `.gz`/`.zst`) and writes uncompressed text; `mmcif` is accepted as another name. The other output formats are unchanged.
+- **`calc --format=pdb` writes the areas into the input PDB file.** The output is the input PDB with the radius of each atom in the occupancy column and its area in the B-factor column, as FreeSASA's PDB output has them, and `REMARK 999 ZSASA` lines that describe the columns and the calculation. Only the atoms in the calculation are written: the ATOM/HETATM records of the others are dropped with their ANISOU records, as are MODEL blocks and TER records left empty, CONECT records that name a dropped atom, and the MASTER record. Every other record is copied unchanged. It needs PDB input (`.pdb`, `.ent`, also `.gz`/`.zst`) and writes uncompressed text. The other output formats are unchanged.
+
 ### Documentation
 
 - **Explicit-hydrogen radius guidance.** A new "Explicit Hydrogens" section in the classifier guide separates reproducing the NACCESS/`traj` convention (united-atom heavy-atom radii plus H at 1.10 Å) from a consistent all-atom model with element van der Waals radii for every atom, and shows the latter with `guess_radius` + `calculate_sasa` and with JSON `r` input. The warning above the radii table now says that NACCESS heavy-atom radii are united-atom radii as well, and the trajectory guide no longer says that NACCESS has radii for hydrogens. (#518)

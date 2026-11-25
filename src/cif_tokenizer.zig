@@ -121,6 +121,24 @@ pub const Tokenizer = struct {
         return self.readUnquotedValue();
     }
 
+    /// A token and the bytes of the source it was read from
+    pub const Spanned = struct {
+        token: Token,
+        /// Offset of the first byte of the token, including an opening
+        /// quote or semicolon
+        start: usize,
+        /// Offset just past the token, including a closing quote or semicolon
+        end: usize,
+    };
+
+    /// Get the next token together with its position in the source
+    pub fn nextSpanned(self: *Tokenizer) Spanned {
+        self.skipWhitespaceAndComments();
+        const start = self.pos;
+        const token = self.next();
+        return .{ .token = token, .start = start, .end = self.pos };
+    }
+
     /// Skip whitespace and comments
     fn skipWhitespaceAndComments(self: *Tokenizer) void {
         while (self.pos < self.source.len) {

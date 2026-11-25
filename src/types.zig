@@ -198,6 +198,11 @@ pub const AtomInput = struct {
     /// batch output. Set after classification (`analysis.atomPolarity`);
     /// null when the split is not requested.
     polar: ?[]const bool = null,
+    /// Where in the source file each atom was read from, for writing the
+    /// areas back into it (`--format=cif`, `--format=pdb`): the index of its
+    /// `_atom_site` row (mmCIF, all rows of the loop counted) or of its line
+    /// (PDB). Set by these parsers on request; strictly increasing.
+    source_row: ?[]const u32 = null,
     allocator: std.mem.Allocator,
 
     /// Get number of atoms
@@ -277,6 +282,7 @@ pub const AtomInput = struct {
         if (self.residue_num) |v| out.residue_num = try gather(i32, self.allocator, v, indices);
         if (self.insertion_code) |v| out.insertion_code = try gather(FixedString4, self.allocator, v, indices);
         if (self.polar) |v| out.polar = try gather(bool, self.allocator, v, indices);
+        if (self.source_row) |v| out.source_row = try gather(u32, self.allocator, v, indices);
         if (self.chain_id_full) |v| {
             const chains = try self.allocator.alloc([]const u8, indices.len);
             errdefer self.allocator.free(chains);
@@ -325,6 +331,9 @@ pub const AtomInput = struct {
         }
         if (self.insertion_code) |codes| {
             self.allocator.free(codes);
+        }
+        if (self.source_row) |rows| {
+            self.allocator.free(rows);
         }
         if (self.polar) |polar| {
             self.allocator.free(polar);

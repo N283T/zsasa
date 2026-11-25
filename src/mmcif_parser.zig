@@ -139,6 +139,9 @@ pub const MmcifParser = struct {
     /// `skip_hydrogens` would drop (hydrogen and deuterium). The list is owned
     /// by the caller and grown with the parser's allocator.
     hydrogen_flags: ?*std.ArrayListUnmanaged(bool) = null,
+    /// Set `AtomInput.source_row`: the index of the `_atom_site` row each
+    /// atom was read from, counting every row of the loop.
+    record_source_rows: bool = false,
     /// Use auth_asym_id instead of label_asym_id for chain, and auth_seq_id
     /// instead of label_seq_id for residue numbers
     use_auth_chain: bool = false,
@@ -426,6 +429,8 @@ pub const MmcifParser = struct {
         defer residue_num_list.deinit(self.allocator);
         var insertion_code_list = std.ArrayListUnmanaged(types.FixedString4).empty;
         defer insertion_code_list.deinit(self.allocator);
+        var source_row_list = std.ArrayListUnmanaged(u32).empty;
+        defer source_row_list.deinit(self.allocator);
         var atom_records = std.ArrayListUnmanaged(AtomRecord).empty;
         defer atom_records.deinit(self.allocator);
         var has_non_blank_alt_loc = false;
@@ -439,6 +444,7 @@ pub const MmcifParser = struct {
         try atom_records.ensureTotalCapacity(self.allocator, estimated_rows);
 
         var col: usize = 0;
+        var row_index: usize = 0;
 
         // We need to re-read from the beginning of values since findAtomSiteLoop
         // consumed the first value. Let's backtrack by using a separate tokenizer
@@ -459,7 +465,8 @@ pub const MmcifParser = struct {
                         const should_include = in_wanted_model and try self.shouldIncludeAtom(row_values, columns);
 
                         if (should_include) {
-                            const atom = try self.atomRecordFromRow(row_values, columns);
+                            var atom = try self.atomRecordFromRow(row_values, columns);
+                            atom.source_row = std.math.cast(u32, row_index) orelse return ParseError.MalformedAtomSite;
                             if (self.alt_loc_mode == .none and atom.alt_loc != ' ') {
                                 return ParseError.UnexpectedAltLoc;
                             }
@@ -468,6 +475,7 @@ pub const MmcifParser = struct {
                         }
 
                         col = 0;
+                        row_index += 1;
                     }
                 },
                 .eof, .loop, .data_block => {
@@ -498,6 +506,7 @@ pub const MmcifParser = struct {
         try chain_id_list.ensureTotalCapacity(self.allocator, max_output_atoms);
         try residue_num_list.ensureTotalCapacity(self.allocator, max_output_atoms);
         try insertion_code_list.ensureTotalCapacity(self.allocator, max_output_atoms);
+        if (self.record_source_rows) try source_row_list.ensureTotalCapacity(self.allocator, max_output_atoms);
 
         const keep = if (has_non_blank_alt_loc) try self.resolveAltLocs(atom_records.items) else null;
         defer if (keep) |flags| self.allocator.free(flags);
@@ -528,6 +537,7 @@ pub const MmcifParser = struct {
             try residue_num_list.append(self.allocator, atom.residue_num);
             try insertion_code_list.append(self.allocator, types.FixedString4.fromSlice(atom.insertion_code));
             if (self.hydrogen_flags) |flags| try flags.append(self.allocator, atom.is_hydrogen);
+            if (self.record_source_rows) source_row_list.appendAssumeCapacity(atom.source_row);
         }
 
         // Convert to AtomInput
@@ -564,6 +574,10 @@ pub const MmcifParser = struct {
         errdefer self.allocator.free(residue_num);
         const insertion_code = try insertion_code_list.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(insertion_code);
+        const source_row: ?[]const u32 = if (self.record_source_rows)
+            try source_row_list.toOwnedSlice(self.allocator)
+        else
+            null;
 
         return AtomInput{
             .x = x,
@@ -577,6 +591,7 @@ pub const MmcifParser = struct {
             .chain_id_full = chain_id_full,
             .residue_num = residue_num,
             .insertion_code = insertion_code,
+            .source_row = source_row,
             .allocator = self.allocator,
         };
     }
@@ -601,6 +616,8 @@ pub const MmcifParser = struct {
         occupancy: f64,
         model_num: ?u32,
         is_hydrogen: bool,
+        /// Index of the `_atom_site` row this atom was read from
+        source_row: u32 = 0,
 
         /// label_seq_id and auth_seq_id are separate numberings: with auth
         /// chain IDs a polymer residue and a non-polymer residue can share a
