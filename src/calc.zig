@@ -9,6 +9,9 @@ const json_parser = @import("json_parser.zig");
 const json_writer = @import("json_writer.zig");
 const bcif_parser = @import("bcif_parser.zig");
 const mmcif_parser = @import("mmcif_parser.zig");
+const mmcif_writer = @import("mmcif_writer.zig");
+const pdb_writer = @import("pdb_writer.zig");
+const mmap_reader = @import("mmap_reader.zig");
 const pdb_parser = @import("pdb_parser.zig");
 const shrake_rupley = @import("shrake_rupley.zig");
 const shrake_rupley_bitmask = @import("shrake_rupley_bitmask.zig");
@@ -192,9 +195,13 @@ fn parseOutputFormat(value: []const u8) OutputFormat {
         return .freesasa;
     } else if (std.mem.eql(u8, value, "rsa")) {
         return .rsa;
+    } else if (std.mem.eql(u8, value, "cif") or std.mem.eql(u8, value, "mmcif")) {
+        return .cif;
+    } else if (std.mem.eql(u8, value, "pdb")) {
+        return .pdb;
     } else {
         std.debug.print("Error: Invalid format: {s}\n", .{value});
-        std.debug.print("Valid formats: json, compact, csv, freesasa, rsa\n", .{});
+        std.debug.print("Valid formats: json, compact, csv, freesasa, rsa, cif, pdb\n", .{});
         std.process.exit(1);
     }
 }
@@ -927,8 +934,8 @@ pub fn printHelp(io: std.Io, program_name: []const u8) void {
         \\                       fast (polynomial approximation, the results of
         \\                       zsasa 0.9.1 and earlier; totals come out a few
         \\                       tenths of a percent too high)
-        \\    --format=FORMAT    Output format: json, compact, csv, freesasa, rsa
-        \\                       (default: json; freesasa/rsa are single-calc text formats)
+        \\    --format=FORMAT    Output format: json, compact, csv, freesasa, rsa, cif, pdb
+        \\                       (default: json)
         \\    --precision=PREC   Floating-point precision: f32, f64 (default: f64)
         \\                       f32 is faster but less accurate
         \\    -o, --output=FILE  Output file (alternative to positional argument)
@@ -962,6 +969,11 @@ pub fn printHelp(io: std.Io, program_name: []const u8) void {
         \\             (JSON input without residue info: atom_index,area)
         \\    freesasa FreeSASA-compatible text summary
         \\    rsa      FreeSASA/NACCESS-compatible RSA residue table
+        \\    cif      The input mmCIF with _atom_site.zsasa_value (area) and
+        \\             _atom_site.zsasa_radius added (mmCIF input only)
+        \\    pdb      The input PDB with the radius in the occupancy and the
+        \\             area in the B-factor column; atoms left out of the
+        \\             calculation are dropped (PDB input only)
         \\
         \\EXAMPLES:
         \\    {s} calc input.json output.json
@@ -1122,6 +1134,7 @@ fn readInputFileAllAtoms(allocator: std.mem.Allocator, io: std.Io, path: []const
             parser.alt_loc_mode = args.alt_loc_mode;
             parser.alt_loc_id = args.alt_loc_id;
             parser.parse_inline_ccd = calcArgsUseCcdResources(args);
+            parser.record_source_rows = args.output_format == .cif;
 
             // Parse chain filter if specified
             var chain_filter_slice: ?[]const []const u8 = null;
@@ -1142,6 +1155,7 @@ fn readInputFileAllAtoms(allocator: std.mem.Allocator, io: std.Io, path: []const
             parser.atom_only = !args.include_hetatm;
             parser.alt_loc_mode = args.alt_loc_mode;
             parser.alt_loc_id = args.alt_loc_id;
+            parser.record_source_rows = args.output_format == .pdb;
 
             // Parse chain filter if specified
             var chain_filter_slice: ?[]const []const u8 = null;
@@ -1517,6 +1531,66 @@ fn detailLabel(algorithm: Algorithm) []const u8 {
     };
 }
 
+/// `_zsasa_parameters.algorithm` of `--format=cif`
+fn algorithmId(algorithm: Algorithm) []const u8 {
+    return switch (algorithm) {
+        .sr => "shrake_rupley",
+        .lr => "lee_richards",
+    };
+}
+
+/// Item name of the resolution parameter in `--format=cif`
+fn detailItem(algorithm: Algorithm) []const u8 {
+    return switch (algorithm) {
+        .sr => "n_points",
+        .lr => "n_slices",
+    };
+}
+
+/// The input file that `--format=cif` and `--format=pdb` write back into
+fn annotatedSourceFormat(output_format: OutputFormat) ?format_detect.InputFormat {
+    return switch (output_format) {
+        .cif => .mmcif,
+        .pdb => .pdb,
+        else => null,
+    };
+}
+
+/// Read the mmCIF or PDB input again and write it with the areas added
+fn writeAnnotatedSource(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    format: OutputFormat,
+    input_path: []const u8,
+    output_path: []const u8,
+    input: types.AtomInput,
+    atom_areas: []const f64,
+    options: mmcif_writer.Options,
+) !void {
+    const source = if (compressed.isCompressed(input_path))
+        try compressed.read(allocator, input_path)
+    else
+        try mmap_reader.readFileOnce(allocator, io, input_path);
+    defer allocator.free(source);
+
+    const text = switch (format) {
+        .cif => try mmcif_writer.annotate(allocator, source, input, atom_areas, options),
+        .pdb => try pdb_writer.annotate(allocator, source, input, atom_areas, .{
+            .algorithm = options.algorithm,
+            .classifier = options.classifier,
+            .probe_radius = options.probe_radius,
+            .detail_item = options.detail_item,
+            .detail_count = options.detail_count,
+        }),
+        else => unreachable,
+    };
+    defer allocator.free(text);
+
+    const file = try std.Io.Dir.cwd().createFile(io, output_path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, text);
+}
+
 fn detailCount(args: CalcArgs) u32 {
     return switch (args.algorithm) {
         .sr => args.n_points,
@@ -1563,6 +1637,27 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
         return error.MissingArgument;
     };
     const input_format = format_detect.detectInputFormat(input_path);
+    if (annotatedSourceFormat(effective_args.output_format)) |source_format| {
+        const name = @tagName(effective_args.output_format);
+        if (input_format != source_format) {
+            switch (source_format) {
+                .mmcif => std.debug.print("Error: --format=cif writes the areas into the input mmCIF file and needs mmCIF input (.cif, .mmcif, optionally .gz or .zst); use --format=json or --format=csv for other inputs\n", .{}),
+                else => std.debug.print("Error: --format=pdb writes the areas into the input PDB file and needs PDB input (.pdb, .ent, optionally .gz or .zst); use --format=json or --format=csv for other inputs\n", .{}),
+            }
+            std.process.exit(1);
+        }
+        const workflow_sets_path = if (workflow) |w| w.output.path != null else false;
+        // Without an output file, write output.cif or output.pdb rather than output.json
+        if (!effective_args.output_path_explicit and !workflow_sets_path and
+            std.mem.eql(u8, effective_args.output_path, (CalcArgs{}).output_path))
+        {
+            effective_args.output_path = if (source_format == .mmcif) "output.cif" else "output.pdb";
+        }
+        if (compressed.isCompressed(effective_args.output_path)) {
+            std.debug.print("Error: --format={s} writes uncompressed text; give an output file without .gz or .zst: {s}\n", .{ name, effective_args.output_path });
+            std.process.exit(1);
+        }
+    }
     const effective_classifier: ?ClassifierType = effective_args.classifier_type orelse
         if (effective_args.config_path == null and input_format != .json) .ccd else null;
     effective_args.classifier_type = if (effective_args.validate_only) null else effective_classifier;
@@ -1890,7 +1985,19 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: CalcArgs) !void {
         std.debug.print("Error creating output directory for '{s}': {s}\n", .{ effective_args.output_path, @errorName(err) });
         std.process.exit(1);
     };
-    json_writer.writeSasaResultWithFormatAndInputOptions(allocator, io, result, input, effective_args.output_path, effective_args.output_format, .{
+    if (annotatedSourceFormat(effective_args.output_format) != null) {
+        writeAnnotatedSource(allocator, io, effective_args.output_format, input_path, effective_args.output_path, input, result.atom_areas, .{
+            .algorithm = algorithmId(effective_args.algorithm),
+            .classifier = classifierName(effective_classifier, effective_args.config_path),
+            .probe_radius = effective_args.probe_radius,
+            .detail_item = detailItem(effective_args.algorithm),
+            .detail_count = detailCount(effective_args),
+            .atom_classes = atom_classes,
+        }) catch |err| {
+            std.debug.print("Error writing output file '{s}': {s}\n", .{ effective_args.output_path, @errorName(err) });
+            std.process.exit(1);
+        };
+    } else json_writer.writeSasaResultWithFormatAndInputOptions(allocator, io, result, input, effective_args.output_path, effective_args.output_format, .{
         .input_name = input_path,
         .classifier_name = classifierName(effective_classifier, effective_args.config_path),
         .algorithm_name = algorithmName(effective_args.algorithm),
@@ -2066,6 +2173,9 @@ test "CalcArgs enum options" {
         .{ &.{ "zsasa", "calc", "--format=csv", "input.json" }, "output_format", OutputFormat.csv },
         .{ &.{ "zsasa", "calc", "--format=freesasa", "input.pdb" }, "output_format", OutputFormat.freesasa },
         .{ &.{ "zsasa", "calc", "--format=rsa", "input.pdb" }, "output_format", OutputFormat.rsa },
+        .{ &.{ "zsasa", "calc", "--format=cif", "input.cif" }, "output_format", OutputFormat.cif },
+        .{ &.{ "zsasa", "calc", "--format=mmcif", "input.cif" }, "output_format", OutputFormat.cif },
+        .{ &.{ "zsasa", "calc", "--format=pdb", "input.pdb" }, "output_format", OutputFormat.pdb },
         .{ &.{ "zsasa", "calc", "--format", "csv", "input.json" }, "output_format", OutputFormat.csv },
         .{ &.{ "zsasa", "calc", "--algorithm=sr", "input.json" }, "algorithm", Algorithm.sr },
         .{ &.{ "zsasa", "calc", "--algorithm=lr", "input.json" }, "algorithm", Algorithm.lr },
@@ -2556,6 +2666,89 @@ fn runCalcOnText(input_name: []const u8, input: []const u8, format: OutputFormat
     try run(allocator, std.testing.io, run_args);
 
     return std.Io.Dir.cwd().readFileAlloc(std.testing.io, output_path, allocator, .limited(1024 * 1024));
+}
+
+test "calc --format=cif writes the areas into the input mmCIF" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\data_T
+        \\loop_
+        \\_atom_site.group_PDB
+        \\_atom_site.type_symbol
+        \\_atom_site.label_atom_id
+        \\_atom_site.label_comp_id
+        \\_atom_site.label_asym_id
+        \\_atom_site.Cartn_x
+        \\_atom_site.Cartn_y
+        \\_atom_site.Cartn_z
+        \\ATOM   C CA GLY A 0.0 0.0 0.0
+        \\HETATM O O  HOH A 20.0 0.0 0.0
+        \\ATOM   C CA GLY B 40.0 0.0 0.0
+        \\#
+        \\
+    ;
+    const json = try runCalcOnText("in.cif", source, .json, .{ .n_points = 20 });
+    defer allocator.free(json);
+    const cif_text = try runCalcOnText("in.cif", source, .cif, .{ .n_points = 20 });
+    defer allocator.free(cif_text);
+
+    // Isolated atoms: the area of each is the full sphere of radius r + 1.4
+    var lines = std.mem.splitScalar(u8, cif_text, '\n');
+    var values: [3][]const u8 = undefined;
+    var n_rows: usize = 0;
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "ATOM") and !std.mem.startsWith(u8, line, "HETATM")) continue;
+        var fields = std.mem.tokenizeScalar(u8, line, ' ');
+        var last: [2][]const u8 = .{ "", "" };
+        while (fields.next()) |f| last = .{ last[1], f };
+        values[n_rows] = last[0];
+        n_rows += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 3), n_rows);
+    try std.testing.expectEqualStrings("?", values[1]);
+
+    const parsed = try std.json.parseFromSlice(struct { total_area: f64, atom_areas: []f64 }, allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.atom_areas.len);
+    try std.testing.expectApproxEqAbs(parsed.value.atom_areas[0], try std.fmt.parseFloat(f64, values[0]), 1e-3);
+    try std.testing.expectApproxEqAbs(parsed.value.atom_areas[1], try std.fmt.parseFloat(f64, values[2]), 1e-3);
+    try std.testing.expect(std.mem.indexOf(u8, cif_text, "_zsasa_parameters.n_points 20\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cif_text, "chain B ") != null);
+}
+
+test "calc --format=pdb writes radius and area into the input PDB" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\ATOM      1  CA  GLY A   1       0.000   0.000   0.000  1.00 20.00           C
+        \\HETATM    2  O   HOH A 101      20.000   0.000   0.000  1.00 20.00           O
+        \\ATOM      3  CA  GLY B   1      40.000   0.000   0.000  1.00 20.00           C
+        \\END
+        \\
+    ;
+    const json = try runCalcOnText("in.pdb", source, .json, .{ .n_points = 20 });
+    defer allocator.free(json);
+    const pdb_text = try runCalcOnText("in.pdb", source, .pdb, .{ .n_points = 20 });
+    defer allocator.free(pdb_text);
+
+    const parsed = try std.json.parseFromSlice(struct { atom_areas: []f64 }, allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.atom_areas.len);
+
+    // The water is not part of the calculation and is left out
+    try std.testing.expect(std.mem.indexOf(u8, pdb_text, "HOH") == null);
+    var areas: [2]f64 = undefined;
+    var n: usize = 0;
+    var lines = std.mem.splitScalar(u8, pdb_text, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "ATOM")) continue;
+        areas[n] = try std.fmt.parseFloat(f64, std.mem.trim(u8, line[60..66], " "));
+        n += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), n);
+    for (areas, parsed.value.atom_areas) |written, computed| {
+        try std.testing.expectApproxEqAbs(computed, written, 0.005);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, pdb_text, "REMARK 999 ZSASA: ALGORITHM shrake_rupley, PROBE RADIUS 1.40, n_points 20\n") != null);
 }
 
 /// Residues 10, 10A and 10B of chain H (antibody numbering), far apart.

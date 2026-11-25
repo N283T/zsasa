@@ -197,7 +197,7 @@ fn getOutputExtension(format: OutputFormat) []const u8 {
         .json, .compact => ".json",
         .jsonl => ".jsonl",
         .csv => ".csv",
-        .freesasa, .rsa => unreachable,
+        .freesasa, .rsa, .cif, .pdb => unreachable,
     };
 }
 
@@ -3040,7 +3040,7 @@ fn validatePolarFormat(output_format: OutputFormat, polar: bool) !void {
 fn validateBatchOutputFormat(output_format: OutputFormat) !void {
     switch (output_format) {
         .json, .compact, .csv, .jsonl => {},
-        .freesasa, .rsa => return error.InvalidArgument,
+        .freesasa, .rsa, .cif, .pdb => return error.InvalidArgument,
     }
 }
 

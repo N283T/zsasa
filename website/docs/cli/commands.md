@@ -199,7 +199,7 @@ See [Output & Analysis](output.md#analysis-features) for detailed output descrip
 | Option | Description | Default | Commands |
 |--------|-------------|---------|----------|
 | `-o, --output=FILE` | Output location, as an alternative to the positional argument: `calc` writes this file; `batch` writes per-file results into this directory, or all rows to this file with `--format=jsonl`; `traj` writes this CSV file. The option wins over a positional path. `-o FILE`, `-o=FILE` and `--output FILE` also work | calc: `output.json`; batch: no per-file output; traj: `traj_sasa.csv` | calc, batch, traj |
-| `--format=FMT` | Output format. `calc`: `json`, `compact`, `csv`, `freesasa`, `rsa`; `batch`: `json`, `compact`, `csv`, `jsonl` | `json` | calc, batch |
+| `--format=FMT` | Output format. `calc`: `json`, `compact`, `csv`, `freesasa`, `rsa`, `cif` (mmCIF input with the areas added; see [Annotated mmCIF](output.md#annotated-mmcif-calc---formatcif)), `pdb` (PDB input with radius and area in the occupancy and B-factor columns; see [Annotated PDB](output.md#annotated-pdb-calc---formatpdb)); `batch`: `json`, `compact`, `csv`, `jsonl` | `json` | calc, batch |
 | `--residue-map` | Add compact residue map arrays to batch JSONL output (`--format=jsonl` only). A BSA `[analysis]` workflow rejects it | off | batch |
 | `--jsonl-decimals=N` | Round JSONL floating-point values to `N` decimal places (`0..15`); requires `--format=jsonl` | full precision | batch |
 | `--timing` | Show timing breakdown (for benchmarking). With `batch --workflow` only a BSA `[analysis]` workflow reports it; a workflow with `[[jobs]]` prints a warning that the option has no effect | off | calc, batch |

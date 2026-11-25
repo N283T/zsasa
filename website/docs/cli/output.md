@@ -183,7 +183,119 @@ every relative value to a number, so it stops with `ValueError` at the first
 ` -99.9` (the same width) before passing the lines to it.
 :::
 
-The `freesasa` and `rsa` formats are available for single `calc` runs only.
+### Annotated mmCIF (`calc --format=cif`)
+
+`--format=cif` writes the input mmCIF file back with the area of every atom
+added, so the areas stay with the structure and can be read with any mmCIF
+reader, such as gemmi. The input must be mmCIF
+(`.cif`, `.mmcif`, also compressed with `.gz` or `.zst`); the output is
+uncompressed text, and the output file name must not end in `.gz` or `.zst`.
+Without an output file, `calc` writes `output.cif`. `mmcif` is accepted as
+another name for the format.
+
+```bash
+zsasa calc --format=cif structure.cif structure_sasa.cif
+```
+
+Everything in the input is copied unchanged, except:
+
+- The first `_atom_site` loop gets two more columns, `_atom_site.zsasa_value`
+  (area in Å²) and `_atom_site.zsasa_radius` (radius in Å), with three
+  decimals. No row is dropped: rows that were not part of the calculation
+  have `?` in both columns. With the defaults these are hydrogens, HETATM
+  records, water, models after the first and the alternate locations that
+  `--altloc` did not select, and with `--chain` the other chains.
+- Two categories are added at the end of the data block that holds
+  `_atom_site`: `_zsasa_parameters` (`algorithm`, `classifier`,
+  `probe_radius`, and `n_points` or `n_slices`) and the loop
+  `_zsasa_results` with the total area, its polar and apolar parts by the
+  classifier's atom classes (as in [`--polar`](#polarnonpolar-summary---polar)),
+  and the area of each chain.
+
+```text
+_atom_site.pdbx_PDB_model_num
+_atom_site.zsasa_value
+_atom_site.zsasa_radius
+ATOM   1   N N   . MET A 1 1  ? 27.340 24.430 2.614  1.00 9.67  ? 1   MET A N   1 17.420 1.640
+...
+HETATM 660 O O   . HOH B 2 .  ? 37.667 43.421 17.000 0.50 33.32 ? 134 HOH A O   1 ? ?
+...
+_zsasa_parameters.algorithm shrake_rupley
+_zsasa_parameters.classifier CCD
+_zsasa_parameters.probe_radius 1.400
+_zsasa_parameters.n_points 100
+#
+loop_
+_zsasa_results.type
+_zsasa_results.chain_id
+_zsasa_results.surface_area
+total . 4834.716
+polar . 2515.821
+apolar . 2318.895
+chain A 4834.716
+#
+```
+
+A file that zsasa has already annotated can be used as input again: the
+values of the existing `zsasa_value` and `zsasa_radius` columns are replaced,
+and earlier `_zsasa_*` categories in the block (and in the blocks before it)
+are removed before the new ones are written, so a second run with the same
+options gives the same file. The chain IDs in `_zsasa_results` are
+`label_asym_id`, or `auth_asym_id` with `--auth-chain`. The values are the
+same as those of the JSON output, rounded to three decimals; with
+`--model=all`, every model is part of the calculation and has values.
+
+This is the format that FreeSASA writes with `--format=cif`, with the
+columns and categories named `zsasa` instead of `FreeSASA`. zsasa does not
+write the per-residue `_freeSASA_rsa` category; use `--format=rsa` for
+residue values. For PDB input, see [Annotated PDB](#annotated-pdb-calc---formatpdb).
+
+### Annotated PDB (`calc --format=pdb`)
+
+`--format=pdb` writes the input PDB file back with the radius of every atom
+in the occupancy column (55-60) and its area in the temperature factor
+(B-factor) column (61-66), the convention of FreeSASA's PDB output, so a
+viewer can color the structure by area. The input must be PDB (`.pdb`,
+`.ent`, also compressed with `.gz` or `.zst`); the output is uncompressed
+text, and the output file name must not end in `.gz` or `.zst`. Without an
+output file, `calc` writes `output.pdb`.
+
+```bash
+zsasa calc --format=pdb structure.pdb structure_sasa.pdb
+```
+
+```text
+HEADER    CHROMOSOMAL PROTEIN                     02-JAN-87   1UBQ
+REMARK 999 ZSASA: OCCUPANCY = RADIUS (A), B-FACTOR = SASA (A^2)
+REMARK 999 ZSASA: ALGORITHM shrake_rupley, PROBE RADIUS 1.40, n_points 100
+REMARK 999 ZSASA: CLASSIFIER CCD
+REMARK 999 ZSASA: TOTAL AREA 4834.72
+...
+ATOM      1  N   MET A   1      27.340  24.430   2.614  1.64 17.42           N
+ATOM      2  CA  MET A   1      26.266  25.413   2.842  1.88 16.22           C
+```
+
+A PDB record has no room for a missing value, so, unlike
+[`--format=cif`](#annotated-mmcif-calc---formatcif), only the atoms that were
+part of the calculation are written. The ATOM and HETATM records of the
+others (with the defaults: hydrogens, HETATM records, water, models after the
+first, alternate locations that `--altloc` did not select, and with
+`--chain` the other chains) are dropped, together with:
+
+- their ANISOU, SIGATM and SIGUIJ records,
+- MODEL blocks and TER records left without atoms,
+- CONECT records that name a dropped atom,
+- the MASTER record, whose counts no longer hold.
+
+Every other record is copied unchanged. `REMARK 999 ZSASA` lines that
+describe the columns and the calculation are added after the HEADER record
+(or at the top of a file without one); a file that zsasa has already
+annotated can be used as input again, and its earlier `REMARK 999 ZSASA`
+lines are replaced. Values have two decimals; an area of 1000 Å² or more is
+written with one decimal to fit the six columns, and one of 10,000 Å² or more
+stops the command with `ValueTooWide`.
+
+The `freesasa`, `rsa`, `cif` and `pdb` formats are available for single `calc` runs only.
 Batch output remains `json`, `compact`, `csv`, or `jsonl`.
 
 ### Trajectory Output (CSV)

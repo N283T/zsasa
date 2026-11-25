@@ -85,6 +85,9 @@ pub const PdbParser = struct {
     /// `skip_hydrogens` would drop (hydrogen and deuterium). The list is owned
     /// by the caller and grown with the parser's allocator.
     hydrogen_flags: ?*std.ArrayListUnmanaged(bool) = null,
+    /// Set `AtomInput.source_row`: the index of the line each atom was read
+    /// from (0-based, lines split at `\n`).
+    record_source_rows: bool = false,
     /// Number of selected ATOM/HETATM records that were dropped because a
     /// field could not be parsed (short line, bad coordinate or residue
     /// number). Reset by every `parse`.
@@ -121,6 +124,8 @@ pub const PdbParser = struct {
         defer insertion_code_list.deinit(self.allocator);
         var atom_records = std.ArrayListUnmanaged(AtomRecord).empty;
         defer atom_records.deinit(self.allocator);
+        var source_row_list = std.ArrayListUnmanaged(u32).empty;
+        defer source_row_list.deinit(self.allocator);
 
         // Pre-allocate based on estimated atom count (PDB line ~80 chars)
         const estimated_atoms = source.len / 80;
@@ -149,7 +154,8 @@ pub const PdbParser = struct {
 
         // Parse line by line
         var lines = std.mem.splitScalar(u8, source, '\n');
-        while (lines.next()) |line| {
+        var line_index: usize = 0;
+        while (lines.next()) |line| : (line_index += 1) {
             // Handle MODEL/ENDMDL records
             if (std.mem.startsWith(u8, line, "MODEL")) {
                 if (self.first_model_only and seen_model) break;
@@ -182,6 +188,7 @@ pub const PdbParser = struct {
                 continue;
             };
             atom.model_num = current_model;
+            atom.source_row = std.math.cast(u32, line_index) orelse return ParseError.NoAtomsFound;
 
             // Hydrogen filtering (also skip deuterium D, an isotope of H)
             if (self.skip_hydrogens or want_hydrogen_flags) {
@@ -248,6 +255,7 @@ pub const PdbParser = struct {
                 &insertion_code_list,
             );
             if (self.hydrogen_flags) |flags| try flags.append(self.allocator, atom.is_hydrogen);
+            if (self.record_source_rows) try source_row_list.append(self.allocator, atom.source_row);
         }
 
         if (x_list.items.len == 0) {
@@ -266,6 +274,7 @@ pub const PdbParser = struct {
             .chain_id = try chain_id_list.toOwnedSlice(self.allocator),
             .residue_num = try residue_num_list.toOwnedSlice(self.allocator),
             .insertion_code = try insertion_code_list.toOwnedSlice(self.allocator),
+            .source_row = if (self.record_source_rows) try source_row_list.toOwnedSlice(self.allocator) else null,
             .allocator = self.allocator,
         };
     }
@@ -312,6 +321,8 @@ pub const PdbParser = struct {
         occupancy: f64,
         model_num: ?u32 = null,
         is_hydrogen: bool = false,
+        /// Index of the line this atom was read from
+        source_row: u32 = 0,
 
         pub fn altLocSite(self: AtomRecord) altloc.Site {
             return .{
@@ -425,7 +436,7 @@ pub const PdbParser = struct {
     }
 };
 
-const AtomRecordKind = struct {
+pub const AtomRecordKind = struct {
     is_hetatm: bool,
     /// The record with its columns 13 onwards in their standard places. Only
     /// that part is meaningful: for a record shifted by an overflowing serial
@@ -446,7 +457,7 @@ const AtomRecordKind = struct {
 ///   the three coordinates: in a standard record they are in columns 35, 43
 ///   and 51, in a shifted one in columns 36, 44 and 52. The serial must
 ///   also reach column 12.
-fn atomRecordKind(line: []const u8) ?AtomRecordKind {
+pub fn atomRecordKind(line: []const u8) ?AtomRecordKind {
     const is_hetatm = std.mem.startsWith(u8, line, "HETATM");
     const is_atom = std.mem.startsWith(u8, line, "ATOM  ") or
         (std.mem.startsWith(u8, line, "ATOM ") and line.len > 5 and std.ascii.isDigit(line[5]));

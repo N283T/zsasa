@@ -48,6 +48,8 @@ pub const OutputFormat = enum {
     jsonl, // JSON Lines (one JSON object per line, for batch)
     freesasa, // FreeSASA-compatible human-readable text (single calc only)
     rsa, // FreeSASA/NACCESS-compatible residue RSA text (single calc only)
+    cif, // Source mmCIF with per-atom areas added (single calc, mmCIF input only; see mmcif_writer.zig)
+    pdb, // Source PDB with radius/area in occupancy/B-factor (single calc, PDB input only; see pdb_writer.zig)
 };
 
 /// Fails with `NonFiniteValue` if `value` holds a NaN or infinite float.
@@ -603,6 +605,7 @@ pub fn writeSasaResultWithFormat(
         .csv => try sasaResultToCsv(allocator, result),
         .freesasa => try sasaResultToFreesasa(allocator, result, .{}),
         .rsa => return error.MissingResidueInfo,
+        .cif, .pdb => return error.MissingSourceText, // written by mmcif_writer/pdb_writer from the source file
         .jsonl => unreachable, // JSONL is handled at batch level, not per-file
     };
     defer allocator.free(output_str);
@@ -651,6 +654,7 @@ pub fn writeSasaResultWithFormatAndInputOptions(
             try sasaResultToCsv(allocator, result),
         .freesasa => try sasaResultToFreesasa(allocator, result, options),
         .rsa => try sasaResultToRsa(allocator, result, input, options),
+        .cif, .pdb => return error.MissingSourceText, // written by mmcif_writer/pdb_writer from the source file
         .jsonl => unreachable, // JSONL is handled at batch level, not per-file
     };
     defer allocator.free(output_str);
