@@ -65,6 +65,13 @@ concurrency:
   group: publish-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
+# setup-zig notes (apply to every job that uses it):
+# - timeout-minutes leaves room for one unresponsive Zig download mirror,
+#   which costs setup-zig about 10 minutes before it moves to the next one.
+# - cache-key includes build.zig.zon, so a dependency change never restores a
+#   cache holding older zsasa/ztraj packages. Zig 0.17 compiles the build.zig
+#   of every lazy dependency it finds in the cache, and an outdated one breaks
+#   the build.
 jobs:
   prepare:
     name: Resolve release tag
@@ -233,7 +240,7 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.python == 'true'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -254,6 +261,7 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.17.1
+          cache-key: ${{ hashFiles('build.zig.zon') }}
 
       - name: Cache cibuildwheel
         if: runner.os != 'Linux'
@@ -281,7 +289,7 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.python == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -297,6 +305,7 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.17.1
+          cache-key: ${{ hashFiles('build.zig.zon') }}
 
       - name: Install build
         run: pip install build
@@ -335,7 +344,7 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.cli == 'true'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -375,6 +384,7 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.17.1
+          cache-key: ${{ hashFiles('build.zig.zon') }}
 
       - name: Build CLI
         run: zig build -Doptimize=ReleaseFast ${{ matrix.zig_args }}
