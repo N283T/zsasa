@@ -17,7 +17,7 @@ uv add zsasa
 Pre-built wheels are available for Linux (x86_64, aarch64), macOS (x86_64, arm64), and Windows (x86_64).
 Python 3.11-3.13 supported.
 
-The pre-built x86_64 wheels, CLI binaries and Docker image need a CPU with AVX2 and FMA (x86-64-v3: Intel Haswell or AMD Excavator, 2013 and later, including every Zen CPU). The macOS builds need macOS 11 or later. On an older CPU, build from source: `pip install --no-binary zsasa zsasa` (needs Zig 0.16) or `zig build -Doptimize=ReleaseFast`, which target the machine they run on.
+The pre-built x86_64 wheels, CLI binaries and Docker image need a CPU with AVX2 and FMA (x86-64-v3: Intel Haswell or AMD Excavator, 2013 and later, including every Zen CPU). The macOS builds need macOS 11 or later. On an older CPU, build from source: `pip install --no-binary zsasa zsasa` (needs Zig 0.17) or `zig build -Doptimize=ReleaseFast`, which target the machine they run on.
 
 For structure file support (mmCIF/PDB), install with an integration:
 
@@ -43,13 +43,13 @@ curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | sh
 # Or with custom install directory
 curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | INSTALL_DIR=/usr/local/bin sh
 
-# Or build from source (requires Zig 0.16.0)
+# Or build from source (requires Zig 0.17)
 git clone https://github.com/N283T/zsasa.git
 cd zsasa
 zig build -Doptimize=ReleaseFast
 ```
 
-The binary is at `./zig-out/bin/zsasa` (source build) or `~/.local/bin/zsasa` (install.sh). The installer supports Linux and macOS. It downloads the latest release by default, or `VERSION=X.Y.Z` when pinned. If Zig 0.16.0 and `git` are available, it builds the tagged source release locally; otherwise it downloads the matching pre-built binary and verifies it against the release's `SHA256SUMS`.
+The binary is at `./zig-out/bin/zsasa` (source build) or `~/.local/bin/zsasa` (install.sh). The installer supports Linux and macOS. It downloads the latest release by default, or `VERSION=X.Y.Z` when pinned. If Zig 0.17.1 and `git` are available, it builds the tagged source release locally; otherwise it downloads the matching pre-built binary and verifies it against the release's `SHA256SUMS`.
 
 The installer stops without installing when it cannot verify the binary: `SHA256SUMS` cannot be downloaded or has no entry for the binary, neither `sha256sum` nor `shasum` is installed, or the checksum differs. To install without verification anyway (not recommended), set `SKIP_CHECKSUM=1`:
 

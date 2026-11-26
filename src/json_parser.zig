@@ -188,8 +188,8 @@ const JsonFields = struct {
     element: ?std.ArrayList(u8) = null,
 
     fn deinit(self: *JsonFields, allocator: Allocator) void {
-        inline for (std.meta.fields(JsonFields)) |f| {
-            if (@field(self, f.name)) |*list| list.deinit(allocator);
+        inline for (@typeInfo(JsonFields).@"struct".field_names) |name| {
+            if (@field(self, name)) |*list| list.deinit(allocator);
         }
     }
 };

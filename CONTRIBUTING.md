@@ -6,7 +6,7 @@ Thank you for your interest in contributing to zsasa!
 
 ### Prerequisites
 
-- **Zig 0.16.0+** - Required for building the project
+- **Zig 0.17.0+** - Required for building the project
 - **Python 3.11+** - Required for the Python bindings
 - **Python 3.12+** and [uv](https://docs.astral.sh/uv/) - Required for the benchmark scripts
 - **FreeSASA C** (optional) - For benchmark comparisons
@@ -62,7 +62,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-Note: Requires Zig 0.16.0+ to be installed. The build hook compiles the library with ReleaseFast optimization.
+Note: Requires Zig 0.17.0+ to be installed. The build hook compiles the library with ReleaseFast optimization.
 
 `ZSASA_NO_BUNDLE=1` turns the build hook off: `ZSASA_NO_BUNDLE=1 pip wheel ./python` gives a pure-Python wheel (`py3-none-any`) with neither the library nor the binary, for packagers that ship those separately (see [Packaging without bundled binaries](https://n283t.github.io/zsasa/docs/python-api#packaging-without-bundled-binaries)). `hatchling` is part of the `dev` extra because `python/tests/test_hatch_build.py` tests the hook.
 

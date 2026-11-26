@@ -334,7 +334,7 @@ def _find_library() -> Path:
         f"Could not find {lib_name}: it is not bundled in the zsasa package "
         f"({package_dir}) and not in {', '.join(str(d) for d in searched)}. "
         "Install with 'pip install zsasa' (a wheel bundles the library; a source "
-        "install requires Zig 0.16.0+), or set ZSASA_LIB to the library file."
+        "install requires Zig 0.17.0+), or set ZSASA_LIB to the library file."
     )
     raise FileNotFoundError(msg)
 

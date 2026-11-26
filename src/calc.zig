@@ -2418,7 +2418,7 @@ test "ensureCalcOutputParentDir creates nested output parent directories" {
 
 test "ensureCalcOutputParentDir accepts a parent that is a symlink to a directory" {
     // macOS /tmp is a symlink to /private/tmp (#517).
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();

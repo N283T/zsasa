@@ -280,7 +280,7 @@ fn isUnsafeFileNameByte(c: u8, os_tag: std.Target.Os.Tag) bool {
 fn sdfMoleculeOutputName(allocator: Allocator, display_name: []const u8, ext: []const u8) ![]u8 {
     const name = try std.mem.concat(allocator, u8, &.{ display_name, ext });
     for (name[0..display_name.len]) |*c| {
-        if (isUnsafeFileNameByte(c.*, builtin.os.tag)) c.* = '_';
+        if (isUnsafeFileNameByte(c.*, builtin.target.os.tag)) c.* = '_';
     }
     return name;
 }
@@ -6551,7 +6551,7 @@ const darwin_iopolicy = struct {
 /// on 10 threads the batch took 439-473 s with this policy and 616-687 s
 /// without it; runs on already-scanned files did not change.
 fn usePassiveDiskIo() void {
-    if (builtin.os.tag == .macos) {
+    if (builtin.target.os.tag == .macos) {
         _ = darwin_iopolicy.setiopolicy_np(darwin_iopolicy.type_disk, darwin_iopolicy.scope_process, darwin_iopolicy.passive);
     }
 }
@@ -6737,7 +6737,7 @@ pub fn run(allocator: Allocator, io: std.Io, args: BatchArgs) !void {
 // =============================================================================
 
 test "usePassiveDiskIo sets the passive disk I/O policy on macOS" {
-    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    if (builtin.target.os.tag != .macos) return error.SkipZigTest;
 
     usePassiveDiskIo();
     try std.testing.expectEqual(
@@ -7097,9 +7097,9 @@ test "BatchConfig default values" {
 }
 
 test "BatchResult deinit frees every buffer a file result owns" {
-    // A DebugAllocator reports a leak through its return value, which makes the
-    // check an explicit assertion.
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    // A SafeAllocator reports the number of leaks through its return value,
+    // which makes the check an explicit assertion.
+    var gpa: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
     const allocator = gpa.allocator();
 
     const results = try allocator.alloc(FileResult, 2);
@@ -7131,7 +7131,7 @@ test "BatchResult deinit frees every buffer a file result owns" {
     };
     batch_result.deinit();
 
-    try std.testing.expectEqual(std.heap.Check.ok, gpa.deinit());
+    try std.testing.expectEqual(@as(usize, 0), gpa.deinit());
 }
 
 test "BatchResult phase timing fields default to zero" {

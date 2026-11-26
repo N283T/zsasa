@@ -33,7 +33,7 @@ pub const MutedStderr = struct {
 /// Everything is printed again when ZSASA_TEST_STDERR is set, and on Windows,
 /// where nothing is muted.
 pub fn muteStderr() MutedStderr {
-    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return .{};
+    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return .{};
     if (std.testing.environ.getPosix(show_stderr_env) != null) return .{};
 
     const saved = posixDup(2) orelse return .{};

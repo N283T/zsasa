@@ -6,9 +6,9 @@ FROM alpine:3.21 AS builder
 # (the build fails if it does not match). When bumping ZIG_VERSION, update
 # both checksums, python/pyproject.toml (cibuildwheel before-all) and the Zig
 # version in .github/workflows/*.yml.
-ARG ZIG_VERSION=0.16.0
-ARG ZIG_SHA256_X86_64=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
-ARG ZIG_SHA256_AARCH64=ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17
+ARG ZIG_VERSION=0.17.1
+ARG ZIG_SHA256_X86_64=3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a
+ARG ZIG_SHA256_AARCH64=a1546d5646eb184437918d6635ca6b762a0e889eac09cef720ee7a1ed3fe7795
 RUN apk add --no-cache curl xz git && \
     ARCH=$(uname -m) && \
     case "${ARCH}" in \

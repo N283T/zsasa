@@ -2981,7 +2981,7 @@ fn writeBatchFixtureDir(tmp: *std.testing.TmpDir, files: []const BatchFixtureFil
     }
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const len = try tmp.dir.realPath(std.testing.io, &buf);
-    return std.testing.allocator.dupeZ(u8, buf[0..len]);
+    return std.testing.allocator.dupeSentinel(u8, buf[0..len], 0);
 }
 
 /// Index of the result entry whose filename is `name`, or null.

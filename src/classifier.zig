@@ -266,7 +266,7 @@ pub const Classifier = struct {
 /// Sources: Mantina et al. 2009 for common elements, gemmi for others
 /// Index = atomic number, Value = radius in Angstroms (0 = unknown)
 const atomic_number_radii = blk: {
-    var radii: [119]f64 = .{0} ** 119;
+    var radii: [119]f64 = @splat(0);
     // Common biological elements
     radii[1] = 1.10; // H
     radii[6] = 1.70; // C

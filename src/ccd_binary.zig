@@ -151,7 +151,7 @@ pub const PackedBond = extern struct {
         return .{
             .atom_idx_1 = std.mem.nativeToLittle(u16, b.atom_idx_1),
             .atom_idx_2 = std.mem.nativeToLittle(u16, b.atom_idx_2),
-            .order = @intFromEnum(b.order),
+            .order = @backingInt(b.order),
             .flags = flags,
         };
     }
@@ -742,7 +742,7 @@ test "parseDict rejects atom lengths above the 4-byte arrays" {
 
 test "parseDict rejects bond order bytes that name no BondOrder" {
     const allocator = std.testing.allocator;
-    const valid_max: u8 = @typeInfo(BondOrder).@"enum".fields.len - 1;
+    const valid_max: u8 = @typeInfo(BondOrder).@"enum".field_names.len - 1;
     for ([_]u8{ valid_max + 1, 7, 200, 255 }) |bad| {
         var img = TestImage{};
         defer img.deinit(allocator);
@@ -970,7 +970,7 @@ test "writeDict rejects component IDs the length byte cannot hold and dangling b
 
     var long_id = ccd_parser.ComponentDict.init(allocator);
     defer long_id.deinit();
-    const long_name = [_]u8{'X'} ** 256;
+    const long_name: [256]u8 = @splat('X');
     try addSizedTestComponent(allocator, &long_id, &long_name, 1, 0);
     var w = std.Io.Writer.fixed(&sink);
     try std.testing.expectError(error.InvalidComponentId, writeDict(&w, &long_id));

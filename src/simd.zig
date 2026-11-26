@@ -12,19 +12,19 @@ const Vec3Gen = types.Vec3Gen;
 /// Compile-time CPU feature detection for SIMD optimization.
 pub const cpu_features = struct {
     /// AVX-512F support (512-bit vectors)
-    pub const has_avx512f = if (builtin.cpu.arch == .x86_64)
-        std.Target.x86.featureSetHas(builtin.cpu.features, .avx512f)
+    pub const has_avx512f = if (builtin.target.cpu.arch == .x86_64)
+        std.Target.x86.featureSetHas(builtin.target.cpu.features, .avx512f)
     else
         false;
 
     /// AVX2 support (256-bit vectors)
-    pub const has_avx2 = if (builtin.cpu.arch == .x86_64)
-        std.Target.x86.featureSetHas(builtin.cpu.features, .avx2)
+    pub const has_avx2 = if (builtin.target.cpu.arch == .x86_64)
+        std.Target.x86.featureSetHas(builtin.target.cpu.features, .avx2)
     else
         false;
 
     /// ARM NEON support (128-bit vectors, available on all aarch64)
-    pub const has_neon = builtin.cpu.arch == .aarch64;
+    pub const has_neon = builtin.target.cpu.arch == .aarch64;
 };
 
 /// Optimal vector widths based on detected CPU features.
@@ -379,7 +379,7 @@ pub fn CirclesOverlapBatch(comptime T: type, comptime N: usize) type {
             dij: [N]T,
             ri_prime: T,
             rj_primes: [N]T,
-        ) std.meta.Int(.unsigned, N) {
+        ) @Int(.unsigned, N) {
             const d: @Vector(N, T) = dij;
             const ri: @Vector(N, T) = @splat(ri_prime);
             const rj: @Vector(N, T) = rj_primes;
@@ -396,7 +396,7 @@ pub fn CirclesOverlapBatch(comptime T: type, comptime N: usize) type {
             if (builtin.zig_backend == .stage2_llvm) {
                 return @bitCast(@as(@Vector(N, u1), @intFromBool(overlaps)));
             }
-            const Mask = std.meta.Int(.unsigned, N);
+            const Mask = @Int(.unsigned, N);
             var mask: Mask = 0;
             inline for (0..N) |i| {
                 if (overlaps[i]) mask |= @as(Mask, 1) << i;
@@ -635,7 +635,7 @@ test "SliceRadiiBatch - correctness" {
 test "CirclesOverlapBatch - mixed" {
     inline for (float_types) |T| {
         inline for (lr_widths) |n| {
-            const Mask = std.meta.Int(.unsigned, n);
+            const Mask = @Int(.unsigned, n);
             const result = CirclesOverlapBatch(T, n).compute(testArray(T, n, test_overlap_dij), 1.0, @splat(1.0));
             try std.testing.expectEqual(@as(Mask, @truncate(test_overlap_expected)), result);
         }
@@ -758,12 +758,12 @@ test "cpu_features - compile-time detection works" {
     const has_neon = cpu_features.has_neon;
 
     // On x86_64, if AVX-512 is available, AVX2 should also be available
-    if (builtin.cpu.arch == .x86_64 and has_avx512) {
+    if (builtin.target.cpu.arch == .x86_64 and has_avx512) {
         try std.testing.expect(has_avx2);
     }
 
     // On aarch64, NEON should always be available
-    if (builtin.cpu.arch == .aarch64) {
+    if (builtin.target.cpu.arch == .aarch64) {
         try std.testing.expect(has_neon);
     }
 
