@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-26
+
+### Upgrade notes
+
+Results do not change in this release. Two things are new or behave differently:
+
+- Building from source needs Zig 0.17 (0.17.1 for `install.sh`); Zig 0.16 no longer builds zsasa. Wheels, release binaries, the Docker image, Homebrew and Scoop are unaffected.
+- `calc --format=cif` and `--format=pdb` are new output formats; the existing formats are unchanged.
+
 ### Added
 
 - **`calc --format=cif` writes the areas into the input mmCIF file.** The output is the input mmCIF with two columns added to `_atom_site`, `zsasa_value` (area in Å²) and `zsasa_radius` (radius in Å), and the categories `_zsasa_parameters` and `_zsasa_results` (total, polar and apolar areas, and the area of each chain) added to its data block, as FreeSASA does with `--format=cif`. Every other line of the input is kept; atom rows that were not part of the calculation (hydrogens, HETATM, water, other models, unselected alternate locations or chains) keep their row and get `?`. Running it on its own output replaces the values instead of adding columns again. It needs mmCIF input (`.cif`, `.mmcif`, also `.gz`/`.zst`) and writes uncompressed text; `mmcif` is accepted as another name. The other output formats are unchanged.
@@ -910,7 +919,8 @@ This release follows a full audit of the code base. Several defaults and output 
   - `calc_reference_sasa.py` - Generate reference SASA
   - `benchmark.py` - Performance benchmarking
 
-[Unreleased]: https://github.com/N283T/zsasa/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/N283T/zsasa/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/N283T/zsasa/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/N283T/zsasa/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/N283T/zsasa/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/N283T/zsasa/compare/v0.11.0...v0.12.0
