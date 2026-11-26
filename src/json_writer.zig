@@ -75,7 +75,7 @@ fn requireFinite(value: anytype) error{NonFiniteValue}!void {
             if (a.child == u8) return;
             for (value) |item| try requireFinite(item);
         },
-        .@"struct" => |st| inline for (st.fields) |f| try requireFinite(@field(value, f.name)),
+        .@"struct" => |st| inline for (st.field_names) |name| try requireFinite(@field(value, name)),
         .@"union" => |u| if (u.tag_type != null) switch (value) {
             inline else => |payload| try requireFinite(payload),
         },

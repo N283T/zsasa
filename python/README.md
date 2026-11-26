@@ -12,7 +12,7 @@ pip install zsasa
 uv add zsasa
 ```
 
-The x86_64 wheels need a CPU with AVX2 and FMA (x86-64-v3, 2013 and later), and the macOS wheels need macOS 11 or later. On an older CPU, install from source with `pip install --no-binary zsasa zsasa` (needs Zig 0.16).
+The x86_64 wheels need a CPU with AVX2 and FMA (x86-64-v3, 2013 and later), and the macOS wheels need macOS 11 or later. On an older CPU, install from source with `pip install --no-binary zsasa zsasa` (needs Zig 0.17).
 
 ### Optional Dependencies
 

@@ -47,7 +47,7 @@ sh -n install.sh
 
 ## Things that are easy to get wrong
 
-- **Zig 0.16.** `std.Io` is passed explicitly. Release builds are ReleaseFast, where illegal behavior is silent corruption, not a panic: validate lengths and enum values read from files.
+- **Zig 0.17.** `std.Io` is passed explicitly. Release builds are ReleaseFast, where illegal behavior is silent corruption, not a panic: validate lengths and enum values read from files.
 - **Python tests and the library.** A stale `python/zsasa/libzsasa.*` copy can shadow a fresh build. Set `ZSASA_LIB=$PWD/zig-out/lib/libzsasa.dylib` (or `.so`) when testing a local build, and `PYTHONPATH=<worktree>/python` in a git worktree. The integration tests need `pip install -e ".[all,dev]"`; without the optional packages they are skipped.
 - **C ABI.** Keep `src/c_api.zig`, the cdef in `python/zsasa/_ffi.py` and the Python error mapping in step. Bump `ABI_VERSION` (and `_EXPECTED_ABI_VERSION`) when an existing exported signature or struct layout changes; adding an export does not need it.
 - **Test partition.** A test file that only the module root or the executable root reaches needs a filter in `build.zig`, or its tests run nowhere.

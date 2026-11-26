@@ -10,7 +10,7 @@
   <a href="https://pypi.org/project/zsasa/"><img src="https://img.shields.io/pypi/v/zsasa?color=blue" alt="PyPI"></a>
   <a href="https://doi.org/10.64898/2026.06.29.733683"><img src="https://img.shields.io/badge/bioRxiv-10.64898%2F2026.06.29.733683-B31B1B" alt="bioRxiv"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
-  <a href="https://ziglang.org/"><img src="https://img.shields.io/badge/Zig-0.16.0+-f7a41d?logo=zig&logoColor=white" alt="Zig"></a>
+  <a href="https://ziglang.org/"><img src="https://img.shields.io/badge/Zig-0.17.0+-f7a41d?logo=zig&logoColor=white" alt="Zig"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11+-3776ab?logo=python&logoColor=white" alt="Python"></a>
   <a href="https://nixos.org/"><img src="https://img.shields.io/badge/Nix-flake-5277C3?logo=nixos&logoColor=white" alt="Nix"></a>
 </p>
@@ -52,7 +52,7 @@ print(f"Total SASA: {result.total_area:.2f} Å²")
 ### CLI
 
 ```bash
-# One-line install for Linux/macOS (downloads a pre-built binary unless Zig 0.16.0 is available)
+# One-line install for Linux/macOS (downloads a pre-built binary unless Zig 0.17.1 is available)
 curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | sh
 
 # Or with custom install directory
@@ -65,7 +65,7 @@ curl -fsSL https://raw.githubusercontent.com/N283T/zsasa/main/install.sh | INSTA
 # Or with Nix
 nix run github:N283T/zsasa -- calc structure.cif output.json
 
-# Or build from source (requires Zig 0.16.0)
+# Or build from source (requires Zig 0.17)
 git clone https://github.com/N283T/zsasa.git
 cd zsasa && zig build -Doptimize=ReleaseFast
 ```

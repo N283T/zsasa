@@ -1305,8 +1305,8 @@ fn freeDecodedColumns(allocator: Allocator, decoded: []DecodedColumn) void {
 
 /// True when a field of `columns`, a struct of optional column indices, is `idx`.
 fn isMappedColumn(columns: anytype, idx: usize) bool {
-    inline for (std.meta.fields(@TypeOf(columns))) |field| {
-        if (@field(columns, field.name) == idx) return true;
+    inline for (@typeInfo(@TypeOf(columns)).@"struct".field_names) |name| {
+        if (@field(columns, name) == idx) return true;
     }
     return false;
 }
@@ -3818,8 +3818,8 @@ test "msgpack reader rejects nesting deeper than max_msgpack_depth" {
 test "msgpack reader accepts nesting up to max_msgpack_depth" {
     const allocator = std.testing.allocator;
     // One integer inside as many arrays as the limit allows, and inside one more
-    const at_limit = [_]u8{0x91} ** max_msgpack_depth ++ [_]u8{0x07};
-    const past_limit = [_]u8{0x91} ** (max_msgpack_depth + 1) ++ [_]u8{0x07};
+    const at_limit = @as([max_msgpack_depth]u8, @splat(0x91)) ++ [_]u8{0x07};
+    const past_limit = @as([max_msgpack_depth + 1]u8, @splat(0x91)) ++ [_]u8{0x07};
 
     var reader = MsgReader.init(allocator, &at_limit);
     const value = try reader.readValue();

@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub const is_windows = builtin.os.tag == .windows;
+pub const is_windows = builtin.target.os.tag == .windows;
 
 /// A read-only file region backed by mmap (POSIX) or heap allocation (Windows).
 ///

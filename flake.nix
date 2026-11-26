@@ -28,7 +28,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          zig = zig-overlay.packages.${system}."0.16.0";
+          zig = zig-overlay.packages.${system}."0.17.1";
 
           # Pre-fetch Zig dependencies as a fixed-output derivation.
           # This runs `zig build --fetch` with network access and captures the

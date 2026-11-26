@@ -523,7 +523,7 @@ test "readGzip rejects garbage after a gzip member" {
     try std.testing.expectError(error.GzipReadFailed, readTestGzip(allocator, &after_two, DEFAULT_MAX_SIZE));
 
     // The gzip magic followed by an invalid header (compression method 0).
-    const bad_header = test_hello_member ++ [_]u8{ 0x1f, 0x8b } ++ [_]u8{0} ** 16;
+    const bad_header = test_hello_member ++ [_]u8{ 0x1f, 0x8b } ++ @as([16]u8, @splat(0));
     try std.testing.expectError(error.GzipReadFailed, readTestGzip(allocator, &bad_header, DEFAULT_MAX_SIZE));
 }
 
@@ -533,7 +533,7 @@ test "readGzip rejects zero padding after a gzip member" {
     const one = test_hello_member ++ [_]u8{0};
     try std.testing.expectError(error.GzipReadFailed, readTestGzip(allocator, &one, DEFAULT_MAX_SIZE));
 
-    const block = test_hello_member ++ [_]u8{0} ** 512;
+    const block = test_hello_member ++ @as([512]u8, @splat(0));
     try std.testing.expectError(error.GzipReadFailed, readTestGzip(allocator, &block, DEFAULT_MAX_SIZE));
 }
 
@@ -739,7 +739,12 @@ test "readGzip decodes members that straddle the input buffer" {
     // More compressed data than the input buffer holds, so that members, and
     // the look-ahead for the next member, span refills of that buffer.
     const count = 100;
-    const gz_data = test_dynamic_member ** count;
+    const gz_data = comptime blk: {
+        const member_len = test_dynamic_member.len;
+        var repeated: [member_len * count]u8 = undefined;
+        for (0..count) |i| @memcpy(repeated[i * member_len ..][0..member_len], &test_dynamic_member);
+        break :blk repeated;
+    };
     comptime std.debug.assert(gz_data.len > CHUNK_SIZE);
 
     const content = try readTestGzip(allocator, &gz_data, DEFAULT_MAX_SIZE);

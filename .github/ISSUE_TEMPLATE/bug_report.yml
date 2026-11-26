@@ -21,7 +21,7 @@ body:
     attributes:
       label: Zig Version (source builds only)
       description: Output of `zig version`, or "not installed" for wheels/binaries
-      placeholder: "0.16.0 or not installed"
+      placeholder: "0.17.1 or not installed"
     validations:
       required: false
 
