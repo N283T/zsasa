@@ -24,7 +24,7 @@ All notable changes to zsasa. See [GitHub Releases](https://github.com/N283T/zsa
 
 ### Changed
 
-- **Build: Zig 0.17.** zsasa now builds with Zig 0.17.1 and no longer with Zig 0.16 (`minimum_zig_version` 0.17.0). The release builds, wheels, Docker image, Nix flake and `install.sh` use Zig 0.17.1, and ztraj is updated to its Zig 0.17 release. Building from source needs Zig 0.17. SASA results and all output formats are unchanged: per-atom output for PDB, mmCIF, BinaryCIF and SDF input, with both algorithms, matches the Zig 0.16 build byte for byte.
+- **Build: Zig 0.17.** zsasa now builds with Zig 0.17.1 and no longer with Zig 0.16 (`minimum_zig_version` 0.17.0). The release builds, wheels, Docker image, Nix flake and `install.sh` use Zig 0.17.1, and ztraj is updated to 0.10.0, its Zig 0.17 release. Building from source needs Zig 0.17. SASA results and all output formats are unchanged: per-atom output for PDB, mmCIF, BinaryCIF and SDF input, with both algorithms, matches the Zig 0.16 build byte for byte.
 - **Build: zsasa no longer fetches a second copy of itself through ztraj.** zsasa now takes only the standalone `ztraj-io` module of ztraj 0.9.0 (`.io_only = true`), the trajectory readers it uses. Before, building zsasa also fetched ztraj's own dependency on an older zsasa (0.2.11). SASA results and trajectory output are unchanged.
 
 ### Fixed
